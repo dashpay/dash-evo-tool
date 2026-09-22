@@ -424,7 +424,11 @@ pub fn get_available_token_actions_for_identity(
         )
     };
 
-    let can_claim = {
+    // Every identity may take a once-per-identity claim, so its presence alone
+    // offers the claim (Platform refuses a second one).
+    let can_claim_once_per_identity =
+        crate::model::token::once_per_identity_amount(token_configuration).is_some();
+    let can_claim = can_claim_once_per_identity || {
         if let Some(dist) = token_configuration
             .distribution_rules()
             .perpetual_distribution()

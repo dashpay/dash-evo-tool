@@ -958,6 +958,19 @@ impl AppContext {
         default_platform_version(&self.network)
     }
 
+    /// The platform version of the connected network, once its protocol
+    /// version has been fetched; [`Self::platform_version`] until then, or for
+    /// a protocol version this build does not know.
+    ///
+    /// For values that differ between protocol versions and must match the
+    /// network, such as fees introduced by a newer protocol.
+    pub fn connected_platform_version(&self) -> &'static PlatformVersion {
+        match self.platform_protocol_version() {
+            0 => self.platform_version(),
+            version => PlatformVersion::get_optional(version).unwrap_or(self.platform_version()),
+        }
+    }
+
     pub fn state_transition_options(&self) -> Option<StateTransitionCreationOptions> {
         // Signing override: only the Developer role may relax the security-level
         // and purpose checks when signing a state transition.

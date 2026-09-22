@@ -1,8 +1,10 @@
+use dash_sdk::dpp::balances::credits::TokenAmount;
+use crate::context::feature_gate::FeatureGate;
+use crate::model::token::{distribution_rules_with_once_per_identity, parse_once_per_identity_amount};
 use crate::model::identity_key_usability::SigningScope;
 use std::collections::{BTreeMap, HashSet};
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::{TokenConfigurationPreset, TokenConfigurationPresetFeatures};
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationPresetFeatures::{MostRestrictive, WithAllAdvancedActions, WithExtremeActions, WithMintingAndBurningActions, WithOnlyEmergencyAction};
-use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::TokenDistributionRules;
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
 use dash_sdk::dpp::data_contract::change_control_rules::v0::ChangeControlRulesV0;
 use dash_sdk::dpp::data_contract::change_control_rules::ChangeControlRules;
@@ -1153,8 +1155,9 @@ impl TokensScreen {
         let main_control_group_change_authorized =
             self.parse_main_control_group_change_authorized()?;
 
-        // 4) Distribution data (perpetual & pre_programmed)
+        // 4) Distribution data (perpetual, pre-programmed & once-per-identity)
         let distribution_rules = self.build_distribution_rules()?;
+        let once_per_identity_amount = self.parse_once_per_identity_amount()?;
 
         // 5) Groups
         let groups = self.parse_groups()?;
@@ -1194,12 +1197,33 @@ impl TokensScreen {
             conventions_change_rules,
             main_control_group_change_authorized,
 
-            distribution_rules: TokenDistributionRules::V0(distribution_rules),
+            distribution_rules: distribution_rules_with_once_per_identity(
+                distribution_rules,
+                once_per_identity_amount,
+            ),
             groups,
             document_schemas: self.parsed_document_schemas.clone(),
             marketplace_rules,
             change_direct_purchase_pricing_rules,
         })
+    }
+
+    /// The once-per-identity amount, when that distribution is enabled. It
+    /// needs protocol version 14, so a network that does not accept it yet is
+    /// refused here rather than by Platform after the fee is paid.
+    fn parse_once_per_identity_amount(&self) -> Result<Option<TokenAmount>, String> {
+        if !self.enable_once_per_identity_distribution {
+            return Ok(None);
+        }
+        if !FeatureGate::TokenOncePerIdentityDistribution.is_available(&self.app_context) {
+            return Err(
+                "The connected network does not accept once-per-identity distributions yet. Turn it off to create the token."
+                    .to_string(),
+            );
+        }
+        parse_once_per_identity_amount(&self.once_per_identity_amount_input)
+            .map(Some)
+            .map_err(|error| error.to_string())
     }
 
     fn parse_contract_keywords(&self) -> Result<Vec<String>, String> {

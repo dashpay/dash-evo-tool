@@ -1,6 +1,9 @@
 use crate::context::AppContext;
 use crate::model::user_role::UserRole;
-use dash_sdk::dpp::version::feature_initial_protocol_versions::SHIELDED_POOL_INITIAL_PROTOCOL_VERSION;
+use dash_sdk::dpp::version::feature_initial_protocol_versions::{
+    IDENTITY_KEY_LIMITS_UPDATE_INITIAL_PROTOCOL_VERSION, SHIELDED_POOL_INITIAL_PROTOCOL_VERSION,
+};
+use dash_sdk::dpp::version::v14::PROTOCOL_VERSION_14;
 
 /// Shielded state transitions activate at upstream rs-platform-version's
 /// [`SHIELDED_POOL_INITIAL_PROTOCOL_VERSION`] (protocol v12), sourced directly
@@ -10,6 +13,17 @@ use dash_sdk::dpp::version::feature_initial_protocol_versions::SHIELDED_POOL_INI
 /// `{ min: 0, max: 0 }` is a valid v0 bound, not an undefined marker.
 const SHIELDED_ACTIVATION_PROTOCOL_VERSION: Option<u32> =
     Some(SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
+
+/// Authentication keys with a budget or an expiry, and the
+/// `IdentityKeyLimitsUpdate` transition that raises them, activate together at
+/// upstream's [`IDENTITY_KEY_LIMITS_UPDATE_INITIAL_PROTOCOL_VERSION`].
+const KEY_LIMITS_ACTIVATION_PROTOCOL_VERSION: u32 =
+    IDENTITY_KEY_LIMITS_UPDATE_INITIAL_PROTOCOL_VERSION;
+
+/// Version 1 token distribution rules (the once-per-identity distribution)
+/// are accepted from protocol version 14. Upstream names no feature constant
+/// for it, so the protocol version it shipped in is used directly.
+const ONCE_PER_IDENTITY_DISTRIBUTION_ACTIVATION_PROTOCOL_VERSION: u32 = PROTOCOL_VERSION_14;
 
 /// A runtime capability of the connected platform, evaluated against the live
 /// context. Independent of the user's role — it answers "does the connected
@@ -26,6 +40,12 @@ pub enum Capability {
     /// transitions (shield, shielded transfer, unshield, shield from asset
     /// lock, shielded withdrawal).
     ShieldedProtocol,
+    /// The connected platform accepts authentication keys with a budget or an
+    /// expiry, and the transition that raises them.
+    IdentityKeyLimits,
+    /// The connected platform accepts tokens with a once-per-identity
+    /// distribution.
+    OncePerIdentityDistribution,
 }
 
 impl Capability {
@@ -40,6 +60,15 @@ impl Capability {
                 // version is not known yet reads as unmet rather than optimistic.
                 Some(activation) => ctx.platform_protocol_version() >= activation,
             },
+            // Same rule: the fetched version, where "not fetched yet" (0)
+            // reads as unmet.
+            Capability::IdentityKeyLimits => {
+                ctx.platform_protocol_version() >= KEY_LIMITS_ACTIVATION_PROTOCOL_VERSION
+            }
+            Capability::OncePerIdentityDistribution => {
+                ctx.platform_protocol_version()
+                    >= ONCE_PER_IDENTITY_DISTRIBUTION_ACTIVATION_PROTOCOL_VERSION
+            }
         }
     }
 }
@@ -135,6 +164,13 @@ pub enum FeatureGate {
     /// Gated at [`UserRole::Developer`]; the successor to the old overloaded
     /// developer-mode flag, which conflated this tier with Power-role disclosure.
     DeveloperTools,
+    /// Adding a key with a budget or an expiry, and raising those limits.
+    /// Offered only where the connected network accepts them.
+    IdentityKeyLimits,
+    /// Creating a token with a once-per-identity distribution. Offered only
+    /// where the connected network accepts it; claiming from an existing one
+    /// needs no gate, since such a token can only exist on such a network.
+    TokenOncePerIdentityDistribution,
 }
 
 impl FeatureGate {
@@ -151,6 +187,10 @@ impl FeatureGate {
             FeatureGate::DashPayOperations => &[Check::Experimental(ExperimentalFeature::DashPay)],
             FeatureGate::Masternodes => &[Check::MinRole(UserRole::Power)],
             FeatureGate::DeveloperTools => &[Check::MinRole(UserRole::Developer)],
+            FeatureGate::IdentityKeyLimits => &[Check::Capability(Capability::IdentityKeyLimits)],
+            FeatureGate::TokenOncePerIdentityDistribution => {
+                &[Check::Capability(Capability::OncePerIdentityDistribution)]
+            }
         }
     }
 
@@ -417,6 +457,26 @@ mod tests {
                 !FeatureGate::ShieldedOperations.is_available(&ctx),
                 "ShieldedOperations must stay closed for {role:?} while the capability is unmet"
             );
+        }
+    }
+
+    /// Protocol version 14 features stay closed below version 14 and before
+    /// the network's version is known, whatever the role.
+    #[test]
+    fn protocol_v14_gates_follow_the_connected_version() {
+        for role in ROLES {
+            let (_tmp, ctx) = ctx_with_role(role);
+            for gate in [
+                FeatureGate::IdentityKeyLimits,
+                FeatureGate::TokenOncePerIdentityDistribution,
+            ] {
+                assert!(!gate.is_available(&ctx), "{gate:?} closed at boot");
+                ctx.set_platform_protocol_version(13);
+                assert!(!gate.is_available(&ctx), "{gate:?} closed on protocol 13");
+                ctx.set_platform_protocol_version(14);
+                assert!(gate.is_available(&ctx), "{gate:?} open on protocol 14");
+                ctx.set_platform_protocol_version(0);
+            }
         }
     }
 }

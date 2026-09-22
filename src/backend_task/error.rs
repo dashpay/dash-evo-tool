@@ -1986,6 +1986,20 @@ pub enum TaskError {
     #[error("Could not retrieve token information from the platform. Please retry.")]
     TokenQueryError { detail: String },
 
+    /// The identity already took its single claim of a token's
+    /// once-per-identity distribution, so Platform refused another one.
+    #[error(
+        "This identity has already claimed its share of this token. Each identity can claim it only once, so there is nothing more to claim."
+    )]
+    TokenOncePerIdentityAlreadyClaimed {
+        token_id: Identifier,
+        identity_id: Identifier,
+        /// Block time of the claim that was paid, in milliseconds.
+        claimed_at_ms: u64,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
     /// A token operation run by the wallet runtime failed for a reason the
     /// SDK error classification has no specific variant for. Built by
     /// [`TaskError::from_token_operation_failure`], which prefers the specific
@@ -3497,6 +3511,20 @@ impl From<SdkError> for TaskError {
                                 identity_id,
                                 token_id,
                                 action,
+                                source_error,
+                            }
+                        }))
+                    }
+                    ConsensusError::StateError(
+                        StateError::TokenOncePerIdentityDistributionAlreadyClaimedError(e),
+                    ) => {
+                        let (token_id, identity_id, claimed_at_ms) =
+                            (e.token_id(), e.identity_id(), e.claimed_at_ms());
+                        Some(Box::new(move |source_error| {
+                            TaskError::TokenOncePerIdentityAlreadyClaimed {
+                                token_id,
+                                identity_id,
+                                claimed_at_ms,
                                 source_error,
                             }
                         }))
@@ -5666,6 +5694,41 @@ mod tests {
             node_msg, generic_msg,
             "MasternodeNotFound must not reuse the IdentityNotFound message"
         );
+    }
+
+    /// A second claim of a once-per-identity distribution maps to its own
+    /// variant carrying the ids, so the claim flow can remember the claim.
+    #[test]
+    fn once_per_identity_already_claimed_maps_to_its_variant() {
+        use dash_sdk::dpp::consensus::state::token::TokenOncePerIdentityDistributionAlreadyClaimedError;
+        let (token_id, identity_id) = (Identifier::random(), Identifier::random());
+        let consensus =
+            ConsensusError::from(TokenOncePerIdentityDistributionAlreadyClaimedError::new(
+                token_id,
+                identity_id,
+                1_758_140_722_000,
+            ));
+        let sdk_err = SdkError::StateTransitionBroadcastError(
+            dash_sdk::error::StateTransitionBroadcastError {
+                code: 40722,
+                message: "already claimed".to_string(),
+                cause: Some(consensus),
+            },
+        );
+        match TaskError::from(sdk_err) {
+            TaskError::TokenOncePerIdentityAlreadyClaimed {
+                token_id: t,
+                identity_id: i,
+                claimed_at_ms,
+                ..
+            } => {
+                assert_eq!(
+                    (t, i, claimed_at_ms),
+                    (token_id, identity_id, 1_758_140_722_000)
+                );
+            }
+            other => panic!("got {other:?}"),
+        }
     }
 
     /// An unclassified SDK failure behind a wallet-runtime token operation

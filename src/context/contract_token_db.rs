@@ -69,6 +69,26 @@ fn untracked_token_prefix(token_id: &Identifier) -> String {
     )
 }
 
+/// Key prefix for the once-per-identity claim hint of one token, filed under
+/// the claiming identity's [`DetScope::Identity`] scope (so it goes with the
+/// identity). The full key is `det:token_once_claimed:v1:<token_id_base58>`;
+/// the value is the block time of the claim in milliseconds.
+///
+/// A hint, not an authority: Platform offers no query for "has this identity
+/// claimed", so DET remembers the claims it saw succeed and the ones Platform
+/// refused as already taken. A claim made on another device is absent until
+/// Platform refuses the next attempt. The fact cannot become false again — a
+/// spent claim stays spent — so the marker is never cleared.
+const ONCE_PER_IDENTITY_CLAIM_PREFIX: &str = "det:token_once_claimed:v1:";
+
+fn once_per_identity_claim_key(token_id: &Identifier) -> String {
+    format!(
+        "{}{}",
+        ONCE_PER_IDENTITY_CLAIM_PREFIX,
+        token_id.to_string(Encoding::Base58)
+    )
+}
+
 fn contract_key(contract_id: &Identifier) -> String {
     format!(
         "{}{}",
@@ -425,6 +445,27 @@ impl AppContext {
         Ok(())
     }
 
+    /// When `identity_id` took its once-per-identity claim of `token_id`, as
+    /// far as this device knows (see [`ONCE_PER_IDENTITY_CLAIM_PREFIX`]).
+    pub fn once_per_identity_claimed_at(
+        &self,
+        token_id: &Identifier,
+        identity_id: &Identifier,
+    ) -> std::result::Result<Option<u64>, TaskError> {
+        once_per_identity_claimed_at_in(&self.det_kv()?, token_id, identity_id)
+    }
+
+    /// Remember that `identity_id` took its once-per-identity claim of
+    /// `token_id` at block time `claimed_at_ms`. Idempotent.
+    pub fn record_once_per_identity_claim(
+        &self,
+        token_id: &Identifier,
+        identity_id: &Identifier,
+        claimed_at_ms: u64,
+    ) -> std::result::Result<(), TaskError> {
+        record_once_per_identity_claim_in(&self.det_kv()?, token_id, identity_id, claimed_at_ms)
+    }
+
     /// Every identity-token pair the user stopped tracking.
     pub fn untracked_token_balances(
         &self,
@@ -759,6 +800,34 @@ fn parse_untracked_key(key: &str) -> Option<IdentityTokenIdentifier> {
 
 /// Dismiss one pair. A single upsert of that pair's marker — idempotent, and
 /// independent of every other pair's marker.
+fn once_per_identity_claimed_at_in(
+    kv: &DetKv,
+    token_id: &Identifier,
+    identity_id: &Identifier,
+) -> std::result::Result<Option<u64>, TaskError> {
+    let identity = identity_id.to_buffer();
+    kv.get(
+        DetScope::Identity(&identity),
+        &once_per_identity_claim_key(token_id),
+    )
+    .map_err(token_err)
+}
+
+fn record_once_per_identity_claim_in(
+    kv: &DetKv,
+    token_id: &Identifier,
+    identity_id: &Identifier,
+    claimed_at_ms: u64,
+) -> std::result::Result<(), TaskError> {
+    let identity = identity_id.to_buffer();
+    kv.put(
+        DetScope::Identity(&identity),
+        &once_per_identity_claim_key(token_id),
+        &claimed_at_ms,
+    )
+    .map_err(token_err)
+}
+
 fn mark_untracked_in(
     kv: &DetKv,
     pair: IdentityTokenIdentifier,
@@ -863,6 +932,56 @@ mod tests {
 
     fn ident(b: u8) -> Identifier {
         Identifier::from([b; 32])
+    }
+
+    /// The once-per-identity claim hint is per (identity, token) and holds
+    /// the claim time.
+    #[test]
+    fn once_per_identity_claim_hint_is_per_identity_and_token() {
+        let kv = empty_kv();
+        let (token, other_token) = (ident(1), ident(2));
+        let (identity, other_identity) = (ident(3), ident(4));
+
+        assert_eq!(
+            once_per_identity_claimed_at_in(&kv, &token, &identity).unwrap(),
+            None
+        );
+        record_once_per_identity_claim_in(&kv, &token, &identity, 42).unwrap();
+        assert_eq!(
+            once_per_identity_claimed_at_in(&kv, &token, &identity).unwrap(),
+            Some(42)
+        );
+        assert_eq!(
+            once_per_identity_claimed_at_in(&kv, &other_token, &identity).unwrap(),
+            None
+        );
+        assert_eq!(
+            once_per_identity_claimed_at_in(&kv, &token, &other_identity).unwrap(),
+            None
+        );
+    }
+
+    /// Stored token configurations are bincode blobs; version 0 distribution
+    /// rules (every token before protocol version 14) keep decoding as version
+    /// 0, and version 1 rules (a once-per-identity distribution) round-trip.
+    #[test]
+    fn stored_token_configs_with_either_rules_version_round_trip() {
+        use crate::model::token::distribution_rules_with_once_per_identity;
+        use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+        use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::TokenDistributionRules;
+
+        let v0_config = TokenConfigurationV0::default_most_restrictive();
+        let TokenDistributionRules::V0(rules) = v0_config.distribution_rules.clone() else {
+            panic!("the default rules are version 0");
+        };
+        let mut v1_config = v0_config.clone();
+        v1_config.distribution_rules = distribution_rules_with_once_per_identity(rules, Some(7));
+
+        for config in [v0_config, v1_config] {
+            let config = TokenConfiguration::V0(config);
+            let bytes = bincode::encode_to_vec(&config, config::standard()).unwrap();
+            assert_eq!(decode_token_config(&bytes).unwrap(), config);
+        }
     }
 
     fn stored_token(alias: &str, contract: u8, position: u16) -> StoredToken {

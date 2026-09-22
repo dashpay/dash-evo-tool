@@ -1,6 +1,7 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::model::identity_key_usability::now_ms;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::request_type::RequestType;
 use dash_sdk::Sdk;
@@ -43,7 +44,10 @@ impl AppContext {
             builder = builder.with_state_transition_creation_options(options);
         }
 
-        self.execute_token_op(
+        let token_id = data_contract.token_id(token_position);
+        let claimer_id = actor_identity.identity.id();
+        let result = self
+            .execute_token_op(
             async {
                 sdk.token_claim(builder, &signing_key, actor_identity)
                     .await
@@ -99,6 +103,43 @@ impl AppContext {
             },
             BackendTaskSuccessResult::ClaimedTokens,
         )
-        .await
+        .await;
+
+        if distribution_type == TokenDistributionType::OncePerIdentity
+            && let Some(token_id) = token_id
+        {
+            self.remember_once_per_identity_claim(&token_id, &claimer_id, &result);
+        }
+        result
+    }
+
+    /// Record the once-per-identity claim hint after a claim attempt: the
+    /// claim just paid, or Platform refused it because an earlier one was.
+    /// Any other outcome says nothing about the claim, so nothing is recorded.
+    /// A failed write only loses the hint, never the claim, so it is logged.
+    fn remember_once_per_identity_claim(
+        &self,
+        token_id: &Identifier,
+        claimer_id: &Identifier,
+        result: &Result<BackendTaskSuccessResult, TaskError>,
+    ) {
+        let claimed_at_ms = match result {
+            Ok(_) => now_ms(),
+            Err(TaskError::TokenOncePerIdentityAlreadyClaimed {
+                identity_id,
+                claimed_at_ms,
+                ..
+            }) if identity_id == claimer_id => *claimed_at_ms,
+            Err(_) => return,
+        };
+        if let Err(error) = self.record_once_per_identity_claim(token_id, claimer_id, claimed_at_ms)
+        {
+            tracing::warn!(
+                %token_id,
+                %claimer_id,
+                ?error,
+                "Could not remember a once-per-identity token claim"
+            );
+        }
     }
 }

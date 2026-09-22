@@ -646,7 +646,7 @@ impl AppContext {
                         // Without the epoch, the network's version is learned from
                         // the ratchet a proved DPNS fetch drives. Only a successful
                         // fetch proves it came from the network, not the local seed.
-                        match DataContract::fetch(sdk, self.dpns_contract.id()).await {
+                        match DataContract::fetch(sdk, self.dpns_contract().id()).await {
                             Ok(_) => {
                                 self.set_platform_protocol_version(sdk.protocol_version_number())
                             }

@@ -32,7 +32,7 @@ use errors::DashPayError;
 /// Every `contactRequest` read in this module goes through here, so the
 /// contract handle and the error attribution are stated once.
 fn contact_request_query(app_context: &AppContext) -> Result<DocumentQuery, DashPayError> {
-    DocumentQuery::new(app_context.dashpay_contract.clone(), "contactRequest").map_err(|e| {
+    DocumentQuery::new(app_context.dashpay_contract(), "contactRequest").map_err(|e| {
         DashPayError::QueryCreation {
             query_target: "DashPay contactRequest",
             source: Box::new(e.into()),

@@ -201,7 +201,7 @@ pub fn get_selected_wallet(
 ) -> Result<Option<Arc<RwLock<Wallet>>>, String> {
     // If `app_context` is provided, use the DPNS-based approach.
     let public_key = if let Some(context) = app_context {
-        let dpns_contract = &context.dpns_contract;
+        let dpns_contract = &context.dpns_contract();
 
         // Attempt to fetch the `preorder` document type from the DPNS contract.
         let preorder_document_type = dpns_contract

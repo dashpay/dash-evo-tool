@@ -627,7 +627,7 @@ pub fn build_identity_registration_with_seed(
     identity_index: u32,
     funding_amount: Duffs,
 ) -> Result<IdentityRegistrationInfo, TaskError> {
-    let dashpay_contract_id = app_context.dashpay_contract.id();
+    let dashpay_contract_id = app_context.dashpay_contract().id();
     let key_specs = default_identity_key_specs(dashpay_contract_id);
     let network = app_context.network;
 

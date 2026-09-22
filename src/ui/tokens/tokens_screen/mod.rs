@@ -1896,7 +1896,7 @@ impl TokensScreen {
         }
         if self.enable_once_per_identity_distribution {
             // Charged from protocol version 14, so priced from the fee table of
-            // the network actually connected rather than the build default.
+            // the version the network confirmed, not the SDK's starting seed.
             fee += self
                 .app_context
                 .connected_platform_version()

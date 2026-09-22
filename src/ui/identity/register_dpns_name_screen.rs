@@ -91,7 +91,7 @@ fn dpns_signing_key(
                 SecurityLevel::MEDIUM,
             ],
             SigningScope::ContractWide {
-                contract_id: app_context.dpns_contract.id(),
+                contract_id: app_context.dpns_contract().id(),
             },
         ))
         .cloned()
@@ -236,12 +236,12 @@ impl RegisterDpnsNameScreen {
                     &mut self.selected_key,
                     TransactionType::DocumentAction,
                     self.app_context
-                        .dpns_contract
+                        .dpns_contract()
                         .document_type_cloned_for_name("domain")
                         .ok()
                         .as_ref(),
                     SigningScope::ContractWide {
-                        contract_id: self.app_context.dpns_contract.id(),
+                        contract_id: self.app_context.dpns_contract().id(),
                     },
                 );
                 if !matches!(key_action, AppAction::None) {

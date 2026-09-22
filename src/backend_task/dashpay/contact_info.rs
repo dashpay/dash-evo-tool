@@ -491,7 +491,7 @@ async fn lookup_contact_info(
     identity: &QualifiedIdentity,
     contact_user_id: Identifier,
 ) -> Result<ContactInfoLookup, TaskError> {
-    let dashpay_contract = app_context.dashpay_contract.clone();
+    let dashpay_contract = app_context.dashpay_contract();
     let identity_id = identity.identity.id();
     let mut query = DocumentQuery::new(dashpay_contract, "contactInfo").map_err(|e| {
         DashPayError::QueryCreation {
@@ -592,7 +592,7 @@ pub async fn create_or_update_contact_info(
     contact_user_id: Identifier,
     update: ContactInfoUpdate,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
-    let dashpay_contract = app_context.dashpay_contract.clone();
+    let dashpay_contract = app_context.dashpay_contract();
     let identity_id = identity.identity.id();
     let lookup = lookup_contact_info(app_context, sdk, &identity, contact_user_id).await?;
     let (found_existing_doc, derivation_index, enc_user_id_key, private_data_key) =

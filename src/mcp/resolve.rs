@@ -427,7 +427,7 @@ mod tests {
     /// the response metadata, so a successful fetch ratchets the SDK exactly as a
     /// live network would; a failed one leaves the version unconfirmed.
     async fn mock_sdk_with_dpns_contract(ctx: &Arc<AppContext>) -> Sdk {
-        let contract = DataContract::clone(&ctx.dpns_contract);
+        let contract = DataContract::clone(&ctx.dpns_contract());
         let mut sdk = Sdk::new_mock();
         sdk.mock()
             .expect_fetch(contract.id(), Some(contract))

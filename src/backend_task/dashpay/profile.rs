@@ -18,7 +18,7 @@ pub async fn load_profile(
     identity: QualifiedIdentity,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     let identity_id = identity.identity.id();
-    let dashpay_contract = app_context.dashpay_contract.clone();
+    let dashpay_contract = app_context.dashpay_contract();
 
     // Query for profile document owned by this identity
     let mut profile_query = DocumentQuery::new(dashpay_contract, "profile").map_err(|e| {
@@ -174,13 +174,12 @@ pub async fn update_profile(
         );
     }
     let identity_id = identity.identity.id();
-    let mut query =
-        DocumentQuery::new(app_context.dashpay_contract.clone(), "profile").map_err(|e| {
-            DashPayError::QueryCreation {
-                query_target: "DashPay profile",
-                source: Box::new(e.into()),
-            }
-        })?;
+    let mut query = DocumentQuery::new(app_context.dashpay_contract(), "profile").map_err(|e| {
+        DashPayError::QueryCreation {
+            query_target: "DashPay profile",
+            source: Box::new(e.into()),
+        }
+    })?;
     query = query.with_where(WhereClause {
         field: "$ownerId".to_string(),
         operator: WhereOperator::Equal,
@@ -289,7 +288,7 @@ pub async fn fetch_contact_profile(
     _identity: QualifiedIdentity, // May be needed for future privacy features
     contact_id: Identifier,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
-    let dashpay_contract = app_context.dashpay_contract.clone();
+    let dashpay_contract = app_context.dashpay_contract();
 
     // Query for the contact's profile document
     let mut query = DocumentQuery::new(dashpay_contract, "profile").map_err(|e| {
@@ -323,8 +322,8 @@ pub async fn search_profiles(
     sdk: &Sdk,
     search_query: String,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
-    let dpns_contract = app_context.dpns_contract.clone();
-    let dashpay_contract = app_context.dashpay_contract.clone();
+    let dpns_contract = app_context.dpns_contract();
+    let dashpay_contract = app_context.dashpay_contract();
     let mut results: Vec<(Identifier, Option<Document>, String)> = Vec::new();
 
     let query_trimmed = search_query.trim();

@@ -290,7 +290,7 @@ pub async fn send_contact_request_with_proof(
     }
 
     // Step 3: Check if a contact request already exists
-    let dashpay_contract = app_context.dashpay_contract.clone();
+    let dashpay_contract = app_context.dashpay_contract();
     let mut existing_query = contact_request_query(app_context)?;
 
     existing_query = existing_query
@@ -652,7 +652,7 @@ async fn resolve_username_to_identity(
     let domain_query = DocumentQuery {
         sub_queries: Vec::new(),
         select: SelectProjection::documents(),
-        data_contract: app_context.dpns_contract.clone(),
+        data_contract: app_context.dpns_contract(),
         document_type_name: "domain".to_string(),
         where_clauses: vec![
             WhereClause {
@@ -764,7 +764,7 @@ pub async fn accept_contact_request(
             Purpose::AUTHENTICATION,
             &[SecurityLevel::CRITICAL, SecurityLevel::HIGH],
             SigningScope::Document {
-                contract_id: app_context.dashpay_contract.id(),
+                contract_id: app_context.dashpay_contract().id(),
                 document_type_name: "contactRequest",
             },
         ))

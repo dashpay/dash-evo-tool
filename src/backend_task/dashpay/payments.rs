@@ -92,7 +92,7 @@ pub async fn derive_contact_payment_address(
     contact_id: Identifier,
 ) -> Result<(Address, u32), String> {
     // Fetch the contact request from the contact to us (they sent us their encrypted xpub)
-    let dashpay_contract = app_context.dashpay_contract.clone();
+    let dashpay_contract = app_context.dashpay_contract();
 
     let mut query = DocumentQuery::new(dashpay_contract.clone(), "contactRequest")
         .map_err(|e| format!("Failed to create query: {}", e))?;

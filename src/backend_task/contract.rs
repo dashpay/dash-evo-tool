@@ -97,7 +97,7 @@ impl AppContext {
                         for data_contract in data_contracts {
                             if let Some(contract) = &data_contract.1 {
                                 // Fetch the contract description from the Search Contract
-                                let search_contract = &self.keyword_search_contract;
+                                let search_contract = self.keyword_search_contract();
                                 let document_query = DocumentQuery {
                                     sub_queries: Vec::new(),
                                     select: SelectProjection::documents(),

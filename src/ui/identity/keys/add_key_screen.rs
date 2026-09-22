@@ -132,7 +132,7 @@ impl AddKeyScreen {
             .unwrap_or(None);
 
         let dashpay_contract_id = app_context
-            .dashpay_contract
+            .dashpay_contract()
             .id()
             .to_string(Encoding::Base58);
 
@@ -180,7 +180,7 @@ impl AddKeyScreen {
             .unwrap_or(None);
 
         let dashpay_contract_id = app_context
-            .dashpay_contract
+            .dashpay_contract()
             .id()
             .to_string(Encoding::Base58);
 

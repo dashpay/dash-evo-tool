@@ -120,7 +120,7 @@ pub enum DocumentDisplayMode {
 impl DocumentQueryScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         let dpns_contract = QualifiedContract {
-            contract: Arc::clone(&app_context.dpns_contract).as_ref().clone(),
+            contract: app_context.dpns_contract().as_ref().clone(),
             alias: Some("dpns".to_string()),
         };
 
@@ -593,7 +593,7 @@ impl ScreenLike for DocumentQueryScreen {
 
         // Reset the selected contract and document type
         let dpns_contract = QualifiedContract {
-            contract: Arc::clone(&self.app_context.dpns_contract).as_ref().clone(),
+            contract: self.app_context.dpns_contract().as_ref().clone(),
             alias: Some("dpns".to_string()),
         };
         self.selected_data_contract = dpns_contract.clone();

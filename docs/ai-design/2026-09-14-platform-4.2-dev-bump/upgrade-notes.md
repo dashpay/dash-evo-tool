@@ -77,14 +77,12 @@ of being skipped.
   transition amount already comes from the SDK's platform version, but
   `register_dpns_name_screen.rs` still shows "Cost ≈ 0.2006 Dash". Marked
   `TODO(platform-4.2-dev-bump)` (impact report F4).
-- **Devnet protocol seed.** Upstream seeds devnets at protocol version 14
-  because lower versions cannot deserialize devnet contracts. DET still seeds
-  every network at version 12 (`default_platform_version`). Marked
-  `TODO(platform-4.2-dev-bump)` (F5). Visibility is not the blocker:
-  `dash_sdk::sdk` is a public module and `min_protocol_version` is a
-  `pub const fn` at the new pin (`rs-sdk/src/sdk.rs:70`). What remains is the
-  seeding decision itself. The older `TODO(platform#4231)` beside it is a
-  separate cleanup; that PR is already merged.
+- **Protocol seed (resolved).** DET no longer seeds every network at
+  version 12. The SDK starts at upstream's per-network
+  `dash_sdk::sdk::min_protocol_version` (13 on mainnet, testnet and regtest;
+  14 on devnet) and ratchets to the version the network runs.
+  `AppContext::platform_version()` returns that negotiated version, and the
+  cached system contracts reload when it changes.
 - Other runtime deltas are covered only by network-dependent tests, which were
   not run:
   - rust-dashcore transaction detection and filter sync;

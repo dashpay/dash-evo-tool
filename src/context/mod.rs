@@ -10,6 +10,7 @@ pub(crate) use identity_db::test_staging;
 pub(crate) mod identity_load_registry;
 pub mod migration_status;
 mod settings_db;
+mod system_contracts;
 #[cfg(test)]
 pub(crate) mod test_support;
 mod wallet_lifecycle;
@@ -44,9 +45,7 @@ use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::state_transition::StateTransitionSigningOptions;
 use dash_sdk::dpp::state_transition::batch_transition::methods::StateTransitionCreationOptions;
-use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
 use dash_sdk::dpp::version::PlatformVersion;
-use dash_sdk::dpp::version::v12::PLATFORM_V12;
 use dash_sdk::platform::DataContract;
 use dash_sdk::platform::Identifier;
 use egui::Context;
@@ -57,6 +56,7 @@ use std::path::PathBuf;
 use std::str::FromStr as _;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
+use system_contracts::{SystemContracts, SystemContractsCache};
 
 use crate::model::settings::AppSettings;
 use crate::model::user_role::{UserRole, UserRoleCell};
@@ -101,11 +101,9 @@ pub struct AppContext {
     // owned by upstream platform-wallet.
     spv_context_provider: RwLock<SpvProvider>,
     pub(crate) config: Arc<RwLock<NetworkConfig>>,
-    pub(crate) dpns_contract: Arc<DataContract>,
-    pub(crate) withdraws_contract: Arc<DataContract>,
-    pub(crate) dashpay_contract: Arc<DataContract>,
-    pub(crate) token_history_contract: Arc<DataContract>,
-    pub(crate) keyword_search_contract: Arc<DataContract>,
+    /// The system contracts at the SDK's protocol version; read through
+    /// [`Self::dpns_contract`] and its siblings.
+    system_contracts: SystemContractsCache,
     pub(crate) core_client: RwLock<Client>,
     pub(crate) has_wallet: AtomicBool,
     /// One-shot-per-session latch for the automatic all-wallets identity sweep.
@@ -421,28 +419,20 @@ impl AppContext {
         };
 
         // Default to SPV provider initially; UI can switch backend after
-        let sdk = match initialize_sdk(address_list, network, spv_provider.clone()) {
+        let sdk = match initialize_sdk(address_list, network, spv_provider.clone(), 0) {
             Ok(sdk) => sdk,
             Err(e) => {
                 tracing::error!("Failed to initialize SDK: {e}");
                 return None;
             }
         };
-        let platform_version = sdk.version();
-
-        let load_contract = |contract: SystemDataContract, label: &str| {
-            load_system_data_contract(contract, platform_version)
-                .inspect_err(|e| tracing::error!(?network, "Failed to load {label} contract: {e}"))
-                .ok()
+        let system_contracts = match SystemContracts::load(sdk.version()) {
+            Ok(contracts) => SystemContractsCache::new(contracts),
+            Err(e) => {
+                tracing::error!(?network, "Failed to load the system contracts: {e}");
+                return None;
+            }
         };
-
-        let dpns_contract = load_contract(SystemDataContract::DPNS, "DPNS")?;
-        let withdrawal_contract = load_contract(SystemDataContract::Withdrawals, "Withdrawals")?;
-        let token_history_contract =
-            load_contract(SystemDataContract::TokenHistory, "TokenHistory")?;
-        let keyword_search_contract =
-            load_contract(SystemDataContract::KeywordSearch, "KeywordSearch")?;
-        let dashpay_contract = load_contract(SystemDataContract::Dashpay, "Dashpay")?;
 
         let addr = format!(
             "http://{}:{}",
@@ -488,11 +478,7 @@ impl AppContext {
             sdk: ArcSwap::from_pointee(sdk),
             spv_context_provider: spv_provider.into(),
             config: config_lock,
-            dpns_contract: Arc::new(dpns_contract),
-            withdraws_contract: Arc::new(withdrawal_contract),
-            dashpay_contract: Arc::new(dashpay_contract),
-            token_history_contract: Arc::new(token_history_contract),
-            keyword_search_contract: Arc::new(keyword_search_contract),
+            system_contracts,
             core_client: core_client.into(),
             has_wallet: (!wallets.is_empty() || !single_key_wallets.is_empty()).into(),
             identity_autodiscovery_fired: AtomicBool::new(false),
@@ -954,8 +940,40 @@ impl AppContext {
         }
     }
 
+    /// The platform version the SDK builds, validates and signs with: the
+    /// network's minimum until a proven response ratchets it to the version
+    /// the network runs.
     pub fn platform_version(&self) -> &'static PlatformVersion {
-        default_platform_version(&self.network)
+        self.sdk.load().version()
+    }
+
+    /// The DPNS contract at [`Self::platform_version`].
+    pub(crate) fn dpns_contract(&self) -> Arc<DataContract> {
+        Arc::clone(&self.system_contracts().dpns)
+    }
+
+    /// The withdrawals contract at [`Self::platform_version`].
+    pub(crate) fn withdraws_contract(&self) -> Arc<DataContract> {
+        Arc::clone(&self.system_contracts().withdrawals)
+    }
+
+    /// The DashPay contract at [`Self::platform_version`].
+    pub(crate) fn dashpay_contract(&self) -> Arc<DataContract> {
+        Arc::clone(&self.system_contracts().dashpay)
+    }
+
+    /// The token history contract at [`Self::platform_version`].
+    pub(crate) fn token_history_contract(&self) -> Arc<DataContract> {
+        Arc::clone(&self.system_contracts().token_history)
+    }
+
+    /// The keyword search contract at [`Self::platform_version`].
+    pub(crate) fn keyword_search_contract(&self) -> Arc<DataContract> {
+        Arc::clone(&self.system_contracts().keyword_search)
+    }
+
+    fn system_contracts(&self) -> Arc<SystemContracts> {
+        self.system_contracts.get(self.platform_version())
     }
 
     /// The platform version of the connected network, once its protocol
@@ -1027,8 +1045,16 @@ impl AppContext {
         };
 
         let provider = self.spv_context_provider.read()?.clone();
-        let new_sdk = initialize_sdk(address_list, self.network, provider)
-            .map_err(|e| TaskError::SdkInitializationFailed { detail: e })?;
+        // Carry the version the current SDK reached, so the replacement does
+        // not build at the network minimum until its first proven response.
+        let carried_protocol_version = self.sdk.load().protocol_version_number();
+        let new_sdk = initialize_sdk(
+            address_list,
+            self.network,
+            provider,
+            carried_protocol_version,
+        )
+        .map_err(|e| TaskError::SdkInitializationFailed { detail: e })?;
 
         // 4. Swap in the new SDK and client
         {
@@ -1625,18 +1651,8 @@ impl AppContext {
 
     /// Returns the DashPay contract identifier.
     pub fn dashpay_contract_id(&self) -> Identifier {
-        self.dashpay_contract.id()
+        self.dashpay_contract().id()
     }
-}
-
-/// Returns the default platform version for the given network.
-// Seeded at v12 and deliberately not pinned: `Sdk`'s protocol-version ratchet
-// raises it to whatever the connected network runs, so one build serves
-// networks both before and after protocol version 14. A hard pin would fix the
-// transition format to one side of that upgrade.
-// TODO(platform-4.2-dev-bump): devnet should seed at ≥PV14 per rs-sdk::min_protocol_version; needs to confirm that function is reachable from DET's dash-sdk re-export first (open question) — see platform-4.2-dev-impact.md F5
-pub(crate) const fn default_platform_version(_network: &Network) -> &'static PlatformVersion {
-    &PLATFORM_V12
 }
 
 #[cfg(test)]
@@ -1676,19 +1692,82 @@ mod tests {
         }
     }
 
+    /// Before any proven response, a context builds, validates and signs at
+    /// the lowest protocol version its network still runs (upstream's
+    /// per-network minimum): 13 on mainnet, not an older table.
     #[test]
-    fn epoch_workaround_uses_v12_for_every_network() {
+    fn platform_version_starts_at_the_network_minimum() {
+        use crate::context::test_support::test_app_context_for_network;
+        use dash_sdk::sdk::min_protocol_version;
+
+        assert_eq!(min_protocol_version(Network::Mainnet), 13);
         for network in [
             Network::Mainnet,
             Network::Testnet,
             Network::Devnet,
             Network::Regtest,
         ] {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let ctx = test_app_context_for_network(tmp.path(), network);
             assert_eq!(
-                default_platform_version(&network).protocol_version,
-                PLATFORM_V12.protocol_version
+                ctx.platform_version().protocol_version,
+                min_protocol_version(network),
+                "{network:?}"
             );
         }
+    }
+
+    /// Once the SDK runs at protocol 14, the context builds with 14 and serves
+    /// the system contracts protocol 14 defines — not the ones loaded at boot.
+    #[test]
+    fn platform_version_and_system_contracts_follow_the_sdk() {
+        use crate::context::test_support::test_app_context_for_network;
+        use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context_for_network(tmp.path(), Network::Mainnet);
+        let v14 = PlatformVersion::get(14).expect("protocol 14");
+        let boot_dashpay = ctx.dashpay_contract();
+        assert_ne!(
+            *boot_dashpay,
+            load_system_data_contract(SystemDataContract::Dashpay, v14).unwrap(),
+            "precondition: protocol 14 redefines the DashPay contract"
+        );
+
+        crate::context::test_support::set_sdk_protocol_version(&ctx, 14);
+
+        assert_eq!(ctx.platform_version().protocol_version, 14);
+        for (served, contract) in [
+            (ctx.dashpay_contract(), SystemDataContract::Dashpay),
+            (ctx.withdraws_contract(), SystemDataContract::Withdrawals),
+            (
+                ctx.token_history_contract(),
+                SystemDataContract::TokenHistory,
+            ),
+            (ctx.dpns_contract(), SystemDataContract::DPNS),
+            (
+                ctx.keyword_search_contract(),
+                SystemDataContract::KeywordSearch,
+            ),
+        ] {
+            assert_eq!(*served, load_system_data_contract(contract, v14).unwrap());
+        }
+        assert_eq!(ctx.dashpay_contract().id(), boot_dashpay.id());
+    }
+
+    /// Until the network's version is fetched, the connected version is the
+    /// one the SDK builds with.
+    #[test]
+    fn connected_platform_version_falls_back_to_the_sdk_version() {
+        use crate::context::test_support::test_app_context_for_network;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context_for_network(tmp.path(), Network::Mainnet);
+        assert_eq!(ctx.platform_protocol_version(), 0);
+        assert_eq!(
+            ctx.connected_platform_version().protocol_version,
+            ctx.sdk.load().protocol_version_number()
+        );
     }
 
     #[test]

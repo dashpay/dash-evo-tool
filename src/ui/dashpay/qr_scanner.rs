@@ -115,7 +115,7 @@ impl QRScannerScreen {
                             SecurityLevel::MEDIUM,
                         ],
                         SigningScope::Document {
-                            contract_id: self.app_context.dashpay_contract.id(),
+                            contract_id: self.app_context.dashpay_contract().id(),
                             document_type_name: "contactRequest",
                         },
                     )

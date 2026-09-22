@@ -318,7 +318,7 @@ impl ScreenLike for AddContactScreen {
                                 Purpose::AUTHENTICATION,
                                 &[SecurityLevel::CRITICAL, SecurityLevel::HIGH],
                                 SigningScope::Document {
-                                    contract_id: self.app_context.dashpay_contract.id(),
+                                    contract_id: self.app_context.dashpay_contract().id(),
                                     document_type_name: "contactRequest",
                                 },
                             ))
@@ -350,7 +350,7 @@ impl ScreenLike for AddContactScreen {
                             &mut self.selected_key,
                             TransactionType::ContactRequest,
                             SigningScope::Document {
-                                contract_id: self.app_context.dashpay_contract.id(),
+                                contract_id: self.app_context.dashpay_contract().id(),
                                 document_type_name: "contactRequest",
                             },
                         );

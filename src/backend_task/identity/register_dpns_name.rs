@@ -50,7 +50,7 @@ impl AppContext {
         }
 
         let mut rng = StdRng::from_entropy();
-        let dpns_contract = self.dpns_contract.clone();
+        let dpns_contract = self.dpns_contract();
 
         let mut qualified_identity = input.qualified_identity;
 
@@ -156,7 +156,7 @@ impl AppContext {
         let public_key = qualified_identity
             .document_signing_key(
                 SigningScope::ContractWide {
-                    contract_id: self.dpns_contract.id(),
+                    contract_id: self.dpns_contract().id(),
                 },
                 &preorder_document_type,
             )
@@ -197,7 +197,7 @@ impl AppContext {
         let dpns_names_document_query = DocumentQuery {
             sub_queries: Vec::new(),
             select: SelectProjection::documents(),
-            data_contract: self.dpns_contract.clone(),
+            data_contract: self.dpns_contract(),
             document_type_name: "domain".to_string(),
             where_clauses: vec![WhereClause {
                 field: "records.identity".to_string(),

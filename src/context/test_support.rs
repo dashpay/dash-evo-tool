@@ -54,3 +54,15 @@ fn test_app_context_with_kv_and_network(
     )
     .expect("AppContext")
 }
+
+/// Put `ctx` at `protocol_version`, as its SDK stands once a proven response
+/// ratcheted it there. The replacement SDK is a mock: nothing reaches a network.
+pub(crate) fn set_sdk_protocol_version(ctx: &AppContext, protocol_version: u32) {
+    let version = dash_sdk::dpp::version::PlatformVersion::get(protocol_version)
+        .expect("a protocol version this build knows");
+    let sdk = dash_sdk::SdkBuilder::new_mock()
+        .with_initial_version(version)
+        .build()
+        .expect("mock sdk");
+    ctx.sdk.store(Arc::new(sdk));
+}

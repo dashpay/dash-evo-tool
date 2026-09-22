@@ -564,7 +564,10 @@ impl AppContext {
 /// refresh it triggered has finished: the refusal itself when the cache now
 /// holds the network's multiplier, otherwise a variant saying the contract
 /// fee could not be updated (the cache keeps its previous value).
-fn fee_refusal_after_refresh(refusal: TaskError, refreshed: Result<(), SdkError>) -> TaskError {
+fn fee_refusal_after_refresh(
+    refusal: TaskError,
+    refreshed: Result<(), Box<SdkError>>,
+) -> TaskError {
     match (refusal, refreshed) {
         (refusal, Ok(())) => refusal,
         (
@@ -581,7 +584,7 @@ fn fee_refusal_after_refresh(refusal: TaskError, refreshed: Result<(), SdkError>
             );
             TaskError::DocumentActionFeeMultiplierNotRefreshed {
                 increase_tolerance_percent,
-                source_error: Box::new(refresh_error),
+                source_error: refresh_error,
             }
         }
         (other, Err(_)) => other,
@@ -617,7 +620,7 @@ mod tests {
     fn a_failed_epoch_refresh_says_the_fee_was_not_updated() {
         let error = fee_refusal_after_refresh(
             fee_refusal(),
-            Err(dash_sdk::Error::Generic("offline".to_string())),
+            Err(Box::new(dash_sdk::Error::Generic("offline".to_string()))),
         );
         assert!(matches!(
             error,

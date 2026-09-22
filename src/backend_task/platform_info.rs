@@ -580,8 +580,10 @@ impl AppContext {
     pub(crate) async fn refresh_current_epoch(
         &self,
         sdk: &Sdk,
-    ) -> Result<ExtendedEpochInfo, SdkError> {
-        let epoch_info = ExtendedEpochInfo::fetch_current(sdk).await?;
+    ) -> Result<ExtendedEpochInfo, Box<SdkError>> {
+        let epoch_info = ExtendedEpochInfo::fetch_current(sdk)
+            .await
+            .map_err(Box::new)?;
         self.adopt_epoch_info(&epoch_info);
         Ok(epoch_info)
     }

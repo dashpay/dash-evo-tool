@@ -2743,6 +2743,35 @@ mod protocol_v14_compat_tests {
         assert_eq!(keys.get(&11), Some(&grouped));
     }
 
+    /// A key extended on the network but stored here as its expired copy is
+    /// judged by the live key: no "expired" caveat (the key chooser's view).
+    #[test]
+    fn an_extended_key_is_not_reported_expired_from_its_stale_copy() {
+        use crate::model::identity_key_usability::{KeyCaveat, key_caveats};
+        let pv = PlatformVersion::latest();
+        let stale = IdentityPublicKey::random_key(7, Some(7), pv).with_limits(None, Some(1));
+        let extended = stale.clone().with_limits(None, Some(u64::MAX));
+        let mut qi = QualifiedIdentity::from_bytes(&v0_9_3_user_blob()).expect("decodes");
+        qi.identity
+            .set_public_keys(BTreeMap::from([(7, extended.clone())]));
+
+        let live = qi.live_public_key(&stale);
+        assert_eq!(live, &extended);
+        let caveats = key_caveats(live, SigningScope::NonBatch, 1_000);
+        assert!(
+            !caveats
+                .iter()
+                .any(|caveat| matches!(caveat, KeyCaveat::Expired { .. })),
+            "{caveats:?}"
+        );
+        assert!(
+            key_caveats(&stale, SigningScope::NonBatch, 1_000)
+                .iter()
+                .any(|caveat| matches!(caveat, KeyCaveat::Expired { .. })),
+            "the stale copy alone would say expired"
+        );
+    }
+
     /// The document signing key skips a key Platform would refuse (expired,
     /// bound elsewhere) and prefers an unlimited key over a limited one.
     #[test]

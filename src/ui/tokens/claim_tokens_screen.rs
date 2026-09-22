@@ -226,7 +226,7 @@ impl ClaimTokensScreen {
 
     /// What a once-per-identity claim pays, and whether this identity already
     /// took it.
-    fn render_once_per_identity_info(&self, ui: &mut Ui) {
+    fn render_once_per_identity_info(&mut self, ui: &mut Ui) {
         let Some(amount) = once_per_identity_amount(&self.token_configuration) else {
             return;
         };
@@ -235,15 +235,34 @@ impl ClaimTokensScreen {
         ui.label(format!(
             "Every identity can claim {amount} base tokens from this distribution, once."
         ));
+        // Advisory only: the hint may be wrong (e.g. recorded on a claim the
+        // network later dropped), so it warns but never blocks a claim.
         if let Some(claimed_at_ms) = self.once_per_identity_claimed_at {
             let dark_mode = ui.style().visuals.dark_mode;
             ui.label(
                 RichText::new(format!(
-                    "This identity already claimed its share on {date}, so there is nothing more to claim.",
+                    "This identity may have already claimed its share on {date}. You can still claim; the network refuses a second claim.",
                     date = format_timestamp_ms_local(claimed_at_ms)
                 ))
                 .color(DashColors::warning_color(dark_mode)),
             );
+            if ui.button("Dismiss").clicked() {
+                let info = &self.identity_token_basic_info;
+                match self
+                    .app_context
+                    .clear_once_per_identity_claim(&info.token_id, &info.identity_id)
+                {
+                    Ok(()) => self.once_per_identity_claimed_at = None,
+                    Err(error) => {
+                        MessageBanner::set_global(
+                            ui.ctx(),
+                            "The note could not be dismissed. Please try again.",
+                            MessageType::Error,
+                        )
+                        .with_details(error);
+                    }
+                }
+            }
         }
         ui.add_space(10.0);
     }
@@ -335,10 +354,6 @@ impl ScreenLike for ClaimTokensScreen {
         if matches!(message_type, MessageType::Error | MessageType::Warning) {
             self.refresh_banner.take_and_clear();
             self.status = ClaimTokensStatus::Error;
-            // A refused once-per-identity claim may have taught the backend
-            // that the claim was already taken.
-            self.once_per_identity_claimed_at =
-                load_once_per_identity_claim(&self.app_context, &self.identity_token_basic_info);
         }
     }
 
@@ -347,6 +362,9 @@ impl ScreenLike for ClaimTokensScreen {
         if let BackendTaskSuccessResult::ClaimedTokens(fee_result) = backend_task_success_result {
             self.completed_fee_result = Some(fee_result);
             self.status = ClaimTokensStatus::Complete;
+            // A successful once-per-identity claim records its hint.
+            self.once_per_identity_claimed_at =
+                load_once_per_identity_claim(&self.app_context, &self.identity_token_basic_info);
         }
     }
 
@@ -654,16 +672,7 @@ impl ScreenLike for ClaimTokensScreen {
 
                 ui.add_space(10.0);
 
-                let already_claimed = self.distribution_type
-                    == Some(TokenDistributionType::OncePerIdentity)
-                    && self.once_per_identity_claimed_at.is_some();
-                if ui
-                    .add_enabled_ui(!already_claimed, |ui| {
-                        ComponentStyles::add_primary_button(ui, "Claim")
-                    })
-                    .inner
-                    .clicked()
-                {
+                if ComponentStyles::add_primary_button(ui, "Claim").clicked() {
                     if self.distribution_type.is_none() {
                         MessageBanner::set_global(
                             ctx,

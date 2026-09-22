@@ -72,13 +72,13 @@ fn untracked_token_prefix(token_id: &Identifier) -> String {
 /// Key prefix for the once-per-identity claim hint of one token, filed under
 /// the claiming identity's [`DetScope::Identity`] scope (so it goes with the
 /// identity). The full key is `det:token_once_claimed:v1:<token_id_base58>`;
-/// the value is the block time of the claim in milliseconds.
+/// the value is the time of the claim in milliseconds (the block time of the
+/// proved claim document, or the local clock when it carries none).
 ///
-/// A hint, not an authority: Platform offers no query for "has this identity
-/// claimed", so DET remembers the claims it saw succeed and the ones Platform
-/// refused as already taken. A claim made on another device is absent until
-/// Platform refuses the next attempt. The fact cannot become false again — a
-/// spent claim stays spent — so the marker is never cleared.
+/// An advisory hint, not an authority: Platform offers no proved query for
+/// "has this identity claimed", so DET records only the claims it saw succeed
+/// (proof-backed), never a node's unproven "already claimed" refusal. The UI
+/// warns with it but still lets the user claim, and the user can dismiss it.
 const ONCE_PER_IDENTITY_CLAIM_PREFIX: &str = "det:token_once_claimed:v1:";
 
 fn once_per_identity_claim_key(token_id: &Identifier) -> String {
@@ -456,7 +456,7 @@ impl AppContext {
     }
 
     /// Remember that `identity_id` took its once-per-identity claim of
-    /// `token_id` at block time `claimed_at_ms`. Idempotent.
+    /// `token_id` at `claimed_at_ms`. Idempotent.
     pub fn record_once_per_identity_claim(
         &self,
         token_id: &Identifier,
@@ -464,6 +464,16 @@ impl AppContext {
         claimed_at_ms: u64,
     ) -> std::result::Result<(), TaskError> {
         record_once_per_identity_claim_in(&self.det_kv()?, token_id, identity_id, claimed_at_ms)
+    }
+
+    /// Forget the once-per-identity claim hint of `identity_id` for
+    /// `token_id` (the user dismissed it). Idempotent.
+    pub fn clear_once_per_identity_claim(
+        &self,
+        token_id: &Identifier,
+        identity_id: &Identifier,
+    ) -> std::result::Result<(), TaskError> {
+        clear_once_per_identity_claim_in(&self.det_kv()?, token_id, identity_id)
     }
 
     /// Every identity-token pair the user stopped tracking.
@@ -828,6 +838,19 @@ fn record_once_per_identity_claim_in(
     .map_err(token_err)
 }
 
+fn clear_once_per_identity_claim_in(
+    kv: &DetKv,
+    token_id: &Identifier,
+    identity_id: &Identifier,
+) -> std::result::Result<(), TaskError> {
+    let identity = identity_id.to_buffer();
+    kv.delete(
+        DetScope::Identity(&identity),
+        &once_per_identity_claim_key(token_id),
+    )
+    .map_err(token_err)
+}
+
 fn mark_untracked_in(
     kv: &DetKv,
     pair: IdentityTokenIdentifier,
@@ -945,6 +968,13 @@ mod tests {
         assert_eq!(
             once_per_identity_claimed_at_in(&kv, &token, &identity).unwrap(),
             None
+        );
+        record_once_per_identity_claim_in(&kv, &token, &identity, 42).unwrap();
+        clear_once_per_identity_claim_in(&kv, &token, &identity).unwrap();
+        assert_eq!(
+            once_per_identity_claimed_at_in(&kv, &token, &identity).unwrap(),
+            None,
+            "a dismissed hint is gone"
         );
         record_once_per_identity_claim_in(&kv, &token, &identity, 42).unwrap();
         assert_eq!(

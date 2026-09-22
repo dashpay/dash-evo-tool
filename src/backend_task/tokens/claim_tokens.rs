@@ -46,6 +46,8 @@ impl AppContext {
 
         let token_id = data_contract.token_id(token_position);
         let claimer_id = actor_identity.identity.id();
+        // The block time the proved claim document carries, when it does.
+        let mut proved_claim_time: Option<u64> = None;
         let result = self
             .execute_token_op(
             async {
@@ -57,6 +59,10 @@ impl AppContext {
             },
             |result| {
                 // Using the result, update the balance of the claimer identity
+                proved_claim_time = match &result {
+                    ClaimResult::Document(document)
+                    | ClaimResult::GroupActionWithDocument(_, document) => document.created_at(),
+                };
                 if let Some(token_id) = data_contract.token_id(token_position) {
                     match result {
                         // Standard claim result - extract claimer and amount from document
@@ -107,33 +113,12 @@ impl AppContext {
 
         if distribution_type == TokenDistributionType::OncePerIdentity
             && let Some(token_id) = token_id
+            && let Some(claimed_at_ms) =
+                once_per_identity_claim_time(&result, proved_claim_time, now_ms())
+            && let Err(error) =
+                self.record_once_per_identity_claim(&token_id, &claimer_id, claimed_at_ms)
         {
-            self.remember_once_per_identity_claim(&token_id, &claimer_id, &result);
-        }
-        result
-    }
-
-    /// Record the once-per-identity claim hint after a claim attempt: the
-    /// claim just paid, or Platform refused it because an earlier one was.
-    /// Any other outcome says nothing about the claim, so nothing is recorded.
-    /// A failed write only loses the hint, never the claim, so it is logged.
-    fn remember_once_per_identity_claim(
-        &self,
-        token_id: &Identifier,
-        claimer_id: &Identifier,
-        result: &Result<BackendTaskSuccessResult, TaskError>,
-    ) {
-        let claimed_at_ms = match result {
-            Ok(_) => now_ms(),
-            Err(TaskError::TokenOncePerIdentityAlreadyClaimed {
-                identity_id,
-                claimed_at_ms,
-                ..
-            }) if identity_id == claimer_id => *claimed_at_ms,
-            Err(_) => return,
-        };
-        if let Err(error) = self.record_once_per_identity_claim(token_id, claimer_id, claimed_at_ms)
-        {
+            // A failed write only loses the hint, never the claim.
             tracing::warn!(
                 %token_id,
                 %claimer_id,
@@ -141,5 +126,69 @@ impl AppContext {
                 "Could not remember a once-per-identity token claim"
             );
         }
+        result
+    }
+}
+
+/// When to record a once-per-identity claim hint for this claim attempt:
+/// only after a successful claim, whose result is proof-backed, at the block
+/// time of the proved claim document (the local clock when it carries none).
+///
+/// A refusal as "already claimed" records nothing: that consensus error comes
+/// from the node DET talked to, unproven, and upstream offers no proved query
+/// for the claim status, so trusting it would let one hostile node mark an
+/// entitlement as spent on this device.
+fn once_per_identity_claim_time(
+    result: &Result<BackendTaskSuccessResult, TaskError>,
+    proved_claim_time: Option<u64>,
+    now_ms: u64,
+) -> Option<u64> {
+    result
+        .as_ref()
+        .ok()
+        .map(|_| proved_claim_time.unwrap_or(now_ms))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend_task::FeeResult;
+
+    fn claimed() -> Result<BackendTaskSuccessResult, TaskError> {
+        Ok(BackendTaskSuccessResult::ClaimedTokens(
+            FeeResult::estimated_only(1),
+        ))
+    }
+
+    #[test]
+    fn a_successful_claim_is_recorded_at_its_proved_block_time() {
+        assert_eq!(
+            once_per_identity_claim_time(&claimed(), Some(7), 9),
+            Some(7)
+        );
+        assert_eq!(
+            once_per_identity_claim_time(&claimed(), None, 9),
+            Some(9),
+            "the local clock when the document carries no time"
+        );
+    }
+
+    /// An "already claimed" refusal is unproven node output: never recorded,
+    /// whichever identity it names.
+    #[test]
+    fn a_refusal_or_any_other_error_is_not_recorded() {
+        for identity_id in [Identifier::random(), Identifier::random()] {
+            let refused = Err(TaskError::TokenOncePerIdentityAlreadyClaimed {
+                token_id: Identifier::random(),
+                identity_id,
+                claimed_at_ms: 5,
+                source_error: Box::new(dash_sdk::Error::Generic("claimed".to_string())),
+            });
+            assert_eq!(once_per_identity_claim_time(&refused, Some(7), 9), None);
+        }
+        assert_eq!(
+            once_per_identity_claim_time(&Err(TaskError::MasterKeyNotFound), Some(7), 9),
+            None
+        );
     }
 }

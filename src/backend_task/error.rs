@@ -2350,6 +2350,13 @@ pub enum TaskError {
     #[error("Could not retrieve token information from the platform. Please retry.")]
     TokenQueryError { detail: String },
 
+    /// A token with a once-per-identity distribution was requested on a
+    /// network that does not accept one yet.
+    #[error(
+        "This network does not support once-per-identity token distributions yet. Create the token without it, or try again after the network upgrades."
+    )]
+    TokenOncePerIdentityNotSupported,
+
     /// The identity already took its single claim of a token's
     /// once-per-identity distribution, so Platform refused another one.
     #[error(

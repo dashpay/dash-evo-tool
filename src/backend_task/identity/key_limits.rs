@@ -142,7 +142,7 @@ pub(super) mod tests {
     use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::version::PlatformVersion;
 
-    pub(in crate::backend_task::identity) fn user_identity() -> QualifiedIdentity {
+    pub(crate) fn user_identity() -> QualifiedIdentity {
         let identity =
             Identity::create_basic_identity(Identifier::random(), PlatformVersion::latest())
                 .expect("basic identity");

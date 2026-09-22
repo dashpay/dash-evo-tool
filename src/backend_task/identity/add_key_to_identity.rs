@@ -351,7 +351,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let ctx = crate::context::test_support::test_app_context(temp_dir.path());
         let sdk = dash_sdk::Sdk::new_mock();
-        let identity = super::super::key_limits::tests::user_identity();
+        let identity = super::super::key_limits_test_identity();
 
         let result = ctx
             .add_key_to_identity(&sdk, identity, key_with_limits(Some(1)), [1; 32])
@@ -370,7 +370,7 @@ mod tests {
         let ctx = crate::context::test_support::test_app_context(temp_dir.path());
         ctx.set_platform_protocol_version(dash_sdk::dpp::version::v14::PROTOCOL_VERSION_14);
         let sdk = dash_sdk::Sdk::new_mock();
-        let identity = super::super::key_limits::tests::user_identity();
+        let identity = super::super::key_limits_test_identity();
 
         let result = ctx
             .add_key_to_identity(&sdk, identity, key_with_limits(Some(0)), [1; 32])

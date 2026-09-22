@@ -2,6 +2,8 @@ mod add_key_to_identity;
 mod auth_pubkey_resolve;
 mod discover_identities;
 mod key_limits;
+#[cfg(test)]
+pub(crate) use key_limits::tests::user_identity as key_limits_test_identity;
 mod load_identity;
 mod load_identity_by_dpns_name;
 mod load_identity_from_wallet;

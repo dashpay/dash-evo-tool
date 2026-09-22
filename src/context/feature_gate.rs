@@ -1,6 +1,7 @@
 use crate::context::AppContext;
 use crate::model::user_role::UserRole;
 use dash_sdk::dpp::version::feature_initial_protocol_versions::{
+    CONTRACT_FEE_CLAIM_INITIAL_PROTOCOL_VERSION,
     IDENTITY_KEY_LIMITS_UPDATE_INITIAL_PROTOCOL_VERSION, SHIELDED_POOL_INITIAL_PROTOCOL_VERSION,
 };
 use dash_sdk::dpp::version::v14::PROTOCOL_VERSION_14;
@@ -46,6 +47,9 @@ pub enum Capability {
     /// The connected platform accepts tokens with a once-per-identity
     /// distribution.
     OncePerIdentityDistribution,
+    /// The connected platform keeps contract fee pots (filled by document
+    /// action fees) and accepts the transition that pays them out.
+    ContractFeePots,
 }
 
 impl Capability {
@@ -68,6 +72,9 @@ impl Capability {
             Capability::OncePerIdentityDistribution => {
                 ctx.platform_protocol_version()
                     >= ONCE_PER_IDENTITY_DISTRIBUTION_ACTIVATION_PROTOCOL_VERSION
+            }
+            Capability::ContractFeePots => {
+                ctx.platform_protocol_version() >= CONTRACT_FEE_CLAIM_INITIAL_PROTOCOL_VERSION
             }
         }
     }
@@ -171,6 +178,9 @@ pub enum FeatureGate {
     /// where the connected network accepts it; claiming from an existing one
     /// needs no gate, since such a token can only exist on such a network.
     TokenOncePerIdentityDistribution,
+    /// Viewing and claiming the fee pots of a contract. Offered only where
+    /// the connected network keeps them.
+    ContractFeePots,
 }
 
 impl FeatureGate {
@@ -191,6 +201,7 @@ impl FeatureGate {
             FeatureGate::TokenOncePerIdentityDistribution => {
                 &[Check::Capability(Capability::OncePerIdentityDistribution)]
             }
+            FeatureGate::ContractFeePots => &[Check::Capability(Capability::ContractFeePots)],
         }
     }
 
@@ -469,6 +480,7 @@ mod tests {
             for gate in [
                 FeatureGate::IdentityKeyLimits,
                 FeatureGate::TokenOncePerIdentityDistribution,
+                FeatureGate::ContractFeePots,
             ] {
                 assert!(!gate.is_available(&ctx), "{gate:?} closed at boot");
                 ctx.set_platform_protocol_version(13);

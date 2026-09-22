@@ -2223,6 +2223,47 @@ pub enum TaskError {
     },
 
     // ──────────────────────────────────────────────────────────────────────────
+    // Contract fee pots (protocol version 14)
+    // ──────────────────────────────────────────────────────────────────────────
+    /// The network does not keep contract fee pots yet.
+    #[error(
+        "This network does not support contract fees yet. Try again after the network upgrades."
+    )]
+    ContractFeePotsNotSupported,
+
+    /// The claiming identity has no key allowed to sign a fee claim.
+    #[error(
+        "Claiming contract fees needs a critical authentication key that is not limited to a contract. Add such a key to this identity, then try again."
+    )]
+    NoFeeClaimSigningKey,
+
+    /// The claiming identity is not a recipient of the pot.
+    #[error(
+        "Only the contract owner can claim the owner's fees, and only a moderator can claim the moderators' fees. Choose an identity that receives these fees, then try again."
+    )]
+    ContractFeeClaimNotAllowed {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// The pot was already paid out in the current epoch.
+    #[error(
+        "These fees were already claimed in the current epoch. Fees can be claimed once per epoch, so try again in the next one."
+    )]
+    ContractFeesAlreadyClaimedThisEpoch {
+        epoch_index: u16,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// The pot holds nothing to pay out.
+    #[error("There are no fees to claim yet. Try again after users have paid fees to this contract.")]
+    ContractFeesNothingToClaim {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    // ──────────────────────────────────────────────────────────────────────────
     // Contract authoring (protocol version 14)
     // ──────────────────────────────────────────────────────────────────────────
     /// A replace changed a property the document type declares immutable.
@@ -3904,6 +3945,27 @@ impl From<SdkError> for TaskError {
                                 key_id,
                                 source_error,
                             }
+                        }))
+                    }
+                    ConsensusError::StateError(StateError::ContractFeeClaimNotAllowedError(_)) => {
+                        Some(Box::new(|source_error| {
+                            TaskError::ContractFeeClaimNotAllowed { source_error }
+                        }))
+                    }
+                    ConsensusError::StateError(
+                        StateError::ContractFeesAlreadyClaimedThisEpochError(e),
+                    ) => {
+                        let epoch_index = e.epoch_index();
+                        Some(Box::new(move |source_error| {
+                            TaskError::ContractFeesAlreadyClaimedThisEpoch {
+                                epoch_index,
+                                source_error,
+                            }
+                        }))
+                    }
+                    ConsensusError::StateError(StateError::ContractFeesNothingToClaimError(_)) => {
+                        Some(Box::new(|source_error| {
+                            TaskError::ContractFeesNothingToClaim { source_error }
                         }))
                     }
                     ConsensusError::StateError(
@@ -6305,8 +6367,10 @@ mod tests {
             PublicKeyBudgetExhaustedError, PublicKeyExpiredError,
         };
         use dash_sdk::dpp::consensus::state::contract_moderation::{
-            ContractUserBannedError, ContractUserSuspendedError,
+            ContractFeeClaimNotAllowedError, ContractFeesAlreadyClaimedThisEpochError,
+            ContractFeesNothingToClaimError, ContractUserBannedError, ContractUserSuspendedError,
         };
+        use dash_sdk::dpp::data_contract::document_type::action_fees::ContractFeePot;
         use dash_sdk::dpp::consensus::state::document::document_action_fee_agreement_mismatch_error::DocumentActionFeeAgreementMismatchError;
         use dash_sdk::dpp::consensus::state::document::document_action_fee_agreement_not_set_error::DocumentActionFeeAgreementNotSetError;
         use dash_sdk::dpp::consensus::state::document::document_action_fee_multiplier_not_tolerated_error::DocumentActionFeeMultiplierNotToleratedError;
@@ -6569,7 +6633,43 @@ mod tests {
             }),
         ];
 
-        for (cause, expected) in cases.into_iter().chain(key_limit_cases) {
+        let contract_id = Identifier::random();
+        let fee_pot_cases: Vec<(ConsensusError, Expectation)> = vec![
+            (
+                ContractFeeClaimNotAllowedError::new(
+                    contract_id,
+                    ContractFeePot::Owner,
+                    Identifier::random(),
+                )
+                .into(),
+                |e| matches!(e, TaskError::ContractFeeClaimNotAllowed { .. }),
+            ),
+            (
+                ContractFeesAlreadyClaimedThisEpochError::new(
+                    contract_id,
+                    ContractFeePot::Owner,
+                    9,
+                )
+                .into(),
+                |e| {
+                    matches!(
+                        e,
+                        TaskError::ContractFeesAlreadyClaimedThisEpoch { epoch_index: 9, .. }
+                    )
+                },
+            ),
+            (
+                ContractFeesNothingToClaimError::new(contract_id, ContractFeePot::Moderators)
+                    .into(),
+                |e| matches!(e, TaskError::ContractFeesNothingToClaim { .. }),
+            ),
+        ];
+
+        for (cause, expected) in cases
+            .into_iter()
+            .chain(key_limit_cases)
+            .chain(fee_pot_cases)
+        {
             let debug = format!("{cause:?}");
             let error = TaskError::from(broadcast_rejection(cause));
             assert!(expected(&error), "{debug} mapped to {error:?}");

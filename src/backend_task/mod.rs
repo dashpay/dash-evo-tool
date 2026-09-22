@@ -49,6 +49,7 @@ use grovestark::GroveSTARKTask;
 pub mod broadcast_state_transition;
 pub mod contested_names;
 pub mod contract;
+pub mod contract_fee_pots;
 pub mod core;
 pub mod dapi_discovery;
 pub mod dashpay;
@@ -900,6 +901,20 @@ pub enum BackendTaskSuccessResult {
             dash_sdk::dpp::identity::KeyID,
             Option<dash_sdk::dpp::fee::Credits>,
         >,
+    },
+    /// Both fee pots of a contract, as Platform holds them.
+    ContractFeePots {
+        contract_id: Identifier,
+        pots: dash_sdk::platform::contract_fee_pots::ContractFeePots,
+    },
+    /// A contract fee pot was paid out. `claimant_balance` is the claiming
+    /// identity's balance after the claim, `remaining_credits` what is left
+    /// in the pot.
+    ContractFeesClaimed {
+        contract_id: Identifier,
+        pot: dash_sdk::dpp::data_contract::document_type::action_fees::ContractFeePot,
+        claimant_balance: Option<dash_sdk::dpp::fee::Credits>,
+        remaining_credits: dash_sdk::dpp::fee::Credits,
     },
     /// The limits of an identity key were raised; `key` is the key as
     /// Platform now stores it.

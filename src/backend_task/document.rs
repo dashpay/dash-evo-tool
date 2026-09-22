@@ -160,6 +160,33 @@ impl AppContext {
         task: DocumentTask,
         sdk: &Sdk,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
+        let result = self.run_document_task_inner(task, sdk).await;
+        if let Err(error) = &result {
+            self.adopt_fee_multiplier_from(error);
+        }
+        result
+    }
+
+    /// A refusal because network fees rose past the agreed tolerance names
+    /// the multiplier the network charges now: adopt it, so the next
+    /// confirmation quotes (and the next agreement names) the current fee
+    /// instead of failing again on the stale one.
+    fn adopt_fee_multiplier_from(&self, error: &TaskError) {
+        if let TaskError::DocumentActionFeeMultiplierRose {
+            current_fee_multiplier_permille,
+            ..
+        } = error
+            && *current_fee_multiplier_permille > 0
+        {
+            self.set_fee_multiplier_permille(*current_fee_multiplier_permille);
+        }
+    }
+
+    async fn run_document_task_inner(
+        &self,
+        task: DocumentTask,
+        sdk: &Sdk,
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         match task {
             DocumentTask::FetchDocuments(document_query) => await_network_request_with_timeout(
                 NETWORK_REQUEST_TIMEOUT,
@@ -545,6 +572,25 @@ impl AppContext {
 
 #[cfg(test)]
 mod tests {
+    /// A refusal for a risen fee multiplier updates the cached one, so the
+    /// retry quotes and agrees to the current fee; other errors leave it.
+    #[test]
+    fn a_risen_fee_multiplier_refusal_updates_the_cache() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+        ctx.set_fee_multiplier_permille(1000);
+
+        ctx.adopt_fee_multiplier_from(&TaskError::MasterKeyNotFound);
+        assert_eq!(ctx.fee_multiplier_permille(), 1000);
+
+        ctx.adopt_fee_multiplier_from(&TaskError::DocumentActionFeeMultiplierRose {
+            known_fee_multiplier_permille: 1000,
+            current_fee_multiplier_permille: 1500,
+            increase_tolerance_percent: 20,
+            source_error: Box::new(dash_sdk::Error::Generic("rose".to_string())),
+        });
+        assert_eq!(ctx.fee_multiplier_permille(), 1500);
+    }
     use super::*;
 
     #[tokio::test]

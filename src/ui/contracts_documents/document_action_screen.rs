@@ -1982,41 +1982,53 @@ fn signing_scope<'a>(
     }
 }
 
-/// "N (X to the contract owner, Y to its moderators)" for a contract fee.
+/// The contract fee as a label value: the total, and its split when both
+/// the owner and the moderators receive a part.
 fn action_fee_summary(quote: &DocumentActionFeeQuote) -> String {
-    if quote.moderators == 0 {
-        format!(
-            "{total} to the contract owner",
-            total = format_credits_as_dash(quote.total)
-        )
-    } else {
-        format!(
+    let total = format_credits_as_dash(quote.total);
+    match (quote.owner, quote.moderators) {
+        (_, 0) => format!("{total} to the contract owner"),
+        (0, _) => format!("{total} to the contract's moderators"),
+        (owner, moderators) => format!(
             "{total} ({owner} to the contract owner, {moderators} to its moderators)",
-            total = format_credits_as_dash(quote.total),
-            owner = format_credits_as_dash(quote.owner),
-            moderators = format_credits_as_dash(quote.moderators)
-        )
+            owner = format_credits_as_dash(owner),
+            moderators = format_credits_as_dash(moderators)
+        ),
     }
 }
 
-/// The confirmation text for a contract fee: what is charged now, and the
-/// most that can be charged if network fees rise before the action runs.
+/// The confirmation text for a contract fee, in complete sentences: who
+/// receives what, whether the fee follows network fees (and the most it can
+/// then reach), and that it comes on top of the network fee. The pricing is
+/// read from the agreement itself, so a fee too small to show the tolerance
+/// after rounding is still described as following network fees.
 fn action_fee_confirmation_text(quote: &DocumentActionFeeQuote) -> String {
-    if quote.max_total > quote.total {
+    let fee = format_credits_as_dash(quote.total);
+    let recipients = match (quote.owner, quote.moderators) {
+        (_, 0) => format!(
+            "This contract charges a fee of {fee} for this action, paid to the contract owner."
+        ),
+        (0, _) => format!(
+            "This contract charges a fee of {fee} for this action, paid to the contract's moderators."
+        ),
+        (owner, moderators) => format!(
+            "This contract charges a fee of {fee} for this action: {owner} to the contract owner and {moderators} to its moderators.",
+            owner = format_credits_as_dash(owner),
+            moderators = format_credits_as_dash(moderators)
+        ),
+    };
+    let pricing = if quote.agreement.fee_multiplier().is_some() {
         format!(
-            "Besides the network fee, this contract charges a fee of {fee} for this action: {summary}. If network fees rise before the action is processed, up to {max} can be charged. If they rise by more than {percent}%, the network refuses the action instead. Do you want to continue?",
-            fee = format_credits_as_dash(quote.total),
-            summary = action_fee_summary(quote),
+            "The fee follows network fees. If they rise before the action is processed, up to {max} can be charged. If they rise by more than {percent}%, the network refuses the action.",
             max = format_credits_as_dash(quote.max_total),
             percent = ACTION_FEE_MULTIPLIER_INCREASE_TOLERANCE_PERCENT
         )
     } else {
-        format!(
-            "Besides the network fee, this contract charges a fixed fee of {fee} for this action: {summary}. Do you want to continue?",
-            fee = format_credits_as_dash(quote.total),
-            summary = action_fee_summary(quote)
-        )
-    }
+        "The fee is fixed and does not change with network fees.".to_string()
+    };
+    format!(
+        "{recipients} {pricing} It is charged on top of the network fee. Do you want to continue?"
+    )
 }
 
 #[cfg(test)]
@@ -2081,11 +2093,29 @@ mod tests {
     fn a_fixed_fee_confirmation_promises_no_increase() {
         let quote = quote(ActionFeePricing::Fixed, 50_000_000_000, 0);
         let text = action_fee_confirmation_text(&quote);
-        assert!(text.contains("fixed fee"), "got: {text}");
+        assert!(text.contains("The fee is fixed"), "got: {text}");
         assert!(
             !text.contains("up to"),
             "a fixed fee cannot rise, got: {text}"
         );
+    }
+
+    /// Rounding can hide the tolerance of a tiny fee (4 credits * 1.2 floors
+    /// to 4): it still follows network fees and must say so.
+    #[test]
+    fn a_tiny_multiplier_priced_fee_is_not_called_fixed() {
+        let mut quote = quote(ActionFeePricing::FeeMultiplier, 4, 0);
+        quote.max_total = quote.total;
+        let text = action_fee_confirmation_text(&quote);
+        assert!(text.contains("follows network fees"), "got: {text}");
+        assert!(!text.contains("fixed"), "got: {text}");
+    }
+
+    #[test]
+    fn a_fee_for_moderators_only_names_them() {
+        let quote = quote(ActionFeePricing::Fixed, 0, 7_000);
+        assert!(action_fee_confirmation_text(&quote).contains("paid to the contract's moderators"));
+        assert!(action_fee_summary(&quote).contains("to the contract's moderators"));
     }
 
     #[test]

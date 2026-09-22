@@ -2170,7 +2170,7 @@ pub enum TaskError {
 
     /// Network fees rose past the increase the fee agreement tolerates.
     #[error(
-        "Network fees rose by more than {increase_tolerance_percent}% since you confirmed the contract fee, so the network refused the action. Refresh the network status to read the current fees, then try again."
+        "Network fees rose by more than {increase_tolerance_percent}% since you confirmed the contract fee, so the network refused the action. The contract fee has been updated to the current network fees. Try again to see and confirm the new amount."
     )]
     DocumentActionFeeMultiplierRose {
         known_fee_multiplier_permille: u64,

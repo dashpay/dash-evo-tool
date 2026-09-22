@@ -2768,12 +2768,24 @@ mod protocol_v14_compat_tests {
         let plain = auth_key(4);
 
         let mut qi = QualifiedIdentity::from_bytes(&v0_9_3_user_blob()).expect("decodes");
-        qi.identity.set_public_keys(BTreeMap::from([
-            (1, expired),
-            (2, elsewhere),
-            (3, limited),
-            (4, plain),
-        ]));
+        let all = [expired, elsewhere, limited, plain];
+        qi.private_keys = Default::default();
+        for key in &all {
+            qi.private_keys
+                .insert_non_encrypted(
+                    (PrivateKeyTarget::PrivateKeyOnMainIdentity, key.id()),
+                    (
+                        QualifiedIdentityPublicKey {
+                            identity_public_key: key.clone(),
+                            in_wallet_at_derivation_path: None,
+                        },
+                        [key.id() as u8; 32],
+                    ),
+                )
+                .expect("a free slot");
+        }
+        qi.identity
+            .set_public_keys(all.iter().map(|key| (key.id(), key.clone())).collect());
         let scope = SigningScope::ContractWide {
             contract_id: dpns.id(),
         };
@@ -2790,6 +2802,17 @@ mod protocol_v14_compat_tests {
             qi.document_signing_key(scope, &preorder).map(|k| k.id()),
             Some(3),
             "a limited key when it is the only usable one"
+        );
+
+        // A held limited key beats an unlimited key whose private half is
+        // not on this device.
+        let mut keys = qi.identity.public_keys().clone();
+        keys.insert(5, auth_key(5));
+        qi.identity.set_public_keys(keys);
+        assert_eq!(
+            qi.document_signing_key(scope, &preorder).map(|k| k.id()),
+            Some(3),
+            "the unlimited key 5 cannot be signed with here"
         );
     }
 }

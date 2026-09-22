@@ -82,7 +82,7 @@ impl AppContext {
         let identity_id = qualified_identity.identity.id();
         let identity = Identity::fetch_by_identifier(sdk, identity_id)
             .await?
-            .ok_or(TaskError::IdentityNotFoundLocally)?;
+            .ok_or(TaskError::IdentityMissingOnNetwork { identity_id })?;
         let key = identity
             .public_keys()
             .get(&key_id)

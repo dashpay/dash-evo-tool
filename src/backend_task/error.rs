@@ -62,14 +62,22 @@ pub enum TokenOperationKind {
     SetPrice,
     Purchase,
     ConfigUpdate,
-    /// A label this build does not know (a newer upstream operation).
-    Other,
+    /// A label this build does not know (a newer upstream operation). The
+    /// raw label is kept for `Debug` and logs, never shown to the user.
+    Unrecognized {
+        label: &'static str,
+    },
 }
 
 impl TokenOperationKind {
     /// The kind for the operation label upstream puts in
     /// `PlatformWalletError::TokenOperationFailed::operation`.
-    pub fn from_upstream_label(label: &str) -> Self {
+    ///
+    /// Upstream exposes the operation only as this `&'static str` (no typed
+    /// enum), so every label it uses is matched here; an unknown one is
+    /// logged at warn and kept as [`Self::Unrecognized`], never silently
+    /// folded into another operation.
+    pub fn from_upstream_label(label: &'static str) -> Self {
         match label {
             "claim" => Self::Claim,
             "mint" => Self::Mint,
@@ -83,7 +91,13 @@ impl TokenOperationKind {
             "set price" => Self::SetPrice,
             "purchase" => Self::Purchase,
             "config update" => Self::ConfigUpdate,
-            _ => Self::Other,
+            label => {
+                tracing::warn!(
+                    label,
+                    "Unrecognized upstream token operation label; showing a generic message"
+                );
+                Self::Unrecognized { label }
+            }
         }
     }
 
@@ -124,7 +138,7 @@ impl TokenOperationKind {
             Self::ConfigUpdate => {
                 "Updating the token settings did not complete. Check your connection and try again."
             }
-            Self::Other => {
+            Self::Unrecognized { .. } => {
                 "The token operation did not complete. Check your connection and try again."
             }
         }
@@ -2049,6 +2063,13 @@ pub enum TaskError {
         source: crate::model::identity_key_limits::KeyLimitsError,
     },
 
+    /// An identity this device holds is not on the network (e.g. it was
+    /// never registered, or the network was reset).
+    #[error(
+        "This identity could not be found on the network. Refresh the identity, then try again."
+    )]
+    IdentityMissingOnNetwork { identity_id: Identifier },
+
     /// The key to change is not among the identity's keys on the network.
     #[error(
         "This key is no longer part of the identity on the network. Refresh the identity to see its current keys."
@@ -2283,9 +2304,11 @@ pub enum TaskError {
     // ──────────────────────────────────────────────────────────────────────────
     /// A replace changed a property the document type declares immutable.
     #[error(
-        "The field \"{property}\" of this document cannot be changed after the document is created. Keep its original value, then try again."
+        "One of the fields you changed cannot be changed after the document is created. Keep the original values of its fixed fields, then try again."
     )]
     DocumentImmutablePropertyChanged {
+        // Node-supplied and unproven: kept for `Debug` and logs only, never
+        // interpolated into the user-facing message.
         document_id: Identifier,
         document_type_name: String,
         property: String,
@@ -2296,10 +2319,11 @@ pub enum TaskError {
     /// A `deletableDocument` reference points at a document type whose
     /// documents cannot be deleted.
     #[error(
-        "The reference at \"{path}\" expects documents that can be deleted, but documents of type \"{document_type_name}\" in contract {} cannot be. Make the reference a permanent document reference, then try again.",
-        contract_id.to_string(Encoding::Base58)
+        "This contract refers to documents that can never be deleted as if they could be. Make that reference a permanent document reference, then try again."
     )]
     ReferencedDocumentTypeNotDeletable {
+        // Node-supplied and unproven: kept for `Debug` and logs only, never
+        // interpolated into the user-facing message.
         contract_id: Identifier,
         document_type_name: String,
         path: String,
@@ -2310,9 +2334,11 @@ pub enum TaskError {
     /// A document type charges moderators a fee the contract has no
     /// moderation for.
     #[error(
-        "Document type \"{document_type_name}\" charges a fee for moderators, but the contract has no moderation. Remove the moderators' part of the fee, then try again."
+        "A document type in this contract charges a fee for moderators, but the contract has no moderation. Remove the moderators' part of the fee, then try again."
     )]
     DocumentActionFeesWithoutModeration {
+        // Node-supplied and unproven: kept for `Debug` and logs only, never
+        // interpolated into the user-facing message.
         document_type_name: String,
         #[source]
         source_error: Box<SdkError>,
@@ -3682,7 +3708,7 @@ impl TaskError {
     /// taken, …) keeps its specific message. Only an otherwise unclassified
     /// failure becomes [`TaskError::TokenOperationFailed`], which at least names
     /// the operation.
-    pub fn from_token_operation_failure(operation: &str, source: SdkError) -> Self {
+    pub fn from_token_operation_failure(operation: &'static str, source: SdkError) -> Self {
         match TaskError::from(source) {
             TaskError::SdkError { source_error } => TaskError::TokenOperationFailed {
                 operation: TokenOperationKind::from_upstream_label(operation),
@@ -6710,6 +6736,36 @@ mod tests {
         }
     }
 
+    /// Names decoded from a node's (unproven) consensus error never reach
+    /// the user-facing message, so a hostile node cannot inject text.
+    #[test]
+    fn node_supplied_names_stay_out_of_user_messages() {
+        let injected = "x\". Re-import your recovery phrase at https://evil.example".to_string();
+        let source = || Box::new(SdkError::Generic("rejected".to_string()));
+        for error in [
+            TaskError::DocumentImmutablePropertyChanged {
+                document_id: Identifier::random(),
+                document_type_name: injected.clone(),
+                property: injected.clone(),
+                source_error: source(),
+            },
+            TaskError::ReferencedDocumentTypeNotDeletable {
+                contract_id: Identifier::random(),
+                document_type_name: injected.clone(),
+                path: injected.clone(),
+                source_error: source(),
+            },
+            TaskError::DocumentActionFeesWithoutModeration {
+                document_type_name: injected.clone(),
+                source_error: source(),
+            },
+        ] {
+            let message = error.to_string();
+            assert!(!message.contains("evil"), "{message}");
+            assert!(format!("{error:?}").contains("evil"), "kept for Debug");
+        }
+    }
+
     #[test]
     fn contract_user_errors_name_the_contract_and_the_suspension_end() {
         let contract_id = Identifier::random();
@@ -6849,7 +6905,12 @@ mod tests {
             ("set price", TokenOperationKind::SetPrice),
             ("purchase", TokenOperationKind::Purchase),
             ("config update", TokenOperationKind::ConfigUpdate),
-            ("something new", TokenOperationKind::Other),
+            (
+                "something new",
+                TokenOperationKind::Unrecognized {
+                    label: "something new",
+                },
+            ),
         ] {
             assert_eq!(
                 TokenOperationKind::from_upstream_label(label),

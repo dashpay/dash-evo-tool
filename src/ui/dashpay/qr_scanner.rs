@@ -3,9 +3,7 @@ use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::dashpay::auto_accept_proof::AutoAcceptProofData;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
-use crate::model::identity_key_usability::{
-    KeyRequirements, SigningScope, select_identity_signing_key_now,
-};
+use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
@@ -108,8 +106,7 @@ impl QRScannerScreen {
         if let Some(identity) = &self.selected_identity {
             if let Some(qr_data) = &self.parsed_qr_data {
                 // Get signing key
-                let signing_key = match select_identity_signing_key_now(
-                    &identity.identity,
+                let signing_key = match identity.signing_key_now(
                     KeyRequirements::new(
                         Purpose::AUTHENTICATION,
                         &[

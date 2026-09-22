@@ -4,9 +4,7 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::fee_estimation::{format_credits_as_dash, max_spendable_credits};
-use crate::model::identity_key_usability::{
-    KeyRequirements, SigningScope, select_identity_signing_key_now,
-};
+use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
@@ -439,22 +437,16 @@ impl ScreenLike for WithdrawalScreen {
                     ui.add_space(10.0);
                 }
 
-                let owner_key = select_identity_signing_key_now(
-                    &self.identity.identity,
-                    KeyRequirements::new(
-                        Purpose::OWNER,
-                        &SecurityLevel::full_range(),
-                        SigningScope::NonBatch,
-                    ),
-                );
-                let transfer_key = select_identity_signing_key_now(
-                    &self.identity.identity,
-                    KeyRequirements::new(
-                        Purpose::TRANSFER,
-                        &SecurityLevel::full_range(),
-                        SigningScope::NonBatch,
-                    ),
-                );
+                let owner_key = self.identity.signing_key_now(KeyRequirements::new(
+                    Purpose::OWNER,
+                    &SecurityLevel::full_range(),
+                    SigningScope::NonBatch,
+                ));
+                let transfer_key = self.identity.signing_key_now(KeyRequirements::new(
+                    Purpose::TRANSFER,
+                    &SecurityLevel::full_range(),
+                    SigningScope::NonBatch,
+                ));
 
                 if let Some(owner_key) = owner_key {
                     if ui.button("Check Owner Key").clicked() {

@@ -4,9 +4,7 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
-use crate::model::identity_key_usability::{
-    KeyRequirements, SigningScope, select_identity_signing_key_now,
-};
+use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
@@ -98,16 +96,13 @@ impl TransferTokensScreen {
 
         let max_amount = Amount::from(&identity_token_balance);
         let selected_key: Option<IdentityPublicKey> = identity.as_ref().and_then(|id| {
-            select_identity_signing_key_now(
-                &id.identity,
-                KeyRequirements::new(
-                    Purpose::AUTHENTICATION,
-                    &[SecurityLevel::CRITICAL],
-                    SigningScope::ContractWide {
-                        contract_id: identity_token_balance.data_contract_id,
-                    },
-                ),
-            )
+            id.signing_key_now(KeyRequirements::new(
+                Purpose::AUTHENTICATION,
+                &[SecurityLevel::CRITICAL],
+                SigningScope::ContractWide {
+                    contract_id: identity_token_balance.data_contract_id,
+                },
+            ))
             .cloned()
         });
         let selected_wallet = identity.as_ref().and_then(|id| {

@@ -4,9 +4,7 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::dpns::{DpnsNameValidationResult, DpnsRegistrationOutcome, validate_dpns_name};
 use crate::model::fee_estimation::format_credits_as_dash;
-use crate::model::identity_key_usability::{
-    KeyRequirements, SigningScope, select_identity_signing_key_now,
-};
+use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::identity_selector::IdentitySelector;
@@ -84,9 +82,8 @@ fn dpns_signing_key(
     identity: &QualifiedIdentity,
 ) -> Option<IdentityPublicKey> {
     use dash_sdk::dpp::identity::SecurityLevel;
-    select_identity_signing_key_now(
-        &identity.identity,
-        KeyRequirements::new(
+    identity
+        .signing_key_now(KeyRequirements::new(
             Purpose::AUTHENTICATION,
             &[
                 SecurityLevel::CRITICAL,
@@ -96,9 +93,8 @@ fn dpns_signing_key(
             SigningScope::ContractWide {
                 contract_id: app_context.dpns_contract.id(),
             },
-        ),
-    )
-    .cloned()
+        ))
+        .cloned()
 }
 
 impl RegisterDpnsNameScreen {

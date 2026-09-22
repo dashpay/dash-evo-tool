@@ -9,9 +9,7 @@ use crate::model::identity_key_limits::{
     KeyLimitsError, limits_allowed, new_key_limits, parse_key_validity_days,
 };
 use crate::model::identity_key_usability::now_ms;
-use crate::model::identity_key_usability::{
-    KeyRequirements, SigningScope, select_identity_signing_key_now,
-};
+use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::wallet::Wallet;
@@ -80,14 +78,11 @@ pub struct AddKeyScreen {
 impl AddKeyScreen {
     pub fn new(identity: QualifiedIdentity, app_context: &Arc<AppContext>) -> Self {
         let identity_clone = identity.clone();
-        let selected_key = select_identity_signing_key_now(
-            &identity_clone.identity,
-            KeyRequirements::new(
-                Purpose::AUTHENTICATION,
-                &[SecurityLevel::MASTER],
-                SigningScope::NonBatch,
-            ),
-        );
+        let selected_key = identity_clone.signing_key_now(KeyRequirements::new(
+            Purpose::AUTHENTICATION,
+            &[SecurityLevel::MASTER],
+            SigningScope::NonBatch,
+        ));
         let selected_wallet = get_selected_wallet(&identity, None, selected_key)
             .or_show_error(app_context.egui_ctx())
             .unwrap_or(None);
@@ -126,14 +121,11 @@ impl AddKeyScreen {
         app_context: &Arc<AppContext>,
     ) -> Self {
         let identity_clone = identity.clone();
-        let selected_key = select_identity_signing_key_now(
-            &identity_clone.identity,
-            KeyRequirements::new(
-                Purpose::AUTHENTICATION,
-                &[SecurityLevel::MASTER],
-                SigningScope::NonBatch,
-            ),
-        );
+        let selected_key = identity_clone.signing_key_now(KeyRequirements::new(
+            Purpose::AUTHENTICATION,
+            &[SecurityLevel::MASTER],
+            SigningScope::NonBatch,
+        ));
         let selected_wallet = get_selected_wallet(&identity, None, selected_key)
             .or_show_error(app_context.egui_ctx())
             .unwrap_or(None);
@@ -177,14 +169,11 @@ impl AddKeyScreen {
         app_context: &Arc<AppContext>,
     ) -> Self {
         let identity_clone = identity.clone();
-        let selected_key = select_identity_signing_key_now(
-            &identity_clone.identity,
-            KeyRequirements::new(
-                Purpose::AUTHENTICATION,
-                &[SecurityLevel::MASTER],
-                SigningScope::NonBatch,
-            ),
-        );
+        let selected_key = identity_clone.signing_key_now(KeyRequirements::new(
+            Purpose::AUTHENTICATION,
+            &[SecurityLevel::MASTER],
+            SigningScope::NonBatch,
+        ));
         let selected_wallet = get_selected_wallet(&identity, None, selected_key)
             .or_show_error(app_context.egui_ctx())
             .unwrap_or(None);

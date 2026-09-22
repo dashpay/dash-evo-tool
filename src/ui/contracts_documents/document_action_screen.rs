@@ -11,7 +11,7 @@ use crate::backend_task::{BackendTask, document::DocumentTask};
 use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::identity_key_usability::{
-    KeyRequirements, SigningScope, select_identity_signing_key_now,
+    KeyRequirements, SigningScope,
 };
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -326,9 +326,8 @@ impl DocumentActionScreen {
                 // cannot sign document operations, so only MEDIUM, HIGH or
                 // CRITICAL keys qualify.
                 use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
-                self.selected_key = select_identity_signing_key_now(
-                    &identity.identity,
-                    KeyRequirements::new(
+                self.selected_key = identity
+                    .signing_key_now(KeyRequirements::new(
                         Purpose::AUTHENTICATION,
                         &[
                             SecurityLevel::CRITICAL,
@@ -339,9 +338,8 @@ impl DocumentActionScreen {
                             self.selected_contract.as_ref(),
                             self.selected_document_type.as_ref(),
                         ),
-                    ),
-                )
-                .cloned();
+                    ))
+                    .cloned();
 
                 // Update wallet
                 self.wallet = get_selected_wallet(identity, Some(&self.app_context), None)

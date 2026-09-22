@@ -11,9 +11,7 @@ use crate::app::AppAction;
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
-use crate::model::identity_key_usability::{
-    KeyRequirements, SigningScope, select_identity_signing_key_now,
-};
+use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
 use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
 use crate::ui::components::component_trait::Component;
@@ -176,17 +174,16 @@ pub struct TokenActionScreen<A: TokenAction> {
 
 impl<A: TokenAction> TokenActionScreen<A> {
     pub fn new(identity_token_info: IdentityTokenInfo, app_context: &Arc<AppContext>) -> Self {
-        let possible_key = select_identity_signing_key_now(
-            &identity_token_info.identity.identity,
-            KeyRequirements::new(
+        let possible_key = identity_token_info
+            .identity
+            .signing_key_now(KeyRequirements::new(
                 Purpose::AUTHENTICATION,
                 &[SecurityLevel::CRITICAL],
                 SigningScope::ContractWide {
                     contract_id: identity_token_info.data_contract.contract.id(),
                 },
-            ),
-        )
-        .cloned();
+            ))
+            .cloned();
 
         let takers = A::authorized_takers(&identity_token_info.token_config);
         let auth = check_token_authorization(&takers, &identity_token_info, A::VERB);

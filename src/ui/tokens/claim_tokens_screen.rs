@@ -1,8 +1,6 @@
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::model::fee_estimation::format_credits_as_dash;
-use crate::model::identity_key_usability::{
-    KeyRequirements, SigningScope, select_identity_signing_key_now,
-};
+use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
 use crate::model::token::once_per_identity_amount;
 use crate::model::user_role::UserRole;
 use crate::ui::components::Component;
@@ -93,30 +91,24 @@ impl ClaimTokensScreen {
             .find(|id| id.identity.id() == identity_token_basic_info.identity_id);
 
         let (selected_key, selected_wallet) = if let Some(ref id) = identity {
-            let identity_inner = &id.identity;
-            let key = select_identity_signing_key_now(
-                identity_inner,
-                KeyRequirements::new(
+            let key = id
+                .signing_key_now(KeyRequirements::new(
                     Purpose::AUTHENTICATION,
                     &[SecurityLevel::CRITICAL],
                     SigningScope::ContractWide {
                         contract_id: identity_token_basic_info.contract_id,
                     },
-                ),
-            )
-            .or_else(|| {
-                select_identity_signing_key_now(
-                    identity_inner,
-                    KeyRequirements::new(
+                ))
+                .or_else(|| {
+                    id.signing_key_now(KeyRequirements::new(
                         Purpose::TRANSFER,
                         &[SecurityLevel::CRITICAL],
                         SigningScope::ContractWide {
                             contract_id: identity_token_basic_info.contract_id,
                         },
-                    ),
-                )
-            })
-            .cloned();
+                    ))
+                })
+                .cloned();
 
             let selected_wallet = get_selected_wallet(id, None, key.as_ref()).unwrap_or(None);
             (key, selected_wallet)

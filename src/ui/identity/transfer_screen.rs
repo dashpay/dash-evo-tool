@@ -4,9 +4,7 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::fee_estimation::{format_credits_as_dash, max_spendable_credits};
-use crate::model::identity_key_usability::{
-    KeyRequirements, SigningScope, select_identity_signing_key_now,
-};
+use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
@@ -95,15 +93,12 @@ impl TransferScreen {
             .unwrap_or_default();
 
         let max_amount = identity.identity.balance();
-        let identity_clone = identity.identity.clone();
-        let selected_key = select_identity_signing_key_now(
-            &identity_clone,
-            KeyRequirements::new(
-                Purpose::TRANSFER,
-                &SecurityLevel::full_range(),
-                SigningScope::NonBatch,
-            ),
-        );
+        let identity_clone = identity.clone();
+        let selected_key = identity_clone.signing_key_now(KeyRequirements::new(
+            Purpose::TRANSFER,
+            &SecurityLevel::full_range(),
+            SigningScope::NonBatch,
+        ));
         let selected_wallet =
             get_selected_wallet(&identity, None, selected_key).unwrap_or_else(|e| {
                 MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error)
@@ -636,14 +631,11 @@ impl ScreenLike for TransferScreen {
 
             let key_for_info = key_info_when_available(
                 has_keys,
-                select_identity_signing_key_now(
-                    &self.identity.identity,
-                    KeyRequirements::new(
-                        Purpose::TRANSFER,
-                        &SecurityLevel::full_range(),
-                        SigningScope::NonBatch,
-                    ),
-                ),
+                self.identity.signing_key_now(KeyRequirements::new(
+                    Purpose::TRANSFER,
+                    &SecurityLevel::full_range(),
+                    SigningScope::NonBatch,
+                )),
             );
 
             if !has_keys {

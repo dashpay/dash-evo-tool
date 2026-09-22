@@ -4,9 +4,7 @@ use crate::backend_task::FeeResult;
 use crate::backend_task::contract::ContractTask;
 use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
-use crate::model::identity_key_usability::{
-    KeyRequirements, SigningScope, select_identity_signing_key_now,
-};
+use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
@@ -110,15 +108,13 @@ impl UpdateDataContractScreen {
             .collect::<Vec<_>>();
 
         let selected_key = selected_qualified_identity.as_ref().and_then(|identity| {
-            select_identity_signing_key_now(
-                &identity.identity,
-                KeyRequirements::new(
+            identity
+                .signing_key_now(KeyRequirements::new(
                     Purpose::AUTHENTICATION,
                     &[SecurityLevel::CRITICAL],
                     SigningScope::NonBatch,
-                ),
-            )
-            .cloned()
+                ))
+                .cloned()
         });
 
         let selected_identity_string = selected_qualified_identity
@@ -494,15 +490,13 @@ impl ScreenLike for UpdateDataContractScreen {
             if response.changed() {
                 if let Some(identity) = &self.selected_qualified_identity {
                     // Auto-select a suitable key for contract updates
-                    self.selected_key = select_identity_signing_key_now(
-                        &identity.identity,
-                        KeyRequirements::new(
+                    self.selected_key = identity
+                        .signing_key_now(KeyRequirements::new(
                             Purpose::AUTHENTICATION,
                             &[SecurityLevel::CRITICAL],
                             SigningScope::NonBatch,
-                        ),
-                    )
-                    .cloned();
+                        ))
+                        .cloned();
 
                     // Update wallet
                     self.selected_wallet =

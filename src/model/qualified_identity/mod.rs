@@ -9,7 +9,7 @@ pub mod qualified_identity_public_key;
 // type — a wallet_backend change out of scope here.
 use crate::backend_task::error::TaskError;
 use crate::model::identity_key_usability::{
-    KeyRequirements, SigningScope, select_identity_signing_key_now,
+    KeyRequirements, SigningScope, now_ms, select_identity_signing_key,
 };
 use crate::model::qualified_identity::encrypted_key_storage::{
     KeyStorage, ResolvedPrivateKey, same_key,
@@ -1014,14 +1014,20 @@ impl QualifiedIdentity {
         scope: SigningScope<'_>,
         document_type: &DocumentTypeRef,
     ) -> Option<&IdentityPublicKey> {
-        select_identity_signing_key_now(
-            &self.identity,
-            KeyRequirements::new(
-                Purpose::AUTHENTICATION,
-                &[document_type.security_level_requirement()],
-                scope,
-            ),
-        )
+        self.signing_key_now(KeyRequirements::new(
+            Purpose::AUTHENTICATION,
+            &[document_type.security_level_requirement()],
+            scope,
+        ))
+    }
+
+    /// The key to sign with for `requirements` now: the automatic choice of
+    /// [`select_identity_signing_key`] among the keys this device holds the
+    /// private half of.
+    pub fn signing_key_now(&self, requirements: KeyRequirements<'_>) -> Option<&IdentityPublicKey> {
+        select_identity_signing_key(&self.identity, requirements, now_ms(), |key| {
+            self.can_sign_with(key)
+        })
     }
 
     pub fn available_withdrawal_keys(&self) -> Vec<&QualifiedIdentityPublicKey> {

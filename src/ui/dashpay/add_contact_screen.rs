@@ -5,9 +5,7 @@ use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::dashpay::validate_account_label;
-use crate::model::identity_key_usability::{
-    KeyRequirements, SigningScope, select_identity_signing_key_now,
-};
+use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::ResultBannerExt;
@@ -315,18 +313,16 @@ impl ScreenLike for AddContactScreen {
                         // Auto-select a suitable AUTHENTICATION key for signing contact requests
                         // Platform requires CRITICAL or HIGH security level for contact request signing
                         use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
-                        self.selected_key = select_identity_signing_key_now(
-                            &identity.identity,
-                            KeyRequirements::new(
+                        self.selected_key = identity
+                            .signing_key_now(KeyRequirements::new(
                                 Purpose::AUTHENTICATION,
                                 &[SecurityLevel::CRITICAL, SecurityLevel::HIGH],
                                 SigningScope::Document {
                                     contract_id: self.app_context.dashpay_contract.id(),
                                     document_type_name: "contactRequest",
                                 },
-                            ),
-                        )
-                        .cloned();
+                            ))
+                            .cloned();
 
                         // Update wallet if not already set
                         if self.selected_wallet.is_none() {

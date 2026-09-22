@@ -4,9 +4,7 @@ use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
-use crate::model::identity_key_usability::{
-    KeyRequirements, SigningScope, select_identity_signing_key_now,
-};
+use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
@@ -83,17 +81,16 @@ pub struct UpdateTokenConfigScreen {
 
 impl UpdateTokenConfigScreen {
     pub fn new(identity_token_info: IdentityTokenInfo, app_context: &Arc<AppContext>) -> Self {
-        let possible_key = select_identity_signing_key_now(
-            &identity_token_info.identity.identity,
-            KeyRequirements::new(
+        let possible_key = identity_token_info
+            .identity
+            .signing_key_now(KeyRequirements::new(
                 Purpose::AUTHENTICATION,
                 &[SecurityLevel::CRITICAL],
                 SigningScope::ContractWide {
                     contract_id: identity_token_info.data_contract.contract.id(),
                 },
-            ),
-        )
-        .cloned();
+            ))
+            .cloned();
 
         // Initialize with no group - will be set when user selects a change item
         let group = None;

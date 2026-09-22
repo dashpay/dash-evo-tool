@@ -1,6 +1,4 @@
-use crate::model::identity_key_usability::{
-    KeyRequirements, SigningScope, select_identity_signing_key_now,
-};
+use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
@@ -84,17 +82,16 @@ pub struct PurchaseTokenScreen {
 
 impl PurchaseTokenScreen {
     pub fn new(identity_token_info: IdentityTokenInfo, app_context: &Arc<AppContext>) -> Self {
-        let possible_key = select_identity_signing_key_now(
-            &identity_token_info.identity.identity,
-            KeyRequirements::new(
+        let possible_key = identity_token_info
+            .identity
+            .signing_key_now(KeyRequirements::new(
                 Purpose::AUTHENTICATION,
                 &[SecurityLevel::CRITICAL],
                 SigningScope::ContractWide {
                     contract_id: identity_token_info.data_contract.contract.id(),
                 },
-            ),
-        )
-        .cloned();
+            ))
+            .cloned();
 
         // Attempt to get an unlocked wallet reference
         let selected_wallet =

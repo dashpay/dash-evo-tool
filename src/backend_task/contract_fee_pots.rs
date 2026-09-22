@@ -8,9 +8,7 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::context::feature_gate::FeatureGate;
-use crate::model::identity_key_usability::{
-    KeyRequirements, SigningScope, select_identity_signing_key_now,
-};
+use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::data_contract::document_type::action_fees::ContractFeePot;
@@ -60,12 +58,10 @@ impl AppContext {
             return Err(TaskError::ContractFeePotsNotSupported);
         }
         let identity_id = qualified_identity.identity.id();
-        let signing_key = select_identity_signing_key_now(
-            &qualified_identity.identity,
-            fee_claim_key_requirements(),
-        )
-        .cloned()
-        .ok_or(TaskError::NoFeeClaimSigningKey)?;
+        let signing_key = qualified_identity
+            .signing_key_now(fee_claim_key_requirements())
+            .cloned()
+            .ok_or(TaskError::NoFeeClaimSigningKey)?;
         let identity = qualified_identity.identity.clone();
         let signer = Arc::new(qualified_identity);
 

@@ -177,30 +177,32 @@ impl KeyRequirements<'_> {
     }
 }
 
-/// The key of `keys` to pick automatically for `requirements` at `now_ms`, or
-/// `None` when no key qualifies.
+/// The key of `keys` to pick automatically for `requirements` at `now_ms`
+/// among those `can_sign` accepts, or `None` when none qualifies.
 ///
-/// A key qualifies when it matches purpose, security level and key type and
-/// [`is_auto_selectable`]. Among qualifying keys an unlimited key wins over a
-/// limited one (a budgeted or expiring key is an application key, taken only
-/// when nothing else fits); ties keep `keys` order (key id order for an
-/// identity's key map).
+/// Mirrors upstream platform-wallet's signer-aware `usable_authentication_key`:
+/// a key qualifies when it matches purpose, security level and key type and
+/// [`is_auto_selectable`]; qualifying unlimited keys come first, then limited
+/// ones (a budgeted or expiring key is an application key), each in `keys`
+/// order (key id order for an identity's key map); the first of that sequence
+/// this device can sign with wins. So a limited key held here beats an
+/// unlimited one whose private half lives elsewhere — the delegated-key case
+/// protocol version 14 limits exist for.
 pub fn select_signing_key<'k>(
     keys: impl IntoIterator<Item = &'k IdentityPublicKey>,
     requirements: KeyRequirements<'_>,
     now_ms: TimestampMillis,
+    can_sign: impl Fn(&IdentityPublicKey) -> bool,
 ) -> Option<&'k IdentityPublicKey> {
-    let mut first_limited = None;
-    for key in keys {
-        if !requirements.matches(key) || !is_auto_selectable(key, requirements.scope, now_ms) {
-            continue;
-        }
-        if !key.has_limits() {
-            return Some(key);
-        }
-        first_limited.get_or_insert(key);
-    }
-    first_limited
+    let qualifying: Vec<&IdentityPublicKey> = keys
+        .into_iter()
+        .filter(|key| {
+            requirements.matches(key) && is_auto_selectable(key, requirements.scope, now_ms)
+        })
+        .collect();
+    let unlimited = qualifying.iter().filter(|key| !key.has_limits());
+    let limited = qualifying.iter().filter(|key| key.has_limits());
+    unlimited.chain(limited).find(|key| can_sign(key)).copied()
 }
 
 impl<'a> KeyRequirements<'a> {
@@ -230,16 +232,14 @@ pub fn select_identity_signing_key<'i>(
     identity: &'i Identity,
     requirements: KeyRequirements<'_>,
     now_ms: TimestampMillis,
+    can_sign: impl Fn(&IdentityPublicKey) -> bool,
 ) -> Option<&'i IdentityPublicKey> {
-    select_signing_key(identity.public_keys().values(), requirements, now_ms)
-}
-
-/// [`select_identity_signing_key`] against the current wall clock.
-pub fn select_identity_signing_key_now<'i>(
-    identity: &'i Identity,
-    requirements: KeyRequirements<'_>,
-) -> Option<&'i IdentityPublicKey> {
-    select_identity_signing_key(identity, requirements, now_ms())
+    select_signing_key(
+        identity.public_keys().values(),
+        requirements,
+        now_ms,
+        can_sign,
+    )
 }
 
 /// The current wall-clock time in milliseconds since the Unix epoch, the clock
@@ -386,14 +386,19 @@ mod tests {
     fn selection_prefers_an_unlimited_key_over_a_limited_one() {
         let limited = key(0, None).with_limits(Some(1_000), None);
         let unlimited = key(1, None);
-        let picked = select_signing_key([&limited, &unlimited], requirements(doc_scope()), NOW);
+        let picked = select_signing_key(
+            [&limited, &unlimited],
+            requirements(doc_scope()),
+            NOW,
+            |_| true,
+        );
         assert_eq!(picked.map(|k| k.id()), Some(1));
     }
 
     #[test]
     fn selection_falls_back_to_a_limited_key() {
         let limited = key(0, None).with_limits(Some(1_000), Some(NOW + 1));
-        let picked = select_signing_key([&limited], requirements(doc_scope()), NOW);
+        let picked = select_signing_key([&limited], requirements(doc_scope()), NOW, |_| true);
         assert_eq!(picked.map(|k| k.id()), Some(0));
     }
 
@@ -409,7 +414,7 @@ mod tests {
         let keys = [&expired, &disabled, &elsewhere, &grouped];
 
         assert_eq!(
-            select_signing_key(keys, requirements(doc_scope()), NOW),
+            select_signing_key(keys, requirements(doc_scope()), NOW, |_| true),
             None
         );
     }
@@ -418,11 +423,13 @@ mod tests {
     fn selection_takes_a_key_bound_to_the_target_contract() {
         let bound = key(0, Some(ContractBounds::SingleContract { id: CONTRACT }));
         assert_eq!(
-            select_signing_key([&bound], requirements(doc_scope()), NOW).map(|k| k.id()),
+            select_signing_key([&bound], requirements(doc_scope()), NOW, |_| true).map(|k| k.id()),
             Some(0)
         );
         assert_eq!(
-            select_signing_key([&bound], requirements(SigningScope::NonBatch), NOW),
+            select_signing_key([&bound], requirements(SigningScope::NonBatch), NOW, |_| {
+                true
+            }),
             None,
             "but not for a transition outside a batch"
         );
@@ -444,7 +451,7 @@ mod tests {
             ..requirements(doc_scope())
         };
         for r in [wrong_level, wrong_type, wrong_purpose] {
-            assert_eq!(select_signing_key([&k], r, NOW), None);
+            assert_eq!(select_signing_key([&k], r, NOW, |_| true), None);
         }
     }
 
@@ -485,5 +492,49 @@ mod tests {
     #[test]
     fn a_plain_key_has_no_caveats() {
         assert!(key_caveats(&key(0, None), doc_scope(), NOW).is_empty());
+    }
+
+    /// A limited key this device can sign with beats an unlimited key whose
+    /// private half lives elsewhere (upstream `usable_authentication_key`).
+    #[test]
+    fn a_held_limited_key_beats_an_unlimited_key_held_elsewhere() {
+        let limited = key(4, None).with_limits(Some(100_000), None);
+        let unlimited = key(1, None);
+        let picked = select_signing_key(
+            [&unlimited, &limited],
+            requirements(doc_scope()),
+            NOW,
+            |k| k.id() == 4,
+        );
+        assert_eq!(picked.map(|k| k.id()), Some(4));
+    }
+
+    /// An unlimited key still wins when both can sign.
+    #[test]
+    fn an_unlimited_key_wins_when_both_can_sign() {
+        let limited = key(4, None).with_limits(Some(100_000), None);
+        let unlimited = key(1, None);
+        let picked = select_signing_key(
+            [&limited, &unlimited],
+            requirements(doc_scope()),
+            NOW,
+            |_| true,
+        );
+        assert_eq!(picked.map(|k| k.id()), Some(1));
+    }
+
+    /// Availability never widens eligibility: a signable but ineligible key
+    /// is not picked when the eligible one cannot sign.
+    #[test]
+    fn availability_does_not_relax_eligibility() {
+        let bound_elsewhere = key(2, Some(ContractBounds::SingleContract { id: OTHER }));
+        let eligible = key(1, None);
+        let picked = select_signing_key(
+            [&eligible, &bound_elsewhere],
+            requirements(doc_scope()),
+            NOW,
+            |k| k.id() == 2,
+        );
+        assert_eq!(picked, None);
     }
 }

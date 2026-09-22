@@ -5,9 +5,7 @@ use crate::context::AppContext;
 use crate::model::dashpay::{
     AcceptedAccounts, ContactInfoField, ContactInfoUpdate, UnreadableContactInfoPolicy,
 };
-use crate::model::identity_key_usability::{
-    KeyRequirements, SigningScope, select_identity_signing_key_now,
-};
+use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
 use crate::model::qualified_identity::QualifiedIdentity;
 use aes_gcm::aes::Aes256;
 use aes_gcm::aes::cipher::{BlockCipherEncrypt, KeyInit};
@@ -639,9 +637,8 @@ pub async fn create_or_update_contact_info(
 
     // Get signing key — accept any key type (BLS, ECDSA, EDDSA) since
     // Platform accepts all for document state transitions.
-    let signing_key = select_identity_signing_key_now(
-        &identity.identity,
-        KeyRequirements::new(
+    let signing_key = identity
+        .signing_key_now(KeyRequirements::new(
             Purpose::AUTHENTICATION,
             &[
                 SecurityLevel::CRITICAL,
@@ -652,9 +649,8 @@ pub async fn create_or_update_contact_info(
                 contract_id: dashpay_contract.id(),
                 document_type_name: "contactInfo",
             },
-        ),
-    )
-    .ok_or_else(|| TaskError::DashPay(DashPayError::MissingAuthenticationKey))?;
+        ))
+        .ok_or_else(|| TaskError::DashPay(DashPayError::MissingAuthenticationKey))?;
 
     // Create document properties
     let mut properties = BTreeMap::new();

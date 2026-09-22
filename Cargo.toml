@@ -24,6 +24,10 @@ base64 = "0.23.1"
 # and `DisplayFromStr` adapters — the vulnerable `KeyValueMap` serializer is never invoked in the
 # dependency chain, so the advisory is not exploitable here (Dependabot alert #41; dismissal as
 # `not_used` was attempted but requires manual GitHub action — see coordinator note).
+# TODO(platform-pin): the dashpay/platform rev below is the head of the unmerged PR
+# dashpay/platform#4764 (branch fix/dashpay-available-signer). Once it merges, re-pin all
+# four platform deps to a commit on v4.3-dev and revert the pin guard target in
+# scripts/migration-fixtures/check-pin-ancestry.sh back to the base branch. Release blocker.
 dash-sdk = { git = "https://github.com/dashpay/platform", rev = "c5c4d3161751e1c991b74b80a5c470f4a99317d4", features = [
     "core_key_wallet",
     "core_key_wallet_manager",

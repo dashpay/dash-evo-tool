@@ -7,14 +7,15 @@ use std::sync::Arc;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::context::feature_gate::FeatureGate;
-use crate::model::identity_key_limits::{KeyLimitsError, KeyLimitsRaise, key_limits_update_signer};
+use crate::model::identity_key_limits::{
+    KeyLimitsError, KeyLimitsRaise, ReviewedSignerUnusable, reviewed_key_limits_signer,
+};
 use crate::model::identity_key_usability::now_ms;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::KeyID;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::signer::Signer;
 use dash_sdk::platform::Identity;
 use dash_sdk::platform::identity_keys_remaining_budgets::{
@@ -66,9 +67,10 @@ impl AppContext {
     ///
     /// The key is read as Platform holds it now. If its limits are not the
     /// ones the user reviewed (raised elsewhere meanwhile), nothing is signed:
-    /// the live key replaces the local copy and the raise is refused, so the
-    /// screen quotes it again. The signing key must still be the reviewed
-    /// one. The updated key replaces the local copy.
+    /// the live keys replace the local copies and the raise is refused, so the
+    /// screen quotes it again. The same holds when the reviewed signer can no
+    /// longer sign it — another key is never picked in its place. The
+    /// updated key replaces the local copy.
     pub(super) async fn raise_key_limits(
         &self,
         sdk: &Sdk,
@@ -87,24 +89,36 @@ impl AppContext {
             .public_keys()
             .get(&key_id)
             .ok_or(TaskError::IdentityKeyNotFound { key_id })?;
-        if let Err(error) = raise.check_against(key, now_ms()) {
-            if error == KeyLimitsError::LimitsChanged {
-                let live = key.clone();
-                self.edit_local_qualified_identity(&identity_id, move |fresh| {
-                    fresh.identity.add_public_key(live);
-                    Ok(())
-                })?;
+        let refusal = match raise.check_against(key, now_ms()) {
+            Err(error) => Some(TaskError::from(error)),
+            Ok(()) => {
+                reviewed_key_limits_signer(identity.public_keys(), raise.signing_key_id, |key| {
+                    qualified_identity.can_sign_with(key)
+                })
+                .err()
+                .map(refused_signer_error)
             }
-            return Err(error.into());
+        };
+        if let Some(refusal) = refusal {
+            // Nothing is signed. Keep the keys as Platform holds them, so
+            // the screen's next review quotes the live limits and picks its
+            // signer from the live key set.
+            let live_keys: Vec<_> = identity.public_keys().values().cloned().collect();
+            self.edit_local_qualified_identity(&identity_id, move |fresh| {
+                for key in live_keys {
+                    fresh.identity.add_public_key(key);
+                }
+                Ok(())
+            })?;
+            return Err(refusal);
         }
 
+        let signing_key = identity
+            .public_keys()
+            .get(&raise.signing_key_id)
+            .cloned()
+            .ok_or(TaskError::NoKeyLimitsSigningKey)?;
         let signer = Arc::new(qualified_identity);
-        let signing_key = key_limits_update_signer(identity.public_keys().values(), |key| {
-            signer.can_sign_with(key)
-        })
-        .filter(|key| key.id() == raise.signing_key_id)
-        .cloned()
-        .ok_or(TaskError::NoKeyLimitsSigningKey)?;
 
         let updated = identity
             .update_key_limits(
@@ -128,6 +142,14 @@ impl AppContext {
             identity_id,
             key: updated,
         })
+    }
+}
+
+/// The error for a reviewed signer Platform no longer accepts.
+fn refused_signer_error(reason: ReviewedSignerUnusable) -> TaskError {
+    match reason {
+        ReviewedSignerUnusable::SignerChanged => KeyLimitsError::SignerChanged.into(),
+        ReviewedSignerUnusable::NoSigner => TaskError::NoKeyLimitsSigningKey,
     }
 }
 
@@ -172,6 +194,25 @@ pub(super) mod tests {
             status: IdentityStatus::Active,
             network: Network::Testnet,
         }
+    }
+
+    /// A reviewed signer replaced on Platform asks for a fresh review; only
+    /// when no key can sign at all is the user told to import one.
+    #[test]
+    fn a_changed_signer_asks_for_a_new_review_not_a_key_import() {
+        let changed = refused_signer_error(ReviewedSignerUnusable::SignerChanged);
+        assert!(matches!(
+            changed,
+            TaskError::InvalidKeyLimits {
+                source: KeyLimitsError::SignerChanged
+            }
+        ));
+        assert!(changed.to_string().contains("Review the change again"));
+
+        assert!(matches!(
+            refused_signer_error(ReviewedSignerUnusable::NoSigner),
+            TaskError::NoKeyLimitsSigningKey
+        ));
     }
 
     /// Before protocol version 14 is confirmed, no limits update is built or

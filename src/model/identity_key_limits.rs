@@ -15,6 +15,7 @@ use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v1::IdentityPublicKeyGettersV1;
 use dash_sdk::dpp::identity::{IdentityPublicKey, KeyID, Purpose, SecurityLevel, TimestampMillis};
+use std::collections::BTreeMap;
 use thiserror::Error;
 
 /// Milliseconds in one day.
@@ -70,6 +71,10 @@ pub enum KeyLimitsError {
         "This key's limits changed after you reviewed them. Review the new limits and confirm again."
     )]
     LimitsChanged,
+    #[error(
+        "The key chosen to approve this change can no longer approve it, because this identity's keys changed. Review the change again and confirm it."
+    )]
+    SignerChanged,
 }
 
 /// Whether a key of this purpose and security level may carry limits.
@@ -131,19 +136,59 @@ pub fn key_limits_update_signer<'a>(
 ) -> Option<&'a IdentityPublicKey> {
     let candidates: Vec<&IdentityPublicKey> = keys
         .into_iter()
-        .filter(|key| {
-            key.purpose() == Purpose::AUTHENTICATION && key.disabled_at().is_none() && can_sign(key)
-        })
+        .filter(|key| may_sign_key_limits_update(key) && can_sign(key))
         .collect();
     let master = candidates
         .iter()
         .find(|key| key.security_level() == SecurityLevel::MASTER);
-    let critical = candidates.iter().find(|key| {
-        key.security_level() == SecurityLevel::CRITICAL
-            && !key.has_limits()
-            && key.contract_bounds().is_none()
-    });
+    let critical = candidates
+        .iter()
+        .find(|key| key.security_level() == SecurityLevel::CRITICAL);
     master.or(critical).copied()
+}
+
+/// Whether Platform accepts `key` as the signer of a key limits update: an
+/// enabled MASTER authentication key, or an enabled CRITICAL one with no
+/// limits and no contract bounds.
+fn may_sign_key_limits_update(key: &IdentityPublicKey) -> bool {
+    key.purpose() == Purpose::AUTHENTICATION
+        && key.disabled_at().is_none()
+        && match key.security_level() {
+            SecurityLevel::MASTER => true,
+            SecurityLevel::CRITICAL => !key.has_limits() && key.contract_bounds().is_none(),
+            _ => false,
+        }
+}
+
+/// Why the signer a key limits update was reviewed with cannot sign it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewedSignerUnusable {
+    /// Another key of the identity can sign the update: the user must review
+    /// it again with that signer.
+    SignerChanged,
+    /// No key of the identity that this device holds can sign the update.
+    NoSigner,
+}
+
+/// The signer the user reviewed (`signing_key_id`), as `keys` (the identity
+/// as Platform holds it now) has it — if Platform still accepts it as the
+/// signer of a key limits update and `can_sign` holds. Never substitutes
+/// another key: a different signer needs a fresh review.
+pub fn reviewed_key_limits_signer(
+    keys: &BTreeMap<KeyID, IdentityPublicKey>,
+    signing_key_id: KeyID,
+    can_sign: impl Fn(&IdentityPublicKey) -> bool,
+) -> Result<&IdentityPublicKey, ReviewedSignerUnusable> {
+    if let Some(key) = keys
+        .get(&signing_key_id)
+        .filter(|key| may_sign_key_limits_update(key) && can_sign(key))
+    {
+        return Ok(key);
+    }
+    match key_limits_update_signer(keys.values(), can_sign) {
+        Some(_) => Err(ReviewedSignerUnusable::SignerChanged),
+        None => Err(ReviewedSignerUnusable::NoSigner),
+    }
 }
 
 /// Parse a whole number of days between 1 and [`MAX_KEY_VALIDITY_DAYS`].
@@ -556,6 +601,45 @@ mod tests {
 
         let picked = key_limits_update_signer([&limited_critical], |_| true);
         assert_eq!(picked, None, "a key with limits may not sign the update");
+    }
+
+    #[test]
+    fn the_reviewed_signer_is_kept_while_platform_still_accepts_it() {
+        let master = signer_key(0, SecurityLevel::MASTER);
+        let critical = signer_key(3, SecurityLevel::CRITICAL);
+        let keys: BTreeMap<KeyID, IdentityPublicKey> =
+            [(0, master.clone()), (3, critical.clone())].into();
+
+        // Reviewed with the CRITICAL key while MASTER is also usable: the
+        // reviewed signer is still valid, so it signs (not the first pick).
+        let signer = reviewed_key_limits_signer(&keys, 3, |_| true);
+        assert_eq!(signer.map(|k| k.id()), Ok(3));
+
+        // Reviewed with MASTER, now disabled on Platform, CRITICAL usable:
+        // never re-picked silently.
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+        let mut disabled_master = master.clone();
+        disabled_master.set_disabled_at(1);
+        let keys: BTreeMap<KeyID, IdentityPublicKey> =
+            [(0, disabled_master), (3, critical.clone())].into();
+        assert_eq!(
+            reviewed_key_limits_signer(&keys, 0, |_| true),
+            Err(ReviewedSignerUnusable::SignerChanged)
+        );
+
+        // Nothing this device holds can sign.
+        assert_eq!(
+            reviewed_key_limits_signer(&keys, 0, |k| k.id() != 3),
+            Err(ReviewedSignerUnusable::NoSigner)
+        );
+
+        // A CRITICAL signer that gained limits is no longer accepted.
+        let keys: BTreeMap<KeyID, IdentityPublicKey> =
+            [(0, master), (3, critical.with_limits(Some(5), None))].into();
+        assert_eq!(
+            reviewed_key_limits_signer(&keys, 3, |_| true),
+            Err(ReviewedSignerUnusable::SignerChanged)
+        );
     }
 
     #[test]

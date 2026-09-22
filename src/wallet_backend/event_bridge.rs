@@ -573,7 +573,9 @@ fn summary_ok_balances(summary: &ShieldedSyncPassSummary) -> Vec<([u8; 32], u64)
             WalletShieldedOutcome::Ok(sync) => match sync.balance_total() {
                 Ok(balance) => Some((*wallet_id, balance)),
                 Err(error) => {
-                    tracing::debug!(
+                    // An overflowing note total means corrupt or hostile sync
+                    // data, not routine noise: surface it at warn.
+                    tracing::warn!(
                         ?wallet_id,
                         ?error,
                         "Shielded sync balance total is invalid; preserving the cached balance"

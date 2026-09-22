@@ -2190,6 +2190,9 @@ pub enum TaskError {
     },
 
     /// Network fees rose past the increase the fee agreement tolerates.
+    /// Reported only after a proved epoch refresh updated the cached fee
+    /// multiplier; the node-reported multipliers here are unproven and are
+    /// never adopted (see `DocumentActionFeeMultiplierNotRefreshed`).
     #[error(
         "Network fees rose by more than {increase_tolerance_percent}% since you confirmed the contract fee, so the network refused the action. The contract fee has been updated to the current network fees. Try again to see and confirm the new amount."
     )]
@@ -2197,6 +2200,19 @@ pub enum TaskError {
         known_fee_multiplier_permille: u64,
         current_fee_multiplier_permille: u64,
         increase_tolerance_percent: u16,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// A document action was refused because network fees rose, and the
+    /// proved refresh of the current fees failed, so the cached fee
+    /// multiplier (and the next quote) keeps its previous value.
+    #[error(
+        "Network fees rose by more than {increase_tolerance_percent}% since you confirmed the contract fee, so the network refused the action. The current network fees could not be loaded, so the contract fee could not be updated. Check your connection, wait a moment, and then try again."
+    )]
+    DocumentActionFeeMultiplierNotRefreshed {
+        increase_tolerance_percent: u16,
+        /// Why the proved epoch refresh failed.
         #[source]
         source_error: Box<SdkError>,
     },

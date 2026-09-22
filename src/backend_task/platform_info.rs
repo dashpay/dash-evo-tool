@@ -573,6 +573,25 @@ fn build_withdrawals_result(
 }
 
 impl AppContext {
+    /// Fetches the current epoch — authenticated by proof — and adopts its
+    /// fee multiplier and protocol version. The only path by which the fee
+    /// multiplier cache changes: document action fee agreements are signed
+    /// against it, so it must never come from an unproven source.
+    pub(crate) async fn refresh_current_epoch(
+        &self,
+        sdk: &Sdk,
+    ) -> Result<ExtendedEpochInfo, SdkError> {
+        let epoch_info = ExtendedEpochInfo::fetch_current(sdk).await?;
+        self.adopt_epoch_info(&epoch_info);
+        Ok(epoch_info)
+    }
+
+    /// Adopts the fee multiplier and protocol version of a proved epoch.
+    fn adopt_epoch_info(&self, epoch_info: &ExtendedEpochInfo) {
+        self.set_fee_multiplier_permille(epoch_info.fee_multiplier_permille());
+        self.set_platform_protocol_version(epoch_info.protocol_version());
+    }
+
     pub async fn run_platform_info_task(
         self: &Arc<Self>,
         request: PlatformInfoTaskRequestType,
@@ -603,13 +622,9 @@ impl AppContext {
                 ))
             }
             PlatformInfoTaskRequestType::CurrentEpochInfo => {
-                match ExtendedEpochInfo::fetch_current(sdk).await {
+                match self.refresh_current_epoch(sdk).await {
                     Ok(epoch_info) => {
-                        // The live multiplier matters beyond display: document
-                        // action fee agreements are signed against it.
                         let fee_multiplier = epoch_info.fee_multiplier_permille();
-                        self.set_fee_multiplier_permille(fee_multiplier);
-                        self.set_platform_protocol_version(epoch_info.protocol_version());
 
                         let mut formatted =
                             format_extended_epoch_info(epoch_info, self.network, true);
@@ -997,6 +1012,28 @@ mod tests {
             properties,
             ..Default::default()
         })
+    }
+
+    /// A proved epoch sets both the fee multiplier cache and the protocol
+    /// version.
+    #[test]
+    fn a_proved_epoch_updates_the_fee_multiplier_and_protocol_version() {
+        use dash_sdk::dpp::block::extended_epoch_info::v0::ExtendedEpochInfoV0;
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+        ctx.set_fee_multiplier_permille(1000);
+
+        ctx.adopt_epoch_info(&ExtendedEpochInfo::V0(ExtendedEpochInfoV0 {
+            index: 7,
+            first_block_time: 0,
+            first_block_height: 0,
+            first_core_block_height: 0,
+            fee_multiplier_permille: 1_500,
+            protocol_version: 14,
+        }));
+
+        assert_eq!(ctx.fee_multiplier_permille(), 1_500);
+        assert_eq!(ctx.platform_protocol_version(), 14);
     }
 
     /// A failed withdrawal keeps its credits locked, so the history says so

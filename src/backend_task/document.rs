@@ -1,3 +1,4 @@
+use dash_sdk::Error as SdkError;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::{
     BackendTaskSuccessResult, FeeResult, NETWORK_REQUEST_TIMEOUT,
@@ -160,25 +161,14 @@ impl AppContext {
         task: DocumentTask,
         sdk: &Sdk,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        let result = self.run_document_task_inner(task, sdk).await;
-        if let Err(error) = &result {
-            self.adopt_fee_multiplier_from(error);
-        }
-        result
-    }
-
-    /// A refusal because network fees rose past the agreed tolerance names
-    /// the multiplier the network charges now: adopt it, so the next
-    /// confirmation quotes (and the next agreement names) the current fee
-    /// instead of failing again on the stale one.
-    fn adopt_fee_multiplier_from(&self, error: &TaskError) {
-        if let TaskError::DocumentActionFeeMultiplierRose {
-            current_fee_multiplier_permille,
-            ..
-        } = error
-            && *current_fee_multiplier_permille > 0
-        {
-            self.set_fee_multiplier_permille(*current_fee_multiplier_permille);
+        match self.run_document_task_inner(task, sdk).await {
+            // The multiplier the refusal names is unproven node data: it only
+            // triggers a proved epoch refresh, never feeds the cache itself.
+            Err(refusal @ TaskError::DocumentActionFeeMultiplierRose { .. }) => {
+                let refreshed = self.refresh_current_epoch(sdk).await.map(|_| ());
+                Err(fee_refusal_after_refresh(refusal, refreshed))
+            }
+            result => result,
         }
     }
 
@@ -570,27 +560,75 @@ impl AppContext {
     }
 }
 
+/// The error to report for a fee multiplier refusal once the proved epoch
+/// refresh it triggered has finished: the refusal itself when the cache now
+/// holds the network's multiplier, otherwise a variant saying the contract
+/// fee could not be updated (the cache keeps its previous value).
+fn fee_refusal_after_refresh(refusal: TaskError, refreshed: Result<(), SdkError>) -> TaskError {
+    match (refusal, refreshed) {
+        (refusal, Ok(())) => refusal,
+        (
+            TaskError::DocumentActionFeeMultiplierRose {
+                increase_tolerance_percent,
+                source_error,
+                ..
+            },
+            Err(refresh_error),
+        ) => {
+            tracing::warn!(
+                refusal = ?source_error,
+                "Network refused a document action for a risen fee multiplier"
+            );
+            TaskError::DocumentActionFeeMultiplierNotRefreshed {
+                increase_tolerance_percent,
+                source_error: Box::new(refresh_error),
+            }
+        }
+        (other, Err(_)) => other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    /// A refusal for a risen fee multiplier updates the cached one, so the
-    /// retry quotes and agrees to the current fee; other errors leave it.
-    #[test]
-    fn a_risen_fee_multiplier_refusal_updates_the_cache() {
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
-        ctx.set_fee_multiplier_permille(1000);
-
-        ctx.adopt_fee_multiplier_from(&TaskError::MasterKeyNotFound);
-        assert_eq!(ctx.fee_multiplier_permille(), 1000);
-
-        ctx.adopt_fee_multiplier_from(&TaskError::DocumentActionFeeMultiplierRose {
+    fn fee_refusal() -> TaskError {
+        TaskError::DocumentActionFeeMultiplierRose {
             known_fee_multiplier_permille: 1000,
             current_fee_multiplier_permille: 1500,
             increase_tolerance_percent: 20,
             source_error: Box::new(dash_sdk::Error::Generic("rose".to_string())),
-        });
-        assert_eq!(ctx.fee_multiplier_permille(), 1500);
+        }
     }
+
+    /// After a proved refresh the refusal is reported as is: the cache holds
+    /// the network's multiplier, so trying again quotes the current fee.
+    #[test]
+    fn a_fee_refusal_stands_once_the_epoch_is_refreshed() {
+        let error = fee_refusal_after_refresh(fee_refusal(), Ok(()));
+        assert!(matches!(
+            error,
+            TaskError::DocumentActionFeeMultiplierRose { .. }
+        ));
+        assert!(error.to_string().contains("has been updated"));
+    }
+
+    /// When the proved refresh fails, the user is told the contract fee
+    /// could not be updated rather than that it was.
+    #[test]
+    fn a_failed_epoch_refresh_says_the_fee_was_not_updated() {
+        let error = fee_refusal_after_refresh(
+            fee_refusal(),
+            Err(dash_sdk::Error::Generic("offline".to_string())),
+        );
+        assert!(matches!(
+            error,
+            TaskError::DocumentActionFeeMultiplierNotRefreshed {
+                increase_tolerance_percent: 20,
+                ..
+            }
+        ));
+        assert!(error.to_string().contains("could not be updated"));
+    }
+
     use super::*;
 
     #[tokio::test]

@@ -39,6 +39,7 @@ use dash_sdk::dpp::identity::Purpose;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use dash_sdk::dpp::version::PlatformVersion;
 use rmcp::handler::server::router::tool::AsyncTool;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -108,6 +109,56 @@ fn withdrawal_key_id(qi: &QualifiedIdentity, purpose: Purpose) -> Option<u32> {
         .into_iter()
         .find(|k| k.identity_public_key.purpose() == purpose)
         .map(|k| k.identity_public_key.id())
+}
+
+/// Credits a withdrawal test moves: a tenth of the balance, clamped to the
+/// protocol's per-transition limits for the version DET builds transitions at.
+///
+/// A long-running testnet node accumulates far more than the per-withdrawal
+/// cap (`max_withdrawal_amount`), and consensus rejects anything above it.
+/// Panics when the balance is below `min_withdrawal_amount`: no valid amount
+/// exists, and clamping up would ask for more credits than the node holds.
+fn test_withdrawal_amount(balance: u64, version: &PlatformVersion) -> u64 {
+    let limits = &version.system_limits;
+    assert!(
+        balance >= limits.min_withdrawal_amount,
+        "The masternode identity holds {balance} credits, below the protocol minimum \
+         withdrawal of {} credits. Fund the identity (top up its Platform credits) and \
+         rerun the test.",
+        limits.min_withdrawal_amount
+    );
+    (balance / 10).clamp(limits.min_withdrawal_amount, limits.max_withdrawal_amount)
+}
+
+#[test]
+fn tc_mn_withdrawal_amount_is_a_tenth_within_limits() {
+    let version = PlatformVersion::latest();
+    let limits = &version.system_limits;
+    let balance = limits.min_withdrawal_amount * 20;
+    assert!(balance / 10 < limits.max_withdrawal_amount);
+    assert_eq!(test_withdrawal_amount(balance, version), balance / 10);
+}
+
+#[test]
+fn tc_mn_withdrawal_amount_capped_at_protocol_max() {
+    let version = PlatformVersion::latest();
+    let max = version.system_limits.max_withdrawal_amount;
+    // The testnet evonode that exposed this held ~13.2k DASH: a tenth is ~2.6x the cap.
+    assert_eq!(test_withdrawal_amount(max * 26, version), max);
+}
+
+#[test]
+fn tc_mn_withdrawal_amount_raised_to_protocol_min() {
+    let version = PlatformVersion::latest();
+    let min = version.system_limits.min_withdrawal_amount;
+    assert_eq!(test_withdrawal_amount(min * 2, version), min);
+}
+
+#[test]
+#[should_panic(expected = "Fund the identity")]
+fn tc_mn_withdrawal_amount_below_min_fails_loudly() {
+    let version = PlatformVersion::latest();
+    test_withdrawal_amount(version.system_limits.min_withdrawal_amount - 1, version);
 }
 
 // ── TC-MN-016 — load happy path: evonode + payout key ────────────────────────
@@ -345,9 +396,7 @@ async fn test_mn050_owner_withdraw_to_payout() {
     let payout_address = qi
         .masternode_payout_address(ctx.app_context.network())
         .expect("payout address present");
-    let balance = qi.identity.balance();
-    assert!(balance > 0, "identity must have withdrawable credits");
-    let amount = (balance / 10).max(1);
+    let amount = test_withdrawal_amount(qi.identity.balance(), ctx.app_context.platform_version());
 
     // Obtain the persisted identity ID (Base58) from the loaded identity.
     let identity_id_b58 = qi.identity.id().to_string(Encoding::Base58);
@@ -417,9 +466,7 @@ async fn test_mn051_transfer_withdraw_to_address() {
         panic!("Expected LoadedIdentity");
     };
 
-    let balance = qi.identity.balance();
-    assert!(balance > 0, "identity must have withdrawable credits");
-    let amount = (balance / 10).max(1);
+    let amount = test_withdrawal_amount(qi.identity.balance(), ctx.app_context.platform_version());
 
     let identity_id_b58 = qi.identity.id().to_string(Encoding::Base58);
     let network_str = network_name(ctx.app_context.network()).to_owned();
@@ -715,9 +762,7 @@ async fn test_mn053_compose_through_db() {
 
     let transfer_key_id = withdrawal_key_id(&qi, Purpose::TRANSFER)
         .expect("payout key recoverable from the persisted record");
-    let balance = qi.identity.balance();
-    assert!(balance > 0, "identity must have withdrawable credits");
-    let amount = (balance / 10).max(1);
+    let amount = test_withdrawal_amount(qi.identity.balance(), ctx.app_context.platform_version());
 
     let framework_wallet = {
         let wallets = ctx.app_context.wallets().read().expect("wallets lock");

@@ -14,7 +14,7 @@
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v1::IdentityPublicKeyGettersV1;
-use dash_sdk::dpp::identity::{IdentityPublicKey, Purpose, SecurityLevel, TimestampMillis};
+use dash_sdk::dpp::identity::{IdentityPublicKey, KeyID, Purpose, SecurityLevel, TimestampMillis};
 use thiserror::Error;
 
 /// Milliseconds in one day.
@@ -66,6 +66,10 @@ pub enum KeyLimitsError {
     StillExpired,
     #[error("The key's expiry must be in the future. Choose a later expiry.")]
     ExpiryNotInFuture,
+    #[error(
+        "This key's limits changed after you reviewed them. Review the new limits and confirm again."
+    )]
+    LimitsChanged,
 }
 
 /// Whether a key of this purpose and security level may carry limits.
@@ -249,6 +253,71 @@ pub fn raised_key_limits(
     }
 
     Ok((total_budget, expires_at))
+}
+
+/// A limits raise the user reviewed: the key's limits as shown, the
+/// absolute limits to set, and the key that signs the change. It is sent as
+/// is, never recomputed: if the key's limits moved meanwhile, the raise is
+/// refused and quoted again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyLimitsRaise {
+    pub key_id: KeyID,
+    pub seen_total_budget: Option<Credits>,
+    pub seen_expires_at: Option<TimestampMillis>,
+    /// The new total budget, `None` to leave it.
+    pub total_budget: Option<Credits>,
+    /// The new expiry, `None` to leave it.
+    pub expires_at: Option<TimestampMillis>,
+    pub signing_key_id: KeyID,
+}
+
+impl KeyLimitsRaise {
+    /// Quote a raise of `key` by `add_budget` credits and/or `extend_days`
+    /// days (see [`raised_key_limits`]), signed by `signing_key_id`.
+    pub fn quote(
+        key: &IdentityPublicKey,
+        add_budget: Option<Credits>,
+        extend_days: Option<u32>,
+        signing_key_id: KeyID,
+        now_ms: TimestampMillis,
+    ) -> Result<Self, KeyLimitsError> {
+        let (total_budget, expires_at) = raised_key_limits(key, add_budget, extend_days, now_ms)?;
+        Ok(Self {
+            key_id: key.id(),
+            seen_total_budget: key.total_budget(),
+            seen_expires_at: key.expires_at(),
+            total_budget,
+            expires_at,
+            signing_key_id,
+        })
+    }
+
+    /// Check the raise against `live`, the key as Platform holds it now: its
+    /// limits must still be the ones reviewed, and the key must still be
+    /// usable after the change.
+    pub fn check_against(
+        &self,
+        live: &IdentityPublicKey,
+        now_ms: TimestampMillis,
+    ) -> Result<(), KeyLimitsError> {
+        if live.disabled_at().is_some() {
+            return Err(KeyLimitsError::KeyDisabled);
+        }
+        if live.total_budget() != self.seen_total_budget
+            || live.expires_at() != self.seen_expires_at
+        {
+            return Err(KeyLimitsError::LimitsChanged);
+        }
+        if self.total_budget.is_none() && self.expires_at.is_none() {
+            return Err(KeyLimitsError::NothingToRaise);
+        }
+        if let Some(expiry_after) = self.expires_at.or(self.seen_expires_at)
+            && expiry_after <= now_ms
+        {
+            return Err(KeyLimitsError::StillExpired);
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -511,6 +580,31 @@ mod tests {
             ),
             Err(KeyLimitsError::NotAllowedForKey { .. })
         ));
+    }
+
+    #[test]
+    fn a_reviewed_raise_is_sent_only_while_the_limits_are_unchanged() {
+        let seen = key(Some(1_000), Some(NOW + DAY_MS));
+        let raise = KeyLimitsRaise::quote(&seen, Some(500), Some(10), 0, NOW).expect("quotes");
+        assert_eq!(raise.total_budget, Some(1_500));
+        assert_eq!(raise.expires_at, Some(NOW + 11 * DAY_MS));
+        assert_eq!(raise.check_against(&seen, NOW), Ok(()));
+
+        let raised_elsewhere = key(Some(5_000), Some(NOW + DAY_MS));
+        assert_eq!(
+            raise.check_against(&raised_elsewhere, NOW),
+            Err(KeyLimitsError::LimitsChanged)
+        );
+    }
+
+    #[test]
+    fn a_reviewed_top_up_is_refused_once_the_key_has_expired() {
+        let seen = key(Some(1_000), Some(NOW + DAY_MS));
+        let raise = KeyLimitsRaise::quote(&seen, Some(500), None, 0, NOW).expect("quotes");
+        assert_eq!(
+            raise.check_against(&seen, NOW + 2 * DAY_MS),
+            Err(KeyLimitsError::StillExpired)
+        );
     }
 
     #[test]

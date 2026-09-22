@@ -7,13 +7,14 @@ use std::sync::Arc;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::context::feature_gate::FeatureGate;
-use crate::model::identity_key_limits::{key_limits_update_signer, raised_key_limits};
+use crate::model::identity_key_limits::{KeyLimitsError, KeyLimitsRaise, key_limits_update_signer};
 use crate::model::identity_key_usability::now_ms;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::KeyID;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::signer::Signer;
 use dash_sdk::platform::Identity;
 use dash_sdk::platform::identity_keys_remaining_budgets::{
@@ -60,26 +61,25 @@ impl AppContext {
 }
 
 impl AppContext {
-    /// Raise the limits of key `key_id` of `qualified_identity`: add
-    /// `add_budget` credits to its spending limit and/or extend its expiry by
-    /// `extend_days`.
+    /// Raise the limits of a key of `qualified_identity` exactly as reviewed
+    /// in `raise`.
     ///
-    /// The new limits are computed from the key as Platform holds it now, not
-    /// from the local copy, so a key raised elsewhere meanwhile is not
-    /// lowered back; a request Platform would refuse (and charge for) is
-    /// refused here first. The updated key replaces the local copy.
+    /// The key is read as Platform holds it now. If its limits are not the
+    /// ones the user reviewed (raised elsewhere meanwhile), nothing is signed:
+    /// the live key replaces the local copy and the raise is refused, so the
+    /// screen quotes it again. The signing key must still be the reviewed
+    /// one. The updated key replaces the local copy.
     pub(super) async fn raise_key_limits(
         &self,
         sdk: &Sdk,
         qualified_identity: QualifiedIdentity,
-        key_id: KeyID,
-        add_budget: Option<Credits>,
-        extend_days: Option<u32>,
+        raise: KeyLimitsRaise,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         if !FeatureGate::IdentityKeyLimits.is_available(self) {
             return Err(TaskError::KeyLimitsNotSupported);
         }
         let identity_id = qualified_identity.identity.id();
+        let key_id = raise.key_id;
         let identity = Identity::fetch_by_identifier(sdk, identity_id)
             .await?
             .ok_or(TaskError::IdentityMissingOnNetwork { identity_id })?;
@@ -87,12 +87,22 @@ impl AppContext {
             .public_keys()
             .get(&key_id)
             .ok_or(TaskError::IdentityKeyNotFound { key_id })?;
-        let (total_budget, expires_at) = raised_key_limits(key, add_budget, extend_days, now_ms())?;
+        if let Err(error) = raise.check_against(key, now_ms()) {
+            if error == KeyLimitsError::LimitsChanged {
+                let live = key.clone();
+                self.edit_local_qualified_identity(&identity_id, move |fresh| {
+                    fresh.identity.add_public_key(live);
+                    Ok(())
+                })?;
+            }
+            return Err(error.into());
+        }
 
         let signer = Arc::new(qualified_identity);
         let signing_key = key_limits_update_signer(identity.public_keys().values(), |key| {
             signer.can_sign_with(key)
         })
+        .filter(|key| key.id() == raise.signing_key_id)
         .cloned()
         .ok_or(TaskError::NoKeyLimitsSigningKey)?;
 
@@ -100,8 +110,8 @@ impl AppContext {
             .update_key_limits(
                 sdk,
                 key_id,
-                total_budget,
-                expires_at,
+                raise.total_budget,
+                raise.expires_at,
                 Some(&signing_key),
                 Arc::clone(&signer),
                 None,
@@ -172,9 +182,15 @@ pub(super) mod tests {
         let ctx = crate::context::test_support::test_app_context(temp_dir.path());
         let sdk = Sdk::new_mock();
 
-        let result = ctx
-            .raise_key_limits(&sdk, user_identity(), 1, Some(1), None)
-            .await;
+        let raise = KeyLimitsRaise {
+            key_id: 1,
+            seen_total_budget: Some(1),
+            seen_expires_at: None,
+            total_budget: Some(2),
+            expires_at: None,
+            signing_key_id: 0,
+        };
+        let result = ctx.raise_key_limits(&sdk, user_identity(), raise).await;
 
         assert!(
             matches!(result, Err(TaskError::KeyLimitsNotSupported)),
@@ -190,9 +206,14 @@ pub(super) mod tests {
         let identity_id = identity.identity.id();
         let task = BackendTask::IdentityTask(IdentityTask::RaiseKeyLimits {
             identity: Box::new(identity),
-            key_id: 7,
-            add_budget: Some(1),
-            extend_days: None,
+            raise: KeyLimitsRaise {
+                key_id: 7,
+                seen_total_budget: Some(1),
+                seen_expires_at: None,
+                total_budget: Some(2),
+                expires_at: None,
+                signing_key_id: 0,
+            },
         });
         assert_eq!(
             BackendTaskContext::from(&task).raise_key_limits_target(),

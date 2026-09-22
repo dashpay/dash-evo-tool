@@ -539,12 +539,12 @@ impl From<&BackendTask> for BackendTaskContext {
                 identity_id,
                 ..
             }) => Self::KeyRemainingBudgets(*identity_id),
-            BackendTask::IdentityTask(IdentityTask::RaiseKeyLimits {
-                identity, key_id, ..
-            }) => Self::RaiseKeyLimits {
-                identity_id: identity.identity.id(),
-                key_id: *key_id,
-            },
+            BackendTask::IdentityTask(IdentityTask::RaiseKeyLimits { identity, raise }) => {
+                Self::RaiseKeyLimits {
+                    identity_id: identity.identity.id(),
+                    key_id: raise.key_id,
+                }
+            }
             BackendTask::SystemTask(SystemTask::ClearNetworkDatabase) => Self::ClearNetworkDatabase,
             BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { seed_hash }) => {
                 Self::GenerateReceiveAddress {

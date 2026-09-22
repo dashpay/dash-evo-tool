@@ -545,15 +545,12 @@ pub enum IdentityTask {
         identity_id: Identifier,
         key_ids: Vec<KeyID>,
     },
-    /// Raise the limits of one of the identity's keys (protocol version 14):
-    /// add `add_budget` credits to its spending limit and/or extend its
-    /// expiry by `extend_days`. Validated against the key as Platform holds
-    /// it, then signed by the MASTER key (or an unlimited CRITICAL key).
+    /// Raise the limits of one of the identity's keys (protocol version 14)
+    /// exactly as the user reviewed them: refused, not recomputed, when the
+    /// key's limits moved meanwhile.
     RaiseKeyLimits {
         identity: Box<QualifiedIdentity>,
-        key_id: KeyID,
-        add_budget: Option<Credits>,
-        extend_days: Option<u32>,
+        raise: crate::model::identity_key_limits::KeyLimitsRaise,
     },
 }
 
@@ -970,14 +967,8 @@ impl AppContext {
                 self.fetch_key_remaining_budgets(sdk, identity_id, key_ids)
                     .await
             }
-            IdentityTask::RaiseKeyLimits {
-                identity,
-                key_id,
-                add_budget,
-                extend_days,
-            } => {
-                self.raise_key_limits(sdk, *identity, key_id, add_budget, extend_days)
-                    .await
+            IdentityTask::RaiseKeyLimits { identity, raise } => {
+                self.raise_key_limits(sdk, *identity, raise).await
             }
             IdentityTask::RecoverLegacyIdentityData {
                 identity_id,

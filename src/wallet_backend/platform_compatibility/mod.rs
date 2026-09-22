@@ -134,6 +134,9 @@ fn validation_error(error: impl std::error::Error + Send + Sync + 'static) -> Up
 }
 
 #[cfg(test)]
+mod real_fixture_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use dash_sdk::dpp::identity::accessors::IdentityGettersV0;

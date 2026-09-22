@@ -304,7 +304,8 @@ impl BackendTestContext {
             lock_file,
             app_kv,
             secret_store,
-        } = open_available_workdir(&base, slot_floor);
+        } = open_available_workdir(&base, slot_floor)
+            .unwrap_or_else(|e| panic!("{}", error_report(&e)));
         tracing::info!("E2E workdir: {}", workdir.display());
 
         // Ensure .env is present in the workdir (no env var mutation needed).
@@ -752,6 +753,85 @@ struct WorkdirHandles {
     secret_store: Arc<platform_wallet_storage::secrets::SecretStore>,
 }
 
+/// Which exclusive store of a workdir slot failed to open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkdirStore {
+    AppKv,
+    SecretVault,
+}
+
+impl std::fmt::Display for WorkdirStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::AppKv => "app k/v store (det-app.sqlite)",
+            Self::SecretVault => "secret vault",
+        })
+    }
+}
+
+/// Why [`open_available_workdir`] could not hand out a workdir slot.
+#[derive(Debug, thiserror::Error)]
+enum WorkdirOpenError {
+    /// A store refused to open for a reason another slot cannot avoid, such as
+    /// an ancestor directory other users can write to. Cycling the remaining
+    /// slots would only repeat the refusal and hide its cause.
+    #[error("E2E workdir {} is unusable: its {store} refused to open", dir.display())]
+    StoreRefused {
+        dir: PathBuf,
+        store: WorkdirStore,
+        #[source]
+        source: Box<TaskError>,
+    },
+
+    /// Every slot is held: locked by another test process, or still open in
+    /// this one after a panicked init.
+    #[error(
+        "All {MAX_WORKDIR_SLOTS} E2E workdir slots are unavailable (locked by another process, \
+         or still open in this one after a panicked init). Kill other test processes or remove \
+         lock files in {}*",
+        base.display()
+    )]
+    AllSlotsBusy {
+        base: PathBuf,
+        /// The last in-process "still open" refusal seen during the scan.
+        #[source]
+        last_held: Option<Box<TaskError>>,
+    },
+}
+
+/// Whether a store-open failure means the slot is held by a handle already open
+/// in this process (leaked by a panicked init), so another slot may succeed.
+///
+/// Matches the typed upstream variants only; every other failure is a property
+/// of the environment, not of the slot, and must stop the scan.
+fn is_slot_held(error: &TaskError) -> bool {
+    use platform_wallet_storage::WalletStorageError;
+    use platform_wallet_storage::secrets::SecretStoreError;
+    match error {
+        TaskError::WalletStorage {
+            source: WalletStorageError::AlreadyOpen { .. },
+        } => true,
+        TaskError::SecretStore { source } => matches!(**source, SecretStoreError::AlreadyLocked),
+        _ => false,
+    }
+}
+
+/// Render an error with its full `source()` chain, one cause per line.
+///
+/// `TaskError`'s `Display` is user-facing copy; the actionable diagnostics (for
+/// an insecure ancestor: the directory and the command to fix it) live further
+/// down the chain.
+fn error_report(error: &dyn std::error::Error) -> String {
+    let mut report = error.to_string();
+    let mut cause = error.source();
+    while let Some(e) = cause {
+        report.push_str("\n  caused by: ");
+        report.push_str(&e.to_string());
+        cause = e.source();
+    }
+    report
+}
+
 /// Open a deterministic workdir, acquiring its lock file and exclusive stores.
 ///
 /// Tries the primary path first (`base`), then falls back to `base-1`, `base-2`,
@@ -763,24 +843,31 @@ struct WorkdirHandles {
 /// leaks both (see [`CTX`]), so "still open in this process" is exactly as
 /// disqualifying as "locked by another process" and is handled the same way.
 ///
+/// Any other store failure ([`is_slot_held`] is false) stops the scan with
+/// [`WorkdirOpenError::StoreRefused`]: it stems from the environment (e.g. a
+/// group-writable `TMPDIR`), so every other slot would fail the same way.
+///
 /// `slot_floor` is the *preferred* first slot to try — bumped across init
 /// retries when a panicked predecessor leaked an un-droppable SPV `LockFile`,
 /// so the retry prefers a fresh directory over the still-locked one. The scan
 /// wraps around and tries every slot, so a `slot_floor` that has climbed to (or
 /// past) `MAX_WORKDIR_SLOTS` still falls back to lower slots whose harness
 /// `.lock` was released on a previous init's unwind — it never produces an empty
-/// scan and a spurious "all slots locked" panic.
+/// scan and a spurious "all slots locked" error.
 ///
 /// This ensures:
 /// - The same workdir is reused across runs (wallets, SPV data, DB persist)
 /// - Concurrent test processes get separate workdirs automatically
 /// - A retried init after a leaked lock or store handle lands on a clean
 ///   directory, but still recovers a freed lower slot
-fn open_available_workdir(base: &std::path::Path, slot_floor: usize) -> WorkdirHandles {
+fn open_available_workdir(
+    base: &std::path::Path,
+    slot_floor: usize,
+) -> Result<WorkdirHandles, WorkdirOpenError> {
     use std::io::Write;
 
     let preferred = slot_floor % MAX_WORKDIR_SLOTS;
-    let mut last_store_error: Option<String> = None;
+    let mut last_held: Option<Box<TaskError>> = None;
 
     for offset in 0..MAX_WORKDIR_SLOTS {
         let slot = (preferred + offset) % MAX_WORKDIR_SLOTS;
@@ -822,24 +909,38 @@ fn open_available_workdir(base: &std::path::Path, slot_floor: usize) -> WorkdirH
         // `app_kv` on the vault's error path releases its registry claim.
         let app_kv = match AppContext::open_app_kv(&dir) {
             Ok(app_kv) => app_kv,
-            Err(e) => {
+            Err(e) if is_slot_held(&e) => {
                 tracing::warn!(
                     "Workdir slot {} has an app k/v still open in this process, trying next: {e}",
                     dir.display()
                 );
-                last_store_error = Some(e.to_string());
+                last_held = Some(Box::new(e));
                 continue;
+            }
+            Err(source) => {
+                return Err(WorkdirOpenError::StoreRefused {
+                    dir,
+                    store: WorkdirStore::AppKv,
+                    source: Box::new(source),
+                });
             }
         };
         let secret_store = match AppContext::open_secret_store(&dir) {
             Ok(secret_store) => secret_store,
-            Err(e) => {
+            Err(e) if is_slot_held(&e) => {
                 tracing::warn!(
                     "Workdir slot {} has a secret vault still open in this process, trying next: {e}",
                     dir.display()
                 );
-                last_store_error = Some(e.to_string());
+                last_held = Some(Box::new(e));
                 continue;
+            }
+            Err(source) => {
+                return Err(WorkdirOpenError::StoreRefused {
+                    dir,
+                    store: WorkdirStore::SecretVault,
+                    source: Box::new(source),
+                });
             }
         };
 
@@ -858,23 +959,18 @@ fn open_available_workdir(base: &std::path::Path, slot_floor: usize) -> WorkdirH
             tracing::info!("Using preferred workdir slot {slot}: {}", dir.display());
         }
 
-        return WorkdirHandles {
+        return Ok(WorkdirHandles {
             dir,
             lock_file: f,
             app_kv,
             secret_store,
-        };
+        });
     }
 
-    panic!(
-        "All {MAX_WORKDIR_SLOTS} E2E workdir slots are unavailable (locked by another process, \
-         or still open in this one after a panicked init). Kill other test processes or remove \
-         lock files in {}*.{}",
-        base.display(),
-        last_store_error
-            .map(|e| format!(" Last store error: {e}"))
-            .unwrap_or_default()
-    );
+    Err(WorkdirOpenError::AllSlotsBusy {
+        base: base.to_path_buf(),
+        last_held,
+    })
 }
 
 /// Try to acquire an exclusive non-blocking file lock using POSIX `flock()`.
@@ -891,4 +987,72 @@ fn try_lock_exclusive(file: &std::fs::File) -> bool {
 #[cfg(not(unix))]
 fn try_lock_exclusive(_file: &std::fs::File) -> bool {
     true
+}
+
+#[cfg(test)]
+mod workdir_tests {
+    use super::*;
+    use platform_wallet_storage::secrets::SecretStoreError;
+    use platform_wallet_storage::{InsecureAncestor, WalletStorageError};
+
+    #[test]
+    fn slot_held_only_for_in_process_open_handles() {
+        assert!(is_slot_held(&TaskError::WalletStorage {
+            source: WalletStorageError::AlreadyOpen {
+                path: PathBuf::from("/w/det-app.sqlite"),
+            },
+        }));
+        assert!(is_slot_held(&TaskError::SecretStore {
+            source: Box::new(SecretStoreError::AlreadyLocked),
+        }));
+
+        assert!(!is_slot_held(&TaskError::WalletDataFolderInsecure {
+            source: WalletStorageError::InsecureParentDir {
+                ancestor: PathBuf::from("/data/tmp"),
+                reason: InsecureAncestor::WritableWithoutSticky { mode: 0o775 },
+            },
+        }));
+        assert!(!is_slot_held(&TaskError::SecretStore {
+            source: Box::new(SecretStoreError::Corruption),
+        }));
+    }
+
+    /// A group-writable parent directory stops the slot scan at the first slot
+    /// with the real cause, instead of cycling every slot and blaming locks.
+    #[cfg(unix)]
+    #[test]
+    fn insecure_parent_dir_stops_the_scan_with_its_cause() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let scratch = tempfile::tempdir().expect("scratch dir");
+        let shared = scratch.path().join("group-writable");
+        std::fs::create_dir(&shared).expect("create shared dir");
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o775))
+            .expect("chmod 0775");
+        let base = shared.join("dash-evo-e2e-testnet");
+
+        let Err(err) = open_available_workdir(&base, 0) else {
+            panic!("a group-writable parent must refuse the workdir");
+        };
+        let WorkdirOpenError::StoreRefused { dir, store, source } = &err else {
+            panic!("expected StoreRefused, got: {err:?}");
+        };
+        assert_eq!(dir, &base, "the scan stops at the first slot");
+        assert_eq!(*store, WorkdirStore::AppKv);
+        match source.as_ref() {
+            TaskError::WalletDataFolderInsecure {
+                source: WalletStorageError::InsecureParentDir { ancestor, .. },
+            } => assert_eq!(ancestor, &shared, "the refused ancestor is named"),
+            other => panic!("expected WalletDataFolderInsecure, got: {other:?}"),
+        }
+        assert!(
+            !base.with_file_name("dash-evo-e2e-testnet-1").exists(),
+            "no further slot may be tried"
+        );
+        let report = error_report(&err);
+        assert!(
+            report.contains(&shared.display().to_string()),
+            "the report names the offending directory: {report}"
+        );
+    }
 }

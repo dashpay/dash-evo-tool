@@ -121,6 +121,9 @@ fn snapshot(bytes: &[u8], status: u8, identity_type: &str) -> Result<ExpectedIde
                         "type": "documentType", "id": id.to_string(Encoding::Base58),
                         "document_type_name": document_type_name
                     }),
+                    ContractBounds::ContractGroup { id } => serde_json::json!({
+                        "type": "contractGroup", "id": id.to_string(Encoding::Base58)
+                    }),
                 }),
             })
         })

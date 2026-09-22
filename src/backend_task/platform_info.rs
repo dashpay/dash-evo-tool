@@ -998,21 +998,40 @@ mod tests {
 
     /// The withdrawal limit follows DET's protocol version, not the newest one
     /// upstream knows: protocol 13 keeps the flat 2000 Dash, where protocol 14
-    /// would report 15% of the total (capped at 4000 Dash).
+    /// reports 15% of the total, capped at 4000 Dash.
+    ///
+    /// `dash_to_credits!` stringifies its argument and parses the text, so a
+    /// Rust numeric separator is not a digit to it: `dash_to_credits!(1_000_000)`
+    /// silently evaluates to 0 credits. Never write a separator inside this
+    /// macro. The total is asserted below, and the protocol-14 expectation is
+    /// pinned to the 4000 Dash cap — a value only a genuinely large total
+    /// produces, so a zeroed total fails the test instead of passing it for the
+    /// wrong reason (at 0 credits, protocol 14 returns its 500 Dash floor).
     #[test]
     fn daily_withdrawal_limit_uses_det_platform_version_not_latest() {
-        let total = dash_to_credits!(1_000_000);
+        let total = dash_to_credits!(1000000);
         assert_eq!(
-            local_daily_withdrawal_limit(total).expect("limit"),
-            dash_to_credits!(2000)
+            total,
+            1_000_000 * dash_to_credits!(1),
+            "the total must really be a million Dash"
         );
+
+        let det_limit = local_daily_withdrawal_limit(total).expect("limit");
+        assert_eq!(det_limit, dash_to_credits!(2000));
         assert_eq!(
-            local_daily_withdrawal_limit(total).expect("limit"),
+            det_limit,
             daily_withdrawal_limit(Some(total), DET_PLATFORM_VERSION).expect("limit")
         );
+
+        let latest_limit =
+            daily_withdrawal_limit(Some(total), PlatformVersion::latest()).expect("limit");
+        assert_eq!(
+            latest_limit,
+            dash_to_credits!(4000),
+            "protocol 14 caps a million-Dash total at 4000 Dash"
+        );
         assert_ne!(
-            local_daily_withdrawal_limit(total).expect("limit"),
-            daily_withdrawal_limit(Some(total), PlatformVersion::latest()).expect("limit"),
+            det_limit, latest_limit,
             "the limit must not follow PlatformVersion::latest()"
         );
     }

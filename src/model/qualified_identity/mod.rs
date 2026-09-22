@@ -1021,6 +1021,18 @@ impl QualifiedIdentity {
         ))
     }
 
+    /// The key as the identity holds it now for `snapshot`, a copy taken
+    /// earlier (e.g. stored next to its private half): budget and expiry move
+    /// with key limits updates, so the snapshot may be stale. Falls back to
+    /// the snapshot when the identity no longer holds the same key.
+    pub fn live_public_key<'a>(&'a self, snapshot: &'a IdentityPublicKey) -> &'a IdentityPublicKey {
+        self.identity
+            .public_keys()
+            .get(&snapshot.id())
+            .filter(|live| encrypted_key_storage::same_key(snapshot, live))
+            .unwrap_or(snapshot)
+    }
+
     /// The key to sign with for `requirements` now: the automatic choice of
     /// [`select_identity_signing_key`] among the keys this device holds the
     /// private half of.
@@ -2803,6 +2815,16 @@ mod protocol_v14_compat_tests {
             Some(3),
             "a limited key when it is the only usable one"
         );
+
+        // The stored snapshot of key 3 is judged by the live key.
+        let mut keys = qi.identity.public_keys().clone();
+        let raised = keys[&3].clone().with_limits(Some(9_000), None);
+        let snapshot = keys[&3].clone();
+        keys.insert(3, raised.clone());
+        qi.identity.set_public_keys(keys);
+        assert_eq!(qi.live_public_key(&snapshot), &raised);
+        let unknown = auth_key(42);
+        assert_eq!(qi.live_public_key(&unknown), &unknown);
 
         // A held limited key beats an unlimited key whose private half is
         // not on this device.

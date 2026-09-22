@@ -507,7 +507,9 @@ fn render_key_combo(
                 return;
             };
             for key_ref in qi.private_keys.identity_public_keys() {
-                let key = &key_ref.1.identity_public_key;
+                // The stored copy may predate a limits raise: judge, label and
+                // hand on the key as the identity holds it now.
+                let key = qi.live_public_key(&key_ref.1.identity_public_key);
 
                 // Platform rejects signing with a disabled key, so never offer one
                 // — not even in dev mode, where the override only relaxes purpose and
@@ -548,6 +550,12 @@ fn render_key_combo(
             }
         });
 
+    if let (Some(qi), Some(selected)) = (identity, selected_key.as_ref()) {
+        let live = qi.live_public_key(selected);
+        if live != selected {
+            *selected_key = Some(live.clone());
+        }
+    }
     if let Some(key) = selected_key.as_ref() {
         render_key_caveats(ui, &key_caveats(key, scope, now));
     }

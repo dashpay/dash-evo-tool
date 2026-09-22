@@ -2140,6 +2140,14 @@ pub enum TaskError {
     // ──────────────────────────────────────────────────────────────────────────
     // Document action fees, moderation and gas sponsorship (protocol version 14)
     // ──────────────────────────────────────────────────────────────────────────
+    /// A document action's fee agreement is missing or names another fee
+    /// than the document type declares; refused before anything is signed.
+    #[error(transparent)]
+    ActionFeeAgreement {
+        #[from]
+        source: crate::model::fee_estimation::ActionFeeAgreementError,
+    },
+
     /// The document type charges an action fee and the transition carried no
     /// agreement to it.
     #[error(

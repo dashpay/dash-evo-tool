@@ -15,7 +15,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::tokens::token_payment_info::TokenPaymentInfo;
 use dash_sdk::drive::query::SelectProjection;
 use dash_sdk::platform::documents::transitions::DocumentCreateResult;
-use crate::model::fee_estimation::document_action_fee_quote;
+use crate::model::fee_estimation::checked_action_fee_agreement;
 use dash_sdk::dpp::data_contract::document_type::action_fees::agreement::DocumentActionFeeAgreement;
 use dash_sdk::dpp::state_transition::batch_transition::batched_transition::document_transition_action_type::DocumentTransitionActionType;
 use dash_sdk::platform::documents::transitions::DocumentCreateTransitionBuilder;
@@ -47,9 +47,8 @@ pub enum DocumentTask {
         qualified_identity: QualifiedIdentity,
         identity_key: IdentityPublicKey,
         /// The document action fee the user was shown and agreed to (protocol
-        /// version 14). `None` lets the backend derive it from `data_contract`
-        /// at the current fee multiplier; a document type that charges no fee
-        /// for the action needs none.
+        /// version 14). Required when the document type charges a fee for
+        /// the action: the backend never agrees on the user's behalf.
         action_fee_agreement: Option<DocumentActionFeeAgreement>,
     },
     DeleteDocument {
@@ -60,9 +59,8 @@ pub enum DocumentTask {
         identity_key: IdentityPublicKey,
         token_payment_info: Option<TokenPaymentInfo>,
         /// The document action fee the user was shown and agreed to (protocol
-        /// version 14). `None` lets the backend derive it from `data_contract`
-        /// at the current fee multiplier; a document type that charges no fee
-        /// for the action needs none.
+        /// version 14). Required when the document type charges a fee for
+        /// the action: the backend never agrees on the user's behalf.
         action_fee_agreement: Option<DocumentActionFeeAgreement>,
     },
     ReplaceDocument {
@@ -73,9 +71,8 @@ pub enum DocumentTask {
         identity_key: IdentityPublicKey,
         token_payment_info: Option<TokenPaymentInfo>,
         /// The document action fee the user was shown and agreed to (protocol
-        /// version 14). `None` lets the backend derive it from `data_contract`
-        /// at the current fee multiplier; a document type that charges no fee
-        /// for the action needs none.
+        /// version 14). Required when the document type charges a fee for
+        /// the action: the backend never agrees on the user's behalf.
         action_fee_agreement: Option<DocumentActionFeeAgreement>,
     },
     TransferDocument {
@@ -87,9 +84,8 @@ pub enum DocumentTask {
         identity_key: IdentityPublicKey,
         token_payment_info: Option<TokenPaymentInfo>,
         /// The document action fee the user was shown and agreed to (protocol
-        /// version 14). `None` lets the backend derive it from `data_contract`
-        /// at the current fee multiplier; a document type that charges no fee
-        /// for the action needs none.
+        /// version 14). Required when the document type charges a fee for
+        /// the action: the backend never agrees on the user's behalf.
         action_fee_agreement: Option<DocumentActionFeeAgreement>,
     },
     PurchaseDocument {
@@ -101,9 +97,8 @@ pub enum DocumentTask {
         identity_key: IdentityPublicKey,
         token_payment_info: Option<TokenPaymentInfo>,
         /// The document action fee the user was shown and agreed to (protocol
-        /// version 14). `None` lets the backend derive it from `data_contract`
-        /// at the current fee multiplier; a document type that charges no fee
-        /// for the action needs none.
+        /// version 14). Required when the document type charges a fee for
+        /// the action: the backend never agrees on the user's behalf.
         action_fee_agreement: Option<DocumentActionFeeAgreement>,
     },
     SetDocumentPrice {
@@ -115,9 +110,8 @@ pub enum DocumentTask {
         identity_key: IdentityPublicKey,
         token_payment_info: Option<TokenPaymentInfo>,
         /// The document action fee the user was shown and agreed to (protocol
-        /// version 14). `None` lets the backend derive it from `data_contract`
-        /// at the current fee multiplier; a document type that charges no fee
-        /// for the action needs none.
+        /// version 14). Required when the document type charges a fee for
+        /// the action: the backend never agrees on the user's behalf.
         action_fee_agreement: Option<DocumentActionFeeAgreement>,
     },
     FetchDocuments(DocumentQuery),
@@ -125,21 +119,6 @@ pub enum DocumentTask {
 }
 
 impl AppContext {
-    /// The action fee agreement `document_type` needs for `action` at the
-    /// cached epoch fee multiplier, `None` when it charges no fee for it.
-    fn document_action_fee_agreement(
-        &self,
-        document_type: &DocumentType,
-        action: DocumentTransitionActionType,
-    ) -> Option<DocumentActionFeeAgreement> {
-        document_action_fee_quote(
-            document_type.as_ref(),
-            action,
-            self.fee_multiplier_permille(),
-        )
-        .map(|quote| quote.agreement)
-    }
-
     /// Fetches a single document by id and bumps its revision, preparing it for
     /// a replace/transfer/purchase/set-price mutation.
     async fn fetch_document_for_mutation(
@@ -258,12 +237,11 @@ impl AppContext {
                 }
                 // After the options: setting them replaces the struct the
                 // agreement is kept in.
-                if let Some(agreement) = action_fee_agreement.or_else(|| {
-                    self.document_action_fee_agreement(
-                        &document_type,
-                        DocumentTransitionActionType::Create,
-                    )
-                }) {
+                if let Some(agreement) = checked_action_fee_agreement(
+                    document_type.as_ref(),
+                    DocumentTransitionActionType::Create,
+                    action_fee_agreement,
+                )? {
                     builder = builder.with_action_fee_agreement(agreement);
                 }
 
@@ -307,12 +285,11 @@ impl AppContext {
                 }
                 // After the options: setting them replaces the struct the
                 // agreement is kept in.
-                if let Some(agreement) = action_fee_agreement.or_else(|| {
-                    self.document_action_fee_agreement(
-                        &document_type,
-                        DocumentTransitionActionType::Delete,
-                    )
-                }) {
+                if let Some(agreement) = checked_action_fee_agreement(
+                    document_type.as_ref(),
+                    DocumentTransitionActionType::Delete,
+                    action_fee_agreement,
+                )? {
                     builder = builder.with_action_fee_agreement(agreement);
                 }
 
@@ -357,12 +334,11 @@ impl AppContext {
                 }
                 // After the options: setting them replaces the struct the
                 // agreement is kept in.
-                if let Some(agreement) = action_fee_agreement.or_else(|| {
-                    self.document_action_fee_agreement(
-                        &document_type,
-                        DocumentTransitionActionType::Replace,
-                    )
-                }) {
+                if let Some(agreement) = checked_action_fee_agreement(
+                    document_type.as_ref(),
+                    DocumentTransitionActionType::Replace,
+                    action_fee_agreement,
+                )? {
                     builder = builder.with_action_fee_agreement(agreement);
                 }
 
@@ -418,12 +394,11 @@ impl AppContext {
                 }
                 // After the options: setting them replaces the struct the
                 // agreement is kept in.
-                if let Some(agreement) = action_fee_agreement.or_else(|| {
-                    self.document_action_fee_agreement(
-                        &document_type,
-                        DocumentTransitionActionType::Transfer,
-                    )
-                }) {
+                if let Some(agreement) = checked_action_fee_agreement(
+                    document_type.as_ref(),
+                    DocumentTransitionActionType::Transfer,
+                    action_fee_agreement,
+                )? {
                     builder = builder.with_action_fee_agreement(agreement);
                 }
 
@@ -480,12 +455,11 @@ impl AppContext {
                 }
                 // After the options: setting them replaces the struct the
                 // agreement is kept in.
-                if let Some(agreement) = action_fee_agreement.or_else(|| {
-                    self.document_action_fee_agreement(
-                        &document_type,
-                        DocumentTransitionActionType::Purchase,
-                    )
-                }) {
+                if let Some(agreement) = checked_action_fee_agreement(
+                    document_type.as_ref(),
+                    DocumentTransitionActionType::Purchase,
+                    action_fee_agreement,
+                )? {
                     builder = builder.with_action_fee_agreement(agreement);
                 }
 
@@ -541,12 +515,11 @@ impl AppContext {
                 }
                 // After the options: setting them replaces the struct the
                 // agreement is kept in.
-                if let Some(agreement) = action_fee_agreement.or_else(|| {
-                    self.document_action_fee_agreement(
-                        &document_type,
-                        DocumentTransitionActionType::UpdatePrice,
-                    )
-                }) {
+                if let Some(agreement) = checked_action_fee_agreement(
+                    document_type.as_ref(),
+                    DocumentTransitionActionType::UpdatePrice,
+                    action_fee_agreement,
+                )? {
                     builder = builder.with_action_fee_agreement(agreement);
                 }
 

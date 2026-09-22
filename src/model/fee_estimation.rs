@@ -1173,6 +1173,46 @@ pub fn document_action_fee_quote(
     })
 }
 
+/// Why a document action cannot carry the fee agreement it was given.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ActionFeeAgreementError {
+    /// The document type charges a fee for the action and no agreement was
+    /// given: the user never confirmed it.
+    #[error(
+        "This contract charges a fee for this action, and you have not confirmed it yet. Try again and confirm the contract fee when asked."
+    )]
+    NotConfirmed,
+    /// The agreement names another fee than the document type declares, so
+    /// the contract changed after the user confirmed.
+    #[error(
+        "The contract fee for this action changed after you confirmed it. Try again to see and confirm the current fee."
+    )]
+    Outdated,
+}
+
+/// The fee agreement a document action may carry: exactly the one the user
+/// confirmed (`agreed`), checked against what `document_type` declares for
+/// `action`. A charged fee without an agreement is refused — the agreement
+/// is never derived on the user's behalf — and so is an agreement to another
+/// fee. A type that charges nothing for the action carries none.
+pub fn checked_action_fee_agreement(
+    document_type: DocumentTypeRef<'_>,
+    action: DocumentTransitionActionType,
+    agreed: Option<DocumentActionFeeAgreement>,
+) -> Result<Option<DocumentActionFeeAgreement>, ActionFeeAgreementError> {
+    let declared = document_type
+        .action_fees()
+        .and_then(|fees| fees.action_fee(action).map(|fee| (fees.pricing(), fee)));
+    match (declared, agreed) {
+        (None, _) => Ok(None),
+        (Some(_), None) => Err(ActionFeeAgreementError::NotConfirmed),
+        (Some((pricing, fee)), Some(agreement)) if agreement.matches_declared(pricing, fee) => {
+            Ok(Some(agreement))
+        }
+        (Some(_), Some(_)) => Err(ActionFeeAgreementError::Outdated),
+    }
+}
+
 #[cfg(test)]
 mod action_fee_tests {
     use super::*;
@@ -1208,6 +1248,73 @@ mod action_fee_tests {
             pv,
         )
         .expect("the document type parses")
+    }
+
+    /// A charged fee is never agreed on the user's behalf.
+    #[test]
+    fn a_charged_fee_without_an_agreement_is_refused() {
+        let doc_type = document_type_with(Some(platform_value!({"create": {"owner": 5_u64}})));
+        assert_eq!(
+            checked_action_fee_agreement(
+                doc_type.as_ref(),
+                DocumentTransitionActionType::Create,
+                None
+            ),
+            Err(ActionFeeAgreementError::NotConfirmed)
+        );
+    }
+
+    #[test]
+    fn the_confirmed_agreement_is_carried_as_is() {
+        let doc_type = document_type_with(Some(platform_value!({"create": {"owner": 5_u64}})));
+        let agreed = document_action_fee_quote(
+            doc_type.as_ref(),
+            DocumentTransitionActionType::Create,
+            1000,
+        )
+        .expect("create is priced")
+        .agreement;
+        assert_eq!(
+            checked_action_fee_agreement(
+                doc_type.as_ref(),
+                DocumentTransitionActionType::Create,
+                Some(agreed)
+            ),
+            Ok(Some(agreed))
+        );
+    }
+
+    /// An agreement to another fee means the contract changed since the
+    /// user confirmed: refused before signing, not sent to be refused.
+    #[test]
+    fn an_agreement_to_another_fee_is_outdated() {
+        let before = document_type_with(Some(platform_value!({"create": {"owner": 5_u64}})));
+        let after = document_type_with(Some(platform_value!({"create": {"owner": 9_u64}})));
+        let agreed =
+            document_action_fee_quote(before.as_ref(), DocumentTransitionActionType::Create, 1000)
+                .expect("create is priced")
+                .agreement;
+        assert_eq!(
+            checked_action_fee_agreement(
+                after.as_ref(),
+                DocumentTransitionActionType::Create,
+                Some(agreed)
+            ),
+            Err(ActionFeeAgreementError::Outdated)
+        );
+    }
+
+    #[test]
+    fn an_uncharged_action_carries_no_agreement() {
+        let doc_type = document_type_with(Some(platform_value!({"delete": {"owner": 5_u64}})));
+        assert_eq!(
+            checked_action_fee_agreement(
+                doc_type.as_ref(),
+                DocumentTransitionActionType::Create,
+                None
+            ),
+            Ok(None)
+        );
     }
 
     #[test]

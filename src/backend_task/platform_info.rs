@@ -11,7 +11,6 @@ use dash_sdk::dpp::core_types::validator_set::v0::ValidatorSetV0Getters;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{Address, Network, ScriptBuf};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
-use dash_sdk::dpp::data_contracts::SystemDataContract;
 use dash_sdk::dpp::data_contracts::withdrawals_contract::WithdrawalStatus;
 use dash_sdk::dpp::data_contracts::withdrawals_contract::v1::document_types::withdrawal::properties::{
     AMOUNT, STATUS, TRANSACTION_INDEX,
@@ -21,7 +20,6 @@ use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::dpp::platform_value::btreemap_extensions::BTreeValueMapHelper;
 use dash_sdk::dpp::state_transition::identity_credit_withdrawal_transition::fields::OUTPUT_SCRIPT;
-use dash_sdk::dpp::system_data_contracts::load_system_data_contract;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::dpp::withdrawal::daily_withdrawal_limit::daily_withdrawal_limit;
 use dash_sdk::dpp::{dash_to_credits, version::ProtocolVersionVoteCount};
@@ -317,10 +315,26 @@ fn format_current_quorums_info(current_quorums_info: &CurrentQuorumsInfo) -> Str
     result
 }
 
+/// The daily withdrawal limit the network enforces, at `platform_version` —
+/// never at whatever version the upstream crates happen to know best.
+///
+/// Protocol 13 uses `daily_withdrawal_limit` v1, a flat 2000 Dash that ignores
+/// the total. Protocol 14 (v2) derives it from the total credits Platform held a
+/// day ago, which the SDK cannot query; passing today's total is an accepted
+/// gap for this display-only figure.
+fn network_daily_withdrawal_limit(
+    total_credits_on_platform: Credits,
+    platform_version: &PlatformVersion,
+) -> Result<Credits, WithdrawalParseError> {
+    daily_withdrawal_limit(Some(total_credits_on_platform), platform_version)
+        .map_err(|e| WithdrawalParseError::DailyLimit(Box::new(e)))
+}
+
 fn format_withdrawal_documents_with_daily_limit(
     withdrawal_documents: &[Document],
     total_credits_on_platform: Credits,
     network: Network,
+    platform_version: &PlatformVersion,
 ) -> Result<String, WithdrawalParseError> {
     let total_amount: Credits = withdrawal_documents
         .iter()
@@ -339,18 +353,8 @@ fn format_withdrawal_documents_with_daily_limit(
         .map(|document| format_withdrawal_line(document, network))
         .collect::<Result<Vec<String>, WithdrawalParseError>>()?;
 
-    // INTENTIONAL: `daily_withdrawal_limit`'s v2 algorithm wants the total
-    // credits Platform held a day ago, and the network's actual active
-    // protocol version — we pass today's current total and `latest()`
-    // instead. Accepted gap, not a bug to fix here: this value is
-    // display-only (an informational text panel, nothing reads it back to
-    // gate or execute a withdrawal), the mismatch only bites during the
-    // narrow window around a protocol version upgrade, and the pinned SDK
-    // exposes no query for the day-old historical total (it's
-    // Drive-internal) to compute the exact figure anyway.
     let daily_withdrawal_limit =
-        daily_withdrawal_limit(Some(total_credits_on_platform), PlatformVersion::latest())
-            .map_err(|e| WithdrawalParseError::DailyLimit(Box::new(e)))?;
+        network_daily_withdrawal_limit(total_credits_on_platform, platform_version)?;
 
     Ok(format!(
         "Withdrawal Information:\n\n\
@@ -728,16 +732,10 @@ impl AppContext {
                 }
             }
             PlatformInfoTaskRequestType::CurrentWithdrawalsInQueue => {
-                let withdrawal_contract = load_system_data_contract(
-                    SystemDataContract::Withdrawals,
-                    PlatformVersion::latest(),
-                )
-                .map_err(|e| TaskError::from(SdkError::Protocol(e)))?;
-
                 let queued_document_query = DocumentQuery {
                     sub_queries: Vec::new(),
                     select: SelectProjection::documents(),
-                    data_contract: Arc::new(withdrawal_contract),
+                    data_contract: self.withdraws_contract(),
                     document_type_name: "withdrawal".to_string(),
                     where_clauses: vec![],
                     time_range_clauses: Vec::new(),
@@ -762,6 +760,7 @@ impl AppContext {
                             &withdrawal_docs,
                             total_credits.0,
                             self.network,
+                            self.connected_platform_version(),
                         )?;
                         Ok(BackendTaskSuccessResult::PlatformInfo(
                             PlatformInfoTaskResult::TextResult(formatted),
@@ -779,16 +778,10 @@ impl AppContext {
                 }
             }
             PlatformInfoTaskRequestType::RecentlyCompletedWithdrawals => {
-                let withdrawal_contract = load_system_data_contract(
-                    SystemDataContract::Withdrawals,
-                    PlatformVersion::latest(),
-                )
-                .map_err(|e| TaskError::from(SdkError::Protocol(e)))?;
-
                 let completed_document_query = DocumentQuery {
                     sub_queries: Vec::new(),
                     select: SelectProjection::documents(),
-                    data_contract: Arc::new(withdrawal_contract),
+                    data_contract: self.withdraws_contract(),
                     document_type_name: "withdrawal".to_string(),
                     where_clauses: vec![WhereClause {
                         field: "status".to_string(),
@@ -880,12 +873,6 @@ impl AppContext {
                 limit,
                 start_after,
             } => {
-                let withdrawal_contract = load_system_data_contract(
-                    SystemDataContract::Withdrawals,
-                    PlatformVersion::latest(),
-                )
-                .map_err(|e| TaskError::from(SdkError::Protocol(e)))?;
-
                 // `0` is the upstream sentinel for "default limit"; clamp the
                 // requested page so the cursor heuristic has a known bound.
                 let page_limit = limit.unwrap_or(50).clamp(1, 100);
@@ -923,7 +910,7 @@ impl AppContext {
                 let query = DocumentQuery {
                     sub_queries: Vec::new(),
                     select: SelectProjection::documents(),
-                    data_contract: Arc::new(withdrawal_contract),
+                    data_contract: self.withdraws_contract(),
                     document_type_name: "withdrawal".to_string(),
                     where_clauses,
                     time_range_clauses: Vec::new(),
@@ -1014,6 +1001,27 @@ mod tests {
             properties,
             ..Default::default()
         })
+    }
+
+    /// The limit is whatever the network's own protocol version says it is,
+    /// never a version fixed in this build: protocol 13 reports a flat 2000
+    /// Dash whatever the total, protocol 14 derives it from that total.
+    #[test]
+    fn daily_withdrawal_limit_follows_the_given_platform_version() {
+        // `dash_to_credits!` stringifies its argument and parses the digits, so
+        // a `1_000_000` written with separators silently reads as no credits.
+        let total = dash_to_credits!(1000000);
+        let v13 = PlatformVersion::get(13).expect("protocol 13");
+        let v14 = PlatformVersion::get(14).expect("protocol 14");
+
+        assert_eq!(
+            network_daily_withdrawal_limit(total, v13).expect("limit"),
+            dash_to_credits!(2000)
+        );
+        assert_eq!(
+            network_daily_withdrawal_limit(total, v14).expect("limit"),
+            dash_to_credits!(4000)
+        );
     }
 
     /// A proved epoch sets both the fee multiplier cache and the protocol

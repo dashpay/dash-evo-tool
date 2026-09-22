@@ -1198,6 +1198,21 @@ mod tests {
         assert!(same_key(&raised, &stored), "in either direction");
     }
 
+    /// A limited key is disabled the same way any other key is, and the state
+    /// it carries is no more identifying for having limits beside it.
+    #[test]
+    fn same_key_ignores_a_limited_key_being_disabled() {
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+
+        let stored = IdentityPublicKey::random_key(0, Some(1), PlatformVersion::latest())
+            .with_limits(Some(1_000), Some(1_800_000));
+        let mut disabled_since = stored.clone();
+        disabled_since.set_disabled_at(1_700_000_000);
+
+        assert!(same_key(&stored, &disabled_since));
+        assert!(same_key(&disabled_since, &stored));
+    }
+
     /// Whether a key has a budget or an expiry is fixed when it is added: a
     /// limit can be raised but never added or removed. A disagreement on the
     /// presence of a limit is a different key.
@@ -1209,7 +1224,14 @@ mod tests {
         let limits_none = base.clone().with_limits(None, None);
 
         assert!(!same_key(&budget_only, &expiry_only));
-        assert!(!same_key(&budget_only, &limits_none));
+        assert!(
+            !same_key(&budget_only, &limits_none),
+            "a budget alone tells two keys apart"
+        );
+        assert!(
+            !same_key(&expiry_only, &limits_none),
+            "and so does an expiry alone"
+        );
         assert!(
             !same_key(&base, &budget_only),
             "a V0 key never gains a budget"

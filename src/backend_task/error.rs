@@ -40,94 +40,6 @@ impl DapiAddressAvailability {
     }
 }
 
-/// The token operation a wallet-runtime token failure belongs to.
-///
-/// Upstream `PlatformWalletError::TokenOperationFailed` names the operation with
-/// a fixed `&'static str` label (a discriminator, not a message); this is its
-/// typed form, so each failure gets a complete, translatable sentence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TokenOperationKind {
-    Claim,
-    Mint,
-    Burn,
-    Transfer,
-    Freeze,
-    Unfreeze,
-    DestroyFrozenFunds,
-    Pause,
-    Resume,
-    SetPrice,
-    Purchase,
-    ConfigUpdate,
-    /// A label this build does not know (a newer upstream operation).
-    Other,
-}
-
-impl TokenOperationKind {
-    /// The kind for the operation label upstream puts in
-    /// `PlatformWalletError::TokenOperationFailed::operation`.
-    pub fn from_upstream_label(label: &str) -> Self {
-        match label {
-            "claim" => Self::Claim,
-            "mint" => Self::Mint,
-            "burn" => Self::Burn,
-            "transfer" => Self::Transfer,
-            "freeze" => Self::Freeze,
-            "unfreeze" => Self::Unfreeze,
-            "destroy frozen funds" => Self::DestroyFrozenFunds,
-            "pause" => Self::Pause,
-            "resume" => Self::Resume,
-            "set price" => Self::SetPrice,
-            "purchase" => Self::Purchase,
-            "config update" => Self::ConfigUpdate,
-            _ => Self::Other,
-        }
-    }
-
-    /// The user-facing sentence for a failure of this operation.
-    fn failure_message(self) -> &'static str {
-        match self {
-            Self::Claim => "The token claim did not complete. Check your connection and try again.",
-            Self::Mint => {
-                "Minting the tokens did not complete. Check your connection and try again."
-            }
-            Self::Burn => {
-                "Burning the tokens did not complete. Check your connection and try again."
-            }
-            Self::Transfer => {
-                "The token transfer did not complete. Check your connection and try again."
-            }
-            Self::Freeze => {
-                "Freezing the token account did not complete. Check your connection and try again."
-            }
-            Self::Unfreeze => {
-                "Unfreezing the token account did not complete. Check your connection and try again."
-            }
-            Self::DestroyFrozenFunds => {
-                "Destroying the frozen tokens did not complete. Check your connection and try again."
-            }
-            Self::Pause => {
-                "Pausing the token did not complete. Check your connection and try again."
-            }
-            Self::Resume => {
-                "Resuming the token did not complete. Check your connection and try again."
-            }
-            Self::SetPrice => {
-                "Setting the token price did not complete. Check your connection and try again."
-            }
-            Self::Purchase => {
-                "The token purchase did not complete. Check your connection and try again."
-            }
-            Self::ConfigUpdate => {
-                "Updating the token settings did not complete. Check your connection and try again."
-            }
-            Self::Other => {
-                "The token operation did not complete. Check your connection and try again."
-            }
-        }
-    }
-}
-
 /// Why an existing DashPay `contactInfo` payload could not be preserved.
 #[derive(Debug, Error)]
 pub enum ContactInfoReadError {
@@ -1986,17 +1898,6 @@ pub enum TaskError {
     #[error("Could not retrieve token information from the platform. Please retry.")]
     TokenQueryError { detail: String },
 
-    /// A token operation run by the wallet runtime failed for a reason the
-    /// SDK error classification has no specific variant for. Built by
-    /// [`TaskError::from_token_operation_failure`], which prefers the specific
-    /// variant whenever there is one.
-    #[error("{}", operation.failure_message())]
-    TokenOperationFailed {
-        operation: TokenOperationKind,
-        #[source]
-        source_error: Box<SdkError>,
-    },
-
     /// The token does not have a perpetual distribution configured — no rewards to claim.
     #[error("This token does not have perpetual distribution, so there are no rewards to claim.")]
     TokenNoPerpetualDistribution,
@@ -3285,26 +3186,6 @@ impl From<dashcore_rpc::Error> for TaskError {
             return TaskError::CoreWalletNotConfigured;
         }
         TaskError::CoreRpc { source: e }
-    }
-}
-
-impl TaskError {
-    /// The error for a token operation the wallet runtime reported as failed
-    /// (`PlatformWalletError::TokenOperationFailed`).
-    ///
-    /// The SDK source is classified exactly like any other SDK error, so a
-    /// rejection with a specific meaning (insufficient balance, a claim already
-    /// taken, …) keeps its specific message. Only an otherwise unclassified
-    /// failure becomes [`TaskError::TokenOperationFailed`], which at least names
-    /// the operation.
-    pub fn from_token_operation_failure(operation: &str, source: SdkError) -> Self {
-        match TaskError::from(source) {
-            TaskError::SdkError { source_error } => TaskError::TokenOperationFailed {
-                operation: TokenOperationKind::from_upstream_label(operation),
-                source_error,
-            },
-            classified => classified,
-        }
     }
 }
 
@@ -5666,82 +5547,6 @@ mod tests {
             node_msg, generic_msg,
             "MasternodeNotFound must not reuse the IdentityNotFound message"
         );
-    }
-
-    /// An unclassified SDK failure behind a wallet-runtime token operation
-    /// keeps the operation, so the message names what did not complete.
-    #[test]
-    fn token_operation_failure_without_a_specific_cause_names_the_operation() {
-        let err =
-            TaskError::from_token_operation_failure("claim", SdkError::Generic("boom".to_string()));
-        assert!(
-            matches!(
-                err,
-                TaskError::TokenOperationFailed {
-                    operation: TokenOperationKind::Claim,
-                    ..
-                }
-            ),
-            "got {err:?}"
-        );
-        assert_eq!(
-            err.to_string(),
-            "The token claim did not complete. Check your connection and try again."
-        );
-    }
-
-    /// A token operation rejected with a specific consensus cause keeps the
-    /// specific variant: the operation label must not mask a better message.
-    #[test]
-    fn token_operation_failure_with_a_specific_cause_keeps_it() {
-        use dash_sdk::dpp::consensus::state::token::IdentityTokenAccountNotFrozenError;
-        let consensus = ConsensusError::from(IdentityTokenAccountNotFrozenError::new(
-            Identifier::random(),
-            Identifier::random(),
-            "Unfreeze".to_string(),
-        ));
-        let sdk_err = SdkError::StateTransitionBroadcastError(
-            dash_sdk::error::StateTransitionBroadcastError {
-                code: 40703,
-                message: "identity token account is not frozen".to_string(),
-                cause: Some(consensus),
-            },
-        );
-        let err = TaskError::from_token_operation_failure("unfreeze", sdk_err);
-        assert!(
-            matches!(err, TaskError::TokenAccountNotFrozen { .. }),
-            "got {err:?}"
-        );
-    }
-
-    /// Every label upstream emits today maps to its own kind; an unknown one
-    /// degrades to the generic kind instead of failing.
-    #[test]
-    fn token_operation_labels_map_to_kinds() {
-        for (label, kind) in [
-            ("claim", TokenOperationKind::Claim),
-            ("mint", TokenOperationKind::Mint),
-            ("burn", TokenOperationKind::Burn),
-            ("transfer", TokenOperationKind::Transfer),
-            ("freeze", TokenOperationKind::Freeze),
-            ("unfreeze", TokenOperationKind::Unfreeze),
-            (
-                "destroy frozen funds",
-                TokenOperationKind::DestroyFrozenFunds,
-            ),
-            ("pause", TokenOperationKind::Pause),
-            ("resume", TokenOperationKind::Resume),
-            ("set price", TokenOperationKind::SetPrice),
-            ("purchase", TokenOperationKind::Purchase),
-            ("config update", TokenOperationKind::ConfigUpdate),
-            ("something new", TokenOperationKind::Other),
-        ] {
-            assert_eq!(
-                TokenOperationKind::from_upstream_label(label),
-                kind,
-                "{label}"
-            );
-        }
     }
 
     #[test]

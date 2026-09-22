@@ -3165,12 +3165,6 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
             }
         }
 
-        // A token operation keeps its SDK cause, so it is classified like any
-        // SDK error; an unclassified one still names the operation.
-        P::TokenOperationFailed { operation, source } => {
-            TaskError::from_token_operation_failure(operation, source)
-        }
-
         // Every remaining variant → generic WalletBackend wrapper.
         other @ (P::WalletCreation(_)
         | P::StaleReservation
@@ -3220,6 +3214,8 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::NoWalletsConfigured
         | P::SpvError(_)
         | P::TokenError(_)
+        // Upstream's typed successor of `TokenError`; same message.
+        | P::TokenOperationFailed { .. }
         | P::ShieldedNoUnspentNotes
         | P::ShieldedInsufficientBalance { .. }
         | P::ShieldedBuildError(_)

@@ -906,6 +906,8 @@ pub enum BackendTaskSuccessResult {
     ContractFeePots {
         contract_id: Identifier,
         pots: dash_sdk::platform::contract_fee_pots::ContractFeePots,
+        /// The epoch the pots were read in, when it fits an epoch index.
+        current_epoch: Option<u16>,
     },
     /// A contract fee pot was paid out. `claimant_balance` is the claiming
     /// identity's balance after the claim, `remaining_credits` what is left

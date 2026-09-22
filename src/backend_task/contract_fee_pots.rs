@@ -39,10 +39,14 @@ impl AppContext {
         if !FeatureGate::ContractFeePots.is_available(self) {
             return Err(TaskError::ContractFeePotsNotSupported);
         }
-        let pots = ContractFeePots::fetch(sdk, contract_id)
-            .await?
-            .unwrap_or_default();
-        Ok(BackendTaskSuccessResult::ContractFeePots { contract_id, pots })
+        let (pots, metadata) = ContractFeePots::fetch_with_metadata(sdk, contract_id, None).await?;
+        Ok(BackendTaskSuccessResult::ContractFeePots {
+            contract_id,
+            pots: pots.unwrap_or_default(),
+            // The epoch of the proved response; a pot already paid out in it
+            // cannot be claimed again until the next one.
+            current_epoch: u16::try_from(metadata.epoch).ok(),
+        })
     }
 
     /// Pay out `pot` of `contract_id`, claimed by `qualified_identity`, and

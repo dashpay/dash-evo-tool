@@ -38,6 +38,7 @@ enum FeePotsState {
     Loaded {
         contract_id: Identifier,
         pots: ContractFeePots,
+        current_epoch: Option<u16>,
     },
     /// The read failed; the banner says why.
     Failed(Identifier),
@@ -50,6 +51,39 @@ impl FeePotsState {
             FeePotsState::Loading(id) | FeePotsState::Failed(id) => Some(*id),
             FeePotsState::Loaded { contract_id, .. } => Some(*contract_id),
         }
+    }
+}
+
+/// What decides whether a pot's Claim button is enabled.
+#[derive(Debug, Clone, Copy)]
+struct ClaimGate {
+    has_recipients: bool,
+    identity_selected: bool,
+    identity_receives: bool,
+    credits: u64,
+    last_claim_epoch: Option<u16>,
+    current_epoch: Option<u16>,
+    claim_in_flight: bool,
+}
+
+/// Why a pot cannot be claimed right now, `None` when it can. Each reason is
+/// a claim Platform would refuse (and still charge for) or one that cannot
+/// be sent yet.
+fn claim_blocked_reason(gate: ClaimGate) -> Option<&'static str> {
+    if !gate.has_recipients {
+        Some("This contract has no moderators, so nobody can claim these fees.")
+    } else if !gate.identity_selected {
+        Some("Select an identity above to claim these fees.")
+    } else if !gate.identity_receives {
+        Some("The selected identity does not receive these fees.")
+    } else if gate.credits == 0 {
+        Some("There are no fees to claim yet.")
+    } else if gate.last_claim_epoch.is_some() && gate.last_claim_epoch == gate.current_epoch {
+        Some("These fees were already claimed in the current epoch. Try again in the next one.")
+    } else if gate.claim_in_flight {
+        Some("A claim is in progress.")
+    } else {
+        None
     }
 }
 
@@ -123,6 +157,7 @@ impl ContractFeePotsScreen {
         contract: &QualifiedContract,
         pot: ContractFeePot,
         state: &ContractFeePotState,
+        current_epoch: Option<u16>,
     ) -> AppAction {
         let dark_mode = ui.style().visuals.dark_mode;
         ui.label(match pot {
@@ -145,19 +180,15 @@ impl ContractFeePotsScreen {
             .selected_identity
             .as_ref()
             .filter(|identity| recipients.contains(&identity.identity.id()));
-        let disabled_reason = if recipients.is_empty() {
-            Some("This contract has no moderators, so nobody can claim these fees.")
-        } else if self.selected_identity.is_none() {
-            Some("Select an identity above to claim these fees.")
-        } else if claimant.is_none() {
-            Some("The selected identity does not receive these fees.")
-        } else if state.credits == 0 {
-            Some("There are no fees to claim yet.")
-        } else if self.claim_in_flight.is_some() {
-            Some("A claim is in progress.")
-        } else {
-            None
-        };
+        let disabled_reason = claim_blocked_reason(ClaimGate {
+            has_recipients: !recipients.is_empty(),
+            identity_selected: self.selected_identity.is_some(),
+            identity_receives: claimant.is_some(),
+            credits: state.credits,
+            last_claim_epoch: state.last_claim_epoch(),
+            current_epoch,
+            claim_in_flight: self.claim_in_flight.is_some(),
+        });
 
         let mut action = AppAction::None;
         let button = ui.add_enabled(disabled_reason.is_none(), egui::Button::new("Claim"));
@@ -208,10 +239,16 @@ impl ScreenLike for ContractFeePotsScreen {
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         match result {
-            BackendTaskSuccessResult::ContractFeePots { contract_id, pots }
-                if self.pots == FeePotsState::Loading(contract_id) =>
-            {
-                self.pots = FeePotsState::Loaded { contract_id, pots };
+            BackendTaskSuccessResult::ContractFeePots {
+                contract_id,
+                pots,
+                current_epoch,
+            } if self.pots == FeePotsState::Loading(contract_id) => {
+                self.pots = FeePotsState::Loaded {
+                    contract_id,
+                    pots,
+                    current_epoch,
+                };
             }
             BackendTaskSuccessResult::ContractFeesClaimed {
                 contract_id,
@@ -336,7 +373,11 @@ impl ScreenLike for ContractFeePotsScreen {
                         inner_action |= self.fetch_pots(contract_id);
                     }
                 }
-                FeePotsState::Loaded { pots, .. } => {
+                FeePotsState::Loaded {
+                    pots,
+                    current_epoch,
+                    ..
+                } => {
                     egui::Grid::new("contract_fee_pots_grid")
                         .num_columns(4)
                         .spacing([16.0, 8.0])
@@ -352,12 +393,14 @@ impl ScreenLike for ContractFeePotsScreen {
                                 &contract,
                                 ContractFeePot::Owner,
                                 &pots.owner,
+                                current_epoch,
                             );
                             inner_action |= self.render_pot_row(
                                 ui,
                                 &contract,
                                 ContractFeePot::Moderators,
                                 &pots.moderators,
+                                current_epoch,
                             );
                         });
                     ui.add_space(8.0);
@@ -386,9 +429,76 @@ mod tests {
             FeePotsState::Loaded {
                 contract_id: id,
                 pots: ContractFeePots::default(),
+                current_epoch: None,
             }
             .contract_id(),
             Some(id)
         );
+    }
+
+    fn claimable() -> ClaimGate {
+        ClaimGate {
+            has_recipients: true,
+            identity_selected: true,
+            identity_receives: true,
+            credits: 10,
+            last_claim_epoch: Some(4),
+            current_epoch: Some(5),
+            claim_in_flight: false,
+        }
+    }
+
+    #[test]
+    fn a_recipient_can_claim_a_filled_pot_not_yet_claimed_this_epoch() {
+        assert_eq!(claim_blocked_reason(claimable()), None);
+        let never_claimed = ClaimGate {
+            last_claim_epoch: None,
+            ..claimable()
+        };
+        assert_eq!(claim_blocked_reason(never_claimed), None);
+    }
+
+    /// Each refusal Platform would charge for is blocked up front.
+    #[test]
+    fn claims_platform_would_refuse_are_blocked() {
+        for gate in [
+            ClaimGate {
+                has_recipients: false,
+                ..claimable()
+            },
+            ClaimGate {
+                identity_selected: false,
+                identity_receives: false,
+                ..claimable()
+            },
+            ClaimGate {
+                identity_receives: false,
+                ..claimable()
+            },
+            ClaimGate {
+                credits: 0,
+                ..claimable()
+            },
+            ClaimGate {
+                last_claim_epoch: Some(5),
+                ..claimable()
+            },
+            ClaimGate {
+                claim_in_flight: true,
+                ..claimable()
+            },
+        ] {
+            assert!(claim_blocked_reason(gate).is_some(), "{gate:?}");
+        }
+    }
+
+    /// Without a known current epoch the epoch rule cannot apply.
+    #[test]
+    fn an_unknown_current_epoch_does_not_block() {
+        let gate = ClaimGate {
+            current_epoch: None,
+            ..claimable()
+        };
+        assert_eq!(claim_blocked_reason(gate), None);
     }
 }

@@ -970,6 +970,10 @@ impl AppContext {
                 batch_feature_version: None,
                 method_feature_version: None,
                 base_feature_version: None,
+                // Signing overrides only. A document action fee agreement is
+                // per transition: `backend_task::document` adds it after these
+                // options, from the contract the user was shown.
+                action_fee_agreement: None,
             })
         } else {
             None

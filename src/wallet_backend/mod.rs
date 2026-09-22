@@ -3165,6 +3165,12 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
             }
         }
 
+        // A token operation keeps its SDK cause, so it is classified like any
+        // SDK error; an unclassified one still names the operation.
+        P::TokenOperationFailed { operation, source } => {
+            TaskError::from_token_operation_failure(operation, source)
+        }
+
         // Every remaining variant → generic WalletBackend wrapper.
         other @ (P::WalletCreation(_)
         | P::StaleReservation
@@ -3451,8 +3457,11 @@ enum IdentityOpErrorKind {
 fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> IdentityOpErrorKind {
     use platform_wallet::error::PlatformWalletError as P;
     match e {
-        // Network / broadcast rejections.
-        P::Sdk(_) | P::TransactionBroadcast(_) => IdentityOpErrorKind::Rejected,
+        // Network / broadcast rejections. A failed token operation carries the
+        // SDK rejection that caused it.
+        P::Sdk(_) | P::TransactionBroadcast(_) | P::TokenOperationFailed { .. } => {
+            IdentityOpErrorKind::Rejected
+        }
 
         // Asset-lock finality failures (IS deadline / IS-expired / CL fallback).
         P::FinalityTimeout(_)

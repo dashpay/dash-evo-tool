@@ -548,6 +548,7 @@ mod tests {
     use crate::model::wallet::test_support::open_wallet;
     use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
     use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
     use dash_sdk::dpp::identity::{KeyType, SecurityLevel};
     use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
@@ -582,11 +583,11 @@ mod tests {
         /// The same key as the chain holds it after a rotation: still listed,
         /// no longer usable.
         fn retired(&self) -> Self {
-            let IdentityPublicKey::V0(mut v0) = self.public.clone();
-            v0.disabled_at = Some(1);
+            let mut public = self.public.clone();
+            public.set_disabled_at(1);
             Self {
                 secret: self.secret,
-                public: IdentityPublicKey::V0(v0),
+                public,
             }
         }
     }
@@ -1153,15 +1154,12 @@ mod tests {
         publish_on(&mut modern.identity, &live.public);
 
         // The same material, saved as the identity's key 5. Nothing is live at 5.
-        let IdentityPublicKey::V0(mut v0) = live.public.clone();
-        v0.id = 5;
+        let mut renumbered = live.public.clone();
+        renumbered.set_id(5);
         let mut legacy = bare_identity(0x29);
         legacy.private_keys.insert_at(
             (M, 5),
-            (
-                QualifiedIdentityPublicKey::from(IdentityPublicKey::V0(v0)),
-                live.clear(),
-            ),
+            (QualifiedIdentityPublicKey::from(renumbered), live.clear()),
         );
 
         let plan = compute_recovery_plan(&modern, &legacy);

@@ -25,7 +25,9 @@
 use crate::framework::harness::ctx;
 use crate::framework::task_runner::run_task;
 use dash_evo_tool::backend_task::error::TaskError;
-use dash_evo_tool::backend_task::identity::{IdentityInputToLoad, IdentityLoadMode, IdentityTask};
+use dash_evo_tool::backend_task::identity::{
+    IdentityInputToLoad, IdentityLoadMode, IdentityTask, KeyVerificationError,
+};
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_evo_tool::mcp::server::DashMcpService;
 use dash_evo_tool::mcp::tools::masternode::{
@@ -214,7 +216,12 @@ async fn test_mn018_load_with_both_keys() {
     );
 }
 
-// ── TC-MN-020 — wrong key (valid format, not on identity) → KeyInputValidationFailed
+// ── TC-MN-020 — wrong key (valid format, not on identity) → IdentityKeyVerificationFailed
+//
+// `KeyInputValidationFailed` covers only malformed input (format checks in
+// `model::key_input`). A well-formed key that matches no OWNER key on the
+// identity is a verification failure, reported as
+// `IdentityKeyVerificationFailed(NoMatchingKey { purpose: "owner" })`.
 
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
@@ -246,8 +253,13 @@ async fn test_mn020_load_wrong_key_rejected() {
         .expect_err("a key not on the identity must be rejected");
 
     assert!(
-        matches!(err, TaskError::KeyInputValidationFailed { .. }),
-        "expected KeyInputValidationFailed, got: {err:?}"
+        matches!(
+            err,
+            TaskError::IdentityKeyVerificationFailed(KeyVerificationError::NoMatchingKey {
+                purpose: "owner"
+            })
+        ),
+        "expected IdentityKeyVerificationFailed(NoMatchingKey {{ purpose: \"owner\" }}), got: {err:?}"
     );
     // TC-MN-061 cross-check: the actual WIF bytes never appear in Display or Debug.
     // (Previous check used "bogus" — the variable name — which is never part of a

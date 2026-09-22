@@ -4538,6 +4538,30 @@ mod tests {
         }
     }
 
+    /// Every network rejection shares the `Rejected` bucket, including a failed
+    /// token operation: it carries the SDK rejection that caused it, so the
+    /// caller may resubmit exactly as for a plain SDK or broadcast failure.
+    #[test]
+    fn identity_op_error_kind_buckets_network_rejections_as_rejected() {
+        use platform_wallet::error::PlatformWalletError as P;
+        let errors = [
+            P::TokenOperationFailed {
+                operation: "claim",
+                source: dash_sdk::Error::Generic("rejected by consensus".to_string()),
+            },
+            P::Sdk(dash_sdk::Error::Generic(
+                "rejected by consensus".to_string(),
+            )),
+            P::TransactionBroadcast("peer rejected the transaction".to_string()),
+        ];
+        for error in &errors {
+            assert!(
+                matches!(identity_op_error_kind(error), IdentityOpErrorKind::Rejected),
+                "Expected IdentityOpErrorKind::Rejected for {error:?}"
+            );
+        }
+    }
+
     fn broadcast_unconfirmed() -> platform_wallet::error::PlatformWalletError {
         platform_wallet::error::PlatformWalletError::TransactionBroadcastUnconfirmed(
             "peer timed out after send".to_string(),

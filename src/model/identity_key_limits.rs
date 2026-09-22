@@ -73,6 +73,24 @@ pub fn limits_allowed(purpose: Purpose, security_level: SecurityLevel) -> bool {
     purpose == Purpose::AUTHENTICATION && security_level != SecurityLevel::MASTER
 }
 
+/// Whether a key of this purpose and security level may be bound to a
+/// contract: encryption and decryption keys always (per the contract's own
+/// rules), authentication keys below MASTER only where the network admits
+/// bound authentication keys (`bound_authentication_supported`).
+pub fn contract_bounds_allowed(
+    purpose: Purpose,
+    security_level: SecurityLevel,
+    bound_authentication_supported: bool,
+) -> bool {
+    match purpose {
+        Purpose::ENCRYPTION | Purpose::DECRYPTION => true,
+        Purpose::AUTHENTICATION => {
+            bound_authentication_supported && security_level != SecurityLevel::MASTER
+        }
+        _ => false,
+    }
+}
+
 /// Check the limits a key to be added carries, as Platform will.
 pub fn validate_key_limits(
     key: &IdentityPublicKey,
@@ -271,6 +289,35 @@ mod tests {
         ));
         assert!(!limits_allowed(Purpose::TRANSFER, SecurityLevel::CRITICAL));
         assert!(!limits_allowed(Purpose::ENCRYPTION, SecurityLevel::MEDIUM));
+    }
+
+    #[test]
+    fn authentication_keys_are_bound_only_where_the_network_admits_it() {
+        assert!(contract_bounds_allowed(
+            Purpose::ENCRYPTION,
+            SecurityLevel::MEDIUM,
+            false
+        ));
+        assert!(!contract_bounds_allowed(
+            Purpose::AUTHENTICATION,
+            SecurityLevel::HIGH,
+            false
+        ));
+        assert!(contract_bounds_allowed(
+            Purpose::AUTHENTICATION,
+            SecurityLevel::HIGH,
+            true
+        ));
+        assert!(!contract_bounds_allowed(
+            Purpose::AUTHENTICATION,
+            SecurityLevel::MASTER,
+            true
+        ));
+        assert!(!contract_bounds_allowed(
+            Purpose::TRANSFER,
+            SecurityLevel::CRITICAL,
+            true
+        ));
     }
 
     #[test]

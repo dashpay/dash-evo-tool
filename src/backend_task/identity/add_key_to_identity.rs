@@ -3,7 +3,7 @@ use crate::backend_task::FeeResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::context::feature_gate::FeatureGate;
-use crate::model::identity_key_limits::validate_key_limits;
+use crate::model::identity_key_limits::{contract_bounds_allowed, validate_key_limits};
 use crate::model::identity_key_usability::now_ms;
 use crate::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -48,6 +48,19 @@ impl AppContext {
                 return Err(TaskError::KeyLimitsNotSupported);
             }
             validate_key_limits(&public_key_to_add.identity_public_key, now_ms())?;
+        }
+
+        {
+            let key = &public_key_to_add.identity_public_key;
+            if key.contract_bounds().is_some()
+                && !contract_bounds_allowed(
+                    key.purpose(),
+                    key.security_level(),
+                    FeatureGate::ContractBoundAuthenticationKeys.is_available(self),
+                )
+            {
+                return Err(TaskError::ContractBoundAuthenticationKeysNotSupported);
+            }
         }
 
         let verify_scope = self.protected_identity_verify_scope(&qualified_identity)?;
@@ -359,6 +372,45 @@ mod tests {
 
         assert!(
             matches!(result, Err(TaskError::KeyLimitsNotSupported)),
+            "got {result:?}"
+        );
+    }
+
+    /// A contract-bound authentication key needs a network that admits one.
+    #[tokio::test]
+    async fn a_bound_authentication_key_needs_a_network_that_admits_it() {
+        use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
+        use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+        use dash_sdk::dpp::identity::{IdentityPublicKey, KeyType, Purpose, SecurityLevel};
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+        ctx.set_platform_protocol_version(13);
+        let sdk = dash_sdk::Sdk::new_mock();
+        let key = QualifiedIdentityPublicKey {
+            identity_public_key: IdentityPublicKey::from(IdentityPublicKeyV0 {
+                id: 5,
+                purpose: Purpose::AUTHENTICATION,
+                security_level: SecurityLevel::HIGH,
+                contract_bounds: Some(ContractBounds::SingleContract {
+                    id: dash_sdk::platform::Identifier::random(),
+                }),
+                key_type: KeyType::ECDSA_SECP256K1,
+                read_only: false,
+                data: vec![2; 33].into(),
+                disabled_at: None,
+            }),
+            in_wallet_at_derivation_path: None,
+        };
+
+        let result = ctx
+            .add_key_to_identity(&sdk, super::super::key_limits_test_identity(), key, [1; 32])
+            .await;
+
+        assert!(
+            matches!(
+                result,
+                Err(TaskError::ContractBoundAuthenticationKeysNotSupported)
+            ),
             "got {result:?}"
         );
     }

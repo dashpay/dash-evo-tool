@@ -1,5 +1,6 @@
 use crate::context::AppContext;
 use crate::model::user_role::UserRole;
+use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::dpp::version::feature_initial_protocol_versions::{
     CONTRACT_FEE_CLAIM_INITIAL_PROTOCOL_VERSION,
     IDENTITY_KEY_LIMITS_UPDATE_INITIAL_PROTOCOL_VERSION, SHIELDED_POOL_INITIAL_PROTOCOL_VERSION,
@@ -26,6 +27,11 @@ const KEY_LIMITS_ACTIVATION_PROTOCOL_VERSION: u32 =
 /// for it, so the protocol version it shipped in is used directly.
 const ONCE_PER_IDENTITY_DISTRIBUTION_ACTIVATION_PROTOCOL_VERSION: u32 = PROTOCOL_VERSION_14;
 
+/// The contract bounds validation version (upstream
+/// `validate_identity_public_key_contract_bounds`) from which AUTHENTICATION
+/// keys below MASTER may be bound to a contract or a document type.
+const CONTRACT_BOUND_AUTHENTICATION_KEYS_VALIDATION_VERSION: u16 = 2;
+
 /// A runtime capability of the connected platform, evaluated against the live
 /// context. Independent of the user's role — it answers "does the connected
 /// network support this?", not "which role has the user selected?".
@@ -50,6 +56,9 @@ pub enum Capability {
     /// The connected platform keeps contract fee pots (filled by document
     /// action fees) and accepts the transition that pays them out.
     ContractFeePots,
+    /// The connected platform accepts AUTHENTICATION keys below MASTER bound
+    /// to a contract or a document type (contract bounds validation v2).
+    ContractBoundAuthenticationKeys,
 }
 
 impl Capability {
@@ -76,6 +85,20 @@ impl Capability {
             Capability::ContractFeePots => {
                 ctx.platform_protocol_version() >= CONTRACT_FEE_CLAIM_INITIAL_PROTOCOL_VERSION
             }
+            // Upstream names no feature constant; the validation version that
+            // admits bound authentication keys is the source of truth.
+            Capability::ContractBoundAuthenticationKeys => PlatformVersion::get_optional(
+                ctx.platform_protocol_version(),
+            )
+            .is_some_and(|version| {
+                version
+                    .drive_abci
+                    .validation_and_processing
+                    .state_transitions
+                    .common_validation_methods
+                    .validate_identity_public_key_contract_bounds
+                    >= CONTRACT_BOUND_AUTHENTICATION_KEYS_VALIDATION_VERSION
+            }),
         }
     }
 }
@@ -181,6 +204,9 @@ pub enum FeatureGate {
     /// Viewing and claiming the fee pots of a contract. Offered only where
     /// the connected network keeps them.
     ContractFeePots,
+    /// Adding an AUTHENTICATION key bound to a contract or a document type.
+    /// Offered only where the connected network accepts one.
+    ContractBoundAuthenticationKeys,
 }
 
 impl FeatureGate {
@@ -202,6 +228,9 @@ impl FeatureGate {
                 &[Check::Capability(Capability::OncePerIdentityDistribution)]
             }
             FeatureGate::ContractFeePots => &[Check::Capability(Capability::ContractFeePots)],
+            FeatureGate::ContractBoundAuthenticationKeys => &[Check::Capability(
+                Capability::ContractBoundAuthenticationKeys,
+            )],
         }
     }
 
@@ -481,6 +510,7 @@ mod tests {
                 FeatureGate::IdentityKeyLimits,
                 FeatureGate::TokenOncePerIdentityDistribution,
                 FeatureGate::ContractFeePots,
+                FeatureGate::ContractBoundAuthenticationKeys,
             ] {
                 assert!(!gate.is_available(&ctx), "{gate:?} closed at boot");
                 ctx.set_platform_protocol_version(13);

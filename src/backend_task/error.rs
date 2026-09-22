@@ -2062,6 +2062,13 @@ pub enum TaskError {
     )]
     KeyLimitsNotSupported,
 
+    /// An authentication key bound to a contract was requested on a network
+    /// that does not accept one yet.
+    #[error(
+        "This network does not support limiting an authentication key to one contract yet. Add the key without contract bounds, or try again after the network upgrades."
+    )]
+    ContractBoundAuthenticationKeysNotSupported,
+
     /// No key this device holds may sign a key limits update: that takes a
     /// MASTER key, or a CRITICAL authentication key with no limits and no
     /// contract bounds.

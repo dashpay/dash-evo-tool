@@ -574,7 +574,7 @@ async fn test_mn054_owner_mode_key_not_loaded() {
     );
 }
 
-// ── TC-MN-007 — load with a malformed ProTxHash → IdentifierParsingError ──────
+// ── TC-MN-007 — load with a malformed ProTxHash → MalformedProTxHash ──────────
 
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
@@ -595,11 +595,13 @@ async fn test_mn007_load_malformed_protx() {
         .await
         .expect_err("a malformed ProTxHash must not load");
 
+    // A masternode/evonode load reports the ProTxHash-specific variant, not
+    // the generic `IdentifierParsingError` a User load gets.
     match err {
-        TaskError::IdentifierParsingError { input } => {
+        TaskError::MalformedProTxHash { input } => {
             assert_eq!(input, "not-a-hash", "the original input is preserved");
         }
-        other => panic!("Expected IdentifierParsingError, got: {other:?}"),
+        other => panic!("Expected MalformedProTxHash, got: {other:?}"),
     }
 }
 

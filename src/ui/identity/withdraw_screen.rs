@@ -4,6 +4,9 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::fee_estimation::{format_credits_as_dash, max_spendable_credits};
+use crate::model::identity_key_usability::{
+    KeyRequirements, SigningScope, select_identity_signing_key_now,
+};
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
@@ -24,7 +27,7 @@ use dash_sdk::dashcore_rpc::dashcore::{Address, Network};
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
+use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::IdentityPublicKey;
 use eframe::egui::{self, Frame, Margin, Ui};
@@ -111,6 +114,7 @@ impl WithdrawalScreen {
             &self.identity,
             &mut self.selected_key,
             TransactionType::Withdraw,
+            SigningScope::NonBatch,
         )
     }
 
@@ -435,17 +439,21 @@ impl ScreenLike for WithdrawalScreen {
                     ui.add_space(10.0);
                 }
 
-                let owner_key = self.identity.identity.get_first_public_key_matching(
-                    Purpose::OWNER,
-                    SecurityLevel::full_range().into(),
-                    KeyType::all_key_types().into(),
-                    false,
+                let owner_key = select_identity_signing_key_now(
+                    &self.identity.identity,
+                    KeyRequirements::new(
+                        Purpose::OWNER,
+                        &SecurityLevel::full_range(),
+                        SigningScope::NonBatch,
+                    ),
                 );
-                let transfer_key = self.identity.identity.get_first_public_key_matching(
-                    Purpose::TRANSFER,
-                    SecurityLevel::full_range().into(),
-                    KeyType::all_key_types().into(),
-                    false,
+                let transfer_key = select_identity_signing_key_now(
+                    &self.identity.identity,
+                    KeyRequirements::new(
+                        Purpose::TRANSFER,
+                        &SecurityLevel::full_range(),
+                        SigningScope::NonBatch,
+                    ),
                 );
 
                 if let Some(owner_key) = owner_key {

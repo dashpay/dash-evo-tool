@@ -4,6 +4,9 @@ use crate::backend_task::FeeResult;
 use crate::backend_task::{BackendTask, document::DocumentTask};
 use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::identity_key_usability::{
+    KeyRequirements, SigningScope, select_identity_signing_key_now,
+};
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
@@ -285,24 +288,26 @@ impl DocumentActionScreen {
             self.no_documents_found = false;
             self.fetched_documents.clear();
             if let Some(identity) = &self.selected_identity {
-                // Auto-select a suitable key for document actions
-                // Note: MASTER keys cannot be used for document operations,
-                // only MEDIUM, HIGH, or CRITICAL security levels are allowed
-                use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
-                self.selected_key = identity
-                    .identity
-                    .get_first_public_key_matching(
+                // Auto-select a suitable key for document actions. MASTER keys
+                // cannot sign document operations, so only MEDIUM, HIGH or
+                // CRITICAL keys qualify.
+                use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
+                self.selected_key = select_identity_signing_key_now(
+                    &identity.identity,
+                    KeyRequirements::new(
                         Purpose::AUTHENTICATION,
-                        [
+                        &[
                             SecurityLevel::CRITICAL,
                             SecurityLevel::HIGH,
                             SecurityLevel::MEDIUM,
-                        ]
-                        .into(),
-                        KeyType::all_key_types().into(),
-                        false,
-                    )
-                    .cloned();
+                        ],
+                        signing_scope(
+                            self.selected_contract.as_ref(),
+                            self.selected_document_type.as_ref(),
+                        ),
+                    ),
+                )
+                .cloned();
 
                 // Update wallet
                 self.wallet = get_selected_wallet(identity, Some(&self.app_context), None)
@@ -327,6 +332,10 @@ impl DocumentActionScreen {
                     &mut self.selected_key,
                     TransactionType::DocumentAction,
                     self.selected_document_type.as_ref(),
+                    signing_scope(
+                        self.selected_contract.as_ref(),
+                        self.selected_document_type.as_ref(),
+                    ),
                 );
             }
         }
@@ -1893,5 +1902,24 @@ impl DocumentActionScreen {
                 action
             })
             .inner
+    }
+}
+
+/// The contract-bounds scope of a document action on `document_type` of
+/// `contract`. Before a contract is chosen nothing is known about the target,
+/// so only keys that can sign anywhere (unbound keys) qualify.
+fn signing_scope<'a>(
+    contract: Option<&QualifiedContract>,
+    document_type: Option<&'a DocumentType>,
+) -> SigningScope<'a> {
+    match (contract, document_type) {
+        (Some(contract), Some(document_type)) => SigningScope::Document {
+            contract_id: contract.contract.id(),
+            document_type_name: document_type.name().as_str(),
+        },
+        (Some(contract), None) => SigningScope::ContractWide {
+            contract_id: contract.contract.id(),
+        },
+        (None, _) => SigningScope::NonBatch,
     }
 }

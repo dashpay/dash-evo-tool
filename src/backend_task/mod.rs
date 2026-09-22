@@ -347,6 +347,8 @@ pub enum BackendTaskContext {
     LegacyRecoveryCheck(Identifier),
     /// The restore of one identity's approved legacy-recovery items.
     LegacyRecoveryRestore(Identifier),
+    /// The read of what is left of one identity's key budgets.
+    KeyRemainingBudgets(Identifier),
     /// A known backend task that needs no finer UI correlation.
     Other,
     /// An error emitted without an originating backend task.
@@ -450,6 +452,15 @@ impl BackendTaskContext {
         }
     }
 
+    /// The identity whose key budgets this operation read, or `None` for
+    /// anything else.
+    pub(crate) fn key_remaining_budgets_identity(&self) -> Option<Identifier> {
+        match self.operation() {
+            Self::KeyRemainingBudgets(identity_id) => Some(*identity_id),
+            _ => None,
+        }
+    }
+
     /// The identity whose legacy-recovery offer this operation belongs to, or
     /// `None` for anything else. A screen showing the recovery affordance uses
     /// it to tell its own failed check or restore from any other task's error
@@ -504,6 +515,10 @@ impl From<&BackendTask> for BackendTaskContext {
                 identity_id,
                 ..
             }) => Self::LegacyRecoveryRestore(*identity_id),
+            BackendTask::IdentityTask(IdentityTask::FetchKeyRemainingBudgets {
+                identity_id,
+                ..
+            }) => Self::KeyRemainingBudgets(*identity_id),
             BackendTask::SystemTask(SystemTask::ClearNetworkDatabase) => Self::ClearNetworkDatabase,
             BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { seed_hash }) => {
                 Self::GenerateReceiveAddress {
@@ -850,6 +865,16 @@ pub enum BackendTaskSuccessResult {
     IdentityKeysUnprotected {
         /// The identity whose key protection was removed.
         identity_id: Identifier,
+    },
+    /// What is left of the budgets of an identity's keys, one entry per
+    /// requested key: `Some(credits)` for a budgeted key (zero means spent),
+    /// `None` for a key without a budget.
+    IdentityKeyRemainingBudgets {
+        identity_id: Identifier,
+        budgets: std::collections::BTreeMap<
+            dash_sdk::dpp::identity::KeyID,
+            Option<dash_sdk::dpp::fee::Credits>,
+        >,
     },
     /// What the preserved legacy database could restore for this identity.
     /// Descriptors only — public key metadata, never key bytes. An empty plan

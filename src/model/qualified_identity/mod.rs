@@ -8,6 +8,9 @@ pub mod qualified_identity_public_key;
 // requires making that secret-seam chokepoint generic over the closure error
 // type — a wallet_backend change out of scope here.
 use crate::backend_task::error::TaskError;
+use crate::model::identity_key_usability::{
+    KeyRequirements, SigningScope, select_identity_signing_key_now,
+};
 use crate::model::qualified_identity::encrypted_key_storage::{
     KeyStorage, ResolvedPrivateKey, same_key,
 };
@@ -37,7 +40,7 @@ use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::state_transition::errors::InvalidIdentityPublicKeyTypeError;
 use dash_sdk::dpp::{ProtocolError, bls_signatures, ed25519_dalek};
 use dash_sdk::platform::IdentityPublicKey;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::fmt::{Display, Formatter};
 use std::sync::{Arc, RwLock};
 use zeroize::Zeroizing;
@@ -1002,15 +1005,22 @@ impl QualifiedIdentity {
         None
     }
 
+    /// The key to sign document transitions on `document_type` with, within
+    /// `scope`: a live AUTHENTICATION key at the document type's required
+    /// security level whose contract bounds permit `scope`, unlimited keys first
+    /// (see [`crate::model::identity_key_usability`]).
     pub fn document_signing_key(
         &self,
+        scope: SigningScope<'_>,
         document_type: &DocumentTypeRef,
     ) -> Option<&IdentityPublicKey> {
-        self.identity.get_first_public_key_matching(
-            Purpose::AUTHENTICATION,
-            HashSet::from([document_type.security_level_requirement()]),
-            HashSet::from(KeyType::all_key_types()),
-            false,
+        select_identity_signing_key_now(
+            &self.identity,
+            KeyRequirements::new(
+                Purpose::AUTHENTICATION,
+                &[document_type.security_level_requirement()],
+                scope,
+            ),
         )
     }
 
@@ -2627,5 +2637,153 @@ mod decode_limit_tests {
             bincode::decode_from_slice(&encoded, identity_blob_decode_config())
                 .expect("decode under the limit");
         assert_eq!(decoded, payload);
+    }
+}
+
+/// Protocol version 14 added `IdentityPublicKey::V1` (key limits) and
+/// `ContractBounds::ContractGroup`. Stored identity blobs carry both enums, so
+/// blobs written before the bump must decode unchanged and the new variants
+/// must round-trip.
+#[cfg(test)]
+mod protocol_v14_compat_tests {
+    use super::*;
+    use crate::model::identity_key_usability::SigningScope;
+    use dash_sdk::dpp::data_contract::document_type::DocumentTypeRef;
+    use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v1::IdentityPublicKeyGettersV1;
+    use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
+    use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::platform::Identifier;
+
+    /// The bundled v0.9.3 profile: real identity rows written by DET v0.9.3.
+    const V0_9_3_DATA_SQL: &str =
+        include_str!("../../../tests/migration-fixtures/v0.9.3-public-identities/data.sql");
+
+    /// The stored blob of the v0.9.3 user identity `public-dpns-user`.
+    fn v0_9_3_user_blob() -> Vec<u8> {
+        const ROW: &str = "INSERT INTO \"identity\" VALUES(X'3B9DA97EBC06C07C0C0C48695EA5D36CAECE9E19E4944AAE5548691D9A80FAE5',X'";
+        let start = V0_9_3_DATA_SQL.find(ROW).expect("the user identity row") + ROW.len();
+        let len = V0_9_3_DATA_SQL[start..]
+            .find('\'')
+            .expect("the end of the blob literal");
+        hex::decode(&V0_9_3_DATA_SQL[start..start + len]).expect("a hex blob")
+    }
+
+    #[test]
+    fn a_blob_written_before_protocol_v14_still_decodes_with_v0_keys() {
+        let qi = QualifiedIdentity::from_bytes(&v0_9_3_user_blob()).expect("decodes");
+
+        let keys = qi.identity.public_keys();
+        assert_eq!(keys.len(), 6, "as the v0.9.3 fixture expectations list");
+        assert!(
+            keys.values().all(|k| matches!(k, IdentityPublicKey::V0(_))),
+            "every pre-v14 key decodes as V0"
+        );
+        assert!(keys.values().all(|k| !k.has_limits()));
+        let bounds: Vec<_> = keys.values().filter_map(|k| k.contract_bounds()).collect();
+        assert_eq!(
+            bounds.len(),
+            2,
+            "the DashPay encryption and decryption keys"
+        );
+        assert!(bounds.iter().all(|b| matches!(
+            b,
+            ContractBounds::SingleContractDocumentType { document_type_name, .. }
+                if document_type_name == "contactRequest"
+        )));
+
+        let reencoded = QualifiedIdentity::from_bytes(&qi.to_bytes()).expect("re-decodes");
+        assert_eq!(reencoded.identity, qi.identity, "a re-save keeps every key");
+    }
+
+    #[test]
+    fn keys_with_limits_and_group_bounds_round_trip_through_the_blob() {
+        let mut qi = QualifiedIdentity::from_bytes(&v0_9_3_user_blob()).expect("decodes");
+        let pv = PlatformVersion::latest();
+        let limited = IdentityPublicKey::random_key(10, Some(1), pv)
+            .with_limits(Some(5_000_000), Some(1_900_000_000_000));
+        let grouped = match IdentityPublicKey::random_key(11, Some(2), pv) {
+            IdentityPublicKey::V0(mut v0) => {
+                v0.contract_bounds = Some(ContractBounds::ContractGroup {
+                    id: Identifier::from([7u8; 32]),
+                });
+                IdentityPublicKey::V0(v0)
+            }
+            other => other,
+        };
+        let mut keys = qi.identity.public_keys().clone();
+        keys.insert(10, limited.clone());
+        keys.insert(11, grouped.clone());
+        qi.identity.set_public_keys(keys);
+
+        let decoded = QualifiedIdentity::from_bytes(&qi.to_bytes()).expect("decodes");
+        let keys = decoded.identity.public_keys();
+        assert_eq!(keys.get(&10), Some(&limited));
+        assert_eq!(keys[&10].total_budget(), Some(5_000_000));
+        assert_eq!(keys[&10].expires_at(), Some(1_900_000_000_000));
+        assert_eq!(keys.get(&11), Some(&grouped));
+    }
+
+    /// The document signing key skips a key Platform would refuse (expired,
+    /// bound elsewhere) and prefers an unlimited key over a limited one.
+    #[test]
+    fn document_signing_key_picks_a_usable_unlimited_key() {
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+        use dash_sdk::dpp::identity::{KeyType, Purpose};
+
+        let pv = PlatformVersion::latest();
+        let dpns = dash_sdk::dpp::system_data_contracts::load_system_data_contract(
+            dash_sdk::dpp::system_data_contracts::SystemDataContract::DPNS,
+            pv,
+        )
+        .expect("the DPNS contract");
+        let preorder: DocumentTypeRef = dpns.document_type_for_name("preorder").expect("preorder");
+        let level = preorder.security_level_requirement();
+
+        let auth_key = |id: KeyID| {
+            let mut key = IdentityPublicKey::random_key(id, Some(u64::from(id)), pv);
+            key.set_purpose(Purpose::AUTHENTICATION);
+            key.set_security_level(level);
+            key.set_key_type(KeyType::ECDSA_SECP256K1);
+            key
+        };
+        let expired = auth_key(1).with_limits(None, Some(1));
+        let elsewhere = match auth_key(2) {
+            IdentityPublicKey::V0(mut v0) => {
+                v0.contract_bounds = Some(ContractBounds::SingleContract {
+                    id: Identifier::from([9u8; 32]),
+                });
+                IdentityPublicKey::V0(v0)
+            }
+            other => other,
+        };
+        let limited = auth_key(3).with_limits(Some(1_000), None);
+        let plain = auth_key(4);
+
+        let mut qi = QualifiedIdentity::from_bytes(&v0_9_3_user_blob()).expect("decodes");
+        qi.identity.set_public_keys(BTreeMap::from([
+            (1, expired),
+            (2, elsewhere),
+            (3, limited),
+            (4, plain),
+        ]));
+        let scope = SigningScope::ContractWide {
+            contract_id: dpns.id(),
+        };
+        assert_eq!(
+            qi.document_signing_key(scope, &preorder).map(|k| k.id()),
+            Some(4),
+            "the unlimited, unbound, live key"
+        );
+
+        let mut keys = qi.identity.public_keys().clone();
+        keys.remove(&4);
+        qi.identity.set_public_keys(keys);
+        assert_eq!(
+            qi.document_signing_key(scope, &preorder).map(|k| k.id()),
+            Some(3),
+            "a limited key when it is the only usable one"
+        );
     }
 }

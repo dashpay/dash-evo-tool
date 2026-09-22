@@ -1,3 +1,4 @@
+use crate::model::identity_key_usability::SigningScope;
 use std::collections::{BTreeMap, HashSet};
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::{TokenConfigurationPreset, TokenConfigurationPresetFeatures};
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationPresetFeatures::{MostRestrictive, WithAllAdvancedActions, WithExtremeActions, WithMintingAndBurningActions, WithOnlyEmergencyAction};
@@ -241,6 +242,7 @@ impl TokensScreen {
                                 &mut self.selected_identity,
                                 &mut self.selected_key,
                                 TransactionType::RegisterContract,
+                                SigningScope::NonBatch,
                             );
                             let after_id = self
                                 .selected_identity

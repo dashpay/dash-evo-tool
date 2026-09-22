@@ -4,6 +4,9 @@ use crate::backend_task::FeeResult;
 use crate::backend_task::contract::ContractTask;
 use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::identity_key_usability::{
+    KeyRequirements, SigningScope, select_identity_signing_key_now,
+};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::identity_selector::IdentitySelector;
@@ -81,17 +84,16 @@ impl RegisterDataContractScreen {
         };
 
         // Auto-select a suitable key for contract registration
-        use dash_sdk::dpp::identity::KeyType;
         let selected_key = selected_qualified_identity.as_ref().and_then(|identity| {
-            identity
-                .identity
-                .get_first_public_key_matching(
+            select_identity_signing_key_now(
+                &identity.identity,
+                KeyRequirements::new(
                     Purpose::AUTHENTICATION,
-                    [SecurityLevel::HIGH, SecurityLevel::CRITICAL].into(),
-                    KeyType::all_key_types().into(),
-                    false,
-                )
-                .cloned()
+                    &[SecurityLevel::HIGH, SecurityLevel::CRITICAL],
+                    SigningScope::NonBatch,
+                ),
+            )
+            .cloned()
         });
 
         let selected_identity_string = selected_qualified_identity
@@ -463,15 +465,7 @@ impl ScreenLike for RegisterDataContractScreen {
                 if response.changed() {
                     if let Some(identity) = &self.selected_qualified_identity {
                         // Auto-select a suitable key for contract registration
-                        use dash_sdk::dpp::identity::KeyType;
-                        self.selected_key = identity
-                            .identity
-                            .get_first_public_key_matching(
-                                Purpose::AUTHENTICATION,
-                                [SecurityLevel::HIGH, SecurityLevel::CRITICAL].into(),
-                                KeyType::all_key_types().into(),
-                                false,
-                            )
+                        self.selected_key = select_identity_signing_key_now(&identity.identity, KeyRequirements::new(Purpose::AUTHENTICATION, &[SecurityLevel::HIGH, SecurityLevel::CRITICAL], SigningScope::NonBatch))
                             .cloned();
 
                         // Update wallet
@@ -503,6 +497,7 @@ impl ScreenLike for RegisterDataContractScreen {
                             identity,
                             &mut self.selected_key,
                             TransactionType::RegisterContract,
+                            SigningScope::NonBatch,
                         );
                     }
                 }

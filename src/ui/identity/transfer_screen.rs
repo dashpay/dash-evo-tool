@@ -4,6 +4,9 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::fee_estimation::{format_credits_as_dash, max_spendable_credits};
+use crate::model::identity_key_usability::{
+    KeyRequirements, SigningScope, select_identity_signing_key_now,
+};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
@@ -24,7 +27,7 @@ use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
+use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::{self, Frame, Margin, Ui};
@@ -93,11 +96,13 @@ impl TransferScreen {
 
         let max_amount = identity.identity.balance();
         let identity_clone = identity.identity.clone();
-        let selected_key = identity_clone.get_first_public_key_matching(
-            Purpose::TRANSFER,
-            SecurityLevel::full_range().into(),
-            KeyType::all_key_types().into(),
-            false,
+        let selected_key = select_identity_signing_key_now(
+            &identity_clone,
+            KeyRequirements::new(
+                Purpose::TRANSFER,
+                &SecurityLevel::full_range(),
+                SigningScope::NonBatch,
+            ),
         );
         let selected_wallet =
             get_selected_wallet(&identity, None, selected_key).unwrap_or_else(|e| {
@@ -139,6 +144,7 @@ impl TransferScreen {
             &self.identity,
             &mut self.selected_key,
             TransactionType::Transfer,
+            SigningScope::NonBatch,
         )
     }
 
@@ -630,11 +636,13 @@ impl ScreenLike for TransferScreen {
 
             let key_for_info = key_info_when_available(
                 has_keys,
-                self.identity.identity.get_first_public_key_matching(
-                    Purpose::TRANSFER,
-                    SecurityLevel::full_range().into(),
-                    KeyType::all_key_types().into(),
-                    false,
+                select_identity_signing_key_now(
+                    &self.identity.identity,
+                    KeyRequirements::new(
+                        Purpose::TRANSFER,
+                        &SecurityLevel::full_range(),
+                        SigningScope::NonBatch,
+                    ),
                 ),
             );
 

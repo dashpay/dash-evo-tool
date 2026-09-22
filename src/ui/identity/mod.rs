@@ -18,6 +18,7 @@
 //! `src/ui/components/left_panel.rs`, and the `RootScreenIdentityHub` entry in
 //! the `main_screens` map in `src/app.rs::AppState::new`.
 
+use crate::model::identity_key_usability::SigningScope;
 use std::sync::{Arc, RwLock};
 
 use dash_sdk::{
@@ -209,7 +210,12 @@ pub fn get_selected_wallet(
 
         // Attempt to retrieve the public key from the identity.
         qualified_identity
-            .document_signing_key(&preorder_document_type)
+            .document_signing_key(
+                SigningScope::ContractWide {
+                    contract_id: dpns_contract.id(),
+                },
+                &preorder_document_type,
+            )
             .ok_or_else(|| {
                 "Identity doesn't have an authentication key for signing document transitions"
                     .to_string()

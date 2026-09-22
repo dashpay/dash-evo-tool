@@ -13,6 +13,9 @@ use crate::context::AppContext;
 use crate::model::dashpay::{
     ContactInfoUpdate, UnreadableContactInfoPolicy, contact_request_recipient,
 };
+use crate::model::identity_key_usability::{
+    KeyRequirements, SigningScope, select_identity_signing_key_now,
+};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::wallet_backend::{ContactRequestActionKind, ContactRequestActionPhase};
 // Upstream contact-request type: used to record the sent request in the
@@ -758,16 +761,19 @@ pub async fn accept_contact_request(
 
     // Get an AUTHENTICATION key for signing the state transition
     // Platform requires CRITICAL or HIGH security level for document creation
-    let signing_key = identity
-        .identity
-        .get_first_public_key_matching(
+    let signing_key = select_identity_signing_key_now(
+        &identity.identity,
+        KeyRequirements::new(
             Purpose::AUTHENTICATION,
-            HashSet::from([SecurityLevel::CRITICAL, SecurityLevel::HIGH]),
-            KeyType::all_key_types().into(),
-            false,
-        )
-        .ok_or_else(|| TaskError::DashPay(DashPayError::MissingAuthenticationKey))?
-        .clone();
+            &[SecurityLevel::CRITICAL, SecurityLevel::HIGH],
+            SigningScope::Document {
+                contract_id: app_context.dashpay_contract.id(),
+                document_type_name: "contactRequest",
+            },
+        ),
+    )
+    .ok_or_else(|| TaskError::DashPay(DashPayError::MissingAuthenticationKey))?
+    .clone();
 
     // Option A fix: record A's incoming CR into B's wallet-manager
     // BEFORE sending the reciprocal.

@@ -4,8 +4,11 @@ use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::wallet::WalletTask;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::identity_key_protection::validate_protection_password;
+use crate::model::identity_key_usability::now_ms;
 use crate::model::legacy_recovery::RecoveryItem;
+use crate::model::qualified_identity::encrypted_key_storage::same_key;
 use crate::model::qualified_identity::encrypted_key_storage::{
     PrivateKeyData, WalletDerivationPath,
 };
@@ -25,6 +28,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
+use crate::ui::helpers::format_timestamp_ms_local;
 use crate::ui::masternodes::{KeyVocabulary, key_role_label};
 use crate::ui::state::legacy_recovery::LegacyRecoveryState;
 use crate::ui::theme::DashColors;
@@ -38,11 +42,13 @@ use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::secp256k1::{Message, Secp256k1, SecretKey};
 use dash_sdk::dpp::dashcore::sign_message::{MessageSignature, signed_msg_hash};
 use dash_sdk::dpp::dashcore::{Address, PrivateKey, PubkeyHash, ScriptHash};
+use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::KeyType;
 use dash_sdk::dpp::identity::KeyType::BIP13_SCRIPT_HASH;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dash_sdk::dpp::identity::identity_public_key::accessors::v1::IdentityPublicKeyGettersV1;
 use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
@@ -118,6 +124,23 @@ pub struct KeyInfoScreen {
     pending_recovery_restore: Option<Vec<RecoveryItem>>,
     /// The screen this key was opened from, for the breadcrumb back to it.
     parent: Option<&'static str>,
+    /// What is left of this key's budget, for a key that has one.
+    remaining_budget: RemainingBudget,
+}
+
+/// What the screen knows about the remaining budget of a budgeted key. Only
+/// Platform tracks it: the key carries the lifetime total, never what is left.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum RemainingBudget {
+    /// Not asked for yet (or asked again after a refresh).
+    #[default]
+    NotRequested,
+    /// The read is in flight.
+    Loading,
+    /// Platform's answer: `None` when it tracks no budget for the key.
+    Known(Option<Credits>),
+    /// The read failed; the total is still shown.
+    Unavailable,
 }
 
 /// At-rest protection posture of an identity's vault-stored keys.
@@ -172,6 +195,7 @@ impl ScreenLike for KeyInfoScreen {
         self.reload_identity();
         self.protection_status = None;
         self.recovery.completed();
+        self.remaining_budget = RemainingBudget::NotRequested;
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
@@ -224,6 +248,13 @@ impl ScreenLike for KeyInfoScreen {
                     MessageType::Success,
                 );
             }
+            BackendTaskSuccessResult::IdentityKeyRemainingBudgets {
+                identity_id,
+                ref budgets,
+            } if identity_id == self.identity.identity.id() => {
+                self.remaining_budget =
+                    RemainingBudget::Known(budgets.get(&self.key.id()).copied().flatten());
+            }
             BackendTaskSuccessResult::IdentityKeysUnprotected { .. } => {
                 self.protection_in_flight = false;
                 self.protection_status = None; // re-probe the vault on next render
@@ -262,6 +293,9 @@ impl ScreenLike for KeyInfoScreen {
 
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
         self.recovery.absorb_error(context);
+        if context.key_remaining_budgets_identity() == Some(self.identity.identity.id()) {
+            self.remaining_budget = RemainingBudget::Unavailable;
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
@@ -367,6 +401,8 @@ impl ScreenLike for KeyInfoScreen {
                             ui.label(RichText::new("Disabled").color(text_primary));
                         }
                         ui.end_row();
+
+                        self.render_key_limits_rows(ui, text_primary);
 
                         if let Some((_, Some(wallet_derivation_path))) =
                             self.private_key_data.as_ref()
@@ -834,6 +870,20 @@ impl ScreenLike for KeyInfoScreen {
             ));
         }
 
+        // A budgeted key: ask Platform what is left of the budget, once per
+        // opened (or refreshed) screen.
+        if self.remaining_budget == RemainingBudget::NotRequested
+            && self.limits_key().total_budget().is_some()
+        {
+            self.remaining_budget = RemainingBudget::Loading;
+            action |= AppAction::BackendTask(BackendTask::IdentityTask(
+                IdentityTask::FetchKeyRemainingBudgets {
+                    identity_id,
+                    key_ids: vec![self.key.id()],
+                },
+            ));
+        }
+
         // Legacy recovery: the passive check goes out once per opened screen,
         // and a restore only after the user pressed Restore — so the two can
         // never contend for `action`, which keeps only its most recent value.
@@ -905,6 +955,77 @@ impl KeyInfoScreen {
             recovery,
             pending_recovery_restore: None,
             parent: None,
+            remaining_budget: RemainingBudget::default(),
+        }
+    }
+
+    /// The key as the identity currently holds it, for its usage limits: the
+    /// budget and expiry move with `IdentityKeyLimitsUpdate`, so the snapshot
+    /// this screen was opened with may be stale. Falls back to the snapshot
+    /// when the identity no longer holds the same key.
+    fn limits_key(&self) -> &IdentityPublicKey {
+        self.identity
+            .identity
+            .public_keys()
+            .get(&self.key.id())
+            .filter(|live| same_key(&self.key, live))
+            .unwrap_or(&self.key)
+    }
+
+    /// The spending limit and expiry rows of the key details grid. A key
+    /// without limits shows neither.
+    fn render_key_limits_rows(&self, ui: &mut egui::Ui, text_primary: Color32) {
+        let key = self.limits_key();
+        let dark_mode = ui.style().visuals.dark_mode;
+
+        if let Some(total_budget) = key.total_budget() {
+            ui.label(
+                RichText::new("Spending limit:")
+                    .strong()
+                    .color(text_primary),
+            );
+            let text = match self.remaining_budget {
+                RemainingBudget::Known(Some(0)) => format!(
+                    "{total} in total. The limit is used up, so the network rejects actions signed with this key.",
+                    total = format_credits_as_dash(total_budget)
+                ),
+                RemainingBudget::Known(Some(remaining)) => format!(
+                    "{remaining} left of {total}.",
+                    remaining = format_credits_as_dash(remaining),
+                    total = format_credits_as_dash(total_budget)
+                ),
+                RemainingBudget::NotRequested | RemainingBudget::Loading => format!(
+                    "{total} in total. Checking how much is left.",
+                    total = format_credits_as_dash(total_budget)
+                ),
+                RemainingBudget::Known(None) | RemainingBudget::Unavailable => format!(
+                    "{total} in total. How much is left could not be read. Refresh to try again.",
+                    total = format_credits_as_dash(total_budget)
+                ),
+            };
+            let color = if self.remaining_budget == RemainingBudget::Known(Some(0)) {
+                DashColors::error_color(dark_mode)
+            } else {
+                text_primary
+            };
+            ui.label(RichText::new(text).color(color));
+            ui.end_row();
+        }
+
+        if let Some(expires_at) = key.expires_at() {
+            ui.label(RichText::new("Expires:").strong().color(text_primary));
+            let date = format_timestamp_ms_local(expires_at);
+            if key.is_expired_at(now_ms()) {
+                ui.label(
+                    RichText::new(format!(
+                        "Expired on {date}. The network rejects actions signed with this key."
+                    ))
+                    .color(DashColors::error_color(dark_mode)),
+                );
+            } else {
+                ui.label(RichText::new(date).color(text_primary));
+            }
+            ui.end_row();
         }
     }
 

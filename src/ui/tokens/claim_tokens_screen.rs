@@ -1,5 +1,8 @@
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::identity_key_usability::{
+    KeyRequirements, SigningScope, select_identity_signing_key_now,
+};
 use crate::model::user_role::UserRole;
 use crate::ui::components::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
@@ -85,22 +88,29 @@ impl ClaimTokensScreen {
 
         let (selected_key, selected_wallet) = if let Some(ref id) = identity {
             let identity_inner = &id.identity;
-            let key = identity_inner
-                .get_first_public_key_matching(
+            let key = select_identity_signing_key_now(
+                identity_inner,
+                KeyRequirements::new(
                     Purpose::AUTHENTICATION,
-                    HashSet::from([SecurityLevel::CRITICAL]),
-                    KeyType::all_key_types().into(),
-                    false,
-                )
-                .or_else(|| {
-                    identity_inner.get_first_public_key_matching(
+                    &[SecurityLevel::CRITICAL],
+                    SigningScope::ContractWide {
+                        contract_id: identity_token_basic_info.contract_id,
+                    },
+                ),
+            )
+            .or_else(|| {
+                select_identity_signing_key_now(
+                    identity_inner,
+                    KeyRequirements::new(
                         Purpose::TRANSFER,
-                        HashSet::from([SecurityLevel::CRITICAL]),
-                        KeyType::all_key_types().into(),
-                        false,
-                    )
-                })
-                .cloned();
+                        &[SecurityLevel::CRITICAL],
+                        SigningScope::ContractWide {
+                            contract_id: identity_token_basic_info.contract_id,
+                        },
+                    ),
+                )
+            })
+            .cloned();
 
             let selected_wallet = get_selected_wallet(id, None, key.as_ref()).unwrap_or(None);
             (key, selected_wallet)
@@ -447,6 +457,9 @@ impl ScreenLike for ClaimTokensScreen {
                         identity,
                         &mut self.selected_key,
                         TransactionType::TokenClaim,
+                        SigningScope::ContractWide {
+                            contract_id: self.identity_token_basic_info.contract_id,
+                        },
                     );
                     ui.add_space(10.0);
                 }

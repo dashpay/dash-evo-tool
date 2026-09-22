@@ -1,3 +1,4 @@
+use crate::model::identity_key_usability::SigningScope;
 use std::collections::BTreeMap;
 
 use crate::backend_task::FeeResult;
@@ -153,7 +154,12 @@ impl AppContext {
         .map_err(|error| SdkError::Protocol(*error))?;
 
         let public_key = qualified_identity
-            .document_signing_key(&preorder_document_type)
+            .document_signing_key(
+                SigningScope::ContractWide {
+                    contract_id: self.dpns_contract.id(),
+                },
+                &preorder_document_type,
+            )
             .ok_or(TaskError::NoDocumentSigningKey)?;
 
         let fee_estimator = self.fee_estimator();

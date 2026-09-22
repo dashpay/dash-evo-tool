@@ -10,6 +10,7 @@ use crate::app::AppAction;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::model::identity_key_usability::now_ms;
 use crate::model::legacy_recovery::RecoveryItem;
 use crate::model::qualified_identity::encrypted_key_storage::same_key;
 use crate::model::qualified_identity::key_placement::KeyPlacement;
@@ -27,6 +28,7 @@ use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dash_sdk::dpp::identity::identity_public_key::accessors::v1::IdentityPublicKeyGettersV1;
 use dash_sdk::platform::IdentityPublicKey;
 use eframe::egui::{self, RichText, ScrollArea};
 use std::sync::Arc;
@@ -279,11 +281,27 @@ impl KeysScreen {
                 ));
             }
             ui.label(RichText::new(held_text).color(DashColors::text_secondary(dark_mode)));
+            Self::render_limits_marker(ui, key, dark_mode);
         });
         if expert {
             Self::render_expert_detail(ui, key, dark_mode);
         }
         action
+    }
+
+    /// A short marker for a key with usage limits (protocol version 14): an
+    /// expired key can no longer sign; a limited one has a spending limit or an
+    /// expiry date, detailed on its page. A key without limits shows nothing.
+    fn render_limits_marker(ui: &mut egui::Ui, key: &IdentityPublicKey, dark_mode: bool) {
+        if key.is_expired_at(now_ms()) {
+            ui.label(RichText::new("Expired").color(DashColors::error_color(dark_mode)))
+                .on_hover_text("This key has expired, so it can no longer sign.");
+        } else if key.has_limits() {
+            ui.label(RichText::new("Limited").color(DashColors::warning_color(dark_mode)))
+                .on_hover_text(
+                    "This key has a spending limit or an expiry date. Open it to see the details.",
+                );
+        }
     }
 
     /// The on-chain specifics of one key, for the Expert view. Everyday view

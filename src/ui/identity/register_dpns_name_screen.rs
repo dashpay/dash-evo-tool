@@ -4,6 +4,9 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::dpns::{DpnsNameValidationResult, DpnsRegistrationOutcome, validate_dpns_name};
 use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::identity_key_usability::{
+    KeyRequirements, SigningScope, select_identity_signing_key_now,
+};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::identity_selector::IdentitySelector;
@@ -72,6 +75,32 @@ pub struct RegisterDpnsNameScreen {
     op_overlay: Option<OverlayHandle>,
 }
 
+/// The key to pre-select for registering a DPNS name for `identity`: an
+/// AUTHENTICATION key that can sign both DPNS documents (preorder and domain).
+/// MASTER keys cannot sign document operations, so only MEDIUM, HIGH or
+/// CRITICAL keys qualify.
+fn dpns_signing_key(
+    app_context: &AppContext,
+    identity: &QualifiedIdentity,
+) -> Option<IdentityPublicKey> {
+    use dash_sdk::dpp::identity::SecurityLevel;
+    select_identity_signing_key_now(
+        &identity.identity,
+        KeyRequirements::new(
+            Purpose::AUTHENTICATION,
+            &[
+                SecurityLevel::CRITICAL,
+                SecurityLevel::HIGH,
+                SecurityLevel::MEDIUM,
+            ],
+            SigningScope::ContractWide {
+                contract_id: app_context.dpns_contract.id(),
+            },
+        ),
+    )
+    .cloned()
+}
+
 impl RegisterDpnsNameScreen {
     pub fn new(app_context: &Arc<AppContext>, source: RegisterDpnsNameSource) -> Self {
         let qualified_identities: Vec<_> =
@@ -97,25 +126,9 @@ impl RegisterDpnsNameScreen {
         };
 
         // Auto-select a suitable key for DPNS registration
-        // Note: MASTER keys cannot be used for document operations,
-        // only MEDIUM, HIGH, or CRITICAL security levels are allowed
-        let selected_key = selected_qualified_identity.as_ref().and_then(|identity| {
-            use dash_sdk::dpp::identity::{KeyType, SecurityLevel};
-            identity
-                .identity
-                .get_first_public_key_matching(
-                    Purpose::AUTHENTICATION,
-                    [
-                        SecurityLevel::CRITICAL,
-                        SecurityLevel::HIGH,
-                        SecurityLevel::MEDIUM,
-                    ]
-                    .into(),
-                    KeyType::all_key_types().into(),
-                    false,
-                )
-                .cloned()
-        });
+        let selected_key = selected_qualified_identity
+            .as_ref()
+            .and_then(|identity| dpns_signing_key(app_context, identity));
 
         let selected_identity_string = selected_qualified_identity
             .as_ref()
@@ -162,23 +175,7 @@ impl RegisterDpnsNameScreen {
                 .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
 
             // Auto-select a suitable key for DPNS registration
-            // Note: MASTER keys cannot be used for document operations,
-            // only MEDIUM, HIGH, or CRITICAL security levels are allowed
-            use dash_sdk::dpp::identity::{KeyType, SecurityLevel};
-            self.selected_key = qi
-                .identity
-                .get_first_public_key_matching(
-                    Purpose::AUTHENTICATION,
-                    [
-                        SecurityLevel::CRITICAL,
-                        SecurityLevel::HIGH,
-                        SecurityLevel::MEDIUM,
-                    ]
-                    .into(),
-                    KeyType::all_key_types().into(),
-                    false,
-                )
-                .cloned();
+            self.selected_key = dpns_signing_key(&self.app_context, qi);
 
             // Update the selected wallet
             self.selected_wallet = get_selected_wallet(qi, Some(&self.app_context), None)
@@ -218,23 +215,7 @@ impl RegisterDpnsNameScreen {
         if response.changed() {
             if let Some(identity) = &self.selected_qualified_identity {
                 // Auto-select a suitable key for DPNS registration
-                // Note: MASTER keys cannot be used for document operations,
-                // only MEDIUM, HIGH, or CRITICAL security levels are allowed
-                use dash_sdk::dpp::identity::{KeyType, SecurityLevel};
-                self.selected_key = identity
-                    .identity
-                    .get_first_public_key_matching(
-                        Purpose::AUTHENTICATION,
-                        [
-                            SecurityLevel::CRITICAL,
-                            SecurityLevel::HIGH,
-                            SecurityLevel::MEDIUM,
-                        ]
-                        .into(),
-                        KeyType::all_key_types().into(),
-                        false,
-                    )
-                    .cloned();
+                self.selected_key = dpns_signing_key(&self.app_context, identity);
 
                 // Update wallet
                 self.selected_wallet = get_selected_wallet(identity, Some(&self.app_context), None)
@@ -263,6 +244,9 @@ impl RegisterDpnsNameScreen {
                         .document_type_cloned_for_name("domain")
                         .ok()
                         .as_ref(),
+                    SigningScope::ContractWide {
+                        contract_id: self.app_context.dpns_contract.id(),
+                    },
                 );
                 if !matches!(key_action, AppAction::None) {
                     action = key_action;

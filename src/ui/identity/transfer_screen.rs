@@ -631,7 +631,7 @@ impl ScreenLike for TransferScreen {
 
             let key_for_info = key_info_when_available(
                 has_keys,
-                self.identity.signing_key_now(KeyRequirements::new(
+                self.identity.matching_key_now(KeyRequirements::new(
                     Purpose::TRANSFER,
                     &SecurityLevel::full_range(),
                     SigningScope::NonBatch,

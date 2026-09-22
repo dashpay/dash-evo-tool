@@ -437,12 +437,12 @@ impl ScreenLike for WithdrawalScreen {
                     ui.add_space(10.0);
                 }
 
-                let owner_key = self.identity.signing_key_now(KeyRequirements::new(
+                let owner_key = self.identity.matching_key_now(KeyRequirements::new(
                     Purpose::OWNER,
                     &SecurityLevel::full_range(),
                     SigningScope::NonBatch,
                 ));
-                let transfer_key = self.identity.signing_key_now(KeyRequirements::new(
+                let transfer_key = self.identity.matching_key_now(KeyRequirements::new(
                     Purpose::TRANSFER,
                     &SecurityLevel::full_range(),
                     SigningScope::NonBatch,

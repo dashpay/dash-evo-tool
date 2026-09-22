@@ -1042,6 +1042,18 @@ impl QualifiedIdentity {
         })
     }
 
+    /// The key [`select_identity_signing_key`] would pick for `requirements`
+    /// now, whether or not this device holds its private half. For
+    /// informational lookups only (e.g. pointing the user at a key whose
+    /// private half they should load) — never for signing; use
+    /// [`Self::signing_key_now`] for that.
+    pub fn matching_key_now(
+        &self,
+        requirements: KeyRequirements<'_>,
+    ) -> Option<&IdentityPublicKey> {
+        select_identity_signing_key(&self.identity, requirements, now_ms(), |_| true)
+    }
+
     pub fn available_withdrawal_keys(&self) -> Vec<&QualifiedIdentityPublicKey> {
         let mut keys = vec![];
 
@@ -2273,6 +2285,30 @@ mod withdrawal_key_tests {
         let transfer = key(1, Purpose::TRANSFER);
         let qi = build_identity(IdentityType::User, vec![transfer], vec![]);
         assert!(qi.default_withdrawal_key().is_none());
+    }
+
+    /// Regression: the withdraw screen's "Check Owner Key" / "Check Payout
+    /// Address Key" buttons render exactly when no signable key is held, so
+    /// their lookup must still find a public-only key.
+    #[test]
+    fn a_public_only_owner_key_is_found_for_information_but_not_for_signing() {
+        let owner = key(2, Purpose::OWNER);
+        let transfer = key(3, Purpose::TRANSFER);
+        let qi = build_identity(IdentityType::Masternode, vec![owner, transfer], vec![]);
+        let levels = SecurityLevel::full_range();
+        let requirements = |purpose| KeyRequirements::new(purpose, &levels, SigningScope::NonBatch);
+
+        assert!(qi.signing_key_now(requirements(Purpose::OWNER)).is_none());
+        assert_eq!(
+            qi.matching_key_now(requirements(Purpose::OWNER))
+                .map(|k| k.id()),
+            Some(2)
+        );
+        assert_eq!(
+            qi.matching_key_now(requirements(Purpose::TRANSFER))
+                .map(|k| k.id()),
+            Some(3)
+        );
     }
 
     #[test]

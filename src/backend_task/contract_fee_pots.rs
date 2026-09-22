@@ -102,22 +102,26 @@ mod tests {
         let ctx = crate::context::test_support::test_app_context(temp_dir.path());
         let sdk = Sdk::new_mock();
 
-        let fetched = ctx
-            .fetch_contract_fee_pots(&sdk, Identifier::random())
-            .await;
-        assert!(
-            matches!(fetched, Err(TaskError::ContractFeePotsNotSupported)),
-            "got {fetched:?}"
-        );
+        // Not known yet (0), and mainnet's 13.
+        for version in [0, 13] {
+            ctx.set_platform_protocol_version(version);
+            let fetched = ctx
+                .fetch_contract_fee_pots(&sdk, Identifier::random())
+                .await;
+            assert!(
+                matches!(fetched, Err(TaskError::ContractFeePotsNotSupported)),
+                "protocol {version}: got {fetched:?}"
+            );
 
-        let identity = crate::backend_task::identity::key_limits_test_identity();
-        let claimed = ctx
-            .claim_contract_fees(&sdk, Identifier::random(), ContractFeePot::Owner, identity)
-            .await;
-        assert!(
-            matches!(claimed, Err(TaskError::ContractFeePotsNotSupported)),
-            "got {claimed:?}"
-        );
+            let identity = crate::backend_task::identity::key_limits_test_identity();
+            let claimed = ctx
+                .claim_contract_fees(&sdk, Identifier::random(), ContractFeePot::Owner, identity)
+                .await;
+            assert!(
+                matches!(claimed, Err(TaskError::ContractFeePotsNotSupported)),
+                "protocol {version}: got {claimed:?}"
+            );
+        }
     }
 
     /// A claimant with no CRITICAL unbound key is refused before anything is

@@ -59,6 +59,8 @@ pub mod grovestark;
 pub mod identity;
 pub mod migration;
 pub mod platform_info;
+#[cfg(test)]
+mod protocol_13_transitions;
 pub mod register_contract;
 pub mod shielded;
 pub mod system_task;

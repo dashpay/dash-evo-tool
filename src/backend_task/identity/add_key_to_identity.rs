@@ -364,16 +364,20 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let ctx = crate::context::test_support::test_app_context(temp_dir.path());
         let sdk = dash_sdk::Sdk::new_mock();
-        let identity = super::super::key_limits_test_identity();
 
-        let result = ctx
-            .add_key_to_identity(&sdk, identity, key_with_limits(Some(1)), [1; 32])
-            .await;
+        // Not known yet (0), and mainnet's 13.
+        for version in [0, 13] {
+            ctx.set_platform_protocol_version(version);
+            let identity = super::super::key_limits_test_identity();
+            let result = ctx
+                .add_key_to_identity(&sdk, identity, key_with_limits(Some(1)), [1; 32])
+                .await;
 
-        assert!(
-            matches!(result, Err(TaskError::KeyLimitsNotSupported)),
-            "got {result:?}"
-        );
+            assert!(
+                matches!(result, Err(TaskError::KeyLimitsNotSupported)),
+                "protocol {version}: got {result:?}"
+            );
+        }
     }
 
     /// A contract-bound authentication key needs a network that admits one.

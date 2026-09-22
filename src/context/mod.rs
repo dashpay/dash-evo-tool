@@ -1630,12 +1630,10 @@ impl AppContext {
 }
 
 /// Returns the default platform version for the given network.
-// TODO(platform#4231): Seeded at v12 (not pinned) so `Sdk`'s protocol-version
-// ratchet stays active. See `PlatformInfoTaskRequestType::CurrentEpochInfo` for
-// why `ExtendedEpochInfo::fetch_current` can't be used directly right now.
-// Revert to `.with_version()` (a hard pin) or otherwise reconsider this once
-// https://github.com/dashpay/platform/pull/4231 merges and this repo's platform
-// pin advances past it.
+// Seeded at v12 and deliberately not pinned: `Sdk`'s protocol-version ratchet
+// raises it to whatever the connected network runs, so one build serves
+// networks both before and after protocol version 14. A hard pin would fix the
+// transition format to one side of that upgrade.
 // TODO(platform-4.2-dev-bump): devnet should seed at ≥PV14 per rs-sdk::min_protocol_version; needs to confirm that function is reachable from DET's dash-sdk re-export first (open question) — see platform-4.2-dev-impact.md F5
 pub(crate) const fn default_platform_version(_network: &Network) -> &'static PlatformVersion {
     &PLATFORM_V12

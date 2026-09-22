@@ -1,3 +1,9 @@
+use dash_sdk::dpp::tokens::token_amount_on_contract_token::DocumentActionTokenCost;
+use crate::ui::components::Component;
+use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
+use dash_sdk::dpp::state_transition::batch_transition::batched_transition::document_transition_action_type::DocumentTransitionActionType;
+use dash_sdk::dpp::data_contract::document_type::action_fees::agreement::DocumentActionFeeAgreement;
+use crate::model::fee_estimation::{ACTION_FEE_MULTIPLIER_INCREASE_TOLERANCE_PERCENT, DocumentActionFeeQuote, document_action_fee_quote};
 use crate::app::AppAction;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::FeeResult;
@@ -67,6 +73,19 @@ pub enum DocumentActionType {
 }
 
 impl DocumentActionType {
+    /// The document transition this action broadcasts, as action fees and
+    /// token costs are declared per transition type.
+    fn transition_action(&self) -> DocumentTransitionActionType {
+        match self {
+            DocumentActionType::Create => DocumentTransitionActionType::Create,
+            DocumentActionType::Delete => DocumentTransitionActionType::Delete,
+            DocumentActionType::Purchase => DocumentTransitionActionType::Purchase,
+            DocumentActionType::Replace => DocumentTransitionActionType::Replace,
+            DocumentActionType::SetPrice => DocumentTransitionActionType::UpdatePrice,
+            DocumentActionType::Transfer => DocumentTransitionActionType::Transfer,
+        }
+    }
+
     pub fn display_name(&self) -> &'static str {
         match self {
             DocumentActionType::Create => "Create Document",
@@ -134,6 +153,17 @@ pub struct DocumentActionScreen {
 
     // Banner for in-progress operations
     refresh_banner: Option<BannerHandle>,
+
+    /// Whether to pay a document type's optional token cost. Off, the action
+    /// carries no token payment and its gas is paid in credits instead.
+    pay_optional_token_cost: bool,
+    /// The confirmation of a document action fee, open while the user decides.
+    action_fee_confirmation: Option<ConfirmationDialog>,
+    /// The action fee quote the open confirmation shows; the agreement signed
+    /// is exactly this one.
+    pending_action_fee: Option<DocumentActionFeeQuote>,
+    /// The action fee agreement the user confirmed, used by the next dispatch.
+    agreed_action_fee: Option<DocumentActionFeeAgreement>,
 }
 
 impl DocumentActionScreen {
@@ -190,6 +220,10 @@ impl DocumentActionScreen {
             fetched_documents: IndexMap::new(),
             completed_fee_result: None,
             refresh_banner: None,
+            pay_optional_token_cost: true,
+            action_fee_confirmation: None,
+            pending_action_fee: None,
+            agreed_action_fee: None,
         }
     }
 
@@ -890,7 +924,46 @@ impl DocumentActionScreen {
                 ))
                 .color(Color32::DARK_RED),
             );
+            // Protocol version 14: an optional token cost may be left out, the
+            // action then paying its gas in credits with no sponsorship.
+            if token_creation_cost.optional {
+                ui.checkbox(
+                    &mut self.pay_optional_token_cost,
+                    "Pay the token cost",
+                )
+                .on_hover_text(
+                    "Paying the token cost is optional for this action. Without it, you pay the network fee yourself in credits.",
+                );
+            }
+        } else {
+            self.pay_optional_token_cost = true;
         }
+    }
+
+    /// The token payment for `cost`, or `None` when there is no cost or the
+    /// user chose not to pay an optional one.
+    fn token_payment_for(&self, cost: Option<DocumentActionTokenCost>) -> Option<TokenPaymentInfo> {
+        cost.filter(|cost| !cost.optional || self.pay_optional_token_cost)
+            .map(|cost| {
+                TokenPaymentInfo::V0(TokenPaymentInfoV0 {
+                    payment_token_contract_id: cost.contract_id,
+                    token_contract_position: cost.token_contract_position,
+                    gas_fees_paid_by: cost.gas_fees_paid_by,
+                    minimum_token_cost: None,
+                    maximum_token_cost: Some(cost.token_amount),
+                })
+            })
+    }
+
+    /// The action fee the selected document type charges for this action at
+    /// the current fee multiplier, `None` when it charges none.
+    fn action_fee_quote(&self) -> Option<DocumentActionFeeQuote> {
+        let doc_type = self.selected_document_type.as_ref()?;
+        document_action_fee_quote(
+            doc_type.as_ref(),
+            self.action_type.transition_action(),
+            self.app_context.fee_multiplier_permille(),
+        )
     }
 
     fn render_broadcast_button(&mut self, ui: &mut Ui) -> AppAction {
@@ -906,6 +979,8 @@ impl DocumentActionScreen {
             DocumentActionType::Purchase => fee_estimator.estimate_document_purchase(),
             DocumentActionType::SetPrice => fee_estimator.estimate_document_set_price(),
         };
+
+        let action_fee = self.action_fee_quote();
 
         ui.add_space(10.0);
         let dark_mode = ui.style().visuals.dark_mode;
@@ -926,6 +1001,20 @@ impl DocumentActionScreen {
                             .size(14.0),
                     );
                 });
+                if let Some(quote) = &action_fee {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new("Contract fee:")
+                                .color(DashColors::text_secondary(dark_mode))
+                                .size(14.0),
+                        );
+                        ui.label(
+                            RichText::new(action_fee_summary(quote))
+                                .color(DashColors::text_primary(dark_mode))
+                                .size(14.0),
+                        );
+                    });
+                }
             });
 
         ui.add_space(10.0);
@@ -939,11 +1028,39 @@ impl DocumentActionScreen {
         };
 
         if ComponentStyles::add_primary_button(ui, button_text).clicked() && self.can_broadcast() {
-            let task = self.create_document_action();
-            if task != BackendTask::None {
-                self.broadcast_status = BroadcastStatus::Broadcasting;
-                self.set_fetching_banner(ui.ctx(), "Broadcasting...");
-                action = AppAction::BackendTask(task);
+            match action_fee {
+                // A contract fee is paid only with the user's explicit
+                // agreement to the amount shown.
+                Some(quote) => {
+                    self.pending_action_fee = Some(quote);
+                    self.action_fee_confirmation = Some(ConfirmationDialog::new(
+                        "Confirm contract fee".to_string(),
+                        action_fee_confirmation_text(&quote),
+                    ));
+                }
+                None => {
+                    self.agreed_action_fee = None;
+                    action = self.dispatch_document_action(ui.ctx());
+                }
+            }
+        }
+
+        let fee_response = self
+            .action_fee_confirmation
+            .as_mut()
+            .and_then(|dialog| dialog.show(ui).inner.dialog_response);
+        if let Some(response) = fee_response {
+            match response {
+                ConfirmationStatus::Confirmed => {
+                    self.action_fee_confirmation = None;
+                    self.agreed_action_fee =
+                        self.pending_action_fee.take().map(|quote| quote.agreement);
+                    action = self.dispatch_document_action(ui.ctx());
+                }
+                ConfirmationStatus::Canceled => {
+                    self.action_fee_confirmation = None;
+                    self.pending_action_fee = None;
+                }
             }
         }
 
@@ -957,6 +1074,17 @@ impl DocumentActionScreen {
         }
 
         action
+    }
+
+    /// Build and dispatch the document action, carrying the agreed action fee.
+    fn dispatch_document_action(&mut self, ctx: &egui::Context) -> AppAction {
+        let task = self.create_document_action();
+        if task == BackendTask::None {
+            return AppAction::None;
+        }
+        self.broadcast_status = BroadcastStatus::Broadcasting;
+        self.set_fetching_banner(ctx, "Broadcasting...");
+        AppAction::BackendTask(task)
     }
 
     /// Resolve the four selections every document action needs — document
@@ -1014,20 +1142,10 @@ impl DocumentActionScreen {
                 };
 
                 let token_payment_info =
-                    doc_type
-                        .document_creation_token_cost()
-                        .map(|token_creation_cost| {
-                            TokenPaymentInfo::V0(TokenPaymentInfoV0 {
-                                payment_token_contract_id: token_creation_cost.contract_id,
-                                token_contract_position: token_creation_cost
-                                    .token_contract_position,
-                                gas_fees_paid_by: token_creation_cost.gas_fees_paid_by,
-                                minimum_token_cost: None,
-                                maximum_token_cost: Some(token_creation_cost.token_amount),
-                            })
-                        });
+                    self.token_payment_for(doc_type.document_creation_token_cost());
 
                 BackendTask::DocumentTask(Box::new(DocumentTask::BroadcastDocument {
+                    action_fee_agreement: self.agreed_action_fee,
                     document: doc,
                     token_payment_info,
                     entropy,
@@ -1057,20 +1175,10 @@ impl DocumentActionScreen {
             return BackendTask::None;
         };
 
-        let token_payment_info =
-            doc_type
-                .document_deletion_token_cost()
-                .map(|token_creation_cost| {
-                    TokenPaymentInfo::V0(TokenPaymentInfoV0 {
-                        payment_token_contract_id: token_creation_cost.contract_id,
-                        token_contract_position: token_creation_cost.token_contract_position,
-                        gas_fees_paid_by: token_creation_cost.gas_fees_paid_by,
-                        minimum_token_cost: None,
-                        maximum_token_cost: Some(token_creation_cost.token_amount),
-                    })
-                });
+        let token_payment_info = self.token_payment_for(doc_type.document_deletion_token_cost());
 
         BackendTask::DocumentTask(Box::new(DocumentTask::DeleteDocument {
+            action_fee_agreement: self.agreed_action_fee,
             document_id,
             document_type: doc_type.clone(),
             data_contract: Arc::new(contract.contract.clone()),
@@ -1088,20 +1196,10 @@ impl DocumentActionScreen {
             return BackendTask::None;
         };
 
-        let token_payment_info =
-            doc_type
-                .document_purchase_token_cost()
-                .map(|token_creation_cost| {
-                    TokenPaymentInfo::V0(TokenPaymentInfoV0 {
-                        payment_token_contract_id: token_creation_cost.contract_id,
-                        token_contract_position: token_creation_cost.token_contract_position,
-                        gas_fees_paid_by: token_creation_cost.gas_fees_paid_by,
-                        minimum_token_cost: None,
-                        maximum_token_cost: Some(token_creation_cost.token_amount),
-                    })
-                });
+        let token_payment_info = self.token_payment_for(doc_type.document_purchase_token_cost());
 
         BackendTask::DocumentTask(Box::new(DocumentTask::PurchaseDocument {
+            action_fee_agreement: self.agreed_action_fee,
             price: self.fetched_price.unwrap_or(0),
             document_id,
             document_type: doc_type.clone(),
@@ -1122,20 +1220,10 @@ impl DocumentActionScreen {
                     };
 
                     let token_payment_info =
-                        doc_type
-                            .document_replacement_token_cost()
-                            .map(|token_creation_cost| {
-                                TokenPaymentInfo::V0(TokenPaymentInfoV0 {
-                                    payment_token_contract_id: token_creation_cost.contract_id,
-                                    token_contract_position: token_creation_cost
-                                        .token_contract_position,
-                                    gas_fees_paid_by: token_creation_cost.gas_fees_paid_by,
-                                    minimum_token_cost: None,
-                                    maximum_token_cost: Some(token_creation_cost.token_amount),
-                                })
-                            });
+                        self.token_payment_for(doc_type.document_replacement_token_cost());
 
                     BackendTask::DocumentTask(Box::new(DocumentTask::ReplaceDocument {
+                        action_fee_agreement: self.agreed_action_fee,
                         document: updated_doc,
                         document_type: doc_type.clone(),
                         data_contract: Arc::new(contract.contract.clone()),
@@ -1160,19 +1248,10 @@ impl DocumentActionScreen {
             };
 
             let token_payment_info =
-                doc_type
-                    .document_replacement_token_cost()
-                    .map(|token_creation_cost| {
-                        TokenPaymentInfo::V0(TokenPaymentInfoV0 {
-                            payment_token_contract_id: token_creation_cost.contract_id,
-                            token_contract_position: token_creation_cost.token_contract_position,
-                            gas_fees_paid_by: token_creation_cost.gas_fees_paid_by,
-                            minimum_token_cost: None,
-                            maximum_token_cost: Some(token_creation_cost.token_amount),
-                        })
-                    });
+                self.token_payment_for(doc_type.document_replacement_token_cost());
 
             BackendTask::DocumentTask(Box::new(DocumentTask::ReplaceDocument {
+                action_fee_agreement: self.agreed_action_fee,
                 document: DocumentV0::default().into(),
                 document_type: doc_type.clone(),
                 data_contract: Arc::new(contract.contract.clone()),
@@ -1193,19 +1272,10 @@ impl DocumentActionScreen {
         };
 
         let token_payment_info =
-            doc_type
-                .document_update_price_token_cost()
-                .map(|token_creation_cost| {
-                    TokenPaymentInfo::V0(TokenPaymentInfoV0 {
-                        payment_token_contract_id: token_creation_cost.contract_id,
-                        token_contract_position: token_creation_cost.token_contract_position,
-                        gas_fees_paid_by: token_creation_cost.gas_fees_paid_by,
-                        minimum_token_cost: None,
-                        maximum_token_cost: Some(token_creation_cost.token_amount),
-                    })
-                });
+            self.token_payment_for(doc_type.document_update_price_token_cost());
 
         BackendTask::DocumentTask(Box::new(DocumentTask::SetDocumentPrice {
+            action_fee_agreement: self.agreed_action_fee,
             price,
             document_id,
             document_type: doc_type.clone(),
@@ -1226,20 +1296,10 @@ impl DocumentActionScreen {
             return BackendTask::None;
         };
 
-        let token_payment_info =
-            doc_type
-                .document_transfer_token_cost()
-                .map(|token_creation_cost| {
-                    TokenPaymentInfo::V0(TokenPaymentInfoV0 {
-                        payment_token_contract_id: token_creation_cost.contract_id,
-                        token_contract_position: token_creation_cost.token_contract_position,
-                        gas_fees_paid_by: token_creation_cost.gas_fees_paid_by,
-                        minimum_token_cost: None,
-                        maximum_token_cost: Some(token_creation_cost.token_amount),
-                    })
-                });
+        let token_payment_info = self.token_payment_for(doc_type.document_transfer_token_cost());
 
         BackendTask::DocumentTask(Box::new(DocumentTask::TransferDocument {
+            action_fee_agreement: self.agreed_action_fee,
             document_id,
             new_owner_id: recipient_id,
             document_type: doc_type.clone(),
@@ -1921,5 +1981,147 @@ fn signing_scope<'a>(
             contract_id: contract.contract.id(),
         },
         (None, _) => SigningScope::NonBatch,
+    }
+}
+
+/// "N (X to the contract owner, Y to its moderators)" for a contract fee.
+fn action_fee_summary(quote: &DocumentActionFeeQuote) -> String {
+    if quote.moderators == 0 {
+        format!(
+            "{total} to the contract owner",
+            total = format_credits_as_dash(quote.total)
+        )
+    } else {
+        format!(
+            "{total} ({owner} to the contract owner, {moderators} to its moderators)",
+            total = format_credits_as_dash(quote.total),
+            owner = format_credits_as_dash(quote.owner),
+            moderators = format_credits_as_dash(quote.moderators)
+        )
+    }
+}
+
+/// The confirmation text for a contract fee: what is charged now, and the
+/// most that can be charged if network fees rise before the action runs.
+fn action_fee_confirmation_text(quote: &DocumentActionFeeQuote) -> String {
+    if quote.max_total > quote.total {
+        format!(
+            "Besides the network fee, this contract charges a fee of {fee} for this action: {summary}. If network fees rise before the action is processed, up to {max} can be charged. If they rise by more than {percent}%, the network refuses the action instead. Do you want to continue?",
+            fee = format_credits_as_dash(quote.total),
+            summary = action_fee_summary(quote),
+            max = format_credits_as_dash(quote.max_total),
+            percent = ACTION_FEE_MULTIPLIER_INCREASE_TOLERANCE_PERCENT
+        )
+    } else {
+        format!(
+            "Besides the network fee, this contract charges a fixed fee of {fee} for this action: {summary}. Do you want to continue?",
+            fee = format_credits_as_dash(quote.total),
+            summary = action_fee_summary(quote)
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dash_sdk::dpp::data_contract::document_type::action_fees::agreement::AgreedFeeMultiplier;
+    use dash_sdk::dpp::data_contract::document_type::action_fees::{
+        ActionFeePricing, DocumentActionFee,
+    };
+
+    fn quote(
+        pricing: ActionFeePricing,
+        owner: Credits,
+        moderators: Credits,
+    ) -> DocumentActionFeeQuote {
+        let total = owner + moderators;
+        let max_total = match pricing {
+            ActionFeePricing::FeeMultiplier => {
+                total * (100 + ACTION_FEE_MULTIPLIER_INCREASE_TOLERANCE_PERCENT as u64) / 100
+            }
+            ActionFeePricing::Fixed => total,
+        };
+        DocumentActionFeeQuote {
+            agreement: DocumentActionFeeAgreement::for_declared_fee(
+                pricing,
+                DocumentActionFee { owner, moderators },
+                AgreedFeeMultiplier {
+                    known_permille: 1000,
+                    increase_tolerance_percent: ACTION_FEE_MULTIPLIER_INCREASE_TOLERANCE_PERCENT,
+                },
+            ),
+            owner,
+            moderators,
+            total,
+            max_total,
+        }
+    }
+
+    /// The user agrees to the most that can be charged, so the confirmation
+    /// names that ceiling and the tolerance behind it, not only today's price.
+    #[test]
+    fn a_multiplier_priced_fee_confirmation_names_the_ceiling_and_the_tolerance() {
+        let quote = quote(ActionFeePricing::FeeMultiplier, 100_000_000_000, 0);
+        let text = action_fee_confirmation_text(&quote);
+        assert!(
+            text.contains(&format!(
+                "up to {}",
+                format_credits_as_dash(quote.max_total)
+            )),
+            "the ceiling must be shown, got: {text}"
+        );
+        assert!(
+            text.contains(&format!(
+                "more than {ACTION_FEE_MULTIPLIER_INCREASE_TOLERANCE_PERCENT}%"
+            )),
+            "the tolerance must be shown, got: {text}"
+        );
+        assert!(text.contains(&format_credits_as_dash(quote.total)));
+    }
+
+    #[test]
+    fn a_fixed_fee_confirmation_promises_no_increase() {
+        let quote = quote(ActionFeePricing::Fixed, 50_000_000_000, 0);
+        let text = action_fee_confirmation_text(&quote);
+        assert!(text.contains("fixed fee"), "got: {text}");
+        assert!(
+            !text.contains("up to"),
+            "a fixed fee cannot rise, got: {text}"
+        );
+    }
+
+    #[test]
+    fn a_fee_split_with_moderators_names_both_parts() {
+        let quote = quote(
+            ActionFeePricing::FeeMultiplier,
+            60_000_000_000,
+            40_000_000_000,
+        );
+        let summary = action_fee_summary(&quote);
+        assert!(summary.contains(&format!(
+            "{} to the contract owner",
+            format_credits_as_dash(quote.owner)
+        )));
+        assert!(summary.contains(&format!(
+            "{} to its moderators",
+            format_credits_as_dash(quote.moderators)
+        )));
+    }
+
+    /// Action fees and token costs are declared per transition, so every
+    /// screen action must name the transition it broadcasts.
+    #[test]
+    fn every_action_maps_to_its_document_transition() {
+        use DocumentTransitionActionType as T;
+        for (action, expected) in [
+            (DocumentActionType::Create, T::Create),
+            (DocumentActionType::Delete, T::Delete),
+            (DocumentActionType::Purchase, T::Purchase),
+            (DocumentActionType::Replace, T::Replace),
+            (DocumentActionType::SetPrice, T::UpdatePrice),
+            (DocumentActionType::Transfer, T::Transfer),
+        ] {
+            assert_eq!(action.transition_action(), expected);
+        }
     }
 }

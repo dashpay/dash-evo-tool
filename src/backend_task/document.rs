@@ -15,6 +15,9 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::tokens::token_payment_info::TokenPaymentInfo;
 use dash_sdk::drive::query::SelectProjection;
 use dash_sdk::platform::documents::transitions::DocumentCreateResult;
+use crate::model::fee_estimation::document_action_fee_quote;
+use dash_sdk::dpp::data_contract::document_type::action_fees::agreement::DocumentActionFeeAgreement;
+use dash_sdk::dpp::state_transition::batch_transition::batched_transition::document_transition_action_type::DocumentTransitionActionType;
 use dash_sdk::platform::documents::transitions::DocumentCreateTransitionBuilder;
 use dash_sdk::platform::documents::transitions::DocumentDeleteResult;
 use dash_sdk::platform::documents::transitions::DocumentDeleteTransitionBuilder;
@@ -43,6 +46,11 @@ pub enum DocumentTask {
         data_contract: Arc<DataContract>,
         qualified_identity: QualifiedIdentity,
         identity_key: IdentityPublicKey,
+        /// The document action fee the user was shown and agreed to (protocol
+        /// version 14). `None` lets the backend derive it from `data_contract`
+        /// at the current fee multiplier; a document type that charges no fee
+        /// for the action needs none.
+        action_fee_agreement: Option<DocumentActionFeeAgreement>,
     },
     DeleteDocument {
         document_id: Identifier,
@@ -51,6 +59,11 @@ pub enum DocumentTask {
         qualified_identity: QualifiedIdentity,
         identity_key: IdentityPublicKey,
         token_payment_info: Option<TokenPaymentInfo>,
+        /// The document action fee the user was shown and agreed to (protocol
+        /// version 14). `None` lets the backend derive it from `data_contract`
+        /// at the current fee multiplier; a document type that charges no fee
+        /// for the action needs none.
+        action_fee_agreement: Option<DocumentActionFeeAgreement>,
     },
     ReplaceDocument {
         document: Document,
@@ -59,6 +72,11 @@ pub enum DocumentTask {
         qualified_identity: QualifiedIdentity,
         identity_key: IdentityPublicKey,
         token_payment_info: Option<TokenPaymentInfo>,
+        /// The document action fee the user was shown and agreed to (protocol
+        /// version 14). `None` lets the backend derive it from `data_contract`
+        /// at the current fee multiplier; a document type that charges no fee
+        /// for the action needs none.
+        action_fee_agreement: Option<DocumentActionFeeAgreement>,
     },
     TransferDocument {
         document_id: Identifier,
@@ -68,6 +86,11 @@ pub enum DocumentTask {
         qualified_identity: QualifiedIdentity,
         identity_key: IdentityPublicKey,
         token_payment_info: Option<TokenPaymentInfo>,
+        /// The document action fee the user was shown and agreed to (protocol
+        /// version 14). `None` lets the backend derive it from `data_contract`
+        /// at the current fee multiplier; a document type that charges no fee
+        /// for the action needs none.
+        action_fee_agreement: Option<DocumentActionFeeAgreement>,
     },
     PurchaseDocument {
         price: Credits,
@@ -77,6 +100,11 @@ pub enum DocumentTask {
         qualified_identity: QualifiedIdentity,
         identity_key: IdentityPublicKey,
         token_payment_info: Option<TokenPaymentInfo>,
+        /// The document action fee the user was shown and agreed to (protocol
+        /// version 14). `None` lets the backend derive it from `data_contract`
+        /// at the current fee multiplier; a document type that charges no fee
+        /// for the action needs none.
+        action_fee_agreement: Option<DocumentActionFeeAgreement>,
     },
     SetDocumentPrice {
         price: Credits,
@@ -86,12 +114,32 @@ pub enum DocumentTask {
         qualified_identity: QualifiedIdentity,
         identity_key: IdentityPublicKey,
         token_payment_info: Option<TokenPaymentInfo>,
+        /// The document action fee the user was shown and agreed to (protocol
+        /// version 14). `None` lets the backend derive it from `data_contract`
+        /// at the current fee multiplier; a document type that charges no fee
+        /// for the action needs none.
+        action_fee_agreement: Option<DocumentActionFeeAgreement>,
     },
     FetchDocuments(DocumentQuery),
     FetchDocumentsPage(DocumentQuery),
 }
 
 impl AppContext {
+    /// The action fee agreement `document_type` needs for `action` at the
+    /// cached epoch fee multiplier, `None` when it charges no fee for it.
+    fn document_action_fee_agreement(
+        &self,
+        document_type: &DocumentType,
+        action: DocumentTransitionActionType,
+    ) -> Option<DocumentActionFeeAgreement> {
+        document_action_fee_quote(
+            document_type.as_ref(),
+            action,
+            self.fee_multiplier_permille(),
+        )
+        .map(|quote| quote.agreement)
+    }
+
     /// Fetches a single document by id and bumps its revision, preparing it for
     /// a replace/transfer/purchase/set-price mutation.
     async fn fetch_document_for_mutation(
@@ -191,6 +239,7 @@ impl AppContext {
                 data_contract,
                 qualified_identity,
                 identity_key,
+                action_fee_agreement,
             } => {
                 let mut builder = DocumentCreateTransitionBuilder::new(
                     data_contract,
@@ -206,6 +255,16 @@ impl AppContext {
                 let maybe_options = self.state_transition_options();
                 if let Some(options) = maybe_options {
                     builder = builder.with_state_transition_creation_options(options);
+                }
+                // After the options: setting them replaces the struct the
+                // agreement is kept in.
+                if let Some(agreement) = action_fee_agreement.or_else(|| {
+                    self.document_action_fee_agreement(
+                        &document_type,
+                        DocumentTransitionActionType::Create,
+                    )
+                }) {
+                    builder = builder.with_action_fee_agreement(agreement);
                 }
 
                 let result = sdk
@@ -229,6 +288,7 @@ impl AppContext {
                 qualified_identity,
                 identity_key,
                 token_payment_info,
+                action_fee_agreement,
             } => {
                 let mut builder = DocumentDeleteTransitionBuilder::new(
                     data_contract,
@@ -244,6 +304,16 @@ impl AppContext {
                 let maybe_options = self.state_transition_options();
                 if let Some(options) = maybe_options {
                     builder = builder.with_state_transition_creation_options(options);
+                }
+                // After the options: setting them replaces the struct the
+                // agreement is kept in.
+                if let Some(agreement) = action_fee_agreement.or_else(|| {
+                    self.document_action_fee_agreement(
+                        &document_type,
+                        DocumentTransitionActionType::Delete,
+                    )
+                }) {
+                    builder = builder.with_action_fee_agreement(agreement);
                 }
 
                 let result = sdk
@@ -269,6 +339,7 @@ impl AppContext {
                 qualified_identity,
                 identity_key,
                 token_payment_info,
+                action_fee_agreement,
             } => {
                 let mut builder = DocumentReplaceTransitionBuilder::new(
                     data_contract,
@@ -283,6 +354,16 @@ impl AppContext {
                 let maybe_options = self.state_transition_options();
                 if let Some(options) = maybe_options {
                     builder = builder.with_state_transition_creation_options(options);
+                }
+                // After the options: setting them replaces the struct the
+                // agreement is kept in.
+                if let Some(agreement) = action_fee_agreement.or_else(|| {
+                    self.document_action_fee_agreement(
+                        &document_type,
+                        DocumentTransitionActionType::Replace,
+                    )
+                }) {
+                    builder = builder.with_action_fee_agreement(agreement);
                 }
 
                 let result = sdk
@@ -309,6 +390,7 @@ impl AppContext {
                 qualified_identity,
                 identity_key,
                 token_payment_info,
+                action_fee_agreement,
             } => {
                 let document = self
                     .fetch_document_for_mutation(
@@ -333,6 +415,16 @@ impl AppContext {
                 let maybe_options = self.state_transition_options();
                 if let Some(options) = maybe_options {
                     builder = builder.with_state_transition_creation_options(options);
+                }
+                // After the options: setting them replaces the struct the
+                // agreement is kept in.
+                if let Some(agreement) = action_fee_agreement.or_else(|| {
+                    self.document_action_fee_agreement(
+                        &document_type,
+                        DocumentTransitionActionType::Transfer,
+                    )
+                }) {
+                    builder = builder.with_action_fee_agreement(agreement);
                 }
 
                 let result = sdk
@@ -359,6 +451,7 @@ impl AppContext {
                 qualified_identity,
                 identity_key,
                 token_payment_info,
+                action_fee_agreement,
             } => {
                 let document = self
                     .fetch_document_for_mutation(
@@ -385,6 +478,16 @@ impl AppContext {
                 if let Some(options) = maybe_options {
                     builder = builder.with_state_transition_creation_options(options);
                 }
+                // After the options: setting them replaces the struct the
+                // agreement is kept in.
+                if let Some(agreement) = action_fee_agreement.or_else(|| {
+                    self.document_action_fee_agreement(
+                        &document_type,
+                        DocumentTransitionActionType::Purchase,
+                    )
+                }) {
+                    builder = builder.with_action_fee_agreement(agreement);
+                }
 
                 let result = sdk
                     .document_purchase(builder, &identity_key, &qualified_identity)
@@ -410,6 +513,7 @@ impl AppContext {
                 qualified_identity,
                 identity_key,
                 token_payment_info,
+                action_fee_agreement,
             } => {
                 let document = self
                     .fetch_document_for_mutation(
@@ -434,6 +538,16 @@ impl AppContext {
                 let maybe_options = self.state_transition_options();
                 if let Some(options) = maybe_options {
                     builder = builder.with_state_transition_creation_options(options);
+                }
+                // After the options: setting them replaces the struct the
+                // agreement is kept in.
+                if let Some(agreement) = action_fee_agreement.or_else(|| {
+                    self.document_action_fee_agreement(
+                        &document_type,
+                        DocumentTransitionActionType::UpdatePrice,
+                    )
+                }) {
+                    builder = builder.with_action_fee_agreement(agreement);
                 }
 
                 let result = sdk

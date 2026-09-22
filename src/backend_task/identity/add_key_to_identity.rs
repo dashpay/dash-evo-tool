@@ -2,6 +2,9 @@ use super::BackendTaskSuccessResult;
 use crate::backend_task::FeeResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::context::feature_gate::FeatureGate;
+use crate::model::identity_key_limits::validate_key_limits;
+use crate::model::identity_key_usability::now_ms;
 use crate::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
@@ -14,6 +17,7 @@ use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::{
     IdentityPublicKeyGettersV0, IdentityPublicKeySettersV0,
 };
+use dash_sdk::dpp::identity::identity_public_key::accessors::v1::IdentityPublicKeyGettersV1;
 use dash_sdk::dpp::prelude::UserFeeIncrease;
 use dash_sdk::dpp::state_transition::identity_update_transition::IdentityUpdateTransition;
 use dash_sdk::dpp::state_transition::identity_update_transition::methods::IdentityUpdateTransitionMethodsV0;
@@ -36,6 +40,16 @@ impl AppContext {
         // below is never built or broadcast for a protected identity we cannot
         // seal — no on-chain/local divergence. A keyless identity yields `None`
         // and the existing broadcast-then-keyless-persist path is unchanged.
+        // Key limits (protocol version 14) are checked before anything is
+        // prompted for or broadcast: an older network cannot decode such a
+        // key, and a limit Platform refuses would still be charged.
+        if public_key_to_add.identity_public_key.has_limits() {
+            if !FeatureGate::IdentityKeyLimits.is_available(self) {
+                return Err(TaskError::KeyLimitsNotSupported);
+            }
+            validate_key_limits(&public_key_to_add.identity_public_key, now_ms())?;
+        }
+
         let verify_scope = self.protected_identity_verify_scope(&qualified_identity)?;
         let verified_password = verify_protected_identity_precondition(
             &self.wallet_backend()?.secret_access(),
@@ -310,6 +324,68 @@ mod tests {
         SecretBytes, SecretStore, SecretString, WalletId as SecretWalletId,
     };
     use std::sync::Arc;
+
+    fn key_with_limits(total_budget: Option<u64>) -> QualifiedIdentityPublicKey {
+        use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+        use dash_sdk::dpp::identity::{IdentityPublicKey, KeyType, Purpose, SecurityLevel};
+        QualifiedIdentityPublicKey {
+            identity_public_key: IdentityPublicKey::from(IdentityPublicKeyV0 {
+                id: 5,
+                purpose: Purpose::AUTHENTICATION,
+                security_level: SecurityLevel::HIGH,
+                contract_bounds: None,
+                key_type: KeyType::ECDSA_SECP256K1,
+                read_only: false,
+                data: vec![2; 33].into(),
+                disabled_at: None,
+            })
+            .with_limits(total_budget, Some(u64::MAX)),
+            in_wallet_at_derivation_path: None,
+        }
+    }
+
+    /// A key with limits is refused before anything is prompted for or
+    /// broadcast while the network has not confirmed protocol version 14.
+    #[tokio::test]
+    async fn a_key_with_limits_needs_a_network_that_supports_them() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+        let sdk = dash_sdk::Sdk::new_mock();
+        let identity = super::super::key_limits::tests::user_identity();
+
+        let result = ctx
+            .add_key_to_identity(&sdk, identity, key_with_limits(Some(1)), [1; 32])
+            .await;
+
+        assert!(
+            matches!(result, Err(TaskError::KeyLimitsNotSupported)),
+            "got {result:?}"
+        );
+    }
+
+    /// Limits Platform would refuse (and charge for) are refused first.
+    #[tokio::test]
+    async fn a_key_with_a_zero_budget_is_refused_locally() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+        ctx.set_platform_protocol_version(dash_sdk::dpp::version::v14::PROTOCOL_VERSION_14);
+        let sdk = dash_sdk::Sdk::new_mock();
+        let identity = super::super::key_limits::tests::user_identity();
+
+        let result = ctx
+            .add_key_to_identity(&sdk, identity, key_with_limits(Some(0)), [1; 32])
+            .await;
+
+        assert!(
+            matches!(
+                result,
+                Err(TaskError::InvalidKeyLimits {
+                    source: crate::model::identity_key_limits::KeyLimitsError::ZeroBudget
+                })
+            ),
+            "got {result:?}"
+        );
+    }
 
     fn fresh_store(dir: &std::path::Path) -> Arc<SecretStore> {
         Arc::new(open_secret_store(&dir.join("secrets.pwsvault")).expect("open vault"))

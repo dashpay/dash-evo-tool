@@ -349,6 +349,11 @@ pub enum BackendTaskContext {
     LegacyRecoveryRestore(Identifier),
     /// The read of what is left of one identity's key budgets.
     KeyRemainingBudgets(Identifier),
+    /// The raise of one identity key's limits.
+    RaiseKeyLimits {
+        identity_id: Identifier,
+        key_id: dash_sdk::dpp::identity::KeyID,
+    },
     /// A known backend task that needs no finer UI correlation.
     Other,
     /// An error emitted without an originating backend task.
@@ -461,6 +466,20 @@ impl BackendTaskContext {
         }
     }
 
+    /// The identity key whose limits this operation raised, or `None` for
+    /// anything else.
+    pub(crate) fn raise_key_limits_target(
+        &self,
+    ) -> Option<(Identifier, dash_sdk::dpp::identity::KeyID)> {
+        match self.operation() {
+            Self::RaiseKeyLimits {
+                identity_id,
+                key_id,
+            } => Some((*identity_id, *key_id)),
+            _ => None,
+        }
+    }
+
     /// The identity whose legacy-recovery offer this operation belongs to, or
     /// `None` for anything else. A screen showing the recovery affordance uses
     /// it to tell its own failed check or restore from any other task's error
@@ -519,6 +538,12 @@ impl From<&BackendTask> for BackendTaskContext {
                 identity_id,
                 ..
             }) => Self::KeyRemainingBudgets(*identity_id),
+            BackendTask::IdentityTask(IdentityTask::RaiseKeyLimits {
+                identity, key_id, ..
+            }) => Self::RaiseKeyLimits {
+                identity_id: identity.identity.id(),
+                key_id: *key_id,
+            },
             BackendTask::SystemTask(SystemTask::ClearNetworkDatabase) => Self::ClearNetworkDatabase,
             BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { seed_hash }) => {
                 Self::GenerateReceiveAddress {
@@ -875,6 +900,12 @@ pub enum BackendTaskSuccessResult {
             dash_sdk::dpp::identity::KeyID,
             Option<dash_sdk::dpp::fee::Credits>,
         >,
+    },
+    /// The limits of an identity key were raised; `key` is the key as
+    /// Platform now stores it.
+    IdentityKeyLimitsRaised {
+        identity_id: Identifier,
+        key: dash_sdk::dpp::identity::IdentityPublicKey,
     },
     /// What the preserved legacy database could restore for this identity.
     /// Descriptors only — public key metadata, never key bytes. An empty plan

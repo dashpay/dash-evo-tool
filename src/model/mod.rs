@@ -9,6 +9,7 @@ pub mod dpns;
 pub mod fee_estimation;
 pub mod grovestark_prover;
 pub mod identity_discovery;
+pub mod identity_key_limits;
 pub mod identity_key_protection;
 pub mod identity_key_usability;
 pub mod key_input;

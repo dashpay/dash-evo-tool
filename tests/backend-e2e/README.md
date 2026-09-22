@@ -139,6 +139,21 @@ ctx().await  -->  OnceCell::get_or_init(BackendTestContext::init)
 6. Restore the framework wallet from `E2E_WALLET_MNEMONIC` (required).
 7. Register the wallet with `AppContext` (idempotent -- handles "already imported").
 8. Wait for SPV to sync the wallet's UTXOs and funds to become spendable (180s timeout).
+
+The full SPV sync wait before step 8 is progress-aware and bounded
+(`framework/wait.rs`):
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `SPV_STALL_WINDOW` | 180s | Fails the init if the SPV progress token does not advance for this long. |
+| `SPV_SYNC_CAP` | 1800s | Hard cap on the whole sync wait, even while it progresses. |
+
+A slow but advancing sync keeps waiting on the same runtime and workdir slot,
+so its stored headers and filters are reused. Failing into an init retry would
+move to a fresh slot (the previous slot's SPV lock cannot be released
+in-process) and restart the sync from genesis. A fresh workdir needs a full
+testnet sync, which can take well over 10 minutes; later runs resume from the
+stored data.
 9. Verify balance is above minimum threshold (10 tDASH).
 10. Sweep orphaned test wallets from previous runs back to the framework wallet.
 

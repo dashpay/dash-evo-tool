@@ -337,7 +337,7 @@ impl BackendTestContext {
 
         // Purge stale wallets from the persistent DB before SPV starts.
         // SPV builds a bloom filter for every loaded wallet address — accumulated
-        // test wallets from previous runs cause SPV sync to exceed the 600s timeout.
+        // test wallets from previous runs slow SPV sync past its stall window and cap.
         {
             let stale: Vec<WalletSeedHash> = {
                 let wallets = app_context.wallets().read().expect("wallets lock");
@@ -490,9 +490,12 @@ impl BackendTestContext {
         // This must come BEFORE the spendable balance check — wallet balances
         // are only available after compact filter sync completes.
         tracing::info!("Waiting for SPV to complete full sync (masternodes + mempool)...");
-        wait::wait_for_spv_running(&app_context, Duration::from_secs(600))
+        // Progress-aware, bounded wait on this runtime: a slow sync keeps its
+        // slot and stored headers/filters instead of panicking into an init
+        // retry that would restart from genesis on a fresh slot.
+        wait::wait_for_spv_sync(&app_context, wait::SPV_STALL_WINDOW, wait::SPV_SYNC_CAP)
             .await
-            .expect("SPV did not reach Running state within 600s");
+            .unwrap_or_else(|e| panic!("SPV did not finish its initial sync: {e}"));
         tracing::info!("SPV fully synced — mempool bloom filter active");
 
         run_task(

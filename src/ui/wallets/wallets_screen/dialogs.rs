@@ -704,22 +704,8 @@ impl WalletsBalancesScreen {
                         } else {
                             "Fund Address"
                         };
-                        let fund_button = ComponentStyles::primary_button(fund_label)
-                            .fill(if can_fund {
-                                ComponentStyles::primary_button_fill()
-                            } else {
-                                DashColors::text_secondary(dark_mode)
-                            });
 
-                        if ui
-                            .add_enabled_ui(can_fund, |ui| {
-                                ui.add_sized(
-                                    ComponentStyles::DIALOG_BUTTON_MIN_SIZE,
-                                    fund_button,
-                                )
-                            })
-                            .inner
-                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        if ComponentStyles::add_primary_button_enabled(ui, can_fund, fund_label)
                             .clicked()
                         {
                             // Check if wallet is locked

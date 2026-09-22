@@ -5,22 +5,28 @@ use dash_evo_tool::ui::theme::ComponentStyles;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 
-fn button_rect(harness: &mut Harness<'_>, label: &str) -> egui::Rect {
+/// Builds a single-button harness inside a horizontal layout, runs one frame,
+/// and returns the rendered button's rect. `add` may run more than once, since
+/// `Harness` re-invokes the UI closure until layout stabilizes.
+fn button_rect_for(add: impl Fn(&mut egui::Ui), label: &str) -> egui::Rect {
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(800.0, 200.0))
+        .build_ui(|ui| {
+            ui.horizontal(|ui| add(ui));
+        });
     harness.run();
     harness.get_by_label(label).rect()
 }
 
 #[test]
 fn primary_button_grows_for_long_label() {
-    let mut harness = Harness::builder()
-        .with_size(egui::vec2(800.0, 200.0))
-        .build_ui(|ui| {
-            ui.horizontal(|ui| {
-                let _ = ComponentStyles::add_primary_button(ui, "Register Token Contract");
-            });
-        });
-    let rect = button_rect(&mut harness, "Register Token Contract");
-    eprintln!("Register Token Contract rect: {rect:?}");
+    let label = "Register Token Contract";
+    let rect = button_rect_for(
+        |ui| {
+            let _ = ComponentStyles::add_primary_button(ui, label);
+        },
+        label,
+    );
     assert!(
         rect.width() > 120.0,
         "long label must grow past the 96px floor (actual width: {})",
@@ -30,40 +36,35 @@ fn primary_button_grows_for_long_label() {
 
 #[test]
 fn primary_button_floors_short_label() {
-    let mut harness = Harness::builder()
-        .with_size(egui::vec2(800.0, 200.0))
-        .build_ui(|ui| {
-            ui.horizontal(|ui| {
-                let _ = ComponentStyles::add_primary_button(ui, "OK");
-            });
-        });
-    let rect = button_rect(&mut harness, "OK");
+    let rect = button_rect_for(
+        |ui| {
+            let _ = ComponentStyles::add_primary_button(ui, "OK");
+        },
+        "OK",
+    );
     assert!(
-        rect.width() >= 90.0,
-        "short label must still honor ~96px min width (actual: {})",
+        rect.width() >= ComponentStyles::DIALOG_BUTTON_MIN_SIZE.x - 6.0,
+        "short label must still honor the ~{}px min width (actual: {})",
+        ComponentStyles::DIALOG_BUTTON_MIN_SIZE.x,
         rect.width()
     );
     assert!(
-        rect.height() >= 30.0,
-        "short label must honor ~36px min height (actual: {})",
+        rect.height() >= ComponentStyles::DIALOG_BUTTON_MIN_SIZE.y - 6.0,
+        "short label must honor the ~{}px min height (actual: {})",
+        ComponentStyles::DIALOG_BUTTON_MIN_SIZE.y,
         rect.height()
     );
 }
 
 #[test]
 fn secondary_button_grows_for_long_label() {
-    let mut harness = Harness::builder()
-        .with_size(egui::vec2(800.0, 200.0))
-        .build_ui(|ui| {
-            ui.horizontal(|ui| {
-                let _ = ComponentStyles::add_secondary_button(
-                    ui,
-                    "Create Asset Lock Transaction",
-                    false,
-                );
-            });
-        });
-    let rect = button_rect(&mut harness, "Create Asset Lock Transaction");
+    let label = "Create Asset Lock Transaction";
+    let rect = button_rect_for(
+        |ui| {
+            let _ = ComponentStyles::add_secondary_button(ui, label, false);
+        },
+        label,
+    );
     assert!(
         rect.width() > 150.0,
         "long label on secondary must grow (actual: {})",
@@ -73,14 +74,13 @@ fn secondary_button_grows_for_long_label() {
 
 #[test]
 fn danger_button_grows_for_long_label() {
-    let mut harness = Harness::builder()
-        .with_size(egui::vec2(800.0, 200.0))
-        .build_ui(|ui| {
-            ui.horizontal(|ui| {
-                let _ = ComponentStyles::add_danger_button(ui, "Remove From Local Database");
-            });
-        });
-    let rect = button_rect(&mut harness, "Remove From Local Database");
+    let label = "Remove From Local Database";
+    let rect = button_rect_for(
+        |ui| {
+            let _ = ComponentStyles::add_danger_button(ui, label);
+        },
+        label,
+    );
     assert!(
         rect.width() > 150.0,
         "long label on danger must grow (actual: {})",
@@ -90,18 +90,13 @@ fn danger_button_grows_for_long_label() {
 
 #[test]
 fn primary_button_enabled_grows_for_long_label() {
-    let mut harness = Harness::builder()
-        .with_size(egui::vec2(800.0, 200.0))
-        .build_ui(|ui| {
-            ui.horizontal(|ui| {
-                let _ = ComponentStyles::add_primary_button_enabled(
-                    ui,
-                    true,
-                    "Register Token Contract",
-                );
-            });
-        });
-    let rect = button_rect(&mut harness, "Register Token Contract");
+    let label = "Register Token Contract";
+    let rect = button_rect_for(
+        |ui| {
+            let _ = ComponentStyles::add_primary_button_enabled(ui, true, label);
+        },
+        label,
+    );
     assert!(
         rect.width() > 120.0,
         "long label on enabled primary must grow (actual: {})",

@@ -1164,18 +1164,13 @@ impl ComponentStyles {
                     .strong()
                     .color(Self::button_disabled_text(dark_mode)),
             };
-            // `add_sized` sets up a `centered_and_justified` inner layout so the button's
-            // `AtomLayout` inherits `horizontal_align = Center`, centering the text within
-            // the fill rect.  Without this, the default top-down-left layout causes the text
-            // atom to be left-aligned inside the button even when the rect is wider than the
-            // text content.
+            // See `add_primary_button` for why `add_sized` is used.
             ui.add_sized(
                 Self::DIALOG_BUTTON_MIN_SIZE,
                 Button::new(text)
                     .fill(Self::button_disabled_fill(dark_mode))
                     .stroke(egui::Stroke::NONE)
                     .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-                    .min_size(Self::DIALOG_BUTTON_MIN_SIZE)
                     .sense(egui::Sense::hover()),
             )
             .on_hover_cursor(CursorIcon::NotAllowed)
@@ -1215,6 +1210,9 @@ impl ComponentStyles {
     /// Height for toolbar buttons in the top panel.
     const TOOLBAR_BUTTON_HEIGHT: f32 = 30.0;
 
+    /// Default minimum size for toolbar buttons.
+    const TOOLBAR_BUTTON_MIN_SIZE: Vec2 = Vec2::new(100.0, Self::TOOLBAR_BUTTON_HEIGHT);
+
     /// Returns a styled toolbar button with white text on the given accent fill.
     ///
     /// Used for top-panel action buttons (Register Name, Refresh, Documents, etc.)
@@ -1232,9 +1230,6 @@ impl ComponentStyles {
             .stroke(egui::Stroke::NONE)
             .min_size(Self::TOOLBAR_BUTTON_MIN_SIZE)
     }
-
-    /// Default minimum size for toolbar buttons. Use this with `add_sized` at callsites.
-    pub const TOOLBAR_BUTTON_MIN_SIZE: Vec2 = Vec2::new(100.0, Self::TOOLBAR_BUTTON_HEIGHT);
 
     /// Add a toolbar button to the UI with pointer cursor on hover.
     ///

@@ -316,11 +316,7 @@ impl NetworkChooserScreen {
                     }
                 } else {
                     // Chain sync is SPV-only.
-                    let show_connect_button = true;
-
-                    if show_connect_button
-                        && ComponentStyles::add_primary_button(ui, "Connect").clicked()
-                    {
+                    if ComponentStyles::add_primary_button(ui, "Connect").clicked() {
                         // The update loop owns the `TaskResult` sender the
                         // backend-wiring step needs, so it lazily wires the
                         // backend then starts chain sync. A click during the

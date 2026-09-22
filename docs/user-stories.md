@@ -774,7 +774,7 @@ As a user whose limited key is running out, I want to add to its spending limit 
 - An expiry is extended from its current date, or from today when the key has already expired.
 - An expired key cannot only be topped up; the screen asks to extend its expiry as well.
 - Before anything is sent, a confirmation shows the resulting total spending limit and expiry and the key that signs the change; exactly that is sent.
-- If the key's limits changed elsewhere in the meantime, nothing is sent and the screen shows the current limits to review again.
+- If the key's limits, or the key that would sign the change, changed elsewhere in the meantime, nothing is sent and the screen shows the current limits and signing key to review again; no other signing key is picked without a new review.
 - The change is signed by the identity's master key, or a critical key without limits; without either on this device, the screen says which key to import.
 - After the change, the screen shows the key as the network stores it and its new remaining limit.
 
@@ -1260,7 +1260,7 @@ As a contract owner or moderator, I want to see what my contract's document fees
 - The Contracts screen offers "Fee Pots" on networks that support contract fees.
 - Both pots of a contract are shown with their balance and last payout (epoch, time, claimant).
 - Only an identity that receives a pot can claim it; the owner pot goes to the owner, the moderators pot to the whole moderation team.
-- A pot can be claimed once per epoch; a pot already claimed in the current epoch cannot be claimed again until the next one.
+- A pot can be claimed once per epoch; a pot already claimed in the current epoch cannot be claimed again until the next one, and the user refreshes the pots once the next epoch starts to claim it.
 - After a claim, the pot and the claimant's new balance are shown.
 
 ## Developer and Power Tools (DEV)

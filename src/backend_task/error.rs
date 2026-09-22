@@ -2083,6 +2083,13 @@ pub enum TaskError {
     )]
     KeyLimitsNotSupported,
 
+    /// Remaining key budgets were requested from a network whose protocol
+    /// version does not track them yet.
+    #[error(
+        "This network does not track key spending limits yet. Try again after the network upgrades."
+    )]
+    KeyRemainingBudgetsNotSupported,
+
     /// An authentication key bound to a contract was requested on a network
     /// that does not accept one yet.
     #[error(

@@ -38,6 +38,11 @@ impl AppContext {
         identity_id: Identifier,
         key_ids: Vec<KeyID>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
+        // A network below protocol version 14 answers this query on no node,
+        // so a request would exhaust the SDK's address pool.
+        if !FeatureGate::IdentityKeyLimits.is_available(self) {
+            return Err(TaskError::KeyRemainingBudgetsNotSupported);
+        }
         if key_ids.is_empty() {
             return Ok(BackendTaskSuccessResult::IdentityKeyRemainingBudgets {
                 identity_id,
@@ -215,6 +220,9 @@ pub(super) mod tests {
         ));
     }
 
+    /// Protocol versions below 14: not known yet (0), and mainnet's 13.
+    const PRE_V14_PROTOCOL_VERSIONS: [u32; 2] = [0, 13];
+
     /// Before protocol version 14 is confirmed, no limits update is built or
     /// broadcast: an older network cannot decode it.
     #[tokio::test]
@@ -223,20 +231,45 @@ pub(super) mod tests {
         let ctx = crate::context::test_support::test_app_context(temp_dir.path());
         let sdk = Sdk::new_mock();
 
-        let raise = KeyLimitsRaise {
-            key_id: 1,
-            seen_total_budget: Some(1),
-            seen_expires_at: None,
-            total_budget: Some(2),
-            expires_at: None,
-            signing_key_id: 0,
-        };
-        let result = ctx.raise_key_limits(&sdk, user_identity(), raise).await;
+        for version in PRE_V14_PROTOCOL_VERSIONS {
+            ctx.set_platform_protocol_version(version);
+            let raise = KeyLimitsRaise {
+                key_id: 1,
+                seen_total_budget: Some(1),
+                seen_expires_at: None,
+                total_budget: Some(2),
+                expires_at: None,
+                signing_key_id: 0,
+            };
+            let result = ctx.raise_key_limits(&sdk, user_identity(), raise).await;
 
-        assert!(
-            matches!(result, Err(TaskError::KeyLimitsNotSupported)),
-            "got {result:?}"
-        );
+            assert!(
+                matches!(result, Err(TaskError::KeyLimitsNotSupported)),
+                "protocol {version}: got {result:?}"
+            );
+        }
+    }
+
+    /// Before protocol version 14 is confirmed, the remaining-budget query is
+    /// not sent: an older network does not answer it, on any node.
+    #[tokio::test]
+    async fn remaining_budgets_are_not_queried_until_the_network_supports_them() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+        let sdk = Sdk::new_mock();
+
+        for version in PRE_V14_PROTOCOL_VERSIONS {
+            ctx.set_platform_protocol_version(version);
+            for key_ids in [vec![1, 2], vec![]] {
+                let result = ctx
+                    .fetch_key_remaining_budgets(&sdk, Identifier::random(), key_ids)
+                    .await;
+                assert!(
+                    matches!(result, Err(TaskError::KeyRemainingBudgetsNotSupported)),
+                    "protocol {version}: got {result:?}"
+                );
+            }
+        }
     }
 
     /// A failed raise must reach the screen it came from, keyed by identity

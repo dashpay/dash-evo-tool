@@ -79,7 +79,11 @@ fn claim_blocked_reason(gate: ClaimGate) -> Option<&'static str> {
     } else if gate.credits == 0 {
         Some("There are no fees to claim yet.")
     } else if gate.last_claim_epoch.is_some() && gate.last_claim_epoch == gate.current_epoch {
-        Some("These fees were already claimed in the current epoch. Try again in the next one.")
+        // The current epoch is read with the pots, so this block lifts only
+        // when they are refreshed after the epoch ends — say so.
+        Some(
+            "These fees were already claimed in the current epoch. Once the next epoch starts, select Refresh and claim them.",
+        )
     } else if gate.claim_in_flight {
         Some("A claim is in progress.")
     } else {
@@ -490,6 +494,18 @@ mod tests {
         ] {
             assert!(claim_blocked_reason(gate).is_some(), "{gate:?}");
         }
+    }
+
+    /// The epoch block does not lift by itself, so its reason names the
+    /// action that lifts it.
+    #[test]
+    fn a_pot_claimed_this_epoch_says_to_refresh_in_the_next_one() {
+        let reason = claim_blocked_reason(ClaimGate {
+            last_claim_epoch: Some(5),
+            ..claimable()
+        })
+        .expect("blocked");
+        assert!(reason.contains("select Refresh"), "{reason}");
     }
 
     /// Without a known current epoch the epoch rule cannot apply.

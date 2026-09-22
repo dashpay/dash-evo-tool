@@ -1203,6 +1203,40 @@ mod tests {
         );
     }
 
+    /// A wallet-derived key fills an empty slot with its derivation path,
+    /// leaves the same key's held private half alone, and refuses a slot a
+    /// different key holds.
+    #[test]
+    fn a_wallet_derived_key_never_displaces_a_held_or_foreign_entry() {
+        let pv = PlatformVersion::latest();
+        let key = IdentityPublicKey::random_key(4, Some(41), pv);
+        let foreign = IdentityPublicKey::random_key(4, Some(42), pv);
+        let qualified = QualifiedIdentityPublicKey::from(key.clone());
+
+        let mut empty = KeyStorage::default();
+        empty
+            .insert_wallet_derived((MAIN, 4), qualified.clone(), derivation_path(0x01))
+            .expect("an empty slot takes the derived key");
+        assert!(matches!(
+            empty.entry_at(&(MAIN, 4)),
+            Some((_, PrivateKeyData::AtWalletDerivationPath(path))) if *path == derivation_path(0x01)
+        ));
+
+        let mut held = filed_under(&key, &[(MAIN, PrivateKeyData::Clear([0x44; 32]))]);
+        held.insert_wallet_derived((MAIN, 4), qualified.clone(), derivation_path(0x01))
+            .expect("the same key is already filed");
+        assert!(
+            matches!(held.entry_at(&(MAIN, 4)), Some((_, PrivateKeyData::Clear(bytes))) if *bytes == [0x44; 32]),
+            "a held private half is never replaced by a derivation path"
+        );
+
+        let mut occupied = filed_under(&foreign, &[(MAIN, PrivateKeyData::Clear([0x55; 32]))]);
+        assert!(matches!(
+            occupied.insert_wallet_derived((MAIN, 4), qualified, derivation_path(0x01)),
+            Err(TaskError::IdentityKeySlotOccupied)
+        ));
+    }
+
     /// A storage filing one key under several placements, each with the given
     /// stored data.
     fn filed_under(

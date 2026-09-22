@@ -738,6 +738,24 @@ pub enum TaskError {
     )]
     IdentityKeyAddedButIdentityUnloaded,
 
+    /// [`Self::IdentityKeyAddedButNotSaved`] for a wallet-derived key. No
+    /// private key exists to copy — the wallet derives it again — so the
+    /// message must not ask for one.
+    #[error(
+        "The new key was added to your identity on the network, but it could not be saved on this device. Your identity and its existing keys are safe. The key was created from your wallet, so there is nothing to copy. To save it here, load this identity from your wallet again."
+    )]
+    DerivedIdentityKeyAddedButNotSaved {
+        #[source]
+        source: Box<TaskError>,
+    },
+
+    /// [`Self::IdentityKeyAddedButIdentityUnloaded`] for a wallet-derived key:
+    /// nothing was saved, and no private key exists to copy.
+    #[error(
+        "The new key was added to your identity on the network, but this identity was removed from this device before the key could be saved here. The key was created from your wallet, so there is nothing to copy. To use this identity here, load it from your wallet again."
+    )]
+    DerivedIdentityKeyAddedButIdentityUnloaded,
+
     /// Fail-closed guard at the opt-in protect boundary: the task found
     /// keys still resident as plaintext on disk after the eager load-path vault
     /// migration, so the identity cannot be reported as fully protected. The
@@ -2776,6 +2794,11 @@ impl TaskError {
             Self::IdentityKeyAddedButNotSaved { source } => Self::IdentityKeyAddedButNotSaved {
                 source: Box::new((*source).contextualize_dapi_availability(availability)),
             },
+            Self::DerivedIdentityKeyAddedButNotSaved { source } => {
+                Self::DerivedIdentityKeyAddedButNotSaved {
+                    source: Box::new((*source).contextualize_dapi_availability(availability)),
+                }
+            }
             Self::ScheduledVoteRejected { source } => {
                 Self::ScheduledVoteAllAddressesExhausted { source }
             }

@@ -41,18 +41,39 @@ pub enum AddKeyStatus {
     /// The key was added on the network but could not be saved on this
     /// device; the screen keeps its private key on hand to copy.
     KeyOnNetworkNotSaved,
+    /// A wallet-derived key was added on the network but could not be saved
+    /// on this device. There is no private key to copy: the wallet derives it
+    /// again.
+    DerivedKeyOnNetworkNotSaved,
     Complete,
 }
 
-/// Whether `error` means the new key is already on the network but was not
-/// saved on this device — the case where the private key in the form may be
-/// the only copy there is.
-fn key_is_on_network_but_not_saved(error: &TaskError) -> bool {
-    matches!(
-        error,
+impl AddKeyStatus {
+    /// The add reached the network but nothing was saved on this device.
+    fn is_on_network_not_saved(&self) -> bool {
+        matches!(
+            self,
+            Self::KeyOnNetworkNotSaved | Self::DerivedKeyOnNetworkNotSaved
+        )
+    }
+}
+
+/// The screen state for `error` when it means the new key is already on the
+/// network but was not saved on this device, or `None` for any other error.
+/// For a user-entered key the private key in the form may be the only copy
+/// there is; a wallet-derived key has none to keep.
+fn on_network_not_saved_status(error: &TaskError) -> Option<AddKeyStatus> {
+    match error {
         TaskError::IdentityKeyAddedButNotSaved { .. }
-            | TaskError::IdentityKeyAddedButIdentityUnloaded
-    )
+        | TaskError::IdentityKeyAddedButIdentityUnloaded => {
+            Some(AddKeyStatus::KeyOnNetworkNotSaved)
+        }
+        TaskError::DerivedIdentityKeyAddedButNotSaved { .. }
+        | TaskError::DerivedIdentityKeyAddedButIdentityUnloaded => {
+            Some(AddKeyStatus::DerivedKeyOnNetworkNotSaved)
+        }
+        _ => None,
+    }
 }
 
 pub struct AddKeyScreen {
@@ -607,6 +628,33 @@ impl AddKeyScreen {
         action
     }
 
+    /// A wallet-derived key is on the network but not saved here. Nothing is
+    /// at risk — the wallet derives the key again — so there is no private
+    /// key to show or copy.
+    fn show_derived_key_not_saved(&mut self, ui: &mut Ui) -> AppAction {
+        let mut action = AppAction::None;
+        let dark_mode = ui.style().visuals.dark_mode;
+        ui.heading("Your new key is not saved on this device");
+        ui.add_space(10.0);
+        Frame::new()
+            .fill(DashColors::surface(dark_mode))
+            .inner_margin(Margin::symmetric(10, 8))
+            .corner_radius(5.0)
+            .show(ui, |ui| {
+                ui.label(
+                    RichText::new(
+                        "The new key is already on your identity on the network, but it is not saved on this device. It was created from your wallet, so it is not lost and there is nothing to copy. To save it here, load this identity from your wallet again.",
+                    )
+                    .color(DashColors::warning_color(dark_mode)),
+                );
+            });
+        ui.add_space(20.0);
+        if ui.button("Back to Identities Screen").clicked() {
+            action = AppAction::PopScreenAndRefresh;
+        }
+        action
+    }
+
     pub fn show_success(&mut self, ui: &mut Ui) -> AppAction {
         let action = crate::ui::helpers::show_success_screen_with_info(
             ui,
@@ -662,7 +710,7 @@ impl ScreenLike for AddKeyScreen {
             self.refresh_banner.take_and_clear();
             // Keep the "save your private key" state that
             // `display_task_error` set for this same error.
-            if self.add_key_status != AddKeyStatus::KeyOnNetworkNotSaved {
+            if !self.add_key_status.is_on_network_not_saved() {
                 self.add_key_status = AddKeyStatus::Error;
             }
         }
@@ -687,9 +735,9 @@ impl ScreenLike for AddKeyScreen {
     }
 
     fn display_task_error(&mut self, error: &TaskError) -> bool {
-        if key_is_on_network_but_not_saved(error) {
+        if let Some(status) = on_network_not_saved_status(error) {
             self.refresh_banner.take_and_clear();
-            self.add_key_status = AddKeyStatus::KeyOnNetworkNotSaved;
+            self.add_key_status = status;
         }
         // The global banner still reports the error.
         false
@@ -747,6 +795,10 @@ impl ScreenLike for AddKeyScreen {
             }
             if self.add_key_status == AddKeyStatus::KeyOnNetworkNotSaved {
                 inner_action |= self.show_key_not_saved(ui);
+                return inner_action;
+            }
+            if self.add_key_status == AddKeyStatus::DerivedKeyOnNetworkNotSaved {
+                inner_action |= self.show_derived_key_not_saved(ui);
                 return inner_action;
             }
 
@@ -1398,6 +1450,54 @@ mod derived_key_tests {
             "a key-id change does not mark the slot used"
         );
     }
+
+    /// A derived key on the network but not saved here gets the no-copy
+    /// state: no private key field and no copy button, since no private key
+    /// exists. A user-entered key keeps both.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn derived_key_not_saved_offers_nothing_to_copy() {
+        let not_saved_harness = |screen: AddKeyScreen| {
+            Harness::builder().with_max_steps(30).build_ui_state(
+                |ui, screen: &mut AddKeyScreen| {
+                    if screen.add_key_status == AddKeyStatus::DerivedKeyOnNetworkNotSaved {
+                        screen.show_derived_key_not_saved(ui);
+                    } else {
+                        screen.show_key_not_saved(ui);
+                    }
+                },
+                screen,
+            )
+        };
+        let (staged, identity) = staged_screen_parts(true).await;
+
+        let mut screen = AddKeyScreen::new(identity.clone(), &staged.ctx);
+        screen.add_key_status = AddKeyStatus::WaitingForResult;
+        assert!(
+            !screen.display_task_error(&TaskError::DerivedIdentityKeyAddedButNotSaved {
+                source: Box::new(TaskError::IdentityKeySlotOccupied),
+            })
+        );
+        screen.display_message("not saved", MessageType::Error);
+        assert!(screen.add_key_status == AddKeyStatus::DerivedKeyOnNetworkNotSaved);
+        let mut harness = not_saved_harness(screen);
+        harness.run();
+        assert!(harness.query_by_label("Copy private key").is_none());
+        assert!(harness.query_by_label("Private Key:").is_none());
+        assert!(
+            harness
+                .query_by_label("Back to Identities Screen")
+                .is_some()
+        );
+
+        let mut screen = AddKeyScreen::new(identity, &staged.ctx);
+        screen.add_key_status = AddKeyStatus::WaitingForResult;
+        screen.display_task_error(&TaskError::IdentityKeyAddedButIdentityUnloaded);
+        screen.display_message("not saved", MessageType::Error);
+        assert!(screen.add_key_status == AddKeyStatus::KeyOnNetworkNotSaved);
+        let mut harness = not_saved_harness(screen);
+        harness.run();
+        assert!(harness.query_by_label("Copy private key").is_some());
+    }
 }
 
 #[cfg(test)]
@@ -1405,22 +1505,30 @@ mod tests {
     use super::*;
 
     /// SEC-104: both "on the network, not saved here" outcomes switch the
-    /// screen to keeping the private key on hand; ordinary failures do not.
+    /// screen to keeping the private key on hand; the derived-key ones switch
+    /// it to the no-copy state; ordinary failures do neither.
     #[test]
     fn only_post_broadcast_save_failures_keep_the_private_key_on_screen() {
-        assert!(key_is_on_network_but_not_saved(
-            &TaskError::IdentityKeyAddedButNotSaved {
+        let status = |error: TaskError| on_network_not_saved_status(&error);
+        assert!(
+            status(TaskError::IdentityKeyAddedButNotSaved {
                 source: Box::new(TaskError::IdentityKeyProtectionDowngrade),
-            }
-        ));
-        assert!(key_is_on_network_but_not_saved(
-            &TaskError::IdentityKeyAddedButIdentityUnloaded
-        ));
-        assert!(!key_is_on_network_but_not_saved(
-            &TaskError::MasterKeyNotFound
-        ));
-        assert!(!key_is_on_network_but_not_saved(
-            &TaskError::IdentityKeyProtectionDowngrade
-        ));
+            }) == Some(AddKeyStatus::KeyOnNetworkNotSaved)
+        );
+        assert!(
+            status(TaskError::IdentityKeyAddedButIdentityUnloaded)
+                == Some(AddKeyStatus::KeyOnNetworkNotSaved)
+        );
+        assert!(
+            status(TaskError::DerivedIdentityKeyAddedButNotSaved {
+                source: Box::new(TaskError::IdentityKeySlotOccupied),
+            }) == Some(AddKeyStatus::DerivedKeyOnNetworkNotSaved)
+        );
+        assert!(
+            status(TaskError::DerivedIdentityKeyAddedButIdentityUnloaded)
+                == Some(AddKeyStatus::DerivedKeyOnNetworkNotSaved)
+        );
+        assert!(status(TaskError::MasterKeyNotFound).is_none());
+        assert!(status(TaskError::IdentityKeyProtectionDowngrade).is_none());
     }
 }

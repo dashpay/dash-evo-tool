@@ -127,7 +127,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   most failures showed a generic storage message, and a randomly generated
   private key could be lost for good. Every such failure now says the key is
   already on the network, and the Add Key screen keeps its private key
-  available to copy.
+  available to copy. A key created from your wallet has no private key to
+  copy, so the screen says instead that it can be saved again by loading the
+  identity from your wallet.
 
 - Cancelling a network switch takes priority over simultaneous startup and
   reports chain sync as stopped after shutting down the new backend.

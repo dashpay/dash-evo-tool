@@ -254,9 +254,11 @@ fn format_extended_epoch_info(
 /// The degraded rendering used when the live epoch fetch fails.
 ///
 /// `protocol_version` is `None` while the connected network has not confirmed
-/// one. The fee multiplier here is the app's fixed default, not a network
-/// reading, and says so — a user comparing it against a network that raised its
-/// fees has to be able to tell which of the two the app is charging by.
+/// one. The fee multiplier here is the app's own default, and the copy says so
+/// rather than claiming anything about what networks charge: with the fetch
+/// failed, this build cannot know that. A user comparing the figure against a
+/// network that raised its fees has to be able to tell which of the two the app
+/// is charging by.
 fn format_hardcoded_current_epoch_info(
     protocol_version: Option<u32>,
     fee_multiplier_permille: u64,
@@ -268,16 +270,14 @@ fn format_hardcoded_current_epoch_info(
              • Protocol Version: {protocol_version}\n\
              • Fee Multiplier: {fee_multiplier}x (a fixed value, not read from the network)\n\n\
              Epoch details could not be read from the network just now. The multiplier shown \
-             is the one every network charges today. Try again in a moment to read the epoch \
-             live."
+             is this app's default, not a value read from the network. Try again in a moment."
         ),
         None => format!(
             "Current Epoch Information:\n\
              • Protocol Version: the connected network has not confirmed one yet.\n\
              • Fee Multiplier: {fee_multiplier}x (a fixed value, not read from the network)\n\n\
              Epoch details could not be read from the network just now. The multiplier shown \
-             is the one every network charges today. Try again in a moment to read the epoch \
-             live."
+             is this app's default, not a value read from the network. Try again in a moment."
         ),
     }
 }
@@ -1103,14 +1103,15 @@ mod tests {
              • Protocol Version: 12\n\
              • Fee Multiplier: 1x (a fixed value, not read from the network)\n\n\
              Epoch details could not be read from the network just now. The multiplier shown \
-             is the one every network charges today. Try again in a moment to read the epoch \
-             live."
+             is this app's default, not a value read from the network. Try again in a moment."
         );
     }
 
-    /// The multiplier is presented as fixed, never as a live reading: a user
-    /// comparing it against a network that raised its fees must be able to see
-    /// which of the two the app is charging by.
+    /// The multiplier is presented as this app's default, never as a live
+    /// reading and never as a claim about what networks charge — with the fetch
+    /// failed, the app cannot know that. A user comparing the figure against a
+    /// network that raised its fees must be able to see which of the two the app
+    /// is charging by.
     #[test]
     fn epoch_fallback_never_presents_the_fee_multiplier_as_a_network_reading() {
         for protocol_version in [None, Some(12)] {
@@ -1119,6 +1120,14 @@ mod tests {
                 formatted
                     .contains("• Fee Multiplier: 1.5x (a fixed value, not read from the network)"),
                 "the multiplier must be shown as fixed, got: {formatted}"
+            );
+            assert!(
+                formatted.contains("is this app's default, not a value read from the network"),
+                "the degraded copy must name the default as the app's own, got: {formatted}"
+            );
+            assert!(
+                !formatted.contains("every network charges"),
+                "a failed fetch cannot support a claim about what networks charge: {formatted}"
             );
         }
     }

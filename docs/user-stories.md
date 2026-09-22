@@ -761,6 +761,7 @@ As a user handing a key to an app or a helper, I want to cap how much that key c
 
 - The Add Key screen offers "Spending Limit" and "Expires After (days)" for authentication keys below the master level.
 - On a network that does not support key limits yet, both options are shown disabled with an explanation.
+- Where the network allows it, an authentication key can also be limited to one contract or document type, with or without a spending limit and expiry.
 - A zero limit, zero days, or an expiry too far in the future is refused before anything is sent.
 - The Key Info screen shows the limit with how much is left of it, and the expiry date; an expired or used-up key is marked.
 
@@ -772,6 +773,8 @@ As a user whose limited key is running out, I want to add to its spending limit 
 - The Key Info screen of a limited key offers "Raise Limits" with an amount to add and a number of days to extend by.
 - An expiry is extended from its current date, or from today when the key has already expired.
 - An expired key cannot only be topped up; the screen asks to extend its expiry as well.
+- Before anything is sent, a confirmation shows the resulting total spending limit and expiry and the key that signs the change; exactly that is sent.
+- If the key's limits changed elsewhere in the meantime, nothing is sent and the screen shows the current limits to review again.
 - The change is signed by the identity's master key, or a critical key without limits; without either on this device, the screen says which key to import.
 - After the change, the screen shows the key as the network stores it and its new remaining limit.
 
@@ -781,7 +784,7 @@ As a user whose limited key is running out, I want to add to its spending limit 
 As a user, I want the app to sign with a key that can actually sign the action, so that my actions are not refused because of an expired, used-up or out-of-scope key.
 
 - Automatic key choice skips disabled and expired keys, keys limited to other contracts or document types, and keys bound to a contract group.
-- Among usable keys, one without limits is preferred over a limited one.
+- Only keys this device holds the private key of are chosen; among those, one without limits is preferred over a limited one.
 - Where the user picks the key, limited and expired keys stay selectable, and the key list and selection show a warning explaining the limit.
 
 ## DPNS (DPN)
@@ -1151,8 +1154,9 @@ As a token creator, I want every identity to be able to claim a fixed amount of 
 
 - The token creator offers a once-per-identity distribution with the amount each identity can claim, on networks that support it.
 - The fee estimate includes the network's extra fee for this distribution.
-- The Claim screen and My Tokens show the distribution; an identity that already claimed sees when, and the Claim button is disabled.
-- A second claim refused by the network is explained and remembered.
+- The Claim screen and My Tokens show the distribution.
+- After a successful claim, the Claim screen notes that the identity may have already claimed and when; the note never blocks claiming and can be dismissed.
+- A second claim refused by the network is explained.
 
 ## Contracts and Documents (DOC)
 
@@ -1237,7 +1241,8 @@ As a user acting on a document whose contract charges a fee, I want to see that 
 
 - The estimated-fee panel shows the contract fee next to the network fee, split between the contract owner and its moderators.
 - Sending asks for confirmation naming the fee and, for a fee that follows network fees, the most that can be charged ("up to N DASH") and the tolerated increase.
-- If network fees rise past that tolerance, or the contract changes its fee, the network refuses the action and the app explains what to do.
+- If network fees rise past that tolerance, the network refuses the action; the app updates the fee, and trying again shows the new amount to confirm.
+- If the contract changes its fee after confirmation, nothing is sent and the user is asked to confirm the current fee.
 
 ### DOC-011: Skip an optional token cost [Implemented]
 **Persona:** Alex, Priya
@@ -1255,7 +1260,8 @@ As a contract owner or moderator, I want to see what my contract's document fees
 - The Contracts screen offers "Fee Pots" on networks that support contract fees.
 - Both pots of a contract are shown with their balance and last payout (epoch, time, claimant).
 - Only an identity that receives a pot can claim it; the owner pot goes to the owner, the moderators pot to the whole moderation team.
-- A pot can be claimed once per epoch; after a claim, the pot and the claimant's new balance are shown.
+- A pot can be claimed once per epoch; a pot already claimed in the current epoch cannot be claimed again until the next one.
+- After a claim, the pot and the claimant's new balance are shown.
 
 ## Developer and Power Tools (DEV)
 

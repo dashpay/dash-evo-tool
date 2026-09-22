@@ -11,16 +11,17 @@
 //! the underlying BackendTask. All other tests drive the BackendTask directly
 //! because they test backend-level behaviour that the tool is transparent to.
 //!
-//! All cases are `#[ignore]` and gated on `E2E_MN_*` env vars; each skips with a
-//! log line (never fails) when its inputs are unset, since a real testnet
-//! masternode with funded credits and its private keys cannot live in CI.
+//! All cases are `#[ignore]` (a real testnet masternode with funded credits
+//! and its private keys cannot live in CI). A case whose `E2E_MN_*` input is
+//! unset FAILS with setup instructions rather than passing without running;
+//! skip the module explicitly with `--skip identity_masternode_withdraw::`.
 //!
-//! Required env vars (see the test spec §0.3):
-//! - `E2E_MN_PRO_TX_HASH` — testnet evonode/masternode ProTxHash (hex).
-//! - `E2E_MN_OWNER_WIF`   — owner private key (WIF or 64-hex).
-//! - `E2E_MN_PAYOUT_WIF`  — payout/transfer private key (WIF or 64-hex).
-//! - `E2E_MN_VOTING_WIF`  — optional voting key (triggers the voter fetch).
-//! - `E2E_MN_NODE_TYPE`   — "masternode" or "evonode" (default "evonode").
+//! Env vars (canonical names; see `tests/backend-e2e/README.md`):
+//! - `E2E_MN_PROTX_HASH` — testnet evonode/masternode ProTxHash (hex).
+//! - `E2E_MN_OWNER_KEY`  — owner private key (WIF or 64-hex).
+//! - `E2E_MN_PAYOUT_KEY` — payout/transfer private key (WIF or 64-hex).
+//! - `E2E_MN_VOTING_KEY` — voting private key (WIF or 64-hex); TC-MN-019 only.
+//! - `E2E_MN_NODE_TYPE`  — "masternode" or "evonode" (optional, default "evonode").
 
 use crate::framework::harness::ctx;
 use crate::framework::task_runner::run_task;
@@ -44,13 +45,52 @@ use rmcp::handler::server::router::tool::AsyncTool;
 use std::str::FromStr;
 use std::sync::Arc;
 
-/// Read an env var, returning `None` and logging a skip line when unset.
-fn opt_env(name: &str) -> Option<String> {
+/// Canonical masternode env var names, documented in `tests/backend-e2e/README.md`.
+const ENV_PROTX_HASH: &str = "E2E_MN_PROTX_HASH";
+const ENV_OWNER_KEY: &str = "E2E_MN_OWNER_KEY";
+const ENV_PAYOUT_KEY: &str = "E2E_MN_PAYOUT_KEY";
+const ENV_VOTING_KEY: &str = "E2E_MN_VOTING_KEY";
+
+/// The pre-rename spelling of a canonical name. Only checked for presence, to
+/// point the operator at the rename; its value is never read.
+fn legacy_env_name(name: &str) -> Option<&'static str> {
+    match name {
+        ENV_PROTX_HASH => Some("E2E_MN_PRO_TX_HASH"),
+        ENV_OWNER_KEY => Some("E2E_MN_OWNER_WIF"),
+        ENV_PAYOUT_KEY => Some("E2E_MN_PAYOUT_WIF"),
+        ENV_VOTING_KEY => Some("E2E_MN_VOTING_WIF"),
+        _ => None,
+    }
+}
+
+/// Read a required masternode env var, failing the test with setup
+/// instructions when it is unset or blank.
+///
+/// Panics instead of returning early: an early `return` reports `ok` for a test
+/// that exercised nothing. Loads the project root `.env` first (as the harness
+/// does) so the check runs before the costly harness init. The value is never
+/// logged.
+fn required_mn_env(name: &str) -> String {
+    if let Err(e) = dotenvy::dotenv() {
+        tracing::debug!(".env not loaded ({e}), relying on environment");
+    }
     match std::env::var(name) {
-        Ok(v) if !v.trim().is_empty() => Some(v),
+        Ok(v) if !v.trim().is_empty() => v,
         _ => {
-            tracing::info!("Skipping masternode e2e: {name} is not set");
-            None
+            let rename_hint = legacy_env_name(name)
+                .filter(|old| std::env::var_os(old).is_some())
+                .map(|old| {
+                    format!("\n{old} is set, but it was renamed to {name}. Rename it in your environment or .env file.")
+                })
+                .unwrap_or_default();
+            panic!(
+                "{name} is not set.\n\
+                 The masternode backend E2E tests need a testnet masternode or evonode and its keys.\n\
+                 Set {name} in your environment or in the project root .env file \
+                 (see \"Masternode tests\" in tests/backend-e2e/README.md).\n\
+                 To run the other backend E2E tests without a masternode, \
+                 add --skip identity_masternode_withdraw:: to the test command.{rename_hint}"
+            );
         }
     }
 }
@@ -166,11 +206,8 @@ fn tc_mn_withdrawal_amount_below_min_fails_loudly() {
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn test_mn016_load_with_payout_key() {
-    let (Some(pro_tx_hash), Some(payout_wif)) =
-        (opt_env("E2E_MN_PRO_TX_HASH"), opt_env("E2E_MN_PAYOUT_WIF"))
-    else {
-        return;
-    };
+    let pro_tx_hash = required_mn_env(ENV_PROTX_HASH);
+    let payout_wif = required_mn_env(ENV_PAYOUT_KEY);
     let ctx = ctx().await;
     let node_type = node_type_from_env();
 
@@ -202,11 +239,8 @@ async fn test_mn016_load_with_payout_key() {
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn test_mn017_load_with_owner_key() {
-    let (Some(pro_tx_hash), Some(owner_wif)) =
-        (opt_env("E2E_MN_PRO_TX_HASH"), opt_env("E2E_MN_OWNER_WIF"))
-    else {
-        return;
-    };
+    let pro_tx_hash = required_mn_env(ENV_PROTX_HASH);
+    let owner_wif = required_mn_env(ENV_OWNER_KEY);
     let ctx = ctx().await;
 
     let task = load_task(
@@ -234,13 +268,9 @@ async fn test_mn017_load_with_owner_key() {
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn test_mn018_load_with_both_keys() {
-    let (Some(pro_tx_hash), Some(owner_wif), Some(payout_wif)) = (
-        opt_env("E2E_MN_PRO_TX_HASH"),
-        opt_env("E2E_MN_OWNER_WIF"),
-        opt_env("E2E_MN_PAYOUT_WIF"),
-    ) else {
-        return;
-    };
+    let pro_tx_hash = required_mn_env(ENV_PROTX_HASH);
+    let owner_wif = required_mn_env(ENV_OWNER_KEY);
+    let payout_wif = required_mn_env(ENV_PAYOUT_KEY);
     let ctx = ctx().await;
 
     let task = load_task(
@@ -277,9 +307,7 @@ async fn test_mn018_load_with_both_keys() {
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn test_mn020_load_wrong_key_rejected() {
-    let Some(pro_tx_hash) = opt_env("E2E_MN_PRO_TX_HASH") else {
-        return;
-    };
+    let pro_tx_hash = required_mn_env(ENV_PROTX_HASH);
     let ctx = ctx().await;
 
     // A valid-format WIF that is (overwhelmingly) NOT a key on the identity.
@@ -372,11 +400,8 @@ async fn test_mn021_load_identity_not_found() {
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn test_mn050_owner_withdraw_to_payout() {
-    let (Some(pro_tx_hash), Some(owner_wif)) =
-        (opt_env("E2E_MN_PRO_TX_HASH"), opt_env("E2E_MN_OWNER_WIF"))
-    else {
-        return;
-    };
+    let pro_tx_hash = required_mn_env(ENV_PROTX_HASH);
+    let owner_wif = required_mn_env(ENV_OWNER_KEY);
     let ctx = ctx().await;
 
     let load = load_task(
@@ -445,11 +470,8 @@ async fn test_mn050_owner_withdraw_to_payout() {
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn test_mn051_transfer_withdraw_to_address() {
-    let (Some(pro_tx_hash), Some(payout_wif)) =
-        (opt_env("E2E_MN_PRO_TX_HASH"), opt_env("E2E_MN_PAYOUT_WIF"))
-    else {
-        return;
-    };
+    let pro_tx_hash = required_mn_env(ENV_PROTX_HASH);
+    let payout_wif = required_mn_env(ENV_PAYOUT_KEY);
     let ctx = ctx().await;
 
     let load = load_task(
@@ -521,11 +543,8 @@ async fn test_mn051_transfer_withdraw_to_address() {
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn test_mn054_owner_mode_key_not_loaded() {
-    let (Some(pro_tx_hash), Some(payout_wif)) =
-        (opt_env("E2E_MN_PRO_TX_HASH"), opt_env("E2E_MN_PAYOUT_WIF"))
-    else {
-        return;
-    };
+    let pro_tx_hash = required_mn_env(ENV_PROTX_HASH);
+    let payout_wif = required_mn_env(ENV_PAYOUT_KEY);
     let ctx = ctx().await;
 
     // Load with ONLY the payout key.
@@ -560,9 +579,7 @@ async fn test_mn054_owner_mode_key_not_loaded() {
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn test_mn007_load_malformed_protx() {
-    let Some(payout_wif) = opt_env("E2E_MN_PAYOUT_WIF") else {
-        return;
-    };
+    // Needs no masternode secret: the ProTxHash parse fails before any key check.
     let ctx = ctx().await;
 
     // "not-a-hash" parses as neither Base58 nor hex; the backend preserves the
@@ -571,7 +588,7 @@ async fn test_mn007_load_malformed_protx() {
         "not-a-hash".to_owned(),
         node_type_from_env(),
         None,
-        Some(payout_wif),
+        None,
         None,
     );
     let err = run_task(&ctx.app_context, task)
@@ -591,13 +608,9 @@ async fn test_mn007_load_malformed_protx() {
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn test_mn019_load_with_voting_key() {
-    let (Some(pro_tx_hash), Some(payout_wif), Some(voting_wif)) = (
-        opt_env("E2E_MN_PRO_TX_HASH"),
-        opt_env("E2E_MN_PAYOUT_WIF"),
-        opt_env("E2E_MN_VOTING_WIF"),
-    ) else {
-        return;
-    };
+    let pro_tx_hash = required_mn_env(ENV_PROTX_HASH);
+    let payout_wif = required_mn_env(ENV_PAYOUT_KEY);
+    let voting_wif = required_mn_env(ENV_VOTING_KEY);
     let ctx = ctx().await;
 
     let task = load_task(
@@ -629,11 +642,8 @@ async fn test_mn019_load_with_voting_key() {
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn test_mn023_reload_idempotent() {
-    let (Some(pro_tx_hash), Some(payout_wif)) =
-        (opt_env("E2E_MN_PRO_TX_HASH"), opt_env("E2E_MN_PAYOUT_WIF"))
-    else {
-        return;
-    };
+    let pro_tx_hash = required_mn_env(ENV_PROTX_HASH);
+    let payout_wif = required_mn_env(ENV_PAYOUT_KEY);
     let ctx = ctx().await;
 
     let first = load_task(
@@ -684,11 +694,8 @@ async fn test_mn023_reload_idempotent() {
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn test_mn052_owner_mode_supplied_address_no_broadcast() {
-    let (Some(pro_tx_hash), Some(owner_wif)) =
-        (opt_env("E2E_MN_PRO_TX_HASH"), opt_env("E2E_MN_OWNER_WIF"))
-    else {
-        return;
-    };
+    let pro_tx_hash = required_mn_env(ENV_PROTX_HASH);
+    let owner_wif = required_mn_env(ENV_OWNER_KEY);
     let ctx = ctx().await;
 
     let load = load_task(
@@ -728,11 +735,8 @@ async fn test_mn052_owner_mode_supplied_address_no_broadcast() {
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn test_mn053_compose_through_db() {
-    let (Some(pro_tx_hash), Some(payout_wif)) =
-        (opt_env("E2E_MN_PRO_TX_HASH"), opt_env("E2E_MN_PAYOUT_WIF"))
-    else {
-        return;
-    };
+    let pro_tx_hash = required_mn_env(ENV_PROTX_HASH);
+    let payout_wif = required_mn_env(ENV_PAYOUT_KEY);
     let ctx = ctx().await;
 
     // Step 1 — load (Tool A), which persists to SQLite.

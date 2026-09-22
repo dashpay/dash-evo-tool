@@ -42,6 +42,38 @@ cargo test --test backend-e2e --all-features -- --ignored --nocapture --test-thr
 |---|---|---|
 | `E2E_WALLET_MNEMONIC` | Yes | BIP-39 mnemonic for the framework wallet. Must be a pre-funded testnet wallet with at least 10 tDASH. Can be set as a shell env var or in the project root `.env` file (see below). If not set, the test fails with an error message and instructions. |
 
+### Masternode tests
+
+`identity_masternode_withdraw` needs a testnet masternode or evonode with funded
+Platform credits and its private keys. These are the only names the tests read:
+
+| Variable | Needed by | Description |
+|---|---|---|
+| `E2E_MN_PROTX_HASH` | every case except TC-MN-007 and TC-MN-021 | ProTxHash of the node (hex). |
+| `E2E_MN_OWNER_KEY` | TC-MN-017, -018, -050, -052 | Owner private key (WIF or 64-hex). |
+| `E2E_MN_PAYOUT_KEY` | TC-MN-016, -018, -019, -023, -051, -053, -054 | Payout (transfer) private key (WIF or 64-hex). |
+| `E2E_MN_VOTING_KEY` | TC-MN-019 | Voting private key (WIF or 64-hex). |
+| `E2E_MN_NODE_TYPE` | all (optional) | `evonode` (default) or `masternode`. |
+
+A case whose variable is unset or blank **fails** with instructions naming the
+variable; it never reports `ok` without running. To run the rest of the suite on
+a machine without a masternode, skip the module explicitly:
+
+```bash
+cargo test --test backend-e2e --all-features -- --ignored --test-threads=1 \
+  --skip identity_masternode_withdraw::
+```
+
+The earlier names `E2E_MN_PRO_TX_HASH`, `E2E_MN_OWNER_WIF`, `E2E_MN_PAYOUT_WIF`
+and `E2E_MN_VOTING_WIF` are not read. If one is set, the failure message names its
+replacement. They are not accepted as aliases because two spellings of the same
+secret leave precedence ambiguous when both are set.
+
+The withdrawal cases move a tenth of the node's balance, clamped to the
+protocol's per-withdrawal limits (`system_limits.min_withdrawal_amount` and
+`max_withdrawal_amount`). A node below the minimum fails with a request to fund
+it.
+
 ### `.env` file handling
 
 The harness uses two separate `.env` files for different purposes:

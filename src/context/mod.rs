@@ -46,7 +46,7 @@ use dash_sdk::dpp::state_transition::StateTransitionSigningOptions;
 use dash_sdk::dpp::state_transition::batch_transition::methods::StateTransitionCreationOptions;
 use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
 use dash_sdk::dpp::version::PlatformVersion;
-use dash_sdk::dpp::version::v12::PLATFORM_V12;
+use dash_sdk::dpp::version::v13::PLATFORM_V13;
 use dash_sdk::platform::DataContract;
 use dash_sdk::platform::Identifier;
 use egui::Context;
@@ -970,6 +970,9 @@ impl AppContext {
                 batch_feature_version: None,
                 method_feature_version: None,
                 base_feature_version: None,
+                // Action fee agreements are a protocol-14 field; DET builds
+                // protocol-13 transitions only (`DET_PLATFORM_VERSION`).
+                action_fee_agreement: None,
             })
         } else {
             None
@@ -1612,16 +1615,28 @@ impl AppContext {
     }
 }
 
+/// The platform version DET uses locally: validation, building and signing
+/// state transitions, loading system contracts, and the SDK's initial
+/// protocol-version seed.
+///
+/// Protocol 13 is what mainnet and testnet run. The pinned upstream crates
+/// already know protocol 14 (`PlatformVersion::latest()`), but DET must not
+/// build or validate protocol-14 structures until it supports them, so every
+/// local use goes through this constant instead of `latest()`.
+// TODO(pv14): raise to PLATFORM_V14 together with protocol-14 support.
+pub(crate) const DET_PLATFORM_VERSION: &PlatformVersion = &PLATFORM_V13;
+
 /// Returns the default platform version for the given network.
-// TODO(platform#4231): Seeded at v12 (not pinned) so `Sdk`'s protocol-version
-// ratchet stays active. See `PlatformInfoTaskRequestType::CurrentEpochInfo` for
-// why `ExtendedEpochInfo::fetch_current` can't be used directly right now.
-// Revert to `.with_version()` (a hard pin) or otherwise reconsider this once
-// https://github.com/dashpay/platform/pull/4231 merges and this repo's platform
-// pin advances past it.
-// TODO(platform-4.2-dev-bump): devnet should seed at ≥PV14 per rs-sdk::min_protocol_version; needs to confirm that function is reachable from DET's dash-sdk re-export first (open question) — see platform-4.2-dev-impact.md F5
+// Seeded (`with_initial_version`), not pinned, so `Sdk`'s protocol-version
+// ratchet stays active and follows the network upward.
+// TODO(platform#4231): the fix is merged upstream and included in the current
+// platform pin; restore the live `ExtendedEpochInfo::fetch_current` in
+// `PlatformInfoTaskRequestType::CurrentEpochInfo` and reconsider this seeding.
+// TODO(pv14): devnet should seed at PV14 per upstream rs-sdk `min_protocol_version`
+// (devnets run the development line); DET seeds every network at
+// `DET_PLATFORM_VERSION` until it supports protocol 14.
 pub(crate) const fn default_platform_version(_network: &Network) -> &'static PlatformVersion {
-    &PLATFORM_V12
+    DET_PLATFORM_VERSION
 }
 
 #[cfg(test)]
@@ -1662,7 +1677,7 @@ mod tests {
     }
 
     #[test]
-    fn epoch_workaround_uses_v12_for_every_network() {
+    fn platform_version_is_v13_for_every_network() {
         for network in [
             Network::Mainnet,
             Network::Testnet,
@@ -1671,7 +1686,7 @@ mod tests {
         ] {
             assert_eq!(
                 default_platform_version(&network).protocol_version,
-                PLATFORM_V12.protocol_version
+                PLATFORM_V13.protocol_version
             );
         }
     }

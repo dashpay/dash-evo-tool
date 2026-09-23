@@ -19,6 +19,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   before sealing. Protection indicators include retained keys, and unpublished
   import retries explain that the original import password is required. Protection
   indicators report unavailable status when the full key inventory cannot be read.
+  Identities without locally stored keys explain that a private key must be added
+  before password protection is available.
 
 - Identity reads no longer migrate or rewrite stored keys. Storage preparation
   explicitly migrates legacy keys under each identity's record lock, propagates

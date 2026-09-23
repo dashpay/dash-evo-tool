@@ -1044,9 +1044,7 @@ impl KeyInfoScreen {
         );
     }
 
-    /// Build a key-info screen with the add-protection confirmation already open
-    /// when vault-backed protection is available, or show a warning when wallet
-    /// setup has not made protection available yet.
+    /// Open the protection prompt, or explain why locally stored keys cannot be protected.
     pub fn new_with_protection_prompt(
         identity: QualifiedIdentity,
         key: IdentityPublicKey,
@@ -1059,7 +1057,7 @@ impl KeyInfoScreen {
             Ok(IdentityProtectionStatus::NoVaultKeys) => {
                 MessageBanner::set_global(
                     app_context.egui_ctx(),
-                    "Password protection is not available yet. Wait for wallet setup to finish, then try again.",
+                    "Password protection is not available for this identity because none of its keys are stored on this device. Add a private key to this identity, then try again.",
                     MessageType::Warning,
                 );
             }

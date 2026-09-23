@@ -2299,7 +2299,7 @@ mod tests {
             Arc::new(RwLock::new(wallet)),
             BTreeMap::new(),
             paths,
-            None,
+            Some("W".to_string()),
         )]);
         let change = input
             .all_entries
@@ -2352,7 +2352,7 @@ mod tests {
             Arc::new(RwLock::new(wallet)),
             BTreeMap::new(),
             paths,
-            None,
+            Some("W".to_string()),
         )]);
 
         let core = input
@@ -2390,7 +2390,7 @@ mod tests {
             Arc::new(RwLock::new(wallet)),
             BTreeMap::new(),
             paths,
-            None,
+            Some("W".to_string()),
         )]);
 
         let platform = input

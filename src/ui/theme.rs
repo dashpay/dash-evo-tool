@@ -1113,7 +1113,7 @@ impl ComponentStyles {
             ui,
             Some(egui::TextWrapMode::Extend),
             f32::INFINITY,
-            egui::FontSelection::Default,
+            egui::FontSelection::Style(egui::TextStyle::Button),
         );
         // egui's button frame (inner margin + stroke + outer margin) nets out to
         // `button_padding` per side.

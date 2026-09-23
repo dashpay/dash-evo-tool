@@ -1,7 +1,7 @@
 //! Shared wallet membership and committed display/prompt metadata.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
 use super::PromptMeta;
 use super::poison::{read_recover, write_recover};
@@ -50,7 +50,53 @@ pub(crate) struct WalletHydration {
     pub single_wallets: Vec<(SingleKeyHash, SingleKeyWallet)>,
 }
 
+thread_local! {
+    /// Addresses of the [`WalletContext`]s whose writer this thread holds.
+    static HELD_WRITERS: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Writer-mutex guard that records ownership so re-entry panics instead of deadlocking.
+struct WriterGuard<'a> {
+    _lock: MutexGuard<'a, ()>,
+    owner: usize,
+}
+
+impl Drop for WriterGuard<'_> {
+    fn drop(&mut self) {
+        // Runs before `_lock` is released, on the thread that took it.
+        HELD_WRITERS.with_borrow_mut(|held| {
+            if let Some(pos) = held.iter().rposition(|&owner| owner == self.owner) {
+                held.swap_remove(pos);
+            }
+        });
+    }
+}
+
 impl WalletContext {
+    /// Take the writer mutex, panicking if this thread already holds it.
+    ///
+    /// # Panics
+    ///
+    /// When a persistence callback re-enters this context (for example through
+    /// `WalletBackend::wallet_meta()`): `std::sync::Mutex` is not re-entrant,
+    /// so the alternative is a silent self-deadlock. This is a programming bug
+    /// (M-PANIC-ON-BUG); callbacks must use raw storage adapters instead.
+    fn lock_writer(&self) -> WriterGuard<'_> {
+        let owner = std::ptr::from_ref(self) as usize;
+        let reentered = HELD_WRITERS.with_borrow(|held| held.contains(&owner));
+        assert!(
+            !reentered,
+            "WalletContext writer re-entered from a persistence callback; \
+             use a raw storage adapter (e.g. WalletMetaView::new) inside callbacks"
+        );
+        let lock = self
+            .writer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        HELD_WRITERS.with_borrow_mut(|held| held.push(owner));
+        WriterGuard { _lock: lock, owner }
+    }
+
     /// Loaded HD wallet handles; aliases are read through [`Self::hd_alias`].
     pub fn wallets(&self) -> HdWallets {
         read_recover(&self.state).wallets.clone()
@@ -108,10 +154,7 @@ impl WalletContext {
 
     // Compatibility reads can re-store an older record format.
     pub(crate) fn read_metadata<T>(&self, read: impl FnOnce() -> T) -> T {
-        let _writer = self
-            .writer
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _writer = self.lock_writer();
         read()
     }
 
@@ -121,10 +164,7 @@ impl WalletContext {
         meta: WalletMeta,
         persist: impl FnOnce() -> Result<(), TaskError>,
     ) -> Result<(), TaskError> {
-        let _writer = self
-            .writer
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _writer = self.lock_writer();
         persist()?;
         write_recover(&self.state).hd.insert(seed, meta);
         Ok(())
@@ -135,10 +175,7 @@ impl WalletContext {
         seed: &WalletSeedHash,
         persist: impl FnOnce() -> Result<(), TaskError>,
     ) -> Result<(), TaskError> {
-        let _writer = self
-            .writer
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _writer = self.lock_writer();
         persist()?;
         let mut state = write_recover(&self.state);
         state.hd.remove(seed);
@@ -150,10 +187,7 @@ impl WalletContext {
         mut wallet: Wallet,
         persist: impl FnOnce(&Wallet) -> Result<WalletMeta, TaskError>,
     ) -> Result<Arc<RwLock<Wallet>>, TaskError> {
-        let _writer = self
-            .writer
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _writer = self.lock_writer();
         let seed = wallet.seed_hash();
         let state = read_recover(&self.state);
         if state.wallets.contains_key(&seed) || state.hd.contains_key(&seed) {
@@ -180,10 +214,7 @@ impl WalletContext {
         raw: &str,
         persist: impl FnOnce(Vec<u8>, &str) -> Result<WalletMeta, TaskError>,
     ) -> Result<String, TaskError> {
-        let _writer = self
-            .writer
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _writer = self.lock_writer();
         let state = read_recover(&self.state);
         let wallet = state
             .wallets
@@ -208,10 +239,7 @@ impl WalletContext {
         source: AliasSource,
         persist: impl FnOnce(Option<String>) -> Result<(ImportedKey, SingleKeyWallet), TaskError>,
     ) -> Result<(ImportedKey, Arc<RwLock<SingleKeyWallet>>), TaskError> {
-        let _writer = self
-            .writer
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _writer = self.lock_writer();
         let state = read_recover(&self.state);
         let taken: Vec<&str> = state
             .single
@@ -244,10 +272,7 @@ impl WalletContext {
         raw: &str,
         persist: impl FnOnce(&ImportedKey) -> Result<(), TaskError>,
     ) -> Result<String, TaskError> {
-        let _writer = self
-            .writer
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _writer = self.lock_writer();
         let state = read_recover(&self.state);
         let mut meta = state
             .single
@@ -275,10 +300,7 @@ impl WalletContext {
         address: &str,
         persist: impl FnOnce() -> Result<(), TaskError>,
     ) -> Result<(), TaskError> {
-        let _writer = self
-            .writer
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _writer = self.lock_writer();
         persist()?;
         let mut state = write_recover(&self.state);
         state.single.remove(address);
@@ -292,10 +314,7 @@ impl WalletContext {
         &self,
         load: impl FnOnce() -> Result<WalletHydration, TaskError>,
     ) -> Result<(), TaskError> {
-        let _writer = self
-            .writer
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _writer = self.lock_writer();
         let loaded = load()?;
         let mut state = write_recover(&self.state);
         for (seed, meta) in loaded.hd {
@@ -323,10 +342,7 @@ impl WalletContext {
     }
 
     pub(crate) fn remove_wallet(&self, seed: &WalletSeedHash) -> Result<(), TaskError> {
-        let _writer = self
-            .writer
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _writer = self.lock_writer();
         let mut state = write_recover(&self.state);
         state
             .wallets
@@ -337,10 +353,7 @@ impl WalletContext {
     }
 
     pub(crate) fn clear(&self) {
-        let _writer = self
-            .writer
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _writer = self.lock_writer();
         *write_recover(&self.state) = WalletState::default();
     }
 
@@ -356,10 +369,7 @@ impl WalletContext {
                 ..Default::default()
             }
         };
-        let _writer = self
-            .writer
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _writer = self.lock_writer();
         let mut state = write_recover(&self.state);
         state.hd.insert(seed, meta);
         state.wallets.insert(seed, wallet);
@@ -384,10 +394,7 @@ impl WalletContext {
                 public_key_bytes: w.public_key.inner.serialize().to_vec(),
             }
         };
-        let _writer = self
-            .writer
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _writer = self.lock_writer();
         let mut state = write_recover(&self.state);
         state.single_membership.insert(meta.address.clone(), hash);
         state.single.insert(meta.address.clone(), meta);
@@ -432,6 +439,40 @@ mod tests {
     use super::*;
     use std::sync::mpsc;
     use std::time::Duration;
+
+    #[test]
+    #[should_panic(expected = "WalletContext writer re-entered")]
+    fn mutator_reentered_from_persist_callback_panics_instead_of_deadlocking() {
+        let context = WalletContext::default();
+        let _ = context.save_hd_metadata([4; 32], WalletMeta::default(), || {
+            context.delete_hd_metadata(&[4; 32], || Ok(()))
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "WalletContext writer re-entered")]
+    fn metadata_read_reentered_from_persist_callback_panics_instead_of_deadlocking() {
+        let context = WalletContext::default();
+        let _ = context.save_hd_metadata([5; 32], WalletMeta::default(), || {
+            context.read_metadata(|| Ok(()))
+        });
+    }
+
+    #[test]
+    fn writer_is_reusable_after_a_callback_error_and_on_other_contexts() {
+        let context = WalletContext::default();
+        let other = WalletContext::default();
+        let result = context.save_hd_metadata([6; 32], WalletMeta::default(), || {
+            // A distinct context's writer is independent, so nesting is allowed.
+            other.save_hd_metadata([6; 32], WalletMeta::default(), || Ok(()))?;
+            Err(TaskError::WalletNotFound)
+        });
+        assert!(result.is_err());
+        assert!(other.hd_metadata(&[6; 32]).is_some());
+        context
+            .save_hd_metadata([6; 32], WalletMeta::default(), || Ok(()))
+            .expect("the writer is released after a failed callback");
+    }
 
     #[test]
     fn removed_wallet_can_be_reimported_and_its_alias_reused() {

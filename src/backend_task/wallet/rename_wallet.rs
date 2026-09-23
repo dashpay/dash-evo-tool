@@ -34,6 +34,10 @@ impl AppContext {
         let alias = self
             .wallet_context()
             .rename_hd(seed_hash, &alias, |xpub_encoded, alias| {
+                // Precondition only: a rename requires a wired backend. Its
+                // backend-bound `wallet_meta()` view must not be used here —
+                // it re-takes the writer this callback runs under, which
+                // `WalletContext` turns into a panic. Use the raw view below.
                 self.wallet_backend()?;
                 let kv = self.app_kv();
                 let meta_view = crate::wallet_backend::WalletMetaView::new(&kv);

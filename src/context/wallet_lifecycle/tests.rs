@@ -3620,6 +3620,39 @@ async fn protection_changing_reimport_then_forget_leaves_no_stale_handle() {
     assert!(!ctx.wallet_context().has_single_key_wallets());
 }
 
+/// Removing the last HD wallet keeps `has_wallet` set while an imported key
+/// is still loaded, matching hydration and import.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remove_last_hd_wallet_keeps_has_wallet_with_imported_key() {
+    use crate::wallet_backend::single_key::ImportPassphrase;
+
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+
+    let seed = [0xB7u8; 64];
+    let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+        .expect("build wallet");
+    let (seed_hash, _) = ctx
+        .register_wallet(wallet, &seed, WalletOrigin::Fresh)
+        .expect("register wallet");
+    let mut raw = [0u8; 32];
+    raw[31] = 0x5B;
+    ctx.import_single_key_wif(
+        &testnet_wif_from_raw(&raw),
+        crate::model::wallet::alias::AliasSource::Preserved(None),
+        ImportPassphrase::default(),
+    )
+    .expect("import must succeed");
+
+    ctx.remove_wallet(&seed_hash).expect("remove wallet");
+    assert!(
+        ctx.has_wallet.load(Ordering::Relaxed),
+        "an imported key is still loaded after the last HD wallet is removed"
+    );
+}
+
 /// Companion to the protected-key test: an **unprotected** single key
 /// has no passphrase by definition, so plaintext in the session map is
 /// inherent and the mirror is expected to be open. This guards against

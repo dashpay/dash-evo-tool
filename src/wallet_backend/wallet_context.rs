@@ -543,6 +543,22 @@ mod tests {
     }
 
     #[test]
+    fn writer_guard_is_cleared_when_a_callback_unwinds() {
+        let context = WalletContext::default();
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = context.save_hd_metadata([7; 32], WalletMeta::default(), || {
+                panic!("callback failure")
+            });
+        }));
+        assert!(unwound.is_err());
+        // The poisoned writer is recovered and the held marker was dropped,
+        // so the same thread can write again without a false re-entry panic.
+        context
+            .save_hd_metadata([7; 32], WalletMeta::default(), || Ok(()))
+            .expect("writer usable after an unwinding callback");
+    }
+
+    #[test]
     fn targeted_readers_track_hd_membership() {
         let context = WalletContext::default();
         assert!(!context.has_any_wallet() && !context.has_hd_wallets());

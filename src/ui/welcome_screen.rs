@@ -43,7 +43,6 @@ struct PreparedRoleCard {
 pub enum OnboardingAction {
     LoadWallet,
     CreateWallet,
-    ImportIdentity,
     JustBrowse,
 }
 
@@ -350,7 +349,6 @@ impl WelcomeScreen {
                     RootScreenType::RootScreenWalletsBalances,
                     Some(Box::new(ScreenType::ImportMnemonic)),
                 ),
-                OnboardingAction::ImportIdentity => (RootScreenType::RootScreenIdentities, None),
                 OnboardingAction::JustBrowse => (RootScreenType::RootScreenIdentityHub, None),
             };
 

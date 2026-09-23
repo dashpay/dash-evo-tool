@@ -108,9 +108,13 @@ impl BootApp {
                     }
                 }
             }
-            Err(e) if e.is_secret_store_wrong_passphrase() => {
+            Err(e) if e.is_recoverable_secret_store_passphrase_error() => {
                 if let BootApp::Unlocking(state) = self {
-                    state.error = Some(UnlockError::WrongPassphrase);
+                    state.error = Some(if e.is_secret_store_wrong_passphrase() {
+                        UnlockError::WrongPassphrase
+                    } else {
+                        UnlockError::TooLong
+                    });
                 }
             }
             // Any non-passphrase failure on the keyed open is genuinely fatal —
@@ -234,6 +238,7 @@ enum UnlockOutcome {
 #[derive(Clone, Copy)]
 enum UnlockError {
     WrongPassphrase,
+    TooLong,
     Blank,
 }
 
@@ -241,6 +246,9 @@ impl UnlockError {
     fn message(self) -> &'static str {
         match self {
             UnlockError::WrongPassphrase => "That passphrase is not correct. Try again.",
+            UnlockError::TooLong => {
+                "This passphrase is too long for this version of the app. Try a shorter passphrase, or reopen the previous version and change it."
+            }
             UnlockError::Blank => "Enter your passphrase to continue.",
         }
     }

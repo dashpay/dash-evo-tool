@@ -358,7 +358,7 @@ impl AppContext {
         // Combine new and stale names (oldest first), preserving the
         // pre-C6 ordering callers may rely on.
         stale.extend(new_names.into_iter().map(|name| (name, None)));
-        stale.sort_by(|a, b| a.1.unwrap_or(0).cmp(&b.1.unwrap_or(0)));
+        stale.sort_by_key(|a| a.1.unwrap_or(0));
         Ok(stale.into_iter().map(|(name, _)| name).collect())
     }
 

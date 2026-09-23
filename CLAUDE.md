@@ -42,7 +42,7 @@ Test locations:
 
 Driving the actual compiled binary through a real display — for flows that need real navigation, real async/network timing, or visual verification beyond what `kittest` (no display) or `backend-e2e` (no UI) can cover. Read `docs/gui-testing/README.md` before running this kind of test — it has the safety rules (isolated data dir, credential handling, fund-movement caps) and the reusable scenario library under `docs/gui-testing/scenarios/`.
 
-Always run `cargo fmt --all` when finalizing your work — this honors the `rust-toolchain.toml` pin (1.92), matching what `clippy.yml`'s `cargo fmt --all -- --check` actually validates. For `cargo clippy`, see the scope guidance below.
+Always run `cargo fmt --all` when finalizing your work — this honors the `rust-toolchain.toml` pin (1.98), matching what `clippy.yml`'s `cargo fmt --all -- --check` actually validates. For `cargo clippy`, see the scope guidance below.
 
 ### Local vs CI — avoid duplicate test runs
 
@@ -69,7 +69,7 @@ Two gaps where CI will **not** cover you:
 - **Draft PRs run no automatic CI.** Both workflows are gated on `github.event.pull_request.draft != true`, so a draft PR's `pull_request` runs are suppressed. Neither workflow declares a `workflow_dispatch` trigger, so there is no way to run them by hand against a draft branch — mark the PR ready for review (`ready_for_review` triggers the full run) to get CI coverage.
 - **Backend E2E tests are not in CI.** The step is commented out in `tests.yml`, and the tests are `#[ignore]`d. If a change touches backend behaviour that only `tests/backend-e2e/` covers, run those locally; CI will not.
 
-A green CI run is only meaningful if it actually executed your tests. `cargo test <filter>` exits 0 and prints `test result: ok` even when the filter matches nothing — when checking a run, confirm your new test names appear in the log **with a pass status**, not merely present. A `#[ignore]`d test (e.g. `test_drop_zeroes_full_capacity` in `src/model/secret.rs`) can appear in the log as `ignored` without having actually run — the "full non-ignored-test gate" above intentionally excludes these; they stay a manual check.
+A green CI run is only meaningful if it actually executed your tests. `cargo test <filter>` exits 0 and prints `test result: ok` even when the filter matches nothing — when checking a run, confirm your new test names appear in the log **with a pass status**, not merely present. A `#[ignore]`d test (e.g. `core_max_send_with_single_utxo_builds_without_change` in `src/wallet_backend/payments.rs`) can appear in the log as `ignored` without having actually run — the "full non-ignored-test gate" above intentionally excludes these; they stay a manual check.
 
 ### User stories catalog
 
@@ -258,7 +258,7 @@ What each verifies:
 - `egui/eframe 0.35` - Immediate mode GUI framework
 - `tokio` - Async runtime (12 worker threads)
 - `rusqlite` - SQLite with bundled library
-- Rust edition 2024, minimum rust-version 1.92
+- Rust edition 2024, minimum rust-version 1.98
 
 ### Configuration
 

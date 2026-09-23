@@ -21,12 +21,12 @@ use crate::ui::dashpay::qr_code_generator::QRCodeGeneratorScreen;
 use crate::ui::dashpay::send_payment::SendPaymentScreen;
 use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen};
 use crate::ui::dpns::dpns_contested_names_screen::DPNSScreen;
-use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
-use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
-use crate::ui::identities::keys::keys_screen::KeysScreen;
-use crate::ui::identities::top_up_identity_screen::TopUpIdentityScreen;
-use crate::ui::identities::transfer_screen::TransferScreen;
-use crate::ui::identities::withdraw_screen::WithdrawalScreen;
+use crate::ui::identity::keys::add_key_screen::AddKeyScreen;
+use crate::ui::identity::keys::key_info_screen::KeyInfoScreen;
+use crate::ui::identity::keys::keys_screen::KeysScreen;
+use crate::ui::identity::top_up_identity_screen::TopUpIdentityScreen;
+use crate::ui::identity::transfer_screen::TransferScreen;
+use crate::ui::identity::withdraw_screen::WithdrawalScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
 use crate::ui::tokens::add_token_by_id_screen::AddTokenByIdScreen;
 use crate::ui::tokens::tokens_screen::{IdentityTokenBasicInfo, IdentityTokenInfo};
@@ -51,11 +51,10 @@ use contracts_documents::update_contract_screen::UpdateDataContractScreen;
 use dash_sdk::dpp::prelude::IdentityPublicKey;
 use dash_sdk::platform::Identifier;
 use dpns::dpns_contested_names_screen::DPNSSubscreen;
-use identities::add_existing_identity_screen::AddExistingIdentityScreen;
-use identities::add_new_identity_screen::AddNewIdentityScreen;
-use identities::identities_screen::IdentitiesScreen;
-use identities::register_dpns_name_screen::{RegisterDpnsNameScreen, RegisterDpnsNameSource};
 use identity::IdentityHubScreen;
+use identity::add_existing_identity_screen::AddExistingIdentityScreen;
+use identity::add_new_identity_screen::AddNewIdentityScreen;
+use identity::register_dpns_name_screen::{RegisterDpnsNameScreen, RegisterDpnsNameSource};
 use masternodes::MasternodesScreen;
 use std::fmt;
 use std::sync::Arc;
@@ -121,7 +120,6 @@ pub mod contracts_documents;
 pub mod dashpay;
 pub mod dpns;
 pub mod helpers;
-pub mod identities;
 pub mod identity;
 pub mod masternodes;
 pub mod network_chooser_screen;
@@ -137,7 +135,6 @@ pub use crate::model::settings::RootScreenType;
 impl From<RootScreenType> for ScreenType {
     fn from(value: RootScreenType) -> Self {
         match value {
-            RootScreenType::RootScreenIdentities => ScreenType::Identities,
             RootScreenType::RootScreenDPNSActiveContests => ScreenType::DPNSActiveContests,
             RootScreenType::RootScreenDPNSPastContests => ScreenType::DPNSPastContests,
             RootScreenType::RootScreenDPNSOwnedNames => ScreenType::DPNSMyUsernames,
@@ -174,8 +171,6 @@ impl From<RootScreenType> for ScreenType {
 
 #[derive(Debug, Clone, Default)]
 pub enum ScreenType {
-    #[default]
-    Identities,
     DPNSActiveContests,
     DPNSPastContests,
     DPNSMyUsernames,
@@ -214,7 +209,8 @@ pub enum ScreenType {
     GroveSTARK,
     AddressBalance,
     Dashpay,
-    /// Unified Identities hub (new four-tab section).
+    /// The unified Identities hub, and the app's default root screen.
+    #[default]
     IdentityHub,
     /// Masternodes section (Expert-Mode gated).
     Masternodes,
@@ -314,7 +310,6 @@ impl PartialEq for ScreenType {
 impl ScreenType {
     pub fn create_screen(&self, app_context: &Arc<AppContext>) -> Screen {
         match self {
-            ScreenType::Identities => Screen::IdentitiesScreen(IdentitiesScreen::new(app_context)),
             ScreenType::DPNSActiveContests => {
                 Screen::DPNSScreen(DPNSScreen::new(app_context, DPNSSubscreen::Active))
             }
@@ -566,7 +561,6 @@ impl ScreenType {
 
 #[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 pub enum Screen {
-    IdentitiesScreen(IdentitiesScreen),
     DPNSScreen(DPNSScreen),
     DocumentQueryScreen(DocumentQueryScreen),
     AddNewWalletScreen(AddNewWalletScreen),
@@ -748,7 +742,6 @@ impl Screen {
         // The `skip` list must exactly match the explicit match arms above.
         set_ctx!(
             set:
-            IdentitiesScreen,
             DPNSScreen,
             AddExistingIdentityScreen,
             KeyInfoScreen,
@@ -915,7 +908,6 @@ impl Screen {
                 screen.key.clone(),
                 screen.private_key_data.clone(),
             ),
-            Screen::IdentitiesScreen(_) => ScreenType::Identities,
             Screen::DPNSScreen(DPNSScreen {
                 dpns_subscreen: DPNSSubscreen::Active,
                 ..
@@ -1078,7 +1070,6 @@ impl Screen {
 macro_rules! delegate_to_screen {
     ($self:expr, $screen:ident => $call:expr) => {
         match $self {
-            Screen::IdentitiesScreen($screen) => $call,
             Screen::DPNSScreen($screen) => $call,
             Screen::DocumentQueryScreen($screen) => $call,
             Screen::AddNewWalletScreen($screen) => $call,

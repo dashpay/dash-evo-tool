@@ -23,6 +23,7 @@ impl AppContext {
 
         // Query the DPNS contract for the domain document
         let domain_query = DocumentQuery {
+            sub_queries: Vec::new(),
             select: SelectProjection::documents(),
             data_contract: self.dpns_contract.clone(),
             document_type_name: "domain".to_string(),
@@ -38,10 +39,12 @@ impl AppContext {
                     value: Value::Text(normalized_name.clone()),
                 },
             ],
+            time_range_clauses: Vec::new(),
             group_by: Vec::new(),
             having: Vec::new(),
             order_by_clauses: vec![],
             limit: 1,
+            offset: None,
             start: None,
         };
 
@@ -76,6 +79,7 @@ impl AppContext {
 
         // Fetch all DPNS names owned by this identity
         let dpns_names_document_query = DocumentQuery {
+            sub_queries: Vec::new(),
             select: SelectProjection::documents(),
             data_contract: self.dpns_contract.clone(),
             document_type_name: "domain".to_string(),
@@ -84,10 +88,12 @@ impl AppContext {
                 operator: WhereOperator::Equal,
                 value: Value::Identifier(identity_id.into()),
             }],
+            time_range_clauses: Vec::new(),
             group_by: Vec::new(),
             having: Vec::new(),
             order_by_clauses: vec![],
             limit: 100,
+            offset: None,
             start: None,
         };
 

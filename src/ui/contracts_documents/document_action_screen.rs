@@ -20,7 +20,7 @@ use crate::ui::helpers::{
     TransactionType, add_contract_doc_type_chooser_with_filtering, add_key_chooser_with_doc_type,
     show_success_screen_with_info,
 };
-use crate::ui::identities::get_selected_wallet;
+use crate::ui::identity::get_selected_wallet;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
@@ -776,7 +776,8 @@ impl DocumentActionScreen {
                                     .background_color(DashColors::input_background(dark_mode)),
                             );
                         }
-                        DocumentPropertyType::Identifier => {
+                        DocumentPropertyType::Identifier
+                        | DocumentPropertyType::IdentifierWithReference(_) => {
                             let dark_mode = ui.style().visuals.dark_mode;
                             ui.add(
                                 egui::TextEdit::singleline(val)
@@ -1352,7 +1353,8 @@ impl DocumentActionScreen {
                     };
                     Value::Bytes(bytes)
                 }
-                DocumentPropertyType::Identifier => {
+                DocumentPropertyType::Identifier
+                | DocumentPropertyType::IdentifierWithReference(_) => {
                     let id = Identifier::from_string(input_str, Encoding::Base58)
                         .map_err(|_| format!("{} is not a valid Identifier (base58)", name))?;
                     id.into()
@@ -1419,6 +1421,7 @@ impl DocumentActionScreen {
             created_at_core_block_height: None,
             updated_at_core_block_height: None,
             transferred_at_core_block_height: None,
+            contract_version: None,
         };
 
         Ok((raw_doc.into(), entropy))
@@ -1529,7 +1532,8 @@ impl DocumentActionScreen {
                     };
                     Value::Bytes(bytes)
                 }
-                DocumentPropertyType::Identifier => {
+                DocumentPropertyType::Identifier
+                | DocumentPropertyType::IdentifierWithReference(_) => {
                     let id = Identifier::from_string(input_str, Encoding::Base58)
                         .map_err(|_| format!("{} is not a valid Identifier (base58)", name))?;
                     id.into()
@@ -1588,6 +1592,7 @@ impl DocumentActionScreen {
             created_at_core_block_height: None,
             updated_at_core_block_height: None,
             transferred_at_core_block_height: None,
+            contract_version: None,
         };
 
         Ok((updated_doc.into(), entropy))

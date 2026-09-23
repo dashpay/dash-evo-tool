@@ -14,7 +14,7 @@ use egui_kittest::kittest::Queryable;
 #[test]
 fn indicator_tracks_role_and_distinguishes_raised_modes() {
     with_isolated_data_dir(|| {
-        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
         let app_context = harness.state().current_app_context().clone();
 
         app_context.set_user_role(UserRole::Everyday);

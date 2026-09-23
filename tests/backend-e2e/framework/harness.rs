@@ -58,7 +58,35 @@ const FUNDED_WALLET_REGISTRATION_TIMEOUT: Duration = Duration::from_secs(120);
 ///
 /// Uses `tokio::sync::OnceCell` so initialization runs inside the shared
 /// runtime context (via `block_on`) rather than spawning a nested one.
+/// `get_or_init` serializes concurrent callers, so parallel test threads never
+/// race into `init()` together — but it does not cache a panicked init, so the
+/// next test retries from scratch.
+///
+/// A retry cannot reuse the failed attempt's workdir. `AppContext::new` ends in
+/// `SpvProvider::bind_app_context`, which stores a strong `Arc<AppContext>`
+/// inside a field of that same `AppContext` — the resulting cycle means no
+/// `AppContext` is ever dropped. Its `Arc<DetKv>` therefore keeps
+/// `det-app.sqlite` in the upstream `SqlitePersister` process-wide open-path
+/// registry (released only on `Drop`), and reopening it returns `AlreadyOpen`.
+/// [`open_available_workdir`] handles this by treating a slot whose stores are
+/// still held open as taken, so the real init failure surfaces on the retry
+/// instead of a misleading `AlreadyOpen`.
+///
+/// None of that is why the suite needs `--test-threads=1`. Serial execution is
+/// required because the tests share mutable chain state: one framework wallet's
+/// UTXO set (`FUNDING_MUTEX` serializes only the broadcast, not the balance
+/// waits), the `SHARED_IDENTITY` fixture, and a cleanup sweep that removes every
+/// wallet but the framework one.
 static CTX: tokio::sync::OnceCell<BackendTestContext> = tokio::sync::OnceCell::const_new();
+
+/// Init attempts allowed per test process before [`BackendTestContext::init`]
+/// stops retrying. A transient failure (SPV peer timeout) can clear on a retry;
+/// a standing one (unfunded framework wallet, bad `E2E_WALLET_MNEMONIC`) cannot,
+/// and retrying it once per remaining test buries the first, real failure.
+const MAX_INIT_ATTEMPTS: usize = 3;
+
+/// Init attempts made in this process, counted by [`BackendTestContext::init`].
+static INIT_ATTEMPTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Serializes the UTXO-critical section of `create_funded_test_wallet`.
 ///
@@ -88,7 +116,7 @@ static LEAKED_BACKEND: tokio::sync::Mutex<
     Option<Arc<dash_evo_tool::wallet_backend::WalletBackend>>,
 > = tokio::sync::Mutex::const_new(None);
 
-/// Number of distinct workdir slots `pick_available_workdir` cycles through.
+/// Number of distinct workdir slots `open_available_workdir` cycles through.
 /// The scan wraps modulo this value, so the preferred floor can climb without
 /// ever emptying the scan range.
 const MAX_WORKDIR_SLOTS: usize = 10;
@@ -96,7 +124,7 @@ const MAX_WORKDIR_SLOTS: usize = 10;
 /// Preferred starting workdir slot for the next `init()`. Bumped each time a
 /// panicked init leaks an un-droppable SPV `LockFile`, so the retry prefers a
 /// fresh directory instead of colliding with the locked one. The scan in
-/// [`pick_available_workdir`] wraps modulo [`MAX_WORKDIR_SLOTS`], so even if
+/// [`open_available_workdir`] wraps modulo [`MAX_WORKDIR_SLOTS`], so even if
 /// this floor exceeds the slot count it never exhausts the available slots — a
 /// freed lower slot is still picked up.
 static WORKDIR_SLOT_FLOOR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -183,6 +211,14 @@ async fn register_wallet_with_retry(
 
 impl BackendTestContext {
     async fn init() -> Self {
+        let attempt = INIT_ATTEMPTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        assert!(
+            attempt <= MAX_INIT_ATTEMPTS,
+            "backend-e2e context init already failed {MAX_INIT_ATTEMPTS} times in this process; \
+             not retrying. Fix the first failure reported above (the earliest `harness.rs` panic \
+             in this log) — every later test reports this message instead."
+        );
+
         // Cancel orphaned SPV tasks from a previous panicked init (if any).
         if let Some(token) = SPV_CANCEL
             .lock()
@@ -205,7 +241,7 @@ impl BackendTestContext {
         // clones keep the backend's `Arc` graph alive — so the lock cannot
         // be reclaimed in-process. Instead, advance the workdir slot so the
         // retry's SpvRuntime locks a fresh directory (this is exactly what
-        // `pick_available_workdir`'s slot fallback exists for).
+        // `open_available_workdir`'s slot fallback exists for).
         if let Some(stale_backend) = LEAKED_BACKEND.lock().await.take() {
             tracing::warn!(
                 "Leaked wallet backend from a previous init attempt; \
@@ -230,46 +266,10 @@ impl BackendTestContext {
             tracing::debug!(".env not loaded ({e}), relying on environment");
         }
 
-        // Deterministic workdir — always the same path so the database, wallets,
-        // and SPV data persist across runs. If the primary path is locked by
-        // another process, fall back to numbered alternatives (slot 1, 2, ...).
-        let base = std::env::temp_dir().join("dash-evo-e2e-testnet");
-        let slot_floor = WORKDIR_SLOT_FLOOR.load(std::sync::atomic::Ordering::SeqCst);
-        let (workdir, lock_file) = pick_available_workdir(&base, slot_floor);
-        std::fs::create_dir_all(&workdir).expect("Failed to create workdir");
-        tracing::info!("E2E workdir: {}", workdir.display());
-
-        // Ensure .env is present in the workdir (no env var mutation needed).
-        ensure_env_file(&workdir);
-
-        // Create database
-        let db_path = workdir.join("data.db");
-        let db =
-            Arc::new(create_database_at_path(&db_path).expect("Failed to create test database"));
-
-        // Create AppContext
-        let subtasks = Arc::new(TaskManager::new());
-        let cancel_token = subtasks.cancellation_token.clone();
-        let connection_status = Arc::new(ConnectionStatus::new());
-        let egui_ctx = egui::Context::default();
-
-        let app_kv = AppContext::open_app_kv(&workdir).expect("open app k/v");
-        let secret_store = AppContext::open_secret_store(&workdir).expect("open secret store");
-        let app_context = AppContext::new(
-            workdir.clone(),
-            Network::Testnet,
-            db,
-            subtasks,
-            connection_status,
-            egui_ctx,
-            app_kv,
-            secret_store,
-            UserRoleCell::new(UserRole::Power),
-        )
-        .expect("Failed to create AppContext for testnet");
-
-        // E2E_WALLET_MNEMONIC is required — read it early so we know which
-        // wallet to keep before SPV starts.
+        // E2E_WALLET_MNEMONIC is required. Read and parse it BEFORE any store is
+        // opened: a bad value here is the most common init failure, and failing
+        // ahead of `open_available_workdir` keeps the first attempt from leaving
+        // a workdir slot holding an un-droppable `det-app.sqlite` handle.
         let mnemonic_phrase = std::env::var("E2E_WALLET_MNEMONIC").unwrap_or_else(|_| {
             panic!(
                 "E2E_WALLET_MNEMONIC is not set.\n\
@@ -293,6 +293,46 @@ impl BackendTestContext {
             .expect("Failed to compute framework wallet hash");
             tmp_wallet.seed_hash()
         };
+
+        // Deterministic workdir — always the same path so the database, wallets,
+        // and SPV data persist across runs. If the primary path is locked by
+        // another process, fall back to numbered alternatives (slot 1, 2, ...).
+        let base = std::env::temp_dir().join("dash-evo-e2e-testnet");
+        let slot_floor = WORKDIR_SLOT_FLOOR.load(std::sync::atomic::Ordering::SeqCst);
+        let WorkdirHandles {
+            dir: workdir,
+            lock_file,
+            app_kv,
+            secret_store,
+        } = open_available_workdir(&base, slot_floor);
+        tracing::info!("E2E workdir: {}", workdir.display());
+
+        // Ensure .env is present in the workdir (no env var mutation needed).
+        ensure_env_file(&workdir);
+
+        // Create database
+        let db_path = workdir.join("data.db");
+        let db =
+            Arc::new(create_database_at_path(&db_path).expect("Failed to create test database"));
+
+        // Create AppContext
+        let subtasks = Arc::new(TaskManager::new());
+        let cancel_token = subtasks.cancellation_token.clone();
+        let connection_status = Arc::new(ConnectionStatus::new());
+        let egui_ctx = egui::Context::default();
+
+        let app_context = AppContext::new(
+            workdir.clone(),
+            Network::Testnet,
+            db,
+            subtasks,
+            connection_status,
+            egui_ctx,
+            app_kv,
+            secret_store,
+            UserRoleCell::new(UserRole::Power),
+        )
+        .expect("Failed to create AppContext for testnet");
 
         // Purge stale wallets from the persistent DB before SPV starts.
         // SPV builds a bloom filter for every loaded wallet address — accumulated
@@ -703,11 +743,25 @@ impl BackendTestContext {
     }
 }
 
-/// Pick a deterministic workdir, acquiring an exclusive lock file.
+/// A workdir slot with every handle the harness needs to hold exclusively.
+struct WorkdirHandles {
+    dir: PathBuf,
+    /// Held for the process lifetime; excludes concurrent test *processes*.
+    lock_file: std::fs::File,
+    app_kv: Arc<dash_evo_tool::wallet_backend::DetKv>,
+    secret_store: Arc<platform_wallet_storage::secrets::SecretStore>,
+}
+
+/// Open a deterministic workdir, acquiring its lock file and exclusive stores.
 ///
 /// Tries the primary path first (`base`), then falls back to `base-1`, `base-2`,
-/// etc. up to 10 slots. Each slot has a `.lock` file that is held for the
-/// lifetime of the returned `File` handle (via `flock` / `LockFile`).
+/// etc. up to [`MAX_WORKDIR_SLOTS`]. A slot is usable only when all three
+/// exclusive claims succeed: its `.lock` file (`flock`, excludes other test
+/// processes), its app k/v store, and its secret vault. Both stores are
+/// single-open-per-process — the k/v via the upstream `SqlitePersister`
+/// open-path registry, the vault via an advisory lock — and a panicked `init()`
+/// leaks both (see [`CTX`]), so "still open in this process" is exactly as
+/// disqualifying as "locked by another process" and is handled the same way.
 ///
 /// `slot_floor` is the *preferred* first slot to try — bumped across init
 /// retries when a panicked predecessor leaked an un-droppable SPV `LockFile`,
@@ -720,12 +774,14 @@ impl BackendTestContext {
 /// This ensures:
 /// - The same workdir is reused across runs (wallets, SPV data, DB persist)
 /// - Concurrent test processes get separate workdirs automatically
-/// - A retried init after a leaked SPV lock prefers a clean directory, but
-///   still recovers a freed lower slot once the leaked floor exceeds the range
-fn pick_available_workdir(base: &std::path::Path, slot_floor: usize) -> (PathBuf, std::fs::File) {
+/// - A retried init after a leaked lock or store handle lands on a clean
+///   directory, but still recovers a freed lower slot
+fn open_available_workdir(base: &std::path::Path, slot_floor: usize) -> WorkdirHandles {
     use std::io::Write;
 
     let preferred = slot_floor % MAX_WORKDIR_SLOTS;
+    let mut last_store_error: Option<String> = None;
+
     for offset in 0..MAX_WORKDIR_SLOTS {
         let slot = (preferred + offset) % MAX_WORKDIR_SLOTS;
         let dir = if slot == 0 {
@@ -753,34 +809,71 @@ fn pick_available_workdir(base: &std::path::Path, slot_floor: usize) -> (PathBuf
         };
 
         // Try to acquire an exclusive non-blocking lock
-        if try_lock_exclusive(&lock_file) {
-            // Write PID for debugging
-            let mut f = lock_file;
-            let _ = f.set_len(0);
-            let _ = write!(f, "{}", std::process::id());
-            let _ = f.flush();
-
-            if offset > 0 {
-                tracing::info!(
-                    "Preferred workdir slot {preferred} unavailable, using slot {slot}: {}",
-                    dir.display()
-                );
-            } else if slot != 0 {
-                tracing::info!("Using preferred workdir slot {slot}: {}", dir.display());
-            }
-            return (dir, f);
+        if !try_lock_exclusive(&lock_file) {
+            tracing::debug!(
+                "Workdir slot {} locked by another process, trying next...",
+                dir.display()
+            );
+            continue;
         }
 
-        tracing::debug!(
-            "Workdir slot {} locked by another process, trying next...",
-            dir.display()
-        );
+        // Both stores refuse a second open, so opening them here is what makes
+        // a slot leaked by a panicked init unusable rather than fatal. Dropping
+        // `app_kv` on the vault's error path releases its registry claim.
+        let app_kv = match AppContext::open_app_kv(&dir) {
+            Ok(app_kv) => app_kv,
+            Err(e) => {
+                tracing::warn!(
+                    "Workdir slot {} has an app k/v still open in this process, trying next: {e}",
+                    dir.display()
+                );
+                last_store_error = Some(e.to_string());
+                continue;
+            }
+        };
+        let secret_store = match AppContext::open_secret_store(&dir) {
+            Ok(secret_store) => secret_store,
+            Err(e) => {
+                tracing::warn!(
+                    "Workdir slot {} has a secret vault still open in this process, trying next: {e}",
+                    dir.display()
+                );
+                last_store_error = Some(e.to_string());
+                continue;
+            }
+        };
+
+        // Write PID for debugging
+        let mut f = lock_file;
+        let _ = f.set_len(0);
+        let _ = write!(f, "{}", std::process::id());
+        let _ = f.flush();
+
+        if offset > 0 {
+            tracing::info!(
+                "Preferred workdir slot {preferred} unavailable, using slot {slot}: {}",
+                dir.display()
+            );
+        } else if slot != 0 {
+            tracing::info!("Using preferred workdir slot {slot}: {}", dir.display());
+        }
+
+        return WorkdirHandles {
+            dir,
+            lock_file: f,
+            app_kv,
+            secret_store,
+        };
     }
 
     panic!(
-        "All {MAX_WORKDIR_SLOTS} E2E workdir slots are locked. \
-         Kill other test processes or remove lock files in {}*",
-        base.display()
+        "All {MAX_WORKDIR_SLOTS} E2E workdir slots are unavailable (locked by another process, \
+         or still open in this one after a panicked init). Kill other test processes or remove \
+         lock files in {}*.{}",
+        base.display(),
+        last_store_error
+            .map(|e| format!(" Last store error: {e}"))
+            .unwrap_or_default()
     );
 }
 

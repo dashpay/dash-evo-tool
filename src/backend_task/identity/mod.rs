@@ -343,16 +343,15 @@ impl IdentityKeySpecs {
                         ));
                     }
                 }
-                Purpose::AUTHENTICATION => {
+                Purpose::AUTHENTICATION
                     if *security_level != SecurityLevel::CRITICAL
                         && *security_level != SecurityLevel::HIGH
-                        && *security_level != SecurityLevel::MEDIUM
-                    {
-                        return Err(format!(
-                            "Key {}: AUTHENTICATION purpose requires CRITICAL, HIGH, or MEDIUM security level, got {:?}",
-                            id, security_level
-                        ));
-                    }
+                        && *security_level != SecurityLevel::MEDIUM =>
+                {
+                    return Err(format!(
+                        "Key {}: AUTHENTICATION purpose requires CRITICAL, HIGH, or MEDIUM security level, got {:?}",
+                        id, security_level
+                    ));
                 }
                 _ => {}
             }
@@ -713,6 +712,10 @@ pub enum KeyVerificationError {
 }
 
 impl AppContext {
+    #[expect(
+        clippy::result_large_err,
+        reason = "the intermediate error is dpp::ProtocolError, an upstream type we cannot shrink"
+    )]
     fn verify_voting_key_exists_on_identity(
         &self,
         voting_identity: &Identity,
@@ -758,6 +761,10 @@ impl AppContext {
         Ok(key)
     }
 
+    #[expect(
+        clippy::result_large_err,
+        reason = "the intermediate error is dpp::ProtocolError, an upstream type we cannot shrink"
+    )]
     fn verify_owner_key_exists_on_identity(
         &self,
         identity: &Identity,
@@ -803,6 +810,10 @@ impl AppContext {
         Ok(key)
     }
 
+    #[expect(
+        clippy::result_large_err,
+        reason = "the intermediate error is dpp::ProtocolError, an upstream type we cannot shrink"
+    )]
     fn verify_payout_address_key_exists_on_identity(
         &self,
         identity: &Identity,
@@ -1213,6 +1224,11 @@ mod tests {
                        Using SingleContract causes 'key bounds expected but not present' error."
                 );
             }
+            Some(ContractBounds::ContractGroup { .. }) => {
+                panic!(
+                    "ENCRYPTION key must be bound to the DashPay contract, not a contract group"
+                );
+            }
             None => {
                 panic!("ENCRYPTION key must have DashPay contract bounds for contactRequest");
             }
@@ -1257,6 +1273,11 @@ mod tests {
                 panic!(
                     "DECRYPTION key must use SingleContractDocumentType, not SingleContract. \
                        Using SingleContract causes 'key bounds expected but not present' error."
+                );
+            }
+            Some(ContractBounds::ContractGroup { .. }) => {
+                panic!(
+                    "DECRYPTION key must be bound to the DashPay contract, not a contract group"
                 );
             }
             None => {

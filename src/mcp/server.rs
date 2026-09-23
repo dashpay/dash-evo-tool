@@ -130,6 +130,11 @@ impl std::fmt::Debug for DashMcpService {
 }
 
 impl DashMcpService {
+    /// Observe an initialized context without starting standalone storage.
+    pub(crate) fn initialized_ctx(&self) -> Option<Arc<AppContext>> {
+        self.ctx.load()
+    }
+
     /// For HTTP mode: wrap the GUI's shared ArcSwap (same reference).
     #[cfg(feature = "mcp")]
     pub fn new_shared(app_context: Arc<arc_swap::ArcSwap<AppContext>>) -> Self {
@@ -279,7 +284,10 @@ impl DashMcpService {
             .with_async_tool::<tools::wallet::SendCoreFunds>()
             .with_async_tool::<tools::platform::QueryWithdrawals>()
             .with_async_tool::<tools::meta::DescribeTool>()
+            .with_async_tool::<tools::meta::AppStorageStatus>()
+            .with_async_tool::<tools::meta::AppStorageUpdate>()
             // Identity tools
+            .with_async_tool::<tools::identity::ListIdentitiesTool>()
             .with_async_tool::<tools::identity::IdentityCreditsTopup>()
             .with_async_tool::<tools::identity::IdentityCreditsTopupFromPlatform>()
             .with_async_tool::<tools::identity::IdentityCreditsTransfer>()
@@ -319,18 +327,14 @@ impl ServerHandler for DashMcpService {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
-        Ok(ListToolsResult {
-            tools: self.tool_router.list_all(),
-            meta: None,
-            next_cursor: None,
-        })
+        Ok(ListToolsResult::with_all_items(self.tool_router.list_all()))
     }
 
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, McpError> {
+    ) -> Result<CallToolResponse, McpError> {
         let tcc = ToolCallContext::new(self, request, context);
         self.tool_router.call(tcc).await
     }
@@ -402,6 +406,33 @@ pub async fn init_app_context() -> Result<Arc<AppContext>, McpError> {
             McpError::internal_error(format!("secret store open: {e}"), None)
         }
     })?;
+
+    // Carry an upgrading user's preferences (network, theme, onboarding) out
+    // of legacy `data.db` before the network is read below — the same import
+    // the GUI boot runs in `AppState::new_inner`. Skipping it boots a first
+    // post-upgrade launch on mainnet, where the legacy wallet drain finds none
+    // of a testnet user's wallets. The GUI answers a failure with a forced
+    // network chooser; det-cli has no one to ask, so it refuses to guess and
+    // the unwritten sentinel makes the next launch retry.
+    // TODO: move into the planned "doctor" module that consolidates DET data
+    // migrations and wallet repair (out of scope for now).
+    match crate::backend_task::migration::legacy_settings::import_legacy_settings(&app_kv, &db) {
+        Ok(outcome) => tracing::debug!(?outcome, "Legacy settings import"),
+        Err(e) => {
+            tracing::warn!(
+                error = ?e,
+                "Could not import preferences from the previous version — refusing to guess the network",
+            );
+            return Err(McpError::internal_error(
+                "Your network choice could not be restored from the previous version. \
+                 Open the Dash Evo Tool desktop app and confirm the network, then run this \
+                 command again."
+                    .to_string(),
+                None,
+            ));
+        }
+    }
+
     let network = app_kv
         .get::<crate::model::settings::AppSettings>(
             crate::wallet_backend::DetScope::Global,

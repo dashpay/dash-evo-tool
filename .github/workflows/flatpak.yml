@@ -37,7 +37,14 @@ jobs:
             runs-on: ubuntu-24.04-arm
 
     runs-on: ${{ matrix.runs-on }}
-    timeout-minutes: 20
+    # Sized for a COLD build, not a cache hit. The Cargo cache key below is
+    # keyed on `Cargo.lock`, so every dependency bump starts both arches from
+    # a prefix-restore that still recompiles the whole upstream tree: ~16
+    # minutes of `cargo build --release` on x86_64 before flatpak-builder even
+    # starts exporting. A warm run finishes in well under half this budget;
+    # the headroom exists so the cold run can reach "Save Cargo cache" and
+    # make the next one warm.
+    timeout-minutes: 45
 
     steps:
       - name: Check out code
@@ -132,7 +139,13 @@ jobs:
             cargo-cache
             cargo-target
           key: cargo-flatpak-${{ matrix.arch }}-${{ hashFiles('Cargo.lock') }}
+          # Ordered most to least specific. The middle entry is what makes a
+          # partial save useful: an incomplete build saves under a run-suffixed
+          # key (see "Save Cargo cache"), and this prefix picks up the most
+          # recent one for THIS lockfile ahead of a complete cache built from a
+          # different, older lockfile.
           restore-keys: |
+            cargo-flatpak-${{ matrix.arch }}-${{ hashFiles('Cargo.lock') }}-
             cargo-flatpak-${{ matrix.arch }}-
 
       - name: Bind-mount Cargo cache into Flatpak sandbox
@@ -181,20 +194,44 @@ jobs:
         run: |
           flatpak build-bundle flatpak-repo dash-evo-tool-linux-${{ matrix.arch }}.flatpak org.dash.DashEvoTool
 
+      # These run after the build, so on a failed or timed-out job they are
+      # reached only if the runner gets that far. The timeout above is what
+      # primarily guarantees a cold build reaches them; `always()` is
+      # defence-in-depth, and it is unconditionally effective for an ordinary
+      # step failure (a compile error, a failed dependency check) where the
+      # partial `cargo-target` is still worth keeping. On a cancellation the
+      # runner continues into its cleanup phase, so the save often lands, but
+      # a multi-gigabyte upload can be cut short by the cancellation grace
+      # period — treat it as opportunistic, never as a guarantee.
       - name: Clean Cargo cache for storage
+        if: always()
         run: |
           rm -rf cargo-target/release/incremental
           rm -rf cargo-cache/registry/src
           echo "=== Cargo cache sizes ==="
           du -sh cargo-cache cargo-target || true
 
+      # Cache entries are IMMUTABLE. Saving an incomplete build under the
+      # canonical key would freeze it: every later run would restore that
+      # partial archive, rebuild the remainder, and be unable to replace it —
+      # permanently paying for whatever the first bad run failed to compile.
+      # So only a fully successful job claims the canonical key; anything else
+      # saves under a run-suffixed key that the middle `restore-keys` prefix
+      # above picks up, letting each attempt improve on the last until one
+      # succeeds and writes the real thing.
+      #
+      # `continue-on-error` because saving is best-effort: re-running a job
+      # whose key already exists makes the save a no-op, and that must never
+      # turn a green build red.
       - name: Save Cargo cache
+        if: always()
+        continue-on-error: true
         uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684  # v4.2.3
         with:
           path: |
             cargo-cache
             cargo-target
-          key: cargo-flatpak-${{ matrix.arch }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-flatpak-${{ matrix.arch }}-${{ hashFiles('Cargo.lock') }}${{ job.status == 'success' && '' || format('-partial-{0}-{1}', github.run_id, github.run_attempt) }}
 
       - name: Upload Flatpak bundle as artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2

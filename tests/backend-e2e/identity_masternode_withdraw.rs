@@ -264,7 +264,7 @@ async fn test_mn020_load_wrong_key_rejected() {
     );
 }
 
-// ── TC-MN-021 — identity not found on network → IdentityNotFound ──────────────
+// ── TC-MN-021 — node not found on network → MasternodeNotFound ───────────────
 
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
@@ -272,23 +272,30 @@ async fn test_mn021_load_identity_not_found() {
     let ctx = ctx().await;
 
     // Well-formed but (overwhelmingly) nonexistent 64-hex ProTxHash.
-    let random_pro_tx = hex::encode([0x42u8; 32]);
+    const PRO_TX_BYTES: [u8; 32] = [0x42u8; 32];
     let task = load_task(
-        random_pro_tx,
+        hex::encode(PRO_TX_BYTES),
         IdentityType::Evonode,
         None,
         Some("".to_owned()),
         None,
     );
-    // No signing key here, but the network fetch fails first with IdentityNotFound.
+    // No signing key here, but the network fetch fails first.
     let err = run_task(&ctx.app_context, task)
         .await
         .expect_err("a nonexistent ProTxHash must not load");
 
-    assert!(
-        matches!(err, TaskError::IdentityNotFound),
-        "expected IdentityNotFound, got: {err:?}"
-    );
+    // A masternode/evonode load reports the node-specific variant, not the
+    // generic `IdentityNotFound` whose "ID or name" copy is wrong for a
+    // ProTxHash form, and it echoes the id it looked up.
+    match err {
+        TaskError::MasternodeNotFound { identity_id } => assert_eq!(
+            identity_id.as_bytes(),
+            &PRO_TX_BYTES,
+            "MasternodeNotFound must echo the looked-up ProTxHash"
+        ),
+        other => panic!("expected MasternodeNotFound, got: {other:?}"),
+    }
 }
 
 // ── TC-MN-050 — OWNER mode happy path via tool invoke: destination forced to payout

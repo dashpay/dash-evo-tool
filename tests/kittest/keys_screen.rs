@@ -18,11 +18,13 @@ use dash_evo_tool::model::qualified_identity::{
 };
 use dash_evo_tool::ui::components::MessageBanner;
 use dash_evo_tool::ui::components::legacy_recovery_section::recovery_item_labels;
-use dash_evo_tool::ui::identities::keys::keys_screen::KeysScreen;
+use dash_evo_tool::ui::identity::keys::keys_screen::KeysScreen;
 use dash_evo_tool::ui::masternodes::{KeyVocabulary, manage_keys_labels};
 use dash_evo_tool::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dash_sdk::dpp::identity::identity_public_key::accessors::v0::{
+    IdentityPublicKeyGettersV0, IdentityPublicKeySettersV0,
+};
 use dash_sdk::dpp::identity::{Identity, KeyID, Purpose};
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
@@ -1062,9 +1064,7 @@ fn a_disabled_key_whose_private_half_is_saved_is_still_reported_as_held() {
         // The live key, as Platform reports it after the user disabled it.
         let mut live = key(0, Purpose::AUTHENTICATION);
         let disabled_at = 1_700_000_000_u64;
-        match &mut live {
-            IdentityPublicKey::V0(v0) => v0.disabled_at = Some(disabled_at),
-        }
+        live.set_disabled_at(disabled_at);
         let identity = Identity::new_with_id_and_keys(
             Identifier::from([0x43u8; 32]),
             BTreeMap::from([(live.id(), live.clone())]),

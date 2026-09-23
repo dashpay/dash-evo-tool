@@ -99,6 +99,7 @@ impl AppContext {
             created_at_core_block_height: None,
             updated_at_core_block_height: None,
             transferred_at_core_block_height: None,
+            contract_version: None,
         });
         let domain_document = Document::V0(DocumentV0 {
             id: domain_id,
@@ -142,6 +143,7 @@ impl AppContext {
             created_at_core_block_height: None,
             updated_at_core_block_height: None,
             transferred_at_core_block_height: None,
+            contract_version: None,
         });
         let outcome = classify_dpns_registration_outcome(
             &domain_document_type,
@@ -187,6 +189,7 @@ impl AppContext {
             .map_err(|error| rebrand_dpns_domain_conflict(TaskError::from(error)))?;
 
         let dpns_names_document_query = DocumentQuery {
+            sub_queries: Vec::new(),
             select: SelectProjection::documents(),
             data_contract: self.dpns_contract.clone(),
             document_type_name: "domain".to_string(),
@@ -195,10 +198,12 @@ impl AppContext {
                 operator: WhereOperator::Equal,
                 value: Value::Identifier(qualified_identity.identity.id().into()),
             }],
+            time_range_clauses: Vec::new(),
             group_by: Vec::new(),
             having: Vec::new(),
             order_by_clauses: vec![],
             limit: 100,
+            offset: None,
             start: None,
         };
 

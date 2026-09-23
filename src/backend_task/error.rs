@@ -185,6 +185,18 @@ pub enum TaskError {
         source: dash_sdk::dpp::key_wallet::Error,
     },
 
+    /// An identity-funding account was derived but could not be saved. Saving
+    /// it is what lets a restart find the account again, so the operation is
+    /// stopped rather than left able to strand a funding lock the app could no
+    /// longer spend. The technical cause lives in `Debug` and the logs.
+    #[error(
+        "Your wallet could not save the account this payment needs. Check that your disk is not full, then try again."
+    )]
+    IdentityFundingAccountPersistFailed {
+        #[source]
+        source: Box<platform_wallet::changeset::PersistenceError>,
+    },
+
     /// Single-key wallets are not supported in this version. Their data is
     /// preserved; HD (recovery-phrase) wallets remain fully functional.
     #[error(
@@ -219,6 +231,29 @@ pub enum TaskError {
     WalletBackend {
         #[source]
         source: std::sync::Arc<platform_wallet::error::PlatformWalletError>,
+    },
+
+    /// A core transaction broadcast returned an ambiguous outcome — the
+    /// transaction may already be on the network. Carved out of
+    /// [`Self::WalletBackend`], whose "please retry" advice would invite a
+    /// double-spend here: upstream keeps the spent inputs reserved precisely so
+    /// a re-submission cannot go through, and a sync or the reservation TTL
+    /// reconciles the real outcome.
+    ///
+    /// The shielded siblings are [`Self::ShieldedConfirmationUnknown`] and the
+    /// per-operation `*ConfirmationUnknown` variants.
+    #[error(
+        "Your transaction was sent but the confirmation could not be verified. Wait a moment, then refresh your balance before sending it again."
+    )]
+    TransactionConfirmationUnknown {
+        /// The transaction whose outcome is unknown, on the paths that know it.
+        /// `None` for the upstream orchestrators (identity registration and
+        /// top-up, platform-address funding, asset-lock creation), which build
+        /// and broadcast their funding transaction internally and surface no
+        /// id — those outcomes cannot be watched for until upstream exposes it.
+        txid: Option<dash_sdk::dpp::dashcore::Txid>,
+        #[source]
+        source: Box<platform_wallet::error::PlatformWalletError>,
     },
 
     /// The wallet could not assemble and sign a payment transaction, for a
@@ -330,6 +365,15 @@ pub enum TaskError {
     )]
     AssetLockNotEligibleForTopUp,
 
+    /// A top-up of an identity outside this wallet was handed a funding mode
+    /// this path cannot build — currently only the whole-account drain, which
+    /// no flow here requests. Rejected before any funds move rather than
+    /// quietly substituting a different funding mode.
+    #[error(
+        "This way of paying is not available when topping up an identity from another wallet. Enter the amount to add, or choose a saved funding transaction instead."
+    )]
+    TopUpFundingMethodUnsupported,
+
     /// The asset-lock proof finalization (InstantSend → ChainLock fallback)
     /// timed out without producing a usable proof for Platform.
     #[error(
@@ -340,6 +384,36 @@ pub enum TaskError {
         source: Box<platform_wallet::error::PlatformWalletError>,
     },
 
+    /// An identity is absent from the wallet store's unowned scope immediately
+    /// after being written there — so a record calling it wallet-free would
+    /// not survive. Names only that, because the two causes are
+    /// indistinguishable at this pin: upstream's out-of-wallet upsert skips a
+    /// row already filed under a wallet, and it also swallows a persist
+    /// failure and returns `Ok(())`. Both leave the same evidence and take
+    /// the same remedies. Carries the identity id (data, not a message).
+    #[error(
+        "Identity {identity_id} could not be saved as belonging to no wallet, because this \
+         device's wallet data still links it to a wallet. Open that wallet and load the identity \
+         from there, or try again in a moment."
+    )]
+    UnownedIdentityMirrorMissing {
+        identity_id: dash_sdk::platform::Identifier,
+    },
+
+    /// An identity is still in the wallet store's unowned scope immediately
+    /// after being withdrawn from it — upstream's deletion write logs a
+    /// persist failure and reports the removal as done regardless, so the
+    /// readback is the only evidence it landed. The next boot's reconcile
+    /// re-issues the withdrawal, which is what the message offers. Carries the
+    /// identity id (data, not a message).
+    #[error(
+        "Identity {identity_id} was removed here, but this device's wallet data still lists it. \
+         Restart the application to finish removing it."
+    )]
+    UnownedIdentityMirrorRemains {
+        identity_id: dash_sdk::platform::Identifier,
+    },
+
     /// The wallet storage backend could not read or write wallet data.
     #[error(
         "Could not access wallet data. Check available disk space and restart the application."
@@ -347,6 +421,13 @@ pub enum TaskError {
     WalletStorage {
         #[source]
         source: platform_wallet_storage::WalletStorageError,
+    },
+
+    /// A pinned-PR wallet database could not be upgraded without losing data.
+    #[error(transparent)]
+    PlatformDatabaseUpgrade {
+        #[from]
+        source: crate::wallet_backend::platform_compatibility::UpgradeError,
     },
 
     /// Persisted Core transaction rows could not be read through the upstream
@@ -401,6 +482,30 @@ pub enum TaskError {
     WalletDataIncompatible {
         #[source]
         source: platform_wallet_storage::WalletStorageError,
+    },
+
+    /// A vault passphrase or a Tier-2 object password was longer than the
+    /// vault's upstream ceiling.
+    ///
+    /// Supersedes the class variants that follow ([`Self::SecretStore`],
+    /// [`Self::WalletSeedStorage`], [`Self::SecretSeam`],
+    /// [`Self::IdentityKeyVault`]) for this one cause: their copy points at
+    /// disk space and restarting, which would leave the only self-service
+    /// fix — shorten the password — undiscoverable. [`vault_error`] does the
+    /// routing, so every path into the vault reports it identically.
+    ///
+    /// The ceiling is enforced on unseal as well as on enrol, so this can
+    /// surface when *reading* a secret, not only when setting a password.
+    ///
+    /// `max` repeats the ceiling already carried by `source` because an
+    /// `#[error(...)]` template cannot reach into a source's fields.
+    #[error(
+        "This password is too long for this version of the app. If it already protects saved keys, reopen them with the previous version and change the password. Otherwise, choose a shorter password and try again."
+    )]
+    PassphraseTooLong {
+        max: usize,
+        #[source]
+        source: Box<platform_wallet_storage::secrets::SecretStoreError>,
     },
 
     /// The encrypted secret store could not be opened, read, or written.
@@ -564,6 +669,20 @@ pub enum TaskError {
         #[source]
         source: Box<TaskError>,
     },
+
+    /// The identity was removed from this device between the add-key broadcast
+    /// and the local write. The key is on Platform, but nothing about it is
+    /// saved here — deliberately: the user asked for this identity's keys to be
+    /// destroyed, and the new key is one of them. Sealing it anyway would leave
+    /// private key material on a device that reports it holds none, referenced
+    /// by no record and reachable by no cleanup.
+    ///
+    /// No loss beyond the on-chain slot: the private key was supplied by the
+    /// user on the add-key screen, so they still hold it.
+    #[error(
+        "The new key was added to your identity on the network, but this identity was removed from this device before the key could be saved here. Load the identity again, then add the key again."
+    )]
+    IdentityKeyAddedButIdentityUnloaded,
 
     /// Fail-closed guard at the opt-in protect boundary: the task found
     /// keys still resident as plaintext on disk after the eager load-path vault
@@ -1117,6 +1236,13 @@ pub enum TaskError {
         "This identity could not be found in your local wallet. Try refreshing your identities list."
     )]
     IdentityNotFoundLocally,
+
+    /// The identity and its private keys are gone, but at least one optional
+    /// owner-scoped sidecar could not be removed.
+    #[error(
+        "The identity was removed, but some DashPay or token-list data may still be stored on this device. The app will keep trying to clear this local data automatically."
+    )]
+    IdentitySidecarCleanupIncomplete,
 
     /// The identity's saved copy in the preserved pre-update database is there
     /// but will not decode, so there is nothing this flow can restore from it.
@@ -2087,6 +2213,15 @@ pub enum TaskError {
     )]
     WalletPasswordTooShort { min: u32 },
 
+    /// A new wallet password is longer than the persistent secret store's
+    /// ceiling, refused by the model pre-check before the vault was reached.
+    ///
+    /// Distinct from [`Self::PassphraseTooLong`], which is raised while reading
+    /// or writing the vault and therefore carries recovery guidance and the
+    /// upstream error as `#[source]`.
+    #[error("This wallet password is too long. Pick a shorter password and try again.")]
+    WalletPasswordTooLong { max: usize },
+
     /// Wallet key derivation failed during construction.
     #[error("Could not create the wallet. Key derivation failed — please try again.")]
     WalletKeyDerivationFailed {
@@ -2321,6 +2456,54 @@ pub enum TaskError {
         source: platform_wallet::wallet::shielded::FileShieldedStoreError,
     },
 
+    /// An earlier identity-funded shielded payment is still unresolved, so the
+    /// upstream coordinator refused to start this one. Nothing was built or
+    /// broadcast; retrying immediately hits the same refusal.
+    ///
+    /// Populated by `map_shielded_op_error` from
+    /// `PlatformWalletError::ShieldedIdentityDebitPending`.
+    #[error(
+        "An earlier shielded payment from identity {identity_id} has not finished yet, so this payment was not started. Wait for the earlier payment to complete, then try again."
+    )]
+    ShieldedIdentityDebitPending {
+        identity_id: Identifier,
+        #[source]
+        source: Box<platform_wallet::error::PlatformWalletError>,
+    },
+
+    /// Durable shielded recovery data is damaged, so a pending payment cannot
+    /// be identified or reconstructed safely. The upstream `reason` stays in
+    /// the source chain (details/logs) and never reaches the message.
+    ///
+    /// The advised recourse is real: removing the wallet runs upstream
+    /// `remove_wallet` → `unregister_wallet` → `purge_wallet`, which deletes
+    /// the wallet's `shielded_pending_spends` rows (damaged guards included);
+    /// re-importing then re-binds and re-syncs from chain.
+    ///
+    /// Populated by `map_shielded_op_error` from
+    /// `PlatformWalletError::ShieldedRecoveryCorrupted`.
+    #[error("{message}", message = shielded_recovery_corrupted_message(*.account_index))]
+    ShieldedRecoveryCorrupted {
+        account_index: Option<u32>,
+        #[source]
+        source: Box<platform_wallet::error::PlatformWalletError>,
+    },
+
+    /// An unresolved shielded payment needs viewing keys for an account that
+    /// is not currently available. The upstream `reason` stays in the source
+    /// chain (details/logs) and never reaches the message.
+    ///
+    /// Populated by `map_shielded_op_error` from
+    /// `PlatformWalletError::ShieldedRecoveryKeysRequired`.
+    #[error(
+        "A pending shielded payment needs shielded account #{account_index}, which is not available right now. Unlock or restore the wallet that holds this account, then try again."
+    )]
+    ShieldedRecoveryKeysRequired {
+        account_index: u32,
+        #[source]
+        source: Box<platform_wallet::error::PlatformWalletError>,
+    },
+
     // ──────────────────────────────────────────────────────────────────────────
     // Network context errors
     // ──────────────────────────────────────────────────────────────────────────
@@ -2384,6 +2567,18 @@ pub enum TaskError {
         source: std::sync::Arc<crate::backend_task::migration::MigrationError>,
     },
 
+    /// A non-interactive storage update was given a wallet password that does
+    /// not open every password-protected wallet. No wallet is skipped on the
+    /// user's behalf, so the update stays unfinished until it is retried with
+    /// the right password or finished in the desktop app.
+    #[error(
+        "The password does not open every password-protected wallet. Check the password and try again, or open the Dash Evo Tool desktop app to finish the storage update."
+    )]
+    StorageUpdatePasswordRejected {
+        #[source]
+        source: std::sync::Arc<crate::backend_task::migration::MigrationError>,
+    },
+
     /// An HD wallet seed envelope decoded cleanly but its plaintext
     /// length is not the expected 64 bytes. Surfaced when the cold-boot
     /// hydration path would otherwise have silently degraded the
@@ -2427,6 +2622,16 @@ pub enum TaskError {
     /// stronger value before the key is encrypted.
     #[error("Passphrases must be at least {min} characters. Pick a longer one and try again.")]
     SingleKeyPassphraseTooShort { min: u32 },
+
+    /// The imported-key passphrase is longer than the vault's ceiling and was
+    /// refused before the key was sealed.
+    #[error("This key passphrase is too long. Pick a shorter passphrase and try again.")]
+    SingleKeyPassphraseTooLong { max: usize },
+
+    /// The identity-key protection password is longer than the vault's
+    /// ceiling and was refused before the keys were sealed.
+    #[error("This identity password is too long. Pick a shorter password and try again.")]
+    IdentityKeyPasswordTooLong { max: usize },
 
     /// The "Passphrase" and "Confirm passphrase" fields in the import
     /// dialog did not match. Caught client-side; this variant exists so
@@ -2496,8 +2701,10 @@ pub enum TaskError {
     /// A secret was needed but no interactive prompt is available in this
     /// context — the operation ran headless (MCP / CLI), where there is no
     /// window to ask for a passphrase. Per the Q-HEADLESS security ruling
-    /// there is no environment-variable or flag fallback for the
-    /// passphrase, so the operation cannot proceed here. Fieldless: this
+    /// there is no environment-variable or flag fallback for a signing
+    /// passphrase, so the operation cannot proceed here. Only the storage
+    /// update accepts a password non-interactively (`app_storage_update`),
+    /// and it does not go through this path. Fieldless: this
     /// carries no upstream diagnostic and, by design, never any secret.
     #[error(
         "This wallet is protected by a passphrase, which can only be entered in the app window. Open Dash Evo Tool and run this action there."
@@ -2679,6 +2886,50 @@ impl TaskError {
             self,
             Self::SecretStore { source } if matches!(**source, SecretStoreError::WrongPassphrase)
         )
+    }
+
+    /// Whether a keyed boot open can recover by keeping the unlock prompt
+    /// visible. An overlong entry is user-correctable just like a wrong one;
+    /// storage corruption and other failures remain fatal.
+    pub fn is_recoverable_secret_store_passphrase_error(&self) -> bool {
+        self.is_secret_store_wrong_passphrase() || matches!(self, Self::PassphraseTooLong { .. })
+    }
+}
+
+/// Wrap a vault failure in its caller's class variant, except the
+/// passphrase-length refusal, which becomes [`TaskError::PassphraseTooLong`]
+/// whichever class hit it.
+///
+/// The class variants exist to give each secret kind its own banner copy, and
+/// that is right for a storage failure. It is wrong for an over-long password:
+/// the cause and the fix are identical for a seed, an imported key and an
+/// identity key alike, and the class copy would send the user to check disk
+/// space instead of shortening the password.
+pub(crate) fn vault_error(
+    source: platform_wallet_storage::secrets::SecretStoreError,
+    class: impl FnOnce(Box<platform_wallet_storage::secrets::SecretStoreError>) -> TaskError,
+) -> TaskError {
+    // `max` is `usize`, so binding it here copies rather than moves `source`.
+    if let platform_wallet_storage::secrets::SecretStoreError::PassphraseTooLong { max, .. } =
+        source
+    {
+        return TaskError::PassphraseTooLong {
+            max,
+            source: Box::new(source),
+        };
+    }
+    class(Box::new(source))
+}
+
+/// User-facing text for [`TaskError::ShieldedRecoveryCorrupted`]. Upstream
+/// reports the account only when the damaged record identifies one, so each
+/// case gets its own complete sentence rather than a spliced fragment.
+fn shielded_recovery_corrupted_message(account_index: Option<u32>) -> String {
+    match account_index {
+        Some(account_index) => format!(
+            "Saved recovery data for shielded account #{account_index} is damaged, so a pending payment cannot be checked safely. Make sure you have this wallet's recovery phrase, remove the wallet, then import it again with that phrase."
+        ),
+        None => "Saved recovery data for your shielded funds is damaged, so a pending payment cannot be checked safely. Make sure you have this wallet's recovery phrase, remove the wallet, then import it again with that phrase.".to_string(),
     }
 }
 
@@ -2889,6 +3140,7 @@ impl From<crate::model::wallet::passphrase::PassphraseError> for TaskError {
         use crate::model::wallet::passphrase::PassphraseError;
         match e {
             PassphraseError::TooShort { min } => TaskError::SingleKeyPassphraseTooShort { min },
+            PassphraseError::TooLong { max } => TaskError::SingleKeyPassphraseTooLong { max },
             PassphraseError::Mismatch => TaskError::SingleKeyPassphraseMismatch,
         }
     }
@@ -2910,6 +3162,9 @@ impl From<crate::model::wallet::WalletCreationError> for TaskError {
         match e {
             WalletCreationError::PasswordTooShort { min } => {
                 TaskError::WalletPasswordTooShort { min }
+            }
+            WalletCreationError::PasswordTooLong { max } => {
+                TaskError::WalletPasswordTooLong { max }
             }
             WalletCreationError::Encryption { detail } => TaskError::EncryptionError { detail },
             WalletCreationError::KeyDerivation { source } => {
@@ -3354,6 +3609,89 @@ mod tests {
         }
     }
 
+    /// Each enrolment path names the credential the user is editing, while a
+    /// vault read explains how to recover data written by an older build.
+    #[test]
+    fn too_long_refusals_are_specific_and_actionable() {
+        use platform_wallet_storage::secrets::{MAX_PASSPHRASE_LEN, SecretStoreError};
+
+        let vault = vault_error(
+            SecretStoreError::PassphraseTooLong {
+                found: MAX_PASSPHRASE_LEN + 1,
+                max: MAX_PASSPHRASE_LEN,
+            },
+            |source| TaskError::SecretSeam { source },
+        );
+
+        assert_eq!(
+            TaskError::WalletPasswordTooLong {
+                max: MAX_PASSPHRASE_LEN,
+            }
+            .to_string(),
+            "This wallet password is too long. Pick a shorter password and try again."
+        );
+        assert_eq!(
+            TaskError::SingleKeyPassphraseTooLong {
+                max: MAX_PASSPHRASE_LEN,
+            }
+            .to_string(),
+            "This key passphrase is too long. Pick a shorter passphrase and try again."
+        );
+        assert_eq!(
+            vault.to_string(),
+            "This password is too long for this version of the app. If it already protects saved keys, reopen them with the previous version and change the password. Otherwise, choose a shorter password and try again."
+        );
+    }
+
+    /// The pre-check variants carry no upstream error — nothing failed
+    /// downstream — while the vault-level refusal keeps its chain. That
+    /// difference is exactly why they are separate variants.
+    #[test]
+    fn pre_check_refusals_carry_no_source_unlike_the_vault_refusal() {
+        use platform_wallet_storage::secrets::MAX_PASSPHRASE_LEN;
+        use std::error::Error;
+
+        assert!(
+            TaskError::WalletPasswordTooLong {
+                max: MAX_PASSPHRASE_LEN,
+            }
+            .source()
+            .is_none()
+        );
+        assert!(
+            TaskError::SingleKeyPassphraseTooLong {
+                max: MAX_PASSPHRASE_LEN,
+            }
+            .source()
+            .is_none()
+        );
+    }
+
+    /// The model pre-checks convert into the pre-check variants, not into the
+    /// vault-level one — so a caller matching on the layer still can.
+    #[test]
+    fn model_ceiling_errors_convert_to_the_pre_check_variants() {
+        use platform_wallet_storage::secrets::MAX_PASSPHRASE_LEN;
+
+        let from_wallet =
+            TaskError::from(crate::model::wallet::WalletCreationError::PasswordTooLong {
+                max: MAX_PASSPHRASE_LEN,
+            });
+        assert!(
+            matches!(from_wallet, TaskError::WalletPasswordTooLong { max } if max == MAX_PASSPHRASE_LEN),
+            "got {from_wallet:?}"
+        );
+
+        let from_passphrase =
+            TaskError::from(crate::model::wallet::passphrase::PassphraseError::TooLong {
+                max: MAX_PASSPHRASE_LEN,
+            });
+        assert!(
+            matches!(from_passphrase, TaskError::SingleKeyPassphraseTooLong { max } if max == MAX_PASSPHRASE_LEN),
+            "got {from_passphrase:?}"
+        );
+    }
+
     #[test]
     fn wallet_password_too_short_display_matches_model_guidance() {
         assert_eq!(
@@ -3642,6 +3980,103 @@ mod tests {
 
         // A wholly unrelated variant is fatal.
         assert!(!TaskError::ImportedKeyNotFound.is_secret_store_wrong_passphrase());
+    }
+
+    #[test]
+    fn boot_passphrase_classifier_keeps_length_refusals_recoverable() {
+        use platform_wallet_storage::secrets::{MAX_PASSPHRASE_LEN, SecretStoreError};
+
+        let too_long = vault_error(
+            SecretStoreError::PassphraseTooLong {
+                found: MAX_PASSPHRASE_LEN + 1,
+                max: MAX_PASSPHRASE_LEN,
+            },
+            |source| TaskError::SecretStore { source },
+        );
+
+        assert!(too_long.is_recoverable_secret_store_passphrase_error());
+        assert!(
+            TaskError::SecretStore {
+                source: Box::new(SecretStoreError::WrongPassphrase),
+            }
+            .is_recoverable_secret_store_passphrase_error()
+        );
+        assert!(
+            !TaskError::SecretStore {
+                source: Box::new(SecretStoreError::Corruption),
+            }
+            .is_recoverable_secret_store_passphrase_error()
+        );
+    }
+
+    /// The length refusal wins over every class variant, and carries the
+    /// limit plus an action the user can actually take.
+    ///
+    /// Routing matters more than the wording: the class variants
+    /// (`SecretSeam`, `WalletSeedStorage`, `IdentityKeyVault`, `SecretStore`)
+    /// all tell the user to check disk space or restart, which for an
+    /// over-long password is wrong and leaves the real fix undiscoverable.
+    #[test]
+    fn vault_error_routes_the_length_refusal_away_from_the_class_copy() {
+        use platform_wallet_storage::secrets::{MAX_PASSPHRASE_LEN, SecretStoreError};
+
+        let too_long = || SecretStoreError::PassphraseTooLong {
+            found: MAX_PASSPHRASE_LEN + 1,
+            max: MAX_PASSPHRASE_LEN,
+        };
+
+        // Every class the vault is reached through yields the same refusal:
+        // the fix is identical regardless of which secret tripped it.
+        for class in [
+            (|source| TaskError::SecretSeam { source }) as fn(_) -> TaskError,
+            |source| TaskError::WalletSeedStorage { source },
+            |source| TaskError::SecretStore { source },
+        ] {
+            let mapped = vault_error(too_long(), class);
+            assert!(
+                matches!(mapped, TaskError::PassphraseTooLong { max, .. } if max == MAX_PASSPHRASE_LEN),
+                "got {mapped:?}"
+            );
+            let msg = mapped.to_string();
+            assert!(
+                msg.contains("previous version") && msg.contains("shorter password"),
+                "the recovery choices must be actionable: {msg}"
+            );
+            assert!(
+                !msg.to_lowercase().contains("disk space"),
+                "an over-long password is not a disk-space problem: {msg}"
+            );
+        }
+
+        // Everything else still gets its class's own copy.
+        let other = vault_error(SecretStoreError::Corruption, |source| {
+            TaskError::SecretSeam { source }
+        });
+        assert!(
+            matches!(other, TaskError::SecretSeam { .. }),
+            "got {other:?}"
+        );
+    }
+
+    /// The refusal preserves the upstream error chain, so `Debug`/logs keep
+    /// the technical cause while `Display` stays user-facing.
+    #[test]
+    fn passphrase_too_long_preserves_its_source() {
+        use platform_wallet_storage::secrets::{MAX_PASSPHRASE_LEN, SecretStoreError};
+        use std::error::Error;
+
+        let mapped = vault_error(
+            SecretStoreError::PassphraseTooLong {
+                found: MAX_PASSPHRASE_LEN + 1,
+                max: MAX_PASSPHRASE_LEN,
+            },
+            |source| TaskError::SecretSeam { source },
+        );
+        let source = mapped.source().expect("the upstream cause is preserved");
+        assert!(
+            format!("{source:?}").contains("PassphraseTooLong"),
+            "got {source:?}"
+        );
     }
 
     #[test]
@@ -4281,6 +4716,65 @@ mod tests {
             matches!(err, TaskError::ShieldedTransitionBuildFailed { .. }),
             "Expected ShieldedTransitionBuildFailed, got: {err:?}"
         );
+    }
+
+    /// The shielded recovery messages interpolate only DET-owned fields and
+    /// never echo the upstream `reason` (which targets developers).
+    #[test]
+    fn shielded_recovery_displays_are_actionable_and_hide_upstream_reason() {
+        use platform_wallet::error::PlatformWalletError as P;
+        const REASON: &str = "pending spend row 7 has an ill-formed nullifier";
+
+        let corrupted = |account_index| TaskError::ShieldedRecoveryCorrupted {
+            account_index,
+            source: Box::new(P::ShieldedRecoveryCorrupted {
+                account_index,
+                reason: REASON.to_string(),
+            }),
+        };
+        let with_account = corrupted(Some(3)).to_string();
+        assert!(with_account.contains("#3"), "got: {with_account}");
+        let without_account = corrupted(None).to_string();
+        assert!(!without_account.contains('#'), "got: {without_account}");
+
+        let keys = TaskError::ShieldedRecoveryKeysRequired {
+            account_index: 2,
+            source: Box::new(P::ShieldedRecoveryKeysRequired {
+                account_index: 2,
+                reason: REASON.to_string(),
+            }),
+        }
+        .to_string();
+        assert!(keys.contains("#2"), "got: {keys}");
+
+        let identity_id = Identifier::from([0x5D; 32]);
+        let pending = TaskError::ShieldedIdentityDebitPending {
+            identity_id,
+            source: Box::new(P::ShieldedIdentityDebitPending {
+                identity_id: [0x5D; 32],
+            }),
+        }
+        .to_string();
+        assert!(
+            pending.contains(&identity_id.to_string(Encoding::Base58)),
+            "got: {pending}"
+        );
+
+        for msg in [&with_account, &without_account, &keys, &pending] {
+            assert!(!msg.contains(REASON), "upstream reason leaked: {msg}");
+        }
+        // Each action names a flow DET actually has (Remove + import with the
+        // recovery phrase; unlock/restore; wait) — never an absent backup flow.
+        for msg in [&with_account, &without_account] {
+            assert!(
+                msg.contains("recovery phrase") && msg.contains("import it again"),
+                "no remove-and-import action in: {msg}"
+            );
+            assert!(!msg.contains("backup"), "no backup flow exists: {msg}");
+        }
+        for msg in [&keys, &pending] {
+            assert!(msg.contains("then try again"), "no action in: {msg}");
+        }
     }
 
     #[test]
@@ -5428,6 +5922,43 @@ mod tests {
                     "Expected no jargon ({jargon}) in user message, got: {msg}"
                 );
             }
+        }
+    }
+
+    /// The core-transaction sibling of the family above. Its whole reason to
+    /// exist is that `WalletBackend`'s "please retry in a moment" would invite
+    /// a double-spend of a payment that may already be on the network, so the
+    /// message must differ from that envelope's and must route the user to a
+    /// refresh instead of a resend.
+    #[test]
+    fn transaction_confirmation_unknown_message_does_not_advise_retrying() {
+        let msg = TaskError::TransactionConfirmationUnknown {
+            txid: None,
+            source: Box::new(platform_wallet::error::PlatformWalletError::Sdk(
+                dash_sdk::Error::Generic("boom".to_string()),
+            )),
+        }
+        .to_string();
+
+        assert!(
+            msg.contains("refresh") && msg.contains("Wait"),
+            "Expected concrete recovery guidance (wait + refresh), got: {msg}"
+        );
+        assert_ne!(
+            msg,
+            TaskError::WalletBackend {
+                source: std::sync::Arc::new(platform_wallet::error::PlatformWalletError::Sdk(
+                    dash_sdk::Error::Generic("boom".to_string())
+                )),
+            }
+            .to_string(),
+            "the carve-out must not reuse the generic envelope's retry advice"
+        );
+        for jargon in ["nonce", "state transition", "SDK", "RPC", "broadcast"] {
+            assert!(
+                !msg.contains(jargon),
+                "Expected no jargon ({jargon}) in user message, got: {msg}"
+            );
         }
     }
 }

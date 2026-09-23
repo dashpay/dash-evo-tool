@@ -480,18 +480,15 @@ async fn tc_028_search_identity_from_wallet() {
     .await
     .expect("TC-028: SearchIdentityFromWallet should not error");
 
-    match &result {
-        BackendTaskSuccessResult::LoadedIdentity(qi) => {
-            tracing::info!("TC-028: found identity {:?}", qi.identity.id());
-        }
-        BackendTaskSuccessResult::RegisteredIdentity(qi, _) => {
-            tracing::info!("TC-028: found identity (registered) {:?}", qi.identity.id());
-        }
-        BackendTaskSuccessResult::Message(msg) => {
-            tracing::info!("TC-028: no identity at index 0: {}", msg);
-        }
-        other => panic!("TC-028: unexpected result: {:?}", other),
-    }
+    // The shared identity is registered at index 0, so the search resolves
+    // exactly one identity and persists it.
+    assert!(
+        matches!(
+            result,
+            BackendTaskSuccessResult::IdentitiesLoaded { count: 1 }
+        ),
+        "TC-028: expected IdentitiesLoaded {{ count: 1 }}, got: {result:?}"
+    );
 }
 
 // --- TC-029: SearchIdentitiesUpToIndex ---

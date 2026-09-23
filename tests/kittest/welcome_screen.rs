@@ -17,7 +17,7 @@ fn welcome_role_cards_expose_radio_accessibility_state() {
                 .with_animations(false)
         });
         harness.set_size(egui::vec2(1024.0, 768.0));
-        harness.run_steps(10);
+        crate::support::wait_for_screens(&mut harness);
 
         for (label, toggled) in [
             ("Default view", Toggled::False),
@@ -46,7 +46,7 @@ fn welcome_role_cards_paint_keyboard_focus() {
                 .with_animations(false)
         });
         harness.set_size(egui::vec2(1024.0, 768.0));
-        harness.run_steps(10);
+        crate::support::wait_for_screens(&mut harness);
 
         let unfocused_shapes = harness.output().shapes.clone();
         harness
@@ -91,7 +91,7 @@ fn welcome_role_cards_fit_a_narrow_window() {
         });
         let window_width = 480.0;
         harness.set_size(egui::vec2(window_width, 1000.0));
-        harness.run_steps(10);
+        crate::support::wait_for_screens(&mut harness);
 
         for role in [UserRole::Everyday, UserRole::Power, UserRole::Developer] {
             let card = harness.get_by_role_and_label(Role::RadioButton, role.label());
@@ -119,7 +119,7 @@ fn welcome_role_card_selection_is_painted_in_the_click_frame() {
                 .with_animations(false)
         });
         harness.set_size(egui::vec2(1024.0, 768.0));
-        harness.run_steps(10);
+        crate::support::wait_for_screens(&mut harness);
 
         harness
             .get_by_role_and_label(Role::RadioButton, "Developer view")
@@ -152,7 +152,7 @@ fn welcome_role_selector_sets_and_persists_role() {
                 .with_animations(false)
         });
         harness.set_size(egui::vec2(1024.0, 768.0));
-        harness.run_steps(10);
+        crate::support::wait_for_screens(&mut harness);
 
         let app_context = harness.state().current_app_context().clone();
         assert_eq!(
@@ -201,7 +201,7 @@ fn just_explore_lands_on_identities_hub() {
                 .with_animations(false)
         });
         harness.set_size(egui::vec2(1024.0, 768.0));
-        harness.run_steps(10);
+        crate::support::wait_for_screens(&mut harness);
 
         assert!(
             harness.state().show_welcome_screen,
@@ -244,7 +244,7 @@ fn welcome_screen_suppresses_disconnected_banner() {
                 .with_animations(false)
         });
         harness.set_size(egui::vec2(1024.0, 768.0));
-        harness.run_steps(10);
+        crate::support::wait_for_screens(&mut harness);
 
         assert!(
             harness.state().show_welcome_screen,

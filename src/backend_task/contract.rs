@@ -78,16 +78,19 @@ impl AppContext {
                                 // Fetch the contract description from the Search Contract
                                 let search_contract = &self.keyword_search_contract;
                                 let document_query = DocumentQuery {
+                                    sub_queries: Vec::new(),
                                     select: SelectProjection::documents(),
                                     data_contract: search_contract.clone(),
                                     document_type_name: "fullDescription".to_string(),
                                     limit: 1,
+                                    offset: None,
                                     start: None,
                                     where_clauses: vec![WhereClause {
                                         field: "contractId".to_string(),
                                         operator: WhereOperator::Equal,
                                         value: Value::Identifier(contract.id().into()),
                                     }],
+                                    time_range_clauses: Vec::new(),
                                     group_by: Vec::new(),
                                     having: Vec::new(),
                                     order_by_clauses: vec![],

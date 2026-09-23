@@ -90,17 +90,18 @@ fn combo_change_writes_selection_to_app_context() {
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
         let _guard = rt.enter();
 
-        // Step 1: fully initialize AppContext via build_eframe + run_steps.
+        // Step 1: fully initialize AppContext via build_eframe.
         //
         // `ensure_wallet_backend` calls `restore_selected_identity_from_kv` on
-        // first wiring. Running 5 steps ensures that happens BEFORE we seed the
-        // identity, so our seed is not overwritten by the async initialization.
+        // first wiring. Waiting for the storage-preparation gate to lift puts
+        // that BEFORE the seed below, so the seed is not overwritten by the
+        // async initialization.
         let mut setup = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
             dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
                 .expect("AppState builds")
                 .with_animations(false)
         });
-        setup.run_steps(5);
+        crate::support::wait_for_screens(&mut setup);
         let ctx = setup.state().current_app_context().clone();
 
         let alice = make_qi(0xAA, "Alice");

@@ -371,19 +371,15 @@ impl AppContext {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-        let derived = private_key.is_none();
-        let not_saved = |source| key_added_but_not_saved(source, derived);
+        let origin = AddedKeyOrigin::of(private_key);
+        let not_saved = |source| origin.not_saved(source);
         if !self.is_identity_listed(&identity_id).map_err(not_saved)? {
             tracing::warn!(
                 target = "backend_task::identity",
                 identity_id = %identity_id,
                 "Identity was removed from this device while its new key was being added; the key is on the network and was not sealed here",
             );
-            return Err(if derived {
-                TaskError::DerivedIdentityKeyAddedButIdentityUnloaded
-            } else {
-                TaskError::IdentityKeyAddedButIdentityUnloaded
-            });
+            return Err(origin.identity_unloaded());
         }
 
         self.store_added_identity_key_locked(
@@ -565,22 +561,51 @@ async fn verify_protected_identity_precondition(
     }
 }
 
-/// Map a POST-broadcast failure (roster read, record read, occupied slot,
-/// seal, vault or record write, protection-downgrade refusal) to the typed
-/// [`TaskError::IdentityKeyAddedButNotSaved`]. The new key is already accepted
-/// on-chain, so the failure cannot be undone — surface a loud, actionable error
-/// (the key is on the network, keep the private key) that preserves the
-/// upstream failure in its `#[source]` chain, rather than a raw storage message
-/// that reads like the add failed. Never falls back to a keyless write.
-///
-/// A `derived` key maps to [`TaskError::DerivedIdentityKeyAddedButNotSaved`]
-/// instead: its wallet derives it again, so there is no private key to keep.
-fn key_added_but_not_saved(source: TaskError, derived: bool) -> TaskError {
-    let source = Box::new(source);
-    if derived {
-        TaskError::DerivedIdentityKeyAddedButNotSaved { source }
-    } else {
-        TaskError::IdentityKeyAddedButNotSaved { source }
+/// Where the private half of a just-broadcast key lives, which decides the
+/// recovery advice when saving it on this device fails.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AddedKeyOrigin {
+    /// Pasted or generated: the private key in the form may be the only copy.
+    UserEntered,
+    /// Wallet-derived: the wallet derives it again, so there is nothing to keep.
+    WalletDerived,
+}
+
+impl AddedKeyOrigin {
+    /// Classify by key material: a key added without a private half is one the
+    /// wallet derives.
+    fn of(private_key: Option<&[u8; 32]>) -> Self {
+        match private_key {
+            Some(_) => Self::UserEntered,
+            None => Self::WalletDerived,
+        }
+    }
+
+    /// Map a POST-broadcast failure (roster read, record read, occupied slot,
+    /// seal, vault or record write, protection-downgrade refusal) to the typed
+    /// "added but not saved" error. The new key is already accepted on-chain,
+    /// so the failure cannot be undone — surface a loud, actionable error that
+    /// preserves the upstream failure in its `#[source]` chain, rather than a
+    /// raw storage message that reads like the add failed. Never falls back to
+    /// a keyless write.
+    ///
+    /// A user-entered key maps to [`TaskError::IdentityKeyAddedButNotSaved`]
+    /// (keep the private key); a wallet-derived one to
+    /// [`TaskError::DerivedIdentityKeyAddedButNotSaved`] (nothing to keep).
+    fn not_saved(self, source: TaskError) -> TaskError {
+        let source = Box::new(source);
+        match self {
+            Self::UserEntered => TaskError::IdentityKeyAddedButNotSaved { source },
+            Self::WalletDerived => TaskError::DerivedIdentityKeyAddedButNotSaved { source },
+        }
+    }
+
+    /// The identity was removed from this device while its key was added.
+    fn identity_unloaded(self) -> TaskError {
+        match self {
+            Self::UserEntered => TaskError::IdentityKeyAddedButIdentityUnloaded,
+            Self::WalletDerived => TaskError::DerivedIdentityKeyAddedButIdentityUnloaded,
+        }
     }
 }
 
@@ -1599,10 +1624,17 @@ mod tests {
         use std::error::Error as _;
         // Any upstream seal error stands in for a vault-write failure; the
         // mapping wraps it without inspecting the specific variant.
-        let mapped = key_added_but_not_saved(TaskError::IdentityKeyMissing, false);
+        let mapped = AddedKeyOrigin::of(Some(&[0x11; 32])).not_saved(TaskError::IdentityKeyMissing);
         assert!(
             matches!(mapped, TaskError::IdentityKeyAddedButNotSaved { .. }),
             "a post-broadcast seal failure must map to the typed orphan error, got {mapped:?}"
+        );
+        assert!(
+            matches!(
+                AddedKeyOrigin::of(Some(&[0x11; 32])).identity_unloaded(),
+                TaskError::IdentityKeyAddedButIdentityUnloaded
+            ),
+            "a user-entered key keeps the copy-your-key advice when its identity was unloaded"
         );
         // The upstream cause survives in the source chain (Display/Debug split).
         let source = mapped.source().expect("upstream seal error is preserved");
@@ -1626,16 +1658,13 @@ mod tests {
     #[test]
     fn derived_post_broadcast_failure_never_asks_to_copy_a_private_key() {
         use std::error::Error as _;
-        let mapped = key_added_but_not_saved(TaskError::IdentityKeyMissing, true);
+        let mapped = AddedKeyOrigin::of(None).not_saved(TaskError::IdentityKeyMissing);
         assert!(
             matches!(mapped, TaskError::DerivedIdentityKeyAddedButNotSaved { .. }),
             "a derived key maps to the derived variant, got {mapped:?}"
         );
         assert!(mapped.source().is_some(), "the upstream cause is preserved");
-        for error in [
-            mapped,
-            TaskError::DerivedIdentityKeyAddedButIdentityUnloaded,
-        ] {
+        for error in [mapped, AddedKeyOrigin::of(None).identity_unloaded()] {
             let shown = error.to_string();
             assert!(
                 shown.contains("added to your identity on the network"),

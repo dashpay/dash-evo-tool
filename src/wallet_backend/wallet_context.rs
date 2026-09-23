@@ -492,11 +492,15 @@ fn resolve_name(raw: &str, kind: DefaultAliasKind, taken: &[&str]) -> Result<Str
     Ok(alias)
 }
 
+/// Only LOADED wallets reserve a name. A metadata row without a loaded wallet
+/// (e.g. its seed envelope is gone) is invisible in the UI, so letting it
+/// block a name — or a default "Wallet N" slot — would reject names the user
+/// cannot see being used.
 fn resolve_hd(state: &WalletState, raw: &str, seed: &WalletSeedHash) -> Result<String, TaskError> {
     let taken: Vec<&str> = state
         .hd
         .iter()
-        .filter(|(key, _)| *key != seed)
+        .filter(|(key, _)| *key != seed && state.wallets.contains_key(*key))
         .map(|(_, m)| m.alias.as_str())
         .collect();
     resolve_name(raw, DefaultAliasKind::HdWallet, &taken)
@@ -625,6 +629,60 @@ mod tests {
         assert_eq!(
             context.hd_alias(&replacement_hash).as_deref(),
             Some("Savings")
+        );
+    }
+
+    /// A metadata row with no loaded wallet (e.g. its seed envelope is gone)
+    /// is invisible in the UI, so it must not reserve a name the user can
+    /// never see — only loaded wallets do.
+    #[test]
+    fn orphan_metadata_row_does_not_reserve_its_alias() {
+        let context = WalletContext::default();
+        for (seed, alias) in [([1; 32], "Savings"), ([2; 32], "Wallet 1")] {
+            let meta = WalletMeta {
+                alias: alias.into(),
+                ..Default::default()
+            };
+            context.save_hd_metadata(seed, meta, || Ok(())).unwrap();
+        }
+        let persist = |wallet: &Wallet| {
+            Ok(WalletMeta {
+                alias: wallet.initial_alias.clone().unwrap(),
+                ..Default::default()
+            })
+        };
+        let register = |alias: &str| {
+            let wallet = Wallet::new_from_seed(
+                rand::random(),
+                dash_sdk::dpp::dashcore::Network::Testnet,
+                Some(alias.into()),
+                None,
+            )
+            .unwrap();
+            let hash = wallet.seed_hash();
+            context
+                .register_hd(wallet, persist)
+                .expect("an orphan row's name is free");
+            context.hd_alias(&hash)
+        };
+
+        assert_eq!(register("Savings").as_deref(), Some("Savings"));
+        assert_eq!(register("").as_deref(), Some("Wallet 1"));
+        assert!(
+            matches!(
+                context.register_hd(
+                    Wallet::new_from_seed(
+                        rand::random(),
+                        dash_sdk::dpp::dashcore::Network::Testnet,
+                        Some("Savings".into()),
+                        None,
+                    )
+                    .unwrap(),
+                    persist,
+                ),
+                Err(TaskError::WalletAliasAlreadyUsed { .. })
+            ),
+            "a loaded wallet still reserves its name"
         );
     }
 

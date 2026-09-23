@@ -96,7 +96,122 @@ pub(super) async fn connect_http(
         // `Bearer Bearer <token>` on the wire and fail server-side auth.
         config = config.auth_header(token.to_string());
     }
-    let transport = StreamableHttpClientTransport::from_config(config);
+    let transport = StreamableHttpClientTransport::with_client(http_client()?, config);
     let client = ().serve(transport).await?;
     Ok(client)
+}
+
+fn http_client() -> Result<reqwest::Client, reqwest::Error> {
+    reqwest::Client::builder()
+        .pool_max_idle_per_host(0)
+        // Loopback tool arguments must never leave this machine through a proxy.
+        .no_proxy()
+        // Tool arguments must stay at the destination validated by the CLI.
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn review_regression_http_client_bypasses_environment_proxy() {
+        const CHILD: &str = "DET_PROXY_TEST_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            runtime.block_on(async {
+                let response = super::http_client()
+                    .unwrap()
+                    .post(std::env::var("DET_PROXY_TEST_URL").unwrap())
+                    .body(rand::random::<u64>().to_string())
+                    .timeout(std::time::Duration::from_secs(5))
+                    .send()
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), reqwest::StatusCode::NO_CONTENT);
+            });
+            return;
+        }
+        let destination = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let proxy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        destination.set_nonblocking(true).unwrap();
+        proxy.set_nonblocking(true).unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "connect::tests::review_regression_http_client_bypasses_environment_proxy",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env(
+                "DET_PROXY_TEST_URL",
+                format!("http://{}/", destination.local_addr().unwrap()),
+            )
+            .env(
+                "HTTP_PROXY",
+                format!("http://{}", proxy.local_addr().unwrap()),
+            )
+            .env(
+                "http_proxy",
+                format!("http://{}", proxy.local_addr().unwrap()),
+            )
+            .env_remove("NO_PROXY")
+            .env_remove("no_proxy")
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut proxied = false;
+        loop {
+            use std::io::{Read as _, Write as _};
+            for (listener, is_proxy) in [(&destination, false), (&proxy, true)] {
+                if let Ok((mut stream, _)) = listener.accept() {
+                    proxied |= is_proxy;
+                    stream
+                        .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                        .unwrap();
+                    let _ = stream.read(&mut [0; 4096]);
+                    stream
+                        .write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+                        .unwrap();
+                }
+            }
+            if let Some(status) = child.try_wait().unwrap() {
+                assert!(status.success(), "transport subprocess failed");
+                break;
+            }
+            if std::time::Instant::now() > deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("transport subprocess timed out");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(!proxied, "loopback request reached the configured proxy");
+    }
+
+    #[tokio::test]
+    async fn http_client_returns_redirect_without_following_it() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0; 1024];
+            let bytes_read = stream.read(&mut request).await.unwrap();
+            assert!(bytes_read > 0, "client closed before sending a request");
+            stream
+                .write_all(b"HTTP/1.1 302 Found\r\nLocation: /other\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+        });
+        let response = super::http_client()
+            .unwrap()
+            .get(format!("http://{addr}/"))
+            .timeout(std::time::Duration::from_secs(5))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::FOUND);
+        server.await.unwrap();
+    }
 }

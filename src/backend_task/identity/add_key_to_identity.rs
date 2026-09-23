@@ -858,20 +858,24 @@ mod tests {
         );
     }
 
-    /// SEC-103: with no drift, a slot deliberately picked off the key id is
-    /// still allowed — the check compares key ids only, so the flow moves on
-    /// past it (to the unmocked broadcast, which fails differently).
+    /// An off-id slot reaches the unmocked broadcast when the key id is unchanged.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn derived_add_allows_an_off_id_slot_when_the_key_id_is_unchanged() {
         let stage = stage_derivation(true).await;
         let network = stage.identity.identity.clone();
         let result = add_derived_against(&stage, network, 3, 1).await;
+        // Nonce and identity reads are mocked; only the broadcast has no expectation.
+        let Err(TaskError::SdkError { source_error }) = result else {
+            panic!("expected the unmocked broadcast to fail, got {result:?}");
+        };
         assert!(
-            !matches!(
-                result,
-                Err(TaskError::DerivedKeyIdChanged | TaskError::DerivedKeyIndexUnavailable)
+            matches!(
+                *source_error,
+                SdkError::DapiClientError(dash_sdk::dapi_client::DapiClientError::Mock(
+                    dash_sdk::dapi_client::mock::MockError::MockExpectationNotFound(_)
+                ))
             ),
-            "an unchanged key id must pass the drift check, got {result:?}",
+            "expected a missing broadcast expectation, got {source_error:?}"
         );
     }
 

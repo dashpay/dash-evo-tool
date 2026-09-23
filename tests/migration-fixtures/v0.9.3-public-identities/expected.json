@@ -1,0 +1,123 @@
+{
+  "identities": [
+    {
+      "id": "51iVVoMU8ANbxDv7wySh5Sk6mZGSEMpCkeqtkr24mHdE",
+      "alias": "public-dpns-user",
+      "identity_type": "User",
+      "network": "testnet",
+      "status": "Active",
+      "balance_credits": 2490734060,
+      "revision": 0,
+      "public_keys": [
+        {
+          "id": 0,
+          "key_type": "ECDSA_HASH160",
+          "purpose": "AUTHENTICATION",
+          "security_level": "MASTER",
+          "data": "a9ef1846de6cc6a5dad6b2426053740e4cce5b8d",
+          "read_only": false,
+          "disabled_at": null,
+          "contract_bounds": null
+        },
+        {
+          "id": 1,
+          "key_type": "ECDSA_HASH160",
+          "purpose": "AUTHENTICATION",
+          "security_level": "CRITICAL",
+          "data": "a9448477330e75ae4e53cc97c270404b6bd98052",
+          "read_only": false,
+          "disabled_at": null,
+          "contract_bounds": null
+        },
+        {
+          "id": 2,
+          "key_type": "ECDSA_HASH160",
+          "purpose": "AUTHENTICATION",
+          "security_level": "HIGH",
+          "data": "7b83198c15a671201e7d3706efe485904d9fbbaf",
+          "read_only": false,
+          "disabled_at": null,
+          "contract_bounds": null
+        },
+        {
+          "id": 3,
+          "key_type": "ECDSA_HASH160",
+          "purpose": "TRANSFER",
+          "security_level": "CRITICAL",
+          "data": "3f93ec2af939780305355081fca1d618d11e7109",
+          "read_only": false,
+          "disabled_at": null,
+          "contract_bounds": null
+        },
+        {
+          "id": 4,
+          "key_type": "ECDSA_SECP256K1",
+          "purpose": "ENCRYPTION",
+          "security_level": "MEDIUM",
+          "data": "02da714f474a0764f27bfb7e285248c3673348f9cc20e7bc1cb3bad014112b94ff",
+          "read_only": false,
+          "disabled_at": null,
+          "contract_bounds": {
+            "type": "documentType",
+            "id": "Bwr4WHCPz5rFVAD87RqTs3izo4zpzwsEdKPWUT1NS1C7",
+            "document_type_name": "contactRequest"
+          }
+        },
+        {
+          "id": 5,
+          "key_type": "ECDSA_SECP256K1",
+          "purpose": "DECRYPTION",
+          "security_level": "MEDIUM",
+          "data": "02c02dc205df2c5a13c6a55a214f6067305b1728fddc8aa56f74240b8414dc3a9a",
+          "read_only": false,
+          "disabled_at": null,
+          "contract_bounds": {
+            "type": "documentType",
+            "id": "Bwr4WHCPz5rFVAD87RqTs3izo4zpzwsEdKPWUT1NS1C7",
+            "document_type_name": "contactRequest"
+          }
+        }
+      ],
+      "private_key_count": 0,
+      "dpns_names": [
+        {
+          "name": "migtestfixture093",
+          "acquired_at": 1789087667422
+        }
+      ]
+    },
+    {
+      "id": "PJUBWbXWmzEYCs99rAAbnCiHRzrnhKLQrXbmSsuPBYB",
+      "alias": "public-evonode",
+      "identity_type": "Evonode",
+      "network": "testnet",
+      "status": "Active",
+      "balance_credits": 3085310039528312,
+      "revision": 0,
+      "public_keys": [
+        {
+          "id": 0,
+          "key_type": "ECDSA_HASH160",
+          "purpose": "TRANSFER",
+          "security_level": "CRITICAL",
+          "data": "c69a0bda7daaae481be8def95e5f347a1d00a4b4",
+          "read_only": true,
+          "disabled_at": null,
+          "contract_bounds": null
+        },
+        {
+          "id": 1,
+          "key_type": "ECDSA_HASH160",
+          "purpose": "OWNER",
+          "security_level": "CRITICAL",
+          "data": "ec83a5f23ec17737f590153eb7eed16f7b2f1327",
+          "read_only": true,
+          "disabled_at": null,
+          "contract_bounds": null
+        }
+      ],
+      "private_key_count": 0,
+      "dpns_names": []
+    }
+  ]
+}

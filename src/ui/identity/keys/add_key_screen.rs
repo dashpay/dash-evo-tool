@@ -397,14 +397,14 @@ impl AddKeyScreen {
                     "A key created from your wallet can be restored later with your wallet's recovery phrase.",
                 )
                 .disabled_tooltip(
-                    "This identity has no wallet on this device to create keys from. Enter a private key instead.",
+                    "A single matching wallet could not be identified on this device. Enter a private key instead.",
                 );
             if response.changed() {
                 self.private_key_input.clear();
             }
             if !possible {
                 ui.label(
-                    "This identity has no wallet on this device to create keys from. Enter a private key instead.",
+                    "A single matching wallet could not be identified on this device. Enter a private key instead.",
                 );
             }
         });
@@ -431,7 +431,7 @@ impl AddKeyScreen {
                 // Unreachable while "Create from wallet" is on; kept for totality.
                 ChooserStatus::NoWallet => {
                     ui.label(
-                        "This identity has no wallet on this device to create keys from. Enter a private key instead.",
+                        "A single matching wallet could not be identified on this device. Enter a private key instead.",
                     );
                 }
                 ChooserStatus::UnsupportedKeyType => {
@@ -480,14 +480,12 @@ impl AddKeyScreen {
 
     fn show_slot_list(&mut self, ui: &mut Ui) {
         let limit = self.derivation.limit();
-        let occupied: Vec<bool> = (0..limit)
-            .map(|index| self.derivation.is_occupied(index))
-            .collect();
         let selected = self.derivation.selected_index();
         egui::ComboBox::from_id_salt("derived_key_index")
             .selected_text(selected.map_or_else(String::new, |index| format!("Slot {index}")))
             .show_ui(ui, |ui| {
-                for (index, used) in (0..limit).zip(occupied) {
+                for index in 0..limit {
+                    let used = self.derivation.is_occupied(index);
                     let label = if used {
                         format!("Slot {index} (in use)")
                     } else {
@@ -519,7 +517,7 @@ impl AddKeyScreen {
         match self.derivation.status() {
             ChooserStatus::Ready => None,
             ChooserStatus::NoWallet => Some(
-                "This identity has no wallet on this device to create keys from. Enter a private key instead.",
+                "A single matching wallet could not be identified on this device. Enter a private key instead.",
             ),
             ChooserStatus::UnsupportedKeyType => Some(
                 "Choose a key type that can be created from a wallet, or turn off Create from wallet.",
@@ -743,16 +741,34 @@ impl ScreenLike for AddKeyScreen {
         false
     }
 
+    fn display_backend_task_result(
+        &mut self,
+        context: &BackendTaskContext,
+        result: BackendTaskSuccessResult,
+    ) {
+        if matches!(
+            result,
+            BackendTaskSuccessResult::IdentityAuthPubkeysWarmed { .. }
+        ) {
+            if let Some((seed_hash, identity_index)) = context.identity_auth_pubkey_warm() {
+                self.derivation.warm_finished(
+                    &self.app_context,
+                    &self.identity,
+                    &seed_hash,
+                    identity_index,
+                );
+            }
+            return;
+        }
+        self.display_task_result(result);
+    }
+
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         match backend_task_success_result {
             BackendTaskSuccessResult::AddedKeyToIdentity(fee_result) => {
                 self.refresh_banner.take_and_clear();
                 self.completed_fee_result = Some(fee_result);
                 self.add_key_status = AddKeyStatus::Complete;
-            }
-            BackendTaskSuccessResult::IdentityAuthPubkeysWarmed { identity_index } => {
-                self.derivation
-                    .warm_finished(&self.app_context, &self.identity, identity_index);
             }
             BackendTaskSuccessResult::RefreshedIdentity(identity)
                 if identity.identity.id() == self.identity.identity.id() =>
@@ -1253,7 +1269,7 @@ mod derived_key_tests {
         assert!(
             harness
                 .query_by_label(
-                    "This identity has no wallet on this device to create keys from. Enter a private key instead."
+                    "A single matching wallet could not be identified on this device. Enter a private key instead."
                 )
                 .is_some()
         );
@@ -1337,16 +1353,52 @@ mod derived_key_tests {
         assert!(harness.state_mut().derivation.take_warm_task().is_some());
     }
 
-    /// A warm that completes while keys are still missing (a lost cache race)
-    /// fails instead of looping warm tasks.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn derived_key_ignores_another_wallet_warm_before_its_own_completion() {
+        let (staged, identity) = staged_screen_parts(false).await;
+        let mut screen = AddKeyScreen::new(identity, &staged.ctx);
+        let warm = screen.derivation.take_warm_task().unwrap();
+        let own_context = BackendTaskContext::from(&warm);
+        let (seed_hash, identity_index) = own_context.identity_auth_pubkey_warm().unwrap();
+        let mut other_seed_hash = seed_hash;
+        other_seed_hash[0] ^= 1;
+        let other_context = BackendTaskContext::IdentityAuthPubkeyWarm {
+            seed_hash: other_seed_hash,
+            identity_index,
+        };
+        screen.display_backend_task_result(
+            &other_context,
+            BackendTaskSuccessResult::IdentityAuthPubkeysWarmed { identity_index },
+        );
+        assert_eq!(screen.derivation.status(), ChooserStatus::Loading);
+        assert!(screen.derivation.take_warm_task().is_none());
+
+        let (_, cache, _, _) = fixture();
+        staged
+            .ctx
+            .wallet_backend()
+            .unwrap()
+            .auth_pubkey_cache()
+            .put(staged.ctx.network, &seed_hash, &cache)
+            .unwrap();
+        screen.display_backend_task_result(
+            &own_context,
+            BackendTaskSuccessResult::IdentityAuthPubkeysWarmed { identity_index },
+        );
+        assert_eq!(screen.derivation.status(), ChooserStatus::Ready);
+        assert!(screen.derivation.selected_index().is_some());
+        assert!(screen.add_blocked_reason().is_none());
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn derived_key_warm_that_leaves_the_cache_cold_does_not_loop() {
         let (staged, identity) = staged_screen_parts(false).await;
         let mut screen = AddKeyScreen::new(identity, &staged.ctx);
-        assert!(screen.derivation.take_warm_task().is_some());
-        screen.display_task_result(BackendTaskSuccessResult::IdentityAuthPubkeysWarmed {
-            identity_index: 0,
-        });
+        let warm = screen.derivation.take_warm_task().unwrap();
+        screen.display_backend_task_result(
+            &BackendTaskContext::from(&warm),
+            BackendTaskSuccessResult::IdentityAuthPubkeysWarmed { identity_index: 0 },
+        );
         assert_eq!(screen.derivation.status(), ChooserStatus::LoadFailed);
         assert!(screen.derivation.take_warm_task().is_none());
     }

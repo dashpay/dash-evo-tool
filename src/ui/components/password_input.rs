@@ -58,6 +58,8 @@ pub struct PasswordInput {
     char_limit: Option<usize>,
     error_message: Option<String>,
     monospace: bool,
+    /// Display-only: the text cannot be edited or selected (reveal still works).
+    read_only: bool,
     /// Carry-over from the previous frame (see module-level note on timing).
     revealing: bool,
 }
@@ -72,6 +74,7 @@ impl PasswordInput {
             char_limit: Some(DEFAULT_PASSWORD_CHAR_LIMIT),
             error_message: None,
             monospace: false,
+            read_only: false,
             revealing: false,
         }
     }
@@ -98,6 +101,14 @@ impl PasswordInput {
     /// Render the text in a monospace font (useful for WIF keys).
     pub fn with_monospace(mut self) -> Self {
         self.monospace = true;
+        self
+    }
+
+    /// Make the field display-only: the text cannot be edited or selected,
+    /// so what is shown (and copied from [`text`](Self::text)) is exactly what
+    /// the caller set. Hold-to-reveal still works.
+    pub fn with_read_only(mut self) -> Self {
+        self.read_only = true;
         self
     }
 
@@ -174,6 +185,10 @@ impl PasswordInput {
 
         if self.monospace {
             text_edit = text_edit.font(egui::TextStyle::Monospace);
+        }
+
+        if self.read_only {
+            text_edit = text_edit.interactive(false);
         }
 
         if let Some(limit) = self.char_limit {
@@ -306,6 +321,45 @@ mod tests {
         assert_eq!(
             PasswordInput::new().with_char_limit(64).char_limit,
             Some(64)
+        );
+    }
+
+    /// Typing into the field edits it, unless it is read-only — then the text
+    /// the caller set is exactly the text it keeps.
+    #[test]
+    fn read_only_input_ignores_typing() {
+        use egui::accesskit::Role;
+        use egui_kittest::{Harness, kittest::Queryable};
+
+        let typed_into = |input: PasswordInput| {
+            let mut harness = Harness::builder().build_ui_state(
+                |ui, input: &mut PasswordInput| {
+                    input.show(ui);
+                },
+                input,
+            );
+            harness.run();
+            let field = harness.get_by_role(Role::PasswordInput);
+            field.click();
+            field.type_text("x");
+            harness.run();
+            harness.state().text().to_string()
+        };
+
+        let mut editable = PasswordInput::new();
+        editable.set_text("abc");
+        assert_eq!(
+            typed_into(editable),
+            "abcx",
+            "control: typing edits the field"
+        );
+
+        let mut read_only = PasswordInput::new().with_read_only();
+        read_only.set_text("abc");
+        assert_eq!(
+            typed_into(read_only),
+            "abc",
+            "a read-only field keeps its text"
         );
     }
 

@@ -76,10 +76,22 @@ fn on_network_not_saved_status(error: &TaskError) -> Option<AddKeyStatus> {
     }
 }
 
+/// The read-only field holding the key the last add submitted.
+fn submitted_private_key_field() -> PasswordInput {
+    PasswordInput::new()
+        .with_char_limit(64)
+        .with_monospace()
+        .with_read_only()
+}
+
 pub struct AddKeyScreen {
     pub identity: QualifiedIdentity,
     pub app_context: Arc<AppContext>,
     private_key_input: PasswordInput,
+    /// The private key as submitted with the last add, read-only. The rescue
+    /// view shows and copies this rather than the editable form field, so an
+    /// edit after the submit cannot change the key the user is told to keep.
+    submitted_private_key: PasswordInput,
     /// "Create from wallet" state: availability, slot load and selection.
     derivation: DerivedKeyChooser,
     /// The next error routed to `display_message` belongs to the chooser's own
@@ -131,6 +143,7 @@ impl AddKeyScreen {
                 .with_hint_text("Private key (hex)")
                 .with_char_limit(64)
                 .with_monospace(),
+            submitted_private_key: submitted_private_key_field(),
             key_type: KeyType::ECDSA_SECP256K1,
             purpose: Purpose::AUTHENTICATION,
             security_level: SecurityLevel::HIGH,
@@ -179,6 +192,7 @@ impl AddKeyScreen {
                 .with_hint_text("Private key (hex)")
                 .with_char_limit(64)
                 .with_monospace(),
+            submitted_private_key: submitted_private_key_field(),
             key_type: KeyType::ECDSA_SECP256K1,
             purpose: Purpose::ENCRYPTION,
             security_level: SecurityLevel::MEDIUM,
@@ -227,6 +241,7 @@ impl AddKeyScreen {
                 .with_hint_text("Private key (hex)")
                 .with_char_limit(64)
                 .with_monospace(),
+            submitted_private_key: submitted_private_key_field(),
             key_type: KeyType::ECDSA_SECP256K1,
             purpose: Purpose::DECRYPTION,
             security_level: SecurityLevel::MEDIUM,
@@ -347,6 +362,8 @@ impl AddKeyScreen {
                             identity_public_key: new_key.into(),
                             in_wallet_at_derivation_path: None,
                         };
+                        self.submitted_private_key
+                            .set_text(hex::encode(private_key_bytes));
                         app_action = AppAction::BackendTask(BackendTask::IdentityTask(
                             IdentityTask::AddKeyToIdentity(
                                 self.identity.clone(),
@@ -606,12 +623,12 @@ impl AddKeyScreen {
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     ui.label("Private Key:");
-                    self.private_key_input.show(ui);
+                    self.submitted_private_key.show(ui);
                 });
                 ui.add_space(8.0);
                 if ui.button("Copy private key").clicked() {
                     ui.ctx()
-                        .copy_text(self.private_key_input.text().to_string());
+                        .copy_text(self.submitted_private_key.text().to_string());
                     MessageBanner::set_global(
                         ui.ctx(),
                         "The private key was copied to the clipboard.",
@@ -675,6 +692,7 @@ impl AddKeyScreen {
             && s == "add_another"
         {
             self.private_key_input.clear();
+            self.submitted_private_key.clear();
             // Hold the slot list until the refreshed identity arrives, so the
             // slot just used is never offered again.
             self.derivation.await_identity_refresh();
@@ -709,6 +727,7 @@ impl ScreenLike for AddKeyScreen {
             // Keep the "save your private key" state that
             // `display_task_error` set for this same error.
             if !self.add_key_status.is_on_network_not_saved() {
+                self.submitted_private_key.clear();
                 self.add_key_status = AddKeyStatus::Error;
             }
         }
@@ -768,6 +787,7 @@ impl ScreenLike for AddKeyScreen {
             BackendTaskSuccessResult::AddedKeyToIdentity(fee_result) => {
                 self.refresh_banner.take_and_clear();
                 self.completed_fee_result = Some(fee_result);
+                self.submitted_private_key.clear();
                 self.add_key_status = AddKeyStatus::Complete;
             }
             BackendTaskSuccessResult::RefreshedIdentity(identity)
@@ -1500,6 +1520,60 @@ mod derived_key_tests {
         assert!(
             !screen.derivation.is_occupied(1),
             "a key-id change does not mark the slot used"
+        );
+    }
+
+    /// The rescue view shows and copies the key as it was submitted: editing
+    /// the form field afterwards cannot change the key the user copies.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_rescued_key_is_the_submitted_key_not_the_live_field() {
+        let (staged, identity) = staged_screen_parts(true).await;
+        let mut harness = source_harness(AddKeyScreen::new(identity, &staged.ctx));
+        harness.run();
+        harness.get_by_label("Create from wallet").click();
+        harness.run();
+        let mut screen = harness.into_state();
+        assert!(!screen.derivation.derived());
+
+        let submitted = hex::encode([0x11; 32]);
+        screen.private_key_input.set_text(submitted.clone());
+        assert!(matches!(
+            screen.validate_and_add_key(),
+            AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::AddKeyToIdentity(
+                ..
+            )))
+        ));
+        screen.add_key_status = AddKeyStatus::WaitingForResult;
+        // A stray edit lands in the form after the submit.
+        screen.private_key_input.set_text(hex::encode([0x22; 32]));
+        screen.display_task_error(&TaskError::IdentityKeyAddedButIdentityUnloaded);
+        screen.display_message("not saved", MessageType::Error);
+        assert!(screen.add_key_status == AddKeyStatus::KeyOnNetworkNotSaved);
+
+        let mut harness = Harness::builder().with_max_steps(30).build_ui_state(
+            |ui, screen: &mut AddKeyScreen| {
+                screen.show_key_not_saved(ui);
+            },
+            screen,
+        );
+        harness.run();
+        harness.get_by_label("Copy private key").click();
+        // One frame: the copy command is in that frame's output only.
+        harness.step();
+        let copied: Vec<String> = harness
+            .output()
+            .platform_output
+            .commands
+            .iter()
+            .filter_map(|command| match command {
+                egui::OutputCommand::CopyText(text) => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            copied,
+            vec![submitted],
+            "the submitted key is what is copied"
         );
     }
 

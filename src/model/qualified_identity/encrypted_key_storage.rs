@@ -693,7 +693,8 @@ impl KeyStorage {
     ///   wallet derivation path, which the rebuild refreshes. A held private
     ///   half (`Clear`, `AlwaysClear`, `Encrypted`, `InVault`) is therefore
     ///   never replaced by a derivation path: no protection downgrade, and the
-    ///   vault secret stays referenced.
+    ///   vault secret stays referenced. Its public key is still refreshed from
+    ///   the rebuild, so an on-chain `disabled_at` is not pinned stale.
     ///
     /// A held stored entry whose public key differs from the rebuild's
     /// (on-chain) key at the same id — a stale local entry such as a
@@ -702,20 +703,25 @@ impl KeyStorage {
     /// sign for the on-chain key, but its private half can be the only copy
     /// there is: stranded but present beats silently deleted.
     pub(crate) fn retain_local_keys_from(&mut self, stored: KeyStorage) {
-        for (placement, entry) in stored.private_keys {
+        for (placement, mut entry) in stored.private_keys {
             let rebuilt = self.private_keys.get(&placement);
             if rebuilt.is_some() && matches!(entry.1, PrivateKeyData::AtWalletDerivationPath(_)) {
                 // Only a derivation path: the rebuild's fresher one wins.
                 continue;
             }
-            if let Some((on_chain, _)) = rebuilt
-                && !same_key(&entry.0.identity_public_key, &on_chain.identity_public_key)
-            {
-                tracing::warn!(
-                    target = "model::qualified_identity",
-                    key_id = placement.1,
-                    "Kept a saved private key whose public key differs from the identity's key with the same id; it may not be usable for signing",
-                );
+            if let Some((on_chain, _)) = rebuilt {
+                if same_key(&entry.0.identity_public_key, &on_chain.identity_public_key) {
+                    // Same key: keep the held private half, but take the
+                    // rebuild's public key. They can differ only in
+                    // `disabled_at`, which moves on-chain after a save.
+                    entry.0.identity_public_key = on_chain.identity_public_key.clone();
+                } else {
+                    tracing::warn!(
+                        target = "model::qualified_identity",
+                        key_id = placement.1,
+                        "Kept a saved private key whose public key differs from the identity's key with the same id; it may not be usable for signing",
+                    );
+                }
             }
             self.private_keys.insert(placement, entry);
         }
@@ -1536,6 +1542,42 @@ mod tests {
                         && same_key(&public_key.identity_public_key, &stale)
             ),
             "the stored secret and its own public key must survive the rebuild"
+        );
+    }
+
+    /// A held stored secret for the same key keeps its private half but takes
+    /// the rebuild's public key, so a key disabled on-chain since the save is
+    /// not offered as still usable.
+    #[test]
+    fn a_held_stored_secret_takes_the_rebuilds_disabled_at() {
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::{
+            IdentityPublicKeyGettersV0, IdentityPublicKeySettersV0,
+        };
+
+        let pv = PlatformVersion::latest();
+        let saved = IdentityPublicKey::random_key(3, Some(31), pv);
+        let mut disabled_on_chain = saved.clone();
+        disabled_on_chain.set_disabled_at(1_700_000_000);
+        let stored = filed_under(&saved, &[(MAIN, PrivateKeyData::InVault)]);
+        let mut rebuilt = filed_under(
+            &disabled_on_chain,
+            &[(
+                MAIN,
+                PrivateKeyData::AtWalletDerivationPath(derivation_path(0x02)),
+            )],
+        );
+
+        rebuilt.retain_local_keys_from(stored);
+
+        let (public_key, data) = rebuilt.entry_at(&(MAIN, 3)).expect("key kept");
+        assert!(
+            matches!(data, PrivateKeyData::InVault),
+            "the held private half survives"
+        );
+        assert_eq!(
+            public_key.identity_public_key.disabled_at(),
+            Some(1_700_000_000),
+            "the on-chain disabled_at replaces the stale snapshot"
         );
     }
 

@@ -230,13 +230,15 @@ fn identity_load_ticket(task: &BackendTask) -> Option<(Identifier, IdentityLoadT
 }
 
 /// Whether a wallet-backend build error is terminal (storage written by a
-/// newer/incompatible app build, or a compatibility upgrade that fails the
-/// same way on every attempt). These must surface their actionable message
+/// newer/incompatible app build, a data folder the app may not write to, or a
+/// compatibility upgrade that fails the same way on every attempt). These must surface their actionable message
 /// instead of being logged-and-discarded as a transient deferral (F50); every
 /// other init error is retried by the cold-boot bridge.
 pub(crate) fn is_terminal_storage_open_error(error: &TaskError) -> bool {
     match error {
-        TaskError::WalletDataTooNew { .. } | TaskError::WalletDataIncompatible { .. } => true,
+        TaskError::WalletDataTooNew { .. }
+        | TaskError::WalletDataIncompatible { .. }
+        | TaskError::WalletStorageAccessDenied { .. } => true,
         TaskError::PlatformDatabaseUpgrade { source } => !source.is_retryable(),
         _ => false,
     }
@@ -2330,6 +2332,13 @@ mod tests {
             &TaskError::WalletDataIncompatible {
                 source: platform_wallet_storage::WalletStorageError::Io(std::io::Error::other(
                     "incompatible test fixture",
+                )),
+            }
+        ));
+        assert!(is_terminal_storage_open_error(
+            &TaskError::WalletStorageAccessDenied {
+                source: platform_wallet_storage::WalletStorageError::Io(std::io::Error::from(
+                    std::io::ErrorKind::PermissionDenied,
                 )),
             }
         ));

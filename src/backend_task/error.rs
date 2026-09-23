@@ -444,6 +444,17 @@ pub enum TaskError {
         source: platform_wallet_storage::WalletStorageError,
     },
 
+    /// A wallet database migration failed because the app is not allowed to
+    /// write to its data folder (file permissions or a read-only disk).
+    /// Retrying never fixes it, so it is terminal.
+    #[error(
+        "Could not open your wallet data because the app is not allowed to change its data folder. Make sure the folder is not on a read-only disk and that you have permission to change it, then restart the application."
+    )]
+    WalletStorageAccessDenied {
+        #[source]
+        source: platform_wallet_storage::WalletStorageError,
+    },
+
     /// A pinned-PR wallet database could not be upgraded without losing data.
     #[error(transparent)]
     PlatformDatabaseUpgrade {
@@ -2854,7 +2865,7 @@ impl TaskError {
 
     /// Map a wallet-storage open failure to the right user-facing variant.
     ///
-    /// Four storage failures get honest, distinct copy; everything else keeps
+    /// Five storage failures get honest, distinct copy; everything else keeps
     /// the generic disk/IO message:
     ///
     /// - A forward-version database (written by a newer build, schema beyond
@@ -2870,6 +2881,9 @@ impl TaskError {
     /// - A migration blocked by another SQLite writer is surfaced as
     ///   [`Self::WalletStorageInUse`] so the user can close the competing
     ///   process and retry instead of following incompatible-data recovery.
+    /// - A migration refused by file permissions or a read-only disk is
+    ///   surfaced as [`Self::WalletStorageAccessDenied`] so the user fixes
+    ///   the folder instead of setting the databases aside.
     /// - A migration that failed on a recoverable resource (disk full, OS I/O
     ///   failure, out of memory) and every other storage failure keep the
     ///   generic, retryable disk/IO copy via [`Self::WalletStorage`].
@@ -2898,6 +2912,11 @@ impl TaskError {
                 if Self::wallet_storage_error_is_resource_exhausted(&other) =>
             {
                 Self::WalletStorage { source: other }
+            }
+            other @ platform_wallet_storage::WalletStorageError::Migration(_)
+                if Self::wallet_storage_error_is_access_denied(&other) =>
+            {
+                Self::WalletStorageAccessDenied { source: other }
             }
             other @ platform_wallet_storage::WalletStorageError::Migration(_) => {
                 Self::WalletDataIncompatible { source: other }
@@ -2935,19 +2954,50 @@ impl TaskError {
         })
     }
 
+    /// File permissions or a read-only disk blocked the migration.
+    /// Mirrors the staged-upgrade `UpgradeError::AccessDenied` classification
+    /// for both SQLite codes and OS error kinds.
+    fn wallet_storage_error_is_access_denied(
+        source: &platform_wallet_storage::WalletStorageError,
+    ) -> bool {
+        Self::wallet_storage_sqlite_cause(source, |code| {
+            matches!(
+                code,
+                rusqlite::ErrorCode::PermissionDenied | rusqlite::ErrorCode::ReadOnly
+            )
+        }) || Self::wallet_storage_cause(source, |error| {
+            error.downcast_ref::<std::io::Error>().is_some_and(|io| {
+                matches!(
+                    io.kind(),
+                    std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem
+                )
+            })
+        })
+    }
+
     /// Whether any `rusqlite::Error` in the typed source chain carries a
     /// SQLite code accepted by `is_match`.
     fn wallet_storage_sqlite_cause(
         source: &platform_wallet_storage::WalletStorageError,
         is_match: impl Fn(rusqlite::ErrorCode) -> bool,
     ) -> bool {
-        let mut cause: Option<&(dyn std::error::Error + 'static)> = Some(source);
-        while let Some(error) = cause {
-            if error
+        Self::wallet_storage_cause(source, |error| {
+            error
                 .downcast_ref::<rusqlite::Error>()
                 .and_then(rusqlite::Error::sqlite_error_code)
                 .is_some_and(&is_match)
-            {
+        })
+    }
+
+    /// Whether any error in the typed source chain (starting with `source`
+    /// itself) satisfies `is_match`.
+    fn wallet_storage_cause(
+        source: &platform_wallet_storage::WalletStorageError,
+        is_match: impl Fn(&(dyn std::error::Error + 'static)) -> bool,
+    ) -> bool {
+        let mut cause: Option<&(dyn std::error::Error + 'static)> = Some(source);
+        while let Some(error) = cause {
+            if is_match(error) {
                 return true;
             }
             cause = error.source();
@@ -5936,7 +5986,7 @@ mod tests {
     /// same way refinery's rusqlite driver does, so the source chain matches
     /// what `SqlitePersister::open` returns for a migration that ran out of a
     /// resource.
-    fn resource_migration_error(code: std::ffi::c_int) -> refinery::Error {
+    fn sqlite_migration_error(code: std::ffi::c_int) -> refinery::Error {
         use refinery::error::WrapMigrationError;
 
         Err::<(), _>(rusqlite::Error::SqliteFailure(
@@ -5959,7 +6009,7 @@ mod tests {
             rusqlite::ffi::SQLITE_NOMEM,
         ] {
             let upstream = platform_wallet_storage::WalletStorageError::Migration(
-                resource_migration_error(code),
+                sqlite_migration_error(code),
             );
             let err = TaskError::from_wallet_storage_open_error(upstream);
             assert!(
@@ -5973,19 +6023,51 @@ mod tests {
         }
     }
 
-    /// Access failures are not fixed by freeing space or retrying, so they
-    /// stay out of the retryable resource class.
+    /// A migration refused by file permissions or a read-only disk is an
+    /// access problem, not incompatible data: it gets its own variant with
+    /// fix-the-folder guidance and never the move-the-databases-aside copy.
     #[test]
-    fn access_migration_errors_do_not_map_to_retryable_wallet_storage() {
-        for code in [rusqlite::ffi::SQLITE_PERM, rusqlite::ffi::SQLITE_READONLY] {
-            let upstream = platform_wallet_storage::WalletStorageError::Migration(
-                resource_migration_error(code),
-            );
+    fn access_denied_storage_errors_map_to_wallet_storage_access_denied() {
+        let migration = |code| {
+            platform_wallet_storage::WalletStorageError::Migration(sqlite_migration_error(code))
+        };
+        let io_migration = |kind: std::io::ErrorKind| {
+            use refinery::error::WrapMigrationError;
+            platform_wallet_storage::WalletStorageError::Migration(
+                Err::<(), _>(std::io::Error::from(kind))
+                    .migration_err("error applying migration", None)
+                    .expect_err("wrapped I/O failure"),
+            )
+        };
+        let cases = [
+            migration(rusqlite::ffi::SQLITE_PERM),
+            migration(rusqlite::ffi::SQLITE_READONLY),
+            io_migration(std::io::ErrorKind::PermissionDenied),
+            io_migration(std::io::ErrorKind::ReadOnlyFilesystem),
+        ];
+        for upstream in cases {
             let err = TaskError::from_wallet_storage_open_error(upstream);
             assert!(
-                !matches!(err, TaskError::WalletStorage { .. }),
-                "SQLite code {code} must not be classified as a resource failure, got: {err:?}"
+                matches!(err, TaskError::WalletStorageAccessDenied { .. }),
+                "Expected WalletStorageAccessDenied, got: {err:?}"
             );
+            assert!(
+                crate::backend_task::is_terminal_storage_open_error(&err),
+                "retrying never fixes permissions, so the message must surface"
+            );
+            let msg = err.to_string();
+            assert!(
+                msg.contains("read-only") && msg.contains("restart"),
+                "{msg}"
+            );
+            let lower = msg.to_lowercase();
+            assert!(
+                !lower.contains("incompatible")
+                    && !lower.contains("disk space")
+                    && !lower.contains("sqlite"),
+                "Access guidance must not reuse other storage copy, got: {msg}"
+            );
+            assert!(std::error::Error::source(&err).is_some());
         }
     }
 

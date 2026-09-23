@@ -302,10 +302,12 @@ impl<'a> SingleKeyView<'a> {
     /// alias resets the key to the smallest unused "Key N", and a name another
     /// imported key already uses is rejected. Returns the alias actually saved.
     ///
-    /// The alias writer lock spans resolution and persistence so alias writers
-    /// serialize and the uniqueness check cannot go stale. With a sidecar, the
-    /// index changes only after a successful write. Without one, the transient
-    /// in-memory index is updated directly.
+    /// [`WalletContext::rename_single_key`] holds its writer across alias
+    /// resolution and persistence, so renames serialize and the uniqueness
+    /// check cannot go stale. The new name is published only after the
+    /// sidecar write succeeds; without a sidecar it is published directly.
+    ///
+    /// [`WalletContext::rename_single_key`]: crate::wallet_backend::wallet_context::WalletContext::rename_single_key
     pub fn set_alias(&self, address: &str, alias: &str) -> Result<String, TaskError> {
         self.context.rename_single_key(address, alias, |updated| {
             if let Some(kv) = self.app_kv {

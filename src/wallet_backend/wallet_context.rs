@@ -19,7 +19,20 @@ type HdWallets = BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>;
 type SingleKeyWallets = BTreeMap<SingleKeyHash, Arc<RwLock<SingleKeyWallet>>>;
 
 /// Per-network wallet membership and authoritative live metadata.
+///
 /// Readers receive owned snapshots; persistence never holds the snapshot lock.
+///
+/// # Lock order
+///
+/// `writer` mutex → `state` RwLock → an inner `Wallet`/`SingleKeyWallet`
+/// handle lock. Mutators run their persistence callback under `writer`, and
+/// `rename_hd` reads the inner wallet while holding it. Therefore:
+///
+/// - never call a mutator (or a backend-bound metadata view such as
+///   `WalletBackend::wallet_meta()`) while holding an inner wallet guard;
+/// - never re-enter this context's writer from a persistence callback: use
+///   raw storage adapters (e.g. `WalletMetaView::new`) inside callbacks.
+///   Re-entry on the same thread panics rather than deadlocking.
 #[derive(Default)]
 pub struct WalletContext {
     writer: Mutex<()>,

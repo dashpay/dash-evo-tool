@@ -307,9 +307,9 @@ impl SecretAccess {
         )
     }
 
-    /// Bind the chokepoint to the backend's live imported-key index. Import,
-    /// rename, forget, and hydration then become visible to prompts through
-    /// the same lock used by [`SingleKeyView`](super::SingleKeyView).
+    /// Bind the chokepoint to the backend's shared wallet context. Prompt copy
+    /// then reads the same committed HD and imported-key metadata that
+    /// imports, renames, removals and hydration publish there.
     pub(crate) fn with_wallet_context(
         secret_store: Arc<SecretStore>,
         prompt: Arc<dyn SecretPrompt>,

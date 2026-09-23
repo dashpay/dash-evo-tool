@@ -28,6 +28,14 @@ the writer ordering; their callbacks use raw storage adapters to avoid recursive
 acquiring the writer mutex. Password acquisition and async backend work happen
 outside these callbacks.
 
+Lock order: writer mutex, then the state RwLock, then an inner wallet handle lock
+(`rename_hd` reads the wallet's xpub while holding the writer). Never call a
+WalletContext mutator, or a backend-bound metadata view such as
+`WalletBackend::wallet_meta()`, while holding an inner wallet guard. Never
+re-enter the writer from a persistence callback. The writer records its holder per
+thread, so a same-thread re-entry panics with a clear message instead of
+deadlocking silently.
+
 Wallet and SingleKeyWallet retain a crate-private `initial_alias` solely for
 construction, legacy hydration and serialization adapters. It is never the live
 name; consumers query WalletContext by seed hash or imported-key address. Existing

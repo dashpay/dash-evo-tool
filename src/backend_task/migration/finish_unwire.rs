@@ -311,7 +311,7 @@ pub enum MigrationError {
         source: Box<TaskError>,
     },
 
-    /// Post-migration re-hydration of `ctx.wallets` from the freshly
+    /// Post-migration re-hydration of the wallet context's HD registry from the freshly
     /// populated sidecars failed, so the migrated wallets were not
     /// reconstructed in memory and could not be registered upstream. The
     /// completion sentinel is withheld so the next cold boot — which
@@ -570,7 +570,7 @@ fn write_dapi_refresh_completion(
 ///    registration) — the pass that restores access to funds.
 /// 3. **Identities** (identity rows and the keys they hold) — last, because it
 ///    needs the drain's output: a wired backend, a reachable vault, and a
-///    hydrated `ctx.wallets` for wallet-derived identity keys to attach to.
+///    hydrated the wallet context's HD registry for wallet-derived identity keys to attach to.
 ///
 /// **Neither DET-owned pass gates the other.** The wallet drain runs regardless
 /// of the app-data outcome, and the identity import runs regardless of it too —
@@ -756,7 +756,7 @@ where
     // the two DET-owned passes must not gate each other.
     //
     // The identity pass needs the drain's output (backend wired, vault reachable,
-    // `ctx.wallets` hydrated) so a wallet-derived key lands against a wallet that
+    // the wallet context's HD registry hydrated) so a wallet-derived key lands against a wallet that
     // exists. It must NOT wait on the app-data result: a hard app-data failure —
     // one malformed vote-index blob is enough — is deterministic, so unwrapping
     // it first would skip the identity import on this launch *and every retry*
@@ -1069,7 +1069,7 @@ impl Drop for RunSeedLeases<'_> {
     }
 }
 
-/// Re-hydrates just-migrated wallets into `ctx.wallets`, registers open wallets,
+/// Re-hydrates just-migrated wallets into the wallet context's HD registry, registers open wallets,
 /// and waits for the UI to unlock or explicitly skip each protected wallet.
 /// [`run`] calls this immediately before [`write_sentinel`], so every open wallet
 /// is registered before completion; a skipped wallet remains closed in its
@@ -1109,7 +1109,7 @@ async fn register_migrated_wallets(
             source: Box::new(source),
         })?;
 
-    // Re-run the cold-boot W2 bridge now that `ctx.wallets` is populated, so the
+    // Re-run the cold-boot W2 bridge now that the wallet context's HD registry is populated, so the
     // just-migrated open wallets are registered upstream (`id_map` + persistor)
     // without a restart.
     app_context.bootstrap_loaded_wallets().await;
@@ -1729,7 +1729,7 @@ pub(crate) fn record_identity_deletion(
 /// the modern identity store.
 ///
 /// Runs after the wallet drain: the k/v store, the secret vault and a hydrated
-/// `ctx.wallets` all have to exist first. Idempotent — an identity already in
+/// the wallet context's HD registry all have to exist first. Idempotent — an identity already in
 /// the store is left alone, so a retry can never overwrite an alias the user has
 /// since edited with the stale legacy copy.
 ///
@@ -6488,7 +6488,7 @@ mod tests {
             .await
             .expect("an unreadable vote row must not fail the wallet migration");
 
-        // Funds first: hydrated into `ctx.wallets`, registered in the same
+        // Funds first: hydrated into the wallet context's HD registry, registered in the same
         // `id_map` that `resolve_wallet` consults, and the drain recorded as done.
         assert!(
             ctx.wallet_context().contains_hd(&seed_hash),

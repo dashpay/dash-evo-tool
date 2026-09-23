@@ -458,8 +458,8 @@ impl AppContext {
         // T-W-01 / T-W-01b: both HD and single-key wallets are now
         // rehydrated from the upstream `SecretStore` + DET k/v sidecars
         // by `WalletBackend::new`, not from the legacy `wallet` /
-        // `single_key_wallet` SQLite tables. The maps start empty here
-        // and are filled inside `ensure_wallet_backend` (see
+        // `single_key_wallet` SQLite tables. The wallet context starts
+        // empty here and is filled inside `ensure_wallet_backend` (see
         // `WalletBackend::hydrate_context_wallets`).
 
         // Wallet selection is restored from the per-network wallet k/v
@@ -1178,7 +1178,7 @@ impl AppContext {
         // longer depends on this — the chokepoint pulls the seed just-in-time
         // from the encrypted vault, and a no-password wallet signs via the
         // unprotected fast-path with no prompt regardless. This runs after the
-        // backend is wired and `ctx.wallets` is populated so address bootstrap
+        // backend is wired and the wallet context's HD registry is populated so address bootstrap
         // has the reconstructed wallets to work from. Idempotent.
         self.bootstrap_loaded_wallets().await;
         Ok(())

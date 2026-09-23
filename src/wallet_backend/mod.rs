@@ -667,11 +667,11 @@ impl WalletBackend {
             }),
         };
 
-        // T-W-01 cold-boot: rebuild `ctx.wallets` from the wallet-meta +
+        // T-W-01 cold-boot: rebuild the wallet context's HD registry from the wallet-meta +
         // seed-envelope sidecars before the loader runs. The legacy
         // `db.get_wallets` row → `Wallet` mapping moved here once the
         // sidecars became the authoritative source. `register_persisted_wallets`
-        // expects `ctx.wallets` to be populated so it can re-provision
+        // expects the wallet context's HD registry to be populated so it can re-provision
         // identity funding accounts (a5538dc8) for every persisted
         // identity, so hydration must precede registration.
         backend.hydrate_context_wallets(ctx)?;
@@ -681,13 +681,14 @@ impl WalletBackend {
         Ok(backend)
     }
 
-    /// Refill `ctx.wallets` and `ctx.single_key_wallets` from the
-    /// sidecars for the active network. Idempotent: a re-run overwrites
-    /// with the same reconstructed wallets keyed by `seed_hash` /
-    /// `key_hash`. Entries already present in the maps (e.g. created
-    /// during the current process before the backend was wired) are
-    /// preserved — sidecar entries only fill gaps so freshly-created
-    /// wallets are never clobbered.
+    /// Refill the wallet context's HD and imported-key registries from the
+    /// sidecars for the active network, in one [`WalletContext::hydrate`]
+    /// call ordered with metadata writers. Idempotent: persisted metadata is
+    /// republished, while wallet handles already registered (e.g. created
+    /// during the current process before the backend was wired) are kept —
+    /// sidecar wallets only fill gaps, so live handles are never replaced.
+    ///
+    /// [`WalletContext::hydrate`]: wallet_context::WalletContext::hydrate
     ///
     /// Called once during [`Self::new`] (cold boot) and again by the
     /// `finish_unwire` migration after it populates the sidecars on first boot
@@ -2086,9 +2087,10 @@ impl WalletBackend {
         self.inner.secret_access.forget_all();
     }
 
-    /// Refresh HD prompt-copy metadata from the current sidecar under the
-    /// same writer lock as metadata writes. The single-key index is shared
-    /// directly. Missing metadata degrades to a generic prompt label.
+    /// Read persisted HD metadata rows for hydration, preserving password
+    /// fields from legacy envelopes that V1 metadata omits. Runs inside the
+    /// hydration callback, so it uses the raw metadata view (the backend-bound
+    /// one would re-enter the wallet context's writer).
     fn load_wallet_metadata(
         &self,
     ) -> Result<Vec<(WalletSeedHash, crate::model::wallet::meta::WalletMeta)>, TaskError> {

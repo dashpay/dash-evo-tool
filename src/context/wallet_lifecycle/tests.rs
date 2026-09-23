@@ -2206,7 +2206,7 @@ async fn clear_network_database_wipes_wallet_meta_and_seed_envelope() {
     );
     assert!(
         !ctx.wallet_context().has_hd_wallets(),
-        "the in-memory wallet map must be empty after clear"
+        "the wallet context must hold no HD wallets after clear"
     );
 
     ctx.wallet_backend()
@@ -2568,7 +2568,7 @@ async fn register_wallet_fails_closed_when_seed_envelope_write_fails() {
 /// When the wallet-meta sidecar write fails, `register_wallet`
 /// must FAIL CLOSED: return `Err` and NOT keep the wallet. Cold-boot
 /// hydration (`hydrate_wallets_for_network`) enumerates ONLY the meta
-/// sidecar — `ctx.wallets` is rebuilt solely from `WalletMetaView::list`.
+/// sidecar — the wallet context's HD registry is rebuilt solely from `WalletMetaView::list`.
 /// A wallet whose seed envelope was saved but whose meta row is missing is
 /// never hydrated, so its funds become unreachable with no self-heal (there
 /// is no upstream→meta reconstruction path). Both sidecars are required, so
@@ -2859,7 +2859,7 @@ async fn malformed_legacy_envelope_does_not_block_healthy_wallet_hydration() {
 /// after the migration completes, NOT only after a second restart. The bug:
 /// `WalletBackend::new` runs `hydrate_context_wallets` against the still-
 /// empty sidecars at first boot; migration then populates the sidecars but
-/// never re-hydrates `ctx.wallets`, so the in-memory map stays empty until
+/// never re-hydrates the wallet context's HD registry, so the in-memory map stays empty until
 /// the next launch reads the now-populated sidecars. The fix re-hydrates at
 /// the end of a successful migration.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2883,7 +2883,7 @@ async fn migrated_wallet_is_visible_without_second_restart() {
     .expect("insert legacy wallet row");
 
     // Wire the backend: hydration runs now, against the EMPTY sidecars
-    // (migration has not run yet), so ctx.wallets is empty.
+    // (migration has not run yet), so the wallet context's HD registry is empty.
     ctx.ensure_wallet_backend(sender)
         .await
         .expect("ensure_wallet_backend should succeed offline");
@@ -2900,7 +2900,7 @@ async fn migrated_wallet_is_visible_without_second_restart() {
     // The migrated wallet must be visible WITHOUT a second backend build.
     assert!(
         ctx.wallet_context().contains_hd(&seed_hash),
-        "the migrated wallet must be in ctx.wallets right after migration (no second restart)"
+        "the migrated wallet must be in the wallet context's HD registry right after migration (no second restart)"
     );
     assert!(
         ctx.has_wallet.load(Ordering::Relaxed),
@@ -2917,13 +2917,13 @@ async fn migrated_wallet_is_visible_without_second_restart() {
 /// start must be RESOLVABLE through the wallet backend right after the
 /// migration completes, NOT only after a second restart. The bug: the
 /// post-migration re-hydration (`hydrate_context_wallets`) refills
-/// `ctx.wallets` (so the wallet shows in the picker and addresses resolve),
+/// the wallet context's HD registry (so the wallet shows in the picker and addresses resolve),
 /// but it never re-runs the W2 cold-boot reconciliation
 /// (`bootstrap_loaded_wallets` → `ensure_upstream_registered`). So the
 /// upstream `id_map` stays empty and every seed-keyed operation
 /// (`resolve_wallet`) returns `WalletNotLoaded` until the next launch —
 /// exactly the "wallet still loading" banner that repeats forever in the
-/// field report. The companion F140 test above only proves `ctx.wallets`
+/// field report. The companion F140 test above only proves the wallet context's HD registry
 /// visibility; this one proves upstream registration, which is what
 /// `resolve_wallet` keys off.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2960,7 +2960,7 @@ async fn migrated_wallet_is_upstream_registered_without_second_restart() {
     );
 
     // Run the cold-start migration. It populates the sidecars, re-hydrates
-    // `ctx.wallets`, AND must re-run the W2 cold-boot reconciliation so the
+    // the wallet context's HD registry, AND must re-run the W2 cold-boot reconciliation so the
     // just-migrated wallet is registered upstream.
     crate::backend_task::migration::finish_unwire::run(&ctx)
         .await
@@ -3113,7 +3113,7 @@ async fn protected_wallet_registers_upstream_on_unlock_without_restart() {
 
     // Wire the backend, then run the cold-start migration. This reproduces
     // the boot state of the acceptance flow: the protected wallet hydrates
-    // into `ctx.wallets` but stays LOCKED, and the W2 bridge defers it.
+    // into the wallet context's HD registry but stays LOCKED, and the W2 bridge defers it.
     ctx.ensure_wallet_backend(sender)
         .await
         .expect("ensure_wallet_backend should succeed offline");
@@ -3132,10 +3132,9 @@ async fn protected_wallet_registers_upstream_on_unlock_without_restart() {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
 
-    let wallet_arc = ctx
-        .wallet_context()
-        .hd_wallet(&seed_hash)
-        .expect("protected wallet must be hydrated into ctx.wallets after migration");
+    let wallet_arc = ctx.wallet_context().hd_wallet(&seed_hash).expect(
+        "protected wallet must be hydrated into the wallet context's HD registry after migration",
+    );
 
     // Precondition: the locked protected wallet is NOT yet registered — the
     // exact `WalletNotLoaded`-producing state the unlock must clear.

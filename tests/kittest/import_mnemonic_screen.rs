@@ -191,3 +191,78 @@ fn duplicate_imported_key_name_is_rejected_and_not_saved() {
         );
     });
 }
+
+/// Regression: pressing "Save Wallet" when the backend rejects the import
+/// must tell the user why. The recovery-phrase branch only rendered errors
+/// containing "Invalid seed phrase", so every `register_wallet` rejection was
+/// stored in `self.error` and never shown — the click looked like a no-op.
+#[test]
+fn duplicate_imported_wallet_name_is_reported_to_the_user() {
+    with_isolated_data_dir(|| {
+        let (runtime, app_context) = fresh_app_context();
+        insert_wallet(&app_context, "Savings");
+        let mut harness = import_harness(runtime, &app_context, with_test_phrase);
+
+        type_name(&mut harness, "Savings");
+        harness.get_by_label("Save Wallet").click();
+        harness.run();
+
+        assert_eq!(
+            sorted_wallet_aliases(&app_context),
+            vec!["Savings".to_owned()],
+            "a second wallet must not be saved under a name already in use"
+        );
+        assert!(
+            harness
+                .query_by_label_contains("Another wallet already uses this name")
+                .is_some(),
+            "the rejection must be shown, not silently swallowed"
+        );
+    });
+}
+
+/// Regression: re-importing a recovery phrase that is already registered
+/// must say so instead of doing nothing.
+#[test]
+fn reimported_recovery_phrase_is_reported_to_the_user() {
+    with_isolated_data_dir(|| {
+        let (runtime, app_context) = fresh_app_context();
+        {
+            let _runtime_guard = runtime.enter();
+            // Fixed test entropy — never a literal recovery phrase.
+            let seed = Mnemonic::from_entropy(&[0u8; 16])
+                .expect("valid entropy")
+                .to_seed("");
+            let wallet = Wallet::new_from_seed(
+                seed,
+                app_context.network(),
+                Some("Existing".to_owned()),
+                None,
+            )
+            .expect("wallet fixture");
+            app_context
+                .register_wallet(
+                    wallet,
+                    &seed,
+                    dash_evo_tool::model::wallet::birth_height::WalletOrigin::Imported,
+                )
+                .expect("first import");
+        }
+        let mut harness = import_harness(runtime, &app_context, with_test_phrase);
+
+        type_name(&mut harness, "Second copy");
+        harness.get_by_label("Save Wallet").click();
+        harness.run();
+
+        assert_eq!(
+            sorted_wallet_aliases(&app_context),
+            vec!["Existing".to_owned()]
+        );
+        assert!(
+            harness
+                .query_by_label_contains("already been imported")
+                .is_some(),
+            "the duplicate import must be shown, not silently swallowed"
+        );
+    });
+}

@@ -2870,8 +2870,9 @@ impl TaskError {
     /// - A migration blocked by another SQLite writer is surfaced as
     ///   [`Self::WalletStorageInUse`] so the user can close the competing
     ///   process and retry instead of following incompatible-data recovery.
-    /// - Every other storage failure keeps the generic disk/IO copy via
-    ///   [`Self::WalletStorage`].
+    /// - A migration that failed on a recoverable resource (disk full, OS I/O
+    ///   failure, out of memory) and every other storage failure keep the
+    ///   generic, retryable disk/IO copy via [`Self::WalletStorage`].
     ///
     /// Discrimination is on the typed upstream variant
     /// (`WalletStorageError::SchemaVersionUnsupported` /
@@ -2893,6 +2894,11 @@ impl TaskError {
             {
                 Self::WalletStorageInUse { source: other }
             }
+            other @ platform_wallet_storage::WalletStorageError::Migration(_)
+                if Self::wallet_storage_error_is_resource_exhausted(&other) =>
+            {
+                Self::WalletStorage { source: other }
+            }
             other @ platform_wallet_storage::WalletStorageError::Migration(_) => {
                 Self::WalletDataIncompatible { source: other }
             }
@@ -2903,17 +2909,44 @@ impl TaskError {
     fn wallet_storage_error_is_in_use(
         source: &platform_wallet_storage::WalletStorageError,
     ) -> bool {
+        Self::wallet_storage_sqlite_cause(source, |code| {
+            matches!(
+                code,
+                rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+            )
+        })
+    }
+
+    /// A migration that ran out of disk space, hit an OS I/O failure or ran
+    /// out of memory is recoverable by freeing the resource and retrying, so
+    /// it must not get the terminal incompatible-data guidance. Access
+    /// failures (`PermissionDenied`, `ReadOnly`) are deliberately excluded:
+    /// retrying never fixes them.
+    fn wallet_storage_error_is_resource_exhausted(
+        source: &platform_wallet_storage::WalletStorageError,
+    ) -> bool {
+        Self::wallet_storage_sqlite_cause(source, |code| {
+            matches!(
+                code,
+                rusqlite::ErrorCode::DiskFull
+                    | rusqlite::ErrorCode::SystemIoFailure
+                    | rusqlite::ErrorCode::OutOfMemory
+            )
+        })
+    }
+
+    /// Whether any `rusqlite::Error` in the typed source chain carries a
+    /// SQLite code accepted by `is_match`.
+    fn wallet_storage_sqlite_cause(
+        source: &platform_wallet_storage::WalletStorageError,
+        is_match: impl Fn(rusqlite::ErrorCode) -> bool,
+    ) -> bool {
         let mut cause: Option<&(dyn std::error::Error + 'static)> = Some(source);
         while let Some(error) = cause {
             if error
                 .downcast_ref::<rusqlite::Error>()
                 .and_then(rusqlite::Error::sqlite_error_code)
-                .is_some_and(|code| {
-                    matches!(
-                        code,
-                        rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
-                    )
-                })
+                .is_some_and(&is_match)
             {
                 return true;
             }
@@ -5897,6 +5930,63 @@ mod tests {
         assert!(message.contains("Close") && message.contains("try again"));
         assert!(!message.contains("incompatible"));
         assert!(std::error::Error::source(&err).is_some());
+    }
+
+    /// Wraps a SQLite failure with `code` in a refinery migration error the
+    /// same way refinery's rusqlite driver does, so the source chain matches
+    /// what `SqlitePersister::open` returns for a migration that ran out of a
+    /// resource.
+    fn resource_migration_error(code: std::ffi::c_int) -> refinery::Error {
+        use refinery::error::WrapMigrationError;
+
+        Err::<(), _>(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(code),
+            None,
+        ))
+        .migration_err("error applying migration", None)
+        .expect_err("wrapped SQLite failure")
+    }
+
+    /// Running out of disk space, an OS I/O failure or memory exhaustion
+    /// during a migration is recoverable by freeing the resource and
+    /// retrying. It must keep the generic, non-terminal storage copy instead
+    /// of the terminal move-the-databases-aside guidance.
+    #[test]
+    fn resource_migration_errors_map_to_retryable_wallet_storage() {
+        for code in [
+            rusqlite::ffi::SQLITE_FULL,
+            rusqlite::ffi::SQLITE_IOERR,
+            rusqlite::ffi::SQLITE_NOMEM,
+        ] {
+            let upstream = platform_wallet_storage::WalletStorageError::Migration(
+                resource_migration_error(code),
+            );
+            let err = TaskError::from_wallet_storage_open_error(upstream);
+            assert!(
+                matches!(err, TaskError::WalletStorage { .. }),
+                "Expected WalletStorage for SQLite code {code}, got: {err:?}"
+            );
+            assert!(
+                !crate::backend_task::is_terminal_storage_open_error(&err),
+                "SQLite code {code} must stay retryable"
+            );
+        }
+    }
+
+    /// Access failures are not fixed by freeing space or retrying, so they
+    /// stay out of the retryable resource class.
+    #[test]
+    fn access_migration_errors_do_not_map_to_retryable_wallet_storage() {
+        for code in [rusqlite::ffi::SQLITE_PERM, rusqlite::ffi::SQLITE_READONLY] {
+            let upstream = platform_wallet_storage::WalletStorageError::Migration(
+                resource_migration_error(code),
+            );
+            let err = TaskError::from_wallet_storage_open_error(upstream);
+            assert!(
+                !matches!(err, TaskError::WalletStorage { .. }),
+                "SQLite code {code} must not be classified as a resource failure, got: {err:?}"
+            );
+        }
     }
 
     /// A divergent migration history (database written under an

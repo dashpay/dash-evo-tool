@@ -303,6 +303,7 @@ pub type WalletWithSnapshot = (
     Arc<RwLock<Wallet>>,
     std::collections::BTreeMap<Address, u64>,
     std::collections::BTreeMap<Address, DerivationPath>,
+    Option<String>,
 );
 
 /// Unified address input with autocomplete, type detection, and validation.
@@ -320,6 +321,7 @@ pub type WalletWithSnapshot = (
 ///             wallet,
 ///             app_context.snapshot_address_balances(&seed_hash),
 ///             app_context.snapshot_address_paths(&seed_hash),
+///             app_context.wallet_context().hd_alias(&seed_hash),
 ///         )])
 ///         .with_label("Destination address")
 ///         .with_hint_text("Enter address or username")
@@ -409,8 +411,8 @@ impl AddressInput {
     /// Skips gracefully if a wallet lock is poisoned. Each Core/Platform entry
     /// carries its wallet's name for the wallet pill and `wallet:` search tag.
     pub fn with_wallets(mut self, wallets: &[WalletWithSnapshot]) -> Self {
-        for (wallet, balances, paths) in wallets {
-            self.extract_wallet_entries(wallet, balances, paths);
+        for (wallet, balances, paths, alias) in wallets {
+            self.extract_wallet_entries(wallet, balances, paths, alias.clone());
         }
         self
     }
@@ -510,8 +512,8 @@ impl AddressInput {
         self.all_entries.retain(|e| {
             e.address_kind != AddressKind::Core && e.address_kind != AddressKind::Platform
         });
-        for (wallet, balances, paths) in wallets {
-            self.extract_wallet_entries(wallet, balances, paths);
+        for (wallet, balances, paths, alias) in wallets {
+            self.extract_wallet_entries(wallet, balances, paths, alias.clone());
         }
     }
 
@@ -544,13 +546,14 @@ impl AddressInput {
         wallet: &Arc<RwLock<Wallet>>,
         address_balances: &std::collections::BTreeMap<Address, u64>,
         address_paths: &std::collections::BTreeMap<Address, DerivationPath>,
+        alias: Option<String>,
     ) {
         let guard = match wallet.read().ok() {
             Some(g) => g,
             None => return,
         };
 
-        let wallet_name = Some(guard.alias.as_deref().unwrap_or("Wallet").to_string());
+        let wallet_name = Some(alias.unwrap_or_else(|| "Wallet".to_string()));
 
         for (address, derivation_path) in address_paths {
             if derivation_path.is_bip44(self.network) {
@@ -2202,6 +2205,7 @@ mod tests {
             Arc::new(RwLock::new(wallet)),
             BTreeMap::new(),
             paths,
+            alias.map(str::to_owned),
         )])
     }
 
@@ -2295,6 +2299,7 @@ mod tests {
             Arc::new(RwLock::new(wallet)),
             BTreeMap::new(),
             paths,
+            None,
         )]);
         let change = input
             .all_entries
@@ -2317,7 +2322,7 @@ mod tests {
 
         let input = AddressInput::new(Network::Testnet)
             .with_exclude_change(true)
-            .with_wallets(&[(Arc::new(RwLock::new(wallet)), BTreeMap::new(), paths)]);
+            .with_wallets(&[(Arc::new(RwLock::new(wallet)), BTreeMap::new(), paths, None)]);
         assert!(
             input
                 .all_entries
@@ -2347,6 +2352,7 @@ mod tests {
             Arc::new(RwLock::new(wallet)),
             BTreeMap::new(),
             paths,
+            None,
         )]);
 
         let core = input
@@ -2384,6 +2390,7 @@ mod tests {
             Arc::new(RwLock::new(wallet)),
             BTreeMap::new(),
             paths,
+            None,
         )]);
 
         let platform = input
@@ -2429,6 +2436,7 @@ mod tests {
             Arc::new(RwLock::new(wallet)),
             BTreeMap::new(),
             BTreeMap::new(),
+            None,
         )]);
 
         assert!(
@@ -2525,7 +2533,12 @@ mod tests {
                 )
                 .expect("wallet from seed");
                 let paths = BTreeMap::from([(address.clone(), bip44_receive_path(0))]);
-                (Arc::new(RwLock::new(wallet)), BTreeMap::new(), paths)
+                (
+                    Arc::new(RwLock::new(wallet)),
+                    BTreeMap::new(),
+                    paths,
+                    Some(format!("w{i}")),
+                )
             })
             .collect();
         let input = AddressInput::new(Network::Testnet).with_wallets(&wallets);

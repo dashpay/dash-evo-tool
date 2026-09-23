@@ -75,7 +75,7 @@ pub(crate) fn require_network(
 /// before aliases had to be unique — is rejected instead of resolving to
 /// whichever wallet iterates first: fund-moving tools must never guess.
 pub(crate) fn wallet(ctx: &AppContext, wallet_id: &str) -> Result<WalletSeedHash, McpToolError> {
-    let wallets = ctx.wallets.read().unwrap_or_else(|e| e.into_inner());
+    let wallets = ctx.wallet_context().wallets();
 
     // Try hex parse first — but only accept if the wallet is actually loaded.
     if wallet_id.len() == 64
@@ -92,7 +92,7 @@ pub(crate) fn wallet(ctx: &AppContext, wallet_id: &str) -> Result<WalletSeedHash
     for (seed_hash, wallet_arc) in wallets.iter() {
         let w = wallet_arc.read().unwrap_or_else(|e| e.into_inner());
         let hex_prefix = hex::encode(&seed_hash[..4]);
-        if let Some(alias) = &w.alias {
+        if let Some(alias) = &ctx.wallet_context().hd_alias(&w.seed_hash()) {
             if !wanted.is_empty() && clean_alias(alias) == wanted {
                 matches.push(*seed_hash);
             }
@@ -531,10 +531,8 @@ mod tests {
         )
         .expect("build wallet");
         let seed_hash = wallet.seed_hash();
-        ctx.wallets
-            .write()
-            .expect("wallet map")
-            .insert(seed_hash, Arc::new(RwLock::new(wallet)));
+        ctx.wallet_context()
+            .insert_test_wallet(seed_hash, Arc::new(RwLock::new(wallet)));
         seed_hash
     }
 

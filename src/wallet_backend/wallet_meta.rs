@@ -28,13 +28,14 @@ use std::sync::Arc;
 use dash_sdk::dpp::dashcore::Network;
 
 use crate::backend_task::error::TaskError;
+use crate::context::wallet_context::WalletContext;
 use crate::model::wallet::WalletSeedHash;
 use crate::model::wallet::meta::{WalletMeta, WalletMetaV1};
+use crate::wallet_backend::DetKv;
 use crate::wallet_backend::kv::{KvAdapterError, map_kv_storage_error};
 #[cfg(test)]
 use crate::wallet_backend::sidecar::sidecar_key;
 use crate::wallet_backend::sidecar::{SidecarScope, SidecarValue, SidecarView};
-use crate::wallet_backend::{DetKv, PromptMeta, SecretAccess};
 
 /// Colon-separated namespace shared across networks. The full key is
 /// `<network>:wallet_meta:<seed_hash_base58>`.
@@ -91,7 +92,10 @@ impl SidecarValue for WalletMeta {
 /// unavailable and the seed hash is the stable DET-level key. Reads degrade to
 /// `None`/skip on a corrupt blob (with a legacy-format fallback, see
 /// [`SidecarValue::read`]) so the picker never blocks.
-pub struct WalletMetaView<'a>(SidecarView<'a, WalletMeta>, Option<&'a SecretAccess>);
+pub struct WalletMetaView<'a>(
+    SidecarView<'a, WalletMeta>,
+    Option<(&'a WalletContext, Network)>,
+);
 
 impl<'a> WalletMetaView<'a> {
     /// Borrow a [`DetKv`] handle as a typed wallet-metadata view. Kept
@@ -109,11 +113,14 @@ impl<'a> WalletMetaView<'a> {
         )
     }
 
-    /// Construct the backend-owned view with the live prompt index. Successful
-    /// writes update that index before returning to the caller.
-    pub(crate) fn with_prompt(kv: &'a Arc<DetKv>, access: &'a SecretAccess) -> Self {
+    /// Construct a view whose mutations publish through the shared owner.
+    pub(crate) fn with_context(
+        kv: &'a Arc<DetKv>,
+        context: &'a WalletContext,
+        network: Network,
+    ) -> Self {
         let mut view = Self::new(kv);
-        view.1 = Some(access);
+        view.1 = Some((context, network));
         view
     }
 
@@ -121,13 +128,19 @@ impl<'a> WalletMetaView<'a> {
     /// row is logged and skipped so the wallet listing degrades to "name
     /// unknown" rather than refusing to open the app.
     pub fn list(&self, network: Network) -> Vec<(WalletSeedHash, WalletMeta)> {
-        self.0.list(network)
+        match self.1 {
+            Some((context, _)) => context.read_metadata(|| self.0.list(network)),
+            None => self.0.list(network),
+        }
     }
 
     /// Fetch the metadata for a single wallet. `None` when the key is
     /// absent or the blob fails to decode (logged).
     pub fn get(&self, network: Network, seed_hash: &WalletSeedHash) -> Option<WalletMeta> {
-        self.0.get(network, seed_hash)
+        match self.1 {
+            Some((context, _)) => context.read_metadata(|| self.0.get(network, seed_hash)),
+            None => self.0.get(network, seed_hash),
+        }
     }
 
     /// Fetch the metadata for a single wallet, surfacing a read failure instead
@@ -142,7 +155,10 @@ impl<'a> WalletMetaView<'a> {
         network: Network,
         seed_hash: &WalletSeedHash,
     ) -> Result<Option<WalletMeta>, TaskError> {
-        self.0.try_get(network, seed_hash)
+        match self.1 {
+            Some((context, _)) => context.read_metadata(|| self.0.try_get(network, seed_hash)),
+            None => self.0.try_get(network, seed_hash),
+        }
     }
 
     /// Upsert the metadata for a single wallet. Re-writing the same value is an
@@ -159,10 +175,15 @@ impl<'a> WalletMetaView<'a> {
         meta: &WalletMeta,
     ) -> Result<(), TaskError> {
         crate::model::wallet::alias::validate_stored_alias(&meta.alias)?;
-        let _write_guard = self.1.map(SecretAccess::wallet_meta_write_guard);
-        self.0.set(network, seed_hash, meta)?;
-        self.update_prompt_meta(network, seed_hash, meta);
-        Ok(())
+        if let Some((context, own_network)) = self.1
+            && own_network == network
+        {
+            context.save_hd_metadata(*seed_hash, meta.clone(), || {
+                self.0.set(network, seed_hash, meta)
+            })
+        } else {
+            self.0.set(network, seed_hash, meta)
+        }
     }
 
     /// Preserve metadata imported from legacy storage, including aliases that
@@ -182,36 +203,26 @@ impl<'a> WalletMetaView<'a> {
                 "Preserving an overlong legacy wallet alias during migration"
             );
         }
-        let _write_guard = self.1.map(SecretAccess::wallet_meta_write_guard);
-        self.0.set(network, seed_hash, meta)?;
-        self.update_prompt_meta(network, seed_hash, meta);
-        Ok(())
+        if let Some((context, own_network)) = self.1
+            && own_network == network
+        {
+            context.save_hd_metadata(*seed_hash, meta.clone(), || {
+                self.0.set(network, seed_hash, meta)
+            })
+        } else {
+            self.0.set(network, seed_hash, meta)
+        }
     }
 
     /// Delete the metadata for a single wallet. Idempotent — a
     /// missing key returns `Ok(())`.
     pub fn delete(&self, network: Network, seed_hash: &WalletSeedHash) -> Result<(), TaskError> {
-        let _write_guard = self.1.map(SecretAccess::wallet_meta_write_guard);
-        self.0.delete(network, seed_hash)?;
-        if let Some(access) = self.1
-            && access.network() == network
+        if let Some((context, own_network)) = self.1
+            && own_network == network
         {
-            access.remove_wallet_meta(seed_hash);
-        }
-        Ok(())
-    }
-
-    fn update_prompt_meta(&self, network: Network, seed_hash: &WalletSeedHash, meta: &WalletMeta) {
-        if let Some(access) = self.1
-            && access.network() == network
-        {
-            access.upsert_wallet_meta(
-                *seed_hash,
-                PromptMeta {
-                    alias: (!meta.alias.is_empty()).then(|| meta.alias.clone()),
-                    password_hint: meta.password_hint.clone(),
-                },
-            );
+            context.delete_hd_metadata(seed_hash, || self.0.delete(network, seed_hash))
+        } else {
+            self.0.delete(network, seed_hash)
         }
     }
 }

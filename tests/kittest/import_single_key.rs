@@ -171,7 +171,10 @@ fn imported_single_key_is_visible_in_session() {
 
         let guard = imported.read().expect("read imported wallet");
         assert_eq!(
-            guard.alias.as_deref(),
+            app_context
+                .wallet_context()
+                .single_alias(&guard.address.to_string())
+                .as_deref(),
             Some("Imported in session"),
             "the in-session wallet should preserve the import alias"
         );
@@ -246,10 +249,9 @@ fn blank_nickname_gets_default_key_name_and_duplicates_are_rejected() {
             .import_single_key_for_test(&wif_for(0x21), Some("  ".to_string()))
             .expect("blank nickname import succeeds");
         assert_eq!(
-            imported
-                .read()
-                .expect("read imported wallet")
-                .alias
+            app_context
+                .wallet_context()
+                .single_alias(&imported.read().unwrap().address.to_string())
                 .as_deref(),
             Some("Key 1")
         );

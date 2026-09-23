@@ -30,7 +30,6 @@ use crate::ui::state::legacy_recovery::LegacyRecoveryState;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenLike};
 use crate::wallet_backend::IdentityKeyView;
-use crate::wallet_backend::poison::RwLockRecover;
 use crate::wallet_backend::secret_seam::SecretScheme;
 use dash_sdk::dashcore_rpc::dashcore::PrivateKey as RPCPrivateKey;
 use dash_sdk::dpp::dashcore::address::Payload;
@@ -859,7 +858,7 @@ impl KeyInfoScreen {
     ) -> Self {
         let selected_wallet =
             if let Some((_, Some(wallet_derivation_path))) = private_key_data.as_ref() {
-                let wallets = app_context.wallets.read_recover();
+                let wallets = app_context.wallet_context().wallets();
                 wallets
                     .get(&wallet_derivation_path.wallet_seed_hash)
                     .cloned()

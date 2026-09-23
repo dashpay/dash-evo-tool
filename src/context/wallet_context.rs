@@ -1,0 +1,630 @@
+//! Shared wallet membership and committed display/prompt metadata.
+
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex, RwLock};
+
+use crate::backend_task::error::TaskError;
+use crate::model::single_key::ImportedKey;
+use crate::model::wallet::alias::{
+    AliasSource, DefaultAliasKind, dedupe_preserved_alias, ensure_alias_unique, next_default_alias,
+    resolve_alias,
+};
+use crate::model::wallet::meta::WalletMeta;
+use crate::model::wallet::single_key::{SingleKeyHash, SingleKeyWallet};
+use crate::model::wallet::{Wallet, WalletSeedHash};
+use crate::wallet_backend::PromptMeta;
+use crate::wallet_backend::poison::{read_recover, write_recover};
+
+type HdWallets = BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>;
+type SingleKeyWallets = BTreeMap<SingleKeyHash, Arc<RwLock<SingleKeyWallet>>>;
+
+/// Per-network wallet membership and authoritative live metadata.
+/// Readers receive owned snapshots; persistence never holds the snapshot lock.
+#[derive(Default)]
+pub struct WalletContext {
+    writer: Mutex<()>,
+    state: RwLock<WalletState>,
+}
+
+impl std::fmt::Debug for WalletContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WalletContext").finish_non_exhaustive()
+    }
+}
+
+#[derive(Default)]
+struct WalletState {
+    wallets: HdWallets,
+    single_wallets: SingleKeyWallets,
+    hd: BTreeMap<WalletSeedHash, WalletMeta>,
+    single: BTreeMap<String, ImportedKey>,
+    single_membership: BTreeMap<String, SingleKeyHash>,
+}
+
+/// Metadata and reconstructed runtime wallets loaded in one hydration operation.
+#[derive(Default)]
+pub(crate) struct WalletHydration {
+    pub hd: Vec<(WalletSeedHash, WalletMeta)>,
+    pub wallets: Vec<(WalletSeedHash, Wallet)>,
+    pub single: Vec<ImportedKey>,
+    pub single_wallets: Vec<(SingleKeyHash, SingleKeyWallet)>,
+}
+
+impl WalletContext {
+    /// Loaded HD wallet handles; aliases are read through [`Self::hd_alias`].
+    pub fn wallets(&self) -> HdWallets {
+        read_recover(&self.state).wallets.clone()
+    }
+
+    /// Loaded imported-key handles; aliases are read through [`Self::single_alias`].
+    pub fn single_key_wallets(&self) -> SingleKeyWallets {
+        read_recover(&self.state).single_wallets.clone()
+    }
+
+    /// Resolve a loaded wallet without exposing registry mutation.
+    pub fn wallet(&self, seed: &WalletSeedHash) -> Result<Arc<RwLock<Wallet>>, TaskError> {
+        read_recover(&self.state)
+            .wallets
+            .get(seed)
+            .cloned()
+            .ok_or(TaskError::WalletNotFound)
+    }
+
+    /// Current committed HD metadata, including the password-prompt label.
+    pub fn hd_metadata(&self, seed: &WalletSeedHash) -> Option<WalletMeta> {
+        read_recover(&self.state).hd.get(seed).cloned()
+    }
+
+    /// Current committed name, with unnamed legacy wallets preserved.
+    pub fn hd_alias(&self, seed: &WalletSeedHash) -> Option<String> {
+        self.hd_metadata(seed)
+            .and_then(|m| (!m.alias.is_empty()).then_some(m.alias))
+    }
+
+    /// Current HD password-prompt copy from the same metadata used by displays.
+    pub fn hd_prompt(&self, seed: &WalletSeedHash) -> PromptMeta {
+        self.hd_metadata(seed)
+            .map(|m| PromptMeta {
+                alias: (!m.alias.is_empty()).then_some(m.alias),
+                password_hint: m.password_hint,
+            })
+            .unwrap_or_default()
+    }
+
+    /// Current imported-key metadata snapshot.
+    pub fn single_key(&self, address: &str) -> Option<ImportedKey> {
+        read_recover(&self.state).single.get(address).cloned()
+    }
+
+    /// Current imported-key name.
+    pub fn single_alias(&self, address: &str) -> Option<String> {
+        self.single_key(address).and_then(|m| m.alias)
+    }
+
+    /// Imported-key metadata ordered by address.
+    pub fn imported_keys(&self) -> Vec<ImportedKey> {
+        read_recover(&self.state).single.values().cloned().collect()
+    }
+
+    // Compatibility reads can re-store an older record format.
+    pub(crate) fn read_metadata<T>(&self, read: impl FnOnce() -> T) -> T {
+        let _writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        read()
+    }
+
+    pub(crate) fn save_hd_metadata(
+        &self,
+        seed: WalletSeedHash,
+        meta: WalletMeta,
+        persist: impl FnOnce() -> Result<(), TaskError>,
+    ) -> Result<(), TaskError> {
+        let _writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        persist()?;
+        write_recover(&self.state).hd.insert(seed, meta);
+        Ok(())
+    }
+
+    pub(crate) fn delete_hd_metadata(
+        &self,
+        seed: &WalletSeedHash,
+        persist: impl FnOnce() -> Result<(), TaskError>,
+    ) -> Result<(), TaskError> {
+        let _writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        persist()?;
+        let mut state = write_recover(&self.state);
+        state.hd.remove(seed);
+        Ok(())
+    }
+
+    pub(crate) fn register_hd(
+        &self,
+        mut wallet: Wallet,
+        persist: impl FnOnce(&Wallet) -> Result<WalletMeta, TaskError>,
+    ) -> Result<Arc<RwLock<Wallet>>, TaskError> {
+        let _writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let seed = wallet.seed_hash();
+        let state = read_recover(&self.state);
+        if state.wallets.contains_key(&seed) || state.hd.contains_key(&seed) {
+            return Err(TaskError::WalletAlreadyImported);
+        }
+        let alias = resolve_hd(
+            &state,
+            wallet.initial_alias.as_deref().unwrap_or_default(),
+            &seed,
+        )?;
+        drop(state);
+        wallet.initial_alias = Some(alias);
+        let meta = persist(&wallet)?;
+        let wallet = Arc::new(RwLock::new(wallet));
+        let mut state = write_recover(&self.state);
+        state.hd.insert(seed, meta);
+        state.wallets.insert(seed, wallet.clone());
+        Ok(wallet)
+    }
+
+    pub(crate) fn rename_hd(
+        &self,
+        seed: WalletSeedHash,
+        raw: &str,
+        persist: impl FnOnce(Vec<u8>, &str) -> Result<WalletMeta, TaskError>,
+    ) -> Result<String, TaskError> {
+        let _writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = read_recover(&self.state);
+        let wallet = state
+            .wallets
+            .get(&seed)
+            .cloned()
+            .ok_or(TaskError::WalletNotFound)?;
+        let alias = resolve_hd(&state, raw, &seed)?;
+        drop(state);
+        let xpub_encoded = wallet
+            .read()?
+            .master_bip44_ecdsa_extended_public_key
+            .encode()
+            .to_vec();
+        let meta = persist(xpub_encoded, &alias)?;
+        write_recover(&self.state).hd.insert(seed, meta);
+        Ok(alias)
+    }
+
+    pub(crate) fn import_single_key(
+        &self,
+        address: &str,
+        source: AliasSource,
+        persist: impl FnOnce(Option<String>) -> Result<(ImportedKey, SingleKeyWallet), TaskError>,
+    ) -> Result<(ImportedKey, Arc<RwLock<SingleKeyWallet>>), TaskError> {
+        let _writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = read_recover(&self.state);
+        let taken: Vec<&str> = state
+            .single
+            .iter()
+            .filter(|(key, _)| key.as_str() != address)
+            .filter_map(|(_, m)| m.alias.as_deref())
+            .collect();
+        let alias = match source {
+            AliasSource::UserEntered(raw) => {
+                Some(resolve_name(&raw, DefaultAliasKind::SingleKey, &taken)?)
+            }
+            AliasSource::Preserved(alias) => {
+                alias.map(|a| dedupe_preserved_alias(a, taken.iter().copied()))
+            }
+        };
+        drop(state);
+        let (meta, wallet) = persist(alias)?;
+        let mut state = write_recover(&self.state);
+        let hash = wallet.key_hash();
+        let wallet = Arc::new(RwLock::new(wallet));
+        state.single_membership.insert(address.to_owned(), hash);
+        state.single_wallets.insert(hash, wallet.clone());
+        state.single.insert(address.to_owned(), meta.clone());
+        Ok((meta, wallet))
+    }
+
+    pub(crate) fn rename_single_key(
+        &self,
+        address: &str,
+        raw: &str,
+        persist: impl FnOnce(&ImportedKey) -> Result<(), TaskError>,
+    ) -> Result<String, TaskError> {
+        let _writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = read_recover(&self.state);
+        let mut meta = state
+            .single
+            .get(address)
+            .cloned()
+            .ok_or(TaskError::ImportedKeyNotFound)?;
+        let taken: Vec<&str> = state
+            .single
+            .iter()
+            .filter(|(key, _)| key.as_str() != address)
+            .filter_map(|(_, m)| m.alias.as_deref())
+            .collect();
+        let alias = resolve_name(raw, DefaultAliasKind::SingleKey, &taken)?;
+        drop(state);
+        meta.alias = Some(alias.clone());
+        persist(&meta)?;
+        write_recover(&self.state)
+            .single
+            .insert(address.to_owned(), meta);
+        Ok(alias)
+    }
+
+    pub(crate) fn remove_single_key(
+        &self,
+        address: &str,
+        persist: impl FnOnce() -> Result<(), TaskError>,
+    ) -> Result<(), TaskError> {
+        let _writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        persist()?;
+        let mut state = write_recover(&self.state);
+        state.single.remove(address);
+        if let Some(hash) = state.single_membership.remove(address) {
+            state.single_wallets.remove(&hash);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn hydrate(
+        &self,
+        load: impl FnOnce() -> Result<WalletHydration, TaskError>,
+    ) -> Result<(), TaskError> {
+        let _writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let loaded = load()?;
+        let mut state = write_recover(&self.state);
+        for (seed, meta) in loaded.hd {
+            state.hd.insert(seed, meta);
+        }
+        for meta in loaded.single {
+            state.single.insert(meta.address.clone(), meta);
+        }
+        for (seed, wallet) in loaded.wallets {
+            state
+                .wallets
+                .entry(seed)
+                .or_insert_with(|| Arc::new(RwLock::new(wallet)));
+        }
+        for (hash, wallet) in loaded.single_wallets {
+            state
+                .single_membership
+                .insert(wallet.address.to_string(), hash);
+            state
+                .single_wallets
+                .entry(hash)
+                .or_insert_with(|| Arc::new(RwLock::new(wallet)));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn remove_wallet(&self, seed: &WalletSeedHash) -> Result<(), TaskError> {
+        let _writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = write_recover(&self.state);
+        state
+            .wallets
+            .remove(seed)
+            .ok_or(TaskError::WalletNotFound)?;
+        state.hd.remove(seed);
+        Ok(())
+    }
+
+    pub(crate) fn clear(&self) {
+        let _writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *write_recover(&self.state) = WalletState::default();
+    }
+
+    /// Seed a runtime fixture without exposing the registry's write lock.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn insert_test_wallet(&self, seed: WalletSeedHash, wallet: Arc<RwLock<Wallet>>) {
+        let meta = {
+            let w = read_recover(&wallet);
+            WalletMeta {
+                alias: w.initial_alias.clone().unwrap_or_default(),
+                password_hint: w.password_hint().clone(),
+                uses_password: w.uses_password,
+                ..Default::default()
+            }
+        };
+        let _writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = write_recover(&self.state);
+        state.hd.insert(seed, meta);
+        state.wallets.insert(seed, wallet);
+    }
+
+    /// Seed an imported-key fixture through the same metadata owner as its display.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn insert_test_single_key(
+        &self,
+        network: dash_sdk::dpp::dashcore::Network,
+        hash: SingleKeyHash,
+        wallet: Arc<RwLock<SingleKeyWallet>>,
+    ) {
+        let meta = {
+            let w = read_recover(&wallet);
+            ImportedKey {
+                address: w.address.to_string(),
+                alias: w.initial_alias.clone(),
+                network,
+                has_passphrase: w.uses_password,
+                passphrase_hint: None,
+                public_key_bytes: w.public_key.inner.serialize().to_vec(),
+            }
+        };
+        let _writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = write_recover(&self.state);
+        state.single_membership.insert(meta.address.clone(), hash);
+        state.single.insert(meta.address.clone(), meta);
+        state.single_wallets.insert(hash, wallet);
+    }
+
+    /// Simulate a successful HD backend rename in UI-only tests.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn rename_test_hd(&self, seed: WalletSeedHash, alias: &str) -> Result<String, TaskError> {
+        self.rename_hd(seed, alias, |_, alias| {
+            let mut meta = self.hd_metadata(&seed).unwrap_or_default();
+            meta.alias = alias.to_owned();
+            Ok(meta)
+        })
+    }
+
+    /// Simulate a successful imported-key backend rename in UI-only tests.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn rename_test_single(&self, address: &str, alias: &str) -> Result<String, TaskError> {
+        self.rename_single_key(address, alias, |_| Ok(()))
+    }
+}
+
+fn resolve_name(raw: &str, kind: DefaultAliasKind, taken: &[&str]) -> Result<String, TaskError> {
+    let alias = resolve_alias(raw, || next_default_alias(kind, taken.iter().copied()))?;
+    ensure_alias_unique(&alias, taken.iter().copied())?;
+    Ok(alias)
+}
+
+fn resolve_hd(state: &WalletState, raw: &str, seed: &WalletSeedHash) -> Result<String, TaskError> {
+    let taken: Vec<&str> = state
+        .hd
+        .iter()
+        .filter(|(key, _)| *key != seed)
+        .map(|(_, m)| m.alias.as_str())
+        .collect();
+    resolve_name(raw, DefaultAliasKind::HdWallet, &taken)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    #[test]
+    fn removed_wallet_can_be_reimported_and_its_alias_reused() {
+        let context = WalletContext::default();
+        let make_wallet = |seed| {
+            Wallet::new_from_seed(
+                seed,
+                dash_sdk::dpp::dashcore::Network::Testnet,
+                Some("Savings".into()),
+                None,
+            )
+            .unwrap()
+        };
+        let persist = |wallet: &Wallet| {
+            Ok(WalletMeta {
+                alias: wallet.initial_alias.clone().unwrap(),
+                ..Default::default()
+            })
+        };
+        let seed = rand::random();
+        let original = make_wallet(seed);
+        let hash = original.seed_hash();
+        context.register_hd(original, persist).unwrap();
+        context.remove_wallet(&hash).unwrap();
+        assert!(context.hd_prompt(&hash).alias.is_none());
+        let reimported = context.register_hd(make_wallet(seed), persist).unwrap();
+        assert_eq!(context.hd_alias(&hash).as_deref(), Some("Savings"));
+        assert_eq!(reimported.read().unwrap().seed_hash(), hash);
+        context.remove_wallet(&hash).unwrap();
+        let replacement = make_wallet(rand::random());
+        let replacement_hash = replacement.seed_hash();
+        context.register_hd(replacement, persist).unwrap();
+        assert_eq!(
+            context.hd_alias(&replacement_hash).as_deref(),
+            Some("Savings")
+        );
+    }
+
+    #[test]
+    fn failed_metadata_write_keeps_committed_alias() {
+        let context = WalletContext::default();
+        let seed = [1; 32];
+        let original = WalletMeta {
+            alias: "Saved".into(),
+            ..Default::default()
+        };
+        context.save_hd_metadata(seed, original, || Ok(())).unwrap();
+        let next = WalletMeta {
+            alias: "Not saved".into(),
+            ..Default::default()
+        };
+        assert!(
+            context
+                .save_hd_metadata(seed, next, || Err(TaskError::WalletNotFound))
+                .is_err()
+        );
+        assert_eq!(context.hd_alias(&seed).as_deref(), Some("Saved"));
+        assert_eq!(context.hd_prompt(&seed).alias.as_deref(), Some("Saved"));
+    }
+
+    #[test]
+    fn metadata_readers_remain_available_during_persistence() {
+        let context = Arc::new(WalletContext::default());
+        let seed = [2; 32];
+        context
+            .save_hd_metadata(
+                seed,
+                WalletMeta {
+                    alias: "Before".into(),
+                    ..Default::default()
+                },
+                || Ok(()),
+            )
+            .unwrap();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let writer_context = context.clone();
+        let writer = std::thread::spawn(move || {
+            writer_context.save_hd_metadata(
+                seed,
+                WalletMeta {
+                    alias: "After".into(),
+                    ..Default::default()
+                },
+                || {
+                    entered_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    Ok(())
+                },
+            )
+        });
+        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let (read_tx, read_rx) = mpsc::channel();
+        let reader_context = context.clone();
+        let reader = std::thread::spawn(move || {
+            read_tx
+                .send((
+                    reader_context.hd_alias(&seed),
+                    reader_context.hd_prompt(&seed).alias,
+                ))
+                .unwrap()
+        });
+        let snapshot = read_rx.recv_timeout(Duration::from_secs(1));
+        release_tx.send(()).unwrap();
+        writer.join().unwrap().unwrap();
+        reader.join().unwrap();
+        assert_eq!(
+            snapshot.unwrap(),
+            (Some("Before".into()), Some("Before".into()))
+        );
+        assert_eq!(context.hd_alias(&seed).as_deref(), Some("After"));
+        assert_eq!(context.hd_prompt(&seed).alias.as_deref(), Some("After"));
+    }
+
+    #[test]
+    fn hydration_cannot_publish_over_a_later_metadata_write() {
+        let context = Arc::new(WalletContext::default());
+        let seed = [3; 32];
+        let (loaded_tx, loaded_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let hydrator_context = context.clone();
+        let hydrator = std::thread::spawn(move || {
+            hydrator_context.hydrate(|| {
+                let old = WalletMeta {
+                    alias: "Stored".into(),
+                    ..Default::default()
+                };
+                loaded_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                Ok(WalletHydration {
+                    hd: vec![(seed, old)],
+                    ..Default::default()
+                })
+            })
+        });
+        loaded_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let writer_context = context.clone();
+        let (done_tx, done_rx) = mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            writer_context
+                .save_hd_metadata(
+                    seed,
+                    WalletMeta {
+                        alias: "Renamed".into(),
+                        ..Default::default()
+                    },
+                    || Ok(()),
+                )
+                .unwrap();
+            done_tx.send(()).unwrap();
+        });
+        let completed_early = done_rx.recv_timeout(Duration::from_millis(100)).is_ok();
+        release_tx.send(()).unwrap();
+        hydrator.join().unwrap().unwrap();
+        writer.join().unwrap();
+        assert!(
+            !completed_early,
+            "hydration must order publication with writers"
+        );
+        assert_eq!(context.hd_alias(&seed).as_deref(), Some("Renamed"));
+        assert_eq!(context.hd_prompt(&seed).alias.as_deref(), Some("Renamed"));
+    }
+
+    #[test]
+    fn retained_wallet_and_metadata_snapshots_cannot_change_live_alias() {
+        let context = WalletContext::default();
+        let wallet = Wallet::new_from_seed(
+            rand::random(),
+            dash_sdk::dpp::dashcore::Network::Testnet,
+            Some("First".into()),
+            None,
+        )
+        .unwrap();
+        let seed = wallet.seed_hash();
+        let wallet = context
+            .register_hd(wallet, |wallet| {
+                Ok(WalletMeta {
+                    alias: wallet.initial_alias.clone().unwrap(),
+                    ..Default::default()
+                })
+            })
+            .unwrap();
+        context
+            .rename_hd(seed, "Second", |_, alias| {
+                Ok(WalletMeta {
+                    alias: alias.to_owned(),
+                    ..Default::default()
+                })
+            })
+            .unwrap();
+        wallet.write().unwrap().initial_alias = Some("Stale handle".into());
+        context.hd_metadata(&seed).unwrap().alias = "Edited snapshot".into();
+        assert_eq!(context.hd_alias(&seed).as_deref(), Some("Second"));
+        assert_eq!(context.hd_prompt(&seed).alias.as_deref(), Some("Second"));
+    }
+}

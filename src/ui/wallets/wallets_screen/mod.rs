@@ -296,15 +296,16 @@ fn resolve_selection_from_store(app_context: &Arc<AppContext>) -> ResolvedWallet
         .and_then(|g| *g);
 
     if let Some(sk_hash) = selected_sk_hash
-        && let Ok(sk_wallets) = app_context.single_key_wallets.read()
-        && let Some(wallet) = sk_wallets.get(&sk_hash)
+        && let Some(wallet) = app_context
+            .wallet_context()
+            .single_key_wallets()
+            .get(&sk_hash)
     {
         return (None, Some(wallet.clone()));
     }
 
     if let Some(hd_hash) = selected_hd_hash
-        && let Ok(wallets) = app_context.wallets.read()
-        && let Some(wallet) = wallets.get(&hd_hash)
+        && let Some(wallet) = app_context.wallet_context().wallets().get(&hd_hash)
     {
         return (Some(wallet.clone()), None);
     }
@@ -320,11 +321,16 @@ impl WalletsBalancesScreen {
             resolve_selection_from_store(app_context);
 
         if selected_wallet.is_none() && selected_single_key_wallet.is_none() {
-            selected_wallet = app_context.wallets.read_recover().values().next().cloned();
+            selected_wallet = app_context
+                .wallet_context()
+                .wallets()
+                .values()
+                .next()
+                .cloned();
             if selected_wallet.is_none() {
                 selected_single_key_wallet = app_context
-                    .single_key_wallets
-                    .read_recover()
+                    .wallet_context()
+                    .single_key_wallets()
                     .values()
                     .next()
                     .cloned();
@@ -454,10 +460,10 @@ impl WalletsBalancesScreen {
     fn select_hd_wallet_by_hash(&mut self, seed_hash: WalletSeedHash) {
         let wallet = self
             .app_context
-            .wallets
-            .read()
-            .ok()
-            .and_then(|wallets| wallets.get(&seed_hash).cloned());
+            .wallet_context()
+            .wallets()
+            .get(&seed_hash)
+            .cloned();
         if let Some(wallet) = wallet {
             self.select_hd_wallet(wallet);
         }
@@ -519,8 +525,11 @@ impl WalletsBalancesScreen {
         if let Some(wallet_arc) = &self.selected_wallet {
             let seed_hash = wallet_arc.read().ok().map(|w| w.seed_hash());
             if let Some(hash) = seed_hash
-                && let Ok(wallets) = self.app_context.wallets.read()
-                && wallets.contains_key(&hash)
+                && self
+                    .app_context
+                    .wallet_context()
+                    .wallets()
+                    .contains_key(&hash)
             {
                 self.selected_account = None;
                 return;
@@ -533,8 +542,11 @@ impl WalletsBalancesScreen {
         if let Some(wallet_arc) = &self.selected_single_key_wallet {
             let key_hash = wallet_arc.read().ok().map(|w| w.key_hash());
             if let Some(hash) = key_hash
-                && let Ok(wallets) = self.app_context.single_key_wallets.read()
-                && wallets.contains_key(&hash)
+                && self
+                    .app_context
+                    .wallet_context()
+                    .single_key_wallets()
+                    .contains_key(&hash)
             {
                 self.selected_account = None;
                 return;
@@ -546,17 +558,23 @@ impl WalletsBalancesScreen {
         // No valid selection, pick a new one (HD wallet first, then single key)
         let next_hd = self
             .app_context
-            .wallets
-            .read()
-            .ok()
-            .and_then(|w| w.values().next().cloned());
+            .wallet_context()
+            .wallets()
+            .values()
+            .next()
+            .cloned();
         if let Some(wallet) = next_hd {
             self.set_selected_hd_wallet(Some(wallet));
             return;
         }
 
-        if let Ok(wallets) = self.app_context.single_key_wallets.read()
-            && let Some(wallet) = wallets.values().next().cloned()
+        if let Some(wallet) = self
+            .app_context
+            .wallet_context()
+            .single_key_wallets()
+            .values()
+            .next()
+            .cloned()
         {
             self.selected_single_key_wallet = Some(wallet);
             self.selected_wallet = None;
@@ -597,7 +615,8 @@ impl WalletsBalancesScreen {
         let mut items: Vec<(String, WalletItem)> = Vec::new();
 
         // Add HD wallets
-        if let Ok(wallets_guard) = self.app_context.wallets.read() {
+        {
+            let wallets_guard = self.app_context.wallet_context().wallets();
             for wallet in wallets_guard.values() {
                 let guard = wallet.read_recover();
                 let seed_hash = guard.seed_hash();
@@ -608,20 +627,29 @@ impl WalletsBalancesScreen {
                     (core_balance + platform_balance + shielded_balance) as f64 * 1e-8;
                 let label = format!(
                     "HD: {alias} ({balance_dash:.4} DASH)",
-                    alias = guard.alias.clone().unwrap_or_else(|| "Unnamed".to_string())
+                    alias = self
+                        .app_context
+                        .wallet_context()
+                        .hd_alias(&guard.seed_hash())
+                        .unwrap_or_else(|| "Unnamed".to_string())
                 );
                 items.push((label, WalletItem::Hd(wallet.clone())));
             }
         }
 
         // Add single key wallets
-        if let Ok(wallets_guard) = self.app_context.single_key_wallets.read() {
+        {
+            let wallets_guard = self.app_context.wallet_context().single_key_wallets();
             for wallet in wallets_guard.values() {
                 let guard = wallet.read_recover();
                 let balance_dash = guard.total_balance_duffs() as f64 * 1e-8;
                 let label = format!(
                     "SK: {alias} ({balance_dash:.4} DASH)",
-                    alias = guard.alias.clone().unwrap_or_else(|| "Unnamed".to_string())
+                    alias = self
+                        .app_context
+                        .wallet_context()
+                        .single_alias(&guard.address.to_string())
+                        .unwrap_or_else(|| "Unnamed".to_string())
                 );
                 items.push((label, WalletItem::SingleKey(wallet.clone())));
             }
@@ -640,7 +668,11 @@ impl WalletsBalancesScreen {
                 .map(|guard| {
                     format!(
                         "HD: {alias}",
-                        alias = guard.alias.clone().unwrap_or_else(|| "Unnamed".to_string())
+                        alias = self
+                            .app_context
+                            .wallet_context()
+                            .hd_alias(&guard.seed_hash())
+                            .unwrap_or_else(|| "Unnamed".to_string())
                     )
                 })
                 .unwrap_or_else(|| "Select a wallet".to_string())
@@ -651,7 +683,11 @@ impl WalletsBalancesScreen {
                 .map(|guard| {
                     format!(
                         "SK: {alias}",
-                        alias = guard.alias.clone().unwrap_or_else(|| "Unnamed".to_string())
+                        alias = self
+                            .app_context
+                            .wallet_context()
+                            .single_alias(&guard.address.to_string())
+                            .unwrap_or_else(|| "Unnamed".to_string())
                     )
                 })
                 .unwrap_or_else(|| "Select a wallet".to_string())
@@ -736,7 +772,13 @@ impl WalletsBalancesScreen {
                         // Extract wallet state before calling mutable methods
                         let (uses_password, is_open, alias) = {
                             if let Ok(wallet) = wallet_arc.read() {
-                                (wallet.uses_password, wallet.is_open(), wallet.alias.clone())
+                                (
+                                    wallet.uses_password,
+                                    wallet.is_open(),
+                                    self.app_context
+                                        .wallet_context()
+                                        .hd_alias(&wallet.seed_hash()),
+                                )
                             } else {
                                 (false, false, None)
                             }
@@ -766,7 +808,11 @@ impl WalletsBalancesScreen {
 
                     // Buttons for single key wallet
                     if let Some(wallet_arc) = single_key_wallet_opt {
-                        let alias = wallet_arc.read().ok().and_then(|w| w.alias.clone());
+                        let alias = wallet_arc.read().ok().and_then(|w| {
+                            self.app_context
+                                .wallet_context()
+                                .single_alias(&w.address.to_string())
+                        });
 
                         self.render_remove_wallet_button(ui);
 
@@ -890,9 +936,10 @@ impl WalletsBalancesScreen {
     fn request_selected_wallet_removal(&mut self) {
         let (pending, message) = if let Some(wallet) = &self.selected_wallet {
             let wallet = wallet.read_recover();
-            let alias = wallet
-                .alias
-                .clone()
+            let alias = self
+                .app_context
+                .wallet_context()
+                .hd_alias(&wallet.seed_hash())
                 .unwrap_or_else(|| "Unnamed Wallet".to_string());
             let message = format!(
                 "Removing wallet \"{alias}\" clears the data used by this version, including its addresses, balances, and asset locks. Identities linked to it will remain, but keys derived from this wallet will not work unless the wallet is imported again. If this wallet came from an earlier version, that version's read-only recovery database stays on this device. Continue?"
@@ -906,9 +953,10 @@ impl WalletsBalancesScreen {
             )
         } else if let Some(wallet) = &self.selected_single_key_wallet {
             let wallet = wallet.read_recover();
-            let alias = wallet
-                .alias
-                .clone()
+            let alias = self
+                .app_context
+                .wallet_context()
+                .single_alias(&wallet.address.to_string())
                 .unwrap_or_else(|| "Unnamed Wallet".to_string());
             let message = format!(
                 "Removing wallet \"{alias}\" will delete its imported private key and local wallet data from this device. Make sure you have a backup of the private key before continuing. Continue?"
@@ -936,12 +984,10 @@ impl WalletsBalancesScreen {
 
     fn handle_single_key_wallet_removal(
         &mut self,
-        key_hash: SingleKeyHash,
+        _key_hash: SingleKeyHash,
         address: String,
         alias: String,
     ) {
-        let app_context = self.app_context.clone();
-        let _update_guard = app_context.lock_single_key_updates();
         let outcome = match self.app_context.wallet_backend() {
             Ok(backend) => backend.single_key().forget(&address).err(),
             Err(error) => Some(error),
@@ -956,9 +1002,6 @@ impl WalletsBalancesScreen {
             return;
         }
 
-        if let Ok(mut wallets) = self.app_context.single_key_wallets.write() {
-            wallets.remove(&key_hash);
-        }
         self.selected_single_key_wallet = None;
         self.persist_selected_single_key_hash(None);
         MessageBanner::set_global(
@@ -973,10 +1016,11 @@ impl WalletsBalancesScreen {
             Ok(()) => {
                 let next_wallet = self
                     .app_context
-                    .wallets
-                    .read()
-                    .ok()
-                    .and_then(|wallets| wallets.values().next().cloned());
+                    .wallet_context()
+                    .wallets()
+                    .values()
+                    .next()
+                    .cloned();
 
                 self.set_selected_hd_wallet(next_wallet);
 
@@ -2123,9 +2167,9 @@ impl WalletsBalancesScreen {
         let (alias, _seed_hash, _wallet_is_main) = {
             let wallet = wallet_arc.read_recover();
             (
-                wallet
-                    .alias
-                    .clone()
+                self.app_context
+                    .wallet_context()
+                    .hd_alias(&wallet.seed_hash())
                     .unwrap_or_else(|| "Unnamed Wallet".to_string()),
                 wallet.seed_hash(),
                 wallet.is_main,
@@ -2570,11 +2614,11 @@ impl ScreenLike for WalletsBalancesScreen {
                     // single keys may be all the user has left to restore.
                     self.render_protected_restore_banner(ui);
 
-                    let has_hd_wallets = !self.app_context.wallets.read_recover().is_empty();
+                    let has_hd_wallets = !self.app_context.wallet_context().wallets().is_empty();
                     let has_single_key_wallets = !self
                         .app_context
-                        .single_key_wallets
-                        .read_recover()
+                        .wallet_context()
+                        .single_key_wallets()
                         .is_empty();
 
                     if !has_hd_wallets && !has_single_key_wallets {
@@ -2764,7 +2808,7 @@ impl ScreenLike for WalletsBalancesScreen {
                     ui.vertical(|ui| {
                         if let Some(wallet_arc) = &self.selected_single_key_wallet
                             && let Ok(wallet) = wallet_arc.read() {
-                                if let Some(alias) = &wallet.alias {
+                                if let Some(alias) = &self.app_context.wallet_context().single_alias(&wallet.address.to_string()) {
                                     ui.label(format!(
                                         "Wallet \"{alias}\" is locked. Please enter the password to unlock it:"
                                     ));
@@ -3177,10 +3221,10 @@ impl ScreenLike for WalletsBalancesScreen {
         if let Some(seed_hash) = pending_seed_hash {
             let selected_wallet = self
                 .app_context
-                .wallets
-                .read()
-                .ok()
-                .and_then(|wallets| wallets.get(&seed_hash).cloned());
+                .wallet_context()
+                .wallets()
+                .get(&seed_hash)
+                .cloned();
 
             if let Some(wallet) = selected_wallet {
                 self.select_hd_wallet(wallet);
@@ -3202,16 +3246,18 @@ impl ScreenLike for WalletsBalancesScreen {
         if self.selected_wallet.is_none() && self.selected_single_key_wallet.is_none() {
             let next_hd = self
                 .app_context
-                .wallets
-                .read()
-                .ok()
-                .and_then(|w| w.values().next().cloned());
+                .wallet_context()
+                .wallets()
+                .values()
+                .next()
+                .cloned();
             if let Some(wallet) = next_hd {
                 self.set_selected_hd_wallet(Some(wallet));
                 return;
             }
             // If no HD wallets, try single key wallets
-            if let Ok(wallets) = self.app_context.single_key_wallets.read() {
+            {
+                let wallets = self.app_context.wallet_context().single_key_wallets();
                 self.selected_single_key_wallet = wallets.values().next().cloned();
             }
         }
@@ -3412,10 +3458,8 @@ mod tests {
         let wallet =
             Wallet::new_from_seed([seed_byte; 64], ctx.network(), None, None).expect("wallet");
         let seed_hash = wallet.seed_hash();
-        ctx.wallets
-            .write()
-            .expect("wallets")
-            .insert(seed_hash, Arc::new(RwLock::new(wallet)));
+        ctx.wallet_context()
+            .insert_test_wallet(seed_hash, Arc::new(RwLock::new(wallet)));
         seed_hash
     }
 
@@ -3517,13 +3561,7 @@ mod tests {
         seed_hd_wallet(&ctx, 0xBB);
 
         // Target the wallet the first-wallet default would NOT pick.
-        let hashes: Vec<WalletSeedHash> = ctx
-            .wallets
-            .read()
-            .expect("wallets")
-            .keys()
-            .copied()
-            .collect();
+        let hashes: Vec<WalletSeedHash> = ctx.wallet_context().wallets().keys().copied().collect();
         let default_pick = hashes.first().copied().expect("a wallet");
         let target = hashes.last().copied().expect("a wallet");
         assert_ne!(
@@ -3578,7 +3616,7 @@ mod tests {
             .expect("hd wallet");
             let hash = wallet.seed_hash();
             let arc = Arc::new(RwLock::new(wallet));
-            ctx.wallets.write().unwrap().insert(hash, arc.clone());
+            ctx.wallet_context().insert_test_wallet(hash, arc.clone());
             (hash, arc)
         }
 
@@ -3593,10 +3631,8 @@ mod tests {
                     .expect("sk wallet");
             let hash = wallet.key_hash;
             let arc = Arc::new(RwLock::new(wallet));
-            ctx.single_key_wallets
-                .write()
-                .unwrap()
-                .insert(hash, arc.clone());
+            ctx.wallet_context()
+                .insert_test_single_key(ctx.network, hash, arc.clone());
             (hash, arc)
         }
 
@@ -3614,9 +3650,8 @@ mod tests {
                 "a single-key removal request opens the confirmation dialog"
             );
             assert!(
-                ctx.single_key_wallets
-                    .read()
-                    .unwrap()
+                ctx.wallet_context()
+                    .single_key_wallets()
                     .contains_key(&key_hash),
                 "requesting removal must not delete the key before confirmation"
             );

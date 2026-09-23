@@ -124,7 +124,7 @@ impl AppContext {
             })
             .map_err(TaskError::from)?;
 
-        let wallets = self.wallets.read().map_err(TaskError::from)?.clone();
+        let wallets = self.wallet_context().wallets();
 
         // Try to derive keys from wallets if requested
         let mut encrypted_private_keys = std::collections::BTreeMap::new();

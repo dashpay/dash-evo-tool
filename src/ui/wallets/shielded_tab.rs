@@ -154,10 +154,10 @@ impl ShieldedTabView {
     fn open_send_flow(&self, flow: SendFlow) -> AppAction {
         let Some(wallet) = self
             .app_context
-            .wallets
-            .read()
-            .ok()
-            .and_then(|wallets| wallets.get(&self.seed_hash).cloned())
+            .wallet_context()
+            .wallets()
+            .get(&self.seed_hash)
+            .cloned()
         else {
             return AppAction::None;
         };
@@ -540,10 +540,7 @@ impl ShieldedTabView {
                 });
             } else {
                 let wallet_locked = {
-                    let Some(wallets) = self.app_context.wallets.read().ok() else {
-                        ui.label("Unable to read wallet state. Please try again.");
-                        return action;
-                    };
+                    let wallets = self.app_context.wallet_context().wallets();
                     wallets
                         .get(&self.seed_hash)
                         .is_some_and(wallet_needs_unlock)

@@ -414,7 +414,7 @@ async fn test_mn051_transfer_withdraw_to_address() {
 
     // A fresh testnet Core address from the framework wallet.
     let framework_wallet = {
-        let wallets = ctx.app_context.wallets().read().expect("wallets lock");
+        let wallets = ctx.app_context.wallet_context().wallets();
         wallets
             .get(&ctx.framework_wallet_hash)
             .expect("framework wallet must exist")
@@ -708,7 +708,7 @@ async fn test_mn053_compose_through_db() {
     let amount = (balance / 10).max(1);
 
     let framework_wallet = {
-        let wallets = ctx.app_context.wallets().read().expect("wallets lock");
+        let wallets = ctx.app_context.wallet_context().wallets();
         wallets
             .get(&ctx.framework_wallet_hash)
             .expect("framework wallet must exist")

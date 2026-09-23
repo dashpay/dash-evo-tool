@@ -423,11 +423,10 @@ mod tests {
         use dash_sdk::dpp::dashcore::PrivateKey;
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(open_secret_store(&dir.path().join("v.pwsvault")).expect("vault"));
-        let index = std::sync::RwLock::new(std::collections::BTreeMap::new());
-        let alias_write_lock = std::sync::Mutex::new(());
+        let index = crate::context::wallet_context::WalletContext::default();
+
         let view = crate::wallet_backend::single_key::SingleKeyView::from_views(
             &store,
-            &alias_write_lock,
             &index,
             Network::Testnet,
             None,

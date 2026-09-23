@@ -161,7 +161,7 @@ impl AddNewIdentityScreen {
         let mut selected_wallet = None;
 
         if app_context.has_wallet.load(Ordering::Relaxed) {
-            let wallets = &app_context.wallets.read_recover();
+            let wallets = &app_context.wallet_context().wallets();
             // If a specific wallet seed hash is provided, use that wallet
             if let Some(seed_hash) = wallet_seed_hash
                 && let Some(wallet) = wallets.get(&seed_hash)
@@ -398,9 +398,9 @@ impl AddNewIdentityScreen {
     /// borrow, leaving the closure's other `self` field writes undisturbed.
     fn wallet_picker_label(app_context: &AppContext, wallet: &Arc<RwLock<Wallet>>) -> String {
         let Some((seed_hash, alias)) = wallet.read().ok().map(|w| {
-            let alias = w
-                .alias
-                .clone()
+            let alias = app_context
+                .wallet_context()
+                .hd_alias(&w.seed_hash())
                 .unwrap_or_else(|| "Unnamed Wallet".to_string());
             (w.seed_hash(), alias)
         }) else {
@@ -415,10 +415,11 @@ impl AddNewIdentityScreen {
         let rendered = if self.app_context.has_wallet.load(Ordering::Relaxed) {
             let wallets: Vec<_> = self
                 .app_context
-                .wallets
-                .read()
-                .map(|guard| guard.values().cloned().collect())
-                .unwrap_or_default();
+                .wallet_context()
+                .wallets()
+                .values()
+                .cloned()
+                .collect();
 
             if wallets.len() > 1 {
                 ui.heading("1. Choose which wallet this identity's keys will come from.");

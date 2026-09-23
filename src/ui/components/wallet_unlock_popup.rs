@@ -167,7 +167,10 @@ impl WalletUnlockPopup {
         let (wallet_alias, seed_hash) = {
             let wallet = wallet.read_recover();
             (
-                wallet.alias.clone().unwrap_or_else(|| "Wallet".to_string()),
+                app_context
+                    .wallet_context()
+                    .hd_alias(&wallet.seed_hash())
+                    .unwrap_or_else(|| "Wallet".to_string()),
                 wallet.seed_hash(),
             )
         };

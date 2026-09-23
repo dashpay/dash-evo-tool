@@ -134,12 +134,7 @@ impl AsyncTool<DashMcpService> for WalletBalancesQuery {
 
         resolve::ensure_spv_synced(&ctx).await?;
 
-        let wallet_arc = resolve::wallet_arc(&ctx, seed_hash)?;
-        let alias = wallet_arc
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .alias
-            .clone();
+        let alias = ctx.wallet_context().hd_alias(&seed_hash);
 
         // Balances come from the display-only WalletBackend snapshot (P4a);
         // upstream owns chain UTXO/balance bookkeeping.
@@ -466,24 +461,14 @@ impl AsyncTool<DashMcpService> for ImportWallet {
             &seed,
             crate::model::wallet::birth_height::WalletOrigin::Imported,
         ) {
-            Ok((hash, wallet_arc)) => Ok(ImportWalletOutput {
+            Ok((hash, _wallet_arc)) => Ok(ImportWalletOutput {
                 seed_hash: hex::encode(hash),
-                alias: wallet_arc
-                    .read()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .alias
-                    .clone(),
+                alias: ctx.wallet_context().hd_alias(&hash),
                 already_imported: false,
             }),
             Err(TaskError::WalletAlreadyImported) => Ok(ImportWalletOutput {
                 seed_hash: hex::encode(seed_hash),
-                alias: ctx.wallet_arc(&seed_hash).ok().and_then(|existing| {
-                    existing
-                        .read()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .alias
-                        .clone()
-                }),
+                alias: ctx.wallet_context().hd_alias(&seed_hash),
                 already_imported: true,
             }),
             Err(e) => Err(McpToolError::TaskFailed(e)),
@@ -535,14 +520,14 @@ impl AsyncTool<DashMcpService> for ListWalletsTool {
         let ctx = service.tool_ctx().await?;
         resolve::verify_network(&ctx, param.network.as_deref())?;
         resolve::ensure_wallets_hydrated(&ctx).await?;
-        let wallets = ctx.wallets.read().unwrap_or_else(|e| e.into_inner());
+        let wallets = ctx.wallet_context().wallets();
         let entries: Vec<WalletEntry> = wallets
             .iter()
             .map(|(hash, wallet_arc)| {
                 let wallet = wallet_arc.read().unwrap_or_else(|e| e.into_inner());
                 WalletEntry {
                     seed_hash: hex::encode(hash),
-                    alias: wallet.alias.clone(),
+                    alias: ctx.wallet_context().hd_alias(&wallet.seed_hash()),
                 }
             })
             .collect();

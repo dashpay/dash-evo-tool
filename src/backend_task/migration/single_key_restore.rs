@@ -535,10 +535,9 @@ mod tests {
 
         let store =
             Arc::new(open_secret_store(&dir.path().join("secrets.pwsvault")).expect("vault"));
-        let index = std::sync::RwLock::new(std::collections::BTreeMap::new());
-        let alias_write_lock = std::sync::Mutex::new(());
-        let view =
-            SingleKeyView::from_views(&store, &alias_write_lock, &index, Network::Testnet, None);
+        let index = crate::context::wallet_context::WalletContext::default();
+
+        let view = SingleKeyView::from_views(&store, &index, Network::Testnet, None);
 
         // Re-protect under a NEW passphrase — the round-trip must keep the
         // address identical (S5) and store an encrypted (not raw) entry (S4).

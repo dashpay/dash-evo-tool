@@ -179,7 +179,7 @@ async fn ensure_wallets_hydrated_finishes_pending_legacy_migration() {
     .expect("seed legacy wallet");
 
     assert!(
-        ctx.wallets.read().expect("wallet map").is_empty(),
+        ctx.wallet_context().wallets().is_empty(),
         "precondition: the legacy wallet is not hydrated yet"
     );
 
@@ -188,11 +188,13 @@ async fn ensure_wallets_hydrated_finishes_pending_legacy_migration() {
         .expect("hydrate and migrate wallets");
 
     let alias = ctx
-        .wallets
-        .read()
-        .expect("wallet map")
+        .wallet_context()
+        .wallets()
         .get(&seed_hash)
-        .map(|wallet| wallet.read().expect("wallet").alias.clone());
+        .map(|wallet| {
+            ctx.wallet_context()
+                .hd_alias(&wallet.read().expect("wallet").seed_hash())
+        });
     let migration_state = ctx.migration_status().state();
     let backend = ctx.wallet_backend().expect("backend wired");
     let spv_started = backend.is_started();

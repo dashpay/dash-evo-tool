@@ -692,7 +692,7 @@ async fn tc_018_fund_platform_address_from_asset_lock() {
     let seed_hash = ctx.framework_wallet_hash;
 
     let wallet_arc = {
-        let wallets = ctx.app_context.wallets().read().expect("wallets lock");
+        let wallets = ctx.app_context.wallet_context().wallets();
         wallets
             .get(&seed_hash)
             .expect("framework wallet missing")

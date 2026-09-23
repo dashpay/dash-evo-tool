@@ -221,10 +221,11 @@ impl TopUpIdentityScreen {
         let rendered = if self.app_context.has_wallet.load(Ordering::Relaxed) {
             let wallets: Vec<_> = self
                 .app_context
-                .wallets
-                .read()
-                .map(|guard| guard.values().cloned().collect())
-                .unwrap_or_default();
+                .wallet_context()
+                .wallets()
+                .values()
+                .cloned()
+                .collect();
 
             if wallets.len() > 1 {
                 let funding_method = self.current_funding_method();
@@ -237,7 +238,9 @@ impl TopUpIdentityScreen {
                         wallet
                             .read()
                             .ok()
-                            .and_then(|w| w.alias.clone())
+                            .and_then(|w| {
+                                self.app_context.wallet_context().hd_alias(&w.seed_hash())
+                            })
                             .unwrap_or_else(|| "Unnamed Wallet".to_string())
                     },
                     |wallet| self.wallet_has_resources_for(wallet, funding_method),
@@ -367,7 +370,8 @@ impl TopUpIdentityScreen {
             let mut has_balance = false;
             let mut has_platform_balance = false;
 
-            if let Ok(wallets) = self.app_context.wallets.read() {
+            {
+                let wallets = self.app_context.wallet_context().wallets();
                 for wallet in wallets.values() {
                     let Ok(wallet) = wallet.read() else {
                         continue;
@@ -894,12 +898,7 @@ impl ScreenLike for TopUpIdentityScreen {
                     || funding_method == FundingMethod::ReceiveDeposit
                 {
                     // Check if there's more than one wallet to show selection UI
-                    let wallet_count = self
-                        .app_context
-                        .wallets
-                        .read()
-                        .map(|w| w.len())
-                        .unwrap_or(0);
+                    let wallet_count = self.app_context.wallet_context().wallets().len();
 
                     if wallet_count > 1 {
                         ui.horizontal(|ui| {
@@ -1012,15 +1011,11 @@ impl ScreenLike for TopUpIdentityScreen {
             // are requested together as one concurrent batch.
             let seed_hashes: Vec<_> = self
                 .app_context
-                .wallets
-                .read()
-                .map(|wallets| {
-                    wallets
-                        .values()
-                        .filter_map(|w| w.read().ok().map(|g| g.seed_hash()))
-                        .collect()
-                })
-                .unwrap_or_default();
+                .wallet_context()
+                .wallets()
+                .values()
+                .filter_map(|w| w.read().ok().map(|g| g.seed_hash()))
+                .collect();
             let mut pending_tasks = self.asset_lock_cache.ensure_requested_many(seed_hashes);
 
             if request_asset_lock_balance

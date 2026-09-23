@@ -15,16 +15,8 @@ fn show_wallet_data_removal_warning(ctx: &egui::Context, error: TaskError) {
 
 impl AppContext {
     pub fn remove_wallet(self: &Arc<Self>, seed_hash: &WalletSeedHash) -> Result<(), TaskError> {
-        // Acquire write lock first to ensure atomicity — if the lock fails,
-        // no changes have been made to the database.
-        let mut wallets = self.wallets.write()?;
-        if !wallets.contains_key(seed_hash) {
-            return Err(TaskError::WalletNotFound);
-        }
-
-        wallets.remove(seed_hash);
-        let has_wallet = !wallets.is_empty();
-        drop(wallets);
+        self.wallet_context().remove_wallet(seed_hash)?;
+        let has_wallet = !self.wallet_context().wallets().is_empty();
 
         self.has_wallet.store(has_wallet, Ordering::Relaxed);
 

@@ -17,7 +17,7 @@ async fn test_tc001_refresh_wallet_info_core_only() {
     let app_context = &ctx.app_context;
 
     let wallet = {
-        let wallets = app_context.wallets().read().expect("wallets lock");
+        let wallets = app_context.wallet_context().wallets();
         wallets
             .get(&ctx.framework_wallet_hash)
             .expect("framework wallet must exist")
@@ -50,7 +50,7 @@ async fn test_tc002_refresh_wallet_info_core_and_platform() {
     let app_context = &ctx.app_context;
 
     let wallet = {
-        let wallets = app_context.wallets().read().expect("wallets lock");
+        let wallets = app_context.wallet_context().wallets();
         wallets
             .get(&ctx.framework_wallet_hash)
             .expect("framework wallet must exist")
@@ -122,7 +122,7 @@ async fn test_tc004_create_registration_asset_lock() {
     let app_context = &ctx.app_context;
 
     let wallet = {
-        let wallets = app_context.wallets().read().expect("wallets lock");
+        let wallets = app_context.wallet_context().wallets();
         wallets
             .get(&ctx.framework_wallet_hash)
             .expect("framework wallet must exist")
@@ -155,7 +155,7 @@ async fn test_tc005_create_top_up_asset_lock() {
     let _identity = fixtures::shared_identity().await;
 
     let wallet = {
-        let wallets = app_context.wallets().read().expect("wallets lock");
+        let wallets = app_context.wallet_context().wallets();
         wallets
             .get(&ctx.framework_wallet_hash)
             .expect("framework wallet must exist")
@@ -266,7 +266,7 @@ async fn test_tc009_send_single_key_wallet_payment() {
     //
     // // Derive a recipient address from the framework wallet
     // let recipient_address = {
-    //     let wallets = app_context.wallets().read().expect("wallets lock");
+    //     let wallets = app_context.wallet_context().wallets();
     //     let fw = wallets
     //         .get(&ctx.framework_wallet_hash)
     //         .expect("framework wallet")
@@ -324,7 +324,7 @@ async fn test_tc011_send_wallet_payment_invalid_address() {
     let app_context = &ctx.app_context;
 
     let wallet = {
-        let wallets = app_context.wallets().read().expect("wallets lock");
+        let wallets = app_context.wallet_context().wallets();
         wallets
             .get(&ctx.framework_wallet_hash)
             .expect("framework wallet must exist")

@@ -1118,9 +1118,8 @@ fn poisoned_wallet_lock_is_recovered_consistently() {
     wallet.wallet_seed.close();
     let seed_hash = wallet.seed_hash();
     let wallet = Arc::new(RwLock::new(wallet));
-    ctx.wallets
-        .write_recover()
-        .insert(seed_hash, Arc::clone(&wallet));
+    ctx.wallet_context()
+        .insert_test_wallet(seed_hash, Arc::clone(&wallet));
 
     let poison_target = Arc::clone(&wallet);
     assert!(
@@ -1520,9 +1519,8 @@ async fn register_wallet_persists_seed_envelope_before_backend_wired() {
     assert!(!meta.uses_password, "no-password wallet meta flag");
     assert_eq!(
         meta.xpub_encoded,
-        ctx.wallets
-            .read()
-            .unwrap()
+        ctx.wallet_context()
+            .wallets()
             .get(&seed_hash)
             .unwrap()
             .read()
@@ -1598,10 +1596,8 @@ async fn unregistered_count_fails_safe_on_poisoned_wallet_lock() {
             .expect("build wallet");
     let seed_hash = wallet.seed_hash();
     let arc = Arc::new(std::sync::RwLock::new(wallet));
-    ctx.wallets
-        .write()
-        .expect("wallets map lock")
-        .insert(seed_hash, Arc::clone(&arc));
+    ctx.wallet_context()
+        .insert_test_wallet(seed_hash, Arc::clone(&arc));
 
     // Poison the wallet's lock by panicking while holding its write guard.
     let poisoner = Arc::clone(&arc);
@@ -1660,7 +1656,7 @@ async fn register_wallet_succeeds_on_fresh_install_without_legacy_tables() {
     assert_eq!(returned_hash, seed_hash);
 
     assert!(
-        ctx.wallets.read_recover().contains_key(&seed_hash),
+        ctx.wallet_context().wallets().contains_key(&seed_hash),
         "the wallet must be registered in-memory after register_wallet"
     );
     assert!(
@@ -1737,6 +1733,9 @@ async fn remove_wallet_warns_when_local_secret_wipe_fails() {
     crate::ui::components::MessageBanner::clear_all_global(ctx.egui_ctx());
 
     ctx.remove_wallet(&seed_hash).expect("remove wallet");
+    assert!(ctx.wallet_context().wallet(&seed_hash).is_err());
+    assert!(ctx.wallet_context().hd_metadata(&seed_hash).is_none());
+    assert!(ctx.wallet_context().hd_prompt(&seed_hash).alias.is_none());
 
     assert!(
         crate::ui::components::MessageBanner::has_global(ctx.egui_ctx()),
@@ -2206,7 +2205,7 @@ async fn clear_network_database_wipes_wallet_meta_and_seed_envelope() {
         "no legacy envelope must survive clear"
     );
     assert!(
-        ctx.wallets.read_recover().is_empty(),
+        ctx.wallet_context().wallets().is_empty(),
         "the in-memory wallet map must be empty after clear"
     );
 
@@ -2462,7 +2461,7 @@ async fn clear_network_database_refuses_unwired_backend_without_partial_wipe() {
         "clear-all must return the dedicated clear-unavailable error"
     );
     assert!(
-        ctx.wallets.read_recover().contains_key(&seed_hash),
+        ctx.wallet_context().wallets().contains_key(&seed_hash),
         "a refused clear must not partially remove the in-memory wallet"
     );
     assert!(
@@ -2557,7 +2556,7 @@ async fn register_wallet_fails_closed_when_seed_envelope_write_fails() {
         "register_wallet must fail closed when the seed envelope cannot be saved"
     );
     assert!(
-        !ctx.wallets.read_recover().contains_key(&seed_hash),
+        !ctx.wallet_context().wallets().contains_key(&seed_hash),
         "a wallet whose seed was not saved must not be kept in memory"
     );
     assert!(
@@ -2606,7 +2605,7 @@ async fn register_wallet_fails_closed_when_wallet_meta_write_fails() {
         "register_wallet must fail closed when the wallet-meta sidecar cannot be saved"
     );
     assert!(
-        !ctx.wallets.read_recover().contains_key(&seed_hash),
+        !ctx.wallet_context().wallets().contains_key(&seed_hash),
         "a wallet with no meta row must not be kept in memory (it would never hydrate)"
     );
     assert!(
@@ -2648,7 +2647,7 @@ async fn register_wallet_rejects_overlong_alias_before_seed_write() {
         "no seed material must survive a rejected HD registration (orphaned secret)"
     );
     assert!(
-        !ctx.wallets.read_recover().contains_key(&seed_hash),
+        !ctx.wallet_context().wallets().contains_key(&seed_hash),
         "a rejected wallet must not be kept in memory"
     );
     assert!(
@@ -2682,7 +2681,12 @@ async fn register_wallet_blank_alias_takes_smallest_unused_default_name() {
         .register_wallet(wallet, &seed, WalletOrigin::Fresh)
         .expect("register blank-named wallet");
 
-    assert_eq!(wallet_arc.read_recover().alias.as_deref(), Some("Wallet 2"));
+    assert_eq!(
+        ctx.wallet_context()
+            .hd_alias(&wallet_arc.read_recover().seed_hash())
+            .as_deref(),
+        Some("Wallet 2")
+    );
     assert_eq!(
         WalletMetaView::new(&ctx.app_kv)
             .get(Network::Testnet, &seed_hash)
@@ -2702,7 +2706,12 @@ async fn register_wallet_cleans_the_alias() {
         .register_wallet(wallet, &seed, WalletOrigin::Fresh)
         .expect("register");
 
-    assert_eq!(wallet_arc.read_recover().alias.as_deref(), Some("Savings"));
+    assert_eq!(
+        ctx.wallet_context()
+            .hd_alias(&wallet_arc.read_recover().seed_hash())
+            .as_deref(),
+        Some("Savings")
+    );
 }
 
 /// A name another HD wallet already uses is rejected before any
@@ -2730,7 +2739,7 @@ async fn register_wallet_rejects_alias_used_by_another_wallet_before_seed_write(
             .is_none(),
         "no seed material may be written for a rejected registration"
     );
-    assert!(!ctx.wallets.read_recover().contains_key(&seed_hash));
+    assert!(!ctx.wallet_context().wallets().contains_key(&seed_hash));
 }
 
 /// Re-importing a wallet is reported as a re-import, not as a name conflict
@@ -2804,39 +2813,32 @@ async fn malformed_legacy_envelope_does_not_block_healthy_wallet_hydration() {
         .unwrap();
     assert!(seeds.legacy_envelope_get(&malformed_hash).is_err());
 
-    let alias_lock = std::sync::Mutex::new(());
-    let index = std::sync::RwLock::new(std::collections::BTreeMap::new());
+    let index = crate::context::wallet_context::WalletContext::default();
     let key = dash_sdk::dpp::dashcore::PrivateKey::from_byte_array(
         &rand::random::<[u8; 32]>(),
         ctx.network,
     )
     .unwrap();
-    let imported = SingleKeyView::from_views(
-        &store,
-        &alias_lock,
-        &index,
-        ctx.network,
-        Some(&ctx.app_kv()),
-    )
-    .import_wif(
-        &key.to_wif(),
-        AliasSource::UserEntered("Healthy key".into()),
-    )
-    .unwrap();
-    assert!(ctx.wallets.read().unwrap().is_empty());
-    assert!(ctx.single_key_wallets.read().unwrap().is_empty());
+    let imported = SingleKeyView::from_views(&store, &index, ctx.network, Some(&ctx.app_kv()))
+        .import_wif(
+            &key.to_wif(),
+            AliasSource::UserEntered("Healthy key".into()),
+        )
+        .unwrap();
+    assert!(ctx.wallet_context().wallets().is_empty());
+    assert!(ctx.wallet_context().single_key_wallets().is_empty());
 
     ctx.ensure_wallet_backend(sender)
         .await
         .expect("one malformed legacy envelope must not prevent backend initialization");
     {
-        let wallets = ctx.wallets.read().unwrap();
+        let wallets = ctx.wallet_context().wallets();
         assert_eq!(wallets.len(), 1);
         assert!(wallets.contains_key(&healthy_hash));
         assert!(!wallets.contains_key(&malformed_hash));
     }
     {
-        let wallets = ctx.single_key_wallets.read().unwrap();
+        let wallets = ctx.wallet_context().single_key_wallets();
         assert_eq!(wallets.len(), 1);
         assert_eq!(
             wallets
@@ -2887,7 +2889,7 @@ async fn migrated_wallet_is_visible_without_second_restart() {
         .await
         .expect("ensure_wallet_backend should succeed offline");
     assert!(
-        !ctx.wallets.read_recover().contains_key(&seed_hash),
+        !ctx.wallet_context().wallets().contains_key(&seed_hash),
         "precondition: the migrated wallet is not yet hydrated (sidecars empty at wiring)"
     );
 
@@ -2898,7 +2900,7 @@ async fn migrated_wallet_is_visible_without_second_restart() {
 
     // The migrated wallet must be visible WITHOUT a second backend build.
     assert!(
-        ctx.wallets.read_recover().contains_key(&seed_hash),
+        ctx.wallet_context().wallets().contains_key(&seed_hash),
         "the migrated wallet must be in ctx.wallets right after migration (no second restart)"
     );
     assert!(
@@ -3132,9 +3134,8 @@ async fn protected_wallet_registers_upstream_on_unlock_without_restart() {
     }
 
     let wallet_arc = ctx
-        .wallets
-        .read()
-        .unwrap()
+        .wallet_context()
+        .wallets()
         .get(&seed_hash)
         .cloned()
         .expect("protected wallet must be hydrated into ctx.wallets after migration");
@@ -3578,7 +3579,7 @@ async fn protected_single_key_import_does_not_retain_plaintext_in_session_map() 
     // The same closed entry must be the one tracked in the session map.
     let key_hash = guard.key_hash();
     drop(guard);
-    let map = ctx.single_key_wallets.read().expect("read map");
+    let map = ctx.wallet_context().single_key_wallets();
     let in_map = map.get(&key_hash).expect("imported key present in map");
     assert!(
         !in_map.read().expect("read map entry").is_open(),

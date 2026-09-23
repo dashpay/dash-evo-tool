@@ -46,26 +46,11 @@ impl AppContext {
         TaskError,
     > {
         let backend = self.wallet_backend()?;
-        let _update_guard = self.lock_single_key_updates();
-        let single_key = backend.single_key();
-        let imported = single_key.import_wif_with_passphrase(wif, alias, passphrase)?;
-
-        // Rebuild the in-memory display wallet from the just-written vault
-        // entry so the map matches the shape `hydrate_context_wallets`
-        // produces on the next cold boot. For a passphrase-protected entry
-        // this yields a closed wallet with no plaintext; for an unprotected
-        // entry it yields the open wallet the legacy path produced.
-        let wallet = single_key
-            .rebuild_display_wallet(&imported)?
-            .ok_or(TaskError::ImportedKeyNotFound)?;
-        let key_hash = wallet.key_hash();
-        let wallet_arc = Arc::new(RwLock::new(wallet));
-
-        self.single_key_wallets
-            .write()?
-            .insert(key_hash, wallet_arc.clone());
+        let (imported, wallet) = backend
+            .single_key()
+            .import_with_wallet(wif, alias, passphrase)?;
         self.has_wallet.store(true, Ordering::Relaxed);
-        Ok((imported, wallet_arc))
+        Ok((imported, wallet))
     }
 
     /// Confirm that `passphrase` unlocks the protected imported key at
@@ -114,76 +99,24 @@ impl AppContext {
     /// [`TaskError::WalletAliasAlreadyUsed`].
     pub fn register_wallet(
         self: &Arc<Self>,
-        mut wallet: Wallet,
+        wallet: Wallet,
         seed: &[u8; 64],
         origin: WalletOrigin,
     ) -> Result<(WalletSeedHash, Arc<RwLock<Wallet>>), TaskError> {
         let seed_hash = wallet.seed_hash();
         let uses_password = wallet.uses_password;
 
-        // Serialize with every other HD alias writer from resolution until the
-        // wallet is visible in `wallets`, so two concurrent registrations or a
-        // racing rename can never settle on the same name. Released before the
-        // address bootstrap.
-        let alias_guard = self.lock_hd_wallet_aliases();
-
-        // 0. Reject a duplicate import. The upstream `det-<network>.sqlite`
-        // persistor is the system of record now; DET no longer writes the
-        // legacy `data.db.wallet` row (the fresh-install schema gates that
-        // table out entirely). Uniqueness is enforced against the wallet-meta
-        // sidecar and the in-memory map — the same key (`seed_hash`) the
-        // legacy unique constraint used. Checked before the alias so a
-        // re-import is reported as such, not as a name conflict.
-        if self.wallets.read()?.contains_key(&seed_hash)
-            || WalletMetaView::new(&self.app_kv)
+        let wallet_arc = self.wallet_context().register_hd(wallet, |wallet| {
+            if WalletMetaView::new(&self.app_kv)
                 .get(self.network, &seed_hash)
                 .is_some()
-        {
-            return Err(TaskError::WalletAlreadyImported);
-        }
-
-        // 1. Resolve the alias before any secret-critical write — this is input
-        // validation. A rejection at the `write_wallet_meta` layer would land
-        // AFTER `write_seed_envelope`, orphaning the encrypted seed (no meta
-        // row → never hydrated, no cleanup path). Mirrors the single-key
-        // import path.
-        let alias = {
-            let wallets = self.wallets.read()?;
-            Self::resolve_hd_wallet_alias(
-                &wallets,
-                wallet.alias.as_deref().unwrap_or_default(),
-                &seed_hash,
-            )?
-        };
-        wallet.alias = Some(alias);
-
-        // 2. Persist the seed-envelope vault entry — FAIL-CLOSED (F62). This is
-        // the encrypted seed the W2 cold-boot bridge re-registers from; without
-        // it the wallet works in-session but VANISHES with its funds on the next
-        // launch. If it cannot be saved, the registration is aborted here (the
-        // wallet is NOT inserted in-memory) so the UI tells the user the wallet
-        // was not saved and to retry — never a silent loss. The vault is
-        // AppContext-owned, so this succeeds even before the backend is wired.
-        self.write_seed_envelope(&wallet)?;
-
-        // Persist the wallet-meta sidecar — FAIL-CLOSED. Cold-boot hydration
-        // enumerates ONLY this sidecar (`hydrate_wallets_for_network` rebuilds
-        // `ctx.wallets` from `WalletMetaView::list`); there is no
-        // upstream→meta reconstruction path. A wallet with a seed envelope but
-        // no meta row is never hydrated, so its funds become unreachable on the
-        // next launch with no self-heal. Both sidecars are required, so a meta
-        // write failure aborts the registration here just like the envelope
-        // write above. The sidecar is AppContext-owned (app_kv), so this
-        // succeeds even before the backend is wired.
-        self.write_wallet_meta(&wallet)?;
-
-        // 3. Register in-memory
-        let wallet_arc = Arc::new(RwLock::new(wallet));
-        let mut wallets = self.wallets.write()?;
-        wallets.insert(seed_hash, wallet_arc.clone());
+            {
+                return Err(TaskError::WalletAlreadyImported);
+            }
+            self.write_seed_envelope(wallet)?;
+            self.write_wallet_meta(wallet)
+        })?;
         self.has_wallet.store(true, Ordering::Relaxed);
-        drop(wallets);
-        drop(alias_guard);
 
         // 4. Bootstrap addresses from the seed the caller holds (fresh
         // register), then — for a password wallet — promote that seed into the
@@ -206,41 +139,6 @@ impl AppContext {
         self.register_wallet_upstream(seed_hash, seed, origin);
 
         Ok((seed_hash, wallet_arc))
-    }
-
-    /// Resolve a user-entered HD wallet alias against the loaded wallets:
-    /// clean it, replace a blank one with the smallest unused "Wallet N", and
-    /// reject a name another HD wallet already uses. The wallet identified by
-    /// `own_seed_hash` is excluded, so a wallet may keep its current name.
-    ///
-    /// Takes the already-held `wallets` map so callers never re-lock it. The
-    /// caller must hold [`Self::lock_hd_wallet_aliases`] until the resolved
-    /// alias is persisted and mirrored into `wallets`.
-    pub(crate) fn resolve_hd_wallet_alias(
-        wallets: &std::collections::BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>,
-        raw: &str,
-        own_seed_hash: &WalletSeedHash,
-    ) -> Result<String, TaskError> {
-        use crate::model::wallet::alias::{
-            DefaultAliasKind, ensure_alias_unique, next_default_alias, resolve_alias,
-        };
-
-        let taken: Vec<String> = wallets
-            .iter()
-            .filter(|(seed_hash, _)| *seed_hash != own_seed_hash)
-            .filter_map(|(_, wallet)| {
-                wallet
-                    .read()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .alias
-                    .clone()
-            })
-            .collect();
-        let alias = resolve_alias(raw, || {
-            next_default_alias(DefaultAliasKind::HdWallet, taken.iter().map(String::as_str))
-        })?;
-        ensure_alias_unique(&alias, taken.iter().map(String::as_str))?;
-        Ok(alias)
     }
 
     /// Spawn the W1 upstream-registration subtask for a just-registered wallet.
@@ -330,10 +228,10 @@ impl AppContext {
     /// nothing reconstructs the meta from the upstream persistor — so a wallet
     /// with no meta row never rehydrates and its funds become unreachable. The
     /// caller propagates the error so the wallet is not kept.
-    fn write_wallet_meta(&self, wallet: &Wallet) -> Result<(), TaskError> {
+    fn write_wallet_meta(&self, wallet: &Wallet) -> Result<WalletMeta, TaskError> {
         let seed_hash = wallet.seed_hash();
         let meta = WalletMeta {
-            alias: wallet.alias.clone().unwrap_or_default(),
+            alias: wallet.initial_alias.clone().unwrap_or_default(),
             is_main: wallet.is_main,
             core_wallet_name: wallet.core_wallet_name.clone(),
             xpub_encoded: wallet
@@ -343,11 +241,8 @@ impl AppContext {
             uses_password: wallet.uses_password,
             password_hint: wallet.password_hint().clone(),
         };
-        if let Ok(backend) = self.wallet_backend() {
-            backend.wallet_meta().set(self.network, &seed_hash, &meta)
-        } else {
-            WalletMetaView::new(&self.app_kv).set(self.network, &seed_hash, &meta)
-        }
+        WalletMetaView::new(&self.app_kv).set(self.network, &seed_hash, &meta)?;
+        Ok(meta)
     }
 
     /// Promote a known HD seed into the JIT chokepoint's session cache

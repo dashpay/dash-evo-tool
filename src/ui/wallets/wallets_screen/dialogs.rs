@@ -1135,7 +1135,12 @@ impl WalletsBalancesScreen {
         let address_input = AddressInput::new(self.app_context.network)
             .with_label("Mine to address:")
             .with_address_kinds(&[AddressKind::Core])
-            .with_wallets(&[(wallet, balances, paths)])
+            .with_wallets(&[(
+                wallet,
+                balances,
+                paths,
+                self.app_context.wallet_context().hd_alias(&seed_hash),
+            )])
             .with_selection_only(true)
             .with_full_addresses(true);
 

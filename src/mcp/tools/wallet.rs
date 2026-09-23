@@ -520,15 +520,13 @@ impl AsyncTool<DashMcpService> for ListWalletsTool {
         let ctx = service.tool_ctx().await?;
         resolve::verify_network(&ctx, param.network.as_deref())?;
         resolve::ensure_wallets_hydrated(&ctx).await?;
-        let wallets = ctx.wallet_context().wallets();
-        let entries: Vec<WalletEntry> = wallets
-            .iter()
-            .map(|(hash, wallet_arc)| {
-                let wallet = wallet_arc.read().unwrap_or_else(|e| e.into_inner());
-                WalletEntry {
-                    seed_hash: hex::encode(hash),
-                    alias: ctx.wallet_context().hd_alias(&wallet.seed_hash()),
-                }
+        let entries: Vec<WalletEntry> = ctx
+            .wallet_context()
+            .wallets()
+            .keys()
+            .map(|hash| WalletEntry {
+                seed_hash: hex::encode(hash),
+                alias: ctx.wallet_context().hd_alias(hash),
             })
             .collect();
         Ok(ListWalletsOutput { wallets: entries })

@@ -203,16 +203,21 @@ impl WalletContext {
 
     /// Current committed name, with unnamed legacy wallets preserved.
     pub fn hd_alias(&self, seed: &WalletSeedHash) -> Option<String> {
-        self.hd_metadata(seed)
-            .and_then(|m| (!m.alias.is_empty()).then_some(m.alias))
+        read_recover(&self.state)
+            .hd
+            .get(seed)
+            .filter(|m| !m.alias.is_empty())
+            .map(|m| m.alias.clone())
     }
 
     /// Current HD password-prompt copy from the same metadata used by displays.
     pub fn hd_prompt(&self, seed: &WalletSeedHash) -> PromptMeta {
-        self.hd_metadata(seed)
+        read_recover(&self.state)
+            .hd
+            .get(seed)
             .map(|m| PromptMeta {
-                alias: (!m.alias.is_empty()).then_some(m.alias),
-                password_hint: m.password_hint,
+                alias: (!m.alias.is_empty()).then(|| m.alias.clone()),
+                password_hint: m.password_hint.clone(),
             })
             .unwrap_or_default()
     }
@@ -224,7 +229,10 @@ impl WalletContext {
 
     /// Current imported-key name.
     pub fn single_alias(&self, address: &str) -> Option<String> {
-        self.single_key(address).and_then(|m| m.alias)
+        read_recover(&self.state)
+            .single
+            .get(address)
+            .and_then(|m| m.alias.clone())
     }
 
     /// Imported-key metadata ordered by address.

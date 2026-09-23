@@ -89,10 +89,9 @@ pub(crate) fn wallet(ctx: &AppContext, wallet_id: &str) -> Result<WalletSeedHash
     let mut matches: Vec<WalletSeedHash> = Vec::new();
     let mut available: Vec<String> = Vec::new();
 
-    for (seed_hash, wallet_arc) in wallets.iter() {
-        let w = wallet_arc.read().unwrap_or_else(|e| e.into_inner());
+    for seed_hash in wallets.keys() {
         let hex_prefix = hex::encode(&seed_hash[..4]);
-        if let Some(alias) = &ctx.wallet_context().hd_alias(&w.seed_hash()) {
+        if let Some(alias) = &ctx.wallet_context().hd_alias(seed_hash) {
             if !wanted.is_empty() && clean_alias(alias) == wanted {
                 matches.push(*seed_hash);
             }

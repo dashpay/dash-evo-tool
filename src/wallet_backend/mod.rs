@@ -2345,13 +2345,12 @@ impl WalletBackend {
 
     /// [`TaskError::WalletNotLoaded`] naming the wallet the caller asked for,
     /// so a user with several wallets open knows which one to wait for. Reads
-    /// the alias from the meta sidecar — the wallet is by definition absent
-    /// from `id_map` here, so there is no live handle to ask.
+    /// the committed alias snapshot, which never takes the writer mutex.
     fn wallet_not_loaded(&self, seed_hash: &WalletSeedHash) -> TaskError {
         let alias = self
-            .wallet_meta()
-            .get(self.inner.network, seed_hash)
-            .map(|meta| meta.alias)
+            .inner
+            .wallet_context
+            .hd_alias(seed_hash)
             .unwrap_or_default();
         TaskError::WalletNotLoaded {
             wallet_label: wallet_label(&alias, seed_hash),

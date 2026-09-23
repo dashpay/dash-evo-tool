@@ -3488,7 +3488,9 @@ mod tests {
         }
 
         // E) Check distribution rules
-        let TokenDistributionRules::V0(dist_rules_v0) = &token_v0.distribution_rules;
+        let TokenDistributionRules::V0(dist_rules_v0) = &token_v0.distribution_rules else {
+            panic!("rules without a once-per-identity distribution stay V0");
+        };
         // -- Perpetual
         let Some(TokenPerpetualDistribution::V0(perp_v0)) = &dist_rules_v0.perpetual_distribution
         else {
@@ -3638,7 +3640,9 @@ mod tests {
         let contract_v1 = data_contract.as_v1().expect("Expected DataContract::V1");
 
         let TokenConfiguration::V0(ref token_v0) = contract_v1.tokens[&0u16];
-        let TokenDistributionRules::V0(dist_rules_v0) = &token_v0.distribution_rules;
+        let TokenDistributionRules::V0(dist_rules_v0) = &token_v0.distribution_rules else {
+            panic!("rules without a once-per-identity distribution stay V0");
+        };
         let Some(TokenPerpetualDistribution::V0(perp_v0)) = &dist_rules_v0.perpetual_distribution
         else {
             panic!("Expected a perpetual distribution");

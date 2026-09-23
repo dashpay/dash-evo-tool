@@ -123,9 +123,27 @@ pub(crate) fn wallet_arc(
 ///
 /// Unlike [`ensure_spv_synced`], this does not start SPV or wait for chain sync.
 pub(crate) async fn ensure_wallets_hydrated(ctx: &Arc<AppContext>) -> Result<(), McpToolError> {
+    hydrate_wallets(ctx, None).await
+}
+
+/// [`ensure_wallets_hydrated`] for the non-interactive storage update: the
+/// drain opens the password-protected wallets with `wallet_password` instead
+/// of requiring the desktop app's password prompt. The password is borrowed
+/// for this call only.
+pub(crate) async fn ensure_wallets_hydrated_with_password(
+    ctx: &Arc<AppContext>,
+    wallet_password: &platform_wallet_storage::secrets::SecretString,
+) -> Result<(), McpToolError> {
+    hydrate_wallets(ctx, Some(wallet_password)).await
+}
+
+async fn hydrate_wallets(
+    ctx: &Arc<AppContext>,
+    wallet_password: Option<&platform_wallet_storage::secrets::SecretString>,
+) -> Result<(), McpToolError> {
     let (tx, _) = tokio::sync::mpsc::channel::<crate::app::TaskResult>(32);
     let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, egui::Context::default());
-    ctx.prepare_storage(sender)
+    ctx.prepare_storage_with_wallet_password(sender, wallet_password)
         .await
         .map_err(McpToolError::TaskFailed)?;
     // Only the join remains: `prepare_storage` has already run the drain, and

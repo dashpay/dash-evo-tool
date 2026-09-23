@@ -3492,6 +3492,46 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn identity_migration_skips_corrupt_wrapper_and_migrates_healthy_record() {
+        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let ctx = &staged.ctx;
+        let kv = ctx.det_kv().unwrap();
+        let id = staged.id.to_buffer();
+        let mut stored: StoredQualifiedIdentity = kv
+            .get(DetScope::Identity(&id), IDENTITY_KEY)
+            .unwrap()
+            .unwrap();
+        stored.qi_bytes = qi_with_plaintext_and_derived([0xAA; 32], [0xBB; 32]).to_bytes();
+        kv.put(DetScope::Identity(&id), IDENTITY_KEY, &stored)
+            .unwrap();
+        let corrupt_id = [0xFE; 32];
+        kv.put(DetScope::Identity(&corrupt_id), IDENTITY_KEY, &1u8)
+            .unwrap();
+        kv.put(DetScope::Global, IDENTITY_INDEX_KEY, &vec![corrupt_id, id])
+            .unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::channel(32);
+        ctx.prepare_storage(crate::utils::egui_mpsc::SenderAsync::new(
+            tx,
+            ctx.egui_ctx().clone(),
+        ))
+        .await
+        .expect("one corrupt wrapper must not block healthy records");
+        assert!(
+            !ctx.get_local_qualified_identity(&staged.id)
+                .unwrap()
+                .unwrap()
+                .private_keys
+                .has_plaintext_for_vault()
+        );
+        assert_eq!(
+            kv.get::<u8>(DetScope::Identity(&corrupt_id), IDENTITY_KEY)
+                .unwrap(),
+            Some(1)
+        );
+        ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn identity_reads_are_pure_and_storage_preparation_migrates_legacy_keys() {
         use crate::app::TaskResult;
         use crate::app_dir::ensure_env_file;

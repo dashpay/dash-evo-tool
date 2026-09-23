@@ -12,12 +12,21 @@ impl AppContext {
             let _guard = lock
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let Some(mut stored): Option<StoredQualifiedIdentity> = kv
-                .get(DetScope::Identity(&id), IDENTITY_KEY)
-                .map_err(identity_err)?
-            else {
-                continue;
-            };
+            let mut stored =
+                match kv.get::<StoredQualifiedIdentity>(DetScope::Identity(&id), IDENTITY_KEY) {
+                    Ok(Some(stored)) => stored,
+                    Ok(None) => continue,
+                    Err(error @ KvAdapterError::Decode(_)) => {
+                        tracing::warn!(
+                            target = "context::identity_db",
+                            identity = %hex::encode(id),
+                            error = ?error,
+                            "Skipping an undecodable identity record during key migration",
+                        );
+                        continue;
+                    }
+                    Err(error) => return Err(identity_err(error)),
+                };
             let mut qi = match decode_stored_identity(&stored.qi_bytes, self.network) {
                 Ok(qi) => qi,
                 Err(error) => {

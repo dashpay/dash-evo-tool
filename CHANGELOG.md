@@ -24,7 +24,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Identity reads no longer migrate or rewrite stored keys. Storage preparation
   explicitly migrates legacy keys under each identity's record lock, propagates
-  write failures for retry, and skips undecodable records without changing them.
+  write failures for retry, and skips undecodable records without changing them,
+  including malformed outer identity records that would otherwise block startup.
 
 - The CLI keeps MCP requests at the selected endpoint without following HTTP
   redirects or using system/environment proxies. Migration fixture packaging rejects configured credentials, and

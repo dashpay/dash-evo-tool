@@ -1588,11 +1588,6 @@ impl AppContext {
         &self.db
     }
 
-    /// Returns a snapshot of the loaded HD wallet handles.
-    pub fn wallets(&self) -> std::collections::BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>> {
-        self.wallet_context().wallets()
-    }
-
     /// Returns the DashPay contract identifier.
     pub fn dashpay_contract_id(&self) -> Identifier {
         self.dashpay_contract.id()

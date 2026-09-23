@@ -539,12 +539,13 @@ impl<'a> SingleKeyView<'a> {
         self.rebuild_wallet(meta)
     }
 
-    /// Seed the in-memory index from the k/v sidecar. Idempotent: re-runs
-    /// overwrite existing in-memory entries with the persisted view, so a
-    /// cold-boot hydration cannot lose entries created in the same
-    /// process before the backend was wired (mirrors the HD-wallet
-    /// `entry().or_insert` pattern in
-    /// [`hydrate_context_wallets`](super::WalletBackend::hydrate_context_wallets)).
+    /// Publish persisted imported-key metadata into the wallet context.
+    ///
+    /// Test and bench helper only: production hydration goes through
+    /// [`hydrate_context_wallets`](super::WalletBackend::hydrate_context_wallets).
+    /// Persisted metadata overwrites any in-memory entry for the same address;
+    /// wallet handles are not touched.
+    #[cfg(any(test, feature = "bench"))]
     pub fn rehydrate_index(&self) -> Result<(), TaskError> {
         self.context.hydrate(|| {
             Ok(crate::wallet_backend::wallet_context::WalletHydration {

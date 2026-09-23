@@ -46,7 +46,7 @@ use egui_extras::{Column, TableBuilder};
 use std::sync::{Arc, RwLock};
 
 use crate::backend_task::migration::single_key_restore::PendingProtectedRestore;
-use crate::model::wallet::single_key::{SingleKeyHash, SingleKeyWallet};
+use crate::model::wallet::single_key::SingleKeyWallet;
 use crate::ui::wallets::import_single_key::ImportSingleKeyDialog;
 use crate::ui::wallets::restore_single_key::RestoreSingleKeyDialog;
 use crate::ui::wallets::shielded_tab::ShieldedTabView;
@@ -78,7 +78,6 @@ enum PendingWalletRemoval {
         alias: String,
     },
     SingleKey {
-        key_hash: SingleKeyHash,
         address: String,
         alias: String,
     },
@@ -875,12 +874,8 @@ impl WalletsBalancesScreen {
                             Some(PendingWalletRemoval::Hd { seed_hash, alias }) => {
                                 self.handle_wallet_removal(seed_hash, alias);
                             }
-                            Some(PendingWalletRemoval::SingleKey {
-                                key_hash,
-                                address,
-                                alias,
-                            }) => {
-                                self.handle_single_key_wallet_removal(key_hash, address, alias);
+                            Some(PendingWalletRemoval::SingleKey { address, alias }) => {
+                                self.handle_single_key_wallet_removal(address, alias);
                             }
                             None => {}
                         }
@@ -924,7 +919,6 @@ impl WalletsBalancesScreen {
             );
             (
                 PendingWalletRemoval::SingleKey {
-                    key_hash: wallet.key_hash,
                     address: wallet.address.to_string(),
                     alias,
                 },
@@ -943,12 +937,7 @@ impl WalletsBalancesScreen {
         );
     }
 
-    fn handle_single_key_wallet_removal(
-        &mut self,
-        _key_hash: SingleKeyHash,
-        address: String,
-        alias: String,
-    ) {
+    fn handle_single_key_wallet_removal(&mut self, address: String, alias: String) {
         let outcome = match self.app_context.wallet_backend() {
             Ok(backend) => backend.single_key().forget(&address).err(),
             Err(error) => Some(error),

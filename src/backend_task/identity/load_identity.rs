@@ -521,6 +521,12 @@ impl AppContext {
             merge_existing_keys_into(qi, existing);
         }
         if self.protected_identity_verify_scope(qi)?.is_some() {
+            // A surviving legacy `Encrypted` key has no vault entry, so sealing would
+            // skip it and leave the protected record half-protected. Checked after the
+            // merge so a resupplied key (the documented recovery) replaces it instead.
+            if qi.private_keys.has_encrypted_legacy_keys() {
+                return Err(TaskError::IdentityKeyProtectionLegacyFormat);
+            }
             let password = password.ok_or(if published {
                 TaskError::IdentityKeyProtectionDowngrade
             } else {
@@ -2177,6 +2183,101 @@ mod tests {
         );
 
         backend.shutdown().await;
+    }
+
+    /// Merge×Tier-2 with a stored legacy `Encrypted` key: sealing skips that key
+    /// (no vault entry), so a merge that keeps it must fail before any secret
+    /// write. Resupplying the key replaces the legacy entry and the merge seals it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn protected_merge_rejects_surviving_legacy_encrypted_key() {
+        use crate::wallet_backend::secret_prompt::test_support::{ScriptedAnswer, TestPrompt};
+        use crate::wallet_backend::secret_seam::write_fault_test_support::WriteFault;
+        const PW: &str = "synthetic-legacy-merge-password";
+        for resupplied in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let ctx = open_import_context(
+                dir.path(),
+                Some(Arc::new(TestPrompt::new([ScriptedAnswer::once(PW)]))),
+            )
+            .await;
+            let (qi, _) = masternode_shaped_qi();
+            let id = qi.identity.id();
+            ctx.insert_local_qualified_identity(&qi, &None).unwrap();
+            ctx.protect_identity_keys(id, Secret::new(PW), None)
+                .unwrap();
+            let mut stored = ctx.get_local_qualified_identity(&id).unwrap().unwrap();
+            let mut fresh = stored.clone();
+
+            let pv = PlatformVersion::latest();
+            let legacy = IdentityPublicKey::random_key(10, Some(10), pv);
+            let legacy_key = (V, legacy.id());
+            stored.private_keys.insert_at(
+                legacy_key.clone(),
+                (
+                    QualifiedIdentityPublicKey::from(legacy.clone()),
+                    PrivateKeyData::Encrypted(vec![0x33; 48]),
+                ),
+            );
+            ctx.insert_local_qualified_identity(&stored, &None).unwrap();
+
+            let new_voter = IdentityPublicKey::random_key(9, Some(9), pv);
+            fresh.private_keys.insert_at(
+                (V, new_voter.id()),
+                (
+                    QualifiedIdentityPublicKey::from(new_voter),
+                    PrivateKeyData::Clear([0xDD; 32]),
+                ),
+            );
+            if resupplied {
+                fresh.private_keys.insert_at(
+                    legacy_key.clone(),
+                    (
+                        QualifiedIdentityPublicKey::from(legacy),
+                        PrivateKeyData::Clear([0xEE; 32]),
+                    ),
+                );
+            }
+
+            let backend = ctx.wallet_backend().unwrap();
+            let scope = ctx
+                .protected_identity_verify_scope(&fresh)
+                .unwrap()
+                .unwrap();
+            let verified = backend
+                .secret_access()
+                .verify_identity_object_password(&scope)
+                .await
+                .unwrap();
+            let fault = WriteFault::arm(0);
+            let result = ctx.persist_merged_identity(&mut fresh, Some(&verified));
+            if resupplied {
+                result.unwrap();
+                let view = IdentityKeyView::new(backend.secret_store(), id.to_buffer());
+                assert_eq!(
+                    view.scheme(&legacy_key.0, legacy_key.1).unwrap(),
+                    SecretScheme::Protected,
+                    "a resupplied legacy key must be sealed Tier-2",
+                );
+                let reread = ctx.get_local_qualified_identity(&id).unwrap().unwrap();
+                assert!(!reread.private_keys.has_encrypted_legacy_keys());
+            } else {
+                assert!(
+                    matches!(result, Err(TaskError::IdentityKeyProtectionLegacyFormat)),
+                    "expected IdentityKeyProtectionLegacyFormat, got {result:?}",
+                );
+                assert!(
+                    fault.schemes().is_empty(),
+                    "legacy rejection must precede any secret write",
+                );
+                let reread = ctx.get_local_qualified_identity(&id).unwrap().unwrap();
+                assert!(
+                    reread.private_keys.entry_at(&(V, 9)).is_none(),
+                    "a rejected merge must not persist the new key",
+                );
+            }
+            drop(fault);
+            backend.shutdown().await;
+        }
     }
 
     /// Merge×Tier-2 (headless fail-closed) — a `MergeIntoExisting` load into a Tier-2

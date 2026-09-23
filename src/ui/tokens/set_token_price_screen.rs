@@ -5,6 +5,7 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
 use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
 use crate::ui::components::ComponentResponse;
@@ -171,13 +172,13 @@ impl SetTokenPriceScreen {
     pub fn new(identity_token_info: IdentityTokenInfo, app_context: &Arc<AppContext>) -> Self {
         let possible_key: Option<&IdentityPublicKey> = identity_token_info
             .identity
-            .identity
-            .get_first_public_key_matching(
+            .signing_key_now(KeyRequirements::new(
                 Purpose::AUTHENTICATION,
-                HashSet::from([SecurityLevel::CRITICAL]),
-                KeyType::all_key_types().into(),
-                false,
-            );
+                &[SecurityLevel::CRITICAL],
+                SigningScope::ContractWide {
+                    contract_id: identity_token_info.data_contract.contract.id(),
+                },
+            ));
 
         let set_error_banner = |msg: &str| super::set_error_banner(app_context, msg);
 
@@ -1011,6 +1012,7 @@ impl ScreenLike for SetTokenPriceScreen {
                         &self.identity_token_info.identity,
                         &mut self.selected_key,
                         TransactionType::TokenAction,
+                        SigningScope::ContractWide { contract_id: self.identity_token_info.data_contract.contract.id() },
                     );
                     ui.add_space(10.0);
                     ui.separator();

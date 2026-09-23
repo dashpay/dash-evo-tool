@@ -422,12 +422,12 @@ mod tests {
     use dash_sdk::platform::DataContract;
 
     /// Mocks the proved DPNS-contract fetch that drives the protocol-version
-    /// ratchet — the only network read the epoch task still performs while
-    /// dashpay/platform#4231 is unresolved. The mock reports `LATEST_VERSION` in
+    /// ratchet — the epoch task's fallback when the current epoch cannot be
+    /// read (the mock has no epoch response). The mock reports `LATEST_VERSION` in
     /// the response metadata, so a successful fetch ratchets the SDK exactly as a
     /// live network would; a failed one leaves the version unconfirmed.
     async fn mock_sdk_with_dpns_contract(ctx: &Arc<AppContext>) -> Sdk {
-        let contract = DataContract::clone(&ctx.dpns_contract);
+        let contract = DataContract::clone(&ctx.dpns_contract());
         let mut sdk = Sdk::new_mock();
         sdk.mock()
             .expect_fetch(contract.id(), Some(contract))

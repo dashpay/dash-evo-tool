@@ -4,8 +4,16 @@ use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::wallet::WalletTask;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::context::feature_gate::FeatureGate;
+use crate::model::amount::Amount;
+use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::identity_key_limits::{
+    KeyLimitsError, KeyLimitsRaise, key_limits_update_signer, parse_key_validity_days,
+};
 use crate::model::identity_key_protection::validate_protection_password;
+use crate::model::identity_key_usability::now_ms;
 use crate::model::legacy_recovery::RecoveryItem;
+use crate::model::qualified_identity::encrypted_key_storage::same_key;
 use crate::model::qualified_identity::encrypted_key_storage::{
     PrivateKeyData, WalletDerivationPath,
 };
@@ -15,7 +23,8 @@ use crate::model::secret::Secret;
 use crate::model::wallet::Wallet;
 use crate::model::wallet::passphrase::PassphraseError;
 use crate::ui::components::MessageBanner;
-use crate::ui::components::component_trait::Component;
+use crate::ui::components::amount_input::AmountInput;
+use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::legacy_recovery_section::host_offer;
@@ -25,6 +34,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
+use crate::ui::helpers::format_timestamp_ms_local;
 use crate::ui::masternodes::{KeyVocabulary, key_role_label};
 use crate::ui::state::legacy_recovery::LegacyRecoveryState;
 use crate::ui::theme::DashColors;
@@ -38,12 +48,15 @@ use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::secp256k1::{Message, Secp256k1, SecretKey};
 use dash_sdk::dpp::dashcore::sign_message::{MessageSignature, signed_msg_hash};
 use dash_sdk::dpp::dashcore::{Address, PrivateKey, PubkeyHash, ScriptHash};
-use dash_sdk::dpp::identity::KeyType;
+use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::KeyType::BIP13_SCRIPT_HASH;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dash_sdk::dpp::identity::identity_public_key::accessors::v1::IdentityPublicKeyGettersV1;
 use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
+use dash_sdk::dpp::identity::signer::Signer;
+use dash_sdk::dpp::identity::{KeyID, KeyType};
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::IdentityPublicKey;
@@ -118,6 +131,38 @@ pub struct KeyInfoScreen {
     pending_recovery_restore: Option<Vec<RecoveryItem>>,
     /// The screen this key was opened from, for the breadcrumb back to it.
     parent: Option<&'static str>,
+    /// What is left of this key's budget, for a key that has one.
+    remaining_budget: RemainingBudget,
+    /// The amount to add to the key's spending limit (Raise Limits form).
+    raise_budget_input: Option<AmountInput>,
+    raise_budget: Option<Amount>,
+    /// The number of days to extend the key's expiry by (Raise Limits form).
+    raise_days_input: String,
+    /// Why the Raise Limits form cannot be sent, shown under it.
+    raise_form_error: Option<String>,
+    /// A limits raise is in flight; the form is disabled until it settles.
+    raise_in_flight: bool,
+    /// The confirmation of a quoted raise, open while the user decides.
+    raise_confirmation: Option<ConfirmationDialog>,
+    /// The raise the open confirmation shows; the one dispatched on confirm.
+    quoted_raise: Option<KeyLimitsRaise>,
+    /// A confirmed raise waiting for dispatch.
+    pending_raise: Option<KeyLimitsRaise>,
+}
+
+/// What the screen knows about the remaining budget of a budgeted key. Only
+/// Platform tracks it: the key carries the lifetime total, never what is left.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum RemainingBudget {
+    /// Not asked for yet (or asked again after a refresh).
+    #[default]
+    NotRequested,
+    /// The read is in flight.
+    Loading,
+    /// Platform's answer: `None` when it tracks no budget for the key.
+    Known(Option<Credits>),
+    /// The read failed; the total is still shown.
+    Unavailable,
 }
 
 /// At-rest protection posture of an identity's vault-stored keys.
@@ -172,6 +217,7 @@ impl ScreenLike for KeyInfoScreen {
         self.reload_identity();
         self.protection_status = None;
         self.recovery.completed();
+        self.remaining_budget = RemainingBudget::NotRequested;
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
@@ -224,6 +270,32 @@ impl ScreenLike for KeyInfoScreen {
                     MessageType::Success,
                 );
             }
+            BackendTaskSuccessResult::IdentityKeyRemainingBudgets {
+                identity_id,
+                ref budgets,
+            } if identity_id == self.identity.identity.id() => {
+                self.remaining_budget =
+                    RemainingBudget::Known(budgets.get(&self.key.id()).copied().flatten());
+            }
+            BackendTaskSuccessResult::IdentityKeyLimitsRaised {
+                identity_id,
+                ref key,
+            } if identity_id == self.identity.identity.id() && key.id() == self.key.id() => {
+                self.raise_in_flight = false;
+                self.raise_budget_input = None;
+                self.raise_budget = None;
+                self.raise_days_input.clear();
+                self.raise_form_error = None;
+                // The backend stored the raised key; show it and read what is
+                // left of the new budget.
+                self.reload_identity();
+                self.remaining_budget = RemainingBudget::NotRequested;
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "The key's limits were raised.",
+                    MessageType::Success,
+                );
+            }
             BackendTaskSuccessResult::IdentityKeysUnprotected { .. } => {
                 self.protection_in_flight = false;
                 self.protection_status = None; // re-probe the vault on next render
@@ -262,6 +334,16 @@ impl ScreenLike for KeyInfoScreen {
 
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
         self.recovery.absorb_error(context);
+        if context.key_remaining_budgets_identity() == Some(self.identity.identity.id()) {
+            self.remaining_budget = RemainingBudget::Unavailable;
+        }
+        if context.raise_key_limits_target() == Some((self.identity.identity.id(), self.key.id())) {
+            self.raise_in_flight = false;
+            // A refused raise may have stored the key as Platform holds it:
+            // show that, so the next quote starts from it.
+            self.reload_identity();
+            self.remaining_budget = RemainingBudget::NotRequested;
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
@@ -368,6 +450,8 @@ impl ScreenLike for KeyInfoScreen {
                         }
                         ui.end_row();
 
+                        self.render_key_limits_rows(ui, text_primary);
+
                         if let Some((_, Some(wallet_derivation_path))) =
                             self.private_key_data.as_ref()
                         {
@@ -428,6 +512,8 @@ impl ScreenLike for KeyInfoScreen {
 
                         ui.end_row();
                     });
+
+                self.render_raise_limits(ui, text_primary);
 
                 ui.add_space(10.0);
                 ui.separator();
@@ -834,6 +920,28 @@ impl ScreenLike for KeyInfoScreen {
             ));
         }
 
+        // A budgeted key: ask Platform what is left of the budget, once per
+        // opened (or refreshed) screen.
+        if self.remaining_budget == RemainingBudget::NotRequested
+            && self.limits_key().total_budget().is_some()
+        {
+            self.remaining_budget = RemainingBudget::Loading;
+            action |= AppAction::BackendTask(BackendTask::IdentityTask(
+                IdentityTask::FetchKeyRemainingBudgets {
+                    identity_id,
+                    key_ids: vec![self.key.id()],
+                },
+            ));
+        }
+
+        if let Some(raise) = self.pending_raise.take() {
+            action |=
+                AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::RaiseKeyLimits {
+                    identity: Box::new(self.identity.clone()),
+                    raise,
+                }));
+        }
+
         // Legacy recovery: the passive check goes out once per opened screen,
         // and a restore only after the user pressed Restore — so the two can
         // never contend for `action`, which keeps only its most recent value.
@@ -905,7 +1013,236 @@ impl KeyInfoScreen {
             recovery,
             pending_recovery_restore: None,
             parent: None,
+            remaining_budget: RemainingBudget::default(),
+            raise_budget_input: None,
+            raise_budget: None,
+            raise_days_input: String::new(),
+            raise_form_error: None,
+            raise_in_flight: false,
+            raise_confirmation: None,
+            quoted_raise: None,
+            pending_raise: None,
         }
+    }
+
+    /// The key as the identity currently holds it, for its usage limits: the
+    /// budget and expiry move with `IdentityKeyLimitsUpdate`, so the snapshot
+    /// this screen was opened with may be stale. Falls back to the snapshot
+    /// when the identity no longer holds the same key.
+    fn limits_key(&self) -> &IdentityPublicKey {
+        self.identity
+            .identity
+            .public_keys()
+            .get(&self.key.id())
+            .filter(|live| same_key(&self.key, live))
+            .unwrap_or(&self.key)
+    }
+
+    /// The spending limit and expiry rows of the key details grid. A key
+    /// without limits shows neither.
+    fn render_key_limits_rows(&self, ui: &mut egui::Ui, text_primary: Color32) {
+        let key = self.limits_key();
+        let dark_mode = ui.style().visuals.dark_mode;
+
+        if let Some(total_budget) = key.total_budget() {
+            ui.label(
+                RichText::new("Spending limit:")
+                    .strong()
+                    .color(text_primary),
+            );
+            let text = match self.remaining_budget {
+                RemainingBudget::Known(Some(0)) => format!(
+                    "{total} in total. The limit is used up, so the network rejects actions signed with this key.",
+                    total = format_credits_as_dash(total_budget)
+                ),
+                RemainingBudget::Known(Some(remaining)) => format!(
+                    "{remaining} left of {total}.",
+                    remaining = format_credits_as_dash(remaining),
+                    total = format_credits_as_dash(total_budget)
+                ),
+                RemainingBudget::NotRequested | RemainingBudget::Loading => format!(
+                    "{total} in total. Checking how much is left.",
+                    total = format_credits_as_dash(total_budget)
+                ),
+                RemainingBudget::Known(None) | RemainingBudget::Unavailable => format!(
+                    "{total} in total. How much is left could not be read. Refresh to try again.",
+                    total = format_credits_as_dash(total_budget)
+                ),
+            };
+            let color = if self.remaining_budget == RemainingBudget::Known(Some(0)) {
+                DashColors::error_color(dark_mode)
+            } else {
+                text_primary
+            };
+            ui.label(RichText::new(text).color(color));
+            ui.end_row();
+        }
+
+        if let Some(expires_at) = key.expires_at() {
+            ui.label(RichText::new("Expires:").strong().color(text_primary));
+            let date = format_timestamp_ms_local(expires_at);
+            if key.is_expired_at(now_ms()) {
+                ui.label(
+                    RichText::new(format!(
+                        "Expired on {date}. The network rejects actions signed with this key."
+                    ))
+                    .color(DashColors::error_color(dark_mode)),
+                );
+            } else {
+                ui.label(RichText::new(date).color(text_primary));
+            }
+            ui.end_row();
+        }
+    }
+
+    /// The Raise Limits section for a key with a spending limit or an expiry:
+    /// add to the limit and/or extend the expiry. Shown only when the network
+    /// supports key limits and this device holds a key allowed to sign the
+    /// change; otherwise it says which of the two is missing.
+    fn render_raise_limits(&mut self, ui: &mut egui::Ui, text_primary: Color32) {
+        let key = self.limits_key().clone();
+        if !key.has_limits() {
+            return;
+        }
+        let dark_mode = ui.style().visuals.dark_mode;
+
+        ui.add_space(10.0);
+        ui.separator();
+        ui.add_space(10.0);
+        ui.heading(RichText::new("Raise Limits").color(text_primary));
+        ui.add_space(6.0);
+
+        if !FeatureGate::IdentityKeyLimits.is_available(&self.app_context) {
+            ui.label(
+                RichText::new(
+                    "Raising key limits needs a network that supports them. Connect to such a network to raise this key's limits.",
+                )
+                .color(DashColors::text_secondary(dark_mode)),
+            );
+            return;
+        }
+        if key.disabled_at().is_some() {
+            ui.label(
+                RichText::new("This key is disabled, so its limits cannot be raised.")
+                    .color(DashColors::text_secondary(dark_mode)),
+            );
+            return;
+        }
+        let signer_id =
+            key_limits_update_signer(self.identity.identity.public_keys().values(), |candidate| {
+                self.identity.can_sign_with(candidate)
+            })
+            .map(|signer| signer.id());
+        let Some(signer_id) = signer_id else {
+            ui.label(
+                RichText::new(
+                    "Raising key limits needs this identity's master key, or a critical key without limits, on this device. Import one of them to raise this key's limits.",
+                )
+                .color(DashColors::text_secondary(dark_mode)),
+            );
+            return;
+        };
+
+        egui::Grid::new("raise_key_limits_grid")
+            .num_columns(2)
+            .spacing([10.0, 10.0])
+            .show(ui, |ui| {
+                if key.total_budget().is_some() {
+                    ui.label(
+                        RichText::new("Add to spending limit:")
+                            .strong()
+                            .color(text_primary),
+                    );
+                    let input = self.raise_budget_input.get_or_insert_with(|| {
+                        AmountInput::new(Amount::new_dash(0.0)).with_hint_text("0.1")
+                    });
+                    let response = input.show(ui);
+                    response.inner.update(&mut self.raise_budget);
+                    ui.end_row();
+                }
+                if key.expires_at().is_some() {
+                    ui.label(
+                        RichText::new("Extend expiry by (days):")
+                            .strong()
+                            .color(text_primary),
+                    );
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.raise_days_input)
+                            .hint_text("30")
+                            .desired_width(80.0),
+                    )
+                    .on_hover_text(
+                        "Counted from the current expiry, or from today if the key has already expired.",
+                    );
+                    ui.end_row();
+                }
+            });
+
+        if let Some(error) = &self.raise_form_error {
+            ui.label(RichText::new(error).color(DashColors::error_color(dark_mode)));
+        }
+
+        ui.add_space(6.0);
+        let clicked = ui
+            .add_enabled(!self.raise_in_flight, egui::Button::new("Raise Limits"))
+            .clicked();
+        if clicked {
+            match self.quoted_raise(&key, signer_id) {
+                Ok(raise) => {
+                    self.raise_form_error = None;
+                    self.raise_confirmation = Some(ConfirmationDialog::new(
+                        "Raise key limits".to_string(),
+                        raise_confirmation_text(&raise),
+                    ));
+                    self.quoted_raise = Some(raise);
+                }
+                Err(error) => self.raise_form_error = Some(error.to_string()),
+            }
+        }
+
+        let response = self
+            .raise_confirmation
+            .as_mut()
+            .and_then(|dialog| dialog.show(ui).inner.dialog_response);
+        match response {
+            Some(ConfirmationStatus::Confirmed) => {
+                self.raise_confirmation = None;
+                if let Some(raise) = self.quoted_raise.take() {
+                    self.raise_in_flight = true;
+                    self.pending_raise = Some(raise);
+                    MessageBanner::set_global(
+                        ui.ctx(),
+                        "Raising the key's limits. Please wait.",
+                        MessageType::Info,
+                    );
+                }
+            }
+            Some(ConfirmationStatus::Canceled) => {
+                self.raise_confirmation = None;
+                self.quoted_raise = None;
+            }
+            None => {}
+        }
+    }
+
+    /// The Raise Limits form as a quoted raise of `key`, signed by
+    /// `signer_id`, checked so a raise Platform would refuse never leaves
+    /// the screen.
+    fn quoted_raise(
+        &self,
+        key: &IdentityPublicKey,
+        signer_id: KeyID,
+    ) -> Result<KeyLimitsRaise, KeyLimitsError> {
+        let add_budget = self
+            .raise_budget
+            .as_ref()
+            .map(Amount::value)
+            .filter(|credits| *credits > 0);
+        let extend_days = match self.raise_days_input.trim() {
+            "" => None,
+            days => Some(parse_key_validity_days(days)?),
+        };
+        KeyLimitsRaise::quote(key, add_budget, extend_days, signer_id, now_ms())
     }
 
     /// The store this key is *published* under, for naming it.
@@ -1727,9 +2064,56 @@ fn validate_identity_password_form(password: String, confirmation: &str) -> Resu
     Ok(password)
 }
 
+/// The confirmation of a limits raise, in complete sentences: the resulting
+/// absolute limits and the key that signs the change.
+fn raise_confirmation_text(raise: &KeyLimitsRaise) -> String {
+    let mut sentences = vec![format!(
+        "You are about to raise the limits of key {key_id}.",
+        key_id = raise.key_id
+    )];
+    if let (Some(from), Some(to)) = (raise.seen_total_budget, raise.total_budget) {
+        sentences.push(format!(
+            "Its total spending limit goes from {from} to {to}.",
+            from = format_credits_as_dash(from),
+            to = format_credits_as_dash(to)
+        ));
+    }
+    if let (Some(from), Some(to)) = (raise.seen_expires_at, raise.expires_at) {
+        sentences.push(format!(
+            "Its expiry moves from {from} to {to}.",
+            from = format_timestamp_ms_local(from),
+            to = format_timestamp_ms_local(to)
+        ));
+    }
+    sentences.push(format!(
+        "The change is signed with key {signer_id}, and a network fee applies. Do you want to continue?",
+        signer_id = raise.signing_key_id
+    ));
+    sentences.join(" ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The confirmation names the resulting absolute limits and the signer,
+    /// so the user consents to exactly what is signed.
+    #[test]
+    fn a_raise_confirmation_shows_the_resulting_limits_and_the_signer() {
+        let raise = KeyLimitsRaise {
+            key_id: 4,
+            seen_total_budget: Some(100_000_000_000),
+            seen_expires_at: None,
+            total_budget: Some(250_000_000_000),
+            expires_at: None,
+            signing_key_id: 0,
+        };
+        let text = raise_confirmation_text(&raise);
+        assert!(text.contains("key 4"), "{text}");
+        assert!(text.contains("goes from 1 DASH to 2.5 DASH"), "{text}");
+        assert!(text.contains("signed with key 0"), "{text}");
+        assert!(!text.contains("expiry"), "no expiry change, got: {text}");
+    }
     use crate::app::TaskResult;
     use crate::app_dir::ensure_env_file;
     use crate::context::connection_status::ConnectionStatus;

@@ -5,6 +5,7 @@ use crate::context::AppContext;
 use crate::model::dashpay::{
     AcceptedAccounts, ContactInfoField, ContactInfoUpdate, UnreadableContactInfoPolicy,
 };
+use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
 use crate::model::qualified_identity::QualifiedIdentity;
 use aes_gcm::aes::Aes256;
 use aes_gcm::aes::cipher::{BlockCipherEncrypt, KeyInit};
@@ -17,14 +18,14 @@ use dash_sdk::dpp::document::{
 };
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
+use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::{Bytes32, Value};
 use dash_sdk::drive::query::{OrderClause, WhereClause, WhereOperator};
 use dash_sdk::platform::documents::transitions::DocumentCreateTransitionBuilder;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::platform::{Document, DocumentQuery, FetchMany, Identifier};
 use dash_sdk::query_types::Documents;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::Arc;
 use zeroize::Zeroizing;
@@ -490,7 +491,7 @@ async fn lookup_contact_info(
     identity: &QualifiedIdentity,
     contact_user_id: Identifier,
 ) -> Result<ContactInfoLookup, TaskError> {
-    let dashpay_contract = app_context.dashpay_contract.clone();
+    let dashpay_contract = app_context.dashpay_contract();
     let identity_id = identity.identity.id();
     let mut query = DocumentQuery::new(dashpay_contract, "contactInfo").map_err(|e| {
         DashPayError::QueryCreation {
@@ -591,7 +592,7 @@ pub async fn create_or_update_contact_info(
     contact_user_id: Identifier,
     update: ContactInfoUpdate,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
-    let dashpay_contract = app_context.dashpay_contract.clone();
+    let dashpay_contract = app_context.dashpay_contract();
     let identity_id = identity.identity.id();
     let lookup = lookup_contact_info(app_context, sdk, &identity, contact_user_id).await?;
     let (found_existing_doc, derivation_index, enc_user_id_key, private_data_key) =
@@ -637,17 +638,18 @@ pub async fn create_or_update_contact_info(
     // Get signing key — accept any key type (BLS, ECDSA, EDDSA) since
     // Platform accepts all for document state transitions.
     let signing_key = identity
-        .identity
-        .get_first_public_key_matching(
+        .signing_key_now(KeyRequirements::new(
             Purpose::AUTHENTICATION,
-            HashSet::from([
+            &[
                 SecurityLevel::CRITICAL,
                 SecurityLevel::HIGH,
                 SecurityLevel::MEDIUM,
-            ]),
-            KeyType::all_key_types().into(),
-            false,
-        )
+            ],
+            SigningScope::Document {
+                contract_id: dashpay_contract.id(),
+                document_type_name: "contactInfo",
+            },
+        ))
         .ok_or_else(|| TaskError::DashPay(DashPayError::MissingAuthenticationKey))?;
 
     // Create document properties

@@ -11,6 +11,7 @@ use crate::app::AppAction;
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
 use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
 use crate::ui::components::component_trait::Component;
@@ -33,6 +34,7 @@ use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::tokens::validate_signing_key;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dpp::data_contract::GroupContractPosition;
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::TokenConfiguration;
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
 use dash_sdk::dpp::data_contract::group::Group;
@@ -174,13 +176,13 @@ impl<A: TokenAction> TokenActionScreen<A> {
     pub fn new(identity_token_info: IdentityTokenInfo, app_context: &Arc<AppContext>) -> Self {
         let possible_key = identity_token_info
             .identity
-            .identity
-            .get_first_public_key_matching(
+            .signing_key_now(KeyRequirements::new(
                 Purpose::AUTHENTICATION,
-                HashSet::from([SecurityLevel::CRITICAL]),
-                KeyType::all_key_types().into(),
-                false,
-            )
+                &[SecurityLevel::CRITICAL],
+                SigningScope::ContractWide {
+                    contract_id: identity_token_info.data_contract.contract.id(),
+                },
+            ))
             .cloned();
 
         let takers = A::authorized_takers(&identity_token_info.token_config);
@@ -533,6 +535,9 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
                     &self.common.identity_token_info.identity,
                     &mut self.common.selected_key,
                     TransactionType::TokenAction,
+                    SigningScope::ContractWide {
+                        contract_id: self.common.identity_token_info.data_contract.contract.id(),
+                    },
                 );
                 ui.add_space(10.0);
                 ui.separator();

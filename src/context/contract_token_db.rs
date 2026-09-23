@@ -69,6 +69,26 @@ fn untracked_token_prefix(token_id: &Identifier) -> String {
     )
 }
 
+/// Key prefix for the once-per-identity claim hint of one token, filed under
+/// the claiming identity's [`DetScope::Identity`] scope (so it goes with the
+/// identity). The full key is `det:token_once_claimed:v1:<token_id_base58>`;
+/// the value is the time of the claim in milliseconds (the block time of the
+/// proved claim document, or the local clock when it carries none).
+///
+/// An advisory hint, not an authority: Platform offers no proved query for
+/// "has this identity claimed", so DET records only the claims it saw succeed
+/// (proof-backed), never a node's unproven "already claimed" refusal. The UI
+/// warns with it but still lets the user claim, and the user can dismiss it.
+const ONCE_PER_IDENTITY_CLAIM_PREFIX: &str = "det:token_once_claimed:v1:";
+
+fn once_per_identity_claim_key(token_id: &Identifier) -> String {
+    format!(
+        "{}{}",
+        ONCE_PER_IDENTITY_CLAIM_PREFIX,
+        token_id.to_string(Encoding::Base58)
+    )
+}
+
 fn contract_key(contract_id: &Identifier) -> String {
     format!(
         "{}{}",
@@ -130,11 +150,11 @@ impl AppContext {
 
         // Pin the system contracts at the head of the list, in display order.
         let system_contracts = [
-            (&self.dpns_contract, "dpns"),
-            (&self.token_history_contract, "token_history"),
-            (&self.withdraws_contract, "withdrawals"),
-            (&self.keyword_search_contract, "keyword_search"),
-            (&self.dashpay_contract, "dashpay"),
+            (self.dpns_contract(), "dpns"),
+            (self.token_history_contract(), "token_history"),
+            (self.withdraws_contract(), "withdrawals"),
+            (self.keyword_search_contract(), "keyword_search"),
+            (self.dashpay_contract(), "dashpay"),
         ];
         for (index, (contract, alias)) in system_contracts.into_iter().enumerate() {
             contracts.insert(
@@ -423,6 +443,37 @@ impl AppContext {
             !(*t == pair.token_id && *i == pair.identity_id)
         })?;
         Ok(())
+    }
+
+    /// When `identity_id` took its once-per-identity claim of `token_id`, as
+    /// far as this device knows (see [`ONCE_PER_IDENTITY_CLAIM_PREFIX`]).
+    pub fn once_per_identity_claimed_at(
+        &self,
+        token_id: &Identifier,
+        identity_id: &Identifier,
+    ) -> std::result::Result<Option<u64>, TaskError> {
+        once_per_identity_claimed_at_in(&self.det_kv()?, token_id, identity_id)
+    }
+
+    /// Remember that `identity_id` took its once-per-identity claim of
+    /// `token_id` at `claimed_at_ms`. Idempotent.
+    pub fn record_once_per_identity_claim(
+        &self,
+        token_id: &Identifier,
+        identity_id: &Identifier,
+        claimed_at_ms: u64,
+    ) -> std::result::Result<(), TaskError> {
+        record_once_per_identity_claim_in(&self.det_kv()?, token_id, identity_id, claimed_at_ms)
+    }
+
+    /// Forget the once-per-identity claim hint of `identity_id` for
+    /// `token_id` (the user dismissed it). Idempotent.
+    pub fn clear_once_per_identity_claim(
+        &self,
+        token_id: &Identifier,
+        identity_id: &Identifier,
+    ) -> std::result::Result<(), TaskError> {
+        clear_once_per_identity_claim_in(&self.det_kv()?, token_id, identity_id)
     }
 
     /// Every identity-token pair the user stopped tracking.
@@ -759,6 +810,47 @@ fn parse_untracked_key(key: &str) -> Option<IdentityTokenIdentifier> {
 
 /// Dismiss one pair. A single upsert of that pair's marker — idempotent, and
 /// independent of every other pair's marker.
+fn once_per_identity_claimed_at_in(
+    kv: &DetKv,
+    token_id: &Identifier,
+    identity_id: &Identifier,
+) -> std::result::Result<Option<u64>, TaskError> {
+    let identity = identity_id.to_buffer();
+    kv.get(
+        DetScope::Identity(&identity),
+        &once_per_identity_claim_key(token_id),
+    )
+    .map_err(token_err)
+}
+
+fn record_once_per_identity_claim_in(
+    kv: &DetKv,
+    token_id: &Identifier,
+    identity_id: &Identifier,
+    claimed_at_ms: u64,
+) -> std::result::Result<(), TaskError> {
+    let identity = identity_id.to_buffer();
+    kv.put(
+        DetScope::Identity(&identity),
+        &once_per_identity_claim_key(token_id),
+        &claimed_at_ms,
+    )
+    .map_err(token_err)
+}
+
+fn clear_once_per_identity_claim_in(
+    kv: &DetKv,
+    token_id: &Identifier,
+    identity_id: &Identifier,
+) -> std::result::Result<(), TaskError> {
+    let identity = identity_id.to_buffer();
+    kv.delete(
+        DetScope::Identity(&identity),
+        &once_per_identity_claim_key(token_id),
+    )
+    .map_err(token_err)
+}
+
 fn mark_untracked_in(
     kv: &DetKv,
     pair: IdentityTokenIdentifier,
@@ -854,6 +946,7 @@ where
 mod tests {
     use super::*;
     use crate::wallet_backend::kv_test_support::{InMemoryKv, StallingReadKv};
+    use dash_sdk::dpp::version::PlatformVersion;
     use platform_wallet_storage::{KvError, KvStore, ObjectId};
     use std::sync::{Arc, Mutex};
 
@@ -863,6 +956,63 @@ mod tests {
 
     fn ident(b: u8) -> Identifier {
         Identifier::from([b; 32])
+    }
+
+    /// The once-per-identity claim hint is per (identity, token) and holds
+    /// the claim time.
+    #[test]
+    fn once_per_identity_claim_hint_is_per_identity_and_token() {
+        let kv = empty_kv();
+        let (token, other_token) = (ident(1), ident(2));
+        let (identity, other_identity) = (ident(3), ident(4));
+
+        assert_eq!(
+            once_per_identity_claimed_at_in(&kv, &token, &identity).unwrap(),
+            None
+        );
+        record_once_per_identity_claim_in(&kv, &token, &identity, 42).unwrap();
+        clear_once_per_identity_claim_in(&kv, &token, &identity).unwrap();
+        assert_eq!(
+            once_per_identity_claimed_at_in(&kv, &token, &identity).unwrap(),
+            None,
+            "a dismissed hint is gone"
+        );
+        record_once_per_identity_claim_in(&kv, &token, &identity, 42).unwrap();
+        assert_eq!(
+            once_per_identity_claimed_at_in(&kv, &token, &identity).unwrap(),
+            Some(42)
+        );
+        assert_eq!(
+            once_per_identity_claimed_at_in(&kv, &other_token, &identity).unwrap(),
+            None
+        );
+        assert_eq!(
+            once_per_identity_claimed_at_in(&kv, &token, &other_identity).unwrap(),
+            None
+        );
+    }
+
+    /// Stored token configurations are bincode blobs; version 0 distribution
+    /// rules (every token before protocol version 14) keep decoding as version
+    /// 0, and version 1 rules (a once-per-identity distribution) round-trip.
+    #[test]
+    fn stored_token_configs_with_either_rules_version_round_trip() {
+        use crate::model::token::distribution_rules_with_once_per_identity;
+        use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+        use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::TokenDistributionRules;
+
+        let v0_config = TokenConfigurationV0::default_most_restrictive();
+        let TokenDistributionRules::V0(rules) = v0_config.distribution_rules.clone() else {
+            panic!("the default rules are version 0");
+        };
+        let mut v1_config = v0_config.clone();
+        v1_config.distribution_rules = distribution_rules_with_once_per_identity(rules, Some(7));
+
+        for config in [v0_config, v1_config] {
+            let config = TokenConfiguration::V0(config);
+            let bytes = bincode::encode_to_vec(&config, config::standard()).unwrap();
+            assert_eq!(decode_token_config(&bytes).unwrap(), config);
+        }
     }
 
     fn stored_token(alias: &str, contract: u8, position: u16) -> StoredToken {
@@ -924,6 +1074,159 @@ mod tests {
         let suffix = key.strip_prefix(TOKEN_KEY_PREFIX).unwrap();
         let decoded = Identifier::from_string(suffix, Encoding::Base58).unwrap();
         assert_eq!(decoded, token);
+    }
+
+    /// A user contract as DET builds one at `platform_version`: a document
+    /// type with a unique index (charging `action_fees`, if given), and a token.
+    fn user_contract_at(
+        platform_version: &PlatformVersion,
+        action_fees: Option<dash_sdk::dpp::platform_value::Value>,
+    ) -> DataContract {
+        use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+        use dash_sdk::dpp::data_contract::config::DataContractConfig;
+        use dash_sdk::dpp::data_contract::document_type::DocumentType;
+        use dash_sdk::dpp::data_contract::v1::DataContractV1;
+        use dash_sdk::dpp::platform_value::platform_value;
+        use std::collections::BTreeMap;
+
+        let id = ident(8);
+        let config = DataContractConfig::default_for_version(platform_version).expect("config");
+        let mut schema = platform_value!({
+            "type": "object",
+            "properties": {"name": {"type": "string", "position": 0, "maxLength": 63_u32}},
+            "required": ["name"],
+            "indices": [{"name": "byName", "properties": [{"name": "asc"}], "unique": true}],
+            "additionalProperties": false,
+        });
+        if let Some(action_fees) = action_fees {
+            schema
+                .insert("actionFees".to_string(), action_fees)
+                .expect("a map schema");
+        }
+        let note = DocumentType::try_from_schema(
+            id,
+            1,
+            config.version(),
+            "note",
+            schema,
+            None,
+            &BTreeMap::new(),
+            &config,
+            true,
+            &mut Vec::new(),
+            platform_version,
+        )
+        .expect("document type");
+        DataContract::V1(DataContractV1 {
+            id,
+            version: 1,
+            owner_id: ident(7),
+            document_types: BTreeMap::from([("note".to_string(), note)]),
+            config,
+            schema_defs: None,
+            groups: BTreeMap::new(),
+            tokens: BTreeMap::from([(
+                0,
+                TokenConfiguration::V0(TokenConfigurationV0::default_most_restrictive()),
+            )]),
+            keywords: vec![],
+            created_at: None,
+            updated_at: None,
+            created_at_block_height: None,
+            updated_at_block_height: None,
+            created_at_epoch: None,
+            updated_at_epoch: None,
+            description: None,
+        })
+    }
+
+    /// The contracts a user may hold locally, encoded as DET encodes them at
+    /// `protocol_version`.
+    fn stored_contracts_at(protocol_version: u32) -> Vec<(DataContract, StoredContract)> {
+        use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
+
+        let pv = PlatformVersion::get(protocol_version).expect("known version");
+        [
+            user_contract_at(pv, None),
+            load_system_data_contract(SystemDataContract::DPNS, pv).expect("dpns"),
+            load_system_data_contract(SystemDataContract::Dashpay, pv).expect("dashpay"),
+            load_system_data_contract(SystemDataContract::TokenHistory, pv).expect("history"),
+        ]
+        .into_iter()
+        .map(|contract| {
+            let stored = StoredContract {
+                contract_bytes: contract
+                    .serialize_to_bytes_with_platform_version(pv)
+                    .expect("encode"),
+                alias: Some("saved".to_string()),
+            };
+            (contract, stored)
+        })
+        .collect()
+    }
+
+    /// Contracts saved while DET built at protocol 12 still load, unchanged,
+    /// once DET builds at the network's 13 or 14.
+    #[test]
+    fn contracts_stored_at_protocol_12_decode_at_13_and_14() {
+        let v12 = PlatformVersion::get(12).expect("v12");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(tmp.path());
+        for version in [13, 14] {
+            crate::context::test_support::set_sdk_protocol_version(&ctx, version);
+            for (original, stored) in stored_contracts_at(12) {
+                let bytes = stored.contract_bytes.clone();
+                let decoded = ctx
+                    .decode_stored_contract(stored)
+                    .unwrap_or_else(|e| panic!("protocol {version}: {e:?}"));
+                assert_eq!(decoded.alias.as_deref(), Some("saved"));
+                assert_eq!(decoded.contract.id(), original.id());
+                assert_eq!(
+                    decoded
+                        .contract
+                        .serialize_to_bytes_with_platform_version(v12)
+                        .expect("re-encode"),
+                    bytes,
+                    "protocol {version}: contract {} lost data",
+                    original.id()
+                );
+            }
+        }
+    }
+
+    /// A contract saved at protocol 14 and read back while DET still builds at
+    /// 13 (after a restart, before the first proven response) decodes without
+    /// error. Protocol 14 features (here `actionFees`) are not parsed at 13,
+    /// but the saved bytes are untouched and decode in full once DET builds at
+    /// 14 again.
+    #[test]
+    fn contracts_stored_at_protocol_14_decode_at_13_and_recover_at_14() {
+        use dash_sdk::dpp::platform_value::platform_value;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(tmp.path());
+        crate::context::test_support::set_sdk_protocol_version(&ctx, 13);
+        for (original, stored) in stored_contracts_at(14) {
+            let decoded = ctx
+                .decode_stored_contract(stored)
+                .unwrap_or_else(|e| panic!("contract {}: {e:?}", original.id()));
+            assert_eq!(decoded.contract, original);
+        }
+
+        let v14 = PlatformVersion::get(14).expect("v14");
+        let charging = user_contract_at(v14, Some(platform_value!({"create": {"owner": 5_u64}})));
+        let stored = || StoredContract {
+            contract_bytes: charging
+                .serialize_to_bytes_with_platform_version(v14)
+                .expect("encode"),
+            alias: None,
+        };
+        let at_13 = ctx.decode_stored_contract(stored()).expect("decodes at 13");
+        assert_eq!(at_13.contract.id(), charging.id());
+
+        crate::context::test_support::set_sdk_protocol_version(&ctx, 14);
+        let at_14 = ctx.decode_stored_contract(stored()).expect("decodes at 14");
+        assert_eq!(at_14.contract, charging);
     }
 
     #[test]

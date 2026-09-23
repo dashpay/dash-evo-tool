@@ -4,6 +4,7 @@ use crate::backend_task::FeeResult;
 use crate::backend_task::contract::ContractTask;
 use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
@@ -24,13 +25,12 @@ use dash_sdk::dpp::data_contract::conversion::json::DataContractJsonConversionMe
 use dash_sdk::dpp::data_contract::serialized_version::DataContractInSerializationFormat;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
+use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::version::TryFromPlatformVersioned;
 use dash_sdk::platform::{DataContract, IdentityPublicKey};
 use eframe::egui::{self, Color32, Frame, Margin, TextEdit};
 use egui::{RichText, ScrollArea, Ui};
-use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
 #[derive(PartialEq)]
@@ -109,13 +109,11 @@ impl UpdateDataContractScreen {
 
         let selected_key = selected_qualified_identity.as_ref().and_then(|identity| {
             identity
-                .identity
-                .get_first_public_key_matching(
+                .signing_key_now(KeyRequirements::new(
                     Purpose::AUTHENTICATION,
-                    HashSet::from([SecurityLevel::CRITICAL]),
-                    KeyType::all_key_types().into(),
-                    false,
-                )
+                    &[SecurityLevel::CRITICAL],
+                    SigningScope::NonBatch,
+                ))
                 .cloned()
         });
 
@@ -493,13 +491,11 @@ impl ScreenLike for UpdateDataContractScreen {
                 if let Some(identity) = &self.selected_qualified_identity {
                     // Auto-select a suitable key for contract updates
                     self.selected_key = identity
-                        .identity
-                        .get_first_public_key_matching(
+                        .signing_key_now(KeyRequirements::new(
                             Purpose::AUTHENTICATION,
-                            HashSet::from([SecurityLevel::CRITICAL]),
-                            KeyType::all_key_types().into(),
-                            false,
-                        )
+                            &[SecurityLevel::CRITICAL],
+                            SigningScope::NonBatch,
+                        ))
                         .cloned();
 
                     // Update wallet
@@ -528,6 +524,7 @@ impl ScreenLike for UpdateDataContractScreen {
                         identity,
                         &mut self.selected_key,
                         TransactionType::UpdateContract,
+                        SigningScope::NonBatch,
                     );
                 }
             }

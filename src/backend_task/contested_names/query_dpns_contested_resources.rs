@@ -19,7 +19,7 @@ impl AppContext {
         sdk: &Sdk,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<(), TaskError> {
-        let data_contract = self.dpns_contract.as_ref();
+        let data_contract = self.dpns_contract();
         let document_type = data_contract
             .document_type_for_name("domain")
             .map_err(|_| TaskError::ContractSchemaMismatch {

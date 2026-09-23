@@ -28,18 +28,19 @@ fn resolve_data_contract(
     app_ctx: &AppContext,
     data_contract_id: &Identifier,
 ) -> Result<Option<Arc<DataContract>>, ContextProviderError> {
-    let cached: [&Arc<DataContract>; SYSTEM_CONTRACT_COUNT] = [
-        &app_ctx.dpns_contract,
-        &app_ctx.dashpay_contract,
-        &app_ctx.token_history_contract,
-        &app_ctx.withdraws_contract,
-        &app_ctx.keyword_search_contract,
+    let cached: [Arc<DataContract>; SYSTEM_CONTRACT_COUNT] = [
+        app_ctx.dpns_contract(),
+        app_ctx.dashpay_contract(),
+        app_ctx.token_history_contract(),
+        app_ctx.withdraws_contract(),
+        app_ctx.keyword_search_contract(),
     ];
 
-    for contract in &cached {
-        if data_contract_id == &contract.id() {
-            return Ok(Some(Arc::clone(contract)));
-        }
+    if let Some(contract) = cached
+        .into_iter()
+        .find(|contract| data_contract_id == &contract.id())
+    {
+        return Ok(Some(contract));
     }
 
     // K/V fallback for user-added / non-system contracts

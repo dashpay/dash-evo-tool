@@ -12,9 +12,12 @@ use dash_sdk::dashcore_rpc;
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::consensus::ConsensusError;
 use dash_sdk::dpp::consensus::basic::basic_error::BasicError;
+use dash_sdk::dpp::consensus::signature::SignatureError;
 use dash_sdk::dpp::consensus::state::state_error::StateError;
 use dash_sdk::dpp::dashcore;
 use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::fee::Credits;
+use dash_sdk::dpp::identity::KeyID;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
 use std::fmt;
@@ -37,6 +40,108 @@ impl DapiAddressAvailability {
 
     fn all_configured_addresses_are_exhausted(self) -> bool {
         self.configured_total != 0 && self.live_count == 0
+    }
+}
+
+/// The token operation a wallet-runtime token failure belongs to.
+///
+/// Upstream `PlatformWalletError::TokenOperationFailed` names the operation with
+/// a fixed `&'static str` label (a discriminator, not a message); this is its
+/// typed form, so each failure gets a complete, translatable sentence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenOperationKind {
+    Claim,
+    Mint,
+    Burn,
+    Transfer,
+    Freeze,
+    Unfreeze,
+    DestroyFrozenFunds,
+    Pause,
+    Resume,
+    SetPrice,
+    Purchase,
+    ConfigUpdate,
+    /// A label this build does not know (a newer upstream operation). The
+    /// raw label is kept for `Debug` and logs, never shown to the user.
+    Unrecognized {
+        label: &'static str,
+    },
+}
+
+impl TokenOperationKind {
+    /// The kind for the operation label upstream puts in
+    /// `PlatformWalletError::TokenOperationFailed::operation`.
+    ///
+    /// Upstream exposes the operation only as this `&'static str` (no typed
+    /// enum), so every label it uses is matched here; an unknown one is
+    /// logged at warn and kept as [`Self::Unrecognized`], never silently
+    /// folded into another operation.
+    pub fn from_upstream_label(label: &'static str) -> Self {
+        match label {
+            "claim" => Self::Claim,
+            "mint" => Self::Mint,
+            "burn" => Self::Burn,
+            "transfer" => Self::Transfer,
+            "freeze" => Self::Freeze,
+            "unfreeze" => Self::Unfreeze,
+            "destroy frozen funds" => Self::DestroyFrozenFunds,
+            "pause" => Self::Pause,
+            "resume" => Self::Resume,
+            "set price" => Self::SetPrice,
+            "purchase" => Self::Purchase,
+            "config update" => Self::ConfigUpdate,
+            label => {
+                tracing::warn!(
+                    label,
+                    "Unrecognized upstream token operation label; showing a generic message"
+                );
+                Self::Unrecognized { label }
+            }
+        }
+    }
+
+    /// The user-facing sentence for a failure of this operation.
+    fn failure_message(self) -> &'static str {
+        match self {
+            Self::Claim => "The token claim did not complete. Check your connection and try again.",
+            Self::Mint => {
+                "Minting the tokens did not complete. Check your connection and try again."
+            }
+            Self::Burn => {
+                "Burning the tokens did not complete. Check your connection and try again."
+            }
+            Self::Transfer => {
+                "The token transfer did not complete. Check your connection and try again."
+            }
+            Self::Freeze => {
+                "Freezing the token account did not complete. Check your connection and try again."
+            }
+            Self::Unfreeze => {
+                "Unfreezing the token account did not complete. Check your connection and try again."
+            }
+            Self::DestroyFrozenFunds => {
+                "Destroying the frozen tokens did not complete. Check your connection and try again."
+            }
+            Self::Pause => {
+                "Pausing the token did not complete. Check your connection and try again."
+            }
+            Self::Resume => {
+                "Resuming the token did not complete. Check your connection and try again."
+            }
+            Self::SetPrice => {
+                "Setting the token price did not complete. Check your connection and try again."
+            }
+            Self::Purchase => {
+                "The token purchase did not complete. Check your connection and try again."
+            }
+            Self::ConfigUpdate => {
+                "Updating the token settings did not complete. Check your connection and try again."
+            }
+            Self::Unrecognized { .. } => {
+                "The token operation did not complete. Check your connection and try again."
+            }
+        }
     }
 }
 
@@ -1892,11 +1997,439 @@ pub enum TaskError {
     },
 
     // ──────────────────────────────────────────────────────────────────────────
+    // Signing key limits and contract bounds (protocol version 14)
+    // ──────────────────────────────────────────────────────────────────────────
+    /// The signing key's expiry time has passed.
+    #[error(
+        "The key used to sign this action expired and can no longer sign. Choose a different key, or add a new key to this identity, then try again."
+    )]
+    SigningKeyExpired {
+        key_id: KeyID,
+        /// When the key expired, in milliseconds since the Unix epoch.
+        expired_at_ms: u64,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// The signing key has spent its whole budget.
+    #[error(
+        "The key used to sign this action has used up its spending limit and can no longer sign. Raise the key's spending limit or choose a different key, then try again."
+    )]
+    SigningKeyBudgetExhausted {
+        key_id: KeyID,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// The action costs more than the signing key's remaining budget.
+    #[error(
+        "This action costs {required_dash}, but the key used to sign it has only {remaining_dash} of its spending limit left. Raise the key's spending limit or choose a different key, then try again.",
+        required_dash = format_credits_as_dash(*.required_budget),
+        remaining_dash = format_credits_as_dash(*.remaining_budget)
+    )]
+    SigningKeyBudgetExceeded {
+        key_id: KeyID,
+        remaining_budget: Credits,
+        required_budget: Credits,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// A contract-bound key signed something outside its contract bounds.
+    #[error(
+        "The key used to sign this action is limited to other contracts or documents, so it cannot sign this one. Choose a different key, then try again."
+    )]
+    SigningKeyOutOfContractBounds {
+        key_id: KeyID,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// A contract-bound key signed an action that is not a document or token
+    /// operation.
+    #[error(
+        "The key used to sign this action is limited to one contract, so it cannot sign this kind of action. Choose a key that is not limited to a contract, then try again."
+    )]
+    SigningKeyContractBoundForNonBatch {
+        key_id: KeyID,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// Key limits were requested that do not pass validation.
+    #[error(transparent)]
+    InvalidKeyLimits {
+        #[from]
+        source: crate::model::identity_key_limits::KeyLimitsError,
+    },
+
+    /// An identity this device holds is not on the network (e.g. it was
+    /// never registered, or the network was reset).
+    #[error(
+        "This identity could not be found on the network. Refresh the identity, then try again."
+    )]
+    IdentityMissingOnNetwork { identity_id: Identifier },
+
+    /// The key to change is not among the identity's keys on the network.
+    #[error(
+        "This key is no longer part of the identity on the network. Refresh the identity to see its current keys."
+    )]
+    IdentityKeyNotFound { key_id: KeyID },
+
+    /// Key limits were requested on a network whose protocol version does not
+    /// support them yet.
+    #[error(
+        "This network does not support spending limits or expiry for keys yet. Add the key without limits, or try again after the network upgrades."
+    )]
+    KeyLimitsNotSupported,
+
+    /// Remaining key budgets were requested from a network whose protocol
+    /// version does not track them yet.
+    #[error(
+        "This network does not track key spending limits yet. Try again after the network upgrades."
+    )]
+    KeyRemainingBudgetsNotSupported,
+
+    /// An authentication key bound to a contract was requested on a network
+    /// that does not accept one yet.
+    #[error(
+        "This network does not support limiting an authentication key to one contract yet. Add the key without contract bounds, or try again after the network upgrades."
+    )]
+    ContractBoundAuthenticationKeysNotSupported,
+
+    /// No key this device holds may sign a key limits update: that takes a
+    /// MASTER key, or a CRITICAL authentication key with no limits and no
+    /// contract bounds.
+    #[error(
+        "Changing key limits needs this identity's master key, or a critical key without limits. Import one of them on this device, then try again."
+    )]
+    NoKeyLimitsSigningKey,
+
+    /// Platform refused a key whose expiry is not in the future.
+    #[error(
+        "The key's expiry is already in the past, so the network refused the change. Choose a later expiry, then try again."
+    )]
+    KeyExpiryInPast {
+        key_id: KeyID,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// Platform refused a limits update that does not raise the stored limit,
+    /// typically because the key changed since it was loaded.
+    #[error(
+        "The key's limits have changed since they were loaded, so the new value would not raise them. Refresh the identity, then try again."
+    )]
+    KeyLimitNotRaised {
+        key_id: KeyID,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// Platform refused raising a limit the key does not have.
+    #[error(
+        "This key does not have that limit, and a limit can only be raised, not added. Refresh the identity to see the key's current limits."
+    )]
+    KeyLimitNotSet {
+        key_id: KeyID,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// A key with limits was used to sign a key limits update.
+    #[error(
+        "A key with its own spending limit or expiry cannot change key limits. Use the identity's master key instead, then try again."
+    )]
+    KeyLimitsSignerHasLimits {
+        key_id: KeyID,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// Platform refused limits on a key that may not carry them, a zero
+    /// budget, or a limits update that changes nothing.
+    #[error(
+        "The network refused these key limits. Only authentication keys below the master level can have them, and a spending limit must be above zero. Adjust the limits, then try again."
+    )]
+    KeyLimitsRefused {
+        key_id: KeyID,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// The key to change is disabled.
+    #[error("This key is disabled, so it cannot be used or changed. Choose a different key.")]
+    IdentityKeyDisabled {
+        key_id: KeyID,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Document action fees, moderation and gas sponsorship (protocol version 14)
+    // ──────────────────────────────────────────────────────────────────────────
+    /// A document action's fee agreement is missing or names another fee
+    /// than the document type declares; refused before anything is signed.
+    #[error(transparent)]
+    ActionFeeAgreement {
+        #[from]
+        source: crate::model::fee_estimation::ActionFeeAgreementError,
+    },
+
+    /// The document type charges an action fee and the transition carried no
+    /// agreement to it.
+    #[error(
+        "This contract charges a fee for this action, and the request did not include your agreement to it. Try again and confirm the contract fee when asked."
+    )]
+    DocumentActionFeeNotAgreed {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// The fee the transition agreed to differs from the one the document
+    /// type declares, typically because the contract changed meanwhile.
+    #[error(
+        "The contract fee for this action is not the one you agreed to, because the contract changed. Reload the contract to see its current fee, then try again."
+    )]
+    DocumentActionFeeChanged {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// Network fees rose past the increase the fee agreement tolerates.
+    /// Reported only after a proved epoch refresh updated the cached fee
+    /// multiplier; the node-reported multipliers here are unproven and are
+    /// never adopted (see `DocumentActionFeeMultiplierNotRefreshed`).
+    #[error(
+        "Network fees rose by more than {increase_tolerance_percent}% since you confirmed the contract fee, so the network refused the action. The contract fee has been updated to the current network fees. Try again to see and confirm the new amount."
+    )]
+    DocumentActionFeeMultiplierRose {
+        known_fee_multiplier_permille: u64,
+        current_fee_multiplier_permille: u64,
+        increase_tolerance_percent: u16,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// A document action was refused because network fees rose, and the
+    /// proved refresh of the current fees failed, so the cached fee
+    /// multiplier (and the next quote) keeps its previous value.
+    #[error(
+        "Network fees rose by more than {increase_tolerance_percent}% since you confirmed the contract fee, so the network refused the action. The current network fees could not be loaded, so the contract fee could not be updated. Check your connection, wait a moment, and then try again."
+    )]
+    DocumentActionFeeMultiplierNotRefreshed {
+        increase_tolerance_percent: u16,
+        /// Why the proved epoch refresh failed.
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// The identity is banned on the contract.
+    #[error(
+        "This identity is banned from contract {} and cannot act on its documents. Use a different identity for this contract.",
+        contract_id.to_string(Encoding::Base58)
+    )]
+    ContractUserBanned {
+        contract_id: Identifier,
+        identity_id: Identifier,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// The identity is suspended on the contract until a given time.
+    #[error(
+        "This identity is suspended from contract {} until {}. Wait until then, or use a different identity for this contract.",
+        contract_id.to_string(Encoding::Base58),
+        format_timestamp_ms_utc(*until_ms)
+    )]
+    ContractUserSuspended {
+        contract_id: Identifier,
+        identity_id: Identifier,
+        /// End of the suspension, in milliseconds since the Unix epoch.
+        until_ms: u64,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// The contract owner sponsoring the gas cannot cover it.
+    #[error(
+        "The contract owner pays the network fee for this action but does not have enough credits for it right now. Try again later."
+    )]
+    GasSponsorInsufficientBalance {
+        sponsor_id: Identifier,
+        balance: Credits,
+        required_balance: Credits,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// The transition asked for a gas payer the document type does not offer.
+    #[error(
+        "This document type does not let that party pay the network fee for this action. Pay the fee as the document type allows, then try again."
+    )]
+    GasFeesPaidByNotAllowed {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// The transitions of one batch named different gas payers.
+    #[error(
+        "The actions in this request name different payers for the network fee. Send them one at a time, then try again."
+    )]
+    InconsistentGasFeesPayerInBatch {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Contract fee pots (protocol version 14)
+    // ──────────────────────────────────────────────────────────────────────────
+    /// The network does not keep contract fee pots yet.
+    #[error(
+        "This network does not support contract fees yet. Try again after the network upgrades."
+    )]
+    ContractFeePotsNotSupported,
+
+    /// The claiming identity has no key allowed to sign a fee claim.
+    #[error(
+        "Claiming contract fees needs a critical authentication key that is not limited to a contract. Add such a key to this identity, then try again."
+    )]
+    NoFeeClaimSigningKey,
+
+    /// The claiming identity is not a recipient of the pot.
+    #[error(
+        "Only the contract owner can claim the owner's fees, and only a moderator can claim the moderators' fees. Choose an identity that receives these fees, then try again."
+    )]
+    ContractFeeClaimNotAllowed {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// The pot was already paid out in the current epoch.
+    #[error(
+        "These fees were already claimed in the current epoch. Fees can be claimed once per epoch, so try again in the next one."
+    )]
+    ContractFeesAlreadyClaimedThisEpoch {
+        epoch_index: u16,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// The pot holds nothing to pay out.
+    #[error("There are no fees to claim yet. Try again after users have paid fees to this contract.")]
+    ContractFeesNothingToClaim {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Contract authoring (protocol version 14)
+    // ──────────────────────────────────────────────────────────────────────────
+    /// A replace changed a property the document type declares immutable.
+    #[error(
+        "One of the fields you changed cannot be changed after the document is created. Keep the original values of its fixed fields, then try again."
+    )]
+    DocumentImmutablePropertyChanged {
+        // Node-supplied and unproven: kept for `Debug` and logs only, never
+        // interpolated into the user-facing message.
+        document_id: Identifier,
+        document_type_name: String,
+        property: String,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// A `deletableDocument` reference points at a document type whose
+    /// documents cannot be deleted.
+    #[error(
+        "This contract refers to documents that can never be deleted as if they could be. Make that reference a permanent document reference, then try again."
+    )]
+    ReferencedDocumentTypeNotDeletable {
+        // Node-supplied and unproven: kept for `Debug` and logs only, never
+        // interpolated into the user-facing message.
+        contract_id: Identifier,
+        document_type_name: String,
+        path: String,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// A document type charges moderators a fee the contract has no
+    /// moderation for.
+    #[error(
+        "A document type in this contract charges a fee for moderators, but the contract has no moderation. Remove the moderators' part of the fee, then try again."
+    )]
+    DocumentActionFeesWithoutModeration {
+        // Node-supplied and unproven: kept for `Debug` and logs only, never
+        // interpolated into the user-facing message.
+        document_type_name: String,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// A once-per-identity distribution amount is zero or above the maximum.
+    #[error(
+        "The amount each identity can claim must be between 1 and {max_amount}. Enter an amount in that range, then try again."
+    )]
+    InvalidOncePerIdentityDistributionAmount {
+        amount: u64,
+        max_amount: u64,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// The pre-programmed distributions of one time add up to more than the
+    /// maximum.
+    #[error(
+        "The scheduled token distributions at {} add up to more than the allowed maximum. Lower those amounts, then try again.",
+        format_timestamp_ms_utc(*timestamp_ms)
+    )]
+    PreProgrammedDistributionOverLimit {
+        token_position: u16,
+        /// The distribution time, in milliseconds since the Unix epoch.
+        timestamp_ms: u64,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    // ──────────────────────────────────────────────────────────────────────────
     // Token query errors
     // ──────────────────────────────────────────────────────────────────────────
     /// Querying token data from the platform failed.
     #[error("Could not retrieve token information from the platform. Please retry.")]
     TokenQueryError { detail: String },
+
+    /// A token with a once-per-identity distribution was requested on a
+    /// network that does not accept one yet.
+    #[error(
+        "This network does not support once-per-identity token distributions yet. Create the token without it, or try again after the network upgrades."
+    )]
+    TokenOncePerIdentityNotSupported,
+
+    /// The identity already took its single claim of a token's
+    /// once-per-identity distribution, so Platform refused another one.
+    #[error(
+        "This identity has already claimed its share of this token. Each identity can claim it only once, so there is nothing more to claim."
+    )]
+    TokenOncePerIdentityAlreadyClaimed {
+        token_id: Identifier,
+        identity_id: Identifier,
+        /// Block time of the claim that was paid, in milliseconds.
+        claimed_at_ms: u64,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// A token operation run by the wallet runtime failed for a reason the
+    /// SDK error classification has no specific variant for. Built by
+    /// [`TaskError::from_token_operation_failure`], which prefers the specific
+    /// variant whenever there is one.
+    #[error("{}", operation.failure_message())]
+    TokenOperationFailed {
+        operation: TokenOperationKind,
+        #[source]
+        source_error: Box<SdkError>,
+    },
 
     /// The token does not have a perpetual distribution configured — no rewards to claim.
     #[error("This token does not have perpetual distribution, so there are no rewards to claim.")]
@@ -3189,6 +3722,35 @@ impl From<dashcore_rpc::Error> for TaskError {
     }
 }
 
+impl TaskError {
+    /// The error for a token operation the wallet runtime reported as failed
+    /// (`PlatformWalletError::TokenOperationFailed`).
+    ///
+    /// The SDK source is classified exactly like any other SDK error, so a
+    /// rejection with a specific meaning (insufficient balance, a claim already
+    /// taken, …) keeps its specific message. Only an otherwise unclassified
+    /// failure becomes [`TaskError::TokenOperationFailed`], which at least names
+    /// the operation.
+    pub fn from_token_operation_failure(operation: &'static str, source: SdkError) -> Self {
+        match TaskError::from(source) {
+            TaskError::SdkError { source_error } => TaskError::TokenOperationFailed {
+                operation: TokenOperationKind::from_upstream_label(operation),
+                source_error,
+            },
+            classified => classified,
+        }
+    }
+}
+
+/// A millisecond Unix timestamp as a UTC date and time for error messages.
+fn format_timestamp_ms_utc(ms: u64) -> String {
+    i64::try_from(ms)
+        .ok()
+        .and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis)
+        .map(|at| at.format("%Y-%m-%d %H:%M UTC").to_string())
+        .unwrap_or_else(|| ms.to_string())
+}
+
 impl From<SdkError> for TaskError {
     fn from(error: SdkError) -> Self {
         if sdk_error_is_masternode_list_not_ready(&error) {
@@ -3382,9 +3944,315 @@ impl From<SdkError> for TaskError {
                             }
                         }))
                     }
+                    ConsensusError::StateError(
+                        StateError::TokenOncePerIdentityDistributionAlreadyClaimedError(e),
+                    ) => {
+                        let (token_id, identity_id, claimed_at_ms) =
+                            (e.token_id(), e.identity_id(), e.claimed_at_ms());
+                        Some(Box::new(move |source_error| {
+                            TaskError::TokenOncePerIdentityAlreadyClaimed {
+                                token_id,
+                                identity_id,
+                                claimed_at_ms,
+                                source_error,
+                            }
+                        }))
+                    }
                     ConsensusError::StateError(StateError::DuplicateUniqueIndexError(_)) => {
                         Some(Box::new(|source_error| TaskError::PlatformEntryConflict {
                             source_error,
+                        }))
+                    }
+                    ConsensusError::SignatureError(SignatureError::PublicKeyExpiredError(e)) => {
+                        let (key_id, expired_at_ms) = (e.public_key_id(), e.expires_at());
+                        Some(Box::new(move |source_error| TaskError::SigningKeyExpired {
+                            key_id,
+                            expired_at_ms,
+                            source_error,
+                        }))
+                    }
+                    ConsensusError::SignatureError(
+                        SignatureError::PublicKeyBudgetExhaustedError(e),
+                    ) => {
+                        let key_id = e.public_key_id();
+                        Some(Box::new(move |source_error| {
+                            TaskError::SigningKeyBudgetExhausted {
+                                key_id,
+                                source_error,
+                            }
+                        }))
+                    }
+                    ConsensusError::StateError(
+                        StateError::IdentityPublicKeyBudgetExceededError(e),
+                    ) => {
+                        let (key_id, remaining_budget, required_budget) =
+                            (e.public_key_id(), e.remaining_budget(), e.required_budget());
+                        Some(Box::new(move |source_error| {
+                            TaskError::SigningKeyBudgetExceeded {
+                                key_id,
+                                remaining_budget,
+                                required_budget,
+                                source_error,
+                            }
+                        }))
+                    }
+                    ConsensusError::SignatureError(
+                        SignatureError::ContractBoundedKeyOutOfBoundsError(e),
+                    ) => {
+                        let key_id = *e.public_key_id();
+                        Some(Box::new(move |source_error| {
+                            TaskError::SigningKeyOutOfContractBounds {
+                                key_id,
+                                source_error,
+                            }
+                        }))
+                    }
+                    ConsensusError::SignatureError(
+                        SignatureError::ContractBoundedKeyNonBatchError(e),
+                    ) => {
+                        let key_id = *e.public_key_id();
+                        Some(Box::new(move |source_error| {
+                            TaskError::SigningKeyContractBoundForNonBatch {
+                                key_id,
+                                source_error,
+                            }
+                        }))
+                    }
+                    ConsensusError::StateError(StateError::ContractFeeClaimNotAllowedError(_)) => {
+                        Some(Box::new(|source_error| {
+                            TaskError::ContractFeeClaimNotAllowed { source_error }
+                        }))
+                    }
+                    ConsensusError::StateError(
+                        StateError::ContractFeesAlreadyClaimedThisEpochError(e),
+                    ) => {
+                        let epoch_index = e.epoch_index();
+                        Some(Box::new(move |source_error| {
+                            TaskError::ContractFeesAlreadyClaimedThisEpoch {
+                                epoch_index,
+                                source_error,
+                            }
+                        }))
+                    }
+                    ConsensusError::StateError(StateError::ContractFeesNothingToClaimError(_)) => {
+                        Some(Box::new(|source_error| {
+                            TaskError::ContractFeesNothingToClaim { source_error }
+                        }))
+                    }
+                    ConsensusError::StateError(
+                        StateError::IdentityPublicKeyAlreadyExpiredError(e),
+                    ) => {
+                        let key_id = e.public_key_id();
+                        Some(Box::new(move |source_error| TaskError::KeyExpiryInPast {
+                            key_id,
+                            source_error,
+                        }))
+                    }
+                    ConsensusError::StateError(
+                        StateError::IdentityPublicKeyLimitNotRaisedError(e),
+                    ) => {
+                        let key_id = e.public_key_id();
+                        Some(Box::new(move |source_error| TaskError::KeyLimitNotRaised {
+                            key_id,
+                            source_error,
+                        }))
+                    }
+                    ConsensusError::StateError(StateError::IdentityPublicKeyLimitNotSetError(
+                        e,
+                    )) => {
+                        let key_id = e.public_key_id();
+                        Some(Box::new(move |source_error| TaskError::KeyLimitNotSet {
+                            key_id,
+                            source_error,
+                        }))
+                    }
+                    ConsensusError::SignatureError(
+                        SignatureError::PublicKeyWithLimitsCannotUpdateKeyLimitsError(e),
+                    ) => {
+                        let key_id = e.public_key_id();
+                        Some(Box::new(move |source_error| {
+                            TaskError::KeyLimitsSignerHasLimits {
+                                key_id,
+                                source_error,
+                            }
+                        }))
+                    }
+                    ConsensusError::BasicError(
+                        BasicError::IdentityPublicKeyLimitsNotAllowedError(e),
+                    ) => {
+                        let key_id = e.public_key_id();
+                        Some(Box::new(move |source_error| TaskError::KeyLimitsRefused {
+                            key_id,
+                            source_error,
+                        }))
+                    }
+                    ConsensusError::BasicError(
+                        BasicError::InvalidIdentityPublicKeyBudgetError(e),
+                    ) => {
+                        let key_id = e.public_key_id();
+                        Some(Box::new(move |source_error| TaskError::KeyLimitsRefused {
+                            key_id,
+                            source_error,
+                        }))
+                    }
+                    ConsensusError::BasicError(BasicError::IdentityKeyLimitsUpdateEmptyError(
+                        e,
+                    )) => {
+                        let key_id = e.public_key_id();
+                        Some(Box::new(move |source_error| TaskError::KeyLimitsRefused {
+                            key_id,
+                            source_error,
+                        }))
+                    }
+                    ConsensusError::StateError(StateError::IdentityPublicKeyIsDisabledError(e)) => {
+                        let key_id = e.public_key_index();
+                        Some(Box::new(move |source_error| {
+                            TaskError::IdentityKeyDisabled {
+                                key_id,
+                                source_error,
+                            }
+                        }))
+                    }
+                    ConsensusError::StateError(
+                        StateError::DocumentActionFeeAgreementNotSetError(_),
+                    ) => Some(Box::new(|source_error| {
+                        TaskError::DocumentActionFeeNotAgreed { source_error }
+                    })),
+                    ConsensusError::StateError(
+                        StateError::DocumentActionFeeAgreementMismatchError(_),
+                    ) => Some(Box::new(|source_error| {
+                        TaskError::DocumentActionFeeChanged { source_error }
+                    })),
+                    ConsensusError::StateError(
+                        StateError::DocumentActionFeeMultiplierNotToleratedError(e),
+                    ) => {
+                        let (known, current, tolerance) = (
+                            e.known_fee_multiplier_permille(),
+                            e.current_fee_multiplier_permille(),
+                            e.increase_tolerance_percent(),
+                        );
+                        Some(Box::new(move |source_error| {
+                            TaskError::DocumentActionFeeMultiplierRose {
+                                known_fee_multiplier_permille: known,
+                                current_fee_multiplier_permille: current,
+                                increase_tolerance_percent: tolerance,
+                                source_error,
+                            }
+                        }))
+                    }
+                    ConsensusError::StateError(StateError::ContractUserBannedError(e)) => {
+                        let (contract_id, identity_id) = (e.contract_id(), e.identity_id());
+                        Some(Box::new(move |source_error| {
+                            TaskError::ContractUserBanned {
+                                contract_id,
+                                identity_id,
+                                source_error,
+                            }
+                        }))
+                    }
+                    ConsensusError::StateError(StateError::ContractUserSuspendedError(e)) => {
+                        let (contract_id, identity_id, until_ms) =
+                            (e.contract_id(), e.identity_id(), e.until());
+                        Some(Box::new(move |source_error| {
+                            TaskError::ContractUserSuspended {
+                                contract_id,
+                                identity_id,
+                                until_ms,
+                                source_error,
+                            }
+                        }))
+                    }
+                    ConsensusError::StateError(StateError::GasSponsorInsufficientBalanceError(
+                        e,
+                    )) => {
+                        let (sponsor_id, balance, required_balance) =
+                            (*e.sponsor_id(), e.balance(), e.required_balance());
+                        Some(Box::new(move |source_error| {
+                            TaskError::GasSponsorInsufficientBalance {
+                                sponsor_id,
+                                balance,
+                                required_balance,
+                                source_error,
+                            }
+                        }))
+                    }
+                    ConsensusError::StateError(StateError::GasFeesPaidByNotAllowedError(_)) => {
+                        Some(Box::new(|source_error| {
+                            TaskError::GasFeesPaidByNotAllowed { source_error }
+                        }))
+                    }
+                    ConsensusError::StateError(
+                        StateError::InconsistentGasFeesPaidByInBatchError(_),
+                    ) => Some(Box::new(|source_error| {
+                        TaskError::InconsistentGasFeesPayerInBatch { source_error }
+                    })),
+                    ConsensusError::StateError(
+                        StateError::DocumentImmutablePropertyChangedError(e),
+                    ) => {
+                        let (document_id, document_type_name, property) = (
+                            e.document_id(),
+                            e.document_type_name().to_owned(),
+                            e.property().to_owned(),
+                        );
+                        Some(Box::new(move |source_error| {
+                            TaskError::DocumentImmutablePropertyChanged {
+                                document_id,
+                                document_type_name,
+                                property,
+                                source_error,
+                            }
+                        }))
+                    }
+                    ConsensusError::StateError(
+                        StateError::ReferencedDocumentTypeNotDeletableError(e),
+                    ) => {
+                        let (contract_id, document_type_name, path) = (
+                            *e.contract_id(),
+                            e.document_type_name().to_owned(),
+                            e.path().to_owned(),
+                        );
+                        Some(Box::new(move |source_error| {
+                            TaskError::ReferencedDocumentTypeNotDeletable {
+                                contract_id,
+                                document_type_name,
+                                path,
+                                source_error,
+                            }
+                        }))
+                    }
+                    ConsensusError::BasicError(
+                        BasicError::DocumentActionFeesWithoutModerationError(e),
+                    ) => {
+                        let document_type_name = e.document_type_name().to_owned();
+                        Some(Box::new(move |source_error| {
+                            TaskError::DocumentActionFeesWithoutModeration {
+                                document_type_name,
+                                source_error,
+                            }
+                        }))
+                    }
+                    ConsensusError::BasicError(
+                        BasicError::InvalidTokenOncePerIdentityDistributionAmountError(e),
+                    ) => {
+                        let (amount, max_amount) = (e.amount(), e.max_amount());
+                        Some(Box::new(move |source_error| {
+                            TaskError::InvalidOncePerIdentityDistributionAmount {
+                                amount,
+                                max_amount,
+                                source_error,
+                            }
+                        }))
+                    }
+                    ConsensusError::BasicError(
+                        BasicError::PreProgrammedDistributionAmountOverLimitError(e),
+                    ) => {
+                        let (token_position, timestamp_ms) = (e.token_position(), e.timestamp());
+                        Some(Box::new(move |source_error| {
+                            TaskError::PreProgrammedDistributionOverLimit {
+                                token_position,
+                                timestamp_ms,
+                                source_error,
+                            }
                         }))
                     }
                     _ => None,
@@ -5547,6 +6415,532 @@ mod tests {
             node_msg, generic_msg,
             "MasternodeNotFound must not reuse the IdentityNotFound message"
         );
+    }
+
+    fn broadcast_rejection(cause: ConsensusError) -> SdkError {
+        SdkError::StateTransitionBroadcastError(dash_sdk::error::StateTransitionBroadcastError {
+            code: 1,
+            message: "rejected".to_string(),
+            cause: Some(cause),
+        })
+    }
+
+    /// Every protocol-version-14 consensus rejection DET flows can hit maps to
+    /// its own variant, keeps the SDK error as its source, and reads as
+    /// complete sentences free of protocol jargon.
+    #[test]
+    fn protocol_v14_consensus_errors_map_to_their_variants() {
+        use dash_sdk::dpp::consensus::basic::contract_moderation::DocumentActionFeesWithoutModerationError;
+        use dash_sdk::dpp::consensus::basic::data_contract::PreProgrammedDistributionAmountOverLimitError;
+        use dash_sdk::dpp::consensus::basic::token::InvalidTokenOncePerIdentityDistributionAmountError;
+        use dash_sdk::dpp::consensus::signature::{
+            ContractBoundedKeyNonBatchError, ContractBoundedKeyOutOfBoundsError,
+            PublicKeyBudgetExhaustedError, PublicKeyExpiredError,
+        };
+        use dash_sdk::dpp::consensus::state::contract_moderation::{
+            ContractFeeClaimNotAllowedError, ContractFeesAlreadyClaimedThisEpochError,
+            ContractFeesNothingToClaimError, ContractUserBannedError, ContractUserSuspendedError,
+        };
+        use dash_sdk::dpp::data_contract::document_type::action_fees::ContractFeePot;
+        use dash_sdk::dpp::consensus::state::document::document_action_fee_agreement_mismatch_error::DocumentActionFeeAgreementMismatchError;
+        use dash_sdk::dpp::consensus::state::document::document_action_fee_agreement_not_set_error::DocumentActionFeeAgreementNotSetError;
+        use dash_sdk::dpp::consensus::state::document::document_action_fee_multiplier_not_tolerated_error::DocumentActionFeeMultiplierNotToleratedError;
+        use dash_sdk::dpp::consensus::state::document::document_immutable_property_changed_error::DocumentImmutablePropertyChangedError;
+        use dash_sdk::dpp::consensus::state::document::referenced_document_type_not_deletable_error::ReferencedDocumentTypeNotDeletableError;
+        use dash_sdk::dpp::consensus::state::identity::gas_sponsor_insufficient_balance_error::GasSponsorInsufficientBalanceError;
+        use dash_sdk::dpp::consensus::state::identity::identity_public_key_budget_exceeded_error::IdentityPublicKeyBudgetExceededError;
+        use dash_sdk::dpp::consensus::state::token::{
+            GasFeesPaidByNotAllowedError, InconsistentGasFeesPaidByInBatchError,
+        };
+        use dash_sdk::dpp::data_contract::document_type::action_fees::agreement::{
+            AgreedFeeMultiplier, DocumentActionFeeAgreement,
+        };
+        use dash_sdk::dpp::data_contract::document_type::action_fees::{
+            ActionFeePricing, DocumentActionFee,
+        };
+        use dash_sdk::dpp::tokens::gas_fees_paid_by::GasFeesPaidBy;
+        use dash_sdk::dpp::consensus::basic::identity::{
+            IdentityKeyLimitsUpdateEmptyError, IdentityPublicKeyLimitsNotAllowedError,
+            InvalidIdentityPublicKeyBudgetError,
+        };
+        use dash_sdk::dpp::consensus::signature::PublicKeyWithLimitsCannotUpdateKeyLimitsError;
+        use dash_sdk::dpp::consensus::state::identity::identity_public_key_is_disabled_error::IdentityPublicKeyIsDisabledError;
+        use dash_sdk::dpp::consensus::state::identity::identity_public_key_already_expired_error::IdentityPublicKeyAlreadyExpiredError;
+        use dash_sdk::dpp::consensus::state::identity::identity_public_key_limit_not_raised_error::IdentityPublicKeyLimitNotRaisedError;
+        use dash_sdk::dpp::consensus::state::identity::identity_public_key_limit_not_set_error::{
+            IdentityPublicKeyLimitNotSetError, KeyLimit,
+        };
+        use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
+
+        let (contract_id, identity_id) = (Identifier::random(), Identifier::random());
+        let fee = DocumentActionFee {
+            owner: 1_000,
+            moderators: 0,
+        };
+        let agreed = AgreedFeeMultiplier {
+            known_permille: 1000,
+            increase_tolerance_percent: 20,
+        };
+        let agreement = DocumentActionFeeAgreement::for_declared_fee(
+            ActionFeePricing::FeeMultiplier,
+            DocumentActionFee {
+                owner: 900,
+                moderators: 0,
+            },
+            agreed,
+        );
+
+        type Expectation = fn(&TaskError) -> bool;
+        let cases: Vec<(ConsensusError, Expectation)> = vec![
+            (PublicKeyExpiredError::new(3, 1_000, 2_000).into(), |e| {
+                matches!(
+                    e,
+                    TaskError::SigningKeyExpired {
+                        key_id: 3,
+                        expired_at_ms: 1_000,
+                        ..
+                    }
+                )
+            }),
+            (PublicKeyBudgetExhaustedError::new(4).into(), |e| {
+                matches!(e, TaskError::SigningKeyBudgetExhausted { key_id: 4, .. })
+            }),
+            (
+                IdentityPublicKeyBudgetExceededError::new(identity_id, 5, 10, 20).into(),
+                |e| {
+                    matches!(
+                        e,
+                        TaskError::SigningKeyBudgetExceeded {
+                            key_id: 5,
+                            remaining_budget: 10,
+                            required_budget: 20,
+                            ..
+                        }
+                    )
+                },
+            ),
+            (ContractBoundedKeyOutOfBoundsError::new(6).into(), |e| {
+                matches!(
+                    e,
+                    TaskError::SigningKeyOutOfContractBounds { key_id: 6, .. }
+                )
+            }),
+            (ContractBoundedKeyNonBatchError::new(7).into(), |e| {
+                matches!(
+                    e,
+                    TaskError::SigningKeyContractBoundForNonBatch { key_id: 7, .. }
+                )
+            }),
+            (
+                DocumentActionFeeAgreementNotSetError::new(
+                    "note".to_string(),
+                    "create".to_string(),
+                    ActionFeePricing::FeeMultiplier,
+                    fee,
+                )
+                .into(),
+                |e| matches!(e, TaskError::DocumentActionFeeNotAgreed { .. }),
+            ),
+            (
+                DocumentActionFeeAgreementMismatchError::new(
+                    "note".to_string(),
+                    "create".to_string(),
+                    ActionFeePricing::FeeMultiplier,
+                    fee,
+                    &agreement,
+                )
+                .into(),
+                |e| matches!(e, TaskError::DocumentActionFeeChanged { .. }),
+            ),
+            (
+                DocumentActionFeeMultiplierNotToleratedError::new(
+                    "note".to_string(),
+                    "create".to_string(),
+                    agreed,
+                    1_500,
+                )
+                .into(),
+                |e| {
+                    matches!(
+                        e,
+                        TaskError::DocumentActionFeeMultiplierRose {
+                            known_fee_multiplier_permille: 1000,
+                            current_fee_multiplier_permille: 1_500,
+                            increase_tolerance_percent: 20,
+                            ..
+                        }
+                    )
+                },
+            ),
+            (
+                ContractUserBannedError::new(contract_id, identity_id).into(),
+                |e| matches!(e, TaskError::ContractUserBanned { .. }),
+            ),
+            (
+                ContractUserSuspendedError::new(contract_id, identity_id, 1_758_140_722_000).into(),
+                |e| {
+                    matches!(
+                        e,
+                        TaskError::ContractUserSuspended {
+                            until_ms: 1_758_140_722_000,
+                            ..
+                        }
+                    )
+                },
+            ),
+            (
+                GasSponsorInsufficientBalanceError::new(contract_id, 1, 2).into(),
+                |e| {
+                    matches!(
+                        e,
+                        TaskError::GasSponsorInsufficientBalance {
+                            balance: 1,
+                            required_balance: 2,
+                            ..
+                        }
+                    )
+                },
+            ),
+            (
+                GasFeesPaidByNotAllowedError::new(
+                    "note".to_string(),
+                    "create".to_string(),
+                    GasFeesPaidBy::ContractOwner,
+                    GasFeesPaidBy::DocumentOwner,
+                )
+                .into(),
+                |e| matches!(e, TaskError::GasFeesPaidByNotAllowed { .. }),
+            ),
+            (
+                InconsistentGasFeesPaidByInBatchError::new(Some(identity_id), None).into(),
+                |e| matches!(e, TaskError::InconsistentGasFeesPayerInBatch { .. }),
+            ),
+            (
+                DocumentImmutablePropertyChangedError::new(
+                    Identifier::random(),
+                    "note".to_string(),
+                    "title".to_string(),
+                )
+                .into(),
+                |e| {
+                    matches!(e, TaskError::DocumentImmutablePropertyChanged { property, .. }
+                        if property == "title")
+                },
+            ),
+            (
+                ReferencedDocumentTypeNotDeletableError::new(
+                    contract_id,
+                    "note".to_string(),
+                    "properties.ref".to_string(),
+                )
+                .into(),
+                |e| matches!(e, TaskError::ReferencedDocumentTypeNotDeletable { .. }),
+            ),
+            (
+                DocumentActionFeesWithoutModerationError::new("note".to_string()).into(),
+                |e| matches!(e, TaskError::DocumentActionFeesWithoutModeration { .. }),
+            ),
+            (
+                InvalidTokenOncePerIdentityDistributionAmountError::new(0, 100).into(),
+                |e| {
+                    matches!(
+                        e,
+                        TaskError::InvalidOncePerIdentityDistributionAmount {
+                            amount: 0,
+                            max_amount: 100,
+                            ..
+                        }
+                    )
+                },
+            ),
+            (
+                PreProgrammedDistributionAmountOverLimitError::new(1, 1_758_140_722_000).into(),
+                |e| {
+                    matches!(
+                        e,
+                        TaskError::PreProgrammedDistributionOverLimit {
+                            token_position: 1,
+                            ..
+                        }
+                    )
+                },
+            ),
+        ];
+
+        let key_limit_cases: Vec<(ConsensusError, Expectation)> = vec![
+            (
+                IdentityPublicKeyAlreadyExpiredError::new(8, 1, 2).into(),
+                |e| matches!(e, TaskError::KeyExpiryInPast { key_id: 8, .. }),
+            ),
+            (
+                IdentityPublicKeyLimitNotRaisedError::new(8, KeyLimit::Budget, 2, 1).into(),
+                |e| matches!(e, TaskError::KeyLimitNotRaised { key_id: 8, .. }),
+            ),
+            (
+                IdentityPublicKeyLimitNotSetError::new(8, KeyLimit::Expiry).into(),
+                |e| matches!(e, TaskError::KeyLimitNotSet { key_id: 8, .. }),
+            ),
+            (
+                PublicKeyWithLimitsCannotUpdateKeyLimitsError::new(9).into(),
+                |e| matches!(e, TaskError::KeyLimitsSignerHasLimits { key_id: 9, .. }),
+            ),
+            (
+                IdentityPublicKeyLimitsNotAllowedError::new(
+                    8,
+                    Purpose::TRANSFER,
+                    SecurityLevel::CRITICAL,
+                )
+                .into(),
+                |e| matches!(e, TaskError::KeyLimitsRefused { key_id: 8, .. }),
+            ),
+            (InvalidIdentityPublicKeyBudgetError::new(8).into(), |e| {
+                matches!(e, TaskError::KeyLimitsRefused { key_id: 8, .. })
+            }),
+            (IdentityKeyLimitsUpdateEmptyError::new(8).into(), |e| {
+                matches!(e, TaskError::KeyLimitsRefused { key_id: 8, .. })
+            }),
+            (IdentityPublicKeyIsDisabledError::new(8).into(), |e| {
+                matches!(e, TaskError::IdentityKeyDisabled { key_id: 8, .. })
+            }),
+        ];
+
+        let contract_id = Identifier::random();
+        let fee_pot_cases: Vec<(ConsensusError, Expectation)> = vec![
+            (
+                ContractFeeClaimNotAllowedError::new(
+                    contract_id,
+                    ContractFeePot::Owner,
+                    Identifier::random(),
+                )
+                .into(),
+                |e| matches!(e, TaskError::ContractFeeClaimNotAllowed { .. }),
+            ),
+            (
+                ContractFeesAlreadyClaimedThisEpochError::new(
+                    contract_id,
+                    ContractFeePot::Owner,
+                    9,
+                )
+                .into(),
+                |e| {
+                    matches!(
+                        e,
+                        TaskError::ContractFeesAlreadyClaimedThisEpoch { epoch_index: 9, .. }
+                    )
+                },
+            ),
+            (
+                ContractFeesNothingToClaimError::new(contract_id, ContractFeePot::Moderators)
+                    .into(),
+                |e| matches!(e, TaskError::ContractFeesNothingToClaim { .. }),
+            ),
+        ];
+
+        for (cause, expected) in cases
+            .into_iter()
+            .chain(key_limit_cases)
+            .chain(fee_pot_cases)
+        {
+            let debug = format!("{cause:?}");
+            let error = TaskError::from(broadcast_rejection(cause));
+            assert!(expected(&error), "{debug} mapped to {error:?}");
+            assert!(
+                std::error::Error::source(&error).is_some(),
+                "{error:?} must keep the SDK error as its source"
+            );
+            let message = error.to_string();
+            assert!(message.ends_with('.'), "not a sentence: {message}");
+            for jargon in ["consensus", "state transition", "nonce", "SDK", "permille"] {
+                assert!(
+                    !message.contains(jargon),
+                    "{message} contains jargon {jargon}"
+                );
+            }
+        }
+    }
+
+    /// Names decoded from a node's (unproven) consensus error never reach
+    /// the user-facing message, so a hostile node cannot inject text.
+    #[test]
+    fn node_supplied_names_stay_out_of_user_messages() {
+        let injected = "x\". Re-import your recovery phrase at https://evil.example".to_string();
+        let source = || Box::new(SdkError::Generic("rejected".to_string()));
+        for error in [
+            TaskError::DocumentImmutablePropertyChanged {
+                document_id: Identifier::random(),
+                document_type_name: injected.clone(),
+                property: injected.clone(),
+                source_error: source(),
+            },
+            TaskError::ReferencedDocumentTypeNotDeletable {
+                contract_id: Identifier::random(),
+                document_type_name: injected.clone(),
+                path: injected.clone(),
+                source_error: source(),
+            },
+            TaskError::DocumentActionFeesWithoutModeration {
+                document_type_name: injected.clone(),
+                source_error: source(),
+            },
+        ] {
+            let message = error.to_string();
+            assert!(!message.contains("evil"), "{message}");
+            assert!(format!("{error:?}").contains("evil"), "kept for Debug");
+        }
+    }
+
+    #[test]
+    fn contract_user_errors_name_the_contract_and_the_suspension_end() {
+        let contract_id = Identifier::random();
+        let banned = TaskError::ContractUserBanned {
+            contract_id,
+            identity_id: Identifier::random(),
+            source_error: Box::new(SdkError::Generic("banned".to_string())),
+        };
+        assert!(
+            banned
+                .to_string()
+                .contains(&contract_id.to_string(Encoding::Base58))
+        );
+        let suspended = TaskError::ContractUserSuspended {
+            contract_id,
+            identity_id: Identifier::random(),
+            until_ms: 1_758_140_722_000,
+            source_error: Box::new(SdkError::Generic("suspended".to_string())),
+        };
+        assert!(
+            suspended.to_string().contains("until 2025-09-17 20:25 UTC"),
+            "got: {suspended}"
+        );
+    }
+
+    #[test]
+    fn budget_exceeded_names_both_amounts_in_dash() {
+        let error = TaskError::SigningKeyBudgetExceeded {
+            key_id: 1,
+            remaining_budget: 50_000_000_000,
+            required_budget: 100_000_000_000,
+            source_error: Box::new(SdkError::Generic("budget".to_string())),
+        };
+        let message = error.to_string();
+        assert!(message.contains("costs 1 DASH"), "got: {message}");
+        assert!(message.contains("only 0.5 DASH"), "got: {message}");
+    }
+
+    /// A second claim of a once-per-identity distribution maps to its own
+    /// variant carrying the ids, so the claim flow can remember the claim.
+    #[test]
+    fn once_per_identity_already_claimed_maps_to_its_variant() {
+        use dash_sdk::dpp::consensus::state::token::TokenOncePerIdentityDistributionAlreadyClaimedError;
+        let (token_id, identity_id) = (Identifier::random(), Identifier::random());
+        let consensus =
+            ConsensusError::from(TokenOncePerIdentityDistributionAlreadyClaimedError::new(
+                token_id,
+                identity_id,
+                1_758_140_722_000,
+            ));
+        let sdk_err = SdkError::StateTransitionBroadcastError(
+            dash_sdk::error::StateTransitionBroadcastError {
+                code: 40722,
+                message: "already claimed".to_string(),
+                cause: Some(consensus),
+            },
+        );
+        match TaskError::from(sdk_err) {
+            TaskError::TokenOncePerIdentityAlreadyClaimed {
+                token_id: t,
+                identity_id: i,
+                claimed_at_ms,
+                ..
+            } => {
+                assert_eq!(
+                    (t, i, claimed_at_ms),
+                    (token_id, identity_id, 1_758_140_722_000)
+                );
+            }
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    /// An unclassified SDK failure behind a wallet-runtime token operation
+    /// keeps the operation, so the message names what did not complete.
+    #[test]
+    fn token_operation_failure_without_a_specific_cause_names_the_operation() {
+        let err =
+            TaskError::from_token_operation_failure("claim", SdkError::Generic("boom".to_string()));
+        assert!(
+            matches!(
+                err,
+                TaskError::TokenOperationFailed {
+                    operation: TokenOperationKind::Claim,
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+        assert_eq!(
+            err.to_string(),
+            "The token claim did not complete. Check your connection and try again."
+        );
+    }
+
+    /// A token operation rejected with a specific consensus cause keeps the
+    /// specific variant: the operation label must not mask a better message.
+    #[test]
+    fn token_operation_failure_with_a_specific_cause_keeps_it() {
+        use dash_sdk::dpp::consensus::state::token::IdentityTokenAccountNotFrozenError;
+        let consensus = ConsensusError::from(IdentityTokenAccountNotFrozenError::new(
+            Identifier::random(),
+            Identifier::random(),
+            "Unfreeze".to_string(),
+        ));
+        let sdk_err = SdkError::StateTransitionBroadcastError(
+            dash_sdk::error::StateTransitionBroadcastError {
+                code: 40703,
+                message: "identity token account is not frozen".to_string(),
+                cause: Some(consensus),
+            },
+        );
+        let err = TaskError::from_token_operation_failure("unfreeze", sdk_err);
+        assert!(
+            matches!(err, TaskError::TokenAccountNotFrozen { .. }),
+            "got {err:?}"
+        );
+    }
+
+    /// Every label upstream emits today maps to its own kind; an unknown one
+    /// degrades to the generic kind instead of failing.
+    #[test]
+    fn token_operation_labels_map_to_kinds() {
+        for (label, kind) in [
+            ("claim", TokenOperationKind::Claim),
+            ("mint", TokenOperationKind::Mint),
+            ("burn", TokenOperationKind::Burn),
+            ("transfer", TokenOperationKind::Transfer),
+            ("freeze", TokenOperationKind::Freeze),
+            ("unfreeze", TokenOperationKind::Unfreeze),
+            (
+                "destroy frozen funds",
+                TokenOperationKind::DestroyFrozenFunds,
+            ),
+            ("pause", TokenOperationKind::Pause),
+            ("resume", TokenOperationKind::Resume),
+            ("set price", TokenOperationKind::SetPrice),
+            ("purchase", TokenOperationKind::Purchase),
+            ("config update", TokenOperationKind::ConfigUpdate),
+            (
+                "something new",
+                TokenOperationKind::Unrecognized {
+                    label: "something new",
+                },
+            ),
+        ] {
+            assert_eq!(
+                TokenOperationKind::from_upstream_label(label),
+                kind,
+                "{label}"
+            );
+        }
     }
 
     #[test]

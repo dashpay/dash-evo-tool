@@ -5,6 +5,7 @@ use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::dashpay::validate_account_label;
+use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::ResultBannerExt;
@@ -23,6 +24,7 @@ use crate::ui::identity::get_selected_wallet;
 use crate::ui::identity::keys::add_key_screen::AddKeyScreen;
 use crate::ui::theme::{DashColors, Typography};
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::IdentityPublicKey;
 use egui::{RichText, ScrollArea, TextEdit, Ui};
@@ -310,17 +312,16 @@ impl ScreenLike for AddContactScreen {
                     if let Some(identity) = &self.selected_identity {
                         // Auto-select a suitable AUTHENTICATION key for signing contact requests
                         // Platform requires CRITICAL or HIGH security level for contact request signing
-                        use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-                        use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
-                        use std::collections::HashSet;
+                        use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
                         self.selected_key = identity
-                            .identity
-                            .get_first_public_key_matching(
+                            .signing_key_now(KeyRequirements::new(
                                 Purpose::AUTHENTICATION,
-                                HashSet::from([SecurityLevel::CRITICAL, SecurityLevel::HIGH]),
-                                KeyType::all_key_types().into(),
-                                false,
-                            )
+                                &[SecurityLevel::CRITICAL, SecurityLevel::HIGH],
+                                SigningScope::Document {
+                                    contract_id: self.app_context.dashpay_contract().id(),
+                                    document_type_name: "contactRequest",
+                                },
+                            ))
                             .cloned();
 
                         // Update wallet if not already set
@@ -348,6 +349,10 @@ impl ScreenLike for AddContactScreen {
                             identity,
                             &mut self.selected_key,
                             TransactionType::ContactRequest,
+                            SigningScope::Document {
+                                contract_id: self.app_context.dashpay_contract().id(),
+                                document_type_name: "contactRequest",
+                            },
                         );
                         if !matches!(key_action, AppAction::None) {
                             inner_action = key_action;

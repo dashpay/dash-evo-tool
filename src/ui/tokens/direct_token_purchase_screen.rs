@@ -1,3 +1,5 @@
+use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
@@ -82,13 +84,13 @@ impl PurchaseTokenScreen {
     pub fn new(identity_token_info: IdentityTokenInfo, app_context: &Arc<AppContext>) -> Self {
         let possible_key = identity_token_info
             .identity
-            .identity
-            .get_first_public_key_matching(
+            .signing_key_now(KeyRequirements::new(
                 Purpose::AUTHENTICATION,
-                HashSet::from([SecurityLevel::CRITICAL]),
-                KeyType::all_key_types().into(),
-                false,
-            )
+                &[SecurityLevel::CRITICAL],
+                SigningScope::ContractWide {
+                    contract_id: identity_token_info.data_contract.contract.id(),
+                },
+            ))
             .cloned();
 
         // Attempt to get an unlocked wallet reference
@@ -533,6 +535,9 @@ impl ScreenLike for PurchaseTokenScreen {
                         &self.identity_token_info.identity,
                         &mut self.selected_key,
                         TransactionType::TokenAction,
+                        SigningScope::ContractWide {
+                            contract_id: self.identity_token_info.data_contract.contract.id(),
+                        },
                     );
                     ui.add_space(10.0);
                     ui.separator();

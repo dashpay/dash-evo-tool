@@ -228,7 +228,7 @@ impl AddNewIdentityScreen {
     /// Default number of keys (master + additional) the chooser warms and reads
     /// from the auth-pubkey cache.
     fn default_key_count(&self) -> u32 {
-        let dashpay_contract_id = self.app_context.dashpay_contract.id();
+        let dashpay_contract_id = self.app_context.dashpay_contract().id();
         // master (index 0) + the default additional keys.
         default_identity_key_specs(dashpay_contract_id).len() as u32 + 1
     }
@@ -262,7 +262,7 @@ impl AddNewIdentityScreen {
 
         let network = self.app_context.network;
         let identity_index = self.identity_id_number;
-        let dashpay_contract_id = self.app_context.dashpay_contract.id();
+        let dashpay_contract_id = self.app_context.dashpay_contract().id();
         let default_keys = default_identity_key_specs(dashpay_contract_id);
 
         let Ok(backend) = self.app_context.wallet_backend() else {

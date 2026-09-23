@@ -1,3 +1,4 @@
+use crate::model::identity_key_usability::SigningScope;
 use std::collections::BTreeMap;
 
 use crate::backend_task::FeeResult;
@@ -49,7 +50,7 @@ impl AppContext {
         }
 
         let mut rng = StdRng::from_entropy();
-        let dpns_contract = self.dpns_contract.clone();
+        let dpns_contract = self.dpns_contract();
 
         let mut qualified_identity = input.qualified_identity;
 
@@ -153,7 +154,12 @@ impl AppContext {
         .map_err(|error| SdkError::Protocol(*error))?;
 
         let public_key = qualified_identity
-            .document_signing_key(&preorder_document_type)
+            .document_signing_key(
+                SigningScope::ContractWide {
+                    contract_id: self.dpns_contract().id(),
+                },
+                &preorder_document_type,
+            )
             .ok_or(TaskError::NoDocumentSigningKey)?;
 
         let fee_estimator = self.fee_estimator();
@@ -191,7 +197,7 @@ impl AppContext {
         let dpns_names_document_query = DocumentQuery {
             sub_queries: Vec::new(),
             select: SelectProjection::documents(),
-            data_contract: self.dpns_contract.clone(),
+            data_contract: self.dpns_contract(),
             document_type_name: "domain".to_string(),
             where_clauses: vec![WhereClause {
                 field: "records.identity".to_string(),

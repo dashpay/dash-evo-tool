@@ -3,6 +3,7 @@ use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::dashpay::auto_accept_proof::AutoAcceptProofData;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
@@ -17,10 +18,10 @@ use crate::ui::components::{MessageBanner, ResultBannerExt};
 use crate::ui::dashpay::dashpay_screen::DashPaySubscreen;
 use crate::ui::identity::get_selected_wallet;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use egui::{RichText, ScrollArea, TextEdit, Ui};
-use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
 pub struct QRScannerScreen {
@@ -105,15 +106,20 @@ impl QRScannerScreen {
         if let Some(identity) = &self.selected_identity {
             if let Some(qr_data) = &self.parsed_qr_data {
                 // Get signing key
-                let signing_key = match identity.identity.get_first_public_key_matching(
-                    Purpose::AUTHENTICATION,
-                    HashSet::from([
-                        SecurityLevel::CRITICAL,
-                        SecurityLevel::HIGH,
-                        SecurityLevel::MEDIUM,
-                    ]),
-                    HashSet::from([KeyType::ECDSA_SECP256K1]),
-                    false,
+                let signing_key = match identity.signing_key_now(
+                    KeyRequirements::new(
+                        Purpose::AUTHENTICATION,
+                        &[
+                            SecurityLevel::CRITICAL,
+                            SecurityLevel::HIGH,
+                            SecurityLevel::MEDIUM,
+                        ],
+                        SigningScope::Document {
+                            contract_id: self.app_context.dashpay_contract().id(),
+                            document_type_name: "contactRequest",
+                        },
+                    )
+                    .with_key_types(&[KeyType::ECDSA_SECP256K1]),
                 ) {
                     Some(key) => key,
                     None => {

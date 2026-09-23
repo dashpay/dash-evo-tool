@@ -1,3 +1,5 @@
+use crate::context::feature_gate::FeatureGate;
+use crate::model::token::parse_once_per_identity_amount;
 use crate::ui::theme::DashColors;
 use crate::ui::tokens::tokens_screen::{
     DistributionEntry, DistributionFunctionUI, IntervalTimeUnit,
@@ -1078,7 +1080,50 @@ Emits tokens in fixed amounts for specific intervals.
                     }
                 });
             }
+
+            ui.separator();
+
+            // ONCE-PER-IDENTITY DISTRIBUTION (protocol version 14)
+            self.render_once_per_identity_distribution(ui);
             });
+        }
+    }
+}
+
+impl TokensScreen {
+    /// The once-per-identity distribution option: a fixed amount every
+    /// identity may claim exactly once. Offered only where the connected
+    /// network accepts it; the registration fee grows when it is on.
+    fn render_once_per_identity_distribution(&mut self, ui: &mut egui::Ui) {
+        let available =
+            FeatureGate::TokenOncePerIdentityDistribution.is_available(&self.app_context);
+        if !available {
+            self.enable_once_per_identity_distribution = false;
+        }
+        ui.add_enabled_ui(available, |ui| {
+            ui.checkbox(
+                &mut self.enable_once_per_identity_distribution,
+                "Enable Once-per-identity Distribution",
+            )
+            .on_hover_text("Every identity can claim a fixed amount of this token, exactly once.")
+            .on_disabled_hover_text(
+                "The connected network does not accept once-per-identity distributions yet.",
+            );
+        });
+
+        if self.enable_once_per_identity_distribution {
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                ui.label("Amount each identity can claim (base tokens):");
+                ui.text_edit_singleline(&mut self.once_per_identity_amount_input);
+            });
+            if !self.once_per_identity_amount_input.trim().is_empty()
+                && let Err(error) =
+                    parse_once_per_identity_amount(&self.once_per_identity_amount_input)
+            {
+                let dark_mode = ui.style().visuals.dark_mode;
+                ui.colored_label(DashColors::error_color(dark_mode), error.to_string());
+            }
         }
     }
 }

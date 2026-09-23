@@ -13,6 +13,7 @@ use crate::context::AppContext;
 use crate::model::dashpay::{
     ContactInfoUpdate, UnreadableContactInfoPolicy, contact_request_recipient,
 };
+use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::wallet_backend::{ContactRequestActionKind, ContactRequestActionPhase};
 // Upstream contact-request type: used to record the sent request in the
@@ -289,7 +290,7 @@ pub async fn send_contact_request_with_proof(
     }
 
     // Step 3: Check if a contact request already exists
-    let dashpay_contract = app_context.dashpay_contract.clone();
+    let dashpay_contract = app_context.dashpay_contract();
     let mut existing_query = contact_request_query(app_context)?;
 
     existing_query = existing_query
@@ -651,7 +652,7 @@ async fn resolve_username_to_identity(
     let domain_query = DocumentQuery {
         sub_queries: Vec::new(),
         select: SelectProjection::documents(),
-        data_contract: app_context.dpns_contract.clone(),
+        data_contract: app_context.dpns_contract(),
         document_type_name: "domain".to_string(),
         where_clauses: vec![
             WhereClause {
@@ -759,13 +760,14 @@ pub async fn accept_contact_request(
     // Get an AUTHENTICATION key for signing the state transition
     // Platform requires CRITICAL or HIGH security level for document creation
     let signing_key = identity
-        .identity
-        .get_first_public_key_matching(
+        .signing_key_now(KeyRequirements::new(
             Purpose::AUTHENTICATION,
-            HashSet::from([SecurityLevel::CRITICAL, SecurityLevel::HIGH]),
-            KeyType::all_key_types().into(),
-            false,
-        )
+            &[SecurityLevel::CRITICAL, SecurityLevel::HIGH],
+            SigningScope::Document {
+                contract_id: app_context.dashpay_contract().id(),
+                document_type_name: "contactRequest",
+            },
+        ))
         .ok_or_else(|| TaskError::DashPay(DashPayError::MissingAuthenticationKey))?
         .clone();
 

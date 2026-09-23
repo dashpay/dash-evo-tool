@@ -115,6 +115,15 @@ impl TokensScreen {
                     );
                     ui.end_row();
 
+                    ui.label("Once-per-identity Distribution:");
+                    match crate::model::token::once_per_identity_amount(config) {
+                        Some(amount) => ui.label(format!(
+                            "Every identity can claim {amount} base tokens once."
+                        )),
+                        None => ui.label("No"),
+                    };
+                    ui.end_row();
+
                     ui.label("Token ID:");
                     ui.label(token_info.token_id.to_string(Encoding::Base58));
                     ui.end_row();

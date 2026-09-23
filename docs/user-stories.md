@@ -754,6 +754,39 @@ As a user, I want to remove an identity from this device from the identity's own
 
 ---
 
+### IDN-022: Add a key with a spending limit or an expiry [Implemented]
+**Persona:** Priya, Jordan
+
+As a user handing a key to an app or a helper, I want to cap how much that key can ever spend and when it stops working, so that a leaked or forgotten key can do limited damage.
+
+- The Add Key screen offers "Spending Limit" and "Expires After (days)" for authentication keys below the master level.
+- On a network that does not support key limits yet, both options are shown disabled with an explanation.
+- Where the network allows it, an authentication key can also be limited to one contract or document type, with or without a spending limit and expiry.
+- A zero limit, zero days, or an expiry too far in the future is refused before anything is sent.
+- The Key Info screen shows the limit with how much is left of it, and the expiry date; an expired or used-up key is marked.
+
+### IDN-023: Raise a key's spending limit or extend its expiry [Implemented]
+**Persona:** Priya, Jordan
+
+As a user whose limited key is running out, I want to add to its spending limit or extend its expiry so that I can keep using it without adding a new key.
+
+- The Key Info screen of a limited key offers "Raise Limits" with an amount to add and a number of days to extend by.
+- An expiry is extended from its current date, or from today when the key has already expired.
+- An expired key cannot only be topped up; the screen asks to extend its expiry as well.
+- Before anything is sent, a confirmation shows the resulting total spending limit and expiry and the key that signs the change; exactly that is sent.
+- If the key's limits, or the key that would sign the change, changed elsewhere in the meantime, nothing is sent and the screen shows the current limits and signing key to review again; no other signing key is picked without a new review.
+- The change is signed by the identity's master key, or a critical key without limits; without either on this device, the screen says which key to import.
+- After the change, the screen shows the key as the network stores it and its new remaining limit.
+
+### IDN-024: Signing avoids keys that cannot sign [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want the app to sign with a key that can actually sign the action, so that my actions are not refused because of an expired, used-up or out-of-scope key.
+
+- Automatic key choice skips disabled and expired keys, keys limited to other contracts or document types, and keys bound to a contract group.
+- Only keys this device holds the private key of are chosen; among those, one without limits is preferred over a limited one.
+- Where the user picks the key, limited and expired keys stay selectable, and the key list and selection show a warning explaining the limit.
+
 ## DPNS (DPN)
 
 ### DPN-001: Register a DPNS username [Implemented]
@@ -1114,6 +1147,17 @@ As a user, I want to stop tracking a token balance for one of my identities so t
 
 ---
 
+### TOK-019: Create a token each identity can claim once [Implemented]
+**Persona:** Jordan
+
+As a token creator, I want every identity to be able to claim a fixed amount of my token exactly once, so that I can run a fair airdrop without a list of recipients.
+
+- The token creator offers a once-per-identity distribution with the amount each identity can claim, on networks that support it.
+- The fee estimate includes the network's extra fee for this distribution.
+- The Claim screen and My Tokens show the distribution.
+- After a successful claim, the Claim screen notes that the identity may have already claimed and when; the note never blocks claiming and can be dismissed.
+- A second claim refused by the network is explained.
+
 ## Contracts and Documents (DOC)
 
 ### DOC-001: Register a new data contract [Implemented]
@@ -1189,6 +1233,35 @@ As a developer, I want to set a price on a document and allow others to purchase
 - Another identity can purchase at the set price.
 
 ---
+
+### DOC-010: Agree to a contract's fee for a document action [Implemented]
+**Persona:** Alex, Priya
+
+As a user acting on a document whose contract charges a fee, I want to see that fee and agree to it before anything is sent, so that I am never charged more than I accepted.
+
+- The estimated-fee panel shows the contract fee next to the network fee, split between the contract owner and its moderators.
+- Sending asks for confirmation naming the fee and, for a fee that follows network fees, the most that can be charged ("up to N DASH") and the tolerated increase.
+- If network fees rise past that tolerance, the network refuses the action; the app updates the fee, and trying again shows the new amount to confirm.
+- If the contract changes its fee after confirmation, nothing is sent and the user is asked to confirm the current fee.
+
+### DOC-011: Skip an optional token cost [Implemented]
+**Persona:** Alex, Priya
+
+As a user, when a document action's token cost is optional, I want to choose not to pay it, so that I can pay the network fee in credits instead.
+
+- A "Pay the token cost" option appears only when the token cost is optional.
+- Without it, the action carries no token payment and its network fee is paid from the identity's credits.
+
+### DOC-012: View and claim a contract's fee pots [Implemented]
+**Persona:** Jordan
+
+As a contract owner or moderator, I want to see what my contract's document fees have collected and claim it, so that the fees reach my identity.
+
+- The Contracts screen offers "Fee Pots" on networks that support contract fees.
+- Both pots of a contract are shown with their balance and last payout (epoch, time, claimant).
+- Only an identity that receives a pot can claim it; the owner pot goes to the owner, the moderators pot to the whole moderation team.
+- A pot can be claimed once per epoch; a pot already claimed in the current epoch cannot be claimed again until the next one, and the user refreshes the pots once the next epoch starts to claim it.
+- After a claim, the pot and the claimant's new balance are shown.
 
 ## Developer and Power Tools (DEV)
 

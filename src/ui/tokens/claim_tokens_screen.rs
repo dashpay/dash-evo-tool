@@ -1,11 +1,14 @@
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
+use crate::model::token::once_per_identity_amount;
 use crate::model::user_role::UserRole;
 use crate::ui::components::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
+use crate::ui::helpers::format_timestamp_ms_local;
 use crate::ui::helpers::{TransactionType, add_key_chooser};
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
@@ -68,6 +71,10 @@ pub struct ClaimTokensScreen {
     wallet_unlock_popup: WalletUnlockPopup,
     // Fee result from completed operation
     completed_fee_result: Option<FeeResult>,
+    /// When the selected identity took its once-per-identity claim of this
+    /// token, as far as this device knows (a local hint; Platform has no query
+    /// for it).
+    once_per_identity_claimed_at: Option<u64>,
 }
 
 impl ClaimTokensScreen {
@@ -84,21 +91,22 @@ impl ClaimTokensScreen {
             .find(|id| id.identity.id() == identity_token_basic_info.identity_id);
 
         let (selected_key, selected_wallet) = if let Some(ref id) = identity {
-            let identity_inner = &id.identity;
-            let key = identity_inner
-                .get_first_public_key_matching(
+            let key = id
+                .signing_key_now(KeyRequirements::new(
                     Purpose::AUTHENTICATION,
-                    HashSet::from([SecurityLevel::CRITICAL]),
-                    KeyType::all_key_types().into(),
-                    false,
-                )
+                    &[SecurityLevel::CRITICAL],
+                    SigningScope::ContractWide {
+                        contract_id: identity_token_basic_info.contract_id,
+                    },
+                ))
                 .or_else(|| {
-                    identity_inner.get_first_public_key_matching(
+                    id.signing_key_now(KeyRequirements::new(
                         Purpose::TRANSFER,
-                        HashSet::from([SecurityLevel::CRITICAL]),
-                        KeyType::all_key_types().into(),
-                        false,
-                    )
+                        &[SecurityLevel::CRITICAL],
+                        SigningScope::ContractWide {
+                            contract_id: identity_token_basic_info.contract_id,
+                        },
+                    ))
                 })
                 .cloned();
 
@@ -108,21 +116,31 @@ impl ClaimTokensScreen {
             (None, None)
         };
 
-        let distribution_type = match (
-            token_configuration
-                .distribution_rules()
-                .perpetual_distribution()
-                .is_some(),
-            token_configuration
-                .distribution_rules()
-                .pre_programmed_distribution()
-                .is_some(),
-        ) {
-            (true, true) => None,
-            (true, false) => Some(TokenDistributionType::Perpetual),
-            (false, true) => Some(TokenDistributionType::PreProgrammed),
-            (false, false) => None,
+        // Pre-select the distribution when the token has exactly one.
+        let rules = token_configuration.distribution_rules();
+        let offered: Vec<TokenDistributionType> = [
+            (
+                rules.perpetual_distribution().is_some(),
+                TokenDistributionType::Perpetual,
+            ),
+            (
+                rules.pre_programmed_distribution().is_some(),
+                TokenDistributionType::PreProgrammed,
+            ),
+            (
+                once_per_identity_amount(&token_configuration).is_some(),
+                TokenDistributionType::OncePerIdentity,
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(present, kind)| present.then_some(kind))
+        .collect();
+        let distribution_type = match offered.as_slice() {
+            [only] => Some(*only),
+            _ => None,
         };
+        let once_per_identity_claimed_at =
+            load_once_per_identity_claim(app_context, &identity_token_basic_info);
 
         Self {
             identity,
@@ -141,6 +159,7 @@ impl ClaimTokensScreen {
             wallet_open_attempted: false,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             completed_fee_result: None,
+            once_per_identity_claimed_at,
         }
     }
 
@@ -166,6 +185,7 @@ impl ClaimTokensScreen {
             .distribution_rules()
             .pre_programmed_distribution()
             .is_some();
+        let show_once_per_identity = once_per_identity_amount(&self.token_configuration).is_some();
         ui.horizontal(|ui| {
             ui.label("Select Distribution Type:");
             egui::ComboBox::from_id_salt("claim_distribution_type_selector")
@@ -176,7 +196,7 @@ impl ClaimTokensScreen {
                     None => "Select a type".to_string(),
                 })
                 .show_ui(ui, |ui| {
-                    if !show_perpetual && !show_pre_programmed {
+                    if !show_perpetual && !show_pre_programmed && !show_once_per_identity {
                         ui.label("No distributions to potentially claim for this token");
                     }
                     if show_perpetual {
@@ -193,8 +213,58 @@ impl ClaimTokensScreen {
                             "PreProgrammed",
                         );
                     }
+                    if show_once_per_identity {
+                        ui.selectable_value(
+                            &mut self.distribution_type,
+                            Some(TokenDistributionType::OncePerIdentity),
+                            "Once per identity",
+                        );
+                    }
                 });
         });
+    }
+
+    /// What a once-per-identity claim pays, and whether this identity already
+    /// took it.
+    fn render_once_per_identity_info(&mut self, ui: &mut Ui) {
+        let Some(amount) = once_per_identity_amount(&self.token_configuration) else {
+            return;
+        };
+        ui.heading("Once-per-identity distribution");
+        ui.add_space(5.0);
+        ui.label(format!(
+            "Every identity can claim {amount} base tokens from this distribution, once."
+        ));
+        // Advisory only: the hint may be wrong (e.g. recorded on a claim the
+        // network later dropped), so it warns but never blocks a claim.
+        if let Some(claimed_at_ms) = self.once_per_identity_claimed_at {
+            let dark_mode = ui.style().visuals.dark_mode;
+            ui.label(
+                RichText::new(format!(
+                    "This identity may have already claimed its share on {date}. You can still claim; the network refuses a second claim.",
+                    date = format_timestamp_ms_local(claimed_at_ms)
+                ))
+                .color(DashColors::warning_color(dark_mode)),
+            );
+            if ui.button("Dismiss").clicked() {
+                let info = &self.identity_token_basic_info;
+                match self
+                    .app_context
+                    .clear_once_per_identity_claim(&info.token_id, &info.identity_id)
+                {
+                    Ok(()) => self.once_per_identity_claimed_at = None,
+                    Err(error) => {
+                        MessageBanner::set_global(
+                            ui.ctx(),
+                            "The note could not be dismissed. Please try again.",
+                            MessageType::Error,
+                        )
+                        .with_details(error);
+                    }
+                }
+            }
+        }
+        ui.add_space(10.0);
     }
 
     fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
@@ -292,6 +362,9 @@ impl ScreenLike for ClaimTokensScreen {
         if let BackendTaskSuccessResult::ClaimedTokens(fee_result) = backend_task_success_result {
             self.completed_fee_result = Some(fee_result);
             self.status = ClaimTokensStatus::Complete;
+            // A successful once-per-identity claim records its hint.
+            self.once_per_identity_claimed_at =
+                load_once_per_identity_claim(&self.app_context, &self.identity_token_basic_info);
         }
     }
 
@@ -304,6 +377,8 @@ impl ScreenLike for ClaimTokensScreen {
         {
             self.identity = Some(updated);
         }
+        self.once_per_identity_claimed_at =
+            load_once_per_identity_claim(&self.app_context, &self.identity_token_basic_info);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
@@ -447,6 +522,9 @@ impl ScreenLike for ClaimTokensScreen {
                         identity,
                         &mut self.selected_key,
                         TransactionType::TokenClaim,
+                        SigningScope::ContractWide {
+                            contract_id: self.identity_token_basic_info.contract_id,
+                        },
                     );
                     ui.add_space(10.0);
                 }
@@ -564,6 +642,10 @@ impl ScreenLike for ClaimTokensScreen {
                     ui.add_space(10.0);
                 }
 
+                if self.distribution_type == Some(TokenDistributionType::OncePerIdentity) {
+                    self.render_once_per_identity_info(ui);
+                }
+
                 // Fee estimation display
                 let fee_estimator = self.app_context.fee_estimator();
                 let estimated_fee = fee_estimator.estimate_document_batch(1); // Token operations are document batch transitions
@@ -631,4 +713,19 @@ impl ScreenLike for ClaimTokensScreen {
 
         action
     }
+}
+
+/// The once-per-identity claim hint for the screen's identity and token. A
+/// read failure only hides the hint (Platform still refuses a second claim),
+/// so it is logged and treated as unknown.
+fn load_once_per_identity_claim(
+    app_context: &AppContext,
+    info: &IdentityTokenBasicInfo,
+) -> Option<u64> {
+    app_context
+        .once_per_identity_claimed_at(&info.token_id, &info.identity_id)
+        .unwrap_or_else(|error| {
+            tracing::warn!(?error, "Could not read the once-per-identity claim hint");
+            None
+        })
 }

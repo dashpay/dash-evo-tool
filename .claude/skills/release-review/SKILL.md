@@ -141,7 +141,7 @@ or a `MasternodeNotFound` as a real fixture problem.
    assertions.)
 4. **Determine the active development branch and resolve it to a commit SHA — record that SHA, don't
    carry a branch name or bare `HEAD` forward.** Check the repo's own contribution docs (e.g.
-   `CLAUDE.md`, `CONTRIBUTING.md`) rather than assuming `main`/`master`; this project may use a
+   `AGENTS.md`, `CONTRIBUTING.md`) rather than assuming `main`/`master`; this project may use a
    dedicated long-lived dev branch instead. Fetch that branch before resolving it — Phase 1's other
    fetch syncs tags only, and a stale remote-tracking ref freezes a wrong development SHA into every
    later phase with no error (confirmed: a checkout's `<canonical-remote>/<base-branch>` sat behind

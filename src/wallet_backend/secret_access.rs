@@ -34,7 +34,7 @@
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::time::Instant;
 
 use dash_sdk::dpp::dashcore::Network;
@@ -239,9 +239,12 @@ struct SecretAccessInner {
     secret_store: Arc<SecretStore>,
     /// HD wallet meta (seed hash → password hint / alias) for prompt copy.
     wallet_meta: RwLock<BTreeMap<WalletSeedHash, PromptMeta>>,
+    /// Serializes wallet-meta persistence and prompt-copy updates so two
+    /// concurrent writes cannot publish their prompt labels out of order.
+    wallet_meta_write_lock: Mutex<()>,
     /// Single-key index (address → alias / hint / has_passphrase) for
     /// prompt copy and the unprotected fast-path check.
-    single_key_index: RwLock<BTreeMap<String, ImportedKey>>,
+    single_key_index: Arc<RwLock<BTreeMap<String, ImportedKey>>>,
     /// Identity prompt-copy index (identity id → alias / password hint) for
     /// the sign-time prompt of an opted-in (Tier-2) identity. Display-only;
     /// the vault scheme — not this index — gates whether a prompt fires.
@@ -303,11 +306,29 @@ impl SecretAccess {
         prompt: Arc<dyn SecretPrompt>,
         network: Network,
     ) -> Self {
+        Self::new_with_single_key_index(
+            secret_store,
+            prompt,
+            network,
+            Arc::new(RwLock::new(BTreeMap::new())),
+        )
+    }
+
+    /// Bind the chokepoint to the backend's live imported-key index. Import,
+    /// rename, forget, and hydration then become visible to prompts through
+    /// the same lock used by [`SingleKeyView`](super::SingleKeyView).
+    pub(crate) fn new_with_single_key_index(
+        secret_store: Arc<SecretStore>,
+        prompt: Arc<dyn SecretPrompt>,
+        network: Network,
+        single_key_index: Arc<RwLock<BTreeMap<String, ImportedKey>>>,
+    ) -> Self {
         Self {
             inner: Arc::new(SecretAccessInner {
                 secret_store,
                 wallet_meta: RwLock::new(BTreeMap::new()),
-                single_key_index: RwLock::new(BTreeMap::new()),
+                wallet_meta_write_lock: Mutex::new(()),
+                single_key_index,
                 identity_prompt_index: RwLock::new(BTreeMap::new()),
                 prompt,
                 session: RwLock::new(HashMap::new()),
@@ -326,6 +347,23 @@ impl SecretAccess {
     /// poisoned lock is recovered (matching `forget`/`forget_all`) so a panicked
     /// reader can never freeze prompt-copy metadata for the rest of the session.
     pub fn set_wallet_meta(&self, meta: BTreeMap<WalletSeedHash, PromptMeta>) {
+        let _write_guard = self.wallet_meta_write_guard();
+        self.replace_wallet_meta(meta);
+    }
+
+    /// Load a fresh sidecar snapshot while holding the same lock as live
+    /// writers. Hydration cannot publish a snapshot older than a completed
+    /// rename, even if the sidecar read overlaps that rename.
+    pub(crate) fn refresh_wallet_meta(
+        &self,
+        load: impl FnOnce() -> Result<BTreeMap<WalletSeedHash, PromptMeta>, TaskError>,
+    ) -> Result<(), TaskError> {
+        let _write_guard = self.wallet_meta_write_guard();
+        self.replace_wallet_meta(load()?);
+        Ok(())
+    }
+
+    fn replace_wallet_meta(&self, meta: BTreeMap<WalletSeedHash, PromptMeta>) {
         let mut guard = self
             .inner
             .wallet_meta
@@ -334,10 +372,36 @@ impl SecretAccess {
         *guard = meta;
     }
 
-    /// Replace the single-key prompt-copy index. Used at hydration time and
-    /// after an import so prompts can show the key nickname and hint, and
-    /// so the unprotected fast-path can skip the prompt. Poison-safe: a poisoned
-    /// lock is recovered so the index can self-heal after a panicked reader.
+    /// Hold this while persisting one wallet-meta write and publishing its
+    /// prompt copy. The lock is separate from readers, which never block on
+    /// sidecar I/O. Poison recovery matches the prompt metadata locks.
+    pub(crate) fn wallet_meta_write_guard(&self) -> MutexGuard<'_, ()> {
+        self.inner
+            .wallet_meta_write_lock
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    pub(crate) fn upsert_wallet_meta(&self, seed_hash: WalletSeedHash, meta: PromptMeta) {
+        self.inner
+            .wallet_meta
+            .write()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .insert(seed_hash, meta);
+    }
+
+    pub(crate) fn remove_wallet_meta(&self, seed_hash: &WalletSeedHash) {
+        self.inner
+            .wallet_meta
+            .write()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .remove(seed_hash);
+    }
+
+    /// Replace the single-key prompt-copy index for standalone callers of
+    /// [`Self::new`]. A backend-bound chokepoint shares the live index and
+    /// does not need this snapshot setter. Poison-safe: a poisoned lock is
+    /// recovered so the index can self-heal after a panicked reader.
     pub fn set_single_key_index(&self, index: BTreeMap<String, ImportedKey>) {
         let mut guard = self
             .inner
@@ -1219,6 +1283,110 @@ mod tests {
         Arc::new(open_secret_store(&path).expect("open vault"))
     }
 
+    #[test]
+    fn wallet_meta_writes_refresh_prompt_copy() {
+        use crate::model::wallet::meta::WalletMeta;
+        use crate::wallet_backend::kv_test_support::FailingKv;
+        use crate::wallet_backend::{DetKv, WalletMetaView};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sa = access(fresh_store(dir.path()), Arc::new(NullSecretPrompt));
+        let storage = Arc::new(FailingKv::default());
+        let kv = Arc::new(DetKv::from_store(storage.clone()));
+        let view = WalletMetaView::with_prompt(&kv, &sa);
+        let seed_hash = [0x51; 32];
+        let scope = SecretScope::HdSeed { seed_hash };
+        let mut meta = WalletMeta {
+            alias: "first name".into(),
+            is_main: false,
+            core_wallet_name: None,
+            xpub_encoded: Vec::new(),
+            uses_password: true,
+            password_hint: Some("first hint".into()),
+        };
+
+        view.set(Network::Testnet, &seed_hash, &meta)
+            .expect("initial write");
+        let first = sa.build_request(&scope, None);
+        assert_eq!(first.display_label, "first name");
+        assert_eq!(first.hint.as_deref(), Some("first hint"));
+
+        meta.alias = "renamed".into();
+        meta.password_hint = Some("new hint".into());
+        view.set(Network::Testnet, &seed_hash, &meta)
+            .expect("rename and hint write");
+        let renamed = sa.build_request(&scope, None);
+        assert_eq!(renamed.display_label, "renamed");
+        assert_eq!(renamed.hint.as_deref(), Some("new hint"));
+
+        storage.fail_deletes(true);
+        view.delete(Network::Testnet, &seed_hash)
+            .expect_err("failed sidecar delete");
+        let after_failed_delete = sa.build_request(&scope, None);
+        assert_eq!(after_failed_delete.display_label, "renamed");
+        assert_eq!(after_failed_delete.hint.as_deref(), Some("new hint"));
+        storage.fail_deletes(false);
+        view.delete(Network::Testnet, &seed_hash)
+            .expect("delete metadata");
+        let deleted = sa.build_request(&scope, None);
+        assert_eq!(deleted.display_label, "your wallet");
+        assert!(deleted.hint.is_none());
+    }
+
+    #[test]
+    fn protected_single_key_import_and_rename_refresh_prompt_copy() {
+        use dash_sdk::dpp::dashcore::PrivateKey;
+        use dash_sdk::dpp::dashcore::hashes::{Hash, sha256};
+
+        use crate::model::wallet::alias::AliasSource;
+        use crate::wallet_backend::single_key::ImportPassphrase;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = fresh_store(dir.path());
+        let index = Arc::new(RwLock::new(BTreeMap::new()));
+        let sa = SecretAccess::new_with_single_key_index(
+            Arc::clone(&store),
+            Arc::new(NullSecretPrompt),
+            Network::Testnet,
+            Arc::clone(&index),
+        );
+        let writer_lock = std::sync::Mutex::new(());
+        let view = SingleKeyView::from_views(&store, &writer_lock, &index, Network::Testnet, None);
+        let key_bytes = sha256::Hash::hash(b"wallet-prompt-test-key").to_byte_array();
+        let wif = PrivateKey::from_byte_array(&key_bytes, Network::Testnet)
+            .expect("deterministic test key")
+            .to_wif();
+        let passphrase = format!("test-passphrase-{}", rand::random::<u64>());
+        let key = view
+            .import_wif_with_passphrase(
+                &wif,
+                AliasSource::UserEntered("first key".into()),
+                ImportPassphrase {
+                    passphrase: Some(Zeroizing::new(passphrase)),
+                    hint: Some("key hint".into()),
+                },
+            )
+            .expect("protected import");
+        let scope = SecretScope::SingleKey {
+            address: key.address.clone(),
+        };
+        assert!(sa.scope_has_passphrase(&scope).expect("protected key"));
+        let imported = sa.build_request(&scope, None);
+        assert_eq!(imported.display_label, "first key");
+        assert_eq!(imported.hint.as_deref(), Some("key hint"));
+
+        view.set_alias(&key.address, "renamed key")
+            .expect("rename key");
+        let renamed = sa.build_request(&scope, None);
+        assert_eq!(renamed.display_label, "renamed key");
+        assert_eq!(renamed.hint.as_deref(), Some("key hint"));
+
+        view.forget(&key.address).expect("forget key");
+        let forgotten = sa.build_request(&scope, None);
+        assert_eq!(forgotten.display_label, key.address);
+        assert!(forgotten.hint.is_none());
+    }
+
     /// Write a protected HD seed envelope under `seed_hash`, encrypting
     /// `seed` with `passphrase`.
     fn store_protected_hd(
@@ -1596,11 +1764,13 @@ mod tests {
 
     fn import_protected_key(store: &Arc<SecretStore>, passphrase: &str) -> String {
         let index = std::sync::RwLock::new(std::collections::BTreeMap::new());
-        let view = SingleKeyView::from_views(store, &index, Network::Testnet, None);
+        let alias_write_lock = std::sync::Mutex::new(());
+        let view =
+            SingleKeyView::from_views(store, &alias_write_lock, &index, Network::Testnet, None);
         let imported = view
             .import_wif_with_passphrase(
                 &known_testnet_wif(),
-                Some("My Key".into()),
+                crate::model::wallet::alias::AliasSource::Preserved(Some("My Key".into())),
                 crate::wallet_backend::single_key::ImportPassphrase {
                     passphrase: Some(zeroize::Zeroizing::new(passphrase.to_string())),
                     hint: Some("the usual".into()),

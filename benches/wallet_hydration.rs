@@ -140,8 +140,13 @@ fn seed_single_key_wallets(view: &SingleKeyView<'_>, count: usize) {
         let priv_key =
             PrivateKey::from_byte_array(&bytes, BENCH_NETWORK).expect("valid secp256k1 secret");
         let wif = priv_key.to_wif();
-        view.import_wif(&wif, Some(format!("bench-sk-{i}")))
-            .expect("import wif");
+        view.import_wif(
+            &wif,
+            dash_evo_tool::model::wallet::alias::AliasSource::Preserved(Some(format!(
+                "bench-sk-{i}"
+            ))),
+        )
+        .expect("import wif");
     }
 }
 
@@ -197,9 +202,15 @@ fn bench_hydrate_single_key_wallets(c: &mut Criterion) {
                     let kv = open_kv(dir.path());
                     let store = open_store(dir.path());
                     let index = std::sync::RwLock::new(std::collections::BTreeMap::new());
+                    let alias_write_lock = std::sync::Mutex::new(());
                     {
-                        let view =
-                            SingleKeyView::from_views(&store, &index, BENCH_NETWORK, Some(&kv));
+                        let view = SingleKeyView::from_views(
+                            &store,
+                            &alias_write_lock,
+                            &index,
+                            BENCH_NETWORK,
+                            Some(&kv),
+                        );
                         seed_single_key_wallets(&view, n);
                     }
                     drop(kv);
@@ -209,8 +220,13 @@ fn bench_hydrate_single_key_wallets(c: &mut Criterion) {
                     let kv = open_kv(dir.path());
                     let store = open_store(dir.path());
                     let cold_index = std::sync::RwLock::new(std::collections::BTreeMap::new());
-                    let view =
-                        SingleKeyView::from_views(&store, &cold_index, BENCH_NETWORK, Some(&kv));
+                    let view = SingleKeyView::from_views(
+                        &store,
+                        &alias_write_lock,
+                        &cold_index,
+                        BENCH_NETWORK,
+                        Some(&kv),
+                    );
 
                     let start = Instant::now();
                     let wallets = view.hydrate_wallets();

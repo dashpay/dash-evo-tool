@@ -104,6 +104,11 @@ bitflags = "2.10"
 rust-embed = "8.7.2"
 zeroize = "1.8.1"
 zxcvbn = "3.1.0"
+# Unicode data for alias cleaning and grapheme-safe input truncation.
+# These crates are already transitive dependencies.
+icu_properties = "2.2.0"
+unicode-general-category = "1.1.0"
+unicode-segmentation = "1.13.2"
 argon2 = { version = "0.6.0", features = ["zeroize"] } # For Argon2 key derivation; zeroize wipes intermediate hash state (SEC-001)
 aes-gcm = "0.11.1" # For AES-256-GCM encryption
 cbc = "0.2.1" # For CBC mode encryption

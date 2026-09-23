@@ -75,7 +75,8 @@ pub enum AliasSource {
     /// name, and checked for uniqueness within its wallet kind.
     UserEntered(String),
     /// Carried over from existing storage (legacy migration or restore).
-    /// Length is checked as stored; `None` stays unnamed. A legacy duplicate
+    /// Never rejected for length — legacy aliases predate the limit, so an
+    /// overlong one is logged and kept; `None` stays unnamed. A legacy duplicate
     /// is never rejected, but it is not kept as an exact duplicate either —
     /// [`dedupe_preserved_alias`] suffixes it `_1`, `_2`, … with the smallest
     /// free number.

@@ -27,8 +27,8 @@ use zeroize::Zeroizing;
 use crate::backend_task::error::TaskError;
 use crate::model::single_key::ImportedKey;
 use crate::model::wallet::alias::{
-    AliasSource, DefaultAliasKind, dedupe_preserved_alias, ensure_alias_unique, next_default_alias,
-    resolve_alias, validate_stored_alias,
+    AliasError, AliasSource, DefaultAliasKind, dedupe_preserved_alias, ensure_alias_unique,
+    next_default_alias, resolve_alias, validate_stored_alias,
 };
 use crate::model::wallet::single_key::{
     ClosedSingleKey, OpenSingleKey, SingleKeyData, SingleKeyHash, SingleKeyWallet,
@@ -203,6 +203,8 @@ impl<'a> SingleKeyView<'a> {
     /// User-entered aliases are cleaned, defaulted, and checked for uniqueness.
     /// Preserved aliases keep their stored form unless another key uses the
     /// name, in which case the smallest free `_1`, `_2`, … suffix is added.
+    /// A preserved alias over the length limit is logged and kept, matching
+    /// HD `WalletMetaView::set_migrated`: legacy aliases predate the limit.
     /// The alias writer lock spans resolution through persistence and indexing;
     /// index readers remain available during encryption and storage writes.
     pub fn import_wif_with_passphrase(
@@ -211,8 +213,14 @@ impl<'a> SingleKeyView<'a> {
         alias: AliasSource,
         passphrase: ImportPassphrase,
     ) -> Result<ImportedKey, TaskError> {
-        if let AliasSource::Preserved(Some(alias)) = &alias {
-            validate_stored_alias(alias)?;
+        if let AliasSource::Preserved(Some(alias)) = &alias
+            && let Err(AliasError::TooLong { length }) = validate_stored_alias(alias)
+        {
+            tracing::warn!(
+                alias_chars = length.actual,
+                max_alias_chars = length.max,
+                "Preserving an overlong legacy single-key alias during migration"
+            );
         }
         let priv_key = PrivateKey::from_wif(wif).map_err(|source| TaskError::InvalidWif {
             source: Box::new(source),
@@ -1106,6 +1114,33 @@ mod tests {
 
         assert!(matches!(error, TaskError::InvalidWalletAliasLength { .. }));
         assert!(view.list().is_empty());
+    }
+
+    /// Legacy single-key aliases predate the length limit (unbounded TEXT
+    /// column). Like HD `set_migrated`, a preserved overlong alias must be
+    /// kept verbatim instead of failing the migration row.
+    #[test]
+    fn import_wif_preserves_overlong_legacy_alias() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (store, index, network) = fresh_view(dir.path(), Network::Testnet);
+        let view = SingleKeyView {
+            alias_write_lock: &std::sync::Mutex::new(()),
+            secret_store: &store,
+            index: &index,
+            network,
+            app_kv: None,
+        };
+        let legacy_alias = "w".repeat(65);
+
+        let imported = view
+            .import_wif(
+                known_wif(),
+                AliasSource::Preserved(Some(legacy_alias.clone())),
+            )
+            .expect("overlong legacy alias must be preserved, not rejected");
+
+        assert_eq!(imported.alias.as_deref(), Some(legacy_alias.as_str()));
+        assert_eq!(view.list().len(), 1);
     }
 
     /// TC-SK-003: importing a WIF writes exactly one entry whose label

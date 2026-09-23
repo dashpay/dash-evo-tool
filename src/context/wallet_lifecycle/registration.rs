@@ -93,7 +93,7 @@ impl AppContext {
     /// the current tip, an imported one from genesis so deposits made before
     /// registration are still found.
     ///
-    /// `wallet.alias` is treated as user input: it is cleaned, a blank or
+    /// `wallet.initial_alias` is treated as user input: it is cleaned, a blank or
     /// missing alias becomes the smallest unused "Wallet N", and an alias
     /// another loaded HD wallet already uses is rejected with
     /// [`TaskError::WalletAliasAlreadyUsed`].
@@ -118,7 +118,7 @@ impl AppContext {
         })?;
         self.has_wallet.store(true, Ordering::Relaxed);
 
-        // 4. Bootstrap addresses from the seed the caller holds (fresh
+        // Bootstrap addresses from the seed the caller holds (fresh
         // register), then — for a password wallet — promote that seed into the
         // JIT session cache so the rest of the session does not re-prompt.
         // A no-password wallet needs no promotion: the chokepoint's
@@ -128,7 +128,7 @@ impl AppContext {
             self.promote_seed_to_session(seed_hash, seed);
         }
 
-        // 5. Register the wallet with the upstream SPV backend so its addresses
+        // Register the wallet with the upstream SPV backend so its addresses
         // are watched and received funds become visible (W1). The
         // upstream `create_wallet_from_seed_bytes` is the only writer to the
         // persistor, so without this the wallet is never watched. Done on a

@@ -26,7 +26,9 @@ type SingleKeyWallets = BTreeMap<SingleKeyHash, Arc<RwLock<SingleKeyWallet>>>;
 ///
 /// `writer` mutex → `state` RwLock → an inner `Wallet`/`SingleKeyWallet`
 /// handle lock. Mutators run their persistence callback under `writer`, and
-/// `rename_hd` reads the inner wallet while holding it. Therefore:
+/// `rename_hd` reads the inner wallet while holding it. No method holds
+/// `state` while acquiring an inner handle lock, so snapshot readers such as
+/// [`Self::hd_alias`] are safe under an inner wallet guard. Therefore:
 ///
 /// - never call a mutator (or a backend-bound metadata view such as
 ///   `WalletBackend::wallet_meta()`) while holding an inner wallet guard;
@@ -270,6 +272,11 @@ impl WalletContext {
         Ok(())
     }
 
+    /// Register a new HD wallet, resolving its alias before `persist` runs.
+    ///
+    /// The ordering is load-bearing: `persist` writes the seed envelope and then
+    /// the metadata row that hydration enumerates, so an alias rejection after
+    /// the envelope write would orphan an encrypted seed that is never loaded.
     pub(crate) fn register_hd(
         &self,
         mut wallet: Wallet,

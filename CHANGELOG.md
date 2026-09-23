@@ -471,8 +471,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - Wallet registries and live names now share one WalletContext across the UI,
-  MCP tools and password prompts. Metadata writes are serialized while readers
-  continue to use the last committed snapshot.
+  MCP tools and password prompts. Metadata writes are serialized while wallet
+  names and password prompts continue to use the last committed snapshot.
 
 - **Platform updated to `4.2.0-dev.8`** (`v4.2-dev`, `63cf57f`): existing
   databases from the previously pinned PR are upgraded automatically with a

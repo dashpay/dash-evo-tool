@@ -34,8 +34,20 @@ set -euo pipefail
 [ "${1:-}" = --standalone ] || exit 1
 shift
 case "$1" in
-    network-info | core-wallet-import | core-balances-get) echo '{}' ;;
-    network-switch) echo '{"active":"testnet"}' ;;
+    network-info)
+        if [ -f "$DASH_EVO_DATA_DIR/network-choice" ]; then
+            echo '{"active":"testnet"}'
+        else
+            echo '{"active":"mainnet"}'
+        fi ;;
+
+    core-wallet-import | core-balances-get) echo '{}' ;;
+    network-switch)
+        if [ "${FORGET_NETWORK:-0}" != 1 ]; then
+            touch "$DASH_EVO_DATA_DIR/network-choice"
+        fi
+        echo '{"active":"testnet"}' ;;
+
     core-address-create) echo '{"address":"mock-address"}' ;;
     platform-addresses-list) echo '{"balances":[{}]}' ;;
     *) exit 1 ;;
@@ -47,6 +59,13 @@ printf 'MCP_API_KEY=%s\n' "$RANDOM-$RANDOM" > "$scratch/capture/.env"
 FIXTURE_WALLET_MNEMONIC="$RANDOM-$RANDOM" bash "$SCRIPT_DIR/capture-headless.sh" \
     --data-dir "$scratch/capture" --det-cli "$scratch/bin/det-cli" > "$scratch/capture.log" 2>&1 || fail 'capture did not force standalone mode'
 echo 'PASS: capture standalone mode'
+if FORGET_NETWORK=1 FIXTURE_WALLET_MNEMONIC="$RANDOM-$RANDOM" bash "$SCRIPT_DIR/capture-headless.sh" \
+    --data-dir "$scratch/forget-network" --det-cli "$scratch/bin/det-cli" > "$scratch/forget-network.log" 2>&1; then
+    fail 'capture accepted a network switch lost on restart'
+fi
+grep -q 'did not survive restart' "$scratch/forget-network.log" || fail 'capture did not report lost network selection'
+echo 'PASS: capture rejects a network switch lost on restart'
+
 
 cat > "$scratch/bin/gh" <<'EOF'
 #!/usr/bin/env bash

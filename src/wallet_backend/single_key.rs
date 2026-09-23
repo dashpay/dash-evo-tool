@@ -35,10 +35,6 @@ use crate::wallet_backend::secret_seam::{SecretScheme, SecretSeam};
 use crate::wallet_backend::single_key_entry::SingleKeyEntry;
 use crate::wallet_backend::{DetKv, DetScope};
 
-/// Minimum length (in characters) for a per-key passphrase. Re-exported
-/// from the model so the rule has a single home; both this backend and
-/// the import/restore dialogs share the same value.
-pub use crate::model::wallet::passphrase::MIN_SINGLE_KEY_PASSPHRASE_LEN;
 use crate::model::wallet::passphrase::validate_single_key_passphrase;
 
 /// Fixed per-backend namespace id for single-key entries.
@@ -930,6 +926,7 @@ fn sign_message_with_raw_key(bytes: &[u8; 32], msg: &[u8; 32]) -> Result<Signatu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::wallet::passphrase::MIN_SINGLE_KEY_PASSPHRASE_LEN;
 
     /// The hand-written `ImportPassphrase` `Debug` must redact the
     /// passphrase so it can never leak through `{:?}` into logs or panic
@@ -1812,7 +1809,7 @@ mod tests {
             .expect_err("short passphrase rejected");
         match err {
             TaskError::SingleKeyPassphraseTooShort { min } => {
-                assert_eq!(min, super::MIN_SINGLE_KEY_PASSPHRASE_LEN as u32);
+                assert_eq!(min, MIN_SINGLE_KEY_PASSPHRASE_LEN as u32);
             }
             other => panic!("expected SingleKeyPassphraseTooShort, got {other:?}"),
         }

@@ -563,16 +563,24 @@ fn stale_after_empty_found(
 }
 
 /// Collect `(wallet_id, balance_credits)` for every wallet that synced
-/// successfully in `summary`. Skipped (no bound shielded sub-wallet) and
-/// errored wallets are excluded so their snapshot balance is left untouched.
-/// Pure — no I/O — so it is unit-testable without a coordinator or a
-/// registered wallet.
+/// successfully in `summary`. Skipped, errored, and overflowing wallets are
+/// excluded so their snapshot balance is left untouched.
 fn summary_ok_balances(summary: &ShieldedSyncPassSummary) -> Vec<([u8; 32], u64)> {
     summary
         .wallet_results
         .iter()
         .filter_map(|(wallet_id, outcome)| match outcome {
-            WalletShieldedOutcome::Ok(sync) => Some((*wallet_id, sync.balance_total())),
+            WalletShieldedOutcome::Ok(sync) => match sync.balance_total() {
+                Ok(balance) => Some((*wallet_id, balance)),
+                Err(error) => {
+                    tracing::debug!(
+                        ?wallet_id,
+                        ?error,
+                        "Shielded sync balance total is invalid; preserving the cached balance"
+                    );
+                    None
+                }
+            },
             WalletShieldedOutcome::Skipped | WalletShieldedOutcome::Err(_) => None,
         })
         .collect()
@@ -1198,12 +1206,19 @@ mod tests {
         summary
             .wallet_results
             .insert([3u8; 32], WalletShieldedOutcome::Err("boom".to_string()));
+        summary.wallet_results.insert(
+            [4u8; 32],
+            WalletShieldedOutcome::Ok(ShieldedSyncSummary {
+                balances: BTreeMap::from([(0, u64::MAX), (1, 1)]),
+                ..Default::default()
+            }),
+        );
 
         let got = summary_ok_balances(&summary);
         assert_eq!(
             got,
             vec![([1u8; 32], 1_234)],
-            "only the Ok wallet contributes its summed balance_total"
+            "only a successful wallet with a representable total contributes a balance"
         );
     }
 

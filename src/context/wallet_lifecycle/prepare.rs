@@ -141,7 +141,13 @@ impl AppContext {
         self.run_pending_vault_cleanup_sweep(&gate);
 
         drain?;
-        self.storage_prepared.store(true, Ordering::Release);
+        // The combined failure publishes its own banner but returns Ok to keep wallets usable.
+        if !matches!(
+            status.state().as_ref(),
+            MigrationState::FailedWithUnreadableIdentities { .. }
+        ) {
+            self.storage_prepared.store(true, Ordering::Release);
+        }
         Ok(())
     }
 

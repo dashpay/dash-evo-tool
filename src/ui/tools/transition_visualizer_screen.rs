@@ -13,7 +13,7 @@ use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::dpp::serialization::PlatformDeserializable;
+use dash_sdk::dpp::serialization::PlatformDeserializableUntrusted;
 use dash_sdk::dpp::state_transition::StateTransition;
 use dash_sdk::platform::Identifier;
 use eframe::egui::{self, Color32, ScrollArea, TextEdit, Ui, Window};
@@ -122,8 +122,9 @@ impl TransitionVisualizerScreen {
 
         match decoded_bytes {
             Ok(bytes) => {
-                // Try to deserialize into a StateTransition
-                match StateTransition::deserialize_from_bytes(&bytes) {
+                // Pasted bytes are untrusted input: decode without
+                // pre-allocating from length prefixes.
+                match StateTransition::deserialize_from_bytes_untrusted(&bytes) {
                     Ok(state_transition) => {
                         // Convert to JSON
                         match serde_json::to_string_pretty(&state_transition) {

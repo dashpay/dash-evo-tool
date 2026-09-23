@@ -7,7 +7,8 @@
 //! points `MIGRATION_FIXTURES_DIR` at an unpacked fixture set. Unset — the
 //! normal `cargo test --all-features --workspace` case — it reports the skip
 //! and passes, while the module-level unit tests below still exercise the
-//! harness's own logic.
+//! harness's own logic. The bundled public-only v0.9.3 profile also runs
+//! without downloaded archives whenever a CLI binary is available.
 //!
 //! What is deliberately *not* done here: booting `AppState` in-process. Under
 //! the `testing` feature `AppState::boot_inputs` substitutes an in-memory
@@ -26,6 +27,7 @@
 //! | `MIGRATION_FIXTURES_MANIFEST` | Manifest path, when it lives elsewhere. |
 //! | `MIGRATION_MATRIX_ONLY` | Comma-separated fixture ids to run. |
 //! | `MIGRATION_MATRIX_SKIP_NETWORK` | Skip the checks needing a synced chain. |
+//! | `MIGRATION_MATRIX_SKIP_PASSWORDS` | Explicitly skip secret-dependent scenarios (fork CI). |
 //! | `MIGRATION_MATRIX_BOOT_TIMEOUT_SECS` | Per-boot wall clock (default 300). |
 //! | `MIGRATION_MATRIX_NETWORK_TIMEOUT_SECS` | Chain-gated calls (default 900). |
 //! | `DET_CLI_BIN` | Binary under test, instead of the one Cargo just built. |
@@ -33,6 +35,7 @@
 mod assertions;
 mod cli;
 mod manifest;
+mod public_identities;
 mod stage;
 
 use std::path::{Path, PathBuf};
@@ -45,6 +48,7 @@ use manifest::{ExpectedWallet, Fixture, Scenario};
 const FIXTURES_DIR_ENV: &str = "MIGRATION_FIXTURES_DIR";
 const ONLY_ENV: &str = "MIGRATION_MATRIX_ONLY";
 const SKIP_NETWORK_ENV: &str = "MIGRATION_MATRIX_SKIP_NETWORK";
+const SKIP_PASSWORDS_ENV: &str = "MIGRATION_MATRIX_SKIP_PASSWORDS";
 const BOOT_TIMEOUT_ENV: &str = "MIGRATION_MATRIX_BOOT_TIMEOUT_SECS";
 const NETWORK_TIMEOUT_ENV: &str = "MIGRATION_MATRIX_NETWORK_TIMEOUT_SECS";
 
@@ -60,6 +64,7 @@ struct Options {
     boot_timeout: Duration,
     network_timeout: Duration,
     skip_network: bool,
+    skip_passwords: bool,
 }
 
 impl Options {
@@ -68,6 +73,7 @@ impl Options {
             boot_timeout: duration_from_env(BOOT_TIMEOUT_ENV, DEFAULT_BOOT_TIMEOUT),
             network_timeout: duration_from_env(NETWORK_TIMEOUT_ENV, DEFAULT_NETWORK_TIMEOUT),
             skip_network: flag(SKIP_NETWORK_ENV),
+            skip_passwords: flag(SKIP_PASSWORDS_ENV),
         }
     }
 }
@@ -147,6 +153,89 @@ fn fixtures_dir() -> Option<PathBuf> {
     }
 }
 
+fn bundled_public_fixture(root: &Path) -> Fixture {
+    let expected: serde_json::Value = serde_json::from_str(include_str!(
+        "../migration-fixtures/v0.9.3-public-identities/expected.json"
+    ))
+    .expect("public fixture expectations");
+    let fixture: Fixture = serde_json::from_value(serde_json::json!({
+        "id": "v0.9.3-public-identities", "network": "testnet",
+        "git_tag": "v0.9.3", "det_version": "0.9.3",
+        "capture_method": "historical-writer+explorer", "profile": "public-identities-dpns",
+        "expect": {"derive_address": false, "starting_db_version": 11,
+            "public_identities": expected["identities"]}
+    }))
+    .expect("public fixture manifest");
+    let source = root.join(&fixture.id);
+    std::fs::create_dir_all(&source).unwrap();
+    let conn = rusqlite::Connection::open(source.join(DATA_DB)).unwrap();
+    // SQLite dumps can insert child rows before the referenced table exists.
+    conn.pragma_update(None, "foreign_keys", false).unwrap();
+    conn.execute_batch(include_str!(
+        "../migration-fixtures/v0.9.3-public-identities/data.sql"
+    ))
+    .unwrap();
+    conn.pragma_update(None, "foreign_keys", true).unwrap();
+    assert!(
+        conn.prepare("PRAGMA foreign_key_check")
+            .unwrap()
+            .query([])
+            .unwrap()
+            .next()
+            .unwrap()
+            .is_none()
+    );
+    fixture
+}
+
+#[test]
+fn public_identity_fixture_contains_user_dpns_and_evonode_without_wallets() {
+    let root = tempfile::tempdir().unwrap();
+    let fixture = bundled_public_fixture(root.path());
+    let db = root.path().join(&fixture.id).join(DATA_DB);
+    let expected = &fixture.expect.public_identities;
+    assert_eq!(expected.len(), 2);
+    assert!(
+        expected
+            .iter()
+            .any(|id| id.identity_type == "User" && !id.dpns_names.is_empty())
+    );
+    assert!(expected.iter().any(|id| id.identity_type == "Evonode"
+        && id.public_keys.iter().any(|key| key.purpose == "OWNER")));
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM wallet", [], |row| row
+            .get::<_, u64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM identity", [], |row| row
+            .get::<_, u64>(0))
+            .unwrap(),
+        2
+    );
+    public_identities::check_source(expected, &db, &root.path().join("scratch")).unwrap();
+}
+
+#[test]
+fn public_identity_fixture_migrates() {
+    if !cfg!(feature = "cli")
+        && std::env::var_os(cli::BINARY_ENV).is_none()
+        && fixtures_dir().is_none()
+    {
+        println!("Skipping public identity CLI migration: enable cli or set DET_CLI_BIN");
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let fixture = bundled_public_fixture(root.path());
+    let options = Options {
+        skip_network: true,
+        ..Options::from_env()
+    };
+    run_fixture(root.path(), &fixture, &options).unwrap_or_else(|error| panic!("{error}"));
+}
+
 /// Applies the `MIGRATION_MATRIX_ONLY` filter, if any.
 fn select(fixtures: &[Fixture]) -> Vec<&Fixture> {
     let only = std::env::var(ONLY_ENV).unwrap_or_default();
@@ -165,8 +254,13 @@ fn select(fixtures: &[Fixture]) -> Vec<&Fixture> {
 /// then one per password run — each on a freshly staged copy, and reports
 /// every failing scenario rather than stopping at the first.
 fn run_fixture(fixtures_dir: &Path, fixture: &Fixture, options: &Options) -> Result<(), String> {
-    let failures: Vec<String> = fixture
-        .scenarios()?
+    if options.skip_passwords && !fixture.password_runs.is_empty() {
+        println!(
+            "  SKIPPED {} password scenario(s): explicitly disabled by {SKIP_PASSWORDS_ENV}",
+            fixture.password_runs.len()
+        );
+    }
+    let failures: Vec<String> = scenarios_for_run(fixture, options.skip_passwords)?
         .iter()
         .filter_map(|scenario| {
             println!("  scenario: {}", scenario.label);
@@ -179,6 +273,14 @@ fn run_fixture(fixtures_dir: &Path, fixture: &Fixture, options: &Options) -> Res
         true => Ok(()),
         false => Err(failures.join("\n\n")),
     }
+}
+
+fn scenarios_for_run(fixture: &Fixture, skip_passwords: bool) -> Result<Vec<Scenario>, String> {
+    Ok(fixture
+        .scenarios()?
+        .into_iter()
+        .filter(|scenario| !skip_passwords || scenario.password_env.is_none())
+        .collect())
 }
 
 /// Stages one fixture, boots it twice, and checks what the upgrade produced.
@@ -212,6 +314,8 @@ fn run_scenario(
     // Every boot path opens a pre-update data.db read-only, so its bytes are
     // part of the contract for every fixture that has one, not an opt-in.
     let before_bytes = assertions::file_bytes(&data_db)?;
+    let before_sentinels = assertions::migration_sentinels(&app_db, &scratch, "before")?;
+    public_identities::check_source(&fixture.expect.public_identities, &data_db, &scratch)?;
 
     let cli = cli::DetCli::new(&staged)?;
 
@@ -260,12 +364,21 @@ fn run_scenario(
         false => assertions::check_wallets(&scenario.listed_aliases, &first)?,
     };
     check_wallet_outcomes(&scenario.wallets, &data_db, &network_db, &scratch, "after")?;
+    public_identities::check_migrated(
+        &fixture.expect.public_identities,
+        &network_db,
+        &scratch,
+        "after",
+        &cli,
+        options.boot_timeout,
+    )?;
     assertions::check_identities(
         &fixture.expect.identity_ids,
         &assertions::identity_ids(&network_db, &scratch, "after")?,
     )?;
 
     let sentinels = assertions::migration_sentinels(&app_db, &scratch, "after")?;
+    assertions::check_existing_sentinels(&before_sentinels, &sentinels)?;
     if needs_desktop {
         // An unfinished storage update must not claim completion.
         assertions::check_sentinel_absent(&sentinels, network)?;
@@ -290,6 +403,14 @@ fn run_scenario(
         "idempotent",
     )?;
     let second_schema = assertions::schema_snapshot(&data_db, &scratch, "idempotent")?;
+    public_identities::check_migrated(
+        &fixture.expect.public_identities,
+        &network_db,
+        &scratch,
+        "idempotent",
+        &cli,
+        options.boot_timeout,
+    )?;
     assertions::check_schema_outcome(before.as_ref(), second_schema.as_ref())?;
     if before_bytes.is_some() {
         assertions::check_bytes_unchanged(
@@ -350,13 +471,10 @@ fn check_wallet_outcomes(
     scratch: &Path,
     label: &str,
 ) -> Result<(), String> {
-    if wallets.is_empty() {
-        return Ok(());
-    }
     match assertions::legacy_wallet_registrations(data_db, network_db, scratch, label)? {
         Some(registered) => assertions::check_wallet_outcomes(wallets, &registered),
         None => {
-            println!("    per-wallet storage check skipped (no {DATA_DB} to name the wallets)");
+            println!("    per-wallet storage check skipped (no legacy wallet table)");
             Ok(())
         }
     }
@@ -365,6 +483,42 @@ fn check_wallet_outcomes(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn review_regression_empty_manifest_cannot_hide_captured_wallets() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join(DATA_DB);
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch("CREATE TABLE wallet(alias TEXT, master_ecdsa_bip44_account_0_epk BLOB); INSERT INTO wallet VALUES ('omitted', x'01');").unwrap();
+        assert!(
+            check_wallet_outcomes(
+                &[],
+                &db,
+                &dir.path().join("missing.sqlite"),
+                &dir.path().join("scratch"),
+                "before"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn modern_profile_without_legacy_wallet_table_is_allowed() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join(DATA_DB);
+        rusqlite::Connection::open(&db)
+            .unwrap()
+            .execute_batch("CREATE TABLE settings(id INTEGER, database_version INTEGER);")
+            .unwrap();
+        check_wallet_outcomes(
+            &[],
+            &db,
+            &dir.path().join("missing.sqlite"),
+            &dir.path().join("scratch"),
+            "before",
+        )
+        .unwrap();
+    }
 
     fn fixture(id: &str) -> Fixture {
         serde_json::from_str(&format!(r#"{{ "id": "{id}", "network": "testnet" }}"#))
@@ -391,5 +545,24 @@ mod tests {
     #[test]
     fn an_absent_flag_is_off() {
         assert!(!flag("MIGRATION_MATRIX_FLAG_THAT_IS_UNSET"));
+    }
+
+    #[test]
+    fn password_scenarios_require_an_explicit_opt_out() {
+        let manifest: manifest::Manifest =
+            serde_json::from_str(include_str!("../migration-fixtures/manifest.json"))
+                .expect("manifest");
+        let fixture = manifest
+            .fixtures
+            .iter()
+            .find(|fixture| !fixture.password_runs.is_empty())
+            .expect("protected fixture");
+        let all = scenarios_for_run(fixture, false).expect("all scenarios");
+        assert!(all.iter().any(|scenario| scenario.password_env.is_some()));
+        let public = scenarios_for_run(fixture, true).expect("password-free scenarios");
+        assert_eq!(public.len(), 1);
+        assert!(public[0].password_env.is_none());
+        assert!(public[0].needs_desktop());
+        assert_eq!(public[0].listed_aliases, all[0].listed_aliases);
     }
 }

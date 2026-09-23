@@ -9,7 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Security
 
 - The CLI keeps MCP requests at the selected endpoint without following HTTP
-  redirects. Migration fixture packaging rejects configured credentials, and
+  redirects or using system/environment proxies. Migration fixture packaging rejects configured credentials, and
   CI requires verified archive checksums and a runtime fixture password.
 
 - **Dependency advisory GHSA-4w2j-m93h-cj5j cleared**: the `quinn-proto` entry in
@@ -31,6 +31,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - A scheduled workflow renews expiring migration fixture archives without
   changing their contents and proposes updated manifest pointers in a PR.
+
+- Migration tests also replay public user/DPNS and Evonode identities serialized
+  by v0.9.3, checking their metadata and every public key after repeated startup.
 
 - Historical-profile migration tests cover v0.9.3 and the September 8 weekly
   release, including protected wallets and repeat startup. CLI tools expose
@@ -112,6 +115,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   follow-up.
 
 ### Fixed
+
+- CLI builds no longer warn about an unused passphrase-limit import.
+
+- Migration tests compile with the current rand dependency.
+
+- Migration CI runs for PR #983 through the regular pull-request workflow.
+
+- CLI network switches persist across restarts, including headless fixture capture.
+  Migration checks reject undeclared legacy wallets, changed captured completion
+  markers, and legacy row changes committed only to the SQLite WAL.
+
+- Storage preparation retries incomplete app-data imports when unreadable
+  identities are also present, and concurrent callers receive the migration error.
+
+- Cancelling a network switch takes priority over simultaneous startup and
+  reports chain sync as stopped after shutting down the new backend.
+
+- Profile saves stop when their picture cannot be downloaded, explain unsupported
+  signing keys, and retry failed display-timestamp storage on profile reads
+  without submitting another paid write.
+  Refreshing a profile preserves its saved dates, and pictures downloaded for
+  profile updates are cached for subsequent views.
+
+- DashPay profile writes use `platform-wallet`, enabling HIGH authentication
+  keys of type ECDSA_SECP256K1 or ECDSA_HASH160 at HIGH or CRITICAL security.
+  Platform is pinned to `f73f5d6098a739d29a1cebc2f7941e062ee8a517`, including
+  dashpay/platform#4653 and #4764 for HASH160 profile creation and replacement
+  that skip eligible keys unavailable to the signer.
+  Identities without an eligible key available locally receive the specific
+  profile-key error before publication.
+  The updated Platform API also uses checked shielded balance totals,
+  versioned token reward calculations, and a terminal failed-withdrawal status.
+  Withdrawal history labels and tool descriptions include all terminal statuses.
+  Writes require a wallet-linked identity; clearing existing profile fields
+  reports an explicit error because the upstream API preserves omitted fields.
 
 - The backend wallet lifecycle test reserves the withdrawal fee instead of
   attempting to withdraw the entire Platform address balance.

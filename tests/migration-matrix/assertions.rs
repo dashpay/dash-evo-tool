@@ -19,8 +19,9 @@ use dash_evo_tool::backend_task::migration::finish_unwire::{
 };
 use dash_evo_tool::database::DEFAULT_DB_VERSION;
 use dash_sdk::dpp::dashcore::{Network, base58};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use crate::cli::CliRun;
 use crate::manifest::{ExpectedWallet, WalletOutcome};
@@ -125,11 +126,12 @@ pub fn check_needs_desktop(run: &CliRun, label: &str) -> Result<(), String> {
 }
 
 /// `data.db`'s schema as it can be compared across a boot: the version the
-/// ladder records plus every object in `sqlite_master`.
+/// ladder records, every schema object, and the committed rows including WAL data.
 #[derive(Debug, PartialEq, Eq)]
 pub struct SchemaSnapshot {
     pub version: Option<u16>,
     objects: Vec<(String, String, String)>,
+    rows: BTreeMap<String, Vec<[u8; 32]>>,
 }
 
 impl SchemaSnapshot {
@@ -156,7 +158,13 @@ pub fn schema_snapshot(
             [],
             |row| row.get::<_, u16>(0),
         )
-        .ok();
+        .optional()
+        .map_err(|e| {
+            format!(
+                "could not read the schema version of {}: {e}",
+                data_db.display()
+            )
+        })?;
     let mut statement = conn
         .prepare("SELECT type, name, IFNULL(sql, '') FROM sqlite_master ORDER BY type, name")
         .map_err(|e| format!("could not read the schema of {}: {e}", data_db.display()))?;
@@ -164,7 +172,58 @@ pub fn schema_snapshot(
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
         .and_then(|rows| rows.collect::<Result<Vec<(String, String, String)>, _>>())
         .map_err(|e| format!("could not read the schema of {}: {e}", data_db.display()))?;
-    Ok(Some(SchemaSnapshot { version, objects }))
+    let rows = table_rows(&conn, &objects)
+        .map_err(|e| format!("could not snapshot rows in {}: {e}", data_db.display()))?;
+    Ok(Some(SchemaSnapshot {
+        version,
+        objects,
+        rows,
+    }))
+}
+
+// Hash typed values, retaining duplicate rows while ignoring physical page order.
+fn table_rows(
+    conn: &Connection,
+    objects: &[(String, String, String)],
+) -> rusqlite::Result<BTreeMap<String, Vec<[u8; 32]>>> {
+    use rusqlite::types::ValueRef;
+    let mut tables = BTreeMap::new();
+    for (_, name, _) in objects.iter().filter(|(kind, _, _)| kind == "table") {
+        let quoted = name.replace('"', "\"\"");
+        let mut statement = conn.prepare(&format!("SELECT * FROM \"{quoted}\""))?;
+        let columns = statement.column_count();
+        let mut rows = statement
+            .query_map([], |row| {
+                let mut hash = Sha256::new();
+                for column in 0..columns {
+                    match row.get_ref(column)? {
+                        ValueRef::Null => hash.update([0]),
+                        ValueRef::Integer(value) => {
+                            hash.update([1]);
+                            hash.update(value.to_le_bytes());
+                        }
+                        ValueRef::Real(value) => {
+                            hash.update([2]);
+                            hash.update(value.to_bits().to_le_bytes());
+                        }
+                        ValueRef::Text(value) | ValueRef::Blob(value) => {
+                            hash.update([if matches!(row.get_ref(column)?, ValueRef::Text(_)) {
+                                3
+                            } else {
+                                4
+                            }]);
+                            hash.update((value.len() as u64).to_le_bytes());
+                            hash.update(value);
+                        }
+                    }
+                }
+                Ok(hash.finalize().into())
+            })?
+            .collect::<rusqlite::Result<Vec<[u8; 32]>>>()?;
+        rows.sort_unstable();
+        tables.insert(name.clone(), rows);
+    }
+    Ok(tables)
 }
 
 /// The legacy `data.db` verdict, conditional on where the fixture started.
@@ -268,8 +327,7 @@ pub fn check_network(expected: Network, run: &CliRun) -> Result<(), String> {
     Ok(())
 }
 
-/// Checks every expected alias survived and returns the identifiers usable
-/// with `core-address-create` (alias when there is one, seed hash otherwise).
+/// Checks the complete wallet roster and returns aliases for `core-address-create`.
 pub fn check_wallets(expected_aliases: &[String], run: &CliRun) -> Result<Vec<String>, String> {
     let json = run.json()?;
     let wallets = json
@@ -285,20 +343,16 @@ pub fn check_wallets(expected_aliases: &[String], run: &CliRun) -> Result<Vec<St
     let mut aliases = BTreeSet::new();
     let mut identifiers = Vec::new();
     for wallet in wallets {
-        let alias = wallet.get("alias").and_then(Value::as_str);
-        let seed_hash = wallet.get("seed_hash").and_then(Value::as_str);
-        if let Some(alias) = alias {
-            aliases.insert(alias.to_string());
+        let alias = wallet.get("alias").and_then(Value::as_str).ok_or_else(|| {
+            format!(
+                "a listed wallet has no alias to match against the manifest\n{}",
+                run.report()
+            )
+        })?;
+        if !aliases.insert(alias.to_string()) {
+            return Err(format!("duplicate wallet alias after migration: {alias:?}"));
         }
-        match alias.or(seed_hash) {
-            Some(id) => identifiers.push(id.to_string()),
-            None => {
-                return Err(format!(
-                    "a listed wallet has neither alias nor seed hash\n{}",
-                    run.report()
-                ));
-            }
-        }
+        identifiers.push(alias.to_string());
     }
 
     let missing: Vec<&String> = expected_aliases
@@ -308,6 +362,15 @@ pub fn check_wallets(expected_aliases: &[String], run: &CliRun) -> Result<Vec<St
     if !missing.is_empty() {
         return Err(format!(
             "wallets missing after the migration: {missing:?} — the boot listed {aliases:?}"
+        ));
+    }
+    let extra: Vec<_> = aliases
+        .iter()
+        .filter(|alias| !expected_aliases.contains(alias))
+        .collect();
+    if !extra.is_empty() {
+        return Err(format!(
+            "wallets absent from the manifest were listed after migration: {extra:?}"
         ));
     }
     Ok(identifiers)
@@ -361,6 +424,24 @@ pub fn migration_sentinels(
             )
         })?;
     Ok(rows)
+}
+
+/// Completed migrations in the captured profile must retain their exact markers.
+pub fn check_existing_sentinels(
+    before: &BTreeMap<String, Vec<u8>>,
+    after: &BTreeMap<String, Vec<u8>>,
+) -> Result<(), String> {
+    let changed: Vec<_> = before
+        .iter()
+        .filter(|(key, value)| after.get(*key) != Some(*value))
+        .map(|(key, _)| key)
+        .collect();
+    if !changed.is_empty() {
+        return Err(format!(
+            "the first boot changed captured migration sentinels: {changed:?}"
+        ));
+    }
+    Ok(())
 }
 
 /// The completion sentinel the legacy drain records once it finishes.
@@ -418,6 +499,16 @@ pub fn legacy_wallet_registrations(
             data_db.display()
         )
     };
+    if !legacy
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'wallet')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(read_error)?
+    {
+        return Ok(None);
+    }
     let mut statement = legacy
         .prepare("SELECT alias, master_ecdsa_bip44_account_0_epk FROM wallet")
         .map_err(read_error)?;
@@ -431,8 +522,12 @@ pub fn legacy_wallet_registrations(
     let store = open_copy(network_db, scratch, label)?;
     let mut registered = BTreeMap::new();
     for (alias, account_xpub) in wallets {
-        // The manifest names wallets by alias; an unnamed one cannot be asked about.
-        let Some(alias) = alias else { continue };
+        let alias = alias.ok_or_else(|| {
+            "a captured wallet has no alias to match against contents.wallets".to_owned()
+        })?;
+        if registered.contains_key(&alias) {
+            return Err(format!("duplicate captured wallet alias: {alias:?}"));
+        }
         let found = match &store {
             None => false,
             Some(conn) => conn
@@ -636,17 +731,25 @@ pub fn check_identities(expected: &[String], found: &BTreeSet<String>) -> Result
 /// Opens a copy of a SQLite database, carrying its `-wal` / `-shm` siblings so
 /// uncheckpointed commits are visible. Returns `None` when the database does
 /// not exist.
-fn open_copy(db: &Path, scratch: &Path, label: &str) -> Result<Option<Connection>, String> {
+pub(crate) fn open_copy(
+    db: &Path,
+    scratch: &Path,
+    label: &str,
+) -> Result<Option<Connection>, String> {
     if !db.exists() {
         return Ok(None);
     }
     let file_name = db
         .file_name()
         .ok_or_else(|| format!("{} has no file name", db.display()))?;
-    let dir = scratch.join(label);
-    fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+    fs::create_dir_all(scratch)
+        .map_err(|e| format!("could not create {}: {e}", scratch.display()))?;
+    let dir = tempfile::Builder::new()
+        .prefix(label)
+        .tempdir_in(scratch)
+        .map_err(|e| format!("could not create snapshot directory: {e}"))?;
 
-    let copy: PathBuf = dir.join(file_name);
+    let copy: PathBuf = dir.keep().join(file_name);
     fs::copy(db, &copy).map_err(|e| format!("could not copy {}: {e}", db.display()))?;
     for suffix in ["-wal", "-shm"] {
         let sibling = PathBuf::from(format!("{}{suffix}", db.display()));
@@ -679,7 +782,11 @@ mod tests {
                 "CREATE TABLE tokens(id INTEGER)".to_string(),
             ));
         }
-        SchemaSnapshot { version, objects }
+        SchemaSnapshot {
+            version,
+            objects,
+            rows: BTreeMap::new(),
+        }
     }
 
     /// Every boot path opens an existing `data.db` read-only, so the legacy
@@ -790,19 +897,40 @@ mod tests {
     }
 
     #[test]
-    fn wallet_identifiers_fall_back_to_the_seed_hash() {
+    fn wallet_list_rejects_unexpected_and_duplicate_wallets() {
+        for wallets in [
+            r#"[{"alias":"extra"}]"#,
+            r#"[{"alias":null,"seed_hash":"ab01"}]"#,
+            r#"[{"alias":"savings"},{"alias":"savings"}]"#,
+        ] {
+            let run = CliRun {
+                command: "core-wallets-list".to_string(),
+                exit_code: Some(0),
+                stdout: format!(r#"{{"wallets":{wallets}}}"#),
+                stderr: String::new(),
+                timed_out: false,
+            };
+            let expected = if wallets.contains("savings") {
+                vec!["savings".to_string()]
+            } else {
+                vec![]
+            };
+            assert!(check_wallets(&expected, &run).is_err(), "{wallets}");
+        }
+    }
+
+    #[test]
+    fn wallet_identifiers_match_the_expected_aliases() {
         let run = CliRun {
             command: "det-cli --standalone core-wallets-list".to_string(),
             exit_code: Some(0),
-            stdout: r#"{"wallets":[{"seed_hash":"ab01","alias":"savings"},
-                                   {"seed_hash":"cd02","alias":null}]}"#
-                .to_string(),
+            stdout: r#"{"wallets":[{"seed_hash":"ab01","alias":"savings"}]}"#.to_string(),
             stderr: String::new(),
             timed_out: false,
         };
 
         let ids = check_wallets(&["savings".to_string()], &run).expect("expected alias present");
-        assert_eq!(ids, ["savings", "cd02"]);
+        assert_eq!(ids, ["savings"]);
 
         let error =
             check_wallets(&["pension".to_string()], &run).expect_err("a missing wallet must fail");
@@ -1001,6 +1129,79 @@ mod tests {
     }
 
     #[test]
+    fn legacy_wallet_aliases_must_be_unique_and_declared() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join(DATA_DB);
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch("CREATE TABLE wallet(alias TEXT, master_ecdsa_bip44_account_0_epk BLOB); INSERT INTO wallet VALUES(NULL, x'01');").unwrap();
+        let read = || {
+            legacy_wallet_registrations(
+                &db,
+                &dir.path().join("absent.sqlite"),
+                &dir.path().join("scratch"),
+                "inspect",
+            )
+        };
+        assert!(read().is_err());
+        conn.execute_batch(
+            "UPDATE wallet SET alias='duplicate'; INSERT INTO wallet SELECT * FROM wallet;",
+        )
+        .unwrap();
+        assert!(read().is_err());
+    }
+
+    #[test]
+    fn review_regression_committed_wal_row_changes_fail_preservation() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join(DATA_DB);
+        let scratch = dir.path().join("scratch");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE settings(id INTEGER, database_version INTEGER); INSERT INTO settings VALUES(1, 11); CREATE TABLE records(value BLOB); INSERT INTO records VALUES(x'01'); PRAGMA wal_checkpoint(TRUNCATE);").unwrap();
+        let before_bytes = file_bytes(&db).unwrap();
+        let before = schema_snapshot(&db, &scratch, "before").unwrap();
+        conn.execute_batch("UPDATE records SET value=x'02';")
+            .unwrap();
+        assert_eq!(
+            before_bytes,
+            file_bytes(&db).unwrap(),
+            "update stays in WAL"
+        );
+        let after = schema_snapshot(&db, &scratch, "after").unwrap();
+        assert!(check_schema_outcome(before.as_ref(), after.as_ref()).is_err());
+    }
+
+    #[test]
+    fn unchanged_wal_and_checkpointed_rows_have_the_same_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join(DATA_DB);
+        let scratch = dir.path().join("scratch");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE settings(id INTEGER, database_version INTEGER); INSERT INTO settings VALUES(1, 11); CREATE TABLE records(t TEXT, b BLOB, i INTEGER, r REAL); INSERT INTO records VALUES('value', x'01', 3, 0.5);").unwrap();
+        let before = schema_snapshot(&db, &scratch, "same-label").unwrap();
+        let repeated = schema_snapshot(&db, &scratch, "same-label").unwrap();
+        check_schema_outcome(before.as_ref(), repeated.as_ref()).unwrap();
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .unwrap();
+        let checkpointed = schema_snapshot(&db, &scratch, "same-label").unwrap();
+        check_schema_outcome(before.as_ref(), checkpointed.as_ref()).unwrap();
+        conn.execute_batch("INSERT INTO records SELECT * FROM records;")
+            .unwrap();
+        let duplicate = schema_snapshot(&db, &scratch, "same-label").unwrap();
+        assert!(check_schema_outcome(before.as_ref(), duplicate.as_ref()).is_err());
+    }
+
+    #[test]
+    fn review_regression_captured_sentinels_must_survive_the_first_boot() {
+        let before = BTreeMap::from([("det:migration:existing".to_owned(), vec![1])]);
+        let mut after = before.clone();
+        after.insert("det:migration:new".to_owned(), vec![2]);
+        check_existing_sentinels(&before, &after).unwrap();
+        after.insert("det:migration:existing".to_owned(), vec![3]);
+        assert!(check_existing_sentinels(&before, &after).is_err());
+        assert!(check_existing_sentinels(&before, &BTreeMap::new()).is_err());
+    }
+
+    #[test]
     fn byte_identity_reports_the_size_change() {
         check_bytes_unchanged(Some(&vec![1, 2]), Some(&vec![1, 2]), DATA_DB).expect("identical");
         let error = check_bytes_unchanged(Some(&vec![1, 2]), Some(&vec![1, 2, 3]), DATA_DB)
@@ -1039,6 +1240,42 @@ mod tests {
             schema_snapshot(&dir.path().join("absent.db"), &scratch, "missing")
                 .expect("a missing file is not an error")
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn schema_snapshot_rejects_malformed_settings() {
+        for sql in [
+            "CREATE TABLE other (id INTEGER);",
+            "CREATE TABLE settings (id INTEGER); INSERT INTO settings VALUES (1);",
+            "CREATE TABLE settings (id INTEGER, database_version); INSERT INTO settings VALUES (1, 'bad');",
+            "CREATE TABLE settings (id INTEGER, database_version); INSERT INTO settings VALUES (1, NULL);",
+            "CREATE TABLE settings (id INTEGER, database_version); INSERT INTO settings VALUES (1, -1);",
+        ] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let db = dir.path().join(DATA_DB);
+            Connection::open(&db).unwrap().execute_batch(sql).unwrap();
+            assert!(
+                schema_snapshot(&db, &dir.path().join("scratch"), "before").is_err(),
+                "{sql}"
+            );
+        }
+    }
+
+    #[test]
+    fn schema_snapshot_allows_an_absent_settings_row() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join(DATA_DB);
+        Connection::open(&db)
+            .unwrap()
+            .execute_batch("CREATE TABLE settings (id INTEGER, database_version INTEGER);")
+            .unwrap();
+        assert_eq!(
+            schema_snapshot(&db, &dir.path().join("scratch"), "before")
+                .unwrap()
+                .unwrap()
+                .version,
+            None
         );
     }
 

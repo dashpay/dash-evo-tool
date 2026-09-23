@@ -19,16 +19,14 @@
 
 #![cfg(feature = "testing")]
 
-use std::cell::Cell as StdCell;
-use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use dash_evo_tool::app::{AppState, BootPhase, STORAGE_PREP_PASSWORD_DESCRIPTION};
 use dash_evo_tool::backend_task::error::TaskError;
 use dash_evo_tool::context::migration_status::{MigrationState, MigrationStep};
 use dash_evo_tool::model::secret::Secret;
-use dash_evo_tool::model::wallet::Wallet;
 use dash_evo_tool::model::wallet::birth_height::WalletOrigin;
+use dash_evo_tool::model::wallet::{Wallet, WalletSeedHash};
 use dash_evo_tool::ui::components::ProgressOverlay;
 use dash_evo_tool::ui::{RootScreenType, Screen};
 use dash_sdk::dpp::dashcore::Network;
@@ -120,6 +118,26 @@ fn mount_prepared_app() -> Harness<'static, AppState> {
     harness
 }
 
+/// Stage prompt-test data after real startup so wiring cannot request its password.
+fn mount_prepared_app_with_locked_wallet() -> (Harness<'static, AppState>, WalletSeedHash) {
+    let harness = mount_prepared_app();
+    let app_context = harness.state().current_app_context();
+    let password = Secret::new("correct password");
+    let seed = [0xA7; 64];
+    let wallet = Wallet::new_from_seed(
+        seed,
+        app_context.network(),
+        Some("Savings".to_string()),
+        Some(&password),
+    )
+    .expect("build protected wallet");
+    let (seed_hash, wallet) = app_context
+        .register_wallet(wallet, &seed, WalletOrigin::Imported)
+        .expect("register protected wallet fixture");
+    wallet.write().expect("wallet lock").wallet_seed.close();
+    (harness, seed_hash)
+}
+
 /// Step until `predicate` holds, panicking with `what` after [`MAX_GATE_FRAMES`].
 /// Bounded on purpose: an unbounded wait turns a gate regression from a red test
 /// into a hung CI job.
@@ -154,36 +172,8 @@ fn gate_password_prompt_is_focusable_and_typeable() {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
 
-        let seed_hash = Rc::new(StdCell::new([0; 32]));
-        let seed_hash_for_app = Rc::clone(&seed_hash);
-        let mut harness = Harness::builder()
-            .with_max_steps(100)
-            .build_eframe(move |ctx| {
-                let mut app = AppState::new(ctx.egui_ctx.clone())
-                    .expect("Failed to create AppState")
-                    .with_animations(false);
-                app.show_welcome_screen = false;
-                app.welcome_screen = None;
-
-                let password = Secret::new("correct password");
-                let seed = [0xA7; 64];
-                let wallet = Wallet::new_from_seed(
-                    seed,
-                    Network::Testnet,
-                    Some("Savings".to_string()),
-                    Some(&password),
-                )
-                .expect("build protected wallet");
-                let (hash, wallet) = app
-                    .current_app_context()
-                    .register_wallet(wallet, &seed, WalletOrigin::Imported)
-                    .expect("register protected wallet fixture");
-                wallet.write().expect("wallet lock").wallet_seed.close();
-                seed_hash_for_app.set(hash);
-                app
-            });
-        harness.set_size(egui::vec2(800.0, 600.0));
-        let app_context = crate::support::wait_for_wallet_backend(&mut harness);
+        let (mut harness, seed_hash) = mount_prepared_app_with_locked_wallet();
+        let app_context = harness.state().current_app_context().clone();
 
         // Raise the GATE, then publish the state preparation would publish while
         // waiting on this wallet's password.
@@ -191,7 +181,7 @@ fn gate_password_prompt_is_focusable_and_typeable() {
         app_context
             .migration_status()
             .set_state(MigrationState::AwaitingWalletPasswords {
-                wallets: vec![seed_hash.get()],
+                wallets: vec![seed_hash],
             });
         harness.run_steps(5);
 
@@ -244,42 +234,14 @@ fn skipping_a_wallet_empties_the_pending_list_through_the_gate() {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
 
-        let seed_hash = Rc::new(StdCell::new([0; 32]));
-        let seed_hash_for_app = Rc::clone(&seed_hash);
-        let mut harness = Harness::builder()
-            .with_max_steps(100)
-            .build_eframe(move |ctx| {
-                let mut app = AppState::new(ctx.egui_ctx.clone())
-                    .expect("Failed to create AppState")
-                    .with_animations(false);
-                app.show_welcome_screen = false;
-                app.welcome_screen = None;
-
-                let password = Secret::new("correct password");
-                let seed = [0xA7; 64];
-                let wallet = Wallet::new_from_seed(
-                    seed,
-                    Network::Testnet,
-                    Some("Savings".to_string()),
-                    Some(&password),
-                )
-                .expect("build protected wallet");
-                let (hash, wallet) = app
-                    .current_app_context()
-                    .register_wallet(wallet, &seed, WalletOrigin::Imported)
-                    .expect("register protected wallet fixture");
-                wallet.write().expect("wallet lock").wallet_seed.close();
-                seed_hash_for_app.set(hash);
-                app
-            });
-        harness.set_size(egui::vec2(800.0, 600.0));
-        let app_context = crate::support::wait_for_wallet_backend(&mut harness);
+        let (mut harness, seed_hash) = mount_prepared_app_with_locked_wallet();
+        let app_context = harness.state().current_app_context().clone();
 
         harness.state_mut().test_raise_storage_prep_gate();
         app_context
             .migration_status()
             .set_state(MigrationState::AwaitingWalletPasswords {
-                wallets: vec![seed_hash.get()],
+                wallets: vec![seed_hash],
             });
         harness.run_steps(5);
 

@@ -14,7 +14,7 @@
 #
 #   network-info            boots the binary and lazy-inits AppContext, which
 #                           creates .env, the SQLite DBs and the secret vault
-#   network-switch          materialises the per-network context and starts SPV
+#   network-switch          saves the chosen network and starts SPV
 #   core-wallet-import      writes the seed through the secret seam and the
 #                           wallet rows behind it
 #   core-balances-get       SPV gate — retried until the chain is synced enough
@@ -187,8 +187,12 @@ det network-info >/dev/null || die "det-cli could not initialise an AppContext i
 note "[2/6] network-switch network=$NETWORK"
 switch_out="$(det network-switch "network=$NETWORK")" ||
     die "Failed to switch to network '$NETWORK'. Check that ${NETWORK^^}_dapi_addresses is populated in $DATA_DIR/.env."
-echo "$switch_out" | jq -e '.active' >/dev/null 2>&1 ||
+echo "$switch_out" | jq -e --arg network "$NETWORK" '.active == $network' >/dev/null 2>&1 ||
     die "network-switch returned no active network: $switch_out"
+
+# Each command is a new process, so verify the saved choice before importing.
+det network-info | jq -e --arg network "$NETWORK" '.active == $network' >/dev/null ||
+    die "The selected network did not survive restart. Use a det-cli build that persists network-switch."
 
 # --------------------------------------------------------------------------
 # 3. Wallet import.

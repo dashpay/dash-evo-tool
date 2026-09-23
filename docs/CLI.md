@@ -44,6 +44,8 @@ Saved wallets are hydrated from the shared data directory on demand, so one-shot
 
 Set `MCP_API_KEY` (in `.env` or shell) to connect to a running Dash Evo Tool instance instead. This shares the app's live state — wallets, network, database.
 
+HTTP connections bypass system and environment proxies, keeping loopback calls on this machine.
+
 The GUI address defaults to `http://127.0.0.1:9527/mcp`. Override with `--addr`:
 
 ```bash

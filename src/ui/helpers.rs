@@ -1139,15 +1139,17 @@ mod tests {
 
         // Opening frame (first render): the outside press must be ignored.
         let mut closed = true;
-        let _ = ctx.run_ui(outside_press(), |ui| {
+        ctx.run_ui(outside_press(), |ui| {
             closed = clicked_outside_window_after_open_by_id(ui.ctx(), window_rect, id);
-        });
+        })
+        .drop_without_applying_deltas();
         assert!(!closed, "the modal must survive its opening click");
 
         // Continuation frame: the same outside press now closes it.
-        let _ = ctx.run_ui(outside_press(), |ui| {
+        ctx.run_ui(outside_press(), |ui| {
             closed = clicked_outside_window_after_open_by_id(ui.ctx(), window_rect, id);
-        });
+        })
+        .drop_without_applying_deltas();
         assert!(
             closed,
             "an outside click after opening must close the modal"
@@ -1164,21 +1166,25 @@ mod tests {
         let id = egui::Id::new("test_modal_rearm_pass");
 
         // First open + a continuation pass so the guard is disarmed.
-        let _ = ctx.run_ui(outside_press(), |ui| {
+        ctx.run_ui(outside_press(), |ui| {
             clicked_outside_window_after_open_by_id(ui.ctx(), window_rect, id);
-        });
-        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+        })
+        .drop_without_applying_deltas();
+        ctx.run_ui(egui::RawInput::default(), |ui| {
             clicked_outside_window_after_open_by_id(ui.ctx(), window_rect, id);
-        });
+        })
+        .drop_without_applying_deltas();
 
         // A pass where the modal does NOT render (no call), creating a gap.
-        let _ = ctx.run_ui(egui::RawInput::default(), |_ui| {});
+        ctx.run_ui(egui::RawInput::default(), |_ui| {})
+            .drop_without_applying_deltas();
 
         // Reopening frame: the guard must be re-armed and ignore the click.
         let mut closed = true;
-        let _ = ctx.run_ui(outside_press(), |ui| {
+        ctx.run_ui(outside_press(), |ui| {
             closed = clicked_outside_window_after_open_by_id(ui.ctx(), window_rect, id);
-        });
+        })
+        .drop_without_applying_deltas();
         assert!(!closed, "reopening after a render gap must skip the click");
     }
 }

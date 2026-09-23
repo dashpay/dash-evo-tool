@@ -187,6 +187,8 @@ pub struct Expectations {
     pub wallet_aliases: Vec<String>,
     /// Lowercase hex identity ids that must survive the migration.
     pub identity_ids: Vec<String>,
+    /// Exact public metadata for a fixture containing only watch-only identities.
+    pub public_identities: Vec<crate::public_identities::ExpectedIdentity>,
     /// `data.db` schema version at capture time. Cross-checked against the
     /// staged file; the file itself is authoritative when the two disagree
     /// only in that the manifest is silent.
@@ -203,6 +205,7 @@ impl Default for Expectations {
         Self {
             wallet_aliases: Vec::new(),
             identity_ids: Vec::new(),
+            public_identities: Vec::new(),
             starting_db_version: None,
             finish_unwire_sentinel: true,
             derive_address: true,

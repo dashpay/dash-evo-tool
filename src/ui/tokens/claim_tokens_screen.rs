@@ -172,6 +172,7 @@ impl ClaimTokensScreen {
                 .selected_text(match &self.distribution_type {
                     Some(TokenDistributionType::Perpetual) => "Perpetual".to_string(),
                     Some(TokenDistributionType::PreProgrammed) => "PreProgrammed".to_string(),
+                    Some(TokenDistributionType::OncePerIdentity) => "Once per identity".to_string(),
                     None => "Select a type".to_string(),
                 })
                 .show_ui(ui, |ui| {

@@ -53,10 +53,6 @@ on:
   # Draft PRs are suppressed by the `draft != true` guards below and otherwise
   # have no way to run CI at all; a manual run covers them.
   workflow_dispatch:
-  workflow_call:
-    secrets:
-      MIGRATION_V093_WALLET_PASSWORD:
-        required: true
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -68,10 +64,9 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # PR #983 is covered on every branch push by migration-matrix-pr.yml.
   pin-ancestry:
     name: Platform pin guard
-    if: github.event.pull_request.draft != true && github.event.pull_request.number != 983
+    if: github.event.pull_request.draft != true
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -93,7 +88,7 @@ jobs:
   build:
     name: Build det-cli
     needs: pin-ancestry
-    if: github.event.pull_request.draft != true && github.event.pull_request.number != 983
+    if: github.event.pull_request.draft != true
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -161,7 +156,7 @@ jobs:
   matrix:
     name: Migration matrix
     needs: build
-    if: github.event.pull_request.draft != true && github.event.pull_request.number != 983
+    if: github.event.pull_request.draft != true
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -267,7 +262,13 @@ jobs:
           # does not enable, so Cargo builds no det-cli for the harness to find.
           DET_CLI_BIN: ${{ runner.temp }}/bin/det-cli
           MIGRATION_V093_WALLET_PASSWORD: ${{ secrets.MIGRATION_V093_WALLET_PASSWORD }}
-        run: cargo test --locked --test migration-matrix --features testing
+          MIGRATION_MATRIX_SKIP_PASSWORDS: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+        run: |
+          if [ "$MIGRATION_MATRIX_SKIP_PASSWORDS" = "true" ]; then
+            echo "::notice::Fork PR: password scenarios are skipped because repository secrets are unavailable. Password-free migration scenarios still run."
+            echo "Migration coverage: password-free scenarios only (fork PR)." >>"$GITHUB_STEP_SUMMARY"
+          fi
+          cargo test --locked --test migration-matrix --features testing -- --nocapture
 
       # The weekly profile once more, opened directly through the
       # platform_compatibility bridge instead of through a det-cli boot: the

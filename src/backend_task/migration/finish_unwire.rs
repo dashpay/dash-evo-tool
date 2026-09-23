@@ -627,7 +627,8 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
         Err(_) => {
             let guard = app_context.lock_prepare_gate().await;
             match app_context.migration_status().state().as_ref() {
-                MigrationState::Failed { error } => {
+                MigrationState::Failed { error }
+                | MigrationState::FailedWithUnreadableIdentities { error, .. } => {
                     let result = Err(super::migration_task_error(Arc::clone(error)));
                     drop(guard);
                     return result;
@@ -5411,6 +5412,38 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn public_migration_follower_returns_the_combined_failure() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+        let migration_guard = ctx.try_lock_prepare_gate().expect("claim migration lock");
+        let source = Arc::new(MigrationError::WalletBackendUnavailable);
+        ctx.migration_status()
+            .set_state(MigrationState::FailedWithUnreadableIdentities {
+                count: 1,
+                error: Arc::clone(&source),
+            });
+        let follower_ctx = Arc::clone(&ctx);
+        let follower = tokio::spawn(async move { run(&follower_ctx).await });
+        tokio::task::yield_now().await;
+
+        assert!(
+            !follower.is_finished(),
+            "the follower must wait for the leader"
+        );
+        drop(migration_guard);
+        let error = follower
+            .await
+            .expect("join")
+            .expect_err("the follower must return the leader's failure");
+
+        assert!(matches!(
+            error,
+            TaskError::MigrationFailed { source: returned }
+                if Arc::ptr_eq(&returned, &source)
+        ));
+    }
+
     #[test]
     fn identity_deletion_before_migration_is_recorded_for_the_retry_filter() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -6559,10 +6592,11 @@ mod tests {
         wire_backend(&ctx).await;
         let backend = ctx.wallet_backend().expect("backend wired");
 
-        let did_work = run(&ctx)
+        let (tx, _rx) = tokio::sync::mpsc::channel(32);
+        let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.prepare_storage(sender.clone())
             .await
-            .expect("both failures are non-fatal to the run — it publishes its own terminal state");
-        assert!(did_work, "the wallet drain moved data");
+            .expect("the combined failure publishes its own state");
 
         // Both signals in one terminal state: the identity count AND the app-data
         // error chain. The pre-fix `SucceededWithUnreadableIdentities` would have
@@ -6606,6 +6640,25 @@ mod tests {
             "an unreadable row is not a pass failure: the import completes, and the row is \
              reported by the durable warning rather than retried forever",
         );
+
+        Connection::open(tmp.path().join("data.db"))
+            .expect("open fixture")
+            .execute_batch("ALTER TABLE top_up ADD COLUMN amount INTEGER NOT NULL DEFAULT 1;")
+            .expect("repair fixture schema");
+        ctx.prepare_storage(sender)
+            .await
+            .expect("retry preparation");
+        assert!(
+            ctx.app_kv()
+                .get::<MigrationCompletion>(DetScope::Global, &app_data_sentinel_key_for(network))
+                .expect("read completion")
+                .is_some(),
+            "preparation must retry the unfinished app-data pass"
+        );
+        assert!(matches!(
+            *ctx.migration_status().state(),
+            MigrationState::SucceededWithUnreadableData { identities: 1, .. }
+        ));
 
         backend.shutdown().await;
     }

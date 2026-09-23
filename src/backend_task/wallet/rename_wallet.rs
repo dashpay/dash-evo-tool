@@ -735,7 +735,7 @@ mod tests {
         let seeds = WalletSeedView::new(&secrets);
         assert!(seeds.get_raw(&new_hash).unwrap().is_none());
         assert!(seeds.get(&new_hash).unwrap().is_none());
-        assert!(!f.ctx.wallet_context().wallets().contains_key(&new_hash));
+        assert!(!f.ctx.wallet_context().contains_hd(&new_hash));
         assert!(
             f.ctx
                 .wallet_backend()

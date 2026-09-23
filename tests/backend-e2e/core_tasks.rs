@@ -16,13 +16,10 @@ async fn test_tc001_refresh_wallet_info_core_only() {
     let ctx = ctx().await;
     let app_context = &ctx.app_context;
 
-    let wallet = {
-        let wallets = app_context.wallet_context().wallets();
-        wallets
-            .get(&ctx.framework_wallet_hash)
-            .expect("framework wallet must exist")
-            .clone()
-    };
+    let wallet = app_context
+        .wallet_context()
+        .hd_wallet(&ctx.framework_wallet_hash)
+        .expect("framework wallet must exist");
 
     let task = BackendTask::CoreTask(CoreTask::RefreshWalletInfo(wallet.clone(), false));
     let result = run_task(app_context, task)
@@ -49,13 +46,10 @@ async fn test_tc002_refresh_wallet_info_core_and_platform() {
     let ctx = ctx().await;
     let app_context = &ctx.app_context;
 
-    let wallet = {
-        let wallets = app_context.wallet_context().wallets();
-        wallets
-            .get(&ctx.framework_wallet_hash)
-            .expect("framework wallet must exist")
-            .clone()
-    };
+    let wallet = app_context
+        .wallet_context()
+        .hd_wallet(&ctx.framework_wallet_hash)
+        .expect("framework wallet must exist");
 
     let task = BackendTask::CoreTask(CoreTask::RefreshWalletInfo(wallet.clone(), true));
     let result = run_task(app_context, task)
@@ -121,13 +115,10 @@ async fn test_tc004_create_registration_asset_lock() {
     let ctx = ctx().await;
     let app_context = &ctx.app_context;
 
-    let wallet = {
-        let wallets = app_context.wallet_context().wallets();
-        wallets
-            .get(&ctx.framework_wallet_hash)
-            .expect("framework wallet must exist")
-            .clone()
-    };
+    let wallet = app_context
+        .wallet_context()
+        .hd_wallet(&ctx.framework_wallet_hash)
+        .expect("framework wallet must exist");
 
     // Use identity index 99 to avoid collision with shared fixtures
     let task = BackendTask::CoreTask(CoreTask::CreateRegistrationAssetLock(
@@ -154,13 +145,10 @@ async fn test_tc005_create_top_up_asset_lock() {
     // Ensure SHARED_IDENTITY exists (registered at index 0)
     let _identity = fixtures::shared_identity().await;
 
-    let wallet = {
-        let wallets = app_context.wallet_context().wallets();
-        wallets
-            .get(&ctx.framework_wallet_hash)
-            .expect("framework wallet must exist")
-            .clone()
-    };
+    let wallet = app_context
+        .wallet_context()
+        .hd_wallet(&ctx.framework_wallet_hash)
+        .expect("framework wallet must exist");
 
     // identity_index=0 (SHARED_IDENTITY's index), topup_index=1
     let task = BackendTask::CoreTask(CoreTask::CreateTopUpAssetLock(
@@ -323,13 +311,10 @@ async fn test_tc011_send_wallet_payment_invalid_address() {
     let ctx = ctx().await;
     let app_context = &ctx.app_context;
 
-    let wallet = {
-        let wallets = app_context.wallet_context().wallets();
-        wallets
-            .get(&ctx.framework_wallet_hash)
-            .expect("framework wallet must exist")
-            .clone()
-    };
+    let wallet = app_context
+        .wallet_context()
+        .hd_wallet(&ctx.framework_wallet_hash)
+        .expect("framework wallet must exist");
 
     let task = BackendTask::CoreTask(CoreTask::SendWalletPayment {
         wallet,

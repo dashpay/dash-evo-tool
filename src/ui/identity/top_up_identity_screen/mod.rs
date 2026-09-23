@@ -898,7 +898,7 @@ impl ScreenLike for TopUpIdentityScreen {
                     || funding_method == FundingMethod::ReceiveDeposit
                 {
                     // Check if there's more than one wallet to show selection UI
-                    let wallet_count = self.app_context.wallet_context().wallets().len();
+                    let wallet_count = self.app_context.wallet_context().hd_count();
 
                     if wallet_count > 1 {
                         ui.horizontal(|ui| {

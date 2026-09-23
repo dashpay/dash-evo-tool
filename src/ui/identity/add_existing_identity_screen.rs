@@ -100,12 +100,7 @@ pub struct AddExistingIdentityScreen {
 
 impl AddExistingIdentityScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
-        let selected_wallet = app_context
-            .wallet_context()
-            .wallets()
-            .values()
-            .next()
-            .cloned();
+        let selected_wallet = app_context.wallet_context().first_hd();
         Self {
             identity_id_input: String::new(),
             identity_type: IdentityType::User,
@@ -1100,10 +1095,7 @@ impl ScreenLike for AddExistingIdentityScreen {
                             inner_action |= self.render_by_identity(ui);
                         }
                         LoadIdentityMode::Wallet => {
-                            let wallets_len = {
-                                let wallets = self.app_context.wallet_context().wallets();
-                                wallets.len()
-                            };
+                            let wallets_len = self.app_context.wallet_context().hd_count();
                             inner_action |= self.render_by_wallet(ui, wallets_len);
                         }
                         LoadIdentityMode::DpnsName => {

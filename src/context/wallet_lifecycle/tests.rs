@@ -1656,7 +1656,7 @@ async fn register_wallet_succeeds_on_fresh_install_without_legacy_tables() {
     assert_eq!(returned_hash, seed_hash);
 
     assert!(
-        ctx.wallet_context().wallets().contains_key(&seed_hash),
+        ctx.wallet_context().contains_hd(&seed_hash),
         "the wallet must be registered in-memory after register_wallet"
     );
     assert!(
@@ -2205,7 +2205,7 @@ async fn clear_network_database_wipes_wallet_meta_and_seed_envelope() {
         "no legacy envelope must survive clear"
     );
     assert!(
-        ctx.wallet_context().wallets().is_empty(),
+        !ctx.wallet_context().has_hd_wallets(),
         "the in-memory wallet map must be empty after clear"
     );
 
@@ -2461,7 +2461,7 @@ async fn clear_network_database_refuses_unwired_backend_without_partial_wipe() {
         "clear-all must return the dedicated clear-unavailable error"
     );
     assert!(
-        ctx.wallet_context().wallets().contains_key(&seed_hash),
+        ctx.wallet_context().contains_hd(&seed_hash),
         "a refused clear must not partially remove the in-memory wallet"
     );
     assert!(
@@ -2556,7 +2556,7 @@ async fn register_wallet_fails_closed_when_seed_envelope_write_fails() {
         "register_wallet must fail closed when the seed envelope cannot be saved"
     );
     assert!(
-        !ctx.wallet_context().wallets().contains_key(&seed_hash),
+        !ctx.wallet_context().contains_hd(&seed_hash),
         "a wallet whose seed was not saved must not be kept in memory"
     );
     assert!(
@@ -2605,7 +2605,7 @@ async fn register_wallet_fails_closed_when_wallet_meta_write_fails() {
         "register_wallet must fail closed when the wallet-meta sidecar cannot be saved"
     );
     assert!(
-        !ctx.wallet_context().wallets().contains_key(&seed_hash),
+        !ctx.wallet_context().contains_hd(&seed_hash),
         "a wallet with no meta row must not be kept in memory (it would never hydrate)"
     );
     assert!(
@@ -2647,7 +2647,7 @@ async fn register_wallet_rejects_overlong_alias_before_seed_write() {
         "no seed material must survive a rejected HD registration (orphaned secret)"
     );
     assert!(
-        !ctx.wallet_context().wallets().contains_key(&seed_hash),
+        !ctx.wallet_context().contains_hd(&seed_hash),
         "a rejected wallet must not be kept in memory"
     );
     assert!(
@@ -2739,7 +2739,7 @@ async fn register_wallet_rejects_alias_used_by_another_wallet_before_seed_write(
             .is_none(),
         "no seed material may be written for a rejected registration"
     );
-    assert!(!ctx.wallet_context().wallets().contains_key(&seed_hash));
+    assert!(!ctx.wallet_context().contains_hd(&seed_hash));
 }
 
 /// Re-importing a wallet is reported as a re-import, not as a name conflict
@@ -2825,8 +2825,7 @@ async fn malformed_legacy_envelope_does_not_block_healthy_wallet_hydration() {
             AliasSource::UserEntered("Healthy key".into()),
         )
         .unwrap();
-    assert!(ctx.wallet_context().wallets().is_empty());
-    assert!(ctx.wallet_context().single_key_wallets().is_empty());
+    assert!(!ctx.wallet_context().has_any_wallet());
 
     ctx.ensure_wallet_backend(sender)
         .await
@@ -2889,7 +2888,7 @@ async fn migrated_wallet_is_visible_without_second_restart() {
         .await
         .expect("ensure_wallet_backend should succeed offline");
     assert!(
-        !ctx.wallet_context().wallets().contains_key(&seed_hash),
+        !ctx.wallet_context().contains_hd(&seed_hash),
         "precondition: the migrated wallet is not yet hydrated (sidecars empty at wiring)"
     );
 
@@ -2900,7 +2899,7 @@ async fn migrated_wallet_is_visible_without_second_restart() {
 
     // The migrated wallet must be visible WITHOUT a second backend build.
     assert!(
-        ctx.wallet_context().wallets().contains_key(&seed_hash),
+        ctx.wallet_context().contains_hd(&seed_hash),
         "the migrated wallet must be in ctx.wallets right after migration (no second restart)"
     );
     assert!(
@@ -3135,9 +3134,7 @@ async fn protected_wallet_registers_upstream_on_unlock_without_restart() {
 
     let wallet_arc = ctx
         .wallet_context()
-        .wallets()
-        .get(&seed_hash)
-        .cloned()
+        .hd_wallet(&seed_hash)
         .expect("protected wallet must be hydrated into ctx.wallets after migration");
 
     // Precondition: the locked protected wallet is NOT yet registered — the

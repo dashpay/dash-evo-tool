@@ -97,23 +97,78 @@ impl WalletContext {
         WriterGuard { _lock: lock, owner }
     }
 
-    /// Loaded HD wallet handles; aliases are read through [`Self::hd_alias`].
+    /// Snapshot of loaded HD wallet handles for iterate-and-release callers;
+    /// prefer the targeted readers for lookups and counts. Aliases are read
+    /// through [`Self::hd_alias`].
     pub fn wallets(&self) -> HdWallets {
         read_recover(&self.state).wallets.clone()
     }
 
-    /// Loaded imported-key handles; aliases are read through [`Self::single_alias`].
+    /// Snapshot of loaded imported-key handles for iterate-and-release callers;
+    /// prefer the targeted readers for lookups and counts. Aliases are read
+    /// through [`Self::single_alias`].
     pub fn single_key_wallets(&self) -> SingleKeyWallets {
         read_recover(&self.state).single_wallets.clone()
     }
 
+    /// Whether an HD wallet with this seed hash is loaded.
+    pub fn contains_hd(&self, seed: &WalletSeedHash) -> bool {
+        read_recover(&self.state).wallets.contains_key(seed)
+    }
+
+    /// Whether an imported key with this key hash is loaded.
+    pub fn contains_single(&self, hash: &SingleKeyHash) -> bool {
+        read_recover(&self.state).single_wallets.contains_key(hash)
+    }
+
+    /// Number of loaded HD wallets.
+    pub fn hd_count(&self) -> usize {
+        read_recover(&self.state).wallets.len()
+    }
+
+    /// Whether any HD wallet is loaded.
+    pub fn has_hd_wallets(&self) -> bool {
+        !read_recover(&self.state).wallets.is_empty()
+    }
+
+    /// Whether any imported key is loaded.
+    pub fn has_single_key_wallets(&self) -> bool {
+        !read_recover(&self.state).single_wallets.is_empty()
+    }
+
+    /// Whether any HD wallet or imported key is loaded.
+    pub fn has_any_wallet(&self) -> bool {
+        let state = read_recover(&self.state);
+        !state.wallets.is_empty() || !state.single_wallets.is_empty()
+    }
+
+    /// Loaded HD wallet handle for `seed`, if any.
+    pub fn hd_wallet(&self, seed: &WalletSeedHash) -> Option<Arc<RwLock<Wallet>>> {
+        read_recover(&self.state).wallets.get(seed).cloned()
+    }
+
+    /// Loaded imported-key handle for `hash`, if any.
+    pub fn single_key_wallet(&self, hash: &SingleKeyHash) -> Option<Arc<RwLock<SingleKeyWallet>>> {
+        read_recover(&self.state).single_wallets.get(hash).cloned()
+    }
+
+    /// HD wallet handle with the lowest seed hash, if any.
+    pub fn first_hd(&self) -> Option<Arc<RwLock<Wallet>>> {
+        read_recover(&self.state).wallets.values().next().cloned()
+    }
+
+    /// Imported-key handle with the lowest key hash, if any.
+    pub fn first_single(&self) -> Option<Arc<RwLock<SingleKeyWallet>>> {
+        read_recover(&self.state)
+            .single_wallets
+            .values()
+            .next()
+            .cloned()
+    }
+
     /// Resolve a loaded wallet without exposing registry mutation.
     pub fn wallet(&self, seed: &WalletSeedHash) -> Result<Arc<RwLock<Wallet>>, TaskError> {
-        read_recover(&self.state)
-            .wallets
-            .get(seed)
-            .cloned()
-            .ok_or(TaskError::WalletNotFound)
+        self.hd_wallet(seed).ok_or(TaskError::WalletNotFound)
     }
 
     /// Current committed HD metadata, including the password-prompt label.
@@ -472,6 +527,39 @@ mod tests {
         context
             .save_hd_metadata([6; 32], WalletMeta::default(), || Ok(()))
             .expect("the writer is released after a failed callback");
+    }
+
+    #[test]
+    fn targeted_readers_track_hd_membership() {
+        let context = WalletContext::default();
+        assert!(!context.has_any_wallet() && !context.has_hd_wallets());
+        assert!(!context.has_single_key_wallets());
+        assert_eq!(context.hd_count(), 0);
+        assert!(context.first_hd().is_none() && context.first_single().is_none());
+        assert!(!context.contains_single(&[9; 32]));
+        assert!(context.single_key_wallet(&[9; 32]).is_none());
+
+        let wallet = Wallet::new_from_seed(
+            rand::random(),
+            dash_sdk::dpp::dashcore::Network::Testnet,
+            Some("Readers".into()),
+            None,
+        )
+        .unwrap();
+        let seed = wallet.seed_hash();
+        let handle = context
+            .register_hd(wallet, |_| Ok(WalletMeta::default()))
+            .unwrap();
+        assert!(context.has_any_wallet() && context.has_hd_wallets());
+        assert!(context.contains_hd(&seed));
+        assert_eq!(context.hd_count(), 1);
+        assert!(Arc::ptr_eq(&context.hd_wallet(&seed).unwrap(), &handle));
+        assert!(Arc::ptr_eq(&context.first_hd().unwrap(), &handle));
+        assert!(!context.has_single_key_wallets());
+
+        context.remove_wallet(&seed).unwrap();
+        assert!(!context.contains_hd(&seed) && context.hd_wallet(&seed).is_none());
+        assert!(!context.has_any_wallet());
     }
 
     #[test]

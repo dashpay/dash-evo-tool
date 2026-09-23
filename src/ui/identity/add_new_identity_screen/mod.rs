@@ -161,19 +161,12 @@ impl AddNewIdentityScreen {
         let mut selected_wallet = None;
 
         if app_context.has_wallet.load(Ordering::Relaxed) {
-            let wallets = &app_context.wallet_context().wallets();
-            // If a specific wallet seed hash is provided, use that wallet
-            if let Some(seed_hash) = wallet_seed_hash
-                && let Some(wallet) = wallets.get(&seed_hash)
-            {
-                selected_wallet = Some(wallet.clone());
-            }
-            // Otherwise, select the first available wallet
-            if selected_wallet.is_none()
-                && let Some(wallet) = wallets.values().next()
-            {
-                selected_wallet = Some(wallet.clone());
-            }
+            let wallets = app_context.wallet_context();
+            // If a specific wallet seed hash is provided, use that wallet;
+            // otherwise, select the first available wallet.
+            selected_wallet = wallet_seed_hash
+                .and_then(|seed_hash| wallets.hd_wallet(&seed_hash))
+                .or_else(|| wallets.first_hd());
         }
 
         // The funding-method pre-selection is applied by `update_wallet` below

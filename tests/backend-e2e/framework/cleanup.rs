@@ -55,13 +55,10 @@ pub async fn cleanup_test_wallets(
 
         // Derive a fresh receive address for each sweep to distribute UTXOs
         // across multiple addresses instead of concentrating on a single one.
-        let framework_wallet = {
-            let wallets = app_context.wallet_context().wallets();
-            wallets
-                .get(&framework_wallet_hash)
-                .expect("framework wallet must exist")
-                .clone()
-        };
+        let framework_wallet = app_context
+            .wallet_context()
+            .hd_wallet(&framework_wallet_hash)
+            .expect("framework wallet must exist");
         let framework_address = get_receive_address(app_context, &framework_wallet).await;
 
         // Wait briefly for SPV to sync this wallet's balance.

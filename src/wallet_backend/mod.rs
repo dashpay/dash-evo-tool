@@ -709,8 +709,7 @@ impl WalletBackend {
             })
         })?;
         ctx.has_wallet.store(
-            !ctx.wallet_context().wallets().is_empty()
-                || !ctx.wallet_context().single_key_wallets().is_empty(),
+            ctx.wallet_context().has_any_wallet(),
             std::sync::atomic::Ordering::Relaxed,
         );
         Ok(())

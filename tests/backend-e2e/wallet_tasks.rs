@@ -691,13 +691,11 @@ async fn tc_018_fund_platform_address_from_asset_lock() {
     let ctx = harness::ctx().await;
     let seed_hash = ctx.framework_wallet_hash;
 
-    let wallet_arc = {
-        let wallets = ctx.app_context.wallet_context().wallets();
-        wallets
-            .get(&seed_hash)
-            .expect("framework wallet missing")
-            .clone()
-    };
+    let wallet_arc = ctx
+        .app_context
+        .wallet_context()
+        .hd_wallet(&seed_hash)
+        .expect("framework wallet missing");
 
     // Step 1: Broadcast an asset lock registration transaction via CoreTask
     tracing::info!("TC-018: broadcasting CreateRegistrationAssetLock (identity_index=98)...");

@@ -858,10 +858,9 @@ impl KeyInfoScreen {
     ) -> Self {
         let selected_wallet =
             if let Some((_, Some(wallet_derivation_path))) = private_key_data.as_ref() {
-                let wallets = app_context.wallet_context().wallets();
-                wallets
-                    .get(&wallet_derivation_path.wallet_seed_hash)
-                    .cloned()
+                app_context
+                    .wallet_context()
+                    .hd_wallet(&wallet_derivation_path.wallet_seed_hash)
             } else {
                 None
             };

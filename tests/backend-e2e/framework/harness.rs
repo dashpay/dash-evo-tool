@@ -624,13 +624,10 @@ impl BackendTestContext {
             .expect("Failed to get test wallet receive address");
         tracing::trace!(address = %test_address, "create_funded_test_wallet: receive address derived");
 
-        let framework_wallet_arc = {
-            let wallets = app_context.wallet_context().wallets();
-            wallets
-                .get(&self.framework_wallet_hash)
-                .expect("framework wallet must exist")
-                .clone()
-        };
+        let framework_wallet_arc = app_context
+            .wallet_context()
+            .hd_wallet(&self.framework_wallet_hash)
+            .expect("framework wallet must exist");
 
         let request = WalletPaymentRequest {
             recipients: vec![PaymentRecipient {

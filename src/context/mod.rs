@@ -1199,13 +1199,13 @@ impl AppContext {
         if let Ok(mut guard) = self.selected_wallet_hash.lock() {
             let candidate = selected
                 .hd_wallet_hash
-                .filter(|h| self.wallet_context().wallets().contains_key(h));
+                .filter(|h| self.wallet_context().contains_hd(h));
             *guard = candidate;
         }
         if let Ok(mut guard) = self.selected_single_key_hash.lock() {
             let candidate = selected
                 .single_key_hash
-                .filter(|h| self.wallet_context().single_key_wallets().contains_key(h));
+                .filter(|h| self.wallet_context().contains_single(h));
             *guard = candidate;
         }
     }

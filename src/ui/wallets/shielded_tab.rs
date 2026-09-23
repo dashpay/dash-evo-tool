@@ -152,13 +152,7 @@ impl ShieldedTabView {
     /// Send Private, Unshield) are routes into the one canonical send screen —
     /// there are no bespoke shielded send screens.
     fn open_send_flow(&self, flow: SendFlow) -> AppAction {
-        let Some(wallet) = self
-            .app_context
-            .wallet_context()
-            .wallets()
-            .get(&self.seed_hash)
-            .cloned()
-        else {
+        let Some(wallet) = self.app_context.wallet_context().hd_wallet(&self.seed_hash) else {
             return AppAction::None;
         };
         AppAction::AddScreen(
@@ -539,12 +533,11 @@ impl ShieldedTabView {
                     ui.label("Initializing shielded wallet (deriving ZIP32 keys)...");
                 });
             } else {
-                let wallet_locked = {
-                    let wallets = self.app_context.wallet_context().wallets();
-                    wallets
-                        .get(&self.seed_hash)
-                        .is_some_and(wallet_needs_unlock)
-                };
+                let wallet_locked = self
+                    .app_context
+                    .wallet_context()
+                    .hd_wallet(&self.seed_hash)
+                    .is_some_and(|wallet| wallet_needs_unlock(&wallet));
                 ui.add_space(20.0);
                 if wallet_locked {
                     ui.label(

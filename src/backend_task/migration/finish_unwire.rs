@@ -6491,7 +6491,7 @@ mod tests {
         // Funds first: hydrated into `ctx.wallets`, registered in the same
         // `id_map` that `resolve_wallet` consults, and the drain recorded as done.
         assert!(
-            ctx.wallet_context().wallets().contains_key(&seed_hash),
+            ctx.wallet_context().contains_hd(&seed_hash),
             "the migrated wallet must be visible after the migration",
         );
         assert!(
@@ -6706,7 +6706,7 @@ mod tests {
 
         // Funds stay safe: the drain ran despite both DET-owned passes breaking.
         assert!(
-            ctx.wallet_context().wallets().contains_key(&seed_hash),
+            ctx.wallet_context().contains_hd(&seed_hash),
             "the migrated wallet must be visible — neither DET-owned failure may block funds",
         );
         assert!(

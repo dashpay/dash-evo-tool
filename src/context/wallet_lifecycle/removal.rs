@@ -16,7 +16,7 @@ fn show_wallet_data_removal_warning(ctx: &egui::Context, error: TaskError) {
 impl AppContext {
     pub fn remove_wallet(self: &Arc<Self>, seed_hash: &WalletSeedHash) -> Result<(), TaskError> {
         self.wallet_context().remove_wallet(seed_hash)?;
-        let has_wallet = !self.wallet_context().wallets().is_empty();
+        let has_wallet = self.wallet_context().has_hd_wallets();
 
         self.has_wallet.store(has_wallet, Ordering::Relaxed);
 

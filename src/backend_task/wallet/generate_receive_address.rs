@@ -16,7 +16,7 @@ impl AppContext {
         // retryable `WalletNotLoaded`. Resolving the existence question here,
         // where the DET-side wallet store lives, keeps that distinction honest
         // instead of collapsing both cases into `WalletNotLoaded`.
-        if !self.wallet_context().wallets().contains_key(&seed_hash) {
+        if !self.wallet_context().contains_hd(&seed_hash) {
             return Err(TaskError::WalletNotFound);
         }
         let backend = self.wallet_backend()?;

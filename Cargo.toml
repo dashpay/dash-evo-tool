@@ -68,7 +68,9 @@ tokio = { version = "1.46.1", features = ["full"] }
 # Historical-profile migration tests verify the old encodings remain readable.
 # Any encoder change that breaks that compatibility needs a read-old/write-new migration:
 # this crate encodes the on-disk wallet-secret envelopes and QualifiedIdentity blobs.
-bincode = { package = "grovedb-bincode", version = "=2.1.0", features = ["serde"] }
+bincode = { package = "grovedb-bincode", version = "=2.1.0", features = [
+    "serde",
+] }
 hex = { version = "0.4.3" }
 async-trait = "0.1.89"
 itertools = "0.15.0"
@@ -104,7 +106,9 @@ bitflags = "2.10"
 rust-embed = "8.7.2"
 zeroize = "1.8.1"
 zxcvbn = "3.1.0"
-argon2 = { version = "0.6.0", features = ["zeroize"] } # For Argon2 key derivation; zeroize wipes intermediate hash state (SEC-001)
+argon2 = { version = "0.6.0", features = [
+    "zeroize",
+] } # For Argon2 key derivation; zeroize wipes intermediate hash state (SEC-001)
 aes-gcm = "0.11.1" # For AES-256-GCM encryption
 cbc = "0.2.1" # For CBC mode encryption
 regex = "1.11.1"
@@ -115,7 +119,11 @@ tempfile = "3.20.0"
 arc-swap = "1"
 urlencoding = "2"
 rmcp = { version = "3.3", optional = true, default-features = false }
-axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"], optional = true }
+axum = { version = "0.8", default-features = false, features = [
+    "http1",
+    "tokio",
+    "json",
+], optional = true }
 # Constant-time equality for `model::secret::Secret` (unconditional) and the
 # MCP API-key check. Not optional: `PartialEq for Secret` is always compiled.
 subtle = "2.6"
@@ -133,8 +141,23 @@ raw-cpuid = "11.5.0"
 default = []
 testing = []
 bench = []
-mcp = ["dep:rmcp", "rmcp/server", "rmcp/macros", "rmcp/transport-streamable-http-server", "dep:axum"]
-cli = ["dep:rmcp", "rmcp/server", "rmcp/macros", "rmcp/client", "rmcp/transport-io", "rmcp/transport-streamable-http-client-reqwest", "dep:clap", "dep:clap_complete"]
+mcp = [
+    "dep:rmcp",
+    "rmcp/server",
+    "rmcp/macros",
+    "rmcp/transport-streamable-http-server",
+    "dep:axum",
+]
+cli = [
+    "dep:rmcp",
+    "rmcp/server",
+    "rmcp/macros",
+    "rmcp/client",
+    "rmcp/transport-io",
+    "rmcp/transport-streamable-http-client-reqwest",
+    "dep:clap",
+    "dep:clap_complete",
+]
 headless = ["cli", "mcp"]
 
 [dev-dependencies]
@@ -145,7 +168,9 @@ criterion = "0.8.2"
 # `refinery::Error` (the upstream `WalletStorageError::Migration` source). Same
 # version already in the graph via `platform-wallet-storage`; the `rusqlite`
 # feature is already enabled transitively, so this adds no new build.
-refinery = { version = "0.9.1", default-features = false, features = ["rusqlite"] }
+refinery = { version = "0.9.1", default-features = false, features = [
+    "rusqlite",
+] }
 
 [[bin]]
 name = "det-cli"
@@ -197,7 +222,10 @@ opt-level = 3
 
 [lints.rust.unexpected_cfgs]
 level = "warn"
-check-cfg = ["cfg(tokio_unstable)", "cfg(feature, values(\"testing\", \"bench\", \"mcp\", \"cli\", \"headless\"))"]
+check-cfg = [
+    "cfg(tokio_unstable)",
+    "cfg(feature, values(\"testing\", \"bench\", \"mcp\", \"cli\", \"headless\"))",
+]
 
 
 [lints.clippy]

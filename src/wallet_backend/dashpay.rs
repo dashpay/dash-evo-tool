@@ -2227,7 +2227,7 @@ mod tests {
         let kv = DetKv::from_store(store.clone());
         let timestamps = ProfileTimestamps::default();
         let owner = id_from_byte(1);
-        store.fail_next_puts(2);
+        store.fail_next_puts_containing("", 2);
         assert!(timestamps.set(&kv, &owner, (111, 222)).is_err());
         // Even while storage is unavailable the view must see the successful write's times.
         assert_eq!(timestamps.get(&kv, &owner), (111, 222));
@@ -2261,7 +2261,7 @@ mod tests {
         let timestamps = ProfileTimestamps::default();
         let owner = id_from_byte(1);
         timestamps.set(&kv, &owner, (111, 222)).unwrap();
-        store.fail_next_puts(1);
+        store.fail_next_puts_containing("", 1);
         assert!(timestamps.set(&kv, &owner, (111, 333)).is_err());
         timestamps.initialize(&kv, &owner, 999).unwrap();
         assert_eq!(timestamps.get(&kv, &owner), (111, 333));
@@ -2291,9 +2291,9 @@ mod tests {
         let timestamps = ProfileTimestamps::default();
         let owner = id_from_byte(1);
         timestamps.set(&kv, &owner, (111, 222)).unwrap();
-        store.fail_reads(true);
+        store.fail_all_reads(true);
         assert!(timestamps.initialize(&kv, &owner, 999).is_err());
-        store.fail_reads(false);
+        store.fail_all_reads(false);
         assert_eq!(timestamps.get(&kv, &owner), (111, 222));
         assert_eq!(store.put_count(), 1);
     }
@@ -2306,7 +2306,7 @@ mod tests {
         let kv = DetKv::from_store(store.clone());
         let timestamps = ProfileTimestamps::default();
         let owner = id_from_byte(1);
-        store.fail_next_puts(1);
+        store.fail_next_puts_containing("", 1);
         assert!(timestamps.initialize(&kv, &owner, 111).is_err());
         timestamps.initialize(&kv, &owner, 222).unwrap();
         assert_eq!(timestamps.get(&kv, &owner), (111, 111));
@@ -2322,7 +2322,7 @@ mod tests {
         let timestamps = ProfileTimestamps::default();
         let owner = id_from_byte(1);
         let other = id_from_byte(2);
-        store.fail_next_puts(1);
+        store.fail_next_puts_containing("", 1);
         assert!(timestamps.set(&kv, &owner, (111, 222)).is_err());
         assert_eq!(timestamps.get(&kv, &other), (0, 0));
         timestamps.set(&kv, &owner, (111, 333)).unwrap();

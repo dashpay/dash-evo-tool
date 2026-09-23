@@ -3583,6 +3583,43 @@ async fn protected_single_key_import_does_not_retain_plaintext_in_session_map() 
     );
 }
 
+/// Re-importing a key with protection changes its runtime key hash; removing
+/// the key afterwards must not leave the first import's handle selectable.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn protection_changing_reimport_then_forget_leaves_no_stale_handle() {
+    use crate::wallet_backend::single_key::ImportPassphrase;
+
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+
+    let mut raw = [0u8; 32];
+    raw[31] = 0x5A;
+    let wif = testnet_wif_from_raw(&raw);
+    let import = |passphrase| {
+        ctx.import_single_key_wif(
+            &wif,
+            crate::model::wallet::alias::AliasSource::Preserved(None),
+            passphrase,
+        )
+        .expect("import must succeed")
+    };
+    let (imported, _) = import(ImportPassphrase::default());
+    import(ImportPassphrase {
+        passphrase: Some(zeroize::Zeroizing::new("a-strong-passphrase".into())),
+        hint: None,
+    });
+    assert_eq!(ctx.wallet_context().single_key_wallets().len(), 1);
+
+    ctx.wallet_backend()
+        .unwrap()
+        .single_key()
+        .forget(&imported.address)
+        .expect("forget must succeed");
+    assert!(!ctx.wallet_context().has_single_key_wallets());
+}
+
 /// Companion to the protected-key test: an **unprotected** single key
 /// has no passphrase by definition, so plaintext in the session map is
 /// inherent and the mirror is expected to be open. This guards against

@@ -54,6 +54,18 @@ struct WalletState {
     single_membership: BTreeMap<String, SingleKeyHash>,
 }
 
+impl WalletState {
+    /// Bind `address` to `hash`, evicting the handle it replaces: protecting a
+    /// re-imported key changes its hash, and removal only evicts the bound one.
+    fn set_single_membership(&mut self, address: String, hash: SingleKeyHash) {
+        if let Some(old) = self.single_membership.insert(address, hash)
+            && old != hash
+        {
+            self.single_wallets.remove(&old);
+        }
+    }
+}
+
 /// Metadata and reconstructed runtime wallets loaded in one hydration operation.
 #[derive(Default)]
 pub(crate) struct WalletHydration {
@@ -328,7 +340,7 @@ impl WalletContext {
         let mut state = write_recover(&self.state);
         let hash = wallet.key_hash();
         let wallet = Arc::new(RwLock::new(wallet));
-        state.single_membership.insert(address.to_owned(), hash);
+        state.set_single_membership(address.to_owned(), hash);
         state.single_wallets.insert(hash, wallet.clone());
         state.single.insert(address.to_owned(), meta.clone());
         Ok((meta, wallet))
@@ -398,9 +410,7 @@ impl WalletContext {
                 .or_insert_with(|| Arc::new(RwLock::new(wallet)));
         }
         for (hash, wallet) in loaded.single_wallets {
-            state
-                .single_membership
-                .insert(wallet.address.to_string(), hash);
+            state.set_single_membership(wallet.address.to_string(), hash);
             state
                 .single_wallets
                 .entry(hash)
@@ -809,6 +819,65 @@ mod tests {
         );
         assert_eq!(context.hd_alias(&seed).as_deref(), Some("Renamed"));
         assert_eq!(context.hd_prompt(&seed).alias.as_deref(), Some("Renamed"));
+    }
+
+    /// Same key, different protection: the two runtime handles hash differently.
+    fn single_key_pair() -> (ImportedKey, SingleKeyWallet, SingleKeyWallet) {
+        let network = dash_sdk::dpp::dashcore::Network::Testnet;
+        let open = SingleKeyWallet::new([7; 32], network, None, None).unwrap();
+        let mut protected = SingleKeyWallet::new([7; 32], network, None, None).unwrap();
+        protected.key_hash = [8; 32];
+        let meta = ImportedKey {
+            address: open.address.to_string(),
+            alias: None,
+            network,
+            has_passphrase: false,
+            passphrase_hint: None,
+            public_key_bytes: open.public_key.inner.serialize().to_vec(),
+        };
+        (meta, open, protected)
+    }
+
+    #[test]
+    fn reimport_with_a_new_key_hash_leaves_no_stale_handle_after_removal() {
+        let context = WalletContext::default();
+        let (meta, open, protected) = single_key_pair();
+        let (address, old_hash) = (meta.address.clone(), open.key_hash());
+        for wallet in [open, protected] {
+            let meta = meta.clone();
+            context
+                .import_single_key(&address, AliasSource::Preserved(None), |_| {
+                    Ok((meta, wallet))
+                })
+                .unwrap();
+        }
+        assert!(!context.contains_single(&old_hash));
+        assert_eq!(context.single_key_wallets().len(), 1);
+        context.remove_single_key(&address, || Ok(())).unwrap();
+        assert!(!context.has_single_key_wallets());
+    }
+
+    #[test]
+    fn hydration_with_a_new_key_hash_leaves_no_stale_handle_after_removal() {
+        let context = WalletContext::default();
+        let (meta, open, protected) = single_key_pair();
+        let (address, old_hash) = (meta.address.clone(), open.key_hash());
+        for wallet in [open, protected] {
+            let meta = meta.clone();
+            context
+                .hydrate(|| {
+                    Ok(WalletHydration {
+                        single: vec![meta],
+                        single_wallets: vec![(wallet.key_hash(), wallet)],
+                        ..Default::default()
+                    })
+                })
+                .unwrap();
+        }
+        assert!(!context.contains_single(&old_hash));
+        assert_eq!(context.single_key_wallets().len(), 1);
+        context.remove_single_key(&address, || Ok(())).unwrap();
+        assert!(!context.has_single_key_wallets());
     }
 
     #[test]

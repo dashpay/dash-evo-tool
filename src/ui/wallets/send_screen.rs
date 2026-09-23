@@ -33,7 +33,7 @@ use crate::ui::components::wallet_unlock_popup::{
 };
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::state::AssetLockBalanceCache;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{
     MessageType, RootScreenType, ScreenLike, append_concurrent_backend_tasks,
     can_append_concurrent_backend_tasks,
@@ -3301,16 +3301,7 @@ impl WalletSendScreen {
                 self.get_transaction_type_description()
             };
 
-            let send_button =
-                egui::Button::new(RichText::new(button_text).color(Color32::WHITE).strong())
-                    .fill(if can_send {
-                        DashColors::DASH_BLUE
-                    } else {
-                        DashColors::DASH_BLUE.gamma_multiply(0.5)
-                    })
-                    .min_size(egui::vec2(160.0, 36.0));
-
-            if ui.add_enabled(can_send, send_button).clicked() {
+            if ComponentStyles::add_primary_button_enabled(ui, can_send, button_text).clicked() {
                 match self.validate_and_send() {
                     Ok(send_action) => {
                         let message = self.simple_send_confirmation_message();
@@ -3948,16 +3939,7 @@ impl WalletSendScreen {
 
             let button_text = if is_sending { "Sending..." } else { "Send" };
 
-            let send_button =
-                egui::Button::new(RichText::new(button_text).color(Color32::WHITE).strong())
-                    .fill(if can_send {
-                        DashColors::DASH_BLUE
-                    } else {
-                        DashColors::DASH_BLUE.gamma_multiply(0.5)
-                    })
-                    .min_size(egui::vec2(160.0, 36.0));
-
-            if ui.add_enabled(can_send, send_button).clicked() {
+            if ComponentStyles::add_primary_button_enabled(ui, can_send, button_text).clicked() {
                 match self.validate_and_send_advanced() {
                     Ok(send_action) => {
                         let message = self.advanced_send_confirmation_message();

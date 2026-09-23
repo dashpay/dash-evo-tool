@@ -786,13 +786,19 @@ impl SingleKeyWalletSendScreen {
             // send with `TaskError::SingleKeyWalletsUnsupported`, so the button
             // stays disabled until that task can build, sign and broadcast a
             // transaction. Mirrors the disabled Send in the wallets action bar;
-            // left unstyled so egui's default disabled visuals apply.
+            // left unstyled so egui's default disabled visuals apply. `add_sized`
+            // supplies the dialog footprint and centers the label inside it.
             let send_label =
                 RichText::new(if self.sending { "Sending..." } else { "Send" }).strong();
-            let send_button = egui::Button::new(send_label).min_size(egui::vec2(120.0, 36.0));
 
             let response = ui
-                .add_enabled(false, send_button)
+                .add_enabled_ui(false, |ui| {
+                    ui.add_sized(
+                        ComponentStyles::DIALOG_BUTTON_MIN_SIZE,
+                        egui::Button::new(send_label),
+                    )
+                })
+                .inner
                 .on_disabled_hover_text(SINGLE_KEY_SEND_UNAVAILABLE);
             if response.clicked() {
                 match self.validate_and_send() {

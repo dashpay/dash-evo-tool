@@ -297,6 +297,40 @@ fn platform_compatibility_removes_only_matching_upstream_backups() {
     assert!(kept.exists());
 }
 
+/// One invalid candidate must not shield the valid snapshots from deletion:
+/// every valid backup is removed and the rejection is still reported.
+#[test]
+fn platform_compatibility_invalid_candidate_does_not_block_removal_of_valid_backups() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("det-testnet.sqlite");
+    let blocked = dir
+        .path()
+        .join("det-testnet.sqlite.platform-67d4ef3-backup-a0.pending");
+    std::fs::create_dir(&blocked).unwrap();
+    let valid = [
+        dir.path()
+            .join("det-testnet.sqlite.platform-67d4ef3-backup-b1.sqlite"),
+        dir.path()
+            .join("det-testnet.sqlite.platform-67d4ef3-backup-c2.pending"),
+    ];
+    for backup in &valid {
+        std::fs::write(backup, b"backup").unwrap();
+    }
+    let auto = dir.path().join("backups/auto");
+    std::fs::create_dir_all(&auto).unwrap();
+    let upstream = auto.join("pre-migration-det-testnet-1-to-2-20260915T120000Z.db");
+    std::fs::write(&upstream, b"backup").unwrap();
+
+    assert!(remove_backups(&path).is_err());
+    for backup in valid.iter().chain([&upstream]) {
+        assert!(!backup.exists(), "{} must be removed", backup.display());
+    }
+    assert!(
+        blocked.is_dir(),
+        "the rejected candidate must be left alone"
+    );
+}
+
 #[test]
 fn platform_compatibility_prune_failure_preserves_original() {
     let (dir, path, target) = fixture();

@@ -249,17 +249,39 @@ fn backup_prefix(path: &Path) -> Option<String> {
 
 /// Retained upgrade backups of the database at `path`.
 fn backups(path: &Path) -> std::io::Result<Vec<PathBuf>> {
-    backups_in(
-        path,
-        Some(&platform_wallet_storage::default_auto_backup_dir(path)),
-    )
+    backups_in(path, Some(&default_auto_dir(path)))
 }
 
+fn default_auto_dir(path: &Path) -> PathBuf {
+    platform_wallet_storage::default_auto_backup_dir(path)
+}
+
+/// Backup candidates that passed validation, plus the first rejected one.
+///
+/// Directory-level failures still abort the scan; a single rejected
+/// candidate does not, so deletion can remove every valid snapshot before
+/// reporting the rejection.
+struct BackupScan {
+    found: Vec<PathBuf>,
+    first_rejection: Option<std::io::Error>,
+}
+
+/// Strict scan: any rejected candidate fails the whole scan. Retention and
+/// publication rely on this to never proceed past an unexpected file.
 fn backups_in(path: &Path, auto_dir: Option<&Path>) -> std::io::Result<Vec<PathBuf>> {
-    let (Some(parent), Some(prefix)) = (path.parent(), backup_prefix(path)) else {
-        return Ok(Vec::new());
-    };
+    let scan = scan_backups_in(path, auto_dir)?;
+    scan.first_rejection.map_or(Ok(scan.found), Err)
+}
+
+fn scan_backups_in(path: &Path, auto_dir: Option<&Path>) -> std::io::Result<BackupScan> {
     let mut found = Vec::new();
+    let mut first_rejection = None;
+    let (Some(parent), Some(prefix)) = (path.parent(), backup_prefix(path)) else {
+        return Ok(BackupScan {
+            found,
+            first_rejection,
+        });
+    };
     for directory in [Some(parent), auto_dir].into_iter().flatten() {
         let metadata = match std::fs::symlink_metadata(directory) {
             Ok(metadata) => metadata,
@@ -288,14 +310,21 @@ fn backups_in(path: &Path, auto_dir: Option<&Path>) -> std::io::Result<Vec<PathB
                     });
             let upstream = Some(directory) == auto_dir && upstream_backup_name(path, name);
             if bridge || upstream {
-                validate_backup_file(&entry.path(), path)?;
-                found.push(entry.path());
+                match validate_backup_file(&entry.path(), path) {
+                    Ok(()) => found.push(entry.path()),
+                    Err(error) => {
+                        first_rejection.get_or_insert(error);
+                    }
+                }
             }
         }
     }
     found.sort();
     found.dedup();
-    Ok(found)
+    Ok(BackupScan {
+        found,
+        first_rejection,
+    })
 }
 
 fn upstream_backup_name(path: &Path, name: &str) -> bool {
@@ -442,8 +471,9 @@ pub(super) fn retain_one_backup_locked(
 /// Backups never contain vault secrets. Attempts every file and returns the first failure.
 pub(crate) fn remove_backups(path: &Path) -> std::io::Result<()> {
     let _guard = backup_lock(path)?;
-    let mut first_error = None;
-    for backup in backups(path)? {
+    let scan = scan_backups_in(path, Some(&default_auto_dir(path)))?;
+    let mut first_error = scan.first_rejection;
+    for backup in scan.found {
         if let Err(error) = remove_backup(&backup, path) {
             first_error.get_or_insert(error);
         }

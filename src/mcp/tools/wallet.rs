@@ -451,15 +451,11 @@ impl AsyncTool<DashMcpService> for ImportWallet {
         // it never outlives this call in freed heap/stack memory.
         let seed = zeroize::Zeroizing::new(mnemonic.to_seed(""));
 
-        let alias = param
-            .alias
-            .as_deref()
-            .map(str::trim)
-            .filter(|a| !a.is_empty())
-            .map(str::to_owned);
-
+        // The raw alias goes to `register_wallet`, which applies the same
+        // cleaning, default naming ("Wallet N"), and uniqueness rule as every
+        // app entry point; the output reports the alias actually saved.
         let wallet =
-            crate::model::wallet::Wallet::new_from_seed(*seed, ctx.network(), alias.clone(), None)
+            crate::model::wallet::Wallet::new_from_seed(*seed, ctx.network(), param.alias, None)
                 .map_err(|e| McpToolError::TaskFailed(e.into()))?;
         // Capture the seed hash before `register_wallet` consumes the wallet so
         // the already-imported branch can still report it.
@@ -470,14 +466,24 @@ impl AsyncTool<DashMcpService> for ImportWallet {
             &seed,
             crate::model::wallet::birth_height::WalletOrigin::Imported,
         ) {
-            Ok((hash, _)) => Ok(ImportWalletOutput {
+            Ok((hash, wallet_arc)) => Ok(ImportWalletOutput {
                 seed_hash: hex::encode(hash),
-                alias,
+                alias: wallet_arc
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .alias
+                    .clone(),
                 already_imported: false,
             }),
             Err(TaskError::WalletAlreadyImported) => Ok(ImportWalletOutput {
                 seed_hash: hex::encode(seed_hash),
-                alias,
+                alias: ctx.wallet_arc(&seed_hash).ok().and_then(|existing| {
+                    existing
+                        .read()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .alias
+                        .clone()
+                }),
                 already_imported: true,
             }),
             Err(e) => Err(McpToolError::TaskFailed(e)),

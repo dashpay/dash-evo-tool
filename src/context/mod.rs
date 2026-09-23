@@ -124,6 +124,12 @@ pub struct AppContext {
     /// Per-wallet guards covering the complete wallet-meta alias update.
     /// Different wallets remain independent while same-wallet renames serialize.
     hd_wallet_rename_locks: Mutex<HashMap<WalletSeedHash, Arc<Mutex<()>>>>,
+    /// Serializes every HD wallet alias writer (registration and rename) so
+    /// alias resolution, the uniqueness check, persistence, and the in-memory
+    /// update form one step. See [`AppContext::lock_hd_wallet_aliases`].
+    hd_wallet_alias_write_lock: Mutex<()>,
+    /// Serializes single-key imports, renames, and removal through the display-cache update.
+    single_key_update_lock: Mutex<()>,
     /// Per-identity guards covering every whole-record mutation of one stored
     /// identity. See [`AppContext::identity_record_lock`].
     identity_record_locks: Mutex<HashMap<Identifier, Arc<Mutex<()>>>>,
@@ -293,6 +299,26 @@ impl std::fmt::Debug for SecretPromptSlot {
 }
 
 impl AppContext {
+    /// Take the guard serializing HD wallet alias writers.
+    ///
+    /// Lock order: this guard first, then the per-wallet
+    /// [`Self::hd_wallet_rename_lock`], then the `wallets` map, then an inner
+    /// wallet. Hold it from alias resolution until the new alias is both
+    /// persisted and visible in `wallets`; never take it while holding any of
+    /// the later locks.
+    pub(crate) fn lock_hd_wallet_aliases(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.hd_wallet_alias_write_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Lock before the backend alias writer, display map, and inner wallet, in that order.
+    pub(crate) fn lock_single_key_updates(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.single_key_update_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     pub(crate) fn hd_wallet_rename_lock(&self, seed_hash: WalletSeedHash) -> Arc<Mutex<()>> {
         self.hd_wallet_rename_locks
             .lock()
@@ -499,6 +525,8 @@ impl AppContext {
             identity_loads: Default::default(),
             wallets: RwLock::new(wallets),
             hd_wallet_rename_locks: Mutex::new(HashMap::new()),
+            hd_wallet_alias_write_lock: Mutex::new(()),
+            single_key_update_lock: Mutex::new(()),
             identity_record_locks: Mutex::new(HashMap::new()),
             single_key_wallets: RwLock::new(single_key_wallets),
             animations_disabled: AtomicBool::new(false),

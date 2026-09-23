@@ -30,11 +30,11 @@ use dash_sdk::dpp::dashcore::Network;
 use crate::backend_task::error::TaskError;
 use crate::model::wallet::WalletSeedHash;
 use crate::model::wallet::meta::{WalletMeta, WalletMetaV1};
-use crate::wallet_backend::DetKv;
 use crate::wallet_backend::kv::{KvAdapterError, map_kv_storage_error};
 #[cfg(test)]
 use crate::wallet_backend::sidecar::sidecar_key;
 use crate::wallet_backend::sidecar::{SidecarScope, SidecarValue, SidecarView};
+use crate::wallet_backend::{DetKv, PromptMeta, SecretAccess};
 
 /// Colon-separated namespace shared across networks. The full key is
 /// `<network>:wallet_meta:<seed_hash_base58>`.
@@ -91,19 +91,30 @@ impl SidecarValue for WalletMeta {
 /// unavailable and the seed hash is the stable DET-level key. Reads degrade to
 /// `None`/skip on a corrupt blob (with a legacy-format fallback, see
 /// [`SidecarValue::read`]) so the picker never blocks.
-pub struct WalletMetaView<'a>(SidecarView<'a, WalletMeta>);
+pub struct WalletMetaView<'a>(SidecarView<'a, WalletMeta>, Option<&'a SecretAccess>);
 
 impl<'a> WalletMetaView<'a> {
     /// Borrow a [`DetKv`] handle as a typed wallet-metadata view. Kept
     /// `pub` so benches and downstream tooling can build the view
     /// without going through [`WalletBackend::wallet_meta`].
     pub fn new(kv: &'a Arc<DetKv>) -> Self {
-        Self(SidecarView::new(
-            kv,
-            KEY_INFIX,
-            SidecarScope::Global,
-            map_kv_error_to_task_error,
-        ))
+        Self(
+            SidecarView::new(
+                kv,
+                KEY_INFIX,
+                SidecarScope::Global,
+                map_kv_error_to_task_error,
+            ),
+            None,
+        )
+    }
+
+    /// Construct the backend-owned view with the live prompt index. Successful
+    /// writes update that index before returning to the caller.
+    pub(crate) fn with_prompt(kv: &'a Arc<DetKv>, access: &'a SecretAccess) -> Self {
+        let mut view = Self::new(kv);
+        view.1 = Some(access);
+        view
     }
 
     /// All `(seed_hash, meta)` pairs persisted for `network`. A single corrupt
@@ -136,15 +147,22 @@ impl<'a> WalletMetaView<'a> {
 
     /// Upsert the metadata for a single wallet. Re-writing the same value is an
     /// idempotent overwrite (DetKv upserts by key).
+    ///
+    /// Enforces only the alias length as stored: user-entered names are
+    /// cleaned, defaulted, and uniqueness-checked upstream (registration and
+    /// rename), while writes that carry an unchanged alias — including the
+    /// empty alias of an unnamed legacy wallet — must round-trip untouched.
     pub fn set(
         &self,
         network: Network,
         seed_hash: &WalletSeedHash,
         meta: &WalletMeta,
     ) -> Result<(), TaskError> {
-        crate::model::wallet::validate_wallet_alias(&meta.alias)
-            .map_err(|source| TaskError::InvalidWalletAliasLength { source })?;
-        self.0.set(network, seed_hash, meta)
+        crate::model::wallet::alias::validate_stored_alias(&meta.alias)?;
+        let _write_guard = self.1.map(SecretAccess::wallet_meta_write_guard);
+        self.0.set(network, seed_hash, meta)?;
+        self.update_prompt_meta(network, seed_hash, meta);
+        Ok(())
     }
 
     /// Preserve metadata imported from legacy storage, including aliases that
@@ -155,20 +173,46 @@ impl<'a> WalletMetaView<'a> {
         seed_hash: &WalletSeedHash,
         meta: &WalletMeta,
     ) -> Result<(), TaskError> {
-        if let Err(error) = crate::model::wallet::validate_wallet_alias(&meta.alias) {
+        if let Err(crate::model::wallet::alias::AliasError::TooLong { length }) =
+            crate::model::wallet::alias::validate_stored_alias(&meta.alias)
+        {
             tracing::warn!(
-                alias_chars = error.actual,
-                max_alias_chars = error.max,
+                alias_chars = length.actual,
+                max_alias_chars = length.max,
                 "Preserving an overlong legacy wallet alias during migration"
             );
         }
-        self.0.set(network, seed_hash, meta)
+        let _write_guard = self.1.map(SecretAccess::wallet_meta_write_guard);
+        self.0.set(network, seed_hash, meta)?;
+        self.update_prompt_meta(network, seed_hash, meta);
+        Ok(())
     }
 
     /// Delete the metadata for a single wallet. Idempotent — a
     /// missing key returns `Ok(())`.
     pub fn delete(&self, network: Network, seed_hash: &WalletSeedHash) -> Result<(), TaskError> {
-        self.0.delete(network, seed_hash)
+        let _write_guard = self.1.map(SecretAccess::wallet_meta_write_guard);
+        self.0.delete(network, seed_hash)?;
+        if let Some(access) = self.1
+            && access.network() == network
+        {
+            access.remove_wallet_meta(seed_hash);
+        }
+        Ok(())
+    }
+
+    fn update_prompt_meta(&self, network: Network, seed_hash: &WalletSeedHash, meta: &WalletMeta) {
+        if let Some(access) = self.1
+            && access.network() == network
+        {
+            access.upsert_wallet_meta(
+                *seed_hash,
+                PromptMeta {
+                    alias: (!meta.alias.is_empty()).then(|| meta.alias.clone()),
+                    password_hint: meta.password_hint.clone(),
+                },
+            );
+        }
     }
 }
 
@@ -250,6 +294,21 @@ mod tests {
             .expect_err("overlong alias must fail");
         assert!(matches!(error, TaskError::InvalidWalletAliasLength { .. }));
         assert_eq!(view.get(Network::Mainnet, &seed), None);
+    }
+
+    /// An unnamed wallet (empty alias, e.g. legacy data) keeps its empty alias
+    /// through a metadata write that does not rename it — the write path never
+    /// substitutes a synthetic default name, so the wallet keeps rendering with
+    /// the seed-hash fallback label.
+    #[test]
+    fn set_keeps_empty_alias_of_unnamed_wallet() {
+        let kv = kv();
+        let view = WalletMetaView::new(&kv);
+        let seed: WalletSeedHash = [0x25; 32];
+        let unnamed = meta("", true, None);
+        view.set(Network::Mainnet, &seed, &unnamed)
+            .expect("an empty alias is a valid stored alias");
+        assert_eq!(view.get(Network::Mainnet, &seed), Some(unnamed));
     }
 
     #[test]

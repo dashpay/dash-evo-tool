@@ -2657,9 +2657,201 @@ async fn register_wallet_rejects_overlong_alias_before_seed_write() {
     );
 }
 
+/// Build an unprotected testnet HD wallet from a repeated seed byte.
+fn hd_wallet_with_alias(seed_byte: u8, alias: Option<&str>) -> ([u8; 64], Wallet) {
+    let seed = [seed_byte; 64];
+    let wallet = Wallet::new_from_seed(seed, Network::Testnet, alias.map(str::to_owned), None)
+        .expect("build wallet");
+    (seed, wallet)
+}
+
+/// A blank (or missing) alias becomes the smallest unused "Wallet N" — not
+/// `count + 1`, which would collide with an existing "Wallet 3" here — and the
+/// resolved name is what gets persisted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn register_wallet_blank_alias_takes_smallest_unused_default_name() {
+    let (ctx, _sender, _tmp) = offline_testnet_context();
+    for (seed_byte, alias) in [(0x61, None), (0x62, Some("Wallet 3"))] {
+        let (seed, wallet) = hd_wallet_with_alias(seed_byte, alias);
+        ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
+            .expect("register existing wallet");
+    }
+
+    let (seed, wallet) = hd_wallet_with_alias(0x63, Some(" \u{200B} "));
+    let (seed_hash, wallet_arc) = ctx
+        .register_wallet(wallet, &seed, WalletOrigin::Fresh)
+        .expect("register blank-named wallet");
+
+    assert_eq!(wallet_arc.read_recover().alias.as_deref(), Some("Wallet 2"));
+    assert_eq!(
+        WalletMetaView::new(&ctx.app_kv)
+            .get(Network::Testnet, &seed_hash)
+            .expect("meta row")
+            .alias,
+        "Wallet 2",
+        "the resolved default name must be persisted"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn register_wallet_cleans_the_alias() {
+    let (ctx, _sender, _tmp) = offline_testnet_context();
+    let (seed, wallet) = hd_wallet_with_alias(0x61, Some("  \u{202E}Savings\u{FEFF} "));
+
+    let (_, wallet_arc) = ctx
+        .register_wallet(wallet, &seed, WalletOrigin::Fresh)
+        .expect("register");
+
+    assert_eq!(wallet_arc.read_recover().alias.as_deref(), Some("Savings"));
+}
+
+/// A name another HD wallet already uses is rejected before any
+/// secret-critical write, so fund-moving tools can never be handed two wallets
+/// under one name.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn register_wallet_rejects_alias_used_by_another_wallet_before_seed_write() {
+    let (ctx, _sender, _tmp) = offline_testnet_context();
+    let (seed, wallet) = hd_wallet_with_alias(0x61, Some("Savings"));
+    ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
+        .expect("register first wallet");
+
+    let (seed, wallet) = hd_wallet_with_alias(0x62, Some("Savings "));
+    let seed_hash = wallet.seed_hash();
+    let result = ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh);
+
+    assert!(
+        matches!(result, Err(TaskError::WalletAliasAlreadyUsed { .. })),
+        "a duplicate name must be rejected"
+    );
+    assert!(
+        WalletSeedView::new(&ctx.secret_store())
+            .get_raw(&seed_hash)
+            .expect("read raw seed")
+            .is_none(),
+        "no seed material may be written for a rejected registration"
+    );
+    assert!(!ctx.wallets.read_recover().contains_key(&seed_hash));
+}
+
+/// Re-importing a wallet is reported as a re-import, not as a name conflict
+/// with itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn register_wallet_reimport_reports_already_imported() {
+    let (ctx, _sender, _tmp) = offline_testnet_context();
+    let (seed, wallet) = hd_wallet_with_alias(0x61, Some("Savings"));
+    ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
+        .expect("register first time");
+
+    let (seed, wallet) = hd_wallet_with_alias(0x61, Some("Savings"));
+    let result = ctx.register_wallet(wallet, &seed, WalletOrigin::Imported);
+
+    assert!(
+        matches!(result, Err(TaskError::WalletAlreadyImported)),
+        "a re-import must be reported as such"
+    );
+}
+
 /// Build a valid BIP44 account-0 master xpub (testnet) for a legacy wallet row.
 fn legacy_master_epk_bytes(seed: &[u8; 64]) -> Vec<u8> {
     crate::database::test_helpers::legacy_master_epk_bytes(seed, Network::Testnet)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn malformed_legacy_envelope_does_not_block_healthy_wallet_hydration() {
+    use crate::model::wallet::alias::AliasSource;
+    use crate::model::wallet::meta::{WalletMeta, WalletMetaV1};
+    use crate::wallet_backend::single_key::SingleKeyView;
+    use crate::wallet_backend::{DetScope, wallet_meta};
+    use platform_wallet_storage::secrets::{SecretBytes, WalletId};
+
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    let store = ctx.secret_store();
+    let seeds = WalletSeedView::new(&store);
+    let seed = std::array::from_fn(|_| rand::random::<u8>());
+    let healthy_hash = crate::model::wallet::ClosedKeyItem::compute_seed_hash(&seed);
+    let xpub_encoded = legacy_master_epk_bytes(&seed);
+    seeds.set_raw(&healthy_hash, &seed).unwrap();
+    WalletMetaView::new(&ctx.app_kv())
+        .set_migrated(
+            ctx.network,
+            &healthy_hash,
+            &WalletMeta {
+                alias: "Healthy HD".into(),
+                xpub_encoded: xpub_encoded.clone(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+    let malformed_hash = rand::random::<[u8; 32]>();
+    ctx.app_kv()
+        .put(
+            DetScope::Global,
+            &wallet_meta::key_for(ctx.network, &malformed_hash),
+            &WalletMetaV1 {
+                alias: "Damaged legacy wallet".into(),
+                xpub_encoded,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    store
+        .set(
+            &WalletId::from(malformed_hash),
+            crate::wallet_backend::wallet_seed_store::ENVELOPE_LABEL,
+            &SecretBytes::from_slice(&[1]),
+        )
+        .unwrap();
+    assert!(seeds.legacy_envelope_get(&malformed_hash).is_err());
+
+    let alias_lock = std::sync::Mutex::new(());
+    let index = std::sync::RwLock::new(std::collections::BTreeMap::new());
+    let key = dash_sdk::dpp::dashcore::PrivateKey::from_byte_array(
+        &rand::random::<[u8; 32]>(),
+        ctx.network,
+    )
+    .unwrap();
+    let imported = SingleKeyView::from_views(
+        &store,
+        &alias_lock,
+        &index,
+        ctx.network,
+        Some(&ctx.app_kv()),
+    )
+    .import_wif(
+        &key.to_wif(),
+        AliasSource::UserEntered("Healthy key".into()),
+    )
+    .unwrap();
+    assert!(ctx.wallets.read().unwrap().is_empty());
+    assert!(ctx.single_key_wallets.read().unwrap().is_empty());
+
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("one malformed legacy envelope must not prevent backend initialization");
+    {
+        let wallets = ctx.wallets.read().unwrap();
+        assert_eq!(wallets.len(), 1);
+        assert!(wallets.contains_key(&healthy_hash));
+        assert!(!wallets.contains_key(&malformed_hash));
+    }
+    {
+        let wallets = ctx.single_key_wallets.read().unwrap();
+        assert_eq!(wallets.len(), 1);
+        assert_eq!(
+            wallets
+                .values()
+                .next()
+                .unwrap()
+                .read()
+                .unwrap()
+                .address
+                .to_string(),
+            imported.address,
+        );
+    }
+    assert!(ctx.has_wallet.load(Ordering::Relaxed));
+    ctx.wallet_backend().unwrap().shutdown().await;
 }
 
 /// F140 — a wallet migrated from legacy `data.db` must be visible right
@@ -3349,7 +3541,11 @@ async fn protected_single_key_import_does_not_retain_plaintext_in_session_map() 
         hint: Some("the test one".into()),
     };
     let (imported, wallet_arc) = ctx
-        .import_single_key_wif(&wif, Some("protected".into()), passphrase)
+        .import_single_key_wif(
+            &wif,
+            crate::model::wallet::alias::AliasSource::Preserved(Some("protected".into())),
+            passphrase,
+        )
         .expect("protected import must succeed");
     assert!(
         imported.has_passphrase,
@@ -3408,7 +3604,11 @@ async fn unprotected_single_key_import_mirrors_open() {
     let wif = testnet_wif_from_raw(&raw);
 
     let (imported, wallet_arc) = ctx
-        .import_single_key_wif(&wif, Some("plain".into()), ImportPassphrase::default())
+        .import_single_key_wif(
+            &wif,
+            crate::model::wallet::alias::AliasSource::Preserved(Some("plain".into())),
+            ImportPassphrase::default(),
+        )
         .expect("unprotected import must succeed");
     assert!(
         !imported.has_passphrase,
@@ -3454,7 +3654,11 @@ async fn protected_single_key_unlock_verifies_without_reparking_plaintext() {
         hint: None,
     };
     let (_imported, wallet_arc) = ctx
-        .import_single_key_wif(&wif, Some("protected".into()), passphrase)
+        .import_single_key_wif(
+            &wif,
+            crate::model::wallet::alias::AliasSource::Preserved(Some("protected".into())),
+            passphrase,
+        )
         .expect("protected import must succeed");
     let address = wallet_arc.read().expect("read mirror").address.to_string();
 

@@ -189,18 +189,17 @@ impl DerivedKeyChooser {
         self.wallet == Some((*seed_hash, identity_index))
     }
 
-    /// A warm task for `identity_index` finished. A load that still finds keys
+    /// This wallet's warm task finished. A load that still finds keys
     /// missing becomes a failure instead of re-dispatching, so a lost race can
     /// never loop warm tasks.
     pub fn warm_finished(
         &mut self,
         app_context: &AppContext,
         identity: &QualifiedIdentity,
+        seed_hash: &WalletSeedHash,
         identity_index: u32,
     ) {
-        if self.load != KeyLoad::Loading
-            || self.wallet.is_none_or(|(_, index)| index != identity_index)
-        {
+        if self.load != KeyLoad::Loading || !self.is_own_warm(seed_hash, identity_index) {
             return;
         }
         self.load = KeyLoad::Cold;

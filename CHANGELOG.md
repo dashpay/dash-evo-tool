@@ -125,6 +125,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The Add Key screen ignores key-slot loading results from other wallets, so
+  concurrent loading cannot leave its wallet slots unavailable.
+
 - CLI builds no longer warn about an unused passphrase-limit import.
 
 - Migration tests compile with the current rand dependency.

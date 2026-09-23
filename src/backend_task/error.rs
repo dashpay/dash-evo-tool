@@ -619,7 +619,7 @@ pub enum TaskError {
     /// evonode identity, or keys spanning several wallets). Fieldless: no
     /// upstream error.
     #[error(
-        "This identity has no wallet on this device to create the key from. Turn off Create from wallet and enter a private key instead."
+        "A single matching wallet could not be identified on this device. Turn off Create from wallet and enter a private key instead."
     )]
     DerivedKeyWalletRequired,
 

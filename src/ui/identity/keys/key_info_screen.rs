@@ -422,6 +422,14 @@ impl ScreenLike for KeyInfoScreen {
                                         .color(text_primary),
                                     );
                                 }
+                                ContractBounds::ContractGroup { id } => {
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "This key can only sign for the contracts, document types and tokens in contract group {id}."
+                                        ))
+                                        .color(text_primary),
+                                    );
+                                }
                             }
                             ui.end_row();
                         }

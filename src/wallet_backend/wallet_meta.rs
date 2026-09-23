@@ -92,25 +92,26 @@ impl SidecarValue for WalletMeta {
 /// unavailable and the seed hash is the stable DET-level key. Reads degrade to
 /// `None`/skip on a corrupt blob (with a legacy-format fallback, see
 /// [`SidecarValue::read`]) so the picker never blocks.
-pub struct WalletMetaView<'a>(
-    SidecarView<'a, WalletMeta>,
-    Option<(&'a WalletContext, Network)>,
-);
+pub struct WalletMetaView<'a> {
+    sidecar: SidecarView<'a, WalletMeta>,
+    /// Context that publishes this view's writes, and the one network it owns.
+    owner: Option<(&'a WalletContext, Network)>,
+}
 
 impl<'a> WalletMetaView<'a> {
     /// Borrow a [`DetKv`] handle as a typed wallet-metadata view. Kept
     /// `pub` so benches and downstream tooling can build the view
     /// without going through [`WalletBackend::wallet_meta`].
     pub fn new(kv: &'a Arc<DetKv>) -> Self {
-        Self(
-            SidecarView::new(
+        Self {
+            sidecar: SidecarView::new(
                 kv,
                 KEY_INFIX,
                 SidecarScope::Global,
                 map_kv_error_to_task_error,
             ),
-            None,
-        )
+            owner: None,
+        }
     }
 
     /// Construct a view whose mutations publish through the shared owner.
@@ -120,7 +121,7 @@ impl<'a> WalletMetaView<'a> {
         network: Network,
     ) -> Self {
         let mut view = Self::new(kv);
-        view.1 = Some((context, network));
+        view.owner = Some((context, network));
         view
     }
 
@@ -128,18 +129,18 @@ impl<'a> WalletMetaView<'a> {
     /// row is logged and skipped so the wallet listing degrades to "name
     /// unknown" rather than refusing to open the app.
     pub fn list(&self, network: Network) -> Vec<(WalletSeedHash, WalletMeta)> {
-        match self.1 {
-            Some((context, _)) => context.read_metadata(|| self.0.list(network)),
-            None => self.0.list(network),
+        match self.owner {
+            Some((context, _)) => context.read_metadata(|| self.sidecar.list(network)),
+            None => self.sidecar.list(network),
         }
     }
 
     /// Fetch the metadata for a single wallet. `None` when the key is
     /// absent or the blob fails to decode (logged).
     pub fn get(&self, network: Network, seed_hash: &WalletSeedHash) -> Option<WalletMeta> {
-        match self.1 {
-            Some((context, _)) => context.read_metadata(|| self.0.get(network, seed_hash)),
-            None => self.0.get(network, seed_hash),
+        match self.owner {
+            Some((context, _)) => context.read_metadata(|| self.sidecar.get(network, seed_hash)),
+            None => self.sidecar.get(network, seed_hash),
         }
     }
 
@@ -155,9 +156,11 @@ impl<'a> WalletMetaView<'a> {
         network: Network,
         seed_hash: &WalletSeedHash,
     ) -> Result<Option<WalletMeta>, TaskError> {
-        match self.1 {
-            Some((context, _)) => context.read_metadata(|| self.0.try_get(network, seed_hash)),
-            None => self.0.try_get(network, seed_hash),
+        match self.owner {
+            Some((context, _)) => {
+                context.read_metadata(|| self.sidecar.try_get(network, seed_hash))
+            }
+            None => self.sidecar.try_get(network, seed_hash),
         }
     }
 
@@ -175,15 +178,7 @@ impl<'a> WalletMetaView<'a> {
         meta: &WalletMeta,
     ) -> Result<(), TaskError> {
         crate::model::wallet::alias::validate_stored_alias(&meta.alias)?;
-        if let Some((context, own_network)) = self.1
-            && own_network == network
-        {
-            context.save_hd_metadata(*seed_hash, meta.clone(), || {
-                self.0.set(network, seed_hash, meta)
-            })
-        } else {
-            self.0.set(network, seed_hash, meta)
-        }
+        self.publish_set(network, seed_hash, meta)
     }
 
     /// Preserve metadata imported from legacy storage, including aliases that
@@ -203,26 +198,37 @@ impl<'a> WalletMetaView<'a> {
                 "Preserving an overlong legacy wallet alias during migration"
             );
         }
-        if let Some((context, own_network)) = self.1
-            && own_network == network
-        {
-            context.save_hd_metadata(*seed_hash, meta.clone(), || {
-                self.0.set(network, seed_hash, meta)
-            })
-        } else {
-            self.0.set(network, seed_hash, meta)
-        }
+        self.publish_set(network, seed_hash, meta)
     }
 
     /// Delete the metadata for a single wallet. Idempotent — a
     /// missing key returns `Ok(())`.
     pub fn delete(&self, network: Network, seed_hash: &WalletSeedHash) -> Result<(), TaskError> {
-        if let Some((context, own_network)) = self.1
+        if let Some((context, own_network)) = self.owner
             && own_network == network
         {
-            context.delete_hd_metadata(seed_hash, || self.0.delete(network, seed_hash))
+            context.delete_hd_metadata(seed_hash, || self.sidecar.delete(network, seed_hash))
         } else {
-            self.0.delete(network, seed_hash)
+            self.sidecar.delete(network, seed_hash)
+        }
+    }
+
+    /// Write `meta`, publishing it through the owning context when this view
+    /// is bound to `network`.
+    fn publish_set(
+        &self,
+        network: Network,
+        seed_hash: &WalletSeedHash,
+        meta: &WalletMeta,
+    ) -> Result<(), TaskError> {
+        if let Some((context, own_network)) = self.owner
+            && own_network == network
+        {
+            context.save_hd_metadata(*seed_hash, meta.clone(), || {
+                self.sidecar.set(network, seed_hash, meta)
+            })
+        } else {
+            self.sidecar.set(network, seed_hash, meta)
         }
     }
 }

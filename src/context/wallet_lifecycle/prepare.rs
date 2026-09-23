@@ -79,6 +79,31 @@ impl AppContext {
         self: &Arc<Self>,
         task_result_sender: crate::utils::egui_mpsc::SenderAsync<crate::app::TaskResult>,
     ) -> Result<(), TaskError> {
+        self.prepare_storage_with_wallet_password(task_result_sender, None)
+            .await
+    }
+
+    /// [`Self::prepare_storage`] for a caller that supplies the password of the
+    /// password-protected wallets up front: the non-interactive storage update
+    /// behind the `app_storage_update` MCP tool.
+    ///
+    /// The drain tries `wallet_password` on every wallet still locked after the
+    /// copy, through the same verification the desktop password prompt submits
+    /// to, before a prompt would otherwise be needed. The password is borrowed
+    /// for this call only and never stored. `None` is exactly
+    /// [`Self::prepare_storage`]; a preparation that already completed returns
+    /// immediately without using the password.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::prepare_storage`], plus
+    /// [`TaskError::StorageUpdatePasswordRejected`] when the password does not
+    /// open every locked wallet.
+    pub async fn prepare_storage_with_wallet_password(
+        self: &Arc<Self>,
+        task_result_sender: crate::utils::egui_mpsc::SenderAsync<crate::app::TaskResult>,
+        wallet_password: Option<&platform_wallet_storage::secrets::SecretString>,
+    ) -> Result<(), TaskError> {
         let gate = self.lock_prepare_gate().await;
         if self.storage_prepared.load(Ordering::Acquire) {
             return Ok(());
@@ -101,7 +126,9 @@ impl AppContext {
             return Err(error);
         }
 
-        let drain = crate::backend_task::migration::finish_unwire::run_gated(self, &gate).await;
+        let drain =
+            crate::backend_task::migration::finish_unwire::run_gated(self, &gate, wallet_password)
+                .await;
         let identity_keys = self.migrate_local_identity_keys_to_vault();
 
         // Run the sweep on the drain's failure path too: a deterministic drain
@@ -116,7 +143,13 @@ impl AppContext {
 
         drain?;
         identity_keys?;
-        self.storage_prepared.store(true, Ordering::Release);
+        // The combined failure publishes its own banner but returns Ok to keep wallets usable.
+        if !matches!(
+            status.state().as_ref(),
+            MigrationState::FailedWithUnreadableIdentities { .. }
+        ) {
+            self.storage_prepared.store(true, Ordering::Release);
+        }
         Ok(())
     }
 

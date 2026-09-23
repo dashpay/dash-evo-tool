@@ -9,7 +9,7 @@ network query, fetches optional avatar bytes, and maintains display timestamps.
 
 Avatar download or decoding failures stop the task before any profile query or
 write. Typed errors preserve the cause and tell the user how to correct the URL.
-DET checks the managing wallet's identity against the pinned upstream key policy
+DET checks the managing wallet's identity against the profile authentication policy
 before invoking the profile API; incompatible keys produce an actionable error.
 
 Failed display-timestamp writes remain in a per-network, per-identity in-memory
@@ -23,10 +23,14 @@ not permit initialization. Downloaded avatar bytes also populate the view cache.
 
 ## Scope and limitations
 
-- HIGH and CRITICAL authentication keys are selected upstream. The pinned
-  platform-wallet supports ECDSA_SECP256K1 only for profile writes. ECDSA_HASH160
-  support belongs in dashpay/platform; this migration does not close #760 for
-  HASH160-only identities. Related PRs: #762 and #978.
+- DET accepts active HIGH or CRITICAL authentication keys of type
+  ECDSA_SECP256K1 or ECDSA_HASH160. The existing signer supports both types.
+  Platform revision `f73f5d6098a739d29a1cebc2f7941e062ee8a517` includes
+  [Platform #4653](https://github.com/dashpay/platform/pull/4653) and the fix from
+  [Platform #4764](https://github.com/dashpay/platform/pull/4764), which select
+  the first eligible key in key-ID order that `QualifiedIdentity::can_sign_with`
+  reports available, for both creation and replacement. Actual signing errors
+  propagate without retrying other keys. Contact ECDH keys are unaffected.
 - An identity must be managed by a loaded wallet. An out-of-wallet identity
   cannot use this upstream API and receives an explicit error.
 - Upstream `ProfileUpdate` treats omitted fields as unchanged. Clearing an
@@ -56,3 +60,13 @@ with a wallet-derived HIGH secp256k1 authentication key and no CRITICAL
 authentication key, creates a profile, replaces it, and checks both the upstream
 cache and the published document. No recovery phrase or private key belongs in
 this document or test fixtures.
+
+Run the matching HASH160 case with the same flags and the filter
+`profile_create_and_replace_with_high_hash160_derived_key`. It registers HASH160
+MASTER and HIGH authentication keys, with no full-public-key signing alternative,
+then verifies both profile creation and replacement through the same backend path.
+
+The filter `profile_create_and_replace_skips_unavailable_hash160_key` exercises a
+partial import: an active HIGH HASH160 key at ID 1 remains registered but absent
+from DET's signer, while the HIGH secp256k1 key at ID 2 is available. Both creation
+and replacement must succeed with key 2. All three cases require live testnet.

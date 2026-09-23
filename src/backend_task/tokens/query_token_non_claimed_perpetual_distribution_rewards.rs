@@ -147,6 +147,7 @@ impl AppContext {
                 start_from_moment_for_distribution,
                 current_cycle_moment,
                 max_cycles,
+                self.platform_version(),
             )
             .map_err(|e| TaskError::TokenQueryError {
                 detail: format!("Failed to calculate estimated rewards: {}", e),

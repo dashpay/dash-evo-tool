@@ -1223,6 +1223,11 @@ mod tests {
                        Using SingleContract causes 'key bounds expected but not present' error."
                 );
             }
+            Some(ContractBounds::ContractGroup { .. }) => {
+                panic!(
+                    "ENCRYPTION key must be bound to the DashPay contract, not a contract group"
+                );
+            }
             None => {
                 panic!("ENCRYPTION key must have DashPay contract bounds for contactRequest");
             }
@@ -1267,6 +1272,11 @@ mod tests {
                 panic!(
                     "DECRYPTION key must use SingleContractDocumentType, not SingleContract. \
                        Using SingleContract causes 'key bounds expected but not present' error."
+                );
+            }
+            Some(ContractBounds::ContractGroup { .. }) => {
+                panic!(
+                    "DECRYPTION key must be bound to the DashPay contract, not a contract group"
                 );
             }
             None => {

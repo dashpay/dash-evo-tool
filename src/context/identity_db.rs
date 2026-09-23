@@ -4960,6 +4960,73 @@ mod tests {
         );
     }
 
+    /// A discovery merge that would leave a password-protected identity with
+    /// resident plaintext fails closed: the keyless vault write is refused
+    /// with `IdentityKeyProtectionDowngrade`, the stored record is left
+    /// byte-for-byte untouched, and the plaintext key lands nowhere.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_discovery_merge_with_plaintext_on_a_protected_identity_is_refused() {
+        use crate::wallet_backend::secret_seam::SecretScheme;
+        use platform_wallet_storage::secrets::SecretString;
+
+        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let id = staged.id.to_buffer();
+        // Seal one stored key Tier-2, so the identity is password-protected.
+        IdentityKeyView::new(&staged.store, id)
+            .store_protected(
+                &PrivateKeyTarget::PrivateKeyOnMainIdentity,
+                1,
+                &[0xAA; 32],
+                &SecretString::new("identity-password-xx"),
+            )
+            .expect("seal a stored key Tier-2");
+        let kv = staged.ctx.det_kv().expect("identity kv");
+        let read_blob = || {
+            kv.get::<StoredQualifiedIdentity>(DetScope::Identity(&id), IDENTITY_KEY)
+                .expect("read the stored record")
+                .expect("record present")
+                .qi_bytes
+        };
+        let before = read_blob();
+
+        // The rebuild carries a resident plaintext key the merge keeps.
+        let mut rediscovered = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read the staged identity")
+            .expect("identity present");
+        let plaintext = IdentityPublicKey::random_key(9, Some(9), PlatformVersion::latest());
+        rediscovered.private_keys.insert_at(
+            (PrivateKeyTarget::PrivateKeyOnMainIdentity, plaintext.id()),
+            (
+                QualifiedIdentityPublicKey::from(plaintext.clone()),
+                PrivateKeyData::Clear([0x99; 32]),
+            ),
+        );
+
+        let err = staged
+            .ctx
+            .store_discovered_identity(&mut rediscovered, &None, DiscoveryIntent::Automatic)
+            .expect_err("a mixed-protection merge must fail closed");
+
+        assert!(
+            matches!(err, TaskError::IdentityKeyProtectionDowngrade),
+            "expected IdentityKeyProtectionDowngrade, got {err:?}"
+        );
+        assert_eq!(
+            read_blob(),
+            before,
+            "the refused merge must leave the stored record untouched"
+        );
+        assert_eq!(
+            IdentityKeyView::new(&staged.store, id)
+                .scheme(&PrivateKeyTarget::PrivateKeyOnMainIdentity, plaintext.id())
+                .expect("read the vault scheme"),
+            SecretScheme::Absent,
+            "the plaintext key must not land in the vault keyless",
+        );
+    }
+
     /// The chokepoint guard, reached through the ordinary update path rather
     /// than through discovery: every fund-moving task (top-up, transfer,
     /// withdrawal, add-key, DPNS registration) holds a `QualifiedIdentity` it

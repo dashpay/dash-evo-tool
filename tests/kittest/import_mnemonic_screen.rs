@@ -189,6 +189,12 @@ fn duplicate_imported_key_name_is_rejected_and_not_saved() {
             vec![Some("Savings".to_owned())],
             "a second key must not be saved under a name already in use"
         );
+        assert!(
+            harness
+                .query_by_label_contains("already uses this name")
+                .is_some(),
+            "the rejection must be shown, not silently swallowed"
+        );
     });
 }
 
@@ -264,5 +270,35 @@ fn reimported_recovery_phrase_is_reported_to_the_user() {
                 .is_some(),
             "the duplicate import must be shown, not silently swallowed"
         );
+    });
+}
+
+#[test]
+fn invalid_recovery_phrase_message_follows_the_words() {
+    with_isolated_data_dir(|| {
+        let (runtime, app_context) = fresh_app_context();
+        // Twelve copies of the first BIP39 word fail the checksum.
+        let mut harness = import_harness(runtime, &app_context, |screen| {
+            screen.set_seed_words_for_test(&["abandon"; 12]);
+        });
+
+        assert!(
+            harness
+                .query_by_label_contains("Invalid seed phrase")
+                .is_some(),
+            "a complete but invalid phrase must be flagged"
+        );
+        assert!(harness.query_by_label("Save Wallet").is_none());
+
+        with_test_phrase(harness.state_mut());
+        harness.run();
+
+        assert!(
+            harness
+                .query_by_label_contains("Invalid seed phrase")
+                .is_none(),
+            "the message must clear once the phrase is valid"
+        );
+        assert!(harness.query_by_label("Save Wallet").is_some());
     });
 }

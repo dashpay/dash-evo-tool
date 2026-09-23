@@ -6,6 +6,14 @@ HD/imported-key registries and the committed metadata used by UI labels, MCP
 resolution and password prompts. Readers receive owned snapshots or runtime wallet
 handles; they cannot mutate registry membership or live names through those handles.
 
+WalletContext lives in `src/wallet_backend/wallet_context.rs`. It is a backend-side
+live cache: its writers are wallet_backend adapters (`SingleKeyView`,
+`WalletMetaView::with_context`, `SecretAccess::with_wallet_context`,
+`WalletBackend::hydrate_context_wallets`) and it depends on wallet_backend types.
+AppContext only holds the `Arc` and exposes it through `AppContext::wallet_context()`.
+The module is `pub(crate)`, and `pub` only under `test` or the `bench` feature so
+benches can build a standalone instance.
+
 One mutex orders metadata mutations, registration, imports and hydration for this
 desktop client, where MCP concurrency is low. Persistence runs under this writer
 mutex, then a short write to the separate state RwLock publishes the successful

@@ -535,7 +535,7 @@ mod tests {
 
         let store =
             Arc::new(open_secret_store(&dir.path().join("secrets.pwsvault")).expect("vault"));
-        let index = crate::context::wallet_context::WalletContext::default();
+        let index = crate::wallet_backend::wallet_context::WalletContext::default();
 
         let view = SingleKeyView::from_views(&store, &index, Network::Testnet, None);
 

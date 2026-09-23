@@ -12,7 +12,6 @@ pub mod migration_status;
 mod settings_db;
 #[cfg(test)]
 pub(crate) mod test_support;
-pub mod wallet_context;
 mod wallet_lifecycle;
 pub use wallet_lifecycle::PrepareGateGuard;
 
@@ -31,6 +30,7 @@ use crate::model::wallet::single_key::SingleKeyHash;
 use crate::model::wallet::{PlatformAddressEntry, PlatformAddressUpdates, Wallet, WalletSeedHash};
 use crate::sdk_wrapper::initialize_sdk;
 use crate::utils::tasks::TaskManager;
+use crate::wallet_backend::wallet_context::WalletContext;
 use crate::wallet_backend::{
     DetKv, DetWalletBalance, NullSecretPrompt, SecretPrompt, WalletBackend,
 };
@@ -121,7 +121,7 @@ pub struct AppContext {
     /// gives a load exclusive use of its identity for its whole
     /// check → fetch → insert → seal span. See [`identity_load_registry`].
     identity_loads: identity_load_registry::SharedLoadRegistry,
-    wallet_context: Arc<wallet_context::WalletContext>,
+    wallet_context: Arc<WalletContext>,
     /// Per-identity guards covering every whole-record mutation of one stored
     /// identity. See [`AppContext::identity_record_lock`].
     identity_record_locks: Mutex<HashMap<Identifier, Arc<Mutex<()>>>>,
@@ -291,7 +291,7 @@ impl std::fmt::Debug for SecretPromptSlot {
 
 impl AppContext {
     /// Shared wallet membership and committed metadata.
-    pub fn wallet_context(&self) -> &Arc<wallet_context::WalletContext> {
+    pub fn wallet_context(&self) -> &Arc<WalletContext> {
         &self.wallet_context
     }
 
@@ -487,7 +487,7 @@ impl AppContext {
             has_wallet: false.into(),
             identity_autodiscovery_fired: AtomicBool::new(false),
             identity_loads: Default::default(),
-            wallet_context: Arc::new(wallet_context::WalletContext::default()),
+            wallet_context: Arc::new(WalletContext::default()),
             identity_record_locks: Mutex::new(HashMap::new()),
             animations_disabled: AtomicBool::new(false),
             cached_settings: RwLock::new(None),

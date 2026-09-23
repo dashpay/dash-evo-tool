@@ -4119,14 +4119,14 @@ mod tests {
         network: dash_sdk::dpp::dashcore::Network,
     ) -> (
         Arc<platform_wallet_storage::secrets::SecretStore>,
-        crate::context::wallet_context::WalletContext,
+        crate::wallet_backend::wallet_context::WalletContext,
         dash_sdk::dpp::dashcore::Network,
     ) {
         let store = Arc::new(
             crate::wallet_backend::single_key::open_secret_store(&dir.join("secrets.pwsvault"))
                 .expect("open vault"),
         );
-        let index = crate::context::wallet_context::WalletContext::default();
+        let index = crate::wallet_backend::wallet_context::WalletContext::default();
         (store, index, network)
     }
 

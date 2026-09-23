@@ -92,7 +92,7 @@ pub(crate) fn single_key_namespace_id() -> SecretWalletId {
 /// [`WalletBackend::single_key`](super::WalletBackend::single_key).
 pub struct SingleKeyView<'a> {
     pub(crate) secret_store: &'a Arc<SecretStore>,
-    pub(crate) context: &'a crate::context::wallet_context::WalletContext,
+    pub(crate) context: &'a crate::wallet_backend::wallet_context::WalletContext,
     pub(crate) network: Network,
     /// Enumerable cross-network sidecar holding the imported-key
     /// metadata blobs. `None` ⇒ a transient view that does not persist
@@ -138,7 +138,7 @@ impl<'a> SingleKeyView<'a> {
     /// sharing a live wallet registry must share the same context.
     pub fn from_views(
         secret_store: &'a Arc<SecretStore>,
-        context: &'a crate::context::wallet_context::WalletContext,
+        context: &'a crate::wallet_backend::wallet_context::WalletContext,
         network: Network,
         app_kv: Option<&'a Arc<DetKv>>,
     ) -> Self {
@@ -547,7 +547,7 @@ impl<'a> SingleKeyView<'a> {
     /// [`hydrate_context_wallets`](super::WalletBackend::hydrate_context_wallets)).
     pub fn rehydrate_index(&self) -> Result<(), TaskError> {
         self.context.hydrate(|| {
-            Ok(crate::context::wallet_context::WalletHydration {
+            Ok(crate::wallet_backend::wallet_context::WalletHydration {
                 single: self.list_persisted(),
                 ..Default::default()
             })
@@ -1041,12 +1041,12 @@ mod tests {
         network: Network,
     ) -> (
         Arc<SecretStore>,
-        crate::context::wallet_context::WalletContext,
+        crate::wallet_backend::wallet_context::WalletContext,
         Network,
     ) {
         let path = dir.join("secrets.pwsvault");
         let store = Arc::new(open_secret_store(&path).expect("open vault"));
-        let index = crate::context::wallet_context::WalletContext::default();
+        let index = crate::wallet_backend::wallet_context::WalletContext::default();
         (store, index, network)
     }
 
@@ -1459,7 +1459,7 @@ mod tests {
     /// keep the constructor tuple-light (clippy `type_complexity`).
     struct ViewFixture {
         store: Arc<SecretStore>,
-        index: crate::context::wallet_context::WalletContext,
+        index: crate::wallet_backend::wallet_context::WalletContext,
         kv: Arc<DetKv>,
         network: Network,
     }
@@ -1467,7 +1467,7 @@ mod tests {
     fn fresh_view_with_kv(dir: &std::path::Path, network: Network) -> ViewFixture {
         let path = dir.join("secrets.pwsvault");
         let store = Arc::new(open_secret_store(&path).expect("open vault"));
-        let index = crate::context::wallet_context::WalletContext::default();
+        let index = crate::wallet_backend::wallet_context::WalletContext::default();
         let kv = Arc::new(DetKv::from_store(Arc::new(InMemoryKv::default())));
         ViewFixture {
             store,
@@ -2029,7 +2029,7 @@ mod tests {
 
     fn transient_view<'a>(
         store: &'a Arc<SecretStore>,
-        context: &'a crate::context::wallet_context::WalletContext,
+        context: &'a crate::wallet_backend::wallet_context::WalletContext,
     ) -> SingleKeyView<'a> {
         SingleKeyView {
             secret_store: store,
@@ -2364,7 +2364,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let store =
             Arc::new(open_secret_store(&dir.path().join("secrets.pwsvault")).expect("open vault"));
-        let index = Arc::new(crate::context::wallet_context::WalletContext::default());
+        let index = Arc::new(crate::wallet_backend::wallet_context::WalletContext::default());
 
         let gated_store = Arc::new(FirstAliasPutGate::default());
         let kv = Arc::new(DetKv::from_store(gated_store.clone()));

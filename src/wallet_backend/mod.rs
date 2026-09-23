@@ -65,6 +65,10 @@ mod snapshot;
 mod token_balance;
 mod versioned_bincode;
 #[cfg(any(test, feature = "bench"))]
+pub mod wallet_context;
+#[cfg(not(any(test, feature = "bench")))]
+pub(crate) mod wallet_context;
+#[cfg(any(test, feature = "bench"))]
 pub mod wallet_meta;
 #[cfg(not(any(test, feature = "bench")))]
 pub(crate) mod wallet_meta;
@@ -468,7 +472,7 @@ struct Inner {
     /// `AppContext::app_kv` so settings and wallet meta both write into
     /// the same persister.
     app_kv: Arc<DetKv>,
-    wallet_context: Arc<crate::context::wallet_context::WalletContext>,
+    wallet_context: Arc<crate::wallet_backend::wallet_context::WalletContext>,
     /// The just-in-time secret chokepoint. Constructed over the same
     /// [`Self::secret_store`] with the host-chosen [`SecretPrompt`]; seeded
     /// with prompt-copy metadata at hydration. Every signing / derivation
@@ -693,7 +697,7 @@ impl WalletBackend {
     pub(crate) fn hydrate_context_wallets(&self, ctx: &Arc<AppContext>) -> Result<(), TaskError> {
         self.inner.wallet_context.hydrate(|| {
             let view = self.single_key();
-            Ok(crate::context::wallet_context::WalletHydration {
+            Ok(crate::wallet_backend::wallet_context::WalletHydration {
                 single: view.list_persisted(),
                 single_wallets: view.hydrate_wallets_from_storage(),
                 wallets: hydration::hydrate_hd_wallets_from_views(

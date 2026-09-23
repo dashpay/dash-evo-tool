@@ -238,7 +238,7 @@ impl std::fmt::Debug for SecretAccess {
 struct SecretAccessInner {
     /// The encrypted vault — decrypt-on-demand source of truth.
     secret_store: Arc<SecretStore>,
-    wallet_context: Arc<crate::context::wallet_context::WalletContext>,
+    wallet_context: Arc<crate::wallet_backend::wallet_context::WalletContext>,
     /// Identity prompt-copy index (identity id → alias / password hint) for
     /// the sign-time prompt of an opted-in (Tier-2) identity. Display-only;
     /// the vault scheme — not this index — gates whether a prompt fires.
@@ -303,7 +303,7 @@ impl SecretAccess {
             secret_store,
             prompt,
             network,
-            Arc::new(crate::context::wallet_context::WalletContext::default()),
+            Arc::new(crate::wallet_backend::wallet_context::WalletContext::default()),
         )
     }
 
@@ -314,7 +314,7 @@ impl SecretAccess {
         secret_store: Arc<SecretStore>,
         prompt: Arc<dyn SecretPrompt>,
         network: Network,
-        wallet_context: Arc<crate::context::wallet_context::WalletContext>,
+        wallet_context: Arc<crate::wallet_backend::wallet_context::WalletContext>,
     ) -> Self {
         Self {
             inner: Arc::new(SecretAccessInner {
@@ -339,7 +339,7 @@ impl SecretAccess {
         self.inner
             .wallet_context
             .hydrate(|| {
-                Ok(crate::context::wallet_context::WalletHydration {
+                Ok(crate::wallet_backend::wallet_context::WalletHydration {
                     hd: meta
                         .into_iter()
                         .map(|(seed, meta)| {
@@ -365,7 +365,7 @@ impl SecretAccess {
         self.inner
             .wallet_context
             .hydrate(|| {
-                Ok(crate::context::wallet_context::WalletHydration {
+                Ok(crate::wallet_backend::wallet_context::WalletHydration {
                     single: index.into_values().collect(),
                     ..Default::default()
                 })
@@ -1292,7 +1292,7 @@ mod tests {
 
         let dir = tempfile::tempdir().expect("tempdir");
         let store = fresh_store(dir.path());
-        let index = Arc::new(crate::context::wallet_context::WalletContext::default());
+        let index = Arc::new(crate::wallet_backend::wallet_context::WalletContext::default());
         let sa = SecretAccess::with_wallet_context(
             Arc::clone(&store),
             Arc::new(NullSecretPrompt),
@@ -1712,7 +1712,7 @@ mod tests {
     // --- single-key scope -------------------------------------------------
 
     fn import_protected_key(store: &Arc<SecretStore>, passphrase: &str) -> String {
-        let index = crate::context::wallet_context::WalletContext::default();
+        let index = crate::wallet_backend::wallet_context::WalletContext::default();
 
         let view = SingleKeyView::from_views(store, &index, Network::Testnet, None);
         let imported = view

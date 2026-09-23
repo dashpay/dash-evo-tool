@@ -28,7 +28,6 @@ use std::sync::Arc;
 use dash_sdk::dpp::dashcore::Network;
 
 use crate::backend_task::error::TaskError;
-use crate::context::wallet_context::WalletContext;
 use crate::model::wallet::WalletSeedHash;
 use crate::model::wallet::meta::{WalletMeta, WalletMetaV1};
 use crate::wallet_backend::DetKv;
@@ -36,6 +35,7 @@ use crate::wallet_backend::kv::{KvAdapterError, map_kv_storage_error};
 #[cfg(test)]
 use crate::wallet_backend::sidecar::sidecar_key;
 use crate::wallet_backend::sidecar::{SidecarScope, SidecarValue, SidecarView};
+use crate::wallet_backend::wallet_context::WalletContext;
 
 /// Colon-separated namespace shared across networks. The full key is
 /// `<network>:wallet_meta:<seed_hash_base58>`.

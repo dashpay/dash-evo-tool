@@ -3,6 +3,8 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, RwLock};
 
+use super::PromptMeta;
+use super::poison::{read_recover, write_recover};
 use crate::backend_task::error::TaskError;
 use crate::model::single_key::ImportedKey;
 use crate::model::wallet::alias::{
@@ -12,8 +14,6 @@ use crate::model::wallet::alias::{
 use crate::model::wallet::meta::WalletMeta;
 use crate::model::wallet::single_key::{SingleKeyHash, SingleKeyWallet};
 use crate::model::wallet::{Wallet, WalletSeedHash};
-use crate::wallet_backend::PromptMeta;
-use crate::wallet_backend::poison::{read_recover, write_recover};
 
 type HdWallets = BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>;
 type SingleKeyWallets = BTreeMap<SingleKeyHash, Arc<RwLock<SingleKeyWallet>>>;

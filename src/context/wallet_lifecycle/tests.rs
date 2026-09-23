@@ -2813,7 +2813,7 @@ async fn malformed_legacy_envelope_does_not_block_healthy_wallet_hydration() {
         .unwrap();
     assert!(seeds.legacy_envelope_get(&malformed_hash).is_err());
 
-    let index = crate::context::wallet_context::WalletContext::default();
+    let index = crate::wallet_backend::wallet_context::WalletContext::default();
     let key = dash_sdk::dpp::dashcore::PrivateKey::from_byte_array(
         &rand::random::<[u8; 32]>(),
         ctx.network,

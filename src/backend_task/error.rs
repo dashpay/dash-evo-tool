@@ -505,6 +505,23 @@ pub enum TaskError {
         source: platform_wallet_storage::WalletStorageError,
     },
 
+    /// The wallet database refused to open because a folder on its path can be
+    /// modified by another account on this computer (group/other-writable
+    /// without the sticky bit, or owned by another user). Distinct from
+    /// [`Self::WalletStorage`] because disk space and restarting are irrelevant:
+    /// only tightening the folder's permissions or ownership fixes it.
+    ///
+    /// The offending folder and the exact reason travel in `source` (the
+    /// upstream message names the folder and the command to run) for the
+    /// details panel and logs; the user-facing copy stays jargon-free.
+    #[error(
+        "Your wallet data folder, or a folder that contains it, can be changed by other accounts on this computer, so the app will not open your wallet data. Make these folders writable only by your own account, then restart the application."
+    )]
+    WalletDataFolderInsecure {
+        #[source]
+        source: platform_wallet_storage::WalletStorageError,
+    },
+
     /// A vault passphrase or a Tier-2 object password was longer than the
     /// vault's upstream ceiling.
     ///
@@ -1469,11 +1486,18 @@ pub enum TaskError {
         source: crate::model::validation::TextLengthError,
     },
 
-    /// A wallet alias exceeded the shared character limit.
+    /// A wallet alias exceeded the shared character limit after cleaning.
     #[error("The wallet name is too long. Use 64 characters or fewer and try again.")]
     InvalidWalletAliasLength {
         #[source]
-        source: crate::model::validation::TextLengthError,
+        source: crate::model::wallet::alias::AliasError,
+    },
+
+    /// Another wallet of the same kind already uses the requested alias.
+    #[error("Another wallet already uses this name. Choose a different name and try again.")]
+    WalletAliasAlreadyUsed {
+        #[source]
+        source: crate::model::wallet::alias::AliasError,
     },
 
     /// A document's unique values conflict with an existing entry.
@@ -2870,14 +2894,17 @@ impl TaskError {
     /// - A migration blocked by another SQLite writer is surfaced as
     ///   [`Self::WalletStorageInUse`] so the user can close the competing
     ///   process and retry instead of following incompatible-data recovery.
+    /// - A folder on the database path that other accounts can modify is
+    ///   surfaced as [`Self::WalletDataFolderInsecure`] so the banner tells the
+    ///   user to tighten folder permissions.
     /// - A migration that failed on a recoverable resource (disk full, OS I/O
     ///   failure, out of memory) and every other storage failure keep the
     ///   generic, retryable disk/IO copy via [`Self::WalletStorage`].
     ///
     /// Discrimination is on the typed upstream variant
     /// (`WalletStorageError::SchemaVersionUnsupported` /
-    /// `WalletStorageError::Migration`) and the typed migration source chain,
-    /// never on `Display` text.
+    /// `WalletStorageError::Migration` / `WalletStorageError::InsecureParentDir`)
+    /// and the typed migration source chain, never on `Display` text.
     pub fn from_wallet_storage_open_error(
         source: platform_wallet_storage::WalletStorageError,
     ) -> Self {
@@ -2901,6 +2928,9 @@ impl TaskError {
             }
             other @ platform_wallet_storage::WalletStorageError::Migration(_) => {
                 Self::WalletDataIncompatible { source: other }
+            }
+            other @ platform_wallet_storage::WalletStorageError::InsecureParentDir { .. } => {
+                Self::WalletDataFolderInsecure { source: other }
             }
             other => Self::WalletStorage { source: other },
         }
@@ -3228,6 +3258,16 @@ impl From<crate::model::wallet::passphrase::PassphraseError> for TaskError {
             PassphraseError::TooShort { min } => TaskError::SingleKeyPassphraseTooShort { min },
             PassphraseError::TooLong { max } => TaskError::SingleKeyPassphraseTooLong { max },
             PassphraseError::Mismatch => TaskError::SingleKeyPassphraseMismatch,
+        }
+    }
+}
+
+impl From<crate::model::wallet::alias::AliasError> for TaskError {
+    fn from(source: crate::model::wallet::alias::AliasError) -> Self {
+        use crate::model::wallet::alias::AliasError;
+        match source {
+            AliasError::TooLong { .. } => TaskError::InvalidWalletAliasLength { source },
+            AliasError::AlreadyUsed => TaskError::WalletAliasAlreadyUsed { source },
         }
     }
 }
@@ -5871,6 +5911,58 @@ mod tests {
             std::error::Error::source(&err).is_some(),
             "Expected source chain to be preserved"
         );
+    }
+
+    /// A group-writable (or foreign-owned) ancestor of the wallet database maps
+    /// to `WalletDataFolderInsecure`, whose copy names the folder-permission
+    /// problem instead of the misleading disk-space advice. The path and mode
+    /// stay in the source chain, out of the user-facing message.
+    #[test]
+    fn insecure_parent_dir_maps_to_wallet_data_folder_insecure() {
+        let ancestor = std::path::PathBuf::from("/data/tmp/shared-scratch");
+        for reason in [
+            platform_wallet_storage::InsecureAncestor::WritableWithoutSticky { mode: 0o775 },
+            platform_wallet_storage::InsecureAncestor::UntrustedOwner {
+                uid: 4242,
+                current_uid: 1000,
+            },
+        ] {
+            let upstream = platform_wallet_storage::WalletStorageError::InsecureParentDir {
+                ancestor: ancestor.clone(),
+                reason,
+            };
+            let err = TaskError::from_wallet_storage_open_error(upstream);
+            assert!(
+                matches!(
+                    &err,
+                    TaskError::WalletDataFolderInsecure {
+                        source: platform_wallet_storage::WalletStorageError::InsecureParentDir {
+                            ancestor: a,
+                            ..
+                        },
+                    } if *a == ancestor
+                ),
+                "Expected WalletDataFolderInsecure carrying the ancestor, got: {err:?}"
+            );
+
+            let msg = err.to_string();
+            assert!(
+                msg.contains("folder") && msg.contains("other accounts"),
+                "Expected folder-permission guidance, got: {msg}"
+            );
+            assert!(
+                !msg.contains("disk space"),
+                "Folder-permission message must not mention disk space, got: {msg}"
+            );
+            assert!(
+                !msg.contains("shared-scratch") && !msg.contains("775") && !msg.contains("chmod"),
+                "Path, mode and commands must stay out of the user message, got: {msg}"
+            );
+            assert!(
+                std::error::Error::source(&err).is_some(),
+                "Expected source chain to be preserved"
+            );
+        }
     }
 
     /// Builds a genuine divergent-version [`refinery::Error`] by applying a

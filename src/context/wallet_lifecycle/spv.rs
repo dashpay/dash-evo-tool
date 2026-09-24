@@ -118,13 +118,7 @@ impl AppContext {
             failures.push(error);
         }
 
-        if let Ok(mut wallets) = self.wallets.write() {
-            wallets.clear();
-        }
-
-        if let Ok(mut single_key_wallets) = self.single_key_wallets.write() {
-            single_key_wallets.clear();
-        }
+        self.wallet_context().clear();
 
         self.has_wallet.store(false, Ordering::Relaxed);
 

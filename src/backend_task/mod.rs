@@ -230,13 +230,16 @@ fn identity_load_ticket(task: &BackendTask) -> Option<(Identifier, IdentityLoadT
 }
 
 /// Whether a wallet-backend build error is terminal (storage written by a
-/// newer/incompatible app build). These must surface their actionable
-/// message instead of being logged-and-discarded as a transient deferral
-/// (F50); every other init error is retried by the cold-boot bridge.
+/// newer/incompatible app build, or a data folder other accounts can modify).
+/// These must surface their actionable message instead of being
+/// logged-and-discarded as a transient deferral (F50); retrying cannot fix
+/// them. Every other init error is retried by the cold-boot bridge.
 pub(crate) fn is_terminal_storage_open_error(error: &TaskError) -> bool {
     matches!(
         error,
-        TaskError::WalletDataTooNew { .. } | TaskError::WalletDataIncompatible { .. }
+        TaskError::WalletDataTooNew { .. }
+            | TaskError::WalletDataIncompatible { .. }
+            | TaskError::WalletDataFolderInsecure { .. }
     )
 }
 
@@ -1124,10 +1127,11 @@ impl AppContext {
             && let Err(e) = self.ensure_wallet_backend(sender.clone()).await
         {
             // A storage-open failure (data written by a newer/incompatible app
-            // build) is terminal — restarting won't help and the generic
-            // "deferred" banner is misleading. Surface those variants so the
-            // user sees the actionable message; every other init error is a
-            // transient deferral the cold-boot bridge retries.
+            // build, or an insecure data folder) is terminal — retrying won't
+            // help and the generic "deferred" banner is misleading. Surface
+            // those variants so the user sees the actionable message; every
+            // other init error is a transient deferral the cold-boot bridge
+            // retries.
             if is_terminal_storage_open_error(&e) {
                 return Err(e);
             }
@@ -2315,7 +2319,8 @@ mod tests {
     }
 
     /// Only the storage-open variants (data from a newer/incompatible
-    /// build) are terminal; every other init error is a transient deferral.
+    /// build, or an insecure data folder) are terminal; every other init
+    /// error is a transient deferral.
     #[test]
     fn terminal_storage_open_errors_are_classified() {
         assert!(is_terminal_storage_open_error(
@@ -2329,6 +2334,16 @@ mod tests {
                 source: platform_wallet_storage::WalletStorageError::Io(std::io::Error::other(
                     "incompatible test fixture",
                 )),
+            }
+        ));
+        assert!(is_terminal_storage_open_error(
+            &TaskError::WalletDataFolderInsecure {
+                source: platform_wallet_storage::WalletStorageError::InsecureParentDir {
+                    ancestor: std::path::PathBuf::from("/shared"),
+                    reason: platform_wallet_storage::InsecureAncestor::WritableWithoutSticky {
+                        mode: 0o777,
+                    },
+                },
             }
         ));
         // A transient pre-wire state must NOT be treated as terminal.

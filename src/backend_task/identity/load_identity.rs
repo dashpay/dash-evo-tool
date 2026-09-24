@@ -597,13 +597,21 @@ impl AppContext {
         let mut relevant_keys = qi.private_keys.keys_set();
         relevant_keys.extend(self.retained_identity_import_keys(&identity_id)?);
         if let Some(existing) = existing {
-            super::protect_identity_keys::reject_resident_identity_plaintext(
-                &existing.private_keys,
-            )?;
+            // Resident plaintext is sealed by the startup migration on relaunch.
+            if existing.private_keys.has_plaintext_for_vault() {
+                return Err(TaskError::IdentityKeyProtectionIncomplete);
+            }
             relevant_keys.extend(existing.private_keys.keys_set());
             if load_mode == IdentityLoadMode::MergeIntoExisting {
                 merge_existing_keys_into(qi, existing);
             }
+        }
+        // A legacy `Encrypted` key has no vault entry, so it cannot be sealed. Checked
+        // on the effective key set, after the merge, so a resupplied key (the documented
+        // recovery) or an `Overwrite` replaces it, while a surviving one fails before
+        // any secret write.
+        if qi.private_keys.has_encrypted_legacy_keys() {
+            return Err(TaskError::IdentityKeyProtectionLegacyFormat);
         }
         let backend = self.wallet_backend()?;
         let view = crate::wallet_backend::IdentityKeyView::new(
@@ -2276,6 +2284,104 @@ mod tests {
                 );
             }
             drop(fault);
+            backend.shutdown().await;
+        }
+    }
+
+    /// Password-supplied import over a stored record carrying a legacy
+    /// `Encrypted` key: the legacy check runs on the effective key set, so a
+    /// reload that resupplies the key (or an `Overwrite` that drops it)
+    /// succeeds, while a merge that keeps it fails before any secret write.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn password_import_validates_legacy_keys_after_replacement() {
+        use crate::wallet_backend::secret_seam::write_fault_test_support::WriteFault;
+        const PW: &str = "synthetic-legacy-import-password";
+        let cases = [
+            (IdentityLoadMode::MergeIntoExisting, false),
+            (IdentityLoadMode::MergeIntoExisting, true),
+            (IdentityLoadMode::Overwrite, false),
+        ];
+        for (load_mode, resupplied) in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let ctx = open_import_context(dir.path(), None).await;
+            let (qi, _) = masternode_shaped_qi();
+            let id = qi.identity.id();
+            ctx.insert_local_qualified_identity(&qi, &None).unwrap();
+            ctx.protect_identity_keys(id, Secret::new(PW), None)
+                .unwrap();
+            let mut stored = ctx.get_local_qualified_identity(&id).unwrap().unwrap();
+            let mut fresh = qi.clone();
+
+            let pv = PlatformVersion::latest();
+            let legacy = IdentityPublicKey::random_key(10, Some(10), pv);
+            let legacy_key = (V, legacy.id());
+            stored.private_keys.insert_at(
+                legacy_key.clone(),
+                (
+                    QualifiedIdentityPublicKey::from(legacy.clone()),
+                    PrivateKeyData::Encrypted(vec![0x33; 48]),
+                ),
+            );
+            ctx.insert_local_qualified_identity(&stored, &None).unwrap();
+
+            let new_voter = IdentityPublicKey::random_key(9, Some(9), pv);
+            fresh.private_keys.insert_at(
+                (V, new_voter.id()),
+                (
+                    QualifiedIdentityPublicKey::from(new_voter),
+                    PrivateKeyData::Clear([0xDD; 32]),
+                ),
+            );
+            if resupplied {
+                fresh.private_keys.insert_at(
+                    legacy_key.clone(),
+                    (
+                        QualifiedIdentityPublicKey::from(legacy),
+                        PrivateKeyData::Clear([0xEE; 32]),
+                    ),
+                );
+            }
+
+            let fault = WriteFault::arm(0);
+            let result = ctx.persist_loaded_identity(&mut fresh, Some(&Secret::new(PW)), load_mode);
+            let schemes = fault.schemes();
+            drop(fault);
+            let backend = ctx.wallet_backend().unwrap();
+            let view = IdentityKeyView::new(backend.secret_store(), id.to_buffer());
+            let reread = ctx.get_local_qualified_identity(&id).unwrap().unwrap();
+            if load_mode == IdentityLoadMode::MergeIntoExisting && !resupplied {
+                assert!(
+                    matches!(result, Err(TaskError::IdentityKeyProtectionLegacyFormat)),
+                    "expected IdentityKeyProtectionLegacyFormat, got {result:?}",
+                );
+                assert!(
+                    schemes.is_empty(),
+                    "legacy rejection must precede any secret write",
+                );
+                assert!(
+                    reread.private_keys.entry_at(&(V, 9)).is_none(),
+                    "a rejected import must not persist the new key",
+                );
+            } else {
+                result.unwrap();
+                assert!(
+                    schemes.iter().all(|s| *s == SecretScheme::Protected),
+                    "a password-selected import must only write protected secrets",
+                );
+                assert!(!reread.private_keys.has_encrypted_legacy_keys());
+                assert_eq!(
+                    view.scheme(&V, 9).unwrap(),
+                    SecretScheme::Protected,
+                    "the new key must be sealed Tier-2",
+                );
+                if resupplied {
+                    assert_eq!(
+                        view.scheme(&legacy_key.0, legacy_key.1).unwrap(),
+                        SecretScheme::Protected,
+                        "a resupplied legacy key must be sealed Tier-2",
+                    );
+                }
+            }
             backend.shutdown().await;
         }
     }

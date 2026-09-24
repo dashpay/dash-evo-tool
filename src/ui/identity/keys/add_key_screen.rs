@@ -1284,12 +1284,12 @@ mod derived_key_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn derived_key_rejected_slot_refreshes_and_selects_another() {
         let (staged, identity) = staged_screen_parts(true).await;
-        staged
-            .ctx
-            .wallets
-            .write()
-            .unwrap()
-            .extend(identity.associated_wallets.clone());
+        for (seed, wallet) in &identity.associated_wallets {
+            staged
+                .ctx
+                .wallet_context()
+                .insert_test_wallet(*seed, Arc::clone(wallet));
+        }
         let mut screen = AddKeyScreen::new(identity.clone(), &staged.ctx);
         assert_eq!(screen.derivation.selected_index(), Some(1));
 
@@ -1326,12 +1326,12 @@ mod derived_key_tests {
 
         let (staged, mut identity) = staged_screen_parts(true).await;
         identity.identity.set_id(staged.id);
-        staged
-            .ctx
-            .wallets
-            .write()
-            .unwrap()
-            .extend(identity.associated_wallets.clone());
+        for (seed, wallet) in &identity.associated_wallets {
+            staged
+                .ctx
+                .wallet_context()
+                .insert_test_wallet(*seed, Arc::clone(wallet));
+        }
         staged
             .ctx
             .update_local_qualified_identity(&identity)

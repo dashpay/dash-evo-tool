@@ -26,10 +26,11 @@ use crate::database::Database;
 use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::model::request_type::RequestType;
-use crate::model::wallet::single_key::{SingleKeyHash, SingleKeyWallet};
+use crate::model::wallet::single_key::SingleKeyHash;
 use crate::model::wallet::{PlatformAddressEntry, PlatformAddressUpdates, Wallet, WalletSeedHash};
 use crate::sdk_wrapper::initialize_sdk;
 use crate::utils::tasks::TaskManager;
+use crate::wallet_backend::wallet_context::WalletContext;
 use crate::wallet_backend::{
     DetKv, DetWalletBalance, NullSecretPrompt, SecretPrompt, WalletBackend,
 };
@@ -52,7 +53,7 @@ use dash_sdk::platform::Identifier;
 use egui::Context;
 use migration_status::MigrationStatus;
 use platform_wallet_storage::secrets::SecretStore;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::str::FromStr as _;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -120,14 +121,10 @@ pub struct AppContext {
     /// gives a load exclusive use of its identity for its whole
     /// check → fetch → insert → seal span. See [`identity_load_registry`].
     identity_loads: identity_load_registry::SharedLoadRegistry,
-    pub(crate) wallets: RwLock<BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>>,
-    /// Per-wallet guards covering the complete wallet-meta alias update.
-    /// Different wallets remain independent while same-wallet renames serialize.
-    hd_wallet_rename_locks: Mutex<HashMap<WalletSeedHash, Arc<Mutex<()>>>>,
+    wallet_context: Arc<WalletContext>,
     /// Per-identity guards covering every whole-record mutation of one stored
     /// identity. See [`AppContext::identity_record_lock`].
     identity_record_locks: Mutex<HashMap<Identifier, Arc<Mutex<()>>>>,
-    pub(crate) single_key_wallets: RwLock<BTreeMap<SingleKeyHash, Arc<RwLock<SingleKeyWallet>>>>,
     /// Hard override that keeps this context's UI still whatever the role — set by
     /// automated tests through [`AppState::with_animations`](crate::app::AppState::with_animations).
     ///
@@ -293,13 +290,9 @@ impl std::fmt::Debug for SecretPromptSlot {
 }
 
 impl AppContext {
-    pub(crate) fn hd_wallet_rename_lock(&self, seed_hash: WalletSeedHash) -> Arc<Mutex<()>> {
-        self.hd_wallet_rename_locks
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .entry(seed_hash)
-            .or_default()
-            .clone()
+    /// Shared wallet membership and committed metadata.
+    pub fn wallet_context(&self) -> &Arc<WalletContext> {
+        &self.wallet_context
     }
 
     /// The guard serializing every whole-record mutation of `identity_id`:
@@ -465,12 +458,9 @@ impl AppContext {
         // T-W-01 / T-W-01b: both HD and single-key wallets are now
         // rehydrated from the upstream `SecretStore` + DET k/v sidecars
         // by `WalletBackend::new`, not from the legacy `wallet` /
-        // `single_key_wallet` SQLite tables. The maps start empty here
-        // and are filled inside `ensure_wallet_backend` (see
+        // `single_key_wallet` SQLite tables. The wallet context starts
+        // empty here and is filled inside `ensure_wallet_backend` (see
         // `WalletBackend::hydrate_context_wallets`).
-        let wallets: BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>> = BTreeMap::new();
-        let single_key_wallets: BTreeMap<SingleKeyHash, Arc<RwLock<SingleKeyWallet>>> =
-            BTreeMap::new();
 
         // Wallet selection is restored from the per-network wallet k/v
         // store inside `ensure_wallet_backend` once the backend is
@@ -494,13 +484,11 @@ impl AppContext {
             token_history_contract: Arc::new(token_history_contract),
             keyword_search_contract: Arc::new(keyword_search_contract),
             core_client: core_client.into(),
-            has_wallet: (!wallets.is_empty() || !single_key_wallets.is_empty()).into(),
+            has_wallet: false.into(),
             identity_autodiscovery_fired: AtomicBool::new(false),
             identity_loads: Default::default(),
-            wallets: RwLock::new(wallets),
-            hd_wallet_rename_locks: Mutex::new(HashMap::new()),
+            wallet_context: Arc::new(WalletContext::default()),
             identity_record_locks: Mutex::new(HashMap::new()),
-            single_key_wallets: RwLock::new(single_key_wallets),
             animations_disabled: AtomicBool::new(false),
             cached_settings: RwLock::new(None),
             pending_dpns_usernames: RwLock::new(HashMap::new()),
@@ -835,9 +823,7 @@ impl AppContext {
     {
         use dash_sdk::dpp::key_wallet::PlatformP2PKHAddress;
         let network = self.network;
-        let Ok(wallets) = self.wallets.read() else {
-            return;
-        };
+        let wallets = self.wallet_context().wallets();
         for (seed_hash, entries) in batches {
             if let Some(wallet_arc) = wallets.get(seed_hash)
                 && let Ok(mut wallet) = wallet_arc.write()
@@ -1192,7 +1178,7 @@ impl AppContext {
         // longer depends on this — the chokepoint pulls the seed just-in-time
         // from the encrypted vault, and a no-password wallet signs via the
         // unprotected fast-path with no prompt regardless. This runs after the
-        // backend is wired and `ctx.wallets` is populated so address bootstrap
+        // backend is wired and the wallet context's HD registry is populated so address bootstrap
         // has the reconstructed wallets to work from. Idempotent.
         self.bootstrap_loaded_wallets().await;
         Ok(())
@@ -1213,15 +1199,13 @@ impl AppContext {
         if let Ok(mut guard) = self.selected_wallet_hash.lock() {
             let candidate = selected
                 .hd_wallet_hash
-                .filter(|h| self.wallets.read().is_ok_and(|w| w.contains_key(h)));
+                .filter(|h| self.wallet_context().contains_hd(h));
             *guard = candidate;
         }
         if let Ok(mut guard) = self.selected_single_key_hash.lock() {
-            let candidate = selected.single_key_hash.filter(|h| {
-                self.single_key_wallets
-                    .read()
-                    .is_ok_and(|w| w.contains_key(h))
-            });
+            let candidate = selected
+                .single_key_hash
+                .filter(|h| self.wallet_context().contains_single(h));
             *guard = candidate;
         }
     }
@@ -1602,11 +1586,6 @@ impl AppContext {
     /// Returns a reference to the database.
     pub fn db(&self) -> &Arc<Database> {
         &self.db
-    }
-
-    /// Returns a reference to the wallets map.
-    pub fn wallets(&self) -> &RwLock<BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>> {
-        &self.wallets
     }
 
     /// Returns the DashPay contract identifier.

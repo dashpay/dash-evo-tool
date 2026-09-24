@@ -106,16 +106,13 @@ fn short_hex(hash: &WalletSeedHash) -> String {
 /// Loaded HD wallets as `(seed_hash, display_name)`, sorted by hash for a
 /// stable order. Name = alias, else a short hex of the seed hash.
 fn gather_wallets(app_context: &Arc<AppContext>) -> Vec<(WalletSeedHash, String)> {
-    let Ok(wallets) = app_context.wallets.read() else {
-        return Vec::new();
-    };
+    let wallets = app_context.wallet_context().wallets();
     wallets
-        .iter()
-        .map(|(hash, w)| {
-            let name = w
-                .read()
-                .ok()
-                .and_then(|w| w.alias.clone())
+        .keys()
+        .map(|hash| {
+            let name = app_context
+                .wallet_context()
+                .hd_alias(hash)
                 .filter(|a| !a.trim().is_empty())
                 .unwrap_or_else(|| short_hex(hash));
             (*hash, name)

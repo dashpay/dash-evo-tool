@@ -41,6 +41,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   slot can be chosen again. Adding a wallet key does not ask for the identity's
   password, because the key stays protected by the wallet.
 
+- A scheduled workflow renews expiring migration fixture archives without
+  changing their contents and proposes updated manifest pointers in a PR.
+
 - Migration tests also replay public user/DPNS and Evonode identities serialized
   by v0.9.3, checking their metadata and every public key after repeated startup.
 
@@ -127,6 +130,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - The Add Key screen ignores key-slot loading results from other wallets, so
   concurrent loading cannot leave its wallet slots unavailable.
+
+- A damaged legacy wallet no longer prevents healthy wallets and imported keys
+  from loading at startup.
+
+- Legacy wallet password hints survive hydration and renaming. Retried key
+  migrations refresh displayed names when duplicate names are disambiguated.
+  Legacy private keys with names over 64 characters migrate instead of failing,
+  matching legacy wallets.
+
+- Wallet and key renames immediately update displayed names and password prompts,
+  including after concurrent imports or delayed task results.
+
+- Re-importing legacy private keys preserves their names, including duplicate-name
+  suffixes. Concurrent imports and renames reserve names without blocking wallet-list
+  reads during storage writes. Wallet names also strip Unicode default-ignorable
+  characters, including variation selectors and Hangul fillers.
 
 - CLI builds no longer warn about an unused passphrase-limit import.
 
@@ -468,6 +487,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   says plainly that the rate shown is fixed rather than read from the network.
 
 ### Changed
+
+- Wallet registries and live names now share one WalletContext across the UI,
+  MCP tools and password prompts. Metadata writes are serialized while wallet
+  names and password prompts continue to use the last committed snapshot.
 
 - **Platform updated to `4.2.0-dev.8`** (`v4.2-dev`, `63cf57f`): existing
   databases from the previously pinned PR are upgraded automatically with a

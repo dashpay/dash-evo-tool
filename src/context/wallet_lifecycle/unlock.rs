@@ -178,8 +178,8 @@ impl AppContext {
     /// `is_open()` excludes it — the single source of truth for "which wallets a
     /// background pass may touch without a passphrase prompt."
     pub(super) fn open_wallets(self: &Arc<Self>) -> Vec<Arc<RwLock<Wallet>>> {
-        self.wallets
-            .read_recover()
+        self.wallet_context()
+            .wallets()
             .values()
             .filter(|wallet| wallet.read_recover().is_open())
             .cloned()
@@ -188,7 +188,7 @@ impl AppContext {
 
     /// Snapshot password-protected wallets that are still closed.
     pub(crate) fn locked_wallet_hashes(self: &Arc<Self>) -> Vec<WalletSeedHash> {
-        let wallets = self.wallets.read_recover();
+        let wallets = self.wallet_context().wallets();
         wallets
             .iter()
             .filter_map(|(seed_hash, wallet)| {
@@ -214,7 +214,7 @@ impl AppContext {
     /// panic never makes a wallet disappear from this decision.
     pub(crate) fn unregistered_open_wallet_count(self: &Arc<Self>) -> usize {
         let backend = self.wallet_backend().ok();
-        let guard = self.wallets.read_recover();
+        let guard = self.wallet_context().wallets();
         guard
             .values()
             .filter(|wallet| {

@@ -550,12 +550,12 @@ mod tests {
         let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
         let (mut identity, cache, seed_hash, seed) = fixture();
         identity.identity.set_id(staged.id);
-        staged
-            .ctx
-            .wallets
-            .write()
-            .unwrap()
-            .extend(identity.associated_wallets.clone());
+        for (seed, wallet) in &identity.associated_wallets {
+            staged
+                .ctx
+                .wallet_context()
+                .insert_test_wallet(*seed, Arc::clone(wallet));
+        }
         let mut key = identity.private_keys.identity_public_keys()[0].1.clone();
         key.identity_public_key.set_id(5);
         key.identity_public_key
@@ -658,12 +658,12 @@ mod tests {
         let (mut identity, cache, seed_hash, seed) = fixture();
         identity.identity.set_id(staged.id);
         if register_wallet {
-            staged
-                .ctx
-                .wallets
-                .write()
-                .unwrap()
-                .extend(identity.associated_wallets.clone());
+            for (seed, wallet) in &identity.associated_wallets {
+                staged
+                    .ctx
+                    .wallet_context()
+                    .insert_test_wallet(*seed, Arc::clone(wallet));
+            }
         }
         let backend = staged.ctx.wallet_backend().unwrap();
         backend.wallet_seeds().set_raw(&seed_hash, &seed).unwrap();

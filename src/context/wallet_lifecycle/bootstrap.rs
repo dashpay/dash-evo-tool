@@ -714,7 +714,7 @@ impl AppContext {
         }
 
         let wallets: Vec<_> = {
-            let guard = self.wallets.read_recover();
+            let guard = self.wallet_context().wallets();
             guard.values().cloned().collect()
         };
 

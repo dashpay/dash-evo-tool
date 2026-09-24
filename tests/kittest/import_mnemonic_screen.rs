@@ -1,7 +1,8 @@
-//! Kittest coverage for the name step of the Import Wallet screen, for both
-//! recovery-phrase (HD wallet) and private-key imports.
+//! Kittest coverage for the Import Wallet screen, for both recovery-phrase
+//! (HD wallet) and private-key imports: naming, phrase validation, and
+//! reporting save rejections to the user.
 //!
-//! The screen passes the raw name to the backend, which cleans it, fills in
+//! For naming, the screen passes the raw name to the backend, which cleans it, fills in
 //! the smallest unused "Wallet N" / "Key N" when it is blank, and rejects a
 //! name another wallet of the same kind already uses.
 
@@ -10,6 +11,7 @@ use bip39::Mnemonic;
 use dash_evo_tool::context::AppContext;
 use dash_evo_tool::model::wallet::Wallet;
 use dash_evo_tool::model::wallet::alias::AliasSource;
+use dash_evo_tool::model::wallet::birth_height::WalletOrigin;
 use dash_evo_tool::ui::ScreenLike;
 use dash_evo_tool::ui::wallets::import_mnemonic_screen::ImportMnemonicScreen;
 use dash_sdk::dpp::dashcore::PrivateKey;
@@ -40,9 +42,13 @@ fn import_harness(
     harness
 }
 
+/// Fixed test entropy — never a literal recovery phrase.
+fn test_mnemonic() -> Mnemonic {
+    Mnemonic::from_entropy(&[0u8; 16]).expect("valid entropy")
+}
+
 fn with_test_phrase(screen: &mut ImportMnemonicScreen) {
-    // Fixed test entropy — never a literal recovery phrase.
-    screen.set_seed_phrase_for_test(&Mnemonic::from_entropy(&[0u8; 16]).expect("valid entropy"));
+    screen.set_seed_phrase_for_test(&test_mnemonic());
 }
 
 fn test_wif(app_context: &AppContext, byte: u8) -> String {
@@ -201,10 +207,8 @@ fn duplicate_imported_key_name_is_rejected_and_not_saved() {
     });
 }
 
-/// Regression: pressing "Save Wallet" when the backend rejects the import
-/// must tell the user why. The recovery-phrase branch only rendered errors
-/// containing "Invalid seed phrase", so every `register_wallet` rejection was
-/// stored in `self.error` and never shown — the click looked like a no-op.
+/// Pressing "Save Wallet" when the backend rejects the name must show the
+/// rejection and save nothing.
 #[test]
 fn duplicate_imported_wallet_name_is_reported_to_the_user() {
     with_isolated_data_dir(|| {
@@ -245,7 +249,8 @@ fn successful_retry_clears_the_previous_rejection() {
         assert!(
             harness
                 .query_by_label_contains("Another wallet already uses this name")
-                .is_some()
+                .is_some(),
+            "the first attempt must be rejected"
         );
 
         type_name(&mut harness, " two");
@@ -254,7 +259,8 @@ fn successful_retry_clears_the_previous_rejection() {
 
         assert_eq!(
             sorted_wallet_aliases(&app_context),
-            vec!["Savings".to_owned(), "Savings two".to_owned()]
+            vec!["Savings".to_owned(), "Savings two".to_owned()],
+            "the retry with a new name must be saved"
         );
         assert!(
             harness
@@ -273,10 +279,7 @@ fn reimported_recovery_phrase_is_reported_to_the_user() {
         let (runtime, app_context) = fresh_app_context();
         {
             let _runtime_guard = runtime.enter();
-            // Fixed test entropy — never a literal recovery phrase.
-            let seed = Mnemonic::from_entropy(&[0u8; 16])
-                .expect("valid entropy")
-                .to_seed("");
+            let seed = test_mnemonic().to_seed("");
             let wallet = Wallet::new_from_seed(
                 seed,
                 app_context.network(),
@@ -285,11 +288,7 @@ fn reimported_recovery_phrase_is_reported_to_the_user() {
             )
             .expect("wallet fixture");
             app_context
-                .register_wallet(
-                    wallet,
-                    &seed,
-                    dash_evo_tool::model::wallet::birth_height::WalletOrigin::Imported,
-                )
+                .register_wallet(wallet, &seed, WalletOrigin::Imported)
                 .expect("first import");
         }
         let mut harness = import_harness(runtime, &app_context, with_test_phrase);
@@ -300,7 +299,8 @@ fn reimported_recovery_phrase_is_reported_to_the_user() {
 
         assert_eq!(
             sorted_wallet_aliases(&app_context),
-            vec!["Existing".to_owned()]
+            vec!["Existing".to_owned()],
+            "the same recovery phrase must not be imported twice"
         );
         assert!(
             harness
@@ -359,7 +359,10 @@ fn private_key_import_with_password_is_reported_to_the_user() {
         harness.get_by_label("Import Key").click();
         harness.run();
 
-        assert!(sorted_key_aliases(&app_context).is_empty());
+        assert!(
+            sorted_key_aliases(&app_context).is_empty(),
+            "nothing may be imported when the key has a password"
+        );
         assert!(
             harness
                 .query_by_label_contains("Per-key passwords are not supported")
@@ -384,7 +387,10 @@ fn invalid_recovery_phrase_message_follows_the_words() {
                 .is_some(),
             "a complete but invalid phrase must be flagged"
         );
-        assert!(harness.query_by_label("Save Wallet").is_none());
+        assert!(
+            harness.query_by_label("Save Wallet").is_none(),
+            "Save Wallet must stay hidden while the phrase is invalid"
+        );
 
         with_test_phrase(harness.state_mut());
         harness.run();
@@ -395,6 +401,9 @@ fn invalid_recovery_phrase_message_follows_the_words() {
                 .is_none(),
             "the message must clear once the phrase is valid"
         );
-        assert!(harness.query_by_label("Save Wallet").is_some());
+        assert!(
+            harness.query_by_label("Save Wallet").is_some(),
+            "Save Wallet must appear once the phrase is valid"
+        );
     });
 }

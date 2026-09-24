@@ -33,7 +33,8 @@ pub struct SingleKeyWallet {
     /// The P2PKH address derived from the public key
     pub address: Address,
     /// Optional alias/name for this wallet
-    pub alias: Option<String>,
+    /// Construction/legacy snapshot only; live labels come from WalletContext.
+    pub(crate) initial_alias: Option<String>,
     /// SHA-256 hash of the private key (used as identifier)
     pub key_hash: SingleKeyHash,
     /// Confirmed balance in duffs
@@ -285,7 +286,7 @@ impl SingleKeyWallet {
             uses_password,
             public_key,
             address,
-            alias,
+            initial_alias: alias,
             key_hash,
             confirmed_balance: 0,
             unconfirmed_balance: 0,
@@ -454,7 +455,7 @@ mod tests {
 
         assert!(wallet.is_open());
         assert!(!wallet.uses_password);
-        assert_eq!(wallet.alias, Some("Test".to_string()));
+        assert_eq!(wallet.initial_alias, Some("Test".to_string()));
         assert!(wallet.private_key(Network::Testnet).is_some());
     }
 
@@ -525,7 +526,7 @@ mod tests {
             uses_password: true,
             public_key,
             address,
-            alias: None,
+            initial_alias: None,
             key_hash: closed.key_hash,
             confirmed_balance: 0,
             unconfirmed_balance: 0,

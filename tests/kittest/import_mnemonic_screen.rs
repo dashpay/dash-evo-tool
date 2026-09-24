@@ -55,19 +55,20 @@ fn insert_wallet(app_context: &AppContext, alias: &str) {
         .expect("wallet fixture");
     seed.zeroize();
     app_context
-        .wallets()
-        .write()
-        .expect("wallet map")
-        .insert(wallet.seed_hash(), Arc::new(RwLock::new(wallet)));
+        .wallet_context()
+        .insert_test_wallet(wallet.seed_hash(), Arc::new(RwLock::new(wallet)));
 }
 
 fn sorted_wallet_aliases(app_context: &AppContext) -> Vec<String> {
     let mut aliases: Vec<String> = app_context
+        .wallet_context()
         .wallets()
-        .read()
-        .expect("wallet map")
         .values()
-        .filter_map(|wallet| wallet.read().expect("wallet").alias.clone())
+        .filter_map(|wallet| {
+            app_context
+                .wallet_context()
+                .hd_alias(&wallet.read().expect("wallet").seed_hash())
+        })
         .collect();
     aliases.sort();
     aliases

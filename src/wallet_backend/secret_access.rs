@@ -34,7 +34,7 @@
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, MutexGuard, RwLock};
+use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
 use dash_sdk::dpp::dashcore::Network;
@@ -46,6 +46,7 @@ use zeroize::Zeroizing;
 
 use crate::backend_task::error::TaskError;
 use crate::model::qualified_identity::PrivateKeyTarget;
+#[cfg(any(test, feature = "testing"))]
 use crate::model::single_key::ImportedKey;
 use crate::model::wallet::WalletSeedHash;
 use crate::model::wallet::encryption::{DecryptError, decrypt_message};
@@ -237,14 +238,7 @@ impl std::fmt::Debug for SecretAccess {
 struct SecretAccessInner {
     /// The encrypted vault — decrypt-on-demand source of truth.
     secret_store: Arc<SecretStore>,
-    /// HD wallet meta (seed hash → password hint / alias) for prompt copy.
-    wallet_meta: RwLock<BTreeMap<WalletSeedHash, PromptMeta>>,
-    /// Serializes wallet-meta persistence and prompt-copy updates so two
-    /// concurrent writes cannot publish their prompt labels out of order.
-    wallet_meta_write_lock: Mutex<()>,
-    /// Single-key index (address → alias / hint / has_passphrase) for
-    /// prompt copy and the unprotected fast-path check.
-    single_key_index: Arc<RwLock<BTreeMap<String, ImportedKey>>>,
+    wallet_context: Arc<crate::wallet_backend::wallet_context::WalletContext>,
     /// Identity prompt-copy index (identity id → alias / password hint) for
     /// the sign-time prompt of an opted-in (Tier-2) identity. Display-only;
     /// the vault scheme — not this index — gates whether a prompt fires.
@@ -298,37 +292,34 @@ impl std::fmt::Debug for VerifiedIdentityPassword {
 impl SecretAccess {
     /// Build a chokepoint over `secret_store`, prompting through `prompt`.
     ///
-    /// Prompt-copy metadata is seeded via [`SecretAccess::set_wallet_meta`]
-    /// / [`SecretAccess::set_single_key_index`]; absent metadata degrades
-    /// to a generic label, never an error.
+    /// Standalone instances start with unnamed metadata. Backend instances
+    /// share WalletContext so displays and prompts use the same labels.
     pub fn new(
         secret_store: Arc<SecretStore>,
         prompt: Arc<dyn SecretPrompt>,
         network: Network,
     ) -> Self {
-        Self::new_with_single_key_index(
+        Self::with_wallet_context(
             secret_store,
             prompt,
             network,
-            Arc::new(RwLock::new(BTreeMap::new())),
+            Arc::new(crate::wallet_backend::wallet_context::WalletContext::default()),
         )
     }
 
-    /// Bind the chokepoint to the backend's live imported-key index. Import,
-    /// rename, forget, and hydration then become visible to prompts through
-    /// the same lock used by [`SingleKeyView`](super::SingleKeyView).
-    pub(crate) fn new_with_single_key_index(
+    /// Bind the chokepoint to the backend's shared wallet context. Prompt copy
+    /// then reads the same committed HD and imported-key metadata that
+    /// imports, renames, removals and hydration publish there.
+    pub(crate) fn with_wallet_context(
         secret_store: Arc<SecretStore>,
         prompt: Arc<dyn SecretPrompt>,
         network: Network,
-        single_key_index: Arc<RwLock<BTreeMap<String, ImportedKey>>>,
+        wallet_context: Arc<crate::wallet_backend::wallet_context::WalletContext>,
     ) -> Self {
         Self {
             inner: Arc::new(SecretAccessInner {
                 secret_store,
-                wallet_meta: RwLock::new(BTreeMap::new()),
-                wallet_meta_write_lock: Mutex::new(()),
-                single_key_index,
+                wallet_context,
                 identity_prompt_index: RwLock::new(BTreeMap::new()),
                 prompt,
                 session: RwLock::new(HashMap::new()),
@@ -342,73 +333,44 @@ impl SecretAccess {
         self.inner.network
     }
 
-    /// Replace the HD prompt-copy metadata map. Used at hydration time so
-    /// prompts can show the wallet name and password hint. Poison-safe: a
-    /// poisoned lock is recovered (matching `forget`/`forget_all`) so a panicked
-    /// reader can never freeze prompt-copy metadata for the rest of the session.
+    /// Seed standalone prompt metadata. Backend-bound instances share WalletContext.
+    #[cfg(any(test, feature = "testing"))]
     pub fn set_wallet_meta(&self, meta: BTreeMap<WalletSeedHash, PromptMeta>) {
-        let _write_guard = self.wallet_meta_write_guard();
-        self.replace_wallet_meta(meta);
-    }
-
-    /// Load a fresh sidecar snapshot while holding the same lock as live
-    /// writers. Hydration cannot publish a snapshot older than a completed
-    /// rename, even if the sidecar read overlaps that rename.
-    pub(crate) fn refresh_wallet_meta(
-        &self,
-        load: impl FnOnce() -> Result<BTreeMap<WalletSeedHash, PromptMeta>, TaskError>,
-    ) -> Result<(), TaskError> {
-        let _write_guard = self.wallet_meta_write_guard();
-        self.replace_wallet_meta(load()?);
-        Ok(())
-    }
-
-    fn replace_wallet_meta(&self, meta: BTreeMap<WalletSeedHash, PromptMeta>) {
-        let mut guard = self
-            .inner
-            .wallet_meta
-            .write()
-            .unwrap_or_else(|poison| poison.into_inner());
-        *guard = meta;
-    }
-
-    /// Hold this while persisting one wallet-meta write and publishing its
-    /// prompt copy. The lock is separate from readers, which never block on
-    /// sidecar I/O. Poison recovery matches the prompt metadata locks.
-    pub(crate) fn wallet_meta_write_guard(&self) -> MutexGuard<'_, ()> {
         self.inner
-            .wallet_meta_write_lock
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
+            .wallet_context
+            .hydrate(|| {
+                Ok(crate::wallet_backend::wallet_context::WalletHydration {
+                    hd: meta
+                        .into_iter()
+                        .map(|(seed, meta)| {
+                            (
+                                seed,
+                                crate::model::wallet::meta::WalletMeta {
+                                    alias: meta.alias.unwrap_or_default(),
+                                    password_hint: meta.password_hint,
+                                    ..Default::default()
+                                },
+                            )
+                        })
+                        .collect(),
+                    ..Default::default()
+                })
+            })
+            .expect("infallible metadata load");
     }
 
-    pub(crate) fn upsert_wallet_meta(&self, seed_hash: WalletSeedHash, meta: PromptMeta) {
-        self.inner
-            .wallet_meta
-            .write()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .insert(seed_hash, meta);
-    }
-
-    pub(crate) fn remove_wallet_meta(&self, seed_hash: &WalletSeedHash) {
-        self.inner
-            .wallet_meta
-            .write()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .remove(seed_hash);
-    }
-
-    /// Replace the single-key prompt-copy index for standalone callers of
-    /// [`Self::new`]. A backend-bound chokepoint shares the live index and
-    /// does not need this snapshot setter. Poison-safe: a poisoned lock is
-    /// recovered so the index can self-heal after a panicked reader.
+    /// Seed standalone imported-key metadata; backend instances share the live owner.
+    #[cfg(any(test, feature = "testing"))]
     pub fn set_single_key_index(&self, index: BTreeMap<String, ImportedKey>) {
-        let mut guard = self
-            .inner
-            .single_key_index
-            .write()
-            .unwrap_or_else(|poison| poison.into_inner());
-        *guard = index;
+        self.inner
+            .wallet_context
+            .hydrate(|| {
+                Ok(crate::wallet_backend::wallet_context::WalletHydration {
+                    single: index.into_values().collect(),
+                    ..Default::default()
+                })
+            })
+            .expect("infallible metadata load");
     }
 
     /// Replace the identity prompt-copy index. Used at hydration time and
@@ -862,9 +824,7 @@ impl SecretAccess {
                         if self.single_key_raw(address)?.is_some() {
                             return Ok(false);
                         }
-                        if let Ok(index) = self.inner.single_key_index.read()
-                            && let Some(meta) = index.get(address)
-                        {
+                        if let Some(meta) = self.inner.wallet_context.single_key(address) {
                             return Ok(meta.has_passphrase);
                         }
                         Ok(self.load_single_key_entry(address)?.has_passphrase)
@@ -1114,23 +1074,12 @@ impl SecretAccess {
     ) -> SecretPromptRequest {
         let (label, hint) = match scope {
             SecretScope::HdSeed { seed_hash } => {
-                let meta = self
-                    .inner
-                    .wallet_meta
-                    .read()
-                    .ok()
-                    .and_then(|g| g.get(seed_hash).cloned())
-                    .unwrap_or_default();
+                let meta = self.inner.wallet_context.hd_prompt(seed_hash);
                 let label = meta.alias.unwrap_or_else(|| "your wallet".to_string());
                 (label, meta.password_hint)
             }
             SecretScope::SingleKey { address } => {
-                let meta = self
-                    .inner
-                    .single_key_index
-                    .read()
-                    .ok()
-                    .and_then(|g| g.get(address).cloned());
+                let meta = self.inner.wallet_context.single_key(address);
                 let label = meta
                     .as_ref()
                     .and_then(|m| m.alias.clone())
@@ -1293,7 +1242,7 @@ mod tests {
         let sa = access(fresh_store(dir.path()), Arc::new(NullSecretPrompt));
         let storage = Arc::new(FailingKv::default());
         let kv = Arc::new(DetKv::from_store(storage.clone()));
-        let view = WalletMetaView::with_prompt(&kv, &sa);
+        let view = WalletMetaView::with_context(&kv, &sa.inner.wallet_context, Network::Testnet);
         let seed_hash = [0x51; 32];
         let scope = SecretScope::HdSeed { seed_hash };
         let mut meta = WalletMeta {
@@ -1343,15 +1292,15 @@ mod tests {
 
         let dir = tempfile::tempdir().expect("tempdir");
         let store = fresh_store(dir.path());
-        let index = Arc::new(RwLock::new(BTreeMap::new()));
-        let sa = SecretAccess::new_with_single_key_index(
+        let index = Arc::new(crate::wallet_backend::wallet_context::WalletContext::default());
+        let sa = SecretAccess::with_wallet_context(
             Arc::clone(&store),
             Arc::new(NullSecretPrompt),
             Network::Testnet,
             Arc::clone(&index),
         );
-        let writer_lock = std::sync::Mutex::new(());
-        let view = SingleKeyView::from_views(&store, &writer_lock, &index, Network::Testnet, None);
+
+        let view = SingleKeyView::from_views(&store, &index, Network::Testnet, None);
         let key_bytes = sha256::Hash::hash(b"wallet-prompt-test-key").to_byte_array();
         let wif = PrivateKey::from_byte_array(&key_bytes, Network::Testnet)
             .expect("deterministic test key")
@@ -1763,10 +1712,9 @@ mod tests {
     // --- single-key scope -------------------------------------------------
 
     fn import_protected_key(store: &Arc<SecretStore>, passphrase: &str) -> String {
-        let index = std::sync::RwLock::new(std::collections::BTreeMap::new());
-        let alias_write_lock = std::sync::Mutex::new(());
-        let view =
-            SingleKeyView::from_views(store, &alias_write_lock, &index, Network::Testnet, None);
+        let index = crate::wallet_backend::wallet_context::WalletContext::default();
+
+        let view = SingleKeyView::from_views(store, &index, Network::Testnet, None);
         let imported = view
             .import_wif_with_passphrase(
                 &known_testnet_wif(),

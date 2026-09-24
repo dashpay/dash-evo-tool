@@ -1566,9 +1566,10 @@ impl WalletSendScreen {
         if let Some(wallet_arc) = &self.selected_wallet
             && let Ok(wallet) = wallet_arc.read()
         {
-            let alias = wallet
-                .alias
-                .clone()
+            let alias = self
+                .app_context
+                .wallet_context()
+                .hd_alias(&wallet.seed_hash())
                 .unwrap_or_else(|| "Unnamed Wallet".to_string());
 
             egui::Grid::new("wallet_info_grid")
@@ -2411,35 +2412,32 @@ impl WalletSendScreen {
 
     fn address_input_wallets(&self) -> Vec<WalletWithSnapshot> {
         self.app_context
-            .wallets
-            .read()
-            .map(|wallets| {
-                wallets
-                    .values()
-                    .map(|wallet| {
-                        let seed_hash = wallet
-                            .read()
-                            .map(|guard| guard.seed_hash())
-                            .unwrap_or_default();
-                        (
-                            wallet.clone(),
-                            self.app_context.snapshot_address_balances(&seed_hash),
-                            self.app_context.snapshot_address_paths(&seed_hash),
-                        )
-                    })
-                    .collect()
+            .wallet_context()
+            .wallets()
+            .values()
+            .map(|wallet| {
+                let seed_hash = wallet
+                    .read()
+                    .map(|guard| guard.seed_hash())
+                    .unwrap_or_default();
+                (
+                    wallet.clone(),
+                    self.app_context.snapshot_address_balances(&seed_hash),
+                    self.app_context.snapshot_address_paths(&seed_hash),
+                    self.app_context.wallet_context().hd_alias(&seed_hash),
+                )
             })
-            .unwrap_or_default()
+            .collect()
     }
 
     fn address_input_snapshot_signature(wallets: &[WalletWithSnapshot]) -> u64 {
         let mut hasher = DefaultHasher::new();
-        for (wallet, balances, paths) in wallets {
+        for (wallet, balances, paths, alias) in wallets {
             let Ok(wallet) = wallet.read() else {
                 continue;
             };
             wallet.seed_hash().hash(&mut hasher);
-            wallet.alias.hash(&mut hasher);
+            alias.hash(&mut hasher);
             balances.hash(&mut hasher);
             for (address, path) in paths {
                 address.hash(&mut hasher);
@@ -5381,7 +5379,7 @@ mod tests {
             )
             .expect("wallet from seed"),
         ));
-        let empty_wallets = vec![(wallet.clone(), BTreeMap::new(), BTreeMap::new())];
+        let empty_wallets = vec![(wallet.clone(), BTreeMap::new(), BTreeMap::new(), None)];
         let empty_signature = WalletSendScreen::address_input_snapshot_signature(&empty_wallets);
         assert_eq!(
             empty_signature,
@@ -5390,11 +5388,11 @@ mod tests {
 
         let address = testnet_core_address(3);
         let paths = BTreeMap::from([(address.clone(), bip44_receive_path(0))]);
-        let with_path = vec![(wallet.clone(), BTreeMap::new(), paths.clone())];
+        let with_path = vec![(wallet.clone(), BTreeMap::new(), paths.clone(), None)];
         let path_signature = WalletSendScreen::address_input_snapshot_signature(&with_path);
         assert_ne!(empty_signature, path_signature);
 
-        let with_balance = vec![(wallet, BTreeMap::from([(address, 42)]), paths)];
+        let with_balance = vec![(wallet, BTreeMap::from([(address, 42)]), paths, None)];
         assert_ne!(
             path_signature,
             WalletSendScreen::address_input_snapshot_signature(&with_balance)

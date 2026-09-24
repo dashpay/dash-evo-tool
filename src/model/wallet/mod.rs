@@ -420,7 +420,8 @@ pub struct Wallet {
     pub platform_payment_account_xpub: Option<ExtendedPubKey>,
     pub known_addresses: BTreeMap<Address, DerivationPath>,
     pub watched_addresses: BTreeMap<DerivationPath, AddressInfo>,
-    pub alias: Option<String>,
+    /// Construction/legacy snapshot only; live labels come from WalletContext.
+    pub(crate) initial_alias: Option<String>,
     pub identities: HashMap<u32, Identity>,
     pub is_main: bool,
     /// DIP-17: Platform address balances and nonces (keyed by Core Address for lookup)
@@ -527,7 +528,7 @@ impl Wallet {
             platform_payment_account_xpub,
             known_addresses,
             watched_addresses,
-            alias,
+            initial_alias: alias,
             identities: Default::default(),
             is_main: true,
             platform_address_info: Default::default(),
@@ -2382,7 +2383,7 @@ pub(crate) mod test_support {
             platform_payment_account_xpub: None,
             known_addresses: BTreeMap::new(),
             watched_addresses: BTreeMap::new(),
-            alias: Some("Test Wallet".to_string()),
+            initial_alias: Some("Test Wallet".to_string()),
             identities: HashMap::new(),
             is_main: true,
             platform_address_info: BTreeMap::new(),

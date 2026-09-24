@@ -100,6 +100,11 @@ pub struct AddKeyScreen {
     /// `display_backend_task_error` for an unhandled error, and this screen
     /// never handles or suppresses one, so the flag is always consumed.
     warm_error_pending: bool,
+    /// The error being routed belongs to this screen's own key add, as told
+    /// by `display_backend_task_error` (always called first). Other tasks'
+    /// errors — e.g. a scheduled-vote sweep — can arrive mid-add and must not
+    /// end it or drop the submitted key.
+    add_error_pending: bool,
     /// The slot chooser was rendered this frame. A slot load (which may open
     /// the wallet's secret prompt) is dispatched only then — never while the
     /// wallet-locked notice or the success page hides the chooser.
@@ -138,6 +143,7 @@ impl AddKeyScreen {
             app_context: app_context.clone(),
             derivation,
             warm_error_pending: false,
+            add_error_pending: false,
             derivation_visible: false,
             private_key_input: PasswordInput::new()
                 .with_hint_text("Private key (hex)")
@@ -187,6 +193,7 @@ impl AddKeyScreen {
             app_context: app_context.clone(),
             derivation,
             warm_error_pending: false,
+            add_error_pending: false,
             derivation_visible: false,
             private_key_input: PasswordInput::new()
                 .with_hint_text("Private key (hex)")
@@ -236,6 +243,7 @@ impl AddKeyScreen {
             app_context: app_context.clone(),
             derivation,
             warm_error_pending: false,
+            add_error_pending: false,
             derivation_visible: false,
             private_key_input: PasswordInput::new()
                 .with_hint_text("Private key (hex)")
@@ -720,7 +728,9 @@ impl ScreenLike for AddKeyScreen {
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Error/success display is handled by the global MessageBanner.
         if matches!(message_type, MessageType::Error | MessageType::Warning) {
-            if std::mem::take(&mut self.warm_error_pending) {
+            if std::mem::take(&mut self.warm_error_pending)
+                || !std::mem::take(&mut self.add_error_pending)
+            {
                 return;
             }
             self.refresh_banner.take_and_clear();
@@ -734,6 +744,7 @@ impl ScreenLike for AddKeyScreen {
     }
 
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
+        self.add_error_pending = context.added_key_identity() == Some(self.identity.identity.id());
         if let Some((seed_hash, identity_index)) = context.identity_auth_pubkey_warm() {
             self.warm_error_pending = self.derivation.warm_failed(&seed_hash, identity_index);
             return;
@@ -741,6 +752,9 @@ impl ScreenLike for AddKeyScreen {
         if context.refreshed_identity() == Some(self.identity.identity.id()) {
             self.derivation
                 .identity_refresh_finished(&self.app_context, &self.identity);
+            return;
+        }
+        if !self.add_error_pending {
             return;
         }
         match error {
@@ -752,7 +766,9 @@ impl ScreenLike for AddKeyScreen {
     }
 
     fn display_task_error(&mut self, error: &TaskError) -> bool {
-        if let Some(status) = on_network_not_saved_status(error) {
+        if self.add_error_pending
+            && let Some(status) = on_network_not_saved_status(error)
+        {
             self.refresh_banner.take_and_clear();
             self.add_key_status = status;
         }
@@ -1361,7 +1377,8 @@ mod derived_key_tests {
         );
 
         // A submission error is still recorded as one.
-        screen.display_backend_task_error(&BackendTaskContext::Other, &TaskError::WalletLocked);
+        let own_add = BackendTaskContext::IdentityKeyAdd(screen.identity.identity.id());
+        screen.display_backend_task_error(&own_add, &TaskError::WalletLocked);
         screen.display_message("The wallet is locked.", MessageType::Error);
         assert!(screen.add_key_status == AddKeyStatus::Error);
 
@@ -1439,7 +1456,7 @@ mod derived_key_tests {
 
         screen.add_key_status = AddKeyStatus::WaitingForResult;
         screen.display_backend_task_error(
-            &BackendTaskContext::Other,
+            &BackendTaskContext::IdentityKeyAdd(screen.identity.identity.id()),
             &TaskError::DerivedKeyIndexUnavailable,
         );
         screen.display_message("rejected", MessageType::Error);
@@ -1486,7 +1503,7 @@ mod derived_key_tests {
 
         screen.add_key_status = AddKeyStatus::WaitingForResult;
         screen.display_backend_task_error(
-            &BackendTaskContext::Other,
+            &BackendTaskContext::IdentityKeyAdd(screen.identity.identity.id()),
             &TaskError::DerivedKeyIdChanged,
         );
         screen.display_message("changed", MessageType::Error);
@@ -1537,16 +1554,38 @@ mod derived_key_tests {
 
         let submitted = hex::encode([0x11; 32]);
         screen.private_key_input.set_text(submitted.clone());
-        assert!(matches!(
-            screen.validate_and_add_key(),
-            AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::AddKeyToIdentity(
-                ..
-            )))
-        ));
+        let AppAction::BackendTask(
+            task @ BackendTask::IdentityTask(IdentityTask::AddKeyToIdentity(..)),
+        ) = screen.validate_and_add_key()
+        else {
+            panic!("a valid key submits an add");
+        };
+        let own_context = BackendTaskContext::from(&task);
         screen.add_key_status = AddKeyStatus::WaitingForResult;
         // A stray edit lands in the form after the submit.
         screen.private_key_input.set_text(hex::encode([0x22; 32]));
-        screen.display_task_error(&TaskError::IdentityKeyAddedButIdentityUnloaded);
+
+        // An unrelated task fails while the add is still running.
+        let unrelated = TaskError::WalletLocked;
+        screen.display_backend_task_error(&BackendTaskContext::Other, &unrelated);
+        assert!(!screen.display_task_error(&unrelated));
+        screen.display_message("unrelated", MessageType::Error);
+        assert!(
+            screen.add_key_status == AddKeyStatus::WaitingForResult,
+            "another task's error does not end the add"
+        );
+        assert_eq!(screen.submitted_private_key.text(), submitted);
+
+        // A post-broadcast failure for another identity's add is not ours.
+        let other_context = BackendTaskContext::IdentityKeyAdd(Identifier::from([0x5A; 32]));
+        let not_saved = TaskError::IdentityKeyAddedButIdentityUnloaded;
+        screen.display_backend_task_error(&other_context, &not_saved);
+        screen.display_task_error(&not_saved);
+        screen.display_message("not saved elsewhere", MessageType::Error);
+        assert!(screen.add_key_status == AddKeyStatus::WaitingForResult);
+
+        screen.display_backend_task_error(&own_context, &not_saved);
+        screen.display_task_error(&not_saved);
         screen.display_message("not saved", MessageType::Error);
         assert!(screen.add_key_status == AddKeyStatus::KeyOnNetworkNotSaved);
 
@@ -1596,13 +1635,14 @@ mod derived_key_tests {
         };
         let (staged, identity) = staged_screen_parts(true).await;
 
+        let own_add = BackendTaskContext::IdentityKeyAdd(identity.identity.id());
         let mut screen = AddKeyScreen::new(identity.clone(), &staged.ctx);
         screen.add_key_status = AddKeyStatus::WaitingForResult;
-        assert!(
-            !screen.display_task_error(&TaskError::DerivedIdentityKeyAddedButNotSaved {
-                source: Box::new(TaskError::IdentityKeySlotOccupied),
-            })
-        );
+        let not_saved = TaskError::DerivedIdentityKeyAddedButNotSaved {
+            source: Box::new(TaskError::IdentityKeySlotOccupied),
+        };
+        screen.display_backend_task_error(&own_add, &not_saved);
+        assert!(!screen.display_task_error(&not_saved));
         screen.display_message("not saved", MessageType::Error);
         assert!(screen.add_key_status == AddKeyStatus::DerivedKeyOnNetworkNotSaved);
         let mut harness = not_saved_harness(screen);
@@ -1617,6 +1657,8 @@ mod derived_key_tests {
 
         let mut screen = AddKeyScreen::new(identity, &staged.ctx);
         screen.add_key_status = AddKeyStatus::WaitingForResult;
+        screen
+            .display_backend_task_error(&own_add, &TaskError::IdentityKeyAddedButIdentityUnloaded);
         screen.display_task_error(&TaskError::IdentityKeyAddedButIdentityUnloaded);
         screen.display_message("not saved", MessageType::Error);
         assert!(screen.add_key_status == AddKeyStatus::KeyOnNetworkNotSaved);

@@ -18,6 +18,8 @@ use egui_kittest::kittest::Queryable;
 use std::sync::{Arc, RwLock};
 use zeroize::Zeroize;
 
+const INVALID_PHRASE_TEXT: &str = "This recovery phrase is not valid";
+
 fn import_harness(
     runtime: tokio::runtime::Runtime,
     app_context: &Arc<AppContext>,
@@ -378,7 +380,7 @@ fn invalid_recovery_phrase_message_follows_the_words() {
 
         assert!(
             harness
-                .query_by_label_contains("Invalid seed phrase")
+                .query_by_label_contains(INVALID_PHRASE_TEXT)
                 .is_some(),
             "a complete but invalid phrase must be flagged"
         );
@@ -389,7 +391,7 @@ fn invalid_recovery_phrase_message_follows_the_words() {
 
         assert!(
             harness
-                .query_by_label_contains("Invalid seed phrase")
+                .query_by_label_contains(INVALID_PHRASE_TEXT)
                 .is_none(),
             "the message must clear once the phrase is valid"
         );

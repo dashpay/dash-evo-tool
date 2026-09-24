@@ -23,8 +23,9 @@ use zeroize::Zeroize;
 use zxcvbn::zxcvbn;
 
 /// Shown under the recovery-phrase grid while the filled-in words are not a
-/// valid BIP39 phrase.
-const INVALID_SEED_PHRASE_MESSAGE: &str = "Invalid seed phrase. Please check that all words are spelled correctly and are valid BIP39 words.";
+/// valid recovery phrase.
+const INVALID_SEED_PHRASE_MESSAGE: &str =
+    "This recovery phrase is not valid. Check that every word is spelled correctly.";
 
 /// Why pressing "Save Wallet" / "Import Key" did not import anything. Every
 /// variant is shown to the user as an error banner; `Display` is the banner

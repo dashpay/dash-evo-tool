@@ -106,7 +106,7 @@ app resolved a *different* directory — stop, do not continue, and check
 4. Select the seed-phrase length matching `MIGRATION_FIXTURE_MNEMONIC`, then
    enter the words. The screen has **one field per word**, not a single
    paste-able box — type or `xdotool type` into each field and tab between
-   them. The screen validates continuously and shows "Invalid seed phrase…"
+   them. The screen validates continuously and shows "This recovery phrase is not valid…"
    until every word is present and valid.
 5. Under step 2 of that screen, set the **Wallet Name** to a recognisable,
    non-default alias (e.g. `Fixture unprotected`).

@@ -27,21 +27,32 @@ use zxcvbn::zxcvbn;
 const INVALID_SEED_PHRASE_MESSAGE: &str = "Invalid seed phrase. Please check that all words are spelled correctly and are valid BIP39 words.";
 
 /// Why pressing "Save Wallet" / "Import Key" did not import anything. Every
-/// variant is shown to the user as an error banner.
-#[derive(Debug)]
+/// variant is shown to the user as an error banner; `Display` is the banner
+/// text.
+#[derive(Debug, thiserror::Error)]
 enum ImportSaveError {
     /// The wallet model or backend refused the import (name already used,
     /// phrase already imported, password out of bounds, storage failure).
-    Rejected(TaskError),
-    /// The private-key input failed this screen's pre-import checks. Holds a
-    /// complete user-facing sentence.
-    InvalidInput(String),
-}
-
-impl From<TaskError> for ImportSaveError {
-    fn from(error: TaskError) -> Self {
-        Self::Rejected(error)
-    }
+    #[error(transparent)]
+    Rejected(#[from] TaskError),
+    /// The private-key field is blank.
+    #[error("Enter a private key to import.")]
+    PrivateKeyMissing,
+    /// A password was entered for a single-key import, which has no per-key
+    /// password layer yet (T-MIG-03).
+    #[error(
+        "Per-key passwords are not supported in this version. Leave the password field blank to import the key; your wallet vault protects all imported keys."
+    )]
+    PrivateKeyPasswordUnsupported,
+    /// The input is neither WIF nor hexadecimal.
+    #[error("This does not look like a valid WIF or hex private key. Check the input.")]
+    PrivateKeyUnrecognized,
+    /// Hexadecimal input that does not decode to 32 bytes.
+    #[error("Hex private keys must be exactly 32 bytes; got {byte_count} bytes.")]
+    PrivateKeyWrongLength { byte_count: usize },
+    /// 32 hexadecimal bytes that are not a valid secp256k1 secret key.
+    #[error("The private key is not valid. Check the hexadecimal value and try again.")]
+    PrivateKeyInvalid,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,6 +152,13 @@ impl ImportMnemonicScreen {
         self.try_parse_private_key();
     }
 
+    /// Test-only seam: enter `password` in the optional password field the
+    /// way typing into it does. Not exposed for production callers.
+    #[doc(hidden)]
+    pub fn set_password_for_test(&mut self, password: &str) {
+        self.password_input.set_text(password.to_owned());
+    }
+
     fn try_parse_private_key(&mut self) {
         let input = self.private_key_input.text().trim();
         if input.is_empty() {
@@ -173,9 +191,7 @@ impl ImportMnemonicScreen {
 
         let input = self.private_key_input.text().trim();
         if input.is_empty() {
-            return Err(ImportSaveError::InvalidInput(
-                "Enter a private key to import.".to_string(),
-            ));
+            return Err(ImportSaveError::PrivateKeyMissing);
         }
 
         // T-W-01b: imported keys live in the upstream `SecretStore` vault,
@@ -184,11 +200,7 @@ impl ImportMnemonicScreen {
         // (T-MIG-03); until then, reject password-protected single-key
         // imports rather than silently storing them in the clear.
         if !self.password_input.is_empty() {
-            return Err(ImportSaveError::InvalidInput(
-                "Per-key passwords are not supported in this version. Leave the password \
-                 field blank to import the key; your wallet vault protects all imported keys."
-                    .to_string(),
-            ));
+            return Err(ImportSaveError::PrivateKeyPasswordUnsupported);
         }
 
         // The backend cleans the raw name, replaces a blank one with the
@@ -201,17 +213,12 @@ impl ImportMnemonicScreen {
         let wif = match PrivateKey::from_wif(input) {
             Ok(_) => input.to_string(),
             Err(_) => {
-                let bytes = hex::decode(input).map_err(|_| {
-                    ImportSaveError::InvalidInput(
-                        "This does not look like a valid WIF or hex private key. Check the input."
-                            .to_string(),
-                    )
-                })?;
+                let bytes =
+                    hex::decode(input).map_err(|_| ImportSaveError::PrivateKeyUnrecognized)?;
                 if bytes.len() != 32 {
-                    return Err(ImportSaveError::InvalidInput(format!(
-                        "Hex private keys must be exactly 32 bytes; got {byte_count} bytes.",
-                        byte_count = bytes.len()
-                    )));
+                    return Err(ImportSaveError::PrivateKeyWrongLength {
+                        byte_count: bytes.len(),
+                    });
                 }
                 let mut buf = [0u8; 32];
                 buf.copy_from_slice(&bytes);
@@ -219,10 +226,7 @@ impl ImportMnemonicScreen {
                     Ok(private_key) => private_key.to_wif(),
                     Err(error) => {
                         tracing::debug!(?error, "Imported hexadecimal private key was rejected");
-                        return Err(ImportSaveError::InvalidInput(
-                            "The private key is not valid. Check the hexadecimal value and try again."
-                                .to_string(),
-                        ));
+                        return Err(ImportSaveError::PrivateKeyInvalid);
                     }
                 }
             }
@@ -716,8 +720,8 @@ impl ScreenLike for ImportMnemonicScreen {
                             Err(ImportSaveError::Rejected(error)) => {
                                 MessageBanner::set_global_with_error(ui.ctx(), error);
                             }
-                            Err(ImportSaveError::InvalidInput(message)) => {
-                                MessageBanner::set_global(ui.ctx(), message, MessageType::Error);
+                            Err(error) => {
+                                MessageBanner::set_global(ui.ctx(), error, MessageType::Error);
                             }
                         }
                     }

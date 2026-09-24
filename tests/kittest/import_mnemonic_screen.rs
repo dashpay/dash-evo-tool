@@ -274,6 +274,58 @@ fn reimported_recovery_phrase_is_reported_to_the_user() {
     });
 }
 
+/// Regression: a password below the vault minimum is refused by the wallet
+/// model, not by `register_wallet`; that rejection must reach the user too.
+#[test]
+fn too_short_import_password_is_reported_to_the_user() {
+    with_isolated_data_dir(|| {
+        let (runtime, app_context) = fresh_app_context();
+        let mut harness = import_harness(runtime, &app_context, |screen| {
+            with_test_phrase(screen);
+            screen.set_password_for_test("short");
+        });
+
+        harness.get_by_label("Save Wallet").click();
+        harness.run();
+
+        assert!(
+            sorted_wallet_aliases(&app_context).is_empty(),
+            "no wallet may be saved with a password below the minimum"
+        );
+        assert!(
+            harness
+                .query_by_label_contains("Wallet passwords must be at least")
+                .is_some(),
+            "the password rejection must be shown, not silently swallowed"
+        );
+    });
+}
+
+/// A private-key import with a password fails this screen's own pre-checks;
+/// the typed rejection must be shown and nothing imported.
+#[test]
+fn private_key_import_with_password_is_reported_to_the_user() {
+    with_isolated_data_dir(|| {
+        let (runtime, app_context) = fresh_app_context();
+        let wif = test_wif(&app_context, 0x33);
+        let mut harness = import_harness(runtime, &app_context, |screen| {
+            screen.set_private_key_for_test(&wif);
+            screen.set_password_for_test("long enough password");
+        });
+
+        harness.get_by_label("Import Key").click();
+        harness.run();
+
+        assert!(sorted_key_aliases(&app_context).is_empty());
+        assert!(
+            harness
+                .query_by_label_contains("Per-key passwords are not supported")
+                .is_some(),
+            "the password rejection must be shown, not silently swallowed"
+        );
+    });
+}
+
 #[test]
 fn invalid_recovery_phrase_message_follows_the_words() {
     with_isolated_data_dir(|| {

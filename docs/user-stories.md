@@ -32,6 +32,9 @@ As a user, I want to create a new wallet with a generated mnemonic so that I can
 
 - Mnemonic is generated using mouse entropy for randomness.
 - User can select mnemonic language and wallet name.
+- A blank wallet name — including one made only of spaces or invisible characters — gets the first unused default name ("Wallet 1", "Wallet 2", …).
+- A wallet name is limited to 64 characters, counted after surrounding spaces and invisible or text-direction control characters are removed; the name field shows that count while typing.
+- A wallet name must differ from every other wallet's name; the app refuses a name another wallet already uses and asks the user to choose a different one.
 - Optional password protection is offered.
 - An optional wallet password must be at least 8 UTF-8 bytes after trimming surrounding whitespace.
 - The app refuses a wallet password that is too long for secure storage before saving the wallet and asks the user to choose a shorter one.
@@ -44,6 +47,7 @@ As a user, I want to import an existing wallet by entering its seed phrase so th
 
 - Accepts standard BIP39 mnemonic phrases.
 - User can assign a name and optional password.
+- The wallet name follows the same rules as creating a wallet: a blank name gets the first unused default name, the 64-character limit applies after surrounding spaces and invisible or text-direction control characters are removed, and a name another wallet already uses is refused.
 - An optional wallet password must be at least 8 UTF-8 bytes after trimming surrounding whitespace.
 - The app refuses a wallet password that is too long for secure storage before saving the wallet and asks the user to choose a shorter one.
 - Wallet syncs balances after import.
@@ -54,6 +58,7 @@ As a user, I want to import an existing wallet by entering its seed phrase so th
 As a power user, I want to import a single private key so that I can manage funds from a standalone address.
 
 - Creates a single-key wallet from WIF-format key.
+- Key names follow the wallet-name rules within the imported keys: a blank name gets the first unused "Key 1", "Key 2", …, the 64-character limit applies after cleaning, and a name another imported key already uses is refused.
 - An optional per-key passphrase must be at least 8 characters. The app refuses one that is too long for secure storage before importing the key and asks the user to choose a shorter passphrase.
 - Wallet appears in the wallet selector.
 
@@ -72,6 +77,9 @@ As a user managing multiple wallets, I want to switch between them quickly so th
 As a power user, I want to rename wallets so that I can identify them by purpose (e.g., "Masternode Collateral").
 
 - Name change persists across sessions.
+- Renaming an HD wallet or an imported key follows the same naming rules as creating it: surrounding spaces and invisible or text-direction control characters are removed, the 64-character limit applies, and a name another wallet of the same kind already uses is refused. Renaming a wallet to its current name is allowed.
+- Clearing the name and saving resets the wallet or key to the first unused default name ("Wallet N" or "Key N").
+- Wallets that already shared a name before names had to be unique keep their names until renamed. Tools that pick a wallet by name refuse a name shared by several wallets and ask for the wallet's identifier instead.
 
 ### WAL-006: Lock and unlock wallet [Implemented]
 **Persona:** Alex, Priya

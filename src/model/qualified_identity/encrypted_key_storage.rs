@@ -1297,16 +1297,30 @@ mod tests {
     }
 
     /// A V1 key carries limits a V0 key cannot, so the two are never the same
-    /// key, and V1 limits are compared strictly.
+    /// key, and V1 limits are compared strictly — `total_budget` and
+    /// `expires_at` each on their own, so dropping either conjunct fails here.
     #[test]
     fn same_key_rejects_a_v1_key_against_v0_or_other_limits() {
         let base = IdentityPublicKey::random_key(0, Some(1), PlatformVersion::latest());
         let limited = base.clone().with_limits(Some(1_000), None);
         let raised = base.clone().with_limits(Some(5_000), None);
+        // Same budget as `limited`, differing only in when the key expires.
+        let expiring = base.clone().with_limits(Some(1_000), Some(1_800_000));
+        let expiring_later = base.clone().with_limits(Some(1_000), Some(2_400_000));
 
         assert!(!same_key(&base, &limited));
         assert!(!same_key(&limited, &base));
         assert!(!same_key(&limited, &raised));
+
+        assert!(
+            !same_key(&limited, &expiring),
+            "an expiry added since the snapshot is a different key"
+        );
+        assert!(!same_key(&expiring, &limited));
+        assert!(
+            !same_key(&expiring, &expiring_later),
+            "a moved expiry is a different key, at an identical budget"
+        );
     }
 
     /// A storage filing one key under several placements, each with the given

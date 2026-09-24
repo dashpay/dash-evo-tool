@@ -42,6 +42,38 @@ cargo test --test backend-e2e --all-features -- --ignored --nocapture --test-thr
 |---|---|---|
 | `E2E_WALLET_MNEMONIC` | Yes | BIP-39 mnemonic for the framework wallet. Must be a pre-funded testnet wallet with at least 10 tDASH. Can be set as a shell env var or in the project root `.env` file (see below). If not set, the test fails with an error message and instructions. |
 
+### Masternode tests
+
+`identity_masternode_withdraw` needs a testnet masternode or evonode with funded
+Platform credits and its private keys. These are the only names the tests read:
+
+| Variable | Needed by | Description |
+|---|---|---|
+| `E2E_MN_PROTX_HASH` | every case except TC-MN-007 and TC-MN-021 | ProTxHash of the node (hex). |
+| `E2E_MN_OWNER_KEY` | TC-MN-017, -018, -050, -052 | Owner private key (WIF or 64-hex). |
+| `E2E_MN_PAYOUT_KEY` | TC-MN-016, -018, -019, -023, -051, -053, -054 | Payout (transfer) private key (WIF or 64-hex). |
+| `E2E_MN_VOTING_KEY` | TC-MN-019 | Voting private key (WIF or 64-hex). |
+| `E2E_MN_NODE_TYPE` | all (optional) | `evonode` (default) or `masternode`. |
+
+A case whose variable is unset or blank **fails** with instructions naming the
+variable; it never reports `ok` without running. To run the rest of the suite on
+a machine without a masternode, skip the module explicitly:
+
+```bash
+cargo test --test backend-e2e --all-features -- --ignored --test-threads=1 \
+  --skip identity_masternode_withdraw::
+```
+
+The earlier names `E2E_MN_PRO_TX_HASH`, `E2E_MN_OWNER_WIF`, `E2E_MN_PAYOUT_WIF`
+and `E2E_MN_VOTING_WIF` are not read. If one is set, the failure message names its
+replacement. They are not accepted as aliases because two spellings of the same
+secret leave precedence ambiguous when both are set.
+
+The withdrawal cases move a tenth of the node's balance, clamped to the
+protocol's per-withdrawal limits (`system_limits.min_withdrawal_amount` and
+`max_withdrawal_amount`). A node below the minimum fails with a request to fund
+it.
+
 ### `.env` file handling
 
 The harness uses two separate `.env` files for different purposes:
@@ -107,6 +139,21 @@ ctx().await  -->  OnceCell::get_or_init(BackendTestContext::init)
 6. Restore the framework wallet from `E2E_WALLET_MNEMONIC` (required).
 7. Register the wallet with `AppContext` (idempotent -- handles "already imported").
 8. Wait for SPV to sync the wallet's UTXOs and funds to become spendable (180s timeout).
+
+The full SPV sync wait before step 8 is progress-aware and bounded
+(`framework/wait.rs`):
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `SPV_STALL_WINDOW` | 180s | Fails the init if the SPV progress token does not advance for this long. |
+| `SPV_SYNC_CAP` | 1800s | Hard cap on the whole sync wait, even while it progresses. |
+
+A slow but advancing sync keeps waiting on the same runtime and workdir slot,
+so its stored headers and filters are reused. Failing into an init retry would
+move to a fresh slot (the previous slot's SPV lock cannot be released
+in-process) and restart the sync from genesis. A fresh workdir needs a full
+testnet sync, which can take well over 10 minutes; later runs resume from the
+stored data.
 9. Verify balance is above minimum threshold (10 tDASH).
 10. Sweep orphaned test wallets from previous runs back to the framework wallet.
 
@@ -198,6 +245,7 @@ list; keep this table in sync when adding or removing a module.
 | `identity_create` | Identity registration funded from a wallet |
 | `identity_masternode_withdraw` | Headless masternode/evonode load + credit withdrawal |
 | `identity_withdraw` | Identity credit withdrawal to a Core address |
+| `platform_info` | Read-only `PlatformInfo` queries: live current-epoch fetch, completed/queued withdrawal queries |
 | `register_dpns` | Full flow: identity creation, DPNS name registration, name search verification |
 | `send_funds` | Core payment between two wallets (send and return) |
 | `spv_wallet` | SPV sync, wallet creation and registration, DB persistence |

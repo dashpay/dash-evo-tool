@@ -124,10 +124,7 @@ impl AppContext {
         &self,
         seed_hash: &WalletSeedHash,
     ) -> Result<Arc<RwLock<Wallet>>, TaskError> {
-        crate::wallet_backend::poison::read_recover(&self.wallets)
-            .get(seed_hash)
-            .cloned()
-            .ok_or(TaskError::WalletNotFound)
+        self.wallet_context().wallet(seed_hash)
     }
 }
 

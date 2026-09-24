@@ -297,6 +297,50 @@ fn platform_compatibility_removes_only_matching_upstream_backups() {
     assert!(kept.exists());
 }
 
+/// An unlink is only durable once its directory is synced: removal must sync
+/// every directory it deleted from, and a failed sync must fail the removal so
+/// callers keep their retry state (the identity-cleanup manifest) instead of
+/// retiring it while the deletion could still be lost on power failure.
+#[test]
+fn platform_compatibility_backup_removal_fails_when_directory_sync_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("det-testnet.sqlite");
+    let auto = dir.path().join("backups/auto");
+    std::fs::create_dir_all(&auto).unwrap();
+    let sibling = dir
+        .path()
+        .join("det-testnet.sqlite.platform-67d4ef3-backup-a1.sqlite");
+    let upstream = auto.join("pre-migration-det-testnet-1-to-2-20260915T120000Z.db");
+    for backup in [&sibling, &upstream] {
+        std::fs::write(backup, b"backup").unwrap();
+    }
+
+    let mut synced = Vec::new();
+    let error = remove_backups_with_sync(&path, |directory| {
+        synced.push(directory.to_owned());
+        Err(std::io::Error::other("injected directory sync failure"))
+    })
+    .unwrap_err();
+
+    assert_eq!(error.kind(), std::io::ErrorKind::Other);
+    assert!(!sibling.exists());
+    assert!(!upstream.exists());
+    synced.sort();
+    let mut expected = vec![dir.path().to_owned(), auto];
+    expected.sort();
+    assert_eq!(synced, expected, "every touched directory must be synced");
+}
+
+/// Nothing deleted means nothing to make durable.
+#[test]
+fn platform_compatibility_backup_removal_skips_sync_without_deletions() {
+    let dir = tempfile::tempdir().unwrap();
+    remove_backups_with_sync(&dir.path().join("det-testnet.sqlite"), |_| {
+        panic!("no directory changed, so none may be synced")
+    })
+    .unwrap();
+}
+
 /// One invalid candidate must not shield the valid snapshots from deletion:
 /// every valid backup is removed and the rejection is still reported.
 #[test]

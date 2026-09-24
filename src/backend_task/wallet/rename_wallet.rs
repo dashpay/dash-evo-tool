@@ -16,7 +16,7 @@ impl AppContext {
     /// picker can still render the wallet without unlocking the seed.
     ///
     /// `alias` is the raw user input. It is resolved through
-    /// [`AppContext::resolve_hd_wallet_alias`]: a blank alias resets the wallet
+    /// the shared wallet context: a blank alias resets the wallet
     /// to the smallest unused "Wallet N", and a name another HD wallet already
     /// uses is rejected. The returned result carries the alias actually saved.
     ///
@@ -31,42 +31,26 @@ impl AppContext {
         seed_hash: WalletSeedHash,
         alias: String,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        // Lock order: alias writers → per-wallet rename lock → `wallets` map →
-        // inner wallet (see `AppContext::lock_hd_wallet_aliases`).
-        let _alias_guard = self.lock_hd_wallet_aliases();
-        let rename_lock = self.hd_wallet_rename_lock(seed_hash);
-        let _rename_guard = rename_lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-
-        // Retaining the map guard makes existence and persistence one operation
-        // relative to wallet removal. The inner wallet guard is disk-I/O-free.
-        let wallets = self.wallets.read()?;
-        let wallet = wallets.get(&seed_hash).ok_or(TaskError::WalletNotFound)?;
-        let alias = Self::resolve_hd_wallet_alias(&wallets, &alias, &seed_hash)?;
-        let xpub_encoded = wallet
-            .read()?
-            .master_bip44_ecdsa_extended_public_key
-            .encode()
-            .to_vec();
-
-        let backend = self.wallet_backend()?;
-        let meta_view = backend.wallet_meta();
-        // Fallible read: a storage/read failure aborts here instead of
-        // defaulting and clobbering the row's other fields on the write below.
-        // Only a genuinely absent row (`Ok(None)`) seeds a fresh default.
-        let mut meta = meta_view
-            .try_get(self.network, &seed_hash)?
-            .unwrap_or_default();
-        meta.alias = alias.clone();
-        if meta.xpub_encoded.is_empty() {
-            meta.xpub_encoded = xpub_encoded;
-        }
-        meta_view.set(self.network, &seed_hash, &meta)?;
-        // Mirror the saved name in memory while the alias lock is still held,
-        // so the next alias writer checks uniqueness against it rather than a
-        // stale name.
-        wallet.write()?.alias = Some(alias.clone());
+        let alias = self
+            .wallet_context()
+            .rename_hd(seed_hash, &alias, |xpub_encoded, alias| {
+                // Precondition only: a rename requires a wired backend. Its
+                // backend-bound `wallet_meta()` view must not be used here —
+                // it re-takes the writer this callback runs under, which
+                // `WalletContext` turns into a panic. Use the raw view below.
+                self.wallet_backend()?;
+                let kv = self.app_kv();
+                let meta_view = crate::wallet_backend::WalletMetaView::new(&kv);
+                let mut meta = meta_view
+                    .try_get(self.network, &seed_hash)?
+                    .unwrap_or_default();
+                meta.alias = alias.to_owned();
+                if meta.xpub_encoded.is_empty() {
+                    meta.xpub_encoded = xpub_encoded;
+                }
+                meta_view.set(self.network, &seed_hash, &meta)?;
+                Ok(meta)
+            })?;
 
         Ok(BackendTaskSuccessResult::WalletAliasRenamed { seed_hash, alias })
     }
@@ -90,16 +74,7 @@ impl AppContext {
         alias: String,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let backend = self.wallet_backend()?;
-        let _update_guard = self.lock_single_key_updates();
         let alias = backend.single_key().set_alias(&address, &alias)?;
-        let wallets = self.single_key_wallets.read()?;
-        for wallet in wallets.values() {
-            let mut wallet = wallet.write()?;
-            if wallet.address.to_string() == address {
-                wallet.alias = Some(alias.clone());
-                break;
-            }
-        }
         Ok(BackendTaskSuccessResult::SingleKeyAliasRenamed { address, alias })
     }
 }
@@ -244,7 +219,7 @@ mod tests {
                 },
             )
             .unwrap();
-        f.ctx.wallets.write().unwrap().clear();
+        f.ctx.wallet_context().clear();
         backend.hydrate_context_wallets(&f.ctx).unwrap();
         let scope = SecretScope::HdSeed {
             seed_hash: f.seed_hash,
@@ -540,13 +515,7 @@ mod tests {
     }
 
     fn in_memory_alias(f: &Fixture) -> Option<String> {
-        f.ctx
-            .wallet_arc(&f.seed_hash)
-            .expect("wallet")
-            .read()
-            .expect("read")
-            .alias
-            .clone()
+        f.ctx.wallet_context().hd_alias(&f.seed_hash)
     }
 
     fn persisted_alias(f: &Fixture) -> String {
@@ -712,8 +681,8 @@ mod tests {
         store.release();
         let first = first.join().unwrap().unwrap();
         let second = second.join().unwrap().unwrap();
-        let mut aliases = [first, second].map(|(hash, wallet)| {
-            let alias = wallet.read().unwrap().alias.clone().unwrap();
+        let mut aliases = [first, second].map(|(hash, _wallet)| {
+            let alias = f.ctx.wallet_context().hd_alias(&hash).unwrap();
             assert_eq!(
                 f.ctx
                     .wallet_backend()
@@ -766,7 +735,7 @@ mod tests {
         let seeds = WalletSeedView::new(&secrets);
         assert!(seeds.get_raw(&new_hash).unwrap().is_none());
         assert!(seeds.get(&new_hash).unwrap().is_none());
-        assert!(!f.ctx.wallets.read().unwrap().contains_key(&new_hash));
+        assert!(!f.ctx.wallet_context().contains_hd(&new_hash));
         assert!(
             f.ctx
                 .wallet_backend()
@@ -861,10 +830,9 @@ mod tests {
         );
 
         assert_eq!(
-            display_wallet
-                .read()
-                .expect("display wallet")
-                .alias
+            f.ctx
+                .wallet_context()
+                .single_alias(&display_wallet.read().unwrap().address.to_string())
                 .as_deref(),
             Some("new name")
         );
@@ -878,70 +846,42 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn single_key_import_serializes_through_display_update() {
+    async fn single_key_reimport_publishes_metadata_without_mutating_retained_handles() {
         use crate::model::wallet::alias::AliasSource;
-
         let f = fixture().await;
         let backend = f.ctx.wallet_backend().expect("backend");
         let key = SecretKey::from_byte_array(&[0x33; 32]).expect("valid scalar");
         let wif = PrivateKey::new(key, Network::Testnet).to_wif();
-        let display_guard = f.ctx.single_key_wallets.read().expect("display map");
-        let first_ctx = f.ctx.clone();
-        let first_wif = wif.clone();
-        let first = std::thread::spawn(move || {
-            first_ctx.import_single_key_wif(
-                &first_wif,
+        let (first, retained) = f
+            .ctx
+            .import_single_key_wif(
+                &wif,
                 AliasSource::UserEntered("First".into()),
                 Default::default(),
             )
-        });
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while backend.single_key().list().is_empty() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "first import persisted"
-            );
-            std::thread::yield_now();
-        }
-
-        let later_ctx = f.ctx.clone();
-        let (started_tx, started_rx) = std::sync::mpsc::channel();
-        let (done_tx, done_rx) = std::sync::mpsc::channel();
-        let later = std::thread::spawn(move || {
-            started_tx.send(()).expect("started");
-            let result = later_ctx.import_single_key_wif(
+            .unwrap();
+        let retained_read = retained.read().unwrap();
+        let (second, _) = f
+            .ctx
+            .import_single_key_wif(
                 &wif,
                 AliasSource::UserEntered("Second".into()),
                 Default::default(),
-            );
-            done_tx.send(()).expect("done");
-            result
-        });
-        started_rx
-            .recv_timeout(Duration::from_secs(5))
-            .expect("later import started");
-        assert!(done_rx.recv_timeout(Duration::from_millis(100)).is_err());
-        let alias_while_display_blocked = backend.single_key().list()[0].alias.clone();
-        drop(display_guard);
-        first.join().expect("first thread").expect("first import");
-        let (imported, displayed) = later.join().expect("later thread").expect("later import");
-        assert_eq!(alias_while_display_blocked.as_deref(), Some("First"));
-        assert_eq!(imported.alias.as_deref(), Some("Second"));
+            )
+            .unwrap();
+        assert_eq!(first.address, second.address);
         assert_eq!(
-            displayed.read().expect("displayed").alias.as_deref(),
-            Some("Second")
-        );
-        let map = f.ctx.single_key_wallets.read().expect("display map");
-        assert_eq!(
-            map.values()
-                .next()
-                .expect("key")
-                .read()
-                .expect("wallet")
-                .alias
+            f.ctx
+                .wallet_context()
+                .single_alias(&retained_read.address.to_string())
                 .as_deref(),
             Some("Second")
         );
+        assert_eq!(
+            backend.single_key().list()[0].alias.as_deref(),
+            Some("Second")
+        );
+        assert_eq!(f.ctx.wallet_context().single_key_wallets().len(), 1);
     }
 
     /// Renaming an address that was never imported surfaces the typed

@@ -413,13 +413,11 @@ async fn test_mn051_transfer_withdraw_to_address() {
     let network_str = network_name(ctx.app_context.network()).to_owned();
 
     // A fresh testnet Core address from the framework wallet.
-    let framework_wallet = {
-        let wallets = ctx.app_context.wallets().read().expect("wallets lock");
-        wallets
-            .get(&ctx.framework_wallet_hash)
-            .expect("framework wallet must exist")
-            .clone()
-    };
+    let framework_wallet = ctx
+        .app_context
+        .wallet_context()
+        .hd_wallet(&ctx.framework_wallet_hash)
+        .expect("framework wallet must exist");
     let addr_str = crate::framework::identity_helpers::get_receive_address(
         &ctx.app_context,
         &framework_wallet,
@@ -707,13 +705,11 @@ async fn test_mn053_compose_through_db() {
     assert!(balance > 0, "identity must have withdrawable credits");
     let amount = (balance / 10).max(1);
 
-    let framework_wallet = {
-        let wallets = ctx.app_context.wallets().read().expect("wallets lock");
-        wallets
-            .get(&ctx.framework_wallet_hash)
-            .expect("framework wallet must exist")
-            .clone()
-    };
+    let framework_wallet = ctx
+        .app_context
+        .wallet_context()
+        .hd_wallet(&ctx.framework_wallet_hash)
+        .expect("framework wallet must exist");
     let addr_str = crate::framework::identity_helpers::get_receive_address(
         &ctx.app_context,
         &framework_wallet,

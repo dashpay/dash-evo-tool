@@ -1078,7 +1078,7 @@ impl AppContext {
         // Update destination address balances in any wallets that contain them
         // (using proof-verified data from the SDK response)
         {
-            let wallets = self.wallets.read()?;
+            let wallets = self.wallet_context().wallets();
             for (seed_hash, wallet_arc) in wallets.iter() {
                 if let Err(e) =
                     self.update_wallet_platform_address_info_from_sdk(*seed_hash, &address_infos)

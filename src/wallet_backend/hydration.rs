@@ -283,7 +283,7 @@ fn wallet_from_envelope(
         platform_payment_account_xpub: None,
         known_addresses: BTreeMap::new(),
         watched_addresses: BTreeMap::new(),
-        alias: if meta.alias.is_empty() {
+        initial_alias: if meta.alias.is_empty() {
             None
         } else {
             Some(meta.alias.clone())
@@ -348,7 +348,7 @@ mod tests {
         let wallet = wallet_from_envelope(seed_hash_for(seed), envelope, &meta, master)
             .expect("wallet rebuilt");
 
-        assert_eq!(wallet.alias.as_deref(), Some("paycheque"));
+        assert_eq!(wallet.initial_alias.as_deref(), Some("paycheque"));
         assert!(wallet.is_main);
         assert_eq!(wallet.core_wallet_name.as_deref(), Some("local-dashd"));
         assert!(
@@ -388,7 +388,7 @@ mod tests {
         let wallet = wallet_from_envelope(seed_hash_for(seed), envelope, &meta, master)
             .expect("wallet rebuilt");
 
-        assert_eq!(wallet.alias.as_deref(), Some("savings"));
+        assert_eq!(wallet.initial_alias.as_deref(), Some("savings"));
         assert!(!wallet.is_main);
         assert!(!wallet.is_open(), "password envelope must stay closed");
         assert!(wallet.uses_password);
@@ -422,7 +422,7 @@ mod tests {
         let master = ExtendedPubKey::decode(&envelope.xpub_encoded).expect("xpub decodes");
         let wallet = wallet_from_envelope(seed_hash_for(seed), envelope, &meta, master)
             .expect("wallet rebuilt");
-        assert!(wallet.alias.is_none());
+        assert!(wallet.initial_alias.is_none());
     }
 
     fn fresh_secret_store(dir: &std::path::Path) -> Arc<SecretStore> {
@@ -466,7 +466,7 @@ mod tests {
         let wallet = reconstruct_wallet(&view, &hash, &meta)
             .expect("no error")
             .expect("rebuilt");
-        assert_eq!(wallet.alias.as_deref(), Some("primary"));
+        assert_eq!(wallet.initial_alias.as_deref(), Some("primary"));
         assert!(wallet.is_main);
         assert!(wallet.is_open());
         assert_eq!(wallet.seed_hash(), hash);
@@ -697,7 +697,7 @@ mod tests {
         let original_hash = wallet.seed_hash();
         let original_xpub = wallet.master_bip44_ecdsa_extended_public_key.encode();
 
-        wallet.alias = Some("new".to_string());
+        wallet.initial_alias = Some("new".to_string());
 
         assert_eq!(wallet.seed_hash(), original_hash);
         assert_eq!(
@@ -705,7 +705,7 @@ mod tests {
             original_xpub
         );
         assert!(wallet.is_main);
-        assert_eq!(wallet.alias.as_deref(), Some("new"));
+        assert_eq!(wallet.initial_alias.as_deref(), Some("new"));
     }
 
     /// Regression for the cold-boot disappearance of a Tier-2-protected HD

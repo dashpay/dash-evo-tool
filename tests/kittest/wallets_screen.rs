@@ -67,10 +67,8 @@ fn wallet_screen_harness(password: Option<&Secret>) -> Harness<'static, WalletsB
     }
     let seed_hash = wallet.seed_hash();
     app_context
-        .wallets()
-        .write()
-        .expect("wallet map")
-        .insert(seed_hash, Arc::new(RwLock::new(wallet)));
+        .wallet_context()
+        .insert_test_wallet(seed_hash, Arc::new(RwLock::new(wallet)));
 
     build_wallet_screen_harness(runtime, app_context)
 }
@@ -274,13 +272,11 @@ fn hd_rename_dispatches_exact_task_and_applies_success() {
         let seed_hash = wallet.seed_hash();
         let wallet = Arc::new(RwLock::new(wallet));
         app_context
-            .wallets()
-            .write()
-            .expect("wallet map")
-            .insert(seed_hash, wallet.clone());
+            .wallet_context()
+            .insert_test_wallet(seed_hash, wallet.clone());
         app_context.set_selected_hd_wallet(Some(seed_hash));
 
-        let (mut harness, dispatched) = build_rename_harness(runtime, app_context);
+        let (mut harness, dispatched) = build_rename_harness(runtime, app_context.clone());
         enter_rename_alias(&mut harness, "Renamed HD");
         harness.get_by_label("Save").click();
         harness.run();
@@ -337,7 +333,10 @@ fn hd_rename_dispatches_exact_task_and_applies_success() {
         );
 
         // Simulate the backend update before the task result reaches the screen.
-        wallet.write().expect("wallet").alias = Some("Renamed HD".into());
+        app_context
+            .wallet_context()
+            .rename_test_hd(wallet.read().unwrap().seed_hash(), "Renamed HD")
+            .unwrap();
         harness.state_mut().display_backend_task_result(
             &dispatch.context,
             BackendTaskSuccessResult::WalletAliasRenamed {
@@ -348,7 +347,10 @@ fn hd_rename_dispatches_exact_task_and_applies_success() {
         harness.run();
 
         assert_eq!(
-            wallet.read().expect("wallet").alias.as_deref(),
+            app_context
+                .wallet_context()
+                .hd_alias(&wallet.read().unwrap().seed_hash())
+                .as_deref(),
             Some("Renamed HD")
         );
         assert!(
@@ -369,13 +371,11 @@ fn rename_button_is_disabled_and_inert_while_save_is_pending() {
         seed.zeroize();
         let seed_hash = wallet.seed_hash();
         app_context
-            .wallets()
-            .write()
-            .expect("wallet map")
-            .insert(seed_hash, Arc::new(RwLock::new(wallet)));
+            .wallet_context()
+            .insert_test_wallet(seed_hash, Arc::new(RwLock::new(wallet)));
         app_context.set_selected_hd_wallet(Some(seed_hash));
 
-        let (mut harness, dispatched) = build_rename_harness(runtime, app_context);
+        let (mut harness, dispatched) = build_rename_harness(runtime, app_context.clone());
         enter_rename_alias(&mut harness, "Pending rename");
         harness.get_by_label("Save").click();
         harness.run();
@@ -422,7 +422,7 @@ fn single_key_rename_dispatches_exact_task_and_applies_success() {
         };
         app_context.set_selected_single_key_wallet(Some(key_hash));
 
-        let (mut harness, dispatched) = build_rename_harness(runtime, app_context);
+        let (mut harness, dispatched) = build_rename_harness(runtime, app_context.clone());
         enter_rename_alias(&mut harness, "Renamed key");
         harness.get_by_label("Save").click();
         harness.run();
@@ -441,7 +441,10 @@ fn single_key_rename_dispatches_exact_task_and_applies_success() {
         );
 
         // Simulate the backend update before the task result reaches the screen.
-        wallet.write().expect("wallet").alias = Some("Renamed key".into());
+        app_context
+            .wallet_context()
+            .rename_test_single(&wallet.read().unwrap().address.to_string(), "Renamed key")
+            .unwrap();
         harness.state_mut().display_backend_task_result(
             &dispatch.context,
             BackendTaskSuccessResult::SingleKeyAliasRenamed {
@@ -452,7 +455,10 @@ fn single_key_rename_dispatches_exact_task_and_applies_success() {
         harness.run();
 
         assert_eq!(
-            wallet.read().expect("wallet").alias.as_deref(),
+            app_context
+                .wallet_context()
+                .single_alias(&wallet.read().unwrap().address.to_string())
+                .as_deref(),
             Some("Renamed key")
         );
         assert!(
@@ -492,13 +498,16 @@ fn hd_rename_delayed_success_keeps_newer_alias_after_selection_change() {
         let other = Arc::new(RwLock::new(other));
 
         {
-            let mut wallets = app_context.wallets().write().expect("wallet map");
-            wallets.insert(target_hash, target.clone());
-            wallets.insert(other_hash, other);
+            app_context
+                .wallet_context()
+                .insert_test_wallet(target_hash, target.clone());
+            app_context
+                .wallet_context()
+                .insert_test_wallet(other_hash, other);
         }
         app_context.set_selected_hd_wallet(Some(target_hash));
 
-        let (mut harness, dispatched) = build_rename_harness(runtime, app_context);
+        let (mut harness, dispatched) = build_rename_harness(runtime, app_context.clone());
         click_in_one_frame(&mut harness, "Rename");
         let input = harness
             .query_all_by_role(egui::accesskit::Role::TextInput)
@@ -523,7 +532,10 @@ fn hd_rename_delayed_success_keeps_newer_alias_after_selection_change() {
         harness.get_by_label("HD: Other (0.0000 DASH)").click();
         harness.run();
 
-        target.write().expect("target").alias = Some("Newer name".into());
+        app_context
+            .wallet_context()
+            .rename_test_hd(target.read().unwrap().seed_hash(), "Newer name")
+            .unwrap();
         harness.state_mut().display_backend_task_result(
             &dispatch.context,
             BackendTaskSuccessResult::WalletAliasRenamed {
@@ -533,7 +545,10 @@ fn hd_rename_delayed_success_keeps_newer_alias_after_selection_change() {
         );
 
         assert_eq!(
-            target.read().expect("target").alias.as_deref(),
+            app_context
+                .wallet_context()
+                .hd_alias(&target.read().unwrap().seed_hash())
+                .as_deref(),
             Some("Newer name"),
             "a delayed result must not overwrite the current backend alias"
         );
@@ -569,7 +584,7 @@ fn single_key_rename_delayed_success_keeps_newer_alias_after_selection_change() 
         };
         app_context.set_selected_single_key_wallet(Some(target_hash));
 
-        let (mut harness, dispatched) = build_rename_harness(runtime, app_context);
+        let (mut harness, dispatched) = build_rename_harness(runtime, app_context.clone());
         click_in_one_frame(&mut harness, "Rename");
         let input = harness
             .query_all_by_role(egui::accesskit::Role::TextInput)
@@ -594,7 +609,10 @@ fn single_key_rename_delayed_success_keeps_newer_alias_after_selection_change() 
         harness.get_by_label("SK: Other key (0.0000 DASH)").click();
         harness.run();
 
-        target.write().expect("target").alias = Some("Newer name".into());
+        app_context
+            .wallet_context()
+            .rename_test_single(&target.read().unwrap().address.to_string(), "Newer name")
+            .unwrap();
         harness.state_mut().display_backend_task_result(
             &dispatch.context,
             BackendTaskSuccessResult::SingleKeyAliasRenamed {
@@ -604,12 +622,18 @@ fn single_key_rename_delayed_success_keeps_newer_alias_after_selection_change() 
         );
 
         assert_eq!(
-            target.read().expect("target").alias.as_deref(),
+            app_context
+                .wallet_context()
+                .single_alias(&target.read().unwrap().address.to_string())
+                .as_deref(),
             Some("Newer name"),
             "a delayed result must not overwrite the current backend alias"
         );
         assert_eq!(
-            other.read().expect("other").alias.as_deref(),
+            app_context
+                .wallet_context()
+                .single_alias(&other.read().unwrap().address.to_string())
+                .as_deref(),
             Some("Other key")
         );
     });
@@ -626,13 +650,11 @@ fn failed_hd_rename_keeps_prefilled_dialog_open_and_shows_banner() {
         seed.zeroize();
         let seed_hash = wallet.seed_hash();
         app_context
-            .wallets()
-            .write()
-            .expect("wallet map")
-            .insert(seed_hash, Arc::new(RwLock::new(wallet)));
+            .wallet_context()
+            .insert_test_wallet(seed_hash, Arc::new(RwLock::new(wallet)));
         app_context.set_selected_hd_wallet(Some(seed_hash));
 
-        let (mut harness, dispatched) = build_rename_harness(runtime, app_context);
+        let (mut harness, dispatched) = build_rename_harness(runtime, app_context.clone());
         enter_rename_alias(&mut harness, "Retry this alias");
         harness.get_by_label("Save").click();
         harness.run();
@@ -697,10 +719,8 @@ fn fund_platform_dialog_last_popup_row_stays_open_until_fund_is_clicked() {
         seed.zeroize();
         let seed_hash = wallet.seed_hash();
         app_context
-            .wallets()
-            .write()
-            .expect("wallet map")
-            .insert(seed_hash, Arc::new(RwLock::new(wallet)));
+            .wallet_context()
+            .insert_test_wallet(seed_hash, Arc::new(RwLock::new(wallet)));
 
         let addresses = platform_addresses(5, app_context.network());
         let last_address = addresses.last().expect("five addresses").0.clone();
@@ -793,10 +813,8 @@ fn create_asset_lock_button_is_below_empty_state() {
         seed.zeroize();
         let seed_hash = wallet.seed_hash();
         app_context
-            .wallets()
-            .write()
-            .expect("wallet map")
-            .insert(seed_hash, Arc::new(RwLock::new(wallet)));
+            .wallet_context()
+            .insert_test_wallet(seed_hash, Arc::new(RwLock::new(wallet)));
 
         let mut screen = WalletsBalancesScreen::new(&app_context);
         screen.display_task_result(BackendTaskSuccessResult::TrackedAssetLocks {
@@ -1005,13 +1023,11 @@ fn hd_rename_to_blank_dispatches_and_applies_default_name() {
         let seed_hash = wallet.seed_hash();
         let wallet = Arc::new(RwLock::new(wallet));
         app_context
-            .wallets()
-            .write()
-            .expect("wallet map")
-            .insert(seed_hash, wallet.clone());
+            .wallet_context()
+            .insert_test_wallet(seed_hash, wallet.clone());
         app_context.set_selected_hd_wallet(Some(seed_hash));
 
-        let (mut harness, dispatched) = build_rename_harness(runtime, app_context);
+        let (mut harness, dispatched) = build_rename_harness(runtime, app_context.clone());
         click_in_one_frame(&mut harness, "Rename");
         assert!(
             harness.query_all_by_value("Old name").next().is_some(),
@@ -1035,7 +1051,10 @@ fn hd_rename_to_blank_dispatches_and_applies_default_name() {
         );
 
         // Simulate the backend update before the task result reaches the screen.
-        wallet.write().expect("wallet").alias = Some("Wallet 1".into());
+        app_context
+            .wallet_context()
+            .rename_test_hd(wallet.read().unwrap().seed_hash(), "Wallet 1")
+            .unwrap();
         harness.state_mut().display_backend_task_result(
             &dispatch.context,
             BackendTaskSuccessResult::WalletAliasRenamed {
@@ -1046,7 +1065,10 @@ fn hd_rename_to_blank_dispatches_and_applies_default_name() {
         harness.run();
 
         assert_eq!(
-            wallet.read().expect("wallet").alias.as_deref(),
+            app_context
+                .wallet_context()
+                .hd_alias(&wallet.read().unwrap().seed_hash())
+                .as_deref(),
             Some("Wallet 1")
         );
         assert!(
@@ -1076,7 +1098,7 @@ fn single_key_rename_to_blank_dispatches_and_applies_default_name() {
         };
         app_context.set_selected_single_key_wallet(Some(key_hash));
 
-        let (mut harness, dispatched) = build_rename_harness(runtime, app_context);
+        let (mut harness, dispatched) = build_rename_harness(runtime, app_context.clone());
         click_in_one_frame(&mut harness, "Rename");
         assert!(
             harness.query_all_by_value("Old key").next().is_some(),
@@ -1096,7 +1118,10 @@ fn single_key_rename_to_blank_dispatches_and_applies_default_name() {
         );
 
         // Simulate the backend update before the task result reaches the screen.
-        wallet.write().expect("wallet").alias = Some("Key 1".into());
+        app_context
+            .wallet_context()
+            .rename_test_single(&wallet.read().unwrap().address.to_string(), "Key 1")
+            .unwrap();
         harness.state_mut().display_backend_task_result(
             &dispatch.context,
             BackendTaskSuccessResult::SingleKeyAliasRenamed {
@@ -1107,7 +1132,10 @@ fn single_key_rename_to_blank_dispatches_and_applies_default_name() {
         harness.run();
 
         assert_eq!(
-            wallet.read().expect("wallet").alias.as_deref(),
+            app_context
+                .wallet_context()
+                .single_alias(&wallet.read().unwrap().address.to_string())
+                .as_deref(),
             Some("Key 1")
         );
         assert!(
@@ -1130,13 +1158,11 @@ fn rename_dialog_counter_counts_cleaned_characters() {
         seed.zeroize();
         let seed_hash = wallet.seed_hash();
         app_context
-            .wallets()
-            .write()
-            .expect("wallet map")
-            .insert(seed_hash, Arc::new(RwLock::new(wallet)));
+            .wallet_context()
+            .insert_test_wallet(seed_hash, Arc::new(RwLock::new(wallet)));
         app_context.set_selected_hd_wallet(Some(seed_hash));
 
-        let (mut harness, _dispatched) = build_rename_harness(runtime, app_context);
+        let (mut harness, _dispatched) = build_rename_harness(runtime, app_context.clone());
         enter_rename_alias(&mut harness, "  abc\u{200B}  ");
 
         assert!(

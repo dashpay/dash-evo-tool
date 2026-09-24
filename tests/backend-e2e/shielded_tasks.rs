@@ -132,7 +132,7 @@ async fn tc_074_shielded_lifecycle() {
 
     // Step 3 (TC-081): unshield part of the pool back to a platform address.
     let platform_addr = {
-        let wallets = app_context.wallets().read().expect("wallets lock");
+        let wallets = app_context.wallet_context().wallets();
         let wallet_arc = wallets
             .get(&seed_hash)
             .expect("framework wallet must exist");
@@ -236,7 +236,7 @@ async fn tc_079_shield_from_balance() {
 
     // Get a platform address from the wallet
     let platform_addr = {
-        let wallets = app_context.wallets().read().expect("wallets lock");
+        let wallets = app_context.wallet_context().wallets();
         let wallet_arc = wallets
             .get(&seed_hash)
             .expect("framework wallet must exist");

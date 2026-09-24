@@ -39,7 +39,6 @@ pub fn nav_button(label: &str, is_active: bool, dark_mode: bool) -> egui::Button
     .fill(fill)
     .stroke(stroke)
     .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
-    .min_size(egui::Vec2::new(150.0, 28.0))
 }
 
 /// Renders a left-hand subscreen chooser panel and returns the action of the clicked item.

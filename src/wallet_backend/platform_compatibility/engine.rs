@@ -469,16 +469,51 @@ pub(super) fn retain_one_backup_locked(
 /// Delete every retained upgrade backup of the database at `path`.
 ///
 /// Backups never contain vault secrets. Attempts every file and returns the first failure.
+/// `Ok` means the deletions are durable: every directory an entry was removed
+/// from is synced, so callers may retire their retry state afterwards.
 pub(crate) fn remove_backups(path: &Path) -> std::io::Result<()> {
+    remove_backups_with_sync(path, sync_directory)
+}
+
+fn remove_backups_with_sync(
+    path: &Path,
+    mut sync_dir: impl FnMut(&Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
     let _guard = backup_lock(path)?;
     let scan = scan_backups_in(path, Some(&default_auto_dir(path)))?;
     let mut first_error = scan.first_rejection;
+    let mut touched = std::collections::BTreeSet::new();
     for backup in scan.found {
-        if let Err(error) = remove_backup(&backup, path) {
+        match remove_backup(&backup, path) {
+            Ok(()) => {
+                if let Some(parent) = backup.parent() {
+                    touched.insert(parent.to_owned());
+                }
+            }
+            Err(error) => {
+                first_error.get_or_insert(error);
+            }
+        }
+    }
+    // One sync per directory after all unlinks, still under the guard.
+    for directory in touched {
+        if let Err(error) = sync_dir(&directory) {
             first_error.get_or_insert(error);
         }
     }
     first_error.map_or(Ok(()), Err)
+}
+
+/// Persist directory-entry changes (unlinks) in `directory`.
+///
+/// Windows cannot open a directory as a `File` without extra flags and NTFS
+/// journals metadata changes, so this is a no-op there.
+fn sync_directory(directory: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    std::fs::File::open(directory)?.sync_all()?;
+    #[cfg(not(unix))]
+    let _ = directory;
+    Ok(())
 }
 
 #[cfg(test)]

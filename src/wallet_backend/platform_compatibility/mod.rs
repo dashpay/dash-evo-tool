@@ -10,15 +10,26 @@ use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig, WalletStor
 use crate::backend_task::error::TaskError;
 
 pub(crate) fn open(config: SqlitePersisterConfig) -> Result<SqlitePersister, TaskError> {
+    open_with_retention(config, engine::retain_one_backup_locked)
+}
+
+fn open_with_retention(
+    config: SqlitePersisterConfig,
+    mut retain: impl FnMut(&engine::BackupGuard, Option<&std::path::Path>) -> std::io::Result<()>,
+) -> Result<SqlitePersister, TaskError> {
     let guard = engine::backup_lock(&config.path).map_err(lock_error)?;
-    let prune = || {
-        engine::retain_one_backup_locked(&guard, config.auto_backup_dir.as_deref())
-            .map_err(lock_error)
-    };
+    let auto_dir = config.auto_backup_dir.as_deref();
     // Check retention before another attempt can create a snapshot, including after a restart.
-    prune()?;
+    retain(&guard, auto_dir).map_err(lock_error)?;
     let result = open_inner(&config, &guard);
-    prune()?;
+    // Post-open retention is best-effort housekeeping: it must neither discard a successful
+    // open nor mask the open's own error. The next open retries it before any new snapshot.
+    if let Err(error) = retain(&guard, auto_dir) {
+        tracing::warn!(
+            ?error,
+            "Upgrade backup retention failed after opening the wallet database"
+        );
+    }
     result
 }
 
@@ -172,6 +183,45 @@ mod tests {
                 std::fs::rename(retained, old).unwrap();
             }
         }
+    }
+
+    #[test]
+    fn platform_compatibility_post_open_retention_failure_keeps_open_result() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::app_dir::ensure_data_dir_exists(dir.path()).unwrap();
+        let path = dir.path().join("wallet.sqlite");
+        let mut calls = 0;
+        let persister = open_with_retention(SqlitePersisterConfig::new(&path), |_, _| {
+            calls += 1;
+            if calls == 1 {
+                Ok(())
+            } else {
+                Err(std::io::Error::other("stray entry rejected by backup scan"))
+            }
+        })
+        .expect("a post-open retention failure must not discard a successful open");
+        assert_eq!(calls, 2);
+        persister.load().unwrap();
+
+        let bad = dir.path().join("corrupt.sqlite");
+        std::fs::write(&bad, b"not a sqlite database, just candy wrappers").unwrap();
+        let mut calls = 0;
+        let error = match open_with_retention(SqlitePersisterConfig::new(&bad), |_, _| {
+            calls += 1;
+            if calls == 1 {
+                Ok(())
+            } else {
+                Err(std::io::Error::other("retention failure"))
+            }
+        }) {
+            Ok(_) => panic!("open unexpectedly succeeded on a corrupt database"),
+            Err(error) => error,
+        };
+        assert_eq!(calls, 2);
+        assert!(
+            !matches!(&error, TaskError::FileSystem { source } if source.to_string() == "retention failure"),
+            "the open error must not be masked by retention: {error:?}"
+        );
     }
 
     #[test]

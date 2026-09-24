@@ -1779,7 +1779,7 @@ impl AppState {
     /// Construct every root screen except the network chooser.
     ///
     /// Deferred to the storage-preparation gate's terminal transition: several
-    /// of these constructors read `ctx.wallets` and the identity store, which
+    /// of these constructors read the wallet context's HD registry and the identity store, which
     /// `AppContext::new` leaves empty on purpose — hydration happens inside
     /// backend wiring. Building them at construction time guaranteed each one
     /// saw nothing and had to be refreshed afterwards anyway.

@@ -230,13 +230,16 @@ fn identity_load_ticket(task: &BackendTask) -> Option<(Identifier, IdentityLoadT
 }
 
 /// Whether a wallet-backend build error is terminal (storage written by a
-/// newer/incompatible app build). These must surface their actionable
-/// message instead of being logged-and-discarded as a transient deferral
-/// (F50); every other init error is retried by the cold-boot bridge.
-fn is_terminal_storage_open_error(error: &TaskError) -> bool {
+/// newer/incompatible app build, or a data folder other accounts can modify).
+/// These must surface their actionable message instead of being
+/// logged-and-discarded as a transient deferral (F50); retrying cannot fix
+/// them. Every other init error is retried by the cold-boot bridge.
+pub(crate) fn is_terminal_storage_open_error(error: &TaskError) -> bool {
     matches!(
         error,
-        TaskError::WalletDataTooNew { .. } | TaskError::WalletDataIncompatible { .. }
+        TaskError::WalletDataTooNew { .. }
+            | TaskError::WalletDataIncompatible { .. }
+            | TaskError::WalletDataFolderInsecure { .. }
     )
 }
 
@@ -339,6 +342,10 @@ pub enum BackendTaskContext {
     },
     /// One HD-wallet or imported-key alias update.
     WalletRename(WalletTask),
+    /// A wallet payment broadcast, bound to the network it was dispatched on.
+    /// Its ambiguous-outcome error is adopted by a per-network watch, and the
+    /// user may have switched networks before that error arrives.
+    WalletPaymentBroadcast { network: Network },
     /// The detection pass for one identity's legacy-recovery offer.
     LegacyRecoveryCheck(Identifier),
     /// The restore of one identity's approved legacy-recovery items.
@@ -350,6 +357,37 @@ pub enum BackendTaskContext {
 }
 
 impl BackendTaskContext {
+    /// The context for `task` about to run on `network`. Identical to
+    /// `From<&BackendTask>` except that a wallet payment broadcast records the
+    /// network: the task alone cannot name it — a [`Wallet`](crate::model::wallet::Wallet)
+    /// carries none, and its extended public key cannot tell Devnet or Regtest
+    /// from Testnet — and a late "outcome unknown" error must not be adopted by
+    /// whichever network happens to be selected when it lands.
+    pub(crate) fn for_task_on(task: &BackendTask, network: Network) -> Self {
+        match task {
+            BackendTask::CoreTask(CoreTask::SendWalletPayment { .. }) => {
+                Self::WalletPaymentBroadcast { network }
+            }
+            // The contact send broadcasts through `CoreTask::SendWalletPayment`
+            // inside this task, so its result rides this context.
+            BackendTask::DashPayTask(dashpay)
+                if matches!(dashpay.as_ref(), DashPayTask::SendPaymentToContact { .. }) =>
+            {
+                Self::WalletPaymentBroadcast { network }
+            }
+            other => Self::from(other),
+        }
+    }
+
+    /// The network a payment broadcast was dispatched on, or `None` for every
+    /// other operation.
+    pub(crate) fn payment_broadcast_network(&self) -> Option<Network> {
+        match self.operation() {
+            Self::WalletPaymentBroadcast { network } => Some(*network),
+            _ => None,
+        }
+    }
+
     pub(crate) fn for_dispatch(task: &BackendTask) -> Self {
         Self::Dispatched {
             dispatch_id: BACKEND_TASK_DISPATCH_ID.fetch_add(1, Ordering::Relaxed),
@@ -775,8 +813,29 @@ pub enum BackendTaskSuccessResult {
         fee_result: FeeResult,
     },
     RemovedIdentities {
+        network: Network,
         identity_ids: Vec<Identifier>,
         associated_cleanup_failed: bool,
+        /// Set when owner-scoped sidecar cleanup failed or was skipped by an
+        /// earlier removal failure. The durable manifest keeps it retryable.
+        local_data_cleanup_failed: bool,
+        /// Set when the primary identity's, the associated voter identity's,
+        /// or both ones' cleanup failed strictly after they were already
+        /// delisted (index removal succeeded), so removal itself is done and
+        /// irreversible; only a k/v drain — which includes, but is not limited
+        /// to, the vault-key delete — is unfinished.
+        ///
+        /// `true` means every identity named in `identity_ids` is already gone
+        /// from every screen and there is no "try again" affordance left for
+        /// the user to reach one with. It does NOT establish that key material
+        /// is still present: the step that failed may be the scope purge for a
+        /// keyless identity, whose cleanup manifest names no placements. Nor
+        /// does it establish that the residue will be gone by the next launch:
+        /// the boot sweep is best-effort, skipped while a storage update runs,
+        /// and retains the manifest whenever the purge or vault delete fails
+        /// again. Callers may promise another automatic attempt; they may not
+        /// promise presence or completion.
+        cleanup_deferred: bool,
     },
     RefreshedIdentity(QualifiedIdentity),
     LoadedIdentity(QualifiedIdentity),
@@ -1068,10 +1127,11 @@ impl AppContext {
             && let Err(e) = self.ensure_wallet_backend(sender.clone()).await
         {
             // A storage-open failure (data written by a newer/incompatible app
-            // build) is terminal — restarting won't help and the generic
-            // "deferred" banner is misleading. Surface those variants so the
-            // user sees the actionable message; every other init error is a
-            // transient deferral the cold-boot bridge retries.
+            // build, or an insecure data folder) is terminal — retrying won't
+            // help and the generic "deferred" banner is misleading. Surface
+            // those variants so the user sees the actionable message; every
+            // other init error is a transient deferral the cold-boot bridge
+            // retries.
             if is_terminal_storage_open_error(&e) {
                 return Err(e);
             }
@@ -1148,104 +1208,10 @@ impl AppContext {
                 Ok(BackendTaskSuccessResult::CoreClientReinitialized)
             }
             BackendTask::SwitchNetwork { network, start_spv } => {
-                // Create a new AppContext for the target network, reusing shared
-                // resources (db, subtasks, connection_status) from the current context.
-                // Wrapped in block_in_place because AppContext::new() does DB init
-                // and file I/O which would block the async runtime.
-                let data_dir = self.data_dir.clone();
-                let db = self.db.clone();
-                let subtasks = self.subtasks.clone();
-                let connection_status = self.connection_status.clone();
-                let egui_ctx = self.egui_ctx().clone();
-                let app_kv = self.app_kv();
-                let secret_store = self.secret_store();
-                // Share the app-global role cell so the freshly-switched context
-                // observes the same value (and live changes) as the rest of the
-                // app — never a fresh per-context cell.
-                let user_role = self.user_role_cell();
-                let new_ctx = tokio::task::block_in_place(|| {
-                    AppContext::new(
-                        data_dir,
-                        network,
-                        db,
-                        subtasks,
-                        connection_status,
-                        egui_ctx,
-                        app_kv,
-                        secret_store,
-                        user_role,
-                    )
+                self.run_switch_network(network, start_spv, sender, |context, sender| async move {
+                    context.ensure_wallet_backend_and_start_spv(sender).await
                 })
-                .ok_or(TaskError::NetworkContextCreationFailed { network })?;
-                new_ctx.install_secret_prompt(self.secret_prompt());
-
-                let backend_wired = match new_ctx.ensure_wallet_backend(sender.clone()).await {
-                    Ok(()) => {
-                        if let Err(error) = sender
-                            .send(TaskResult::unattributed_success(
-                                BackendTaskSuccessResult::NetworkContextRegistered {
-                                    network,
-                                    context: Arc::clone(&new_ctx),
-                                },
-                            ))
-                            .await
-                        {
-                            tracing::debug!(
-                                ?network,
-                                %error,
-                                "Network switch context registration receiver was unavailable"
-                            );
-                        }
-                        true
-                    }
-                    Err(error) => {
-                        tracing::warn!(
-                            ?network,
-                            %error,
-                            "Wallet backend wiring failed after network switch"
-                        );
-                        false
-                    }
-                };
-
-                let cancellation_token = self.subtasks.cancellation_token.clone();
-                let spv_started = if start_spv
-                    && backend_wired
-                    && !cancellation_token.is_cancelled()
-                {
-                    tokio::select! {
-                        result = new_ctx.ensure_wallet_backend_and_start_spv(sender.clone()) => {
-                            match result {
-                                Ok(()) => {
-                                    tracing::info!(?network, "SPV started after network switch");
-                                    true
-                                }
-                                Err(error) => {
-                                    tracing::warn!(
-                                        ?network,
-                                        %error,
-                                        "SPV start failed after network switch"
-                                    );
-                                    false
-                                }
-                            }
-                        }
-                        _ = cancellation_token.cancelled() => false,
-                    }
-                } else {
-                    false
-                };
-                if cancellation_token.is_cancelled()
-                    && let Ok(backend) = new_ctx.wallet_backend()
-                {
-                    backend.forget_all_secrets();
-                    backend.shutdown().await;
-                }
-                Ok(BackendTaskSuccessResult::NetworkContextCreated {
-                    network,
-                    context: new_ctx,
-                    spv_started,
-                })
+                .await
             }
             BackendTask::DiscoverDapiNodes { network } => {
                 let devnet_name = self
@@ -1266,6 +1232,115 @@ impl AppContext {
             }
             BackendTask::None => Ok(BackendTaskSuccessResult::None),
         }
+    }
+
+    async fn run_switch_network<F>(
+        self: &Arc<Self>,
+        network: Network,
+        start_spv: bool,
+        sender: SenderAsync<TaskResult>,
+        start_backend: impl FnOnce(Arc<Self>, SenderAsync<TaskResult>) -> F,
+    ) -> Result<BackendTaskSuccessResult, TaskError>
+    where
+        F: Future<Output = Result<(), TaskError>>,
+    {
+        // Create a new AppContext for the target network, reusing shared
+        // resources (db, subtasks, connection_status) from the current context.
+        // Wrapped in block_in_place because AppContext::new() does DB init
+        // and file I/O which would block the async runtime.
+        let data_dir = self.data_dir.clone();
+        let db = self.db.clone();
+        let subtasks = self.subtasks.clone();
+        let connection_status = self.connection_status.clone();
+        let egui_ctx = self.egui_ctx().clone();
+        let app_kv = self.app_kv();
+        let secret_store = self.secret_store();
+        // Share the app-global role cell so the freshly-switched context
+        // observes the same value (and live changes) as the rest of the
+        // app — never a fresh per-context cell.
+        let user_role = self.user_role_cell();
+        let new_ctx = tokio::task::block_in_place(|| {
+            AppContext::new(
+                data_dir,
+                network,
+                db,
+                subtasks,
+                connection_status,
+                egui_ctx,
+                app_kv,
+                secret_store,
+                user_role,
+            )
+        })
+        .ok_or(TaskError::NetworkContextCreationFailed { network })?;
+        new_ctx.install_secret_prompt(self.secret_prompt());
+
+        let backend_wired = match new_ctx.ensure_wallet_backend(sender.clone()).await {
+            Ok(()) => {
+                if let Err(error) = sender
+                    .send(TaskResult::unattributed_success(
+                        BackendTaskSuccessResult::NetworkContextRegistered {
+                            network,
+                            context: Arc::clone(&new_ctx),
+                        },
+                    ))
+                    .await
+                {
+                    tracing::debug!(
+                        ?network,
+                        %error,
+                        "Network switch context registration receiver was unavailable"
+                    );
+                }
+                true
+            }
+            Err(error) => {
+                tracing::warn!(
+                    ?network,
+                    %error,
+                    "Wallet backend wiring failed after network switch"
+                );
+                false
+            }
+        };
+
+        let cancellation_token = self.subtasks.cancellation_token.clone();
+        let mut spv_started = if start_spv && backend_wired && !cancellation_token.is_cancelled() {
+            tokio::select! {
+                biased;
+                _ = cancellation_token.cancelled() => false,
+                result = start_backend(Arc::clone(&new_ctx), sender.clone()) => {
+                    match result {
+                        Ok(()) => {
+                            tracing::info!(?network, "SPV started after network switch");
+                            true
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                ?network,
+                                %error,
+                                "SPV start failed after network switch"
+                            );
+                            false
+                        }
+                    }
+                }
+            }
+        } else {
+            false
+        };
+        if cancellation_token.is_cancelled()
+            && let Ok(backend) = new_ctx.wallet_backend()
+        {
+            backend.forget_all_secrets();
+            backend.shutdown().await;
+            spv_started = false;
+        }
+        Ok(BackendTaskSuccessResult::NetworkContextCreated {
+            network,
+            context: new_ctx,
+            spv_started,
+        })
     }
 
     async fn run_wallet_task(
@@ -1409,6 +1484,50 @@ mod tests {
     use crate::context::feature_gate::FeatureGate;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn switch_network_keeps_registration_queued_after_completion() {
+        use crate::context::test_support::test_app_context;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = test_app_context(dir.path());
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, context.egui_ctx().clone());
+        let completed = context
+            .run_backend_task(
+                BackendTask::SwitchNetwork {
+                    network: Network::Mainnet,
+                    start_spv: false,
+                },
+                sender,
+            )
+            .await
+            .expect("switch network");
+        let BackendTaskSuccessResult::NetworkContextCreated {
+            context: completed_context,
+            spv_started,
+            ..
+        } = completed
+        else {
+            panic!("expected completed network context");
+        };
+        assert!(!spv_started);
+
+        let mut registered = None;
+        while let Ok(TaskResult::Success { result, .. }) = rx.try_recv() {
+            if let BackendTaskSuccessResult::NetworkContextRegistered { context, .. } = *result {
+                registered = Some(context);
+                break;
+            }
+        }
+        let registered = registered.expect("registration remains queued after completion");
+        assert!(Arc::ptr_eq(&registered, &completed_context));
+        registered
+            .wallet_backend()
+            .expect("registered backend")
+            .shutdown()
+            .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn switch_network_registers_wired_backend_before_cancellation_teardown() {
         use crate::context::test_support::test_app_context;
         use crate::wallet_backend::{RememberPolicy, SecretPlaintext, SecretScope};
@@ -1418,12 +1537,11 @@ mod tests {
         let context = test_app_context(temp_dir.path());
         let (tx, mut rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
         let sender = SenderAsync::new(tx, context.egui_ctx().clone());
-        let mut switch = Box::pin(context.run_backend_task(
-            BackendTask::SwitchNetwork {
-                network: Network::Mainnet,
-                start_spv: true,
-            },
+        let mut switch = Box::pin(context.run_switch_network(
+            Network::Mainnet,
+            true,
             sender,
+            |_, _| std::future::pending(),
         ));
 
         let registered_context = tokio::time::timeout(Duration::from_secs(5), async {
@@ -1791,6 +1909,57 @@ mod tests {
         );
     }
 
+    /// Both shapes of payment broadcast must carry the network they were
+    /// dispatched on: it is the only way a late "outcome unknown" error can be
+    /// told apart from one belonging to the network the user has since left.
+    #[test]
+    fn payment_broadcast_context_carries_the_dispatch_network() {
+        use crate::backend_task::core::{PaymentRecipient, WalletPaymentRequest};
+        use crate::model::wallet::Wallet;
+        use std::sync::RwLock;
+
+        let request = WalletPaymentRequest {
+            recipients: vec![PaymentRecipient {
+                address: "yMLhEsf1bbDqM5p9LyrPHgM7g4Pvqp1Fbb".to_string(),
+                amount_duffs: 10_000,
+            }],
+            override_fee: None,
+        };
+        let wallet =
+            Wallet::new_from_seed([7u8; 64], Network::Testnet, None, None).expect("wallet");
+        let direct = BackendTask::CoreTask(CoreTask::SendWalletPayment {
+            wallet: Arc::new(RwLock::new(wallet)),
+            request,
+        });
+        let contact = BackendTask::DashPayTask(Box::new(DashPayTask::SendPaymentToContact {
+            identity: qualified_identity(3),
+            contact_id: Identifier::from([4; 32]),
+            amount_duffs: 10_000,
+            memo: None,
+        }));
+
+        for task in [direct, contact] {
+            let context = BackendTaskContext::for_task_on(&task, Network::Testnet);
+            assert_eq!(
+                context.payment_broadcast_network(),
+                Some(Network::Testnet),
+                "a payment broadcast must record the network it runs on: {context:?}"
+            );
+        }
+
+        let unrelated = BackendTask::SystemTask(SystemTask::ClearNetworkDatabase);
+        assert_eq!(
+            BackendTaskContext::for_task_on(&unrelated, Network::Testnet),
+            BackendTaskContext::ClearNetworkDatabase,
+            "every other task keeps the context it always had"
+        );
+        assert_eq!(
+            BackendTaskContext::for_task_on(&unrelated, Network::Testnet)
+                .payment_broadcast_network(),
+            None,
+        );
+    }
+
     /// `is_wallet_touching` covers every task family that funnels
     /// through `WalletBackend` — the gate in `run_backend_task` relies
     /// on it to short-circuit while the cold-start migration is
@@ -2150,13 +2319,31 @@ mod tests {
     }
 
     /// Only the storage-open variants (data from a newer/incompatible
-    /// build) are terminal; every other init error is a transient deferral.
+    /// build, or an insecure data folder) are terminal; every other init
+    /// error is a transient deferral.
     #[test]
     fn terminal_storage_open_errors_are_classified() {
         assert!(is_terminal_storage_open_error(
             &TaskError::WalletDataTooNew {
                 found: 99,
                 max_supported: 1,
+            }
+        ));
+        assert!(is_terminal_storage_open_error(
+            &TaskError::WalletDataIncompatible {
+                source: platform_wallet_storage::WalletStorageError::Io(std::io::Error::other(
+                    "incompatible test fixture",
+                )),
+            }
+        ));
+        assert!(is_terminal_storage_open_error(
+            &TaskError::WalletDataFolderInsecure {
+                source: platform_wallet_storage::WalletStorageError::InsecureParentDir {
+                    ancestor: std::path::PathBuf::from("/shared"),
+                    reason: platform_wallet_storage::InsecureAncestor::WritableWithoutSticky {
+                        mode: 0o777,
+                    },
+                },
             }
         ));
         // A transient pre-wire state must NOT be treated as terminal.

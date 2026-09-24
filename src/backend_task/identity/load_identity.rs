@@ -17,7 +17,7 @@ use crate::model::qualified_identity::{
     DPNSNameInfo, IdentityStatus, IdentityType, QualifiedIdentity,
 };
 use crate::model::wallet::{Wallet, WalletSeedHash};
-use crate::ui::identities::add_new_identity_screen::MAX_IDENTITY_INDEX;
+use crate::ui::identity::add_new_identity_screen::MAX_IDENTITY_INDEX;
 use dash_sdk::Sdk;
 use dash_sdk::dashcore_rpc::dashcore::PrivateKey;
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
@@ -200,7 +200,7 @@ impl AppContext {
 
         let mut encrypted_private_keys = BTreeMap::new();
 
-        let wallets = self.wallets.read().map_err(TaskError::from)?.clone();
+        let wallets = self.wallet_context().wallets();
 
         if identity_type == IdentityType::User
             && derive_keys_from_wallets
@@ -401,6 +401,7 @@ impl AppContext {
 
         // Fetch DPNS names using SDK
         let dpns_names_document_query = DocumentQuery {
+            sub_queries: Vec::new(),
             select: SelectProjection::documents(),
             data_contract: self.dpns_contract.clone(),
             document_type_name: "domain".to_string(),
@@ -409,10 +410,12 @@ impl AppContext {
                 operator: WhereOperator::Equal,
                 value: Value::Identifier(identity_id.into()),
             }],
+            time_range_clauses: Vec::new(),
             group_by: Vec::new(),
             having: Vec::new(),
             order_by_clauses: vec![],
             limit: 100,
+            offset: None,
             start: None,
         };
 

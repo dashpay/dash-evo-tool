@@ -5,6 +5,38 @@ use thiserror::Error;
 /// Comprehensive error types for DashPay operations
 #[derive(Error, Debug)]
 pub enum DashPayError {
+    /// A profile picture must be available before publishing its URL and hashes.
+    #[error(transparent)]
+    ProfileAvatarFailed(#[from] super::avatar_processing::AvatarProcessingError),
+
+    #[error(
+        "This identity's keys cannot save profiles yet. Use a different wallet-linked identity with profile support."
+    )]
+    ProfileSigningKeyUnsupported,
+
+    #[error(
+        "The profile contains invalid fields. Check the name, bio, and picture URL, then retry."
+    )]
+    ProfileValidationFailed {
+        errors: Vec<crate::model::dashpay::ProfileFieldError>,
+    },
+
+    #[error(
+        "Clearing profile fields is not supported yet. Keep the existing values or enter replacements."
+    )]
+    ProfileFieldRemovalUnsupported,
+
+    #[error(
+        "Saving a profile requires a wallet-linked identity. Load its wallet and refresh the identity, then retry."
+    )]
+    ProfileWalletRequired,
+
+    #[error("The profile could not be saved. Refresh the identity and try again.")]
+    ProfileWriteFailed {
+        #[source]
+        source: std::sync::Arc<platform_wallet::PlatformWalletError>,
+    },
+
     // Contact Request Errors
     #[error("This contact could not be found on the network. Please check the ID and try again.")]
     IdentityNotFound { identity_id: Identifier },
@@ -154,6 +186,8 @@ impl DashPayError {
                 | DashPayError::MissingEncryptionKey
                 | DashPayError::ContactInfoValidationFailed { .. }
                 | DashPayError::CannotContactSelf
+                | DashPayError::ProfileSigningKeyUnsupported
+                | DashPayError::ProfileAvatarFailed(_)
         )
     }
 }

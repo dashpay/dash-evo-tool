@@ -413,11 +413,7 @@ impl AppContext {
         network: Network,
     ) -> Option<AddressInfo> {
         let generic_address = platform_address.to_address_with_network(network);
-        let wallets = self
-            .wallets
-            .read()
-            .inspect_err(|e| tracing::error!(err=%e, "wallet lock poisoned"))
-            .ok()?;
+        let wallets = self.wallet_context().wallets();
 
         let mut recent_info: Option<AddressInfo> = None;
         for wallet in wallets.values() {

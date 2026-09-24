@@ -4,11 +4,14 @@ use crate::model::wallet::single_key::SingleKeyWallet;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::identities::add_existing_identity_screen::AddExistingIdentityScreen;
-use crate::ui::identities::add_new_identity_screen::AddNewIdentityScreen;
+use crate::ui::identity::add_existing_identity_screen::AddExistingIdentityScreen;
+use crate::ui::identity::add_new_identity_screen::AddNewIdentityScreen;
 use crate::ui::{RootScreenType, Screen, ScreenLike};
 
 use crate::model::wallet::Wallet;
+use crate::model::wallet::alias::AliasSource;
+use crate::ui::components::Component;
+use crate::ui::components::alias_input::AliasInput;
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use bip39::Mnemonic;
@@ -27,7 +30,7 @@ pub struct ImportMnemonicScreen {
     // Common fields
     import_type: ImportType,
     password_input: PasswordInput,
-    alias_input: String,
+    alias_input: AliasInput,
     password_strength: f64,
     estimated_time_to_crack: String,
     error: Option<String>,
@@ -54,7 +57,10 @@ impl ImportMnemonicScreen {
             // Common fields
             import_type: ImportType::Mnemonic,
             password_input: PasswordInput::new().with_hint_text("Optional password"),
-            alias_input: String::new(),
+            alias_input: AliasInput::new()
+                .with_label("Name")
+                .with_hint_text("For example: Savings")
+                .with_desired_width(250.0),
             password_strength: 0.0,
             estimated_time_to_crack: String::new(),
             error: None,
@@ -76,6 +82,29 @@ impl ImportMnemonicScreen {
             // Identity discovery options
             identity_scan_count: 5,
         }
+    }
+
+    /// Test-only seam: fill the recovery-phrase grid with `mnemonic` and turn
+    /// identity auto-discovery off so a saved wallet triggers no network scan.
+    /// Not exposed for production callers.
+    #[doc(hidden)]
+    pub fn set_seed_phrase_for_test(&mut self, mnemonic: &Mnemonic) {
+        let words: Vec<String> = mnemonic.words().map(str::to_owned).collect();
+        self.selected_seed_phrase_length = words.len();
+        self.seed_phrase_words = words;
+        self.import_type = ImportType::Mnemonic;
+        self.identity_scan_count = 0;
+    }
+
+    /// Test-only seam: switch to private-key import and enter `private_key`
+    /// (WIF or hex) the way typing into the field does. Not exposed for
+    /// production callers.
+    #[doc(hidden)]
+    pub fn set_private_key_for_test(&mut self, private_key: &str) {
+        self.show_advanced_options = true;
+        self.import_type = ImportType::PrivateKey;
+        self.private_key_input.set_text(private_key.to_owned());
+        self.try_parse_private_key();
     }
 
     fn try_parse_private_key(&mut self) {
@@ -126,17 +155,9 @@ impl ImportMnemonicScreen {
             );
         }
 
-        let alias = if self.alias_input.trim().is_empty() {
-            let existing_wallet_count = self
-                .app_context
-                .single_key_wallets
-                .read()
-                .map(|w| w.len())
-                .unwrap_or(0);
-            Some(format!("Key {number}", number = existing_wallet_count + 1))
-        } else {
-            Some(self.alias_input.clone())
-        };
+        // The backend cleans the raw name, replaces a blank one with the
+        // smallest unused "Key N", and rejects a name another key already uses.
+        let alias = AliasSource::UserEntered(self.alias_input.text().to_owned());
 
         // The single import path takes WIF only — normalise hex input to
         // WIF first so users can paste either shape while every import
@@ -194,23 +215,13 @@ impl ImportMnemonicScreen {
                 Some(self.password_input.secret().clone())
             };
 
-            // Generate default wallet name if none provided
-            let wallet_alias = if self.alias_input.trim().is_empty() {
-                let existing_wallet_count = self
-                    .app_context
-                    .wallets
-                    .read()
-                    .map(|w| w.len())
-                    .unwrap_or(0);
-                format!("Wallet {number}", number = existing_wallet_count + 1)
-            } else {
-                self.alias_input.clone()
-            };
-
+            // The raw name goes to `register_wallet`, which cleans it, replaces
+            // a blank name with the smallest unused "Wallet N", and rejects a
+            // name another wallet already uses.
             let wallet = Wallet::new_from_seed(
                 seed,
                 self.app_context.network,
-                Some(wallet_alias),
+                Some(self.alias_input.text().to_owned()),
                 password.as_ref(),
             )
             .map_err(|e| e.to_string())?;
@@ -255,14 +266,14 @@ impl ImportMnemonicScreen {
             buttons.push((
                 "Create Identity".to_string(),
                 AppAction::PopThenAddScreenToMainScreen(
-                    RootScreenType::RootScreenIdentities,
+                    RootScreenType::RootScreenIdentityHub,
                     Screen::AddNewIdentityScreen(AddNewIdentityScreen::new(&self.app_context)),
                 ),
             ));
             buttons.push((
                 "Load Existing Identity".to_string(),
                 AppAction::PopThenAddScreenToMainScreen(
-                    RootScreenType::RootScreenIdentities,
+                    RootScreenType::RootScreenIdentityHub,
                     Screen::AddExistingIdentityScreen(AddExistingIdentityScreen::new(
                         &self.app_context,
                     )),
@@ -295,7 +306,7 @@ impl ImportMnemonicScreen {
 
             // Reset common fields
             self.password_input.clear();
-            self.alias_input = String::new();
+            self.alias_input.clear();
             self.password_strength = 0.0;
             self.estimated_time_to_crack = String::new();
             self.error = None;
@@ -583,10 +594,7 @@ impl ScreenLike for ImportMnemonicScreen {
 
                     ui.add_space(8.0);
 
-                    ui.horizontal(|ui| {
-                        ui.label("Name:");
-                        ui.text_edit_singleline(&mut self.alias_input);
-                    });
+                    self.alias_input.show(ui);
 
                     step += 1;
 

@@ -28,7 +28,7 @@ use crate::ui::components::styled::{StyledButton, island_central_panel};
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::{add_top_panel_with_global_nav, subdued_everyday_spec};
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
-use crate::ui::identities::register_dpns_name_screen::RegisterDpnsNameSource;
+use crate::ui::identity::register_dpns_name_screen::RegisterDpnsNameSource;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike, ScreenType};
 

@@ -57,6 +57,7 @@ impl ViewTokenClaimsScreen {
         Self {
             identity_token_basic_info: identity_token_basic_info.clone(),
             new_claims_query: DocumentQuery {
+                sub_queries: Vec::new(),
                 select: SelectProjection::documents(),
                 data_contract: app_context.token_history_contract.clone(),
                 document_type_name: "claim".to_string(),
@@ -72,10 +73,12 @@ impl ViewTokenClaimsScreen {
                         value: Value::Identifier(identity_token_basic_info.identity_id.into()),
                     },
                 ],
+                time_range_clauses: Vec::new(),
                 group_by: Vec::new(),
                 having: Vec::new(),
                 order_by_clauses: vec![],
                 limit: 0,
+                offset: None,
                 start: None,
             },
             fetch_status: FetchStatus::NotFetching,

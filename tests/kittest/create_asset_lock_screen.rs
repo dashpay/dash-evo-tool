@@ -15,7 +15,7 @@ fn test_create_asset_lock_screen_renders() {
         });
 
         harness.set_size(egui::vec2(1024.0, 768.0));
-        harness.run_steps(10);
+        crate::support::wait_for_screens(&mut harness);
     });
 }
 
@@ -64,7 +64,7 @@ fn test_create_asset_lock_screen_frame_stability() {
 
         // Run multiple batches to test stability
         for _ in 0..10 {
-            harness.run_steps(10);
+            crate::support::wait_for_screens(&mut harness);
         }
     });
 }

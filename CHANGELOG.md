@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- The CLI keeps MCP requests at the selected endpoint without following HTTP
+  redirects or using system/environment proxies. Migration fixture packaging rejects configured credentials, and
+  CI requires verified archive checksums and a runtime fixture password.
+
 - **Dependency advisory GHSA-4w2j-m93h-cj5j cleared**: the `quinn-proto` entry in
   the lock file moves from 0.11.14 to 0.11.15, which fixes a remote
   memory-exhaustion issue in out-of-order stream reassembly. The crate is an
@@ -24,6 +28,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   in `Cargo.toml` marks the re-check.
 
 ### Added
+
+- Migration tests also replay public user/DPNS and Evonode identities serialized
+  by v0.9.3, checking their metadata and every public key after repeated startup.
+
+- Historical-profile migration tests cover v0.9.3 and the September 8 weekly
+  release, including protected wallets and repeat startup. CLI tools expose
+  saved identity bindings, inspect storage without starting an upgrade, and
+  complete protected storage updates using password files or standard input.
 
 - **Keys saved on this device but not on the identity's key lists are now
   listed**: a key can be saved here while appearing on none of the identity's
@@ -100,6 +112,117 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   follow-up.
 
 ### Fixed
+
+- A damaged legacy wallet no longer prevents healthy wallets and imported keys
+  from loading at startup.
+
+- Legacy wallet password hints survive hydration and renaming. Retried key
+  migrations refresh displayed names when duplicate names are disambiguated.
+  Legacy private keys with names over 64 characters migrate instead of failing,
+  matching legacy wallets.
+
+- Wallet and key renames immediately update displayed names and password prompts,
+  including after concurrent imports or delayed task results.
+
+- Re-importing legacy private keys preserves their names, including duplicate-name
+  suffixes. Concurrent imports and renames reserve names without blocking wallet-list
+  reads during storage writes. Wallet names also strip Unicode default-ignorable
+  characters, including variation selectors and Hangul fillers.
+
+- CLI builds no longer warn about an unused passphrase-limit import.
+
+- Migration tests compile with the current rand dependency.
+
+- Migration CI runs for PR #983 through the regular pull-request workflow.
+
+- CLI network switches persist across restarts, including headless fixture capture.
+  Migration checks reject undeclared legacy wallets, changed captured completion
+  markers, and legacy row changes committed only to the SQLite WAL.
+
+- Storage preparation retries incomplete app-data imports when unreadable
+  identities are also present, and concurrent callers receive the migration error.
+
+- Cancelling a network switch takes priority over simultaneous startup and
+  reports chain sync as stopped after shutting down the new backend.
+
+- Profile saves stop when their picture cannot be downloaded, explain unsupported
+  signing keys, and retry failed display-timestamp storage on profile reads
+  without submitting another paid write.
+  Refreshing a profile preserves its saved dates, and pictures downloaded for
+  profile updates are cached for subsequent views.
+
+- DashPay profile writes use `platform-wallet`, enabling HIGH authentication
+  keys of type ECDSA_SECP256K1 or ECDSA_HASH160 at HIGH or CRITICAL security.
+  Platform is pinned to `f73f5d6098a739d29a1cebc2f7941e062ee8a517`, including
+  dashpay/platform#4653 and #4764 for HASH160 profile creation and replacement
+  that skip eligible keys unavailable to the signer.
+  Identities without an eligible key available locally receive the specific
+  profile-key error before publication.
+  The updated Platform API also uses checked shielded balance totals,
+  versioned token reward calculations, and a terminal failed-withdrawal status.
+  Withdrawal history labels and tool descriptions include all terminal statuses.
+  Writes require a wallet-linked identity; clearing existing profile fields
+  reports an explicit error because the upstream API preserves omitted fields.
+
+- The backend wallet lifecycle test reserves the withdrawal fee instead of
+  attempting to withdraw the entire Platform address balance.
+
+- Identity creation and top-up accounts are saved before payment and restored
+  after restarting the app. Temporary save failures are retried a few times;
+  if saving still fails, the payment stops and the app asks you to try again.
+
+- **Closing password-entry screens no longer aborts debug builds**: secret
+  buffers now own separate guarded memory pages, so releasing one password
+  field cannot interfere with another field that is still in use.
+
+- **A payment whose confirmation couldn't be verified now confirms itself**:
+  the app used to tell you to wait and check your balance, and then never
+  mention it again — leaving you to work out by hand whether the payment
+  actually went. It now keeps watching that payment and, the moment the network
+  takes it, replaces the message with a confirmation naming that payment. The
+  confirmation waits for you instead of timing out, so stepping away while a
+  payment is in the air no longer means returning to a blank screen with the
+  answer already expired, and because it names the payment you can tell which
+  one landed when more than one is waiting. If it is
+  still unconfirmed after eleven minutes, the message changes once to point you
+  at the wallet's transaction history and to warn against sending again in the
+  meantime; the watch carries on, so a late confirmation still resolves it. The
+  app never claims a payment has failed — the Dash network has no way to say
+  so, and guessing could tell you it was safe to send again when it was not.
+  Several unverified payments can be waiting at once, and answering one of them
+  leaves every other message exactly where it was. If you switch networks while
+  one is waiting, the payment is left alone rather than followed on the network
+  you moved to, where it could never be found. Creating an asset lock is also
+  covered by the earlier fix below: it was still asking you to retry an outcome
+  that may already be on its way.
+
+  While a payment is still unaccounted for, its message also survives other
+  notifications crowding it out: only five are shown at once, and the app used
+  to let ordinary ones quietly push this one off the screen for good. If that
+  happens the message comes back on its own. Closing it yourself still closes
+  it for good — the app restores what it lost, not what you dismissed.
+- **The app now opens maximized the very first time it runs**: on a fresh
+  install, the window used to open at a small default size that didn't fit
+  the onboarding page. It now opens maximized on first launch; any size or
+  position you set afterward is remembered and used on every later start, as
+  before.
+
+- **A sent payment whose confirmation couldn't be verified no longer tells you
+  to retry it**: when the network doesn't confirm a payment quickly enough,
+  the app used to show a generic "please retry" message — but the payment may
+  already be on its way, and sending it again risked sending it twice. The
+  app now tells you plainly that the payment was sent and its confirmation is
+  still unknown, and asks you to wait and check your balance before trying
+  again.
+
+- **Masternodes and evonodes are now recorded in the wallet store too**: a node
+  loaded from its ProTxHash was only ever written to this app's own records, so
+  the wallet store the app shares with the rest of the wallet stack had no entry
+  for it at all. Such a node is now recorded there as belonging to no wallet,
+  which is what it is — nodes already on this device are added the next time the
+  app starts, with nothing to press. Recording it under one of your wallets was
+  not an option: removing that wallet would then have deleted the node along
+  with it, keys and alias included.
 
 - **Wallet data no longer lives inside the deletable network-cache folder**:
   each network's wallet database used to sit inside the same folder as the
@@ -347,9 +470,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Wallet registries and live names now share one WalletContext across the UI,
+  MCP tools and password prompts. Metadata writes are serialized while wallet
+  names and password prompts continue to use the last committed snapshot.
+
+- **Platform updated to `4.2.0-dev.8`** (`v4.2-dev`, `63cf57f`): existing
+  databases from the previously pinned PR are upgraded automatically with a
+  retained backup and verified data transfer. Both app preferences and network
+  wallet data are covered. Identity ownership changes preserve saved metadata,
+  and swept transactions leave the displayed history. The single-UTXO Max-send
+  regression test now passes and is enabled. See the
+  [upgrade review](docs/ai-design/2026-09-10-platform-pin/upgrade-notes.md) for
+  compatibility details and functionality still pending upstream.
+
+- **A funding transaction found again on the network is now labelled honestly**:
+  when the app rediscovers a saved funding transaction from the chain rather
+  than tracking it from the start, it can tell that the network confirmed it but
+  not whether it was already spent on an identity. The funding list says exactly
+  that instead of claiming it is ready to use or already used. Selecting it still
+  works — the network has the final say and refuses one that was already spent.
+
 - **Upstream wallet backend updated (`platform-wallet` / `platform-wallet-storage`)**:
   the `dashpay/platform` dependency is bumped to the PR #3968 tip
-  (`d18020f` → `288a6ca`), which lands an embeddable SQLite persistence backend with
+  (`d18020f` → `67d4ef3f`), which lands an embeddable SQLite persistence backend with
   *seedless rehydration*. The wallet manager now restores watch-only wallet state
   (accounts, balances, identities, platform addresses) from the on-disk store
   without the HD seed, re-deriving spend authority just-in-time from the seed only
@@ -369,7 +512,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (measured in bytes, not characters, so a 4-character non-ASCII password like
   `öäüß` — 8 bytes — is accepted); existing wallets with shorter passwords
   that are still in DET's legacy encrypted format remain usable instead of
-  failing during lazy migration. Protected (Tier-2) shielded wallets now resolve
+  failing during lazy migration. New wallet passwords and key passphrases that
+  are too long for secure storage are now refused before anything is saved,
+  with guidance specific to the credential being edited. Protected (Tier-2) shielded wallets now resolve
   their seed just in time for every operation that spends or binds their Orchard
   keys (initialization, shield from Core, shield from Platform, transfer,
   unshield, and withdraw). Each operation prompts for the passphrase unless the

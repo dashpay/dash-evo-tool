@@ -1,7 +1,11 @@
 use egui::{
     Button, Color32, CursorIcon, FontFamily, FontId, RichText, Stroke, Ui, Vec2, WidgetText,
 };
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::panic::{self, AssertUnwindSafe};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::{Arc, OnceLock, mpsc};
+use std::thread;
+use std::time::Duration;
 
 pub use crate::model::settings::ThemeMode;
 
@@ -19,46 +23,255 @@ impl From<IdentityStatus> for Color32 {
     }
 }
 
-/// Detect system theme preference
-pub fn detect_system_theme() -> Result<ThemeMode, String> {
-    match dark_light::detect().map_err(|e| e.to_string())? {
-        dark_light::Mode::Dark => Ok(ThemeMode::Dark),
-        dark_light::Mode::Light => Ok(ThemeMode::Light),
-        dark_light::Mode::Unspecified => Ok(ThemeMode::Light), // Default to light if unknown
+/// How long a caller waits for the OS to report its theme before giving up
+/// for this attempt. Matches the 25 ms budget `dark_light` 2.x enforced
+/// internally; 3.x dropped it, and its Linux `detect()` blocks on D-Bus portal
+/// activation for 25–90 s when `xdg-desktop-portal` cannot start. The egui
+/// frame loop polls this every 2 s, so an unbounded call freezes the UI.
+const THEME_DETECTION_BUDGET: Duration = Duration::from_millis(25);
+
+/// Outcome of one bounded OS theme detection attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Detection {
+    Dark,
+    /// Also reported when the OS has no preference (`Mode::Unspecified`),
+    /// which is common on Linux.
+    Light,
+    /// The OS could not report a theme (no portal, unsupported platform).
+    Failed,
+    /// No answer within the budget. The detection keeps running and its
+    /// result is handed to a later caller.
+    Pending,
+}
+
+/// Encoding of [`Detection`] in the lock-free late-result slot.
+/// `Pending` is never parked.
+const LATE_EMPTY: u8 = 0;
+const LATE_DARK: u8 = 1;
+const LATE_LIGHT: u8 = 2;
+const LATE_FAILED: u8 = 3;
+
+impl Detection {
+    fn to_late(self) -> u8 {
+        match self {
+            Detection::Dark => LATE_DARK,
+            Detection::Light => LATE_LIGHT,
+            Detection::Failed => LATE_FAILED,
+            Detection::Pending => LATE_EMPTY,
+        }
+    }
+
+    fn from_late(raw: u8) -> Option<Self> {
+        match raw {
+            LATE_DARK => Some(Detection::Dark),
+            LATE_LIGHT => Some(Detection::Light),
+            LATE_FAILED => Some(Detection::Failed),
+            _ => None,
+        }
     }
 }
 
-/// Latches so a persistent detection failure (e.g. no XDG portal on
-/// headless Linux) is logged once instead of on every poll. Cleared on the
-/// next successful detection so a later failure logs again.
-static THEME_DETECTION_FAILURE_LOGGED: AtomicBool = AtomicBool::new(false);
-
-/// Returns `true` the first time it's called since the latch was last reset
-/// by a successful detection, `false` on every subsequent call.
-fn should_log_theme_detection_failure() -> bool {
-    !THEME_DETECTION_FAILURE_LOGGED.swap(true, Ordering::Relaxed)
+/// Logs a persistent detection failure (e.g. no XDG portal on headless Linux)
+/// once instead of on every poll. A successful detection re-arms it so a later
+/// failure logs again. Owned by the detector worker thread, so no atomics.
+#[derive(Debug, Default)]
+struct FailureLogLatch {
+    logged: bool,
 }
 
-/// Detect system theme, returning `None` only on detection errors.
-/// Use this for polling: a `None` means "keep the previous theme" rather than
-/// flipping to an arbitrary default. `Unspecified` maps to Light (common on
-/// Linux where `dark_light` often can't determine the theme).
-pub fn try_detect_system_theme() -> Option<ThemeMode> {
-    match dark_light::detect() {
-        Ok(dark_light::Mode::Dark) => {
-            THEME_DETECTION_FAILURE_LOGGED.store(false, Ordering::Relaxed);
-            Some(ThemeMode::Dark)
+impl FailureLogLatch {
+    /// `true` for the first failure since the last success, `false` after.
+    fn should_log(&mut self) -> bool {
+        !std::mem::replace(&mut self.logged, true)
+    }
+
+    fn reset(&mut self) {
+        self.logged = false;
+    }
+}
+
+/// Runs a blocking OS theme detector on one dedicated worker thread, so
+/// callers (the egui frame loop) wait at most `budget` per attempt.
+///
+/// Invariants:
+/// - At most one detection runs at a time (`in_flight`). A caller arriving
+///   while one runs gets `Pending` and queues nothing, so a hung portal pins
+///   exactly one thread — never a growing backlog of blocked calls.
+/// - The worker parks every result in `late` *before* clearing `in_flight`, so
+///   a result whose caller already gave up is returned to the next caller and
+///   the theme converges once the OS answers.
+/// - No locks: callers and the worker share two atomics and hand replies over
+///   a per-request channel, so there is no lock ordering to get wrong.
+struct BoundedThemeDetector {
+    requests: mpsc::Sender<mpsc::SyncSender<Detection>>,
+    in_flight: Arc<AtomicBool>,
+    late: Arc<AtomicU8>,
+    budget: Duration,
+}
+
+impl BoundedThemeDetector {
+    fn spawn<F, E>(mut detect: F, budget: Duration) -> Self
+    where
+        F: FnMut() -> Result<dark_light::Mode, E> + Send + 'static,
+        E: std::fmt::Display,
+    {
+        let (requests, inbox) = mpsc::channel::<mpsc::SyncSender<Detection>>();
+        let in_flight = Arc::new(AtomicBool::new(false));
+        let late = Arc::new(AtomicU8::new(LATE_EMPTY));
+        let worker_in_flight = Arc::clone(&in_flight);
+        let worker_late = Arc::clone(&late);
+
+        let spawned = thread::Builder::new()
+            .name("theme-detector".to_owned())
+            .spawn(move || {
+                let mut failure_log = FailureLogLatch::default();
+                // Ends once the detector — the only `requests` sender — is dropped.
+                for reply in inbox {
+                    let outcome = match panic::catch_unwind(AssertUnwindSafe(&mut detect)) {
+                        Ok(Ok(dark_light::Mode::Dark)) => {
+                            failure_log.reset();
+                            Detection::Dark
+                        }
+                        Ok(Ok(dark_light::Mode::Light | dark_light::Mode::Unspecified)) => {
+                            failure_log.reset();
+                            Detection::Light
+                        }
+                        Ok(Err(e)) => {
+                            if failure_log.should_log() {
+                                tracing::debug!("OS theme detection failed: {e}");
+                            }
+                            Detection::Failed
+                        }
+                        // A panicking detector must not kill the worker: that
+                        // would leave `in_flight` set and detection off for good.
+                        Err(_) => {
+                            if failure_log.should_log() {
+                                tracing::debug!("OS theme detection panicked");
+                            }
+                            Detection::Failed
+                        }
+                    };
+                    worker_late.store(outcome.to_late(), Ordering::SeqCst);
+                    worker_in_flight.store(false, Ordering::SeqCst);
+                    // Fails only when the caller stopped waiting; the result is
+                    // already parked in `late` for the next caller.
+                    let _ = reply.try_send(outcome);
+                }
+            });
+        if let Err(e) = spawned {
+            // `inbox` was dropped with the closure, so every `detect` reports
+            // `Failed` and the app falls back to its default theme.
+            tracing::debug!("Failed to start the OS theme detection thread: {e}");
         }
-        Ok(dark_light::Mode::Light | dark_light::Mode::Unspecified) => {
-            THEME_DETECTION_FAILURE_LOGGED.store(false, Ordering::Relaxed);
-            Some(ThemeMode::Light)
+
+        Self {
+            requests,
+            in_flight,
+            late,
+            budget,
         }
-        Err(e) => {
-            if should_log_theme_detection_failure() {
-                tracing::debug!("OS theme detection failed: {e}");
+    }
+
+    /// Returns the OS theme, waiting at most `budget`.
+    fn detect(&self) -> Detection {
+        if let Some(parked) = Detection::from_late(self.late.swap(LATE_EMPTY, Ordering::SeqCst)) {
+            return parked;
+        }
+        if self
+            .in_flight
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return Detection::Pending;
+        }
+
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+        if self.requests.send(reply_tx).is_err() {
+            // The worker thread never started; nothing will ever answer.
+            self.in_flight.store(false, Ordering::SeqCst);
+            return Detection::Failed;
+        }
+        match reply_rx.recv_timeout(self.budget) {
+            Ok(outcome) => {
+                // Drop the copy the worker parked: this is the freshest completed
+                // result, and replaying it would skip the next real detection.
+                self.late.store(LATE_EMPTY, Ordering::SeqCst);
+                outcome
             }
-            None
+            Err(mpsc::RecvTimeoutError::Timeout) => Detection::Pending,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                self.in_flight.store(false, Ordering::SeqCst);
+                Detection::Failed
+            }
         }
+    }
+}
+
+/// The process-wide detector backed by `dark_light`, started on first use.
+fn system_theme_detector() -> &'static BoundedThemeDetector {
+    static DETECTOR: OnceLock<BoundedThemeDetector> = OnceLock::new();
+    DETECTOR.get_or_init(|| {
+        // `dark_light::detect` uses Foundation APIs (e.g. `NSUserDefaults`) on
+        // macOS that create autoreleased objects. This worker thread lives for
+        // the process lifetime and runs repeatedly while polling, so without a
+        // pool drained per call those allocations accumulate until exit.
+        #[cfg(target_os = "macos")]
+        let detect = || objc2::rc::autoreleasepool(|_| dark_light::detect());
+        #[cfg(not(target_os = "macos"))]
+        let detect = dark_light::detect;
+        BoundedThemeDetector::spawn(detect, THEME_DETECTION_BUDGET)
+    })
+}
+
+/// Detect system theme preference, waiting at most `THEME_DETECTION_BUDGET`.
+pub fn detect_system_theme() -> Result<ThemeMode, String> {
+    match system_theme_detector().detect() {
+        Detection::Dark => Ok(ThemeMode::Dark),
+        Detection::Light => Ok(ThemeMode::Light),
+        Detection::Failed => Err("OS theme detection failed".to_owned()),
+        Detection::Pending => Err("OS theme detection did not answer in time".to_owned()),
+    }
+}
+
+/// Detect system theme, returning `None` when the OS gave no answer.
+/// Use this for polling: a `None` means "keep the previous theme" rather than
+/// flipping to an arbitrary default. Never blocks the caller for longer than
+/// `THEME_DETECTION_BUDGET`; a slower answer is returned on a later poll.
+/// `Unspecified` maps to Light (common on Linux where `dark_light` often
+/// can't determine the theme).
+pub fn try_detect_system_theme() -> Option<ThemeMode> {
+    match try_detect_system_theme_detailed() {
+        ThemeDetectionOutcome::Detected(mode) => Some(mode),
+        ThemeDetectionOutcome::Pending | ThemeDetectionOutcome::Failed => None,
+    }
+}
+
+/// Outcome of a system-theme detection attempt for callers that must react
+/// differently to "no answer yet" than to "detection failed" — e.g. an
+/// explicit preference change, where a still-pending answer (common on a cold
+/// Linux portal request) should not be reported as a failure: the next poll
+/// will pick up the late result once it arrives. Polling callers that only
+/// need a detected mode should use `try_detect_system_theme` instead, which
+/// intentionally treats both as "keep the previous theme".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThemeDetectionOutcome {
+    Detected(ThemeMode),
+    /// No answer within `THEME_DETECTION_BUDGET` yet; detection keeps running
+    /// in the background and a later poll may still resolve it.
+    Pending,
+    /// The OS could not report a theme (no portal, unsupported platform).
+    Failed,
+}
+
+/// Detect system theme, distinguishing `Pending` from `Failed`. See
+/// [`ThemeDetectionOutcome`] for when to prefer this over
+/// `try_detect_system_theme`.
+pub fn try_detect_system_theme_detailed() -> ThemeDetectionOutcome {
+    match system_theme_detector().detect() {
+        Detection::Dark => ThemeDetectionOutcome::Detected(ThemeMode::Dark),
+        Detection::Light => ThemeDetectionOutcome::Detected(ThemeMode::Light),
+        Detection::Failed => ThemeDetectionOutcome::Failed,
+        Detection::Pending => ThemeDetectionOutcome::Pending,
     }
 }
 
@@ -849,17 +1062,7 @@ impl ComponentStyles {
     /// When a `RichText` is passed, its existing formatting (e.g. font size) is
     /// preserved and only `strong` + text color are applied on top.
     pub fn primary_button(label: impl Into<WidgetText>) -> Button<'static> {
-        let text = match label.into() {
-            WidgetText::RichText(rt) => rt
-                .as_ref()
-                .clone()
-                .strong()
-                .color(Self::primary_button_text()),
-            // LayoutJob/Galley variants are not used by any callsite.
-            other => RichText::new(other.text().to_string())
-                .strong()
-                .color(Self::primary_button_text()),
-        };
+        let text = Self::primary_text(label);
         Button::new(text)
             .fill(Self::primary_button_fill())
             .stroke(Self::primary_button_stroke())
@@ -871,17 +1074,7 @@ impl ComponentStyles {
     ///
     /// Accepts any label type (`&str`, `String`, `RichText`, `WidgetText`).
     pub fn secondary_button(label: impl Into<WidgetText>, dark_mode: bool) -> Button<'static> {
-        let text = match label.into() {
-            WidgetText::RichText(rt) => rt
-                .as_ref()
-                .clone()
-                .strong()
-                .color(Self::secondary_button_text(dark_mode)),
-            // LayoutJob/Galley variants are not used by any callsite.
-            other => RichText::new(other.text().to_string())
-                .strong()
-                .color(Self::secondary_button_text(dark_mode)),
-        };
+        let text = Self::secondary_text(label, dark_mode);
         Button::new(text)
             .fill(Self::secondary_button_fill(dark_mode))
             .stroke(Self::secondary_button_stroke(dark_mode))
@@ -893,17 +1086,7 @@ impl ComponentStyles {
     ///
     /// Accepts any label type (`&str`, `String`, `RichText`, `WidgetText`).
     pub fn danger_button(label: impl Into<WidgetText>) -> Button<'static> {
-        let text = match label.into() {
-            WidgetText::RichText(rt) => rt
-                .as_ref()
-                .clone()
-                .strong()
-                .color(Self::danger_button_text()),
-            // LayoutJob/Galley variants are not used by any callsite.
-            other => RichText::new(other.text().to_string())
-                .strong()
-                .color(Self::danger_button_text()),
-        };
+        let text = Self::danger_text(label);
         Button::new(text)
             .fill(Self::danger_button_fill())
             .stroke(egui::Stroke::NONE)
@@ -911,9 +1094,70 @@ impl ComponentStyles {
             .min_size(Self::DIALOG_BUTTON_MIN_SIZE)
     }
 
+    /// Add `button` with its label centered, at least `min_size` large.
+    ///
+    /// `add_sized` gives the button a `centered_and_justified` inner layout, so its
+    /// `AtomLayout` inherits `horizontal_align = Center`. Without it the default
+    /// top-down-left layout left-aligns a label narrower than `min_size`.
+    ///
+    /// `add_sized` also caps the width the label may use, so the target width is the
+    /// label's natural width (floored at `min_size.x`, capped at the available width).
+    /// Passing only `min_size` would wrap long labels in vertical layouts.
+    fn add_centered_button(
+        ui: &mut egui::Ui,
+        text: &WidgetText,
+        button: Button<'_>,
+        min_size: Vec2,
+    ) -> egui::Response {
+        let galley = text.clone().into_galley(
+            ui,
+            Some(egui::TextWrapMode::Extend),
+            f32::INFINITY,
+            egui::FontSelection::Style(egui::TextStyle::Button),
+        );
+        // egui's button frame (inner margin + stroke + outer margin) nets out to
+        // `button_padding` per side.
+        let natural = galley.size() + 2.0 * ui.spacing().button_padding;
+        let width = natural.x.ceil().min(ui.available_width()).max(min_size.x);
+        let height = natural.y.ceil().max(min_size.y);
+        ui.add_sized(Vec2::new(width, height), button)
+    }
+
+    fn primary_text(label: impl Into<WidgetText>) -> WidgetText {
+        Self::styled_label(label, Self::primary_button_text(), true)
+    }
+
+    fn secondary_text(label: impl Into<WidgetText>, dark_mode: bool) -> WidgetText {
+        Self::styled_label(label, Self::secondary_button_text(dark_mode), true)
+    }
+
+    fn danger_text(label: impl Into<WidgetText>) -> WidgetText {
+        Self::styled_label(label, Self::danger_button_text(), true)
+    }
+
+    fn toolbar_text(label: impl Into<WidgetText>) -> WidgetText {
+        Self::styled_label(label, DashColors::WHITE, false)
+    }
+
+    /// Applies `color` (and optionally `strong`) to `label`, preserving any existing
+    /// `RichText` formatting (e.g. font size).
+    fn styled_label(label: impl Into<WidgetText>, color: Color32, strong: bool) -> WidgetText {
+        let rt = match label.into() {
+            WidgetText::RichText(rt) => rt.as_ref().clone(),
+            // LayoutJob/Galley variants are not used by any callsite.
+            other => RichText::new(other.text().to_string()),
+        };
+        let rt = if strong { rt.strong() } else { rt };
+        rt.color(color).into()
+    }
+
     /// Add a primary button to the UI with pointer cursor on hover.
+    ///
+    /// The label is centered; see [`Self::add_centered_button`].
     pub fn add_primary_button(ui: &mut egui::Ui, label: impl Into<WidgetText>) -> egui::Response {
-        ui.add(Self::primary_button(label))
+        let text = Self::primary_text(label);
+        let button = Self::primary_button(text.clone());
+        Self::add_centered_button(ui, &text, button, Self::DIALOG_BUTTON_MIN_SIZE)
             .on_hover_cursor(CursorIcon::PointingHand)
     }
 
@@ -931,52 +1175,40 @@ impl ComponentStyles {
         label: impl Into<WidgetText>,
     ) -> egui::Response {
         if enabled {
-            ui.add(Self::primary_button(label))
-                .on_hover_cursor(CursorIcon::PointingHand)
-        } else {
-            let dark_mode = ui.style().visuals.dark_mode;
-            let text = match label.into() {
-                WidgetText::RichText(rt) => rt
-                    .as_ref()
-                    .clone()
-                    .strong()
-                    .color(Self::button_disabled_text(dark_mode)),
-                // LayoutJob/Galley variants are not used by any callsite.
-                other => RichText::new(other.text().to_string())
-                    .strong()
-                    .color(Self::button_disabled_text(dark_mode)),
-            };
-            // `add_sized` sets up a `centered_and_justified` inner layout so the button's
-            // `AtomLayout` inherits `horizontal_align = Center`, centering the text within
-            // the fill rect.  Without this, the default top-down-left layout causes the text
-            // atom to be left-aligned inside the button even when the rect is wider than the
-            // text content.
-            ui.add_sized(
-                Self::DIALOG_BUTTON_MIN_SIZE,
-                Button::new(text)
-                    .fill(Self::button_disabled_fill(dark_mode))
-                    .stroke(egui::Stroke::NONE)
-                    .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-                    .min_size(Self::DIALOG_BUTTON_MIN_SIZE)
-                    .sense(egui::Sense::hover()),
-            )
-            .on_hover_cursor(CursorIcon::NotAllowed)
+            return Self::add_primary_button(ui, label);
         }
+        let dark_mode = ui.style().visuals.dark_mode;
+        let text = Self::styled_label(label, Self::button_disabled_text(dark_mode), true);
+        let button = Button::new(text.clone())
+            .fill(Self::button_disabled_fill(dark_mode))
+            .stroke(egui::Stroke::NONE)
+            .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+            .sense(egui::Sense::hover());
+        Self::add_centered_button(ui, &text, button, Self::DIALOG_BUTTON_MIN_SIZE)
+            .on_hover_cursor(CursorIcon::NotAllowed)
     }
 
     /// Add a secondary button to the UI with pointer cursor on hover.
+    ///
+    /// The label is centered; see [`Self::add_centered_button`].
     pub fn add_secondary_button(
         ui: &mut egui::Ui,
         label: impl Into<WidgetText>,
         dark_mode: bool,
     ) -> egui::Response {
-        ui.add(Self::secondary_button(label, dark_mode))
+        let text = Self::secondary_text(label, dark_mode);
+        let button = Self::secondary_button(text.clone(), dark_mode);
+        Self::add_centered_button(ui, &text, button, Self::DIALOG_BUTTON_MIN_SIZE)
             .on_hover_cursor(CursorIcon::PointingHand)
     }
 
     /// Add a danger button to the UI with pointer cursor on hover.
+    ///
+    /// The label is centered; see [`Self::add_centered_button`].
     pub fn add_danger_button(ui: &mut egui::Ui, label: impl Into<WidgetText>) -> egui::Response {
-        ui.add(Self::danger_button(label))
+        let text = Self::danger_text(label);
+        let button = Self::danger_button(text.clone());
+        Self::add_centered_button(ui, &text, button, Self::DIALOG_BUTTON_MIN_SIZE)
             .on_hover_cursor(CursorIcon::PointingHand)
     }
 
@@ -990,31 +1222,34 @@ impl ComponentStyles {
     /// Height for toolbar buttons in the top panel.
     const TOOLBAR_BUTTON_HEIGHT: f32 = 30.0;
 
+    /// Default minimum size for toolbar buttons.
+    const TOOLBAR_BUTTON_MIN_SIZE: Vec2 = Vec2::new(100.0, Self::TOOLBAR_BUTTON_HEIGHT);
+
     /// Returns a styled toolbar button with white text on the given accent fill.
     ///
     /// Used for top-panel action buttons (Register Name, Refresh, Documents, etc.)
     /// whose fill color depends on the active network.
     pub fn toolbar_button(label: impl Into<WidgetText>, fill: egui::Color32) -> Button<'static> {
-        let text = match label.into() {
-            WidgetText::RichText(rt) => rt.as_ref().clone().color(DashColors::WHITE),
-            // LayoutJob/Galley variants are not used by any callsite.
-            other => RichText::new(other.text().to_string()).color(DashColors::WHITE),
-        };
+        let text = Self::toolbar_text(label);
         Button::new(text)
             .fill(fill)
             .frame(true)
             .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
             .stroke(egui::Stroke::NONE)
-            .min_size(Vec2::new(100.0, Self::TOOLBAR_BUTTON_HEIGHT))
+            .min_size(Self::TOOLBAR_BUTTON_MIN_SIZE)
     }
 
     /// Add a toolbar button to the UI with pointer cursor on hover.
+    ///
+    /// The label is centered; see [`Self::add_centered_button`].
     pub fn add_toolbar_button(
         ui: &mut egui::Ui,
         label: impl Into<WidgetText>,
         fill: egui::Color32,
     ) -> egui::Response {
-        ui.add(Self::toolbar_button(label, fill))
+        let text = Self::toolbar_text(label);
+        let button = Self::toolbar_button(text.clone(), fill);
+        Self::add_centered_button(ui, &text, button, Self::TOOLBAR_BUTTON_MIN_SIZE)
             .on_hover_cursor(CursorIcon::PointingHand)
     }
 }
@@ -1063,7 +1298,9 @@ pub trait ResponseExt {
 
     /// Disabled tooltip with `NotAllowed` cursor.
     ///
-    /// Only applies when the widget is **disabled** -- skips silently when enabled so
+    /// Only applies when the widget is **disabled** (or enabled but not clickable, as
+    /// with `ComponentStyles::add_primary_button_enabled(ui, false, …)`) -- skips
+    /// silently when clickable so
     /// it can be chained with [`clickable_tooltip`](ResponseExt::clickable_tooltip). Use
     /// to explain why an action is unavailable.
     ///
@@ -1092,11 +1329,16 @@ impl ResponseExt for egui::Response {
     }
 
     fn disabled_tooltip(self, text: impl Into<egui::WidgetText>) -> Self {
-        if self.enabled() {
-            self
-        } else {
+        if !self.enabled() {
             self.on_disabled_hover_text(text)
                 .on_hover_cursor(CursorIcon::NotAllowed)
+        } else if !self.sense.senses_click() {
+            // Styled-disabled widgets (e.g. `ComponentStyles::add_primary_button_enabled`)
+            // stay enabled but only sense hover, so `on_disabled_hover_text` never fires.
+            self.on_hover_text(text)
+                .on_hover_cursor(CursorIcon::NotAllowed)
+        } else {
+            self
         }
     }
 }
@@ -1225,6 +1467,8 @@ pub fn apply_theme(ctx: &egui::Context, theme_mode: ThemeMode) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
+    use std::time::Instant;
 
     /// The `hint()` token must be larger than egui's built-in `.small()` (the
     /// style that made the instructional subtext too small to read) and pinned
@@ -1246,26 +1490,183 @@ mod tests {
 
     #[test]
     fn theme_detection_failure_logs_once_until_reset() {
-        THEME_DETECTION_FAILURE_LOGGED.store(false, Ordering::Relaxed);
+        let mut latch = FailureLogLatch::default();
 
+        assert!(latch.should_log(), "first failure should log");
+        assert!(!latch.should_log(), "repeated failure should be suppressed");
         assert!(
-            should_log_theme_detection_failure(),
-            "first failure should log"
-        );
-        assert!(
-            !should_log_theme_detection_failure(),
-            "repeated failure should be suppressed"
-        );
-        assert!(
-            !should_log_theme_detection_failure(),
+            !latch.should_log(),
             "still suppressed while failure persists"
         );
 
         // A successful detection resets the latch.
-        THEME_DETECTION_FAILURE_LOGGED.store(false, Ordering::Relaxed);
+        latch.reset();
         assert!(
-            should_log_theme_detection_failure(),
+            latch.should_log(),
             "failure after a success should log again"
+        );
+    }
+
+    /// Generous bound for "returned promptly" on a loaded CI host. The gated
+    /// detectors below block forever unless released, so a correct detector
+    /// finishes these tests in milliseconds and a broken one hangs past this.
+    const PROMPT: Duration = Duration::from_secs(5);
+
+    /// Budget for the gated detector; tiny so `Pending` tests stay fast.
+    const TIGHT_BUDGET: Duration = Duration::from_millis(20);
+
+    fn wait_until(what: &str, condition: impl Fn() -> bool) {
+        let deadline = Instant::now() + PROMPT;
+        while !condition() {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    /// A detector that blocks until the test sends a mode through the returned
+    /// gate (standing in for a hung D-Bus portal), counting invocations.
+    fn gated_detector() -> (
+        BoundedThemeDetector,
+        mpsc::Sender<dark_light::Mode>,
+        Arc<AtomicUsize>,
+    ) {
+        let (gate, gate_rx) = mpsc::channel::<dark_light::Mode>();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let worker_calls = Arc::clone(&calls);
+        let detector = BoundedThemeDetector::spawn(
+            move || {
+                worker_calls.fetch_add(1, Ordering::SeqCst);
+                gate_rx.recv().map_err(|_| "gate closed")
+            },
+            TIGHT_BUDGET,
+        );
+        (detector, gate, calls)
+    }
+
+    #[test]
+    fn fast_detector_answers_immediately() {
+        let detector =
+            BoundedThemeDetector::spawn(|| Ok::<_, &str>(dark_light::Mode::Dark), PROMPT);
+        assert_eq!(detector.detect(), Detection::Dark);
+
+        let detector =
+            BoundedThemeDetector::spawn(|| Ok::<_, &str>(dark_light::Mode::Unspecified), PROMPT);
+        assert_eq!(
+            detector.detect(),
+            Detection::Light,
+            "an unspecified OS preference maps to Light"
+        );
+    }
+
+    #[test]
+    fn fast_answers_are_not_replayed_to_the_next_call() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let worker_calls = Arc::clone(&calls);
+        let detector = BoundedThemeDetector::spawn(
+            move || {
+                Ok::<_, &str>(if worker_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    dark_light::Mode::Dark
+                } else {
+                    dark_light::Mode::Light
+                })
+            },
+            PROMPT,
+        );
+
+        assert_eq!(detector.detect(), Detection::Dark);
+        assert_eq!(
+            detector.detect(),
+            Detection::Light,
+            "each call after a delivered answer must run a fresh detection"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn failing_detector_reports_failed() {
+        let detector =
+            BoundedThemeDetector::spawn(|| Err::<dark_light::Mode, _>("no portal"), PROMPT);
+        assert_eq!(detector.detect(), Detection::Failed);
+    }
+
+    #[test]
+    fn slow_detector_returns_pending_within_budget() {
+        let (detector, _gate, _calls) = gated_detector();
+
+        let started = Instant::now();
+        assert_eq!(detector.detect(), Detection::Pending);
+        assert!(
+            started.elapsed() < PROMPT,
+            "a hung detector must not block the caller (took {:?})",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn late_result_is_delivered_to_the_next_call() {
+        let (detector, gate, calls) = gated_detector();
+        assert_eq!(detector.detect(), Detection::Pending);
+
+        gate.send(dark_light::Mode::Dark)
+            .expect("the detector is waiting on the gate");
+        wait_until("the late result to be parked", || {
+            !detector.in_flight.load(Ordering::SeqCst)
+        });
+
+        assert_eq!(
+            detector.detect(),
+            Detection::Dark,
+            "the answer that missed its budget must reach the next caller"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "the parked answer must be returned without running another detection"
+        );
+    }
+
+    #[test]
+    fn calls_while_a_detection_runs_do_not_start_another() {
+        let (detector, gate, calls) = gated_detector();
+        assert_eq!(detector.detect(), Detection::Pending);
+        wait_until("the worker to start the first detection", || {
+            calls.load(Ordering::SeqCst) == 1
+        });
+
+        for _ in 0..3 {
+            assert_eq!(detector.detect(), Detection::Pending);
+        }
+
+        // Release the only running detection. Had the extra calls queued
+        // requests, the worker would pick them up next and block again.
+        gate.send(dark_light::Mode::Light)
+            .expect("the detector is waiting on the gate");
+        wait_until("the first detection to finish", || {
+            !detector.in_flight.load(Ordering::SeqCst)
+        });
+        assert_eq!(detector.detect(), Detection::Light);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn panicking_detector_reports_failed_and_keeps_serving() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let worker_calls = Arc::clone(&calls);
+        let detector = BoundedThemeDetector::spawn(
+            move || {
+                if worker_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    panic!("simulated detector panic");
+                }
+                Ok::<_, &str>(dark_light::Mode::Dark)
+            },
+            PROMPT,
+        );
+
+        assert_eq!(detector.detect(), Detection::Failed);
+        assert_eq!(
+            detector.detect(),
+            Detection::Dark,
+            "the worker must survive a panicking detector"
         );
     }
 }

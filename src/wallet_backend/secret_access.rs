@@ -46,6 +46,7 @@ use zeroize::Zeroizing;
 
 use crate::backend_task::error::TaskError;
 use crate::model::qualified_identity::PrivateKeyTarget;
+#[cfg(any(test, feature = "testing"))]
 use crate::model::single_key::ImportedKey;
 use crate::model::wallet::WalletSeedHash;
 use crate::model::wallet::encryption::{DecryptError, decrypt_message};
@@ -237,11 +238,7 @@ impl std::fmt::Debug for SecretAccess {
 struct SecretAccessInner {
     /// The encrypted vault — decrypt-on-demand source of truth.
     secret_store: Arc<SecretStore>,
-    /// HD wallet meta (seed hash → password hint / alias) for prompt copy.
-    wallet_meta: RwLock<BTreeMap<WalletSeedHash, PromptMeta>>,
-    /// Single-key index (address → alias / hint / has_passphrase) for
-    /// prompt copy and the unprotected fast-path check.
-    single_key_index: RwLock<BTreeMap<String, ImportedKey>>,
+    wallet_context: Arc<crate::wallet_backend::wallet_context::WalletContext>,
     /// Identity prompt-copy index (identity id → alias / password hint) for
     /// the sign-time prompt of an opted-in (Tier-2) identity. Display-only;
     /// the vault scheme — not this index — gates whether a prompt fires.
@@ -295,19 +292,34 @@ impl std::fmt::Debug for VerifiedIdentityPassword {
 impl SecretAccess {
     /// Build a chokepoint over `secret_store`, prompting through `prompt`.
     ///
-    /// Prompt-copy metadata is seeded via [`SecretAccess::set_wallet_meta`]
-    /// / [`SecretAccess::set_single_key_index`]; absent metadata degrades
-    /// to a generic label, never an error.
+    /// Standalone instances start with unnamed metadata. Backend instances
+    /// share WalletContext so displays and prompts use the same labels.
     pub fn new(
         secret_store: Arc<SecretStore>,
         prompt: Arc<dyn SecretPrompt>,
         network: Network,
     ) -> Self {
+        Self::with_wallet_context(
+            secret_store,
+            prompt,
+            network,
+            Arc::new(crate::wallet_backend::wallet_context::WalletContext::default()),
+        )
+    }
+
+    /// Bind the chokepoint to the backend's shared wallet context. Prompt copy
+    /// then reads the same committed HD and imported-key metadata that
+    /// imports, renames, removals and hydration publish there.
+    pub(crate) fn with_wallet_context(
+        secret_store: Arc<SecretStore>,
+        prompt: Arc<dyn SecretPrompt>,
+        network: Network,
+        wallet_context: Arc<crate::wallet_backend::wallet_context::WalletContext>,
+    ) -> Self {
         Self {
             inner: Arc::new(SecretAccessInner {
                 secret_store,
-                wallet_meta: RwLock::new(BTreeMap::new()),
-                single_key_index: RwLock::new(BTreeMap::new()),
+                wallet_context,
                 identity_prompt_index: RwLock::new(BTreeMap::new()),
                 prompt,
                 session: RwLock::new(HashMap::new()),
@@ -321,30 +333,44 @@ impl SecretAccess {
         self.inner.network
     }
 
-    /// Replace the HD prompt-copy metadata map. Used at hydration time so
-    /// prompts can show the wallet name and password hint. Poison-safe: a
-    /// poisoned lock is recovered (matching `forget`/`forget_all`) so a panicked
-    /// reader can never freeze prompt-copy metadata for the rest of the session.
+    /// Seed standalone prompt metadata. Backend-bound instances share WalletContext.
+    #[cfg(any(test, feature = "testing"))]
     pub fn set_wallet_meta(&self, meta: BTreeMap<WalletSeedHash, PromptMeta>) {
-        let mut guard = self
-            .inner
-            .wallet_meta
-            .write()
-            .unwrap_or_else(|poison| poison.into_inner());
-        *guard = meta;
+        self.inner
+            .wallet_context
+            .hydrate(|| {
+                Ok(crate::wallet_backend::wallet_context::WalletHydration {
+                    hd: meta
+                        .into_iter()
+                        .map(|(seed, meta)| {
+                            (
+                                seed,
+                                crate::model::wallet::meta::WalletMeta {
+                                    alias: meta.alias.unwrap_or_default(),
+                                    password_hint: meta.password_hint,
+                                    ..Default::default()
+                                },
+                            )
+                        })
+                        .collect(),
+                    ..Default::default()
+                })
+            })
+            .expect("infallible metadata load");
     }
 
-    /// Replace the single-key prompt-copy index. Used at hydration time and
-    /// after an import so prompts can show the key nickname and hint, and
-    /// so the unprotected fast-path can skip the prompt. Poison-safe: a poisoned
-    /// lock is recovered so the index can self-heal after a panicked reader.
+    /// Seed standalone imported-key metadata; backend instances share the live owner.
+    #[cfg(any(test, feature = "testing"))]
     pub fn set_single_key_index(&self, index: BTreeMap<String, ImportedKey>) {
-        let mut guard = self
-            .inner
-            .single_key_index
-            .write()
-            .unwrap_or_else(|poison| poison.into_inner());
-        *guard = index;
+        self.inner
+            .wallet_context
+            .hydrate(|| {
+                Ok(crate::wallet_backend::wallet_context::WalletHydration {
+                    single: index.into_values().collect(),
+                    ..Default::default()
+                })
+            })
+            .expect("infallible metadata load");
     }
 
     /// Replace the identity prompt-copy index. Used at hydration time and
@@ -798,9 +824,7 @@ impl SecretAccess {
                         if self.single_key_raw(address)?.is_some() {
                             return Ok(false);
                         }
-                        if let Ok(index) = self.inner.single_key_index.read()
-                            && let Some(meta) = index.get(address)
-                        {
+                        if let Some(meta) = self.inner.wallet_context.single_key(address) {
                             return Ok(meta.has_passphrase);
                         }
                         Ok(self.load_single_key_entry(address)?.has_passphrase)
@@ -1050,23 +1074,12 @@ impl SecretAccess {
     ) -> SecretPromptRequest {
         let (label, hint) = match scope {
             SecretScope::HdSeed { seed_hash } => {
-                let meta = self
-                    .inner
-                    .wallet_meta
-                    .read()
-                    .ok()
-                    .and_then(|g| g.get(seed_hash).cloned())
-                    .unwrap_or_default();
+                let meta = self.inner.wallet_context.hd_prompt(seed_hash);
                 let label = meta.alias.unwrap_or_else(|| "your wallet".to_string());
                 (label, meta.password_hint)
             }
             SecretScope::SingleKey { address } => {
-                let meta = self
-                    .inner
-                    .single_key_index
-                    .read()
-                    .ok()
-                    .and_then(|g| g.get(address).cloned());
+                let meta = self.inner.wallet_context.single_key(address);
                 let label = meta
                     .as_ref()
                     .and_then(|m| m.alias.clone())
@@ -1171,13 +1184,21 @@ fn handle_lazy_tier2_rewrap_result(result: Result<(), TaskError>) -> Result<(), 
             );
             Ok(())
         }
+        Err(TaskError::PassphraseTooLong { source, .. }) => {
+            tracing::warn!(
+                target = "wallet_backend::secret_access",
+                error = ?source,
+                "HD seed lazy Tier-2 re-wrap deferred because the legacy password exceeds the storage ceiling",
+            );
+            Ok(())
+        }
         other => other,
     }
 }
 
 /// Whether `e` is the "wrong passphrase" condition that the re-ask loop
 /// catches and re-prompts on (rather than aborting).
-fn is_wrong_passphrase(e: &TaskError) -> bool {
+pub(crate) fn is_wrong_passphrase(e: &TaskError) -> bool {
     match e {
         TaskError::SingleKeyPassphraseIncorrect
         | TaskError::HdPassphraseIncorrect
@@ -1209,6 +1230,110 @@ mod tests {
     fn fresh_store(dir: &std::path::Path) -> Arc<SecretStore> {
         let path = dir.join("secrets.pwsvault");
         Arc::new(open_secret_store(&path).expect("open vault"))
+    }
+
+    #[test]
+    fn wallet_meta_writes_refresh_prompt_copy() {
+        use crate::model::wallet::meta::WalletMeta;
+        use crate::wallet_backend::kv_test_support::FailingKv;
+        use crate::wallet_backend::{DetKv, WalletMetaView};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sa = access(fresh_store(dir.path()), Arc::new(NullSecretPrompt));
+        let storage = Arc::new(FailingKv::default());
+        let kv = Arc::new(DetKv::from_store(storage.clone()));
+        let view = WalletMetaView::with_context(&kv, &sa.inner.wallet_context, Network::Testnet);
+        let seed_hash = [0x51; 32];
+        let scope = SecretScope::HdSeed { seed_hash };
+        let mut meta = WalletMeta {
+            alias: "first name".into(),
+            is_main: false,
+            core_wallet_name: None,
+            xpub_encoded: Vec::new(),
+            uses_password: true,
+            password_hint: Some("first hint".into()),
+        };
+
+        view.set(Network::Testnet, &seed_hash, &meta)
+            .expect("initial write");
+        let first = sa.build_request(&scope, None);
+        assert_eq!(first.display_label, "first name");
+        assert_eq!(first.hint.as_deref(), Some("first hint"));
+
+        meta.alias = "renamed".into();
+        meta.password_hint = Some("new hint".into());
+        view.set(Network::Testnet, &seed_hash, &meta)
+            .expect("rename and hint write");
+        let renamed = sa.build_request(&scope, None);
+        assert_eq!(renamed.display_label, "renamed");
+        assert_eq!(renamed.hint.as_deref(), Some("new hint"));
+
+        storage.fail_deletes(true);
+        view.delete(Network::Testnet, &seed_hash)
+            .expect_err("failed sidecar delete");
+        let after_failed_delete = sa.build_request(&scope, None);
+        assert_eq!(after_failed_delete.display_label, "renamed");
+        assert_eq!(after_failed_delete.hint.as_deref(), Some("new hint"));
+        storage.fail_deletes(false);
+        view.delete(Network::Testnet, &seed_hash)
+            .expect("delete metadata");
+        let deleted = sa.build_request(&scope, None);
+        assert_eq!(deleted.display_label, "your wallet");
+        assert!(deleted.hint.is_none());
+    }
+
+    #[test]
+    fn protected_single_key_import_and_rename_refresh_prompt_copy() {
+        use dash_sdk::dpp::dashcore::PrivateKey;
+        use dash_sdk::dpp::dashcore::hashes::{Hash, sha256};
+
+        use crate::model::wallet::alias::AliasSource;
+        use crate::wallet_backend::single_key::ImportPassphrase;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = fresh_store(dir.path());
+        let index = Arc::new(crate::wallet_backend::wallet_context::WalletContext::default());
+        let sa = SecretAccess::with_wallet_context(
+            Arc::clone(&store),
+            Arc::new(NullSecretPrompt),
+            Network::Testnet,
+            Arc::clone(&index),
+        );
+
+        let view = SingleKeyView::from_views(&store, &index, Network::Testnet, None);
+        let key_bytes = sha256::Hash::hash(b"wallet-prompt-test-key").to_byte_array();
+        let wif = PrivateKey::from_byte_array(&key_bytes, Network::Testnet)
+            .expect("deterministic test key")
+            .to_wif();
+        let passphrase = format!("test-passphrase-{}", rand::random::<u64>());
+        let key = view
+            .import_wif_with_passphrase(
+                &wif,
+                AliasSource::UserEntered("first key".into()),
+                ImportPassphrase {
+                    passphrase: Some(Zeroizing::new(passphrase)),
+                    hint: Some("key hint".into()),
+                },
+            )
+            .expect("protected import");
+        let scope = SecretScope::SingleKey {
+            address: key.address.clone(),
+        };
+        assert!(sa.scope_has_passphrase(&scope).expect("protected key"));
+        let imported = sa.build_request(&scope, None);
+        assert_eq!(imported.display_label, "first key");
+        assert_eq!(imported.hint.as_deref(), Some("key hint"));
+
+        view.set_alias(&key.address, "renamed key")
+            .expect("rename key");
+        let renamed = sa.build_request(&scope, None);
+        assert_eq!(renamed.display_label, "renamed key");
+        assert_eq!(renamed.hint.as_deref(), Some("key hint"));
+
+        view.forget(&key.address).expect("forget key");
+        let forgotten = sa.build_request(&scope, None);
+        assert_eq!(forgotten.display_label, key.address);
+        assert!(forgotten.hint.is_none());
     }
 
     /// Write a protected HD seed envelope under `seed_hash`, encrypting
@@ -1587,12 +1712,13 @@ mod tests {
     // --- single-key scope -------------------------------------------------
 
     fn import_protected_key(store: &Arc<SecretStore>, passphrase: &str) -> String {
-        let index = std::sync::RwLock::new(std::collections::BTreeMap::new());
+        let index = crate::wallet_backend::wallet_context::WalletContext::default();
+
         let view = SingleKeyView::from_views(store, &index, Network::Testnet, None);
         let imported = view
             .import_wif_with_passphrase(
                 &known_testnet_wif(),
-                Some("My Key".into()),
+                crate::model::wallet::alias::AliasSource::Preserved(Some("My Key".into())),
                 crate::wallet_backend::single_key::ImportPassphrase {
                     passphrase: Some(zeroize::Zeroizing::new(passphrase.to_string())),
                     hint: Some("the usual".into()),
@@ -2738,6 +2864,21 @@ mod tests {
     fn lazy_tier2_rewrap_defers_blank_passphrase() {
         let result = handle_lazy_tier2_rewrap_result(Err(TaskError::SecretSeam {
             source: Box::new(SecretStoreError::BlankPassphrase),
+        }));
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn lazy_tier2_rewrap_defers_overlong_passphrase() {
+        use platform_wallet_storage::secrets::MAX_PASSPHRASE_LEN;
+
+        let result = handle_lazy_tier2_rewrap_result(Err(TaskError::PassphraseTooLong {
+            max: MAX_PASSPHRASE_LEN,
+            source: Box::new(SecretStoreError::PassphraseTooLong {
+                found: MAX_PASSPHRASE_LEN + 1,
+                max: MAX_PASSPHRASE_LEN,
+            }),
         }));
 
         assert!(result.is_ok());

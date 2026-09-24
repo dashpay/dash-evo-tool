@@ -33,7 +33,7 @@ use crate::ui::components::wallet_unlock_popup::{
 };
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::state::AssetLockBalanceCache;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{
     MessageType, RootScreenType, ScreenLike, append_concurrent_backend_tasks,
     can_append_concurrent_backend_tasks,
@@ -418,7 +418,7 @@ impl WalletSendScreen {
             .filter(|(addr, _, _)| destination != Some(addr))
             .cloned()
             .collect();
-        sorted_addresses.sort_by(|a, b| b.2.cmp(&a.2));
+        sorted_addresses.sort_by_key(|a| std::cmp::Reverse(a.2));
 
         let usable_count = sorted_addresses.len().min(MAX_PLATFORM_INPUTS);
         if usable_count == 0 {
@@ -755,7 +755,7 @@ impl WalletSendScreen {
             .filter(|(_, balance)| *balance > 0)
             .collect();
         // Sort by balance descending for better UX
-        addresses.sort_by(|a, b| b.1.cmp(&a.1));
+        addresses.sort_by_key(|a| std::cmp::Reverse(a.1));
         addresses
     }
 
@@ -1566,9 +1566,10 @@ impl WalletSendScreen {
         if let Some(wallet_arc) = &self.selected_wallet
             && let Ok(wallet) = wallet_arc.read()
         {
-            let alias = wallet
-                .alias
-                .clone()
+            let alias = self
+                .app_context
+                .wallet_context()
+                .hd_alias(&wallet.seed_hash())
                 .unwrap_or_else(|| "Unnamed Wallet".to_string());
 
             egui::Grid::new("wallet_info_grid")
@@ -2411,35 +2412,32 @@ impl WalletSendScreen {
 
     fn address_input_wallets(&self) -> Vec<WalletWithSnapshot> {
         self.app_context
-            .wallets
-            .read()
-            .map(|wallets| {
-                wallets
-                    .values()
-                    .map(|wallet| {
-                        let seed_hash = wallet
-                            .read()
-                            .map(|guard| guard.seed_hash())
-                            .unwrap_or_default();
-                        (
-                            wallet.clone(),
-                            self.app_context.snapshot_address_balances(&seed_hash),
-                            self.app_context.snapshot_address_paths(&seed_hash),
-                        )
-                    })
-                    .collect()
+            .wallet_context()
+            .wallets()
+            .values()
+            .map(|wallet| {
+                let seed_hash = wallet
+                    .read()
+                    .map(|guard| guard.seed_hash())
+                    .unwrap_or_default();
+                (
+                    wallet.clone(),
+                    self.app_context.snapshot_address_balances(&seed_hash),
+                    self.app_context.snapshot_address_paths(&seed_hash),
+                    self.app_context.wallet_context().hd_alias(&seed_hash),
+                )
             })
-            .unwrap_or_default()
+            .collect()
     }
 
     fn address_input_snapshot_signature(wallets: &[WalletWithSnapshot]) -> u64 {
         let mut hasher = DefaultHasher::new();
-        for (wallet, balances, paths) in wallets {
+        for (wallet, balances, paths, alias) in wallets {
             let Ok(wallet) = wallet.read() else {
                 continue;
             };
             wallet.seed_hash().hash(&mut hasher);
-            wallet.alias.hash(&mut hasher);
+            alias.hash(&mut hasher);
             balances.hash(&mut hasher);
             for (address, path) in paths {
                 address.hash(&mut hasher);
@@ -2633,7 +2631,7 @@ impl WalletSendScreen {
                     .filter(|(addr, _, _)| destination.as_ref() != Some(addr))
                     .cloned()
                     .collect();
-                sorted_addresses.sort_by(|a, b| b.2.cmp(&a.2));
+                sorted_addresses.sort_by_key(|a| std::cmp::Reverse(a.2));
 
                 // Sum balances from top addresses, limited by MAX_PLATFORM_INPUTS.
                 let total: u64 = sorted_addresses
@@ -3301,16 +3299,7 @@ impl WalletSendScreen {
                 self.get_transaction_type_description()
             };
 
-            let send_button =
-                egui::Button::new(RichText::new(button_text).color(Color32::WHITE).strong())
-                    .fill(if can_send {
-                        DashColors::DASH_BLUE
-                    } else {
-                        DashColors::DASH_BLUE.gamma_multiply(0.5)
-                    })
-                    .min_size(egui::vec2(160.0, 36.0));
-
-            if ui.add_enabled(can_send, send_button).clicked() {
+            if ComponentStyles::add_primary_button_enabled(ui, can_send, button_text).clicked() {
                 match self.validate_and_send() {
                     Ok(send_action) => {
                         let message = self.simple_send_confirmation_message();
@@ -3948,16 +3937,7 @@ impl WalletSendScreen {
 
             let button_text = if is_sending { "Sending..." } else { "Send" };
 
-            let send_button =
-                egui::Button::new(RichText::new(button_text).color(Color32::WHITE).strong())
-                    .fill(if can_send {
-                        DashColors::DASH_BLUE
-                    } else {
-                        DashColors::DASH_BLUE.gamma_multiply(0.5)
-                    })
-                    .min_size(egui::vec2(160.0, 36.0));
-
-            if ui.add_enabled(can_send, send_button).clicked() {
+            if ComponentStyles::add_primary_button_enabled(ui, can_send, button_text).clicked() {
                 match self.validate_and_send_advanced() {
                     Ok(send_action) => {
                         let message = self.advanced_send_confirmation_message();
@@ -5399,7 +5379,7 @@ mod tests {
             )
             .expect("wallet from seed"),
         ));
-        let empty_wallets = vec![(wallet.clone(), BTreeMap::new(), BTreeMap::new())];
+        let empty_wallets = vec![(wallet.clone(), BTreeMap::new(), BTreeMap::new(), None)];
         let empty_signature = WalletSendScreen::address_input_snapshot_signature(&empty_wallets);
         assert_eq!(
             empty_signature,
@@ -5408,11 +5388,11 @@ mod tests {
 
         let address = testnet_core_address(3);
         let paths = BTreeMap::from([(address.clone(), bip44_receive_path(0))]);
-        let with_path = vec![(wallet.clone(), BTreeMap::new(), paths.clone())];
+        let with_path = vec![(wallet.clone(), BTreeMap::new(), paths.clone(), None)];
         let path_signature = WalletSendScreen::address_input_snapshot_signature(&with_path);
         assert_ne!(empty_signature, path_signature);
 
-        let with_balance = vec![(wallet, BTreeMap::from([(address, 42)]), paths)];
+        let with_balance = vec![(wallet, BTreeMap::from([(address, 42)]), paths, None)];
         assert_ne!(
             path_signature,
             WalletSendScreen::address_input_snapshot_signature(&with_balance)

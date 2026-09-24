@@ -9,7 +9,7 @@
 //! metadata sidecar in [`crate::model::single_key`], which is current code.
 
 use aes_gcm::aead::Aead;
-use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+use aes_gcm::{Aes256Gcm, KeyInit};
 use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
 use dash_sdk::dpp::dashcore::{Address, Network, OutPoint, PrivateKey, PublicKey, TxOut};
 use sha2::{Digest, Sha256};
@@ -33,7 +33,8 @@ pub struct SingleKeyWallet {
     /// The P2PKH address derived from the public key
     pub address: Address,
     /// Optional alias/name for this wallet
-    pub alias: Option<String>,
+    /// Construction/legacy snapshot only; live labels come from WalletContext.
+    pub(crate) initial_alias: Option<String>,
     /// SHA-256 hash of the private key (used as identifier)
     pub key_hash: SingleKeyHash,
     /// Confirmed balance in duffs
@@ -190,7 +191,6 @@ impl ClosedSingleKey {
     }
 
     /// Decrypt the private key using a password
-    #[allow(deprecated)]
     pub fn decrypt_private_key(&self, password: &str) -> Result<[u8; 32], EncryptionError> {
         // Both the derived AES key and the decrypted plaintext are
         // secret-bearing; `derive_password_key` already returns a `Zeroizing`
@@ -198,10 +198,16 @@ impl ClosedSingleKey {
         // wipe on drop instead of lingering after the bytes are copied out.
         let key = derive_password_key(password, &self.salt)?;
         let cipher = Aes256Gcm::new_from_slice(&key).map_err(|_| EncryptionError::Malformed)?;
-        let nonce_arr = Nonce::from_slice(&self.nonce);
+        // A stored nonce of the wrong length is a corrupt at-rest blob, not a
+        // panic.
+        let nonce_arr: &[u8; 12] = self
+            .nonce
+            .as_slice()
+            .try_into()
+            .map_err(|_| EncryptionError::Malformed)?;
         let decrypted = Zeroizing::new(
             cipher
-                .decrypt(nonce_arr, self.encrypted_private_key.as_slice())
+                .decrypt(nonce_arr.into(), self.encrypted_private_key.as_slice())
                 .map_err(|_| EncryptionError::WrongPassword)?,
         );
 
@@ -280,7 +286,7 @@ impl SingleKeyWallet {
             uses_password,
             public_key,
             address,
-            alias,
+            initial_alias: alias,
             key_hash,
             confirmed_balance: 0,
             unconfirmed_balance: 0,
@@ -411,6 +417,31 @@ impl SingleKeyWallet {
 mod tests {
     use super::*;
 
+    /// Known-answer vector for the at-rest single-key envelope, generated
+    /// independently with Python `cryptography` 46 (OpenSSL): Argon2id v0x13
+    /// m=19456 KiB t=2 p=1 (the `argon2` crate's `Params::DEFAULT`) over
+    /// "correct horse battery staple" / salt 00..0f, then AES-256-GCM with
+    /// nonce 00..0b over the private key 80..9f. Existing encrypted rows must
+    /// keep decrypting across `argon2` / `aes-gcm` bumps.
+    #[test]
+    fn decrypt_private_key_opens_golden_envelope() {
+        let expected: [u8; 32] = std::array::from_fn(|i| 0x80 + i as u8);
+        let closed = ClosedSingleKey {
+            key_hash: ClosedSingleKey::compute_key_hash(&expected),
+            encrypted_private_key: hex::decode(
+                "5f344d9e0e9197f24cddd9dadef127469ec1c5e930aa19cfa3eff9394696f1bf\
+                 0348eb0411f3a46f98de2e74f5b2d247",
+            )
+            .expect("ciphertext hex"),
+            salt: (0u8..16).collect(),
+            nonce: (0u8..12).collect(),
+        };
+        let decrypted = closed
+            .decrypt_private_key("correct horse battery staple")
+            .expect("an envelope written by the previous crate versions must still decrypt");
+        assert_eq!(decrypted, expected);
+    }
+
     #[test]
     fn test_create_single_key_wallet_no_password() {
         let private_key = [42u8; 32];
@@ -424,7 +455,7 @@ mod tests {
 
         assert!(wallet.is_open());
         assert!(!wallet.uses_password);
-        assert_eq!(wallet.alias, Some("Test".to_string()));
+        assert_eq!(wallet.initial_alias, Some("Test".to_string()));
         assert!(wallet.private_key(Network::Testnet).is_some());
     }
 
@@ -495,7 +526,7 @@ mod tests {
             uses_password: true,
             public_key,
             address,
-            alias: None,
+            initial_alias: None,
             key_hash: closed.key_hash,
             confirmed_balance: 0,
             unconfirmed_balance: 0,

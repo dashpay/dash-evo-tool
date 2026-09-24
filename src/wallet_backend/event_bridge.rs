@@ -286,6 +286,12 @@ impl EventHandler for EventBridge {
                 *wallet_id
             }
             WalletEvent::SyncHeightAdvanced { wallet_id, .. } => *wallet_id,
+            WalletEvent::TransactionsSwept {
+                wallet_id, txids, ..
+            } => {
+                self.snapshots.remove_transactions(wallet_id, txids);
+                *wallet_id
+            }
             WalletEvent::ChainLockProcessed { wallet_id, .. } => {
                 // Upstream chain-lock notification: no transaction deltas to
                 // accumulate, but balances may shift from unconfirmed to
@@ -557,16 +563,24 @@ fn stale_after_empty_found(
 }
 
 /// Collect `(wallet_id, balance_credits)` for every wallet that synced
-/// successfully in `summary`. Skipped (no bound shielded sub-wallet) and
-/// errored wallets are excluded so their snapshot balance is left untouched.
-/// Pure — no I/O — so it is unit-testable without a coordinator or a
-/// registered wallet.
+/// successfully in `summary`. Skipped, errored, and overflowing wallets are
+/// excluded so their snapshot balance is left untouched.
 fn summary_ok_balances(summary: &ShieldedSyncPassSummary) -> Vec<([u8; 32], u64)> {
     summary
         .wallet_results
         .iter()
         .filter_map(|(wallet_id, outcome)| match outcome {
-            WalletShieldedOutcome::Ok(sync) => Some((*wallet_id, sync.balance_total())),
+            WalletShieldedOutcome::Ok(sync) => match sync.balance_total() {
+                Ok(balance) => Some((*wallet_id, balance)),
+                Err(error) => {
+                    tracing::debug!(
+                        ?wallet_id,
+                        ?error,
+                        "Shielded sync balance total is invalid; preserving the cached balance"
+                    );
+                    None
+                }
+            },
             WalletShieldedOutcome::Skipped | WalletShieldedOutcome::Err(_) => None,
         })
         .collect()
@@ -994,6 +1008,33 @@ mod tests {
     }
 
     #[test]
+    fn swept_transactions_leave_history_without_removing_other_wallets() {
+        let (bridge, _cs, mut rx) = make_bridge();
+        let swept = received_record(&funding_address(), 100);
+        let retained = received_record(&funding_address(), 200);
+        let txid = swept.txid;
+        bridge
+            .snapshots
+            .accumulate_transactions(&[9; 32], [&swept, &retained]);
+        bridge.snapshots.accumulate_transactions(&[8; 32], [&swept]);
+
+        bridge.on_wallet_event(&WalletEvent::TransactionsSwept {
+            wallet_id: [9; 32],
+            txids: vec![txid],
+            superseded_by: retained.txid,
+            winner_mined_height: None,
+            released_outpoints: Vec::new(),
+            balance: WalletCoreBalance::default(),
+            account_balances: BTreeMap::new(),
+        });
+
+        assert_eq!(bridge.snapshots.transaction_status(&[9; 32], &txid), None);
+        assert_eq!(bridge.snapshots.transaction_count(&[9; 32]), 1);
+        assert_eq!(bridge.snapshots.transaction_count(&[8; 32]), 1);
+        assert!(drained_repaint(&mut rx));
+    }
+
+    #[test]
     fn live_event_for_hydrated_txid_upserts_without_duplicate() {
         let (bridge, _cs, _rx) = make_bridge();
         let wallet_id = [9u8; 32];
@@ -1165,12 +1206,19 @@ mod tests {
         summary
             .wallet_results
             .insert([3u8; 32], WalletShieldedOutcome::Err("boom".to_string()));
+        summary.wallet_results.insert(
+            [4u8; 32],
+            WalletShieldedOutcome::Ok(ShieldedSyncSummary {
+                balances: BTreeMap::from([(0, u64::MAX), (1, 1)]),
+                ..Default::default()
+            }),
+        );
 
         let got = summary_ok_balances(&summary);
         assert_eq!(
             got,
             vec![([1u8; 32], 1_234)],
-            "only the Ok wallet contributes its summed balance_total"
+            "only a successful wallet with a representable total contributes a balance"
         );
     }
 

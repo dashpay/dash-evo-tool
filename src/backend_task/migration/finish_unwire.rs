@@ -13,15 +13,17 @@ use std::sync::Arc;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
+use platform_wallet_storage::secrets::SecretString;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
 use crate::backend_task::dapi_discovery::persist_dapi_addresses;
 use crate::backend_task::error::TaskError;
-use crate::context::AppContext;
 use crate::context::migration_status::{MigrationState, MigrationStep};
+use crate::context::{AppContext, WalletUnlockRetention};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::WalletSeedHash;
+use crate::wallet_backend::secret_access::is_wrong_passphrase;
 use crate::wallet_backend::{DetScope, KvAdapterError, network_prefix};
 
 /// Sentinel key format string. The migration body filters every
@@ -277,6 +279,27 @@ pub enum MigrationError {
     )]
     InteractivePromptUnavailable,
 
+    /// The password supplied for a non-interactive storage update does not
+    /// open one of the password-protected wallets. Nothing is skipped on the
+    /// user's behalf: the completion sentinel is withheld, and the update can
+    /// be retried with the right password or finished in the desktop app.
+    #[error(
+        "The password does not open every password-protected wallet. Check the password and try again, or open the Dash Evo Tool desktop app to finish the storage update."
+    )]
+    WalletPasswordRejected {
+        #[source]
+        source: Box<TaskError>,
+    },
+
+    /// A supplied password could not open a wallet for a reason other than the
+    /// password itself: the vault read or the re-seal under that password
+    /// failed. The completion sentinel is withheld so a re-run retries.
+    #[error("could not open a password-protected wallet with the supplied password")]
+    WalletUnlockFailed {
+        #[source]
+        source: Box<TaskError>,
+    },
+
     /// A pass reported an error that is not a [`MigrationError`]. Every pass is
     /// meant to report through one of the typed variants above; this catch-all
     /// exists so a stray error still reaches a terminal banner. Leaving one
@@ -288,7 +311,7 @@ pub enum MigrationError {
         source: Box<TaskError>,
     },
 
-    /// Post-migration re-hydration of `ctx.wallets` from the freshly
+    /// Post-migration re-hydration of the wallet context's HD registry from the freshly
     /// populated sidecars failed, so the migrated wallets were not
     /// reconstructed in memory and could not be registered upstream. The
     /// completion sentinel is withheld so the next cold boot — which
@@ -347,7 +370,8 @@ pub(crate) fn migration_error_chain(error: TaskError) -> Arc<MigrationError> {
         TaskError::MigrationFailed { source }
         | TaskError::SavedDataTooOld { source }
         | TaskError::SavedDataTooNew { source }
-        | TaskError::StorageUpdateNeedsDesktop { source } => source,
+        | TaskError::StorageUpdateNeedsDesktop { source }
+        | TaskError::StorageUpdatePasswordRejected { source } => source,
         other => Arc::new(MigrationError::Unexpected {
             source: Box::new(other),
         }),
@@ -403,7 +427,7 @@ async fn refresh_dapi_nodes_once(app_context: &Arc<AppContext>) {
 
 /// Runs one best-effort refresh with an injected discovery operation.
 ///
-/// Run-triggered passes still hold their per-context `migration_run`, while migration and manual refresh
+/// Run-triggered passes still hold their per-context `prepare_gate`, while migration and manual refresh
 /// share a process-wide guard across whole-file config persistence, including different network contexts.
 async fn refresh_dapi_nodes_once_with<D, F>(app_context: &Arc<AppContext>, discover: D)
 where
@@ -546,7 +570,7 @@ fn write_dapi_refresh_completion(
 ///    registration) — the pass that restores access to funds.
 /// 3. **Identities** (identity rows and the keys they hold) — last, because it
 ///    needs the drain's output: a wired backend, a reachable vault, and a
-///    hydrated `ctx.wallets` for wallet-derived identity keys to attach to.
+///    hydrated the wallet context's HD registry for wallet-derived identity keys to attach to.
 ///
 /// **Neither DET-owned pass gates the other.** The wallet drain runs regardless
 /// of the app-data outcome, and the identity import runs regardless of it too —
@@ -598,12 +622,13 @@ fn write_dapi_refresh_completion(
 /// both signals) rather than an `Err` that this boundary would publish as a
 /// plain `Failed`, dropping the identity count.
 pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
-    let _run_guard = match app_context.migration_run.try_lock() {
+    let _run_guard = match app_context.try_lock_prepare_gate() {
         Ok(guard) => guard,
         Err(_) => {
-            let guard = app_context.migration_run.lock().await;
+            let guard = app_context.lock_prepare_gate().await;
             match app_context.migration_status().state().as_ref() {
-                MigrationState::Failed { error } => {
+                MigrationState::Failed { error }
+                | MigrationState::FailedWithUnreadableIdentities { error, .. } => {
                     let result = Err(super::migration_task_error(Arc::clone(error)));
                     drop(guard);
                     return result;
@@ -617,7 +642,32 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
         }
     };
 
-    match run_under_guard(app_context).await {
+    run_gated(app_context, &_run_guard, None).await
+}
+
+/// The drain body, for a caller that already owns
+/// [`AppContext::prepare_gate`](crate::context::AppContext), proved by the
+/// borrowed guard.
+///
+/// [`AppContext::prepare_storage`] holds the gate across wiring *and* the drain
+/// so the two are one ordering rather than two racing claims; it therefore
+/// cannot go through [`run`], whose own acquire would deadlock against it. The
+/// guard parameter is proof, not decoration: without it this function is a
+/// silently unguarded copy of [`run`] that any future caller could reach.
+///
+/// `wallet_password` is the non-interactive storage update's password for the
+/// password-protected wallets; see [`register_migrated_wallets`].
+///
+/// # Errors
+///
+/// Same as [`run`], plus [`TaskError::StorageUpdatePasswordRejected`] when
+/// `wallet_password` does not open every locked wallet.
+pub(crate) async fn run_gated(
+    app_context: &Arc<AppContext>,
+    _gate: &crate::context::PrepareGateGuard<'_>,
+    wallet_password: Option<&SecretString>,
+) -> Result<bool, TaskError> {
+    match run_under_guard(app_context, wallet_password).await {
         Ok(did_work) => Ok(did_work),
         Err(task_error) => {
             if !app_context.migration_status().state().is_in_progress() {
@@ -634,7 +684,7 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
     }
 }
 
-/// Waits for the launching pass, then holds `migration_run` through refresh.
+/// Waits for the launching pass, then holds `prepare_gate` through refresh.
 /// Operations that claim this guard stay gated until the detached work completes.
 fn spawn_dapi_refresh<F>(app_context: &Arc<AppContext>, refresh: F) -> tokio::task::JoinHandle<()>
 where
@@ -642,23 +692,27 @@ where
 {
     let ctx = Arc::clone(app_context);
     tokio::spawn(async move {
-        let _refresh_guard = ctx.migration_run.lock().await;
+        let _refresh_guard = ctx.lock_prepare_gate().await;
         refresh.await;
     })
 }
 
 /// Queues refresh before migration so its waiter acquires the guard at completion.
-async fn run_under_guard(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
+async fn run_under_guard(
+    app_context: &Arc<AppContext>,
+    wallet_password: Option<&SecretString>,
+) -> Result<bool, TaskError> {
     let ctx = Arc::clone(app_context);
     std::mem::drop(spawn_dapi_refresh(app_context, async move {
         refresh_dapi_nodes_once(&ctx).await;
     }));
-    run_under_guard_with_dapi_refresh(app_context, std::future::ready(())).await
+    run_under_guard_with_dapi_refresh(app_context, std::future::ready(()), wallet_password).await
 }
 
 async fn run_under_guard_with_dapi_refresh<F>(
     app_context: &Arc<AppContext>,
     dapi_refresh: F,
+    wallet_password: Option<&SecretString>,
 ) -> Result<bool, TaskError>
 where
     F: Future<Output = ()>,
@@ -683,7 +737,7 @@ where
     // is what restores access to funds, so nothing about DET's own rows may gate
     // it. Propagating here would let one bad vote row wedge the drain on every
     // launch, with no user-reachable way out.
-    let wallet_moved = match drain_wallets(app_context).await {
+    let wallet_moved = match drain_wallets(app_context, wallet_password).await {
         Ok(moved) => moved,
         Err(drain_error) => {
             if let Err(app_data_error) = &app_data {
@@ -702,7 +756,7 @@ where
     // the two DET-owned passes must not gate each other.
     //
     // The identity pass needs the drain's output (backend wired, vault reachable,
-    // `ctx.wallets` hydrated) so a wallet-derived key lands against a wallet that
+    // the wallet context's HD registry hydrated) so a wallet-derived key lands against a wallet that
     // exists. It must NOT wait on the app-data result: a hard app-data failure —
     // one malformed vote-index blob is enough — is deterministic, so unwrapping
     // it first would skip the identity import on this launch *and every retry*
@@ -901,7 +955,10 @@ where
 /// no-op paths (sentinel already present, or no legacy rows at all). This is
 /// the funds path: [`run`] keeps it free of every DET-owned concern so nothing
 /// but a genuine wallet-migration failure can withhold access to a seed.
-async fn drain_wallets(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
+async fn drain_wallets(
+    app_context: &Arc<AppContext>,
+    wallet_password: Option<&SecretString>,
+) -> Result<bool, TaskError> {
     let status = app_context.migration_status();
     let app_kv = app_context.app_kv();
     let network = app_context.network;
@@ -976,7 +1033,7 @@ async fn drain_wallets(app_context: &Arc<AppContext>) -> Result<bool, TaskError>
     // wallet is still absent from `det-<net>.sqlite`. On failure
     // this returns `Err` (the sentinel is skipped) so the next cold start — or
     // the "Retry now" banner — re-runs the idempotent migration.
-    register_migrated_wallets(app_context).await?;
+    register_migrated_wallets(app_context, wallet_password).await?;
 
     write_sentinel(&app_kv, network, 1)?;
 
@@ -1012,7 +1069,7 @@ impl Drop for RunSeedLeases<'_> {
     }
 }
 
-/// Re-hydrates just-migrated wallets into `ctx.wallets`, registers open wallets,
+/// Re-hydrates just-migrated wallets into the wallet context's HD registry, registers open wallets,
 /// and waits for the UI to unlock or explicitly skip each protected wallet.
 /// [`run`] calls this immediately before [`write_sentinel`], so every open wallet
 /// is registered before completion; a skipped wallet remains closed in its
@@ -1024,7 +1081,17 @@ impl Drop for RunSeedLeases<'_> {
 /// and neither ordering is guaranteed. The run therefore holds its own lease on
 /// every seed it prompted for (`WalletUnlockRetention::UntilStorageUpdateComplete`)
 /// rather than depending on the unlock subtask still being alive.
-async fn register_migrated_wallets(app_context: &Arc<AppContext>) -> Result<(), MigrationError> {
+///
+/// `wallet_password` is supplied by the non-interactive storage update: it is
+/// tried on every locked wallet (see [`unlock_with_supplied_password`]) before
+/// any prompt is considered, so a correct one finishes the update headless and
+/// a wrong one fails it immediately. Without it, a headless caller still gets
+/// [`MigrationError::InteractivePromptUnavailable`] at once — nothing here
+/// ever waits for a person who is not there.
+async fn register_migrated_wallets(
+    app_context: &Arc<AppContext>,
+    wallet_password: Option<&SecretString>,
+) -> Result<(), MigrationError> {
     let _seed_leases = RunSeedLeases(app_context);
 
     let backend = app_context
@@ -1042,7 +1109,7 @@ async fn register_migrated_wallets(app_context: &Arc<AppContext>) -> Result<(), 
             source: Box::new(source),
         })?;
 
-    // Re-run the cold-boot W2 bridge now that `ctx.wallets` is populated, so the
+    // Re-run the cold-boot W2 bridge now that the wallet context's HD registry is populated, so the
     // just-migrated open wallets are registered upstream (`id_map` + persistor)
     // without a restart.
     app_context.bootstrap_loaded_wallets().await;
@@ -1050,6 +1117,11 @@ async fn register_migrated_wallets(app_context: &Arc<AppContext>) -> Result<(), 
     app_context
         .migration_status()
         .begin_wallet_password_collection();
+    if let Some(password) = wallet_password {
+        unlock_with_supplied_password(app_context, password)?;
+        // Same re-drive the prompt loop below runs after each unlock.
+        app_context.bootstrap_loaded_wallets().await;
+    }
     loop {
         let wallets = app_context
             .migration_status()
@@ -1073,6 +1145,47 @@ async fn register_migrated_wallets(app_context: &Arc<AppContext>) -> Result<(), 
     let unregistered = app_context.unregistered_open_wallet_count();
     if unregistered > 0 {
         return Err(MigrationError::RegistrationIncomplete { unregistered });
+    }
+    Ok(())
+}
+
+/// Opens every migrated wallet still locked with `password`, through
+/// [`AppContext::handle_wallet_unlocked`] — the verification boundary the
+/// desktop password prompt submits to — and holds each seed until the update
+/// ends, exactly as a prompt unlock does
+/// ([`WalletUnlockRetention::UntilStorageUpdateComplete`]).
+///
+/// One password serves every locked wallet. A wallet it does not open fails
+/// the update with [`MigrationError::WalletPasswordRejected`] instead of being
+/// skipped: skipping is the user's decision, and a mistyped password must not
+/// make it for them. Wallets opened before the rejection stay registered and
+/// protected; the completion sentinel is withheld, so a re-run revisits them.
+fn unlock_with_supplied_password(
+    app_context: &Arc<AppContext>,
+    password: &SecretString,
+) -> Result<(), MigrationError> {
+    let locked = app_context
+        .migration_status()
+        .pending_wallet_passwords(app_context.locked_wallet_hashes());
+    for seed_hash in locked {
+        // A wallet removed since the listing has nothing left to unlock.
+        let Ok(wallet) = app_context.wallet_arc(&seed_hash) else {
+            continue;
+        };
+        app_context
+            .handle_wallet_unlocked(
+                &wallet,
+                password.expose_secret(),
+                WalletUnlockRetention::UntilStorageUpdateComplete,
+            )
+            .map_err(|source| {
+                let source = Box::new(source);
+                if is_wrong_passphrase(&source) {
+                    MigrationError::WalletPasswordRejected { source }
+                } else {
+                    MigrationError::WalletUnlockFailed { source }
+                }
+            })?;
     }
     Ok(())
 }
@@ -1591,7 +1704,7 @@ fn write_identity_progress(
 
 /// Record an explicit identity deletion before removing its modern record.
 /// A later partial-pass retry then skips the stale legacy row. The caller holds
-/// `migration_run` across this marker and the complete modern-store deletion.
+/// `prepare_gate` across this marker and the complete modern-store deletion.
 pub(crate) fn record_identity_deletion(
     app_context: &AppContext,
     id: [u8; 32],
@@ -1616,7 +1729,7 @@ pub(crate) fn record_identity_deletion(
 /// the modern identity store.
 ///
 /// Runs after the wallet drain: the k/v store, the secret vault and a hydrated
-/// `ctx.wallets` all have to exist first. Idempotent — an identity already in
+/// the wallet context's HD registry all have to exist first. Idempotent — an identity already in
 /// the store is left alone, so a retry can never overwrite an alias the user has
 /// since edited with the stale legacy copy.
 ///
@@ -1708,7 +1821,16 @@ fn migrate_identities(
                     "Importing an identity whose wallet is not present; the link is kept so it re-attaches when that wallet is restored",
                 );
             }
-            app_context.insert_local_qualified_identity(qi, wallet)
+            // Gated exactly as a discovery pass is, and through the same
+            // critical section: an import is the machine finding an identity,
+            // never the user asking for one back, so it consults the unload
+            // marker and never retires it.
+            let mut qi = qi.clone();
+            app_context.store_discovered_identity(
+                &mut qi,
+                wallet,
+                crate::model::identity_discovery::DiscoveryIntent::Automatic,
+            )
         },
     )?;
 
@@ -1716,6 +1838,7 @@ fn migrate_identities(
         target = "migration::finish_unwire",
         imported = outcome.imported,
         skipped_existing = outcome.skipped_existing,
+        skipped_unloaded = outcome.skipped_unloaded,
         unreadable = outcome.unreadable,
         network = ?network,
         "Identity migration pass complete",
@@ -1759,7 +1882,7 @@ fn migrate_identities_from_conn<R, H, I>(
 where
     R: FnMut(&BTreeSet<[u8; 32]>) -> Result<(), MigrationError>,
     H: FnMut([u8; 32]) -> Result<bool, TaskError>,
-    I: FnMut(&QualifiedIdentity, &Option<(WalletSeedHash, u32)>) -> Result<(), TaskError>,
+    I: FnMut(&QualifiedIdentity, &Option<(WalletSeedHash, u32)>) -> Result<bool, TaskError>,
 {
     let import_failed = |source: TaskError| MigrationError::IdentityImportFailed {
         source: Box::new(source),
@@ -1805,7 +1928,16 @@ where
         // The wallet link travels verbatim, never nulled — even when that wallet
         // did not come across: it is what re-attaches the identity when the
         // wallet is restored or unlocked later.
-        insert(&row.qi, &row.wallet).map_err(import_failed)?;
+        if !insert(&row.qi, &row.wallet).map_err(import_failed)? {
+            // Counted apart from `skipped_existing`, which would state
+            // something untrue about why this row was left out: nothing is in
+            // the store, and the row was declined rather than found redundant.
+            // Not recorded as processed either — a later pass re-offers it, and
+            // is declined again unless the user has loaded the identity back by
+            // then, which is the only thing that should change the answer.
+            outcome.skipped_unloaded = outcome.skipped_unloaded.saturating_add(1);
+            continue;
+        }
         processed.insert(row.id);
         record_processed(processed)?;
         outcome.imported = outcome.imported.saturating_add(1);
@@ -1821,6 +1953,11 @@ struct IdentityMigrationOutcome {
     imported: u32,
     /// Identities already in the store and therefore left untouched.
     skipped_existing: u32,
+    /// Identities the user unloaded from this device, which the import must not
+    /// hand back. Distinct from `skipped_existing`: nothing is in the store for
+    /// these, and saying otherwise would make the migration report misstate its
+    /// own reason for skipping them.
+    skipped_unloaded: u32,
     /// Legacy rows that could not be decoded. Recorded as a durable
     /// [`UnreadableIdentitiesWarning`] so the user still hears about them, but
     /// never fails the pass — the identities that *did* decode must not be held
@@ -1940,7 +2077,7 @@ struct SingleKeyMigrationOutcome {
 /// `single_key_priv.<addr>` label. Idempotent. Password-protected rows
 /// are skipped and reported separately, not as failures.
 async fn migrate_single_key_rows(app_context: &Arc<AppContext>) -> Result<(), TaskError> {
-    let backend = app_context
+    app_context
         .wallet_backend()
         .map_err(|_| MigrationError::WalletBackendUnavailable)?;
 
@@ -1953,10 +2090,17 @@ async fn migrate_single_key_rows(app_context: &Arc<AppContext>) -> Result<(), Ta
     }
     let conn = open_legacy_read_only(&path)?;
 
-    let view = backend.single_key();
     let outcome = migrate_single_key_rows_from_conn(
         &conn,
-        |wif, alias| view.import_wif(wif, alias).map(|_| ()),
+        |wif, alias| {
+            app_context
+                .import_single_key_wif(
+                    wif,
+                    crate::model::wallet::alias::AliasSource::Preserved(alias),
+                    Default::default(),
+                )
+                .map(|_| ())
+        },
         app_context.network,
     )?;
     tracing::info!(
@@ -2611,9 +2755,9 @@ impl From<MigrationError> for TaskError {
 }
 
 /// Test-only synchronization helper: `run` deliberately detaches its DAPI
-/// refresh onto a spawned task that queues for `migration_run` behind the
+/// refresh onto a spawned task that queues for `prepare_gate` behind the
 /// caller's own guard (see [`spawn_dapi_refresh`]). A test that calls another
-/// `migration_run`-guarded operation (e.g. `delete_local_qualified_identity`)
+/// `prepare_gate`-guarded operation (e.g. `delete_local_qualified_identity`)
 /// right after `run` returns races that detached task — yield so it queues
 /// for the guard, then acquire the same guard after the refresh releases it.
 ///
@@ -2623,7 +2767,7 @@ impl From<MigrationError> for TaskError {
 #[cfg(test)]
 pub(crate) async fn wait_for_dapi_refresh(app_context: &Arc<AppContext>) {
     tokio::task::yield_now().await;
-    let guard = app_context.migration_run.lock().await;
+    let guard = app_context.lock_prepare_gate().await;
     drop(guard);
 }
 
@@ -2634,6 +2778,7 @@ mod tests {
     use crate::config::{CONFIG_ENV_LOCK, Config, NetworkConfig};
     use crate::wallet_backend::DetKv;
     use crate::wallet_backend::kv_test_support::InMemoryKv;
+    use crate::wallet_backend::poison::RwLockRecover;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn kv() -> DetKv {
@@ -3076,7 +3221,7 @@ mod tests {
             calls.fetch_add(1, Ordering::SeqCst);
             Err(crate::backend_task::dapi_discovery::DapiDiscoveryError::Timeout)
         });
-        let did_work = run_under_guard_with_dapi_refresh(&ctx, refresh)
+        let did_work = run_under_guard_with_dapi_refresh(&ctx, refresh, None)
             .await
             .expect("DAPI discovery must not fail the migration");
 
@@ -3572,7 +3717,7 @@ mod tests {
                         .imported
                         .borrow_mut()
                         .push(qi.identity.id().to_buffer());
-                    Ok(())
+                    Ok(true)
                 },
             )
             .expect("an undecodable row must not fail the pass");
@@ -3617,7 +3762,7 @@ mod tests {
                         .imported
                         .borrow_mut()
                         .push(qi.identity.id().to_buffer());
-                    Ok(())
+                    Ok(true)
                 },
             )
             .expect("import");
@@ -3655,7 +3800,7 @@ mod tests {
                         .imported
                         .borrow_mut()
                         .push(qi.identity.id().to_buffer());
-                    Ok(())
+                    Ok(true)
                 },
             )
             .expect("presence check");
@@ -3694,7 +3839,7 @@ mod tests {
                     if id == failing {
                         Err(TaskError::WalletNotFound)
                     } else {
-                        Ok(())
+                        Ok(true)
                     }
                 },
             );
@@ -3712,7 +3857,7 @@ mod tests {
                 |_| Ok(false),
                 |qi, _| {
                     attempts.borrow_mut().push(qi.identity.id().to_buffer());
-                    Ok(())
+                    Ok(true)
                 },
             )
             .expect("retry");
@@ -3749,7 +3894,7 @@ mod tests {
                         .imported
                         .borrow_mut()
                         .push(qi.identity.id().to_buffer());
-                    Ok(())
+                    Ok(true)
                 },
             )
             .expect("import");
@@ -3789,7 +3934,7 @@ mod tests {
                 |_| Ok(false),
                 |_, wallet| {
                     links.borrow_mut().push(*wallet);
-                    Ok(())
+                    Ok(true)
                 },
             )
             .expect("import");
@@ -3974,16 +4119,14 @@ mod tests {
         network: dash_sdk::dpp::dashcore::Network,
     ) -> (
         Arc<platform_wallet_storage::secrets::SecretStore>,
-        std::sync::RwLock<
-            std::collections::BTreeMap<String, crate::model::single_key::ImportedKey>,
-        >,
+        crate::wallet_backend::wallet_context::WalletContext,
         dash_sdk::dpp::dashcore::Network,
     ) {
         let store = Arc::new(
             crate::wallet_backend::single_key::open_secret_store(&dir.join("secrets.pwsvault"))
                 .expect("open vault"),
         );
-        let index = std::sync::RwLock::new(std::collections::BTreeMap::new());
+        let index = crate::wallet_backend::wallet_context::WalletContext::default();
         (store, index, network)
     }
 
@@ -4031,14 +4174,20 @@ mod tests {
         let (store, index, network) = view_fixture(dir.path(), Network::Testnet);
         let view = SingleKeyView {
             secret_store: &store,
-            index: &index,
+            context: &index,
             network,
             app_kv: None,
         };
 
         let outcome = migrate_single_key_rows_from_conn(
             &conn,
-            |wif, alias| view.import_wif(wif, alias).map(|_| ()),
+            |wif, alias| {
+                view.import_wif(
+                    wif,
+                    crate::model::wallet::alias::AliasSource::Preserved(alias),
+                )
+                .map(|_| ())
+            },
             Network::Testnet,
         )
         .expect("migrate");
@@ -4104,20 +4253,32 @@ mod tests {
         let (store, index, network) = view_fixture(dir.path(), Network::Testnet);
         let view = SingleKeyView {
             secret_store: &store,
-            index: &index,
+            context: &index,
             network,
             app_kv: None,
         };
 
         let first = migrate_single_key_rows_from_conn(
             &conn,
-            |wif, alias| view.import_wif(wif, alias).map(|_| ()),
+            |wif, alias| {
+                view.import_wif(
+                    wif,
+                    crate::model::wallet::alias::AliasSource::Preserved(alias),
+                )
+                .map(|_| ())
+            },
             Network::Testnet,
         )
         .expect("first pass");
         let second = migrate_single_key_rows_from_conn(
             &conn,
-            |wif, alias| view.import_wif(wif, alias).map(|_| ()),
+            |wif, alias| {
+                view.import_wif(
+                    wif,
+                    crate::model::wallet::alias::AliasSource::Preserved(alias),
+                )
+                .map(|_| ())
+            },
             Network::Testnet,
         )
         .expect("second pass");
@@ -4195,14 +4356,20 @@ mod tests {
         let (store, index, network) = view_fixture(dir.path(), Network::Testnet);
         let view = SingleKeyView {
             secret_store: &store,
-            index: &index,
+            context: &index,
             network,
             app_kv: None,
         };
 
         let outcome = migrate_single_key_rows_from_conn(
             &conn,
-            |wif, alias| view.import_wif(wif, alias).map(|_| ()),
+            |wif, alias| {
+                view.import_wif(
+                    wif,
+                    crate::model::wallet::alias::AliasSource::Preserved(alias),
+                )
+                .map(|_| ())
+            },
             Network::Testnet,
         )
         .expect("partial failure must not abort the loop");
@@ -5202,7 +5369,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = fresh_app_context(tmp.path());
         let deleted = [0x44; 32];
-        let _migration_guard = ctx.migration_run.try_lock().expect("claim migration lock");
+        let _migration_guard = ctx.try_lock_prepare_gate().expect("claim migration lock");
 
         assert!(matches!(
             ctx.delete_local_qualified_identity(&Identifier::from(deleted)),
@@ -5221,7 +5388,7 @@ mod tests {
     async fn public_migration_run_waits_behind_idle_deletion_guard() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = fresh_app_context(tmp.path());
-        let migration_guard = ctx.migration_run.try_lock().expect("claim migration lock");
+        let migration_guard = ctx.try_lock_prepare_gate().expect("claim migration lock");
         let follower_ctx = Arc::clone(&ctx);
         let follower = tokio::spawn(async move { run(&follower_ctx).await });
         tokio::task::yield_now().await;
@@ -5249,11 +5416,43 @@ mod tests {
     async fn public_migration_follower_returns_the_published_failure() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = fresh_app_context(tmp.path());
-        let migration_guard = ctx.migration_run.try_lock().expect("claim migration lock");
+        let migration_guard = ctx.try_lock_prepare_gate().expect("claim migration lock");
         let source = Arc::new(MigrationError::WalletBackendUnavailable);
         ctx.migration_status().set_state(MigrationState::Failed {
             error: Arc::clone(&source),
         });
+        let follower_ctx = Arc::clone(&ctx);
+        let follower = tokio::spawn(async move { run(&follower_ctx).await });
+        tokio::task::yield_now().await;
+
+        assert!(
+            !follower.is_finished(),
+            "the follower must wait for the leader"
+        );
+        drop(migration_guard);
+        let error = follower
+            .await
+            .expect("join")
+            .expect_err("the follower must return the leader's failure");
+
+        assert!(matches!(
+            error,
+            TaskError::MigrationFailed { source: returned }
+                if Arc::ptr_eq(&returned, &source)
+        ));
+    }
+
+    #[tokio::test]
+    async fn public_migration_follower_returns_the_combined_failure() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+        let migration_guard = ctx.try_lock_prepare_gate().expect("claim migration lock");
+        let source = Arc::new(MigrationError::WalletBackendUnavailable);
+        ctx.migration_status()
+            .set_state(MigrationState::FailedWithUnreadableIdentities {
+                count: 1,
+                error: Arc::clone(&source),
+            });
         let follower_ctx = Arc::clone(&ctx);
         let follower = tokio::spawn(async move { run(&follower_ctx).await });
         tokio::task::yield_now().await;
@@ -5291,6 +5490,76 @@ mod tests {
         );
     }
 
+    /// The import is gated on the unload marker itself, not only on the
+    /// progress set. That matters because the progress set does not cover every
+    /// unload: `record_identity_deletion` is a no-op once migration reports
+    /// success, and the devnet wipe clears identities without touching it at
+    /// all — so an import that trusted progress alone would hand those back.
+    ///
+    /// The pass here is handed an empty progress set, which is what a lost or
+    /// never-written progress key looks like.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unloaded_identity_is_declined_by_the_import_and_counted_apart() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+        wire_backend(&ctx).await;
+        let backend = ctx.wallet_backend().expect("backend wired");
+        let unloaded = [0x66; 32];
+        ctx.delete_local_qualified_identity(&Identifier::from(unloaded))
+            .expect("unload through the normal path");
+
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        identities::create_identity_table(&conn);
+        identities::insert_identity(
+            &conn,
+            unloaded,
+            Some(identities::identity_blob(unloaded)),
+            true,
+        );
+
+        let inserted = std::cell::Cell::new(false);
+        let outcome = migrate_identities_from_conn(
+            &conn,
+            ctx.network,
+            &mut BTreeSet::new(),
+            |_| Ok(()),
+            |_| Ok(false),
+            |qi, wallet| {
+                inserted.set(true);
+                let mut qi = qi.clone();
+                ctx.store_discovered_identity(
+                    &mut qi,
+                    wallet,
+                    crate::model::identity_discovery::DiscoveryIntent::Automatic,
+                )
+                .map_err(|_| TaskError::WalletNotFound)
+            },
+        )
+        .expect("migration pass");
+
+        assert!(
+            inserted.get(),
+            "precondition: the row must reach the import, or this proves nothing about the gate"
+        );
+        assert_eq!(
+            outcome.skipped_unloaded, 1,
+            "an unloaded identity must be counted as declined"
+        );
+        assert_eq!(
+            outcome.skipped_existing, 0,
+            "and never as already present, which would state something untrue about why \
+             it was left out"
+        );
+        assert_eq!(outcome.imported, 0, "nothing was imported");
+        assert!(
+            !ctx.has_local_qualified_identity(&Identifier::from(unloaded))
+                .expect("read identity store"),
+            "the unloaded identity must stay off this device"
+        );
+
+        backend.shutdown().await;
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn deletion_first_keeps_a_pending_legacy_identity_absent() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -5322,7 +5591,7 @@ mod tests {
             |_| Ok(false),
             |_, _| {
                 inserted.set(true);
-                Ok(())
+                Ok(true)
             },
         )
         .expect("migration pass");
@@ -5612,6 +5881,74 @@ mod tests {
             .expect("wallet backend must wire offline");
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn migration_retry_refreshes_hydrated_duplicate_key_names() {
+        use crate::model::wallet::alias::AliasSource;
+        use dash_sdk::dpp::dashcore::PrivateKey;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = fresh_app_context(tmp.path());
+        wire_backend(&ctx).await;
+        let backend = ctx.wallet_backend().unwrap();
+        let conn = Connection::open(ctx.db.db_file_path().unwrap()).unwrap();
+        for byte in [0x31, 0x32] {
+            let raw = [byte; 32];
+            let key = PrivateKey::from_byte_array(&raw, ctx.network).unwrap();
+            let mut imported = backend
+                .single_key()
+                .import_wif(&key.to_wif(), AliasSource::Preserved(Some("Dup".into())))
+                .unwrap();
+            imported.alias = Some("Dup".into());
+            ctx.app_kv()
+                .put(
+                    DetScope::Global,
+                    &format!("{}:single_key_meta:{}", ctx.network, imported.address),
+                    &imported,
+                )
+                .unwrap();
+            seed_legacy_row(
+                &conn,
+                &[byte; 32],
+                &raw,
+                &[],
+                &[],
+                &imported.address,
+                Some("Dup"),
+                false,
+                ctx.network,
+            );
+        }
+        backend.hydrate_context_wallets(&ctx).unwrap();
+        assert!(
+            ctx.wallet_context()
+                .single_key_wallets()
+                .values()
+                .all(|wallet| ctx
+                    .wallet_context()
+                    .single_alias(&wallet.read().unwrap().address.to_string())
+                    .as_deref()
+                    == Some("Dup"))
+        );
+
+        migrate_single_key_rows(&ctx).await.unwrap();
+        backend.hydrate_context_wallets(&ctx).unwrap();
+        let listed = backend.single_key().list();
+        assert_eq!(listed.len(), 2);
+        assert_ne!(listed[0].alias, listed[1].alias);
+        for wallet in ctx.wallet_context().single_key_wallets().values() {
+            let wallet = wallet.read().unwrap();
+            let stored = listed
+                .iter()
+                .find(|key| key.address == wallet.address.to_string())
+                .unwrap();
+            assert_eq!(
+                ctx.wallet_context()
+                    .single_alias(&wallet.address.to_string()),
+                stored.alias
+            );
+        }
+    }
+
     /// Stage the v0.10-dev vote queue: the legacy table plus the rows given as
     /// `(contested_name, vote_choice)`. A `vote_choice` the reader cannot parse
     /// is the corrupt row an upgrade has to survive.
@@ -5697,7 +6034,6 @@ mod tests {
     async fn skipped_protected_wallet_completes_and_registers_on_later_ordinary_unlock() {
         use crate::context::WalletUnlockRetention;
         use crate::wallet_backend::SecretScope;
-        use crate::wallet_backend::poison::RwLockRecover;
         use dash_sdk::dpp::dashcore::Network;
 
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -5860,6 +6196,153 @@ mod tests {
             .await;
     }
 
+    /// Runs the non-interactive storage update exactly as the
+    /// `app_storage_update` MCP tool does, bounded so a regression that waits
+    /// for a person fails instead of hanging.
+    async fn prepare_with_password(ctx: &Arc<AppContext>, password: &str) -> Result<(), TaskError> {
+        let (tx, _rx) = tokio::sync::mpsc::channel::<crate::app::TaskResult>(32);
+        let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, ctx.egui_ctx().clone());
+        let supplied = SecretString::new(password);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            ctx.prepare_storage_with_wallet_password(sender, Some(&supplied)),
+        )
+        .await
+        .expect("a non-interactive storage update must never wait for a person")
+    }
+
+    /// A headless caller that supplies the right password finishes the update
+    /// for every protected wallet sharing it: each is registered, keeps its
+    /// password protection, and its seed is forgotten once the update ends.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn supplied_password_finishes_a_headless_storage_update() {
+        use crate::wallet_backend::SecretScope;
+        use crate::wallet_backend::secret_seam::SecretScheme;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+        let password = "shared-headless-password";
+        let wallets = [
+            seed_legacy_protected_wallet(&ctx, &[0xD5; 64], password, "Savings", Network::Testnet),
+            seed_legacy_protected_wallet(&ctx, &[0xD6; 64], password, "Spending", Network::Testnet),
+        ];
+        let legacy_path = tmp.path().join("data.db");
+        let before = std::fs::read(&legacy_path).expect("snapshot legacy database before run");
+        wire_backend(&ctx).await;
+        assert!(
+            !ctx.has_interactive_secret_prompt(),
+            "precondition: a headless context with no password prompt"
+        );
+
+        prepare_with_password(&ctx, password)
+            .await
+            .expect("the right password must finish the storage update headless");
+
+        assert!(
+            read_sentinel(&ctx.app_kv(), Network::Testnet)
+                .expect("read the completion sentinel")
+                .is_some(),
+            "a finished update must record its completion"
+        );
+        let backend = ctx.wallet_backend().expect("backend wired");
+        let store = ctx.secret_store();
+        let view = crate::wallet_backend::WalletSeedView::new(&store);
+        for seed_hash in wallets {
+            assert!(
+                backend.is_wallet_registered(&seed_hash),
+                "every wallet the password opens must be registered"
+            );
+            assert_eq!(
+                view.scheme(&seed_hash).expect("scheme after the update"),
+                SecretScheme::Protected,
+                "a password-protected wallet must stay password-protected"
+            );
+        }
+
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        while wallets.iter().any(|seed_hash| {
+            backend
+                .secret_access()
+                .is_session_cached(&SecretScope::HdSeed {
+                    seed_hash: *seed_hash,
+                })
+        }) {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "a seed unlocked for the storage update must not outlive it"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert_eq!(
+            std::fs::read(&legacy_path).expect("snapshot legacy database after run"),
+            before,
+            "the legacy database bytes must never change"
+        );
+
+        backend.shutdown().await;
+    }
+
+    /// One password serves every protected wallet. A wallet it does not open
+    /// fails the whole update at once — nothing is skipped, no completion is
+    /// recorded, no prompt is published — and the rejection never echoes the
+    /// password.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_password_that_does_not_open_every_wallet_fails_closed() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+        let supplied = "opens-only-the-first-wallet";
+        seed_legacy_protected_wallet(&ctx, &[0xD7; 64], supplied, "Opens", Network::Testnet);
+        let refused = seed_legacy_protected_wallet(
+            &ctx,
+            &[0xD8; 64],
+            "a-different-password",
+            "Refuses",
+            Network::Testnet,
+        );
+        wire_backend(&ctx).await;
+
+        let error = prepare_with_password(&ctx, supplied)
+            .await
+            .expect_err("a password that does not open every wallet must fail");
+
+        match &error {
+            TaskError::StorageUpdatePasswordRejected { source } => assert!(
+                matches!(
+                    source.as_ref(),
+                    MigrationError::WalletPasswordRejected { .. }
+                ),
+                "unexpected source: {source:?}"
+            ),
+            other => panic!("expected the dedicated rejected-password error, got {other:?}"),
+        }
+        assert!(
+            !error.to_string().contains(supplied) && !format!("{error:?}").contains(supplied),
+            "the error must never carry the password"
+        );
+        assert!(
+            read_sentinel(&ctx.app_kv(), Network::Testnet)
+                .expect("read the completion sentinel")
+                .is_none(),
+            "an unfinished update must not record completion"
+        );
+        assert!(
+            ctx.locked_wallet_hashes().contains(&refused),
+            "the wallet the password does not open stays locked"
+        );
+        assert!(
+            !matches!(
+                ctx.migration_status().state().as_ref(),
+                MigrationState::AwaitingWalletPasswords { .. }
+            ),
+            "a headless context must never publish a prompt nobody can render"
+        );
+
+        ctx.wallet_backend()
+            .expect("backend wired")
+            .shutdown()
+            .await;
+    }
+
     /// The old SQLite file is a recovery artifact, not migration-owned state.
     /// A complete run that unlocks one protected wallet and skips another must
     /// leave the file byte-for-byte unchanged, and both copied legacy envelopes
@@ -5867,7 +6350,6 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn full_unlock_and_skip_run_leaves_legacy_database_unchanged() {
         use crate::context::WalletUnlockRetention;
-        use crate::wallet_backend::poison::RwLockRecover;
         use dash_sdk::dpp::dashcore::Network;
 
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -5980,7 +6462,6 @@ mod tests {
     /// and fatally, so this wallet stayed unreachable on every launch forever.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn run_completes_the_wallet_drain_despite_an_unreadable_vote_row() {
-        use crate::wallet_backend::poison::RwLockRecover;
         use dash_sdk::dpp::dashcore::Network;
 
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -6007,10 +6488,10 @@ mod tests {
             .await
             .expect("an unreadable vote row must not fail the wallet migration");
 
-        // Funds first: hydrated into `ctx.wallets`, registered in the same
+        // Funds first: hydrated into the wallet context's HD registry, registered in the same
         // `id_map` that `resolve_wallet` consults, and the drain recorded as done.
         assert!(
-            ctx.wallets.read_recover().contains_key(&seed_hash),
+            ctx.wallet_context().contains_hd(&seed_hash),
             "the migrated wallet must be visible after the migration",
         );
         assert!(
@@ -6174,7 +6655,6 @@ mod tests {
     /// neither DET-owned sentinel is written, so both retry on the next launch.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn both_app_data_and_identity_failures_surface_together() {
-        use crate::wallet_backend::poison::RwLockRecover;
         use dash_sdk::dpp::dashcore::Network;
 
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -6206,10 +6686,11 @@ mod tests {
         wire_backend(&ctx).await;
         let backend = ctx.wallet_backend().expect("backend wired");
 
-        let did_work = run(&ctx)
+        let (tx, _rx) = tokio::sync::mpsc::channel(32);
+        let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.prepare_storage(sender.clone())
             .await
-            .expect("both failures are non-fatal to the run — it publishes its own terminal state");
-        assert!(did_work, "the wallet drain moved data");
+            .expect("the combined failure publishes its own state");
 
         // Both signals in one terminal state: the identity count AND the app-data
         // error chain. The pre-fix `SucceededWithUnreadableIdentities` would have
@@ -6225,7 +6706,7 @@ mod tests {
 
         // Funds stay safe: the drain ran despite both DET-owned passes breaking.
         assert!(
-            ctx.wallets.read_recover().contains_key(&seed_hash),
+            ctx.wallet_context().contains_hd(&seed_hash),
             "the migrated wallet must be visible — neither DET-owned failure may block funds",
         );
         assert!(
@@ -6253,6 +6734,25 @@ mod tests {
             "an unreadable row is not a pass failure: the import completes, and the row is \
              reported by the durable warning rather than retried forever",
         );
+
+        Connection::open(tmp.path().join("data.db"))
+            .expect("open fixture")
+            .execute_batch("ALTER TABLE top_up ADD COLUMN amount INTEGER NOT NULL DEFAULT 1;")
+            .expect("repair fixture schema");
+        ctx.prepare_storage(sender)
+            .await
+            .expect("retry preparation");
+        assert!(
+            ctx.app_kv()
+                .get::<MigrationCompletion>(DetScope::Global, &app_data_sentinel_key_for(network))
+                .expect("read completion")
+                .is_some(),
+            "preparation must retry the unfinished app-data pass"
+        );
+        assert!(matches!(
+            *ctx.migration_status().state(),
+            MigrationState::SucceededWithUnreadableData { identities: 1, .. }
+        ));
 
         backend.shutdown().await;
     }

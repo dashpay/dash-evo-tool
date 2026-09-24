@@ -21,24 +21,20 @@ fn identity_hub_mounts_and_renders() {
     });
 }
 
-/// IT-NAV-01: The nav must keep the legacy `Identities` and `Dashpay` entries
-/// alongside the new hub so users can toggle between old and new.
+/// IT-NAV-01: The hub is a root distinct from the legacy `Dashpay` entry, and
+/// its on-disk encoding round-trips.
 #[test]
-fn legacy_nav_entries_coexist_with_hub() {
-    // We don't need to drive the UI for this one — it's a pure enum check.
-    // The `RootScreenType` enum must contain all three coexisting variants.
-    let legacy_identities = RootScreenType::RootScreenIdentities;
+fn hub_is_distinct_from_dashpay_and_round_trips() {
+    // A pure enum check — no need to drive the UI.
     // `RootScreenDashpay` is the legacy root nav entry for DashPay; the other
     // `RootScreenDashPay*` variants are sub-screens within that section.
     let legacy_dashpay_root = RootScreenType::RootScreenDashpay;
-    let new_hub = RootScreenType::RootScreenIdentityHub;
-    assert_ne!(legacy_identities, new_hub);
-    assert_ne!(legacy_dashpay_root, new_hub);
-    // Round-trip the new variant through on-disk encoding to verify the
-    // persistence contract is stable.
-    let encoded = new_hub.to_int();
+    let hub = RootScreenType::RootScreenIdentityHub;
+    assert_ne!(legacy_dashpay_root, hub);
+    // Round-trip through on-disk encoding to verify the persistence contract.
+    let encoded = hub.to_int();
     let decoded = RootScreenType::from_int(encoded).expect("hub variant must decode");
-    assert_eq!(new_hub, decoded);
+    assert_eq!(hub, decoded);
 }
 
 /// The hub screen must be reachable from the existing `create_screen`

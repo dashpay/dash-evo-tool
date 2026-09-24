@@ -78,7 +78,8 @@ current session"). Steps:
    `DASH_EVO_DATA_DIR=/data/tmp/det-qa-pr892-data`.
 5. App restored `QA Wallet 1` automatically on startup, balance showed correctly (3 DASH)
    immediately, even while the "Syncing with the Dash network" startup modal was still
-   showing (dismissed via "Continue in the background").
+   showing (dismissed via "Continue in the background", since superseded by a "Cancel" →
+   confirm step — see `docs/ai-design/2026-08-31-startup-linearization/`).
 6. Expanded Transaction History again: **all 3 transactions rendered correctly**, same
    amounts/timestamps/txids/ChainLock heights as before the restart.
    Screenshot: `WAL-016-2-tx-history-after-cold-boot-PASS.png`.

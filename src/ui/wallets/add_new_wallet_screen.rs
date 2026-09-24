@@ -1,14 +1,16 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
+use crate::ui::components::Component;
+use crate::ui::components::alias_input::AliasInput;
 use crate::ui::components::entropy_grid::U256EntropyGrid;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::helpers::{ModalOpeningGuard, clicked_outside_window_after_open};
-use crate::ui::identities::add_new_identity_screen::AddNewIdentityScreen;
-use crate::ui::identities::funding_common::generate_qr_code_image;
+use crate::ui::identity::add_new_identity_screen::AddNewIdentityScreen;
+use crate::ui::identity::funding_common::generate_qr_code_image;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{RootScreenType, Screen, ScreenLike};
 use bip39::{Language, Mnemonic};
@@ -54,7 +56,7 @@ pub struct AddNewWalletScreen {
     entropy_grid: U256EntropyGrid,
     selected_language: Language,
     selected_word_count: WordCount,
-    alias_input: String,
+    alias_input: AliasInput,
     wrote_it_down: bool,
     password_strength: f64,
     estimated_time_to_crack: String,
@@ -79,7 +81,10 @@ impl AddNewWalletScreen {
             entropy_grid: U256EntropyGrid::new(),
             selected_language: Language::English,
             selected_word_count: WordCount::Words24, // Default to 24 words for maximum security
-            alias_input: String::new(),
+            alias_input: AliasInput::new()
+                .with_label("Wallet name")
+                .with_hint_text("For example: Savings")
+                .with_desired_width(250.0),
             wrote_it_down: false,
             password_strength: 0.0,
             estimated_time_to_crack: "".to_string(),
@@ -94,6 +99,15 @@ impl AddNewWalletScreen {
             receive_popup_opening_guard: ModalOpeningGuard::default(),
             funds_received: false,
         }
+    }
+
+    /// Test-only seam: install a recovery phrase and confirm it was written
+    /// down, so an integration test can reach the name and save steps without
+    /// driving the entropy grid. Not exposed for production callers.
+    #[doc(hidden)]
+    pub fn set_seed_phrase_for_test(&mut self, mnemonic: Mnemonic) {
+        self.seed_phrase = Some(mnemonic);
+        self.wrote_it_down = true;
     }
 
     /// Generate a new seed phrase based on the selected language and word count
@@ -118,23 +132,13 @@ impl AddNewWalletScreen {
                 Some(self.password_input.secret().clone())
             };
 
-            // Generate default wallet name if none provided
-            let wallet_alias = if self.alias_input.trim().is_empty() {
-                let existing_wallet_count = self
-                    .app_context
-                    .wallets
-                    .read()
-                    .map(|w| w.len())
-                    .unwrap_or(0);
-                format!("Wallet {}", existing_wallet_count + 1)
-            } else {
-                self.alias_input.clone()
-            };
-
+            // The raw name goes to `register_wallet`, which cleans it, replaces
+            // a blank name with the smallest unused "Wallet N", and rejects a
+            // name another wallet already uses.
             let wallet = Wallet::new_from_seed(
                 seed,
                 self.app_context.network,
-                Some(wallet_alias),
+                Some(self.alias_input.text().to_owned()),
                 password.as_ref(),
             )
             .map_err(|e| e.to_string())?;
@@ -267,7 +271,7 @@ impl AddNewWalletScreen {
 
             if ui.button("Create Platform Identity").clicked() {
                 action = AppAction::PopThenAddScreenToMainScreen(
-                    RootScreenType::RootScreenIdentities,
+                    RootScreenType::RootScreenIdentityHub,
                     Screen::AddNewIdentityScreen(AddNewIdentityScreen::new_with_wallet(
                         &self.app_context,
                         self.created_wallet_seed_hash,
@@ -616,10 +620,7 @@ impl ScreenLike for AddNewWalletScreen {
 
                     ui.add_space(8.0);
 
-                    ui.horizontal(|ui| {
-                        ui.label("Wallet Name:");
-                        ui.text_edit_singleline(&mut self.alias_input);
-                    });
+                    self.alias_input.show(ui);
 
                     ui.add_space(10.0);
                     ui.separator();

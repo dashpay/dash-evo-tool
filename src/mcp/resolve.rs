@@ -6,6 +6,7 @@ use crate::mcp::server::network_display_name;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::spv_status::SpvStatus;
 use crate::model::wallet::WalletSeedHash;
+use crate::model::wallet::alias::clean_alias;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::Identifier;
 use std::sync::{Arc, RwLock};
@@ -67,8 +68,14 @@ pub(crate) fn require_network(
 }
 
 /// Resolve a wallet identifier (alias or 64-char hex seed hash) to a `WalletSeedHash`.
+///
+/// Aliases are compared after [`clean_alias`], so invisible or bidirectional
+/// characters cannot make visually identical names resolve differently. An
+/// alias shared by more than one loaded wallet — possible for wallets named
+/// before aliases had to be unique — is rejected instead of resolving to
+/// whichever wallet iterates first: fund-moving tools must never guess.
 pub(crate) fn wallet(ctx: &AppContext, wallet_id: &str) -> Result<WalletSeedHash, McpToolError> {
-    let wallets = ctx.wallets.read().unwrap_or_else(|e| e.into_inner());
+    let wallets = ctx.wallet_context().wallets();
 
     // Try hex parse first — but only accept if the wallet is actually loaded.
     if wallet_id.len() == 64
@@ -78,18 +85,37 @@ pub(crate) fn wallet(ctx: &AppContext, wallet_id: &str) -> Result<WalletSeedHash
     {
         return Ok(hash);
     }
+    let wanted = clean_alias(wallet_id);
+    let mut matches: Vec<WalletSeedHash> = Vec::new();
     let mut available: Vec<String> = Vec::new();
 
-    for (seed_hash, wallet_arc) in wallets.iter() {
-        let w = wallet_arc.read().unwrap_or_else(|e| e.into_inner());
+    for seed_hash in wallets.keys() {
         let hex_prefix = hex::encode(&seed_hash[..4]);
-        if let Some(alias) = &w.alias {
-            if alias == wallet_id {
-                return Ok(*seed_hash);
+        if let Some(alias) = &ctx.wallet_context().hd_alias(seed_hash) {
+            if !wanted.is_empty() && clean_alias(alias) == wanted {
+                matches.push(*seed_hash);
             }
             available.push(format!("  - \"{alias}\" ({hex_prefix}...)"));
         } else {
             available.push(format!("  - ({hex_prefix}...)"));
+        }
+    }
+
+    match matches.as_slice() {
+        [] => {}
+        [only] => return Ok(*only),
+        several => {
+            let prefixes = several
+                .iter()
+                .map(|seed_hash| format!("{}...", hex::encode(&seed_hash[..4])))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(McpToolError::InvalidParam {
+                message: format!(
+                    "The wallet alias \"{wallet_id}\" matches {count} wallets ({prefixes}). Pass the 64-character hex seed hash instead.",
+                    count = several.len()
+                ),
+            });
         }
     }
 
@@ -118,17 +144,38 @@ pub(crate) fn wallet_arc(
         })
 }
 
-/// Wire the wallet backend and finish any pending legacy-wallet migration so
-/// every persisted wallet is available in memory before returning.
+/// Prepare this network's storage so every persisted wallet is available in
+/// memory before returning.
 ///
 /// Unlike [`ensure_spv_synced`], this does not start SPV or wait for chain sync.
 pub(crate) async fn ensure_wallets_hydrated(ctx: &Arc<AppContext>) -> Result<(), McpToolError> {
+    hydrate_wallets(ctx, None).await
+}
+
+/// [`ensure_wallets_hydrated`] for the non-interactive storage update: the
+/// drain opens the password-protected wallets with `wallet_password` instead
+/// of requiring the desktop app's password prompt. The password is borrowed
+/// for this call only.
+pub(crate) async fn ensure_wallets_hydrated_with_password(
+    ctx: &Arc<AppContext>,
+    wallet_password: &platform_wallet_storage::secrets::SecretString,
+) -> Result<(), McpToolError> {
+    hydrate_wallets(ctx, Some(wallet_password)).await
+}
+
+async fn hydrate_wallets(
+    ctx: &Arc<AppContext>,
+    wallet_password: Option<&platform_wallet_storage::secrets::SecretString>,
+) -> Result<(), McpToolError> {
     let (tx, _) = tokio::sync::mpsc::channel::<crate::app::TaskResult>(32);
     let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, egui::Context::default());
-    ctx.ensure_wallet_backend(sender)
+    ctx.prepare_storage_with_wallet_password(sender, wallet_password)
         .await
         .map_err(McpToolError::TaskFailed)?;
-    ensure_legacy_storage_migrated(ctx).await
+    // Only the join remains: `prepare_storage` has already run the drain, and
+    // it publishes a terminal state on every path that returns `Ok`, so a
+    // dispatch here could only re-run work that just finished.
+    ensure_storage_ready(ctx).await
 }
 
 /// Poll until the cold-start storage update is fully complete.
@@ -182,28 +229,6 @@ async fn ensure_storage_ready(ctx: &Arc<AppContext>) -> Result<(), McpToolError>
     }
 }
 
-/// Dispatch or join the legacy-data migration before wallet reads.
-///
-/// Standalone/headless MCP has no GUI frame loop to dispatch `FinishUnwire`.
-/// Embedded MCP may race the GUI dispatch, so the AppContext run gate safely
-/// joins that run and the task's sentinel keeps repeated dispatch idempotent.
-async fn ensure_legacy_storage_migrated(ctx: &Arc<AppContext>) -> Result<(), McpToolError> {
-    let migration_state = ctx.migration_status().state();
-    if matches!(
-        migration_state.as_ref(),
-        crate::context::migration_status::MigrationState::Idle
-            | crate::context::migration_status::MigrationState::Failed { .. }
-    ) {
-        use crate::backend_task::migration::MigrationTask;
-        if let Err(e) = ctx.run_migration_task(MigrationTask::FinishUnwire).await {
-            tracing::warn!(error = ?e, "Standalone cold-start storage update failed");
-            return Err(McpToolError::TaskFailed(e));
-        }
-    }
-
-    ensure_storage_ready(ctx).await
-}
-
 /// Wait for SPV to reach the `Running` state (chain headers + filters synced).
 ///
 /// Required for **all wallet-facing tools** — both core-chain (UTXOs, sending
@@ -215,16 +240,18 @@ async fn ensure_legacy_storage_migrated(ctx: &Arc<AppContext>) -> Result<(), Mcp
 /// Only tools that make no network calls (e.g. `core_wallets_list`,
 /// `network_info`, `tool_describe`) skip this gate.
 ///
-/// Wires the wallet backend and starts chain sync on first call before waiting —
-/// neither standalone (stdio) boot, the HTTP context swap, nor the
-/// post-network-switch path eagerly wires the backend the way the GUI does, so
+/// Prepares this network's storage and starts chain sync on first call before
+/// waiting — neither standalone (stdio) boot, the HTTP context swap, nor the
+/// post-network-switch path prepares storage the way the GUI's gate does, so
 /// this is the single chokepoint that makes SPV actually start for every gated
 /// tool. Both steps are idempotent, so repeated tool calls are cheap.
 ///
-/// Also dispatches or joins any pending cold-start storage migration and waits
-/// for a wallet-safe terminal state before polling SPV — this prevents the
-/// `WalletStorageNotReady` fast-fail that `run_backend_task` applies while
-/// migration is mid-flight.
+/// Storage preparation — wiring, the schema ladder, hydration and the legacy
+/// drain — completes *before* chain sync starts, inside the chokepoint. This
+/// then joins any concurrent run another process started and waits for a
+/// wallet-safe terminal state before polling SPV, which prevents the
+/// `WalletStorageNotReady` fast-fail that `run_backend_task` applies while a
+/// storage update is mid-flight.
 ///
 /// Once synced, an unpopulated Platform protocol cache is refreshed so
 /// headless feature gates evaluate the connected network rather than boot state.
@@ -266,12 +293,20 @@ async fn ensure_spv_ready(
     // `try_send`, so a closed channel is harmless. Mirrors `dispatch::dispatch_task`.
     let (tx, _) = tokio::sync::mpsc::channel::<crate::app::TaskResult>(32);
     let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, egui::Context::default());
+    // Prepare storage, THEN start chain sync — both inside the chokepoint, in
+    // that order. This call used to start SPV before the legacy drain had run;
+    // the drain is now part of `prepare_storage`, which the chokepoint awaits
+    // first, so the ordering holds by construction rather than by callsite
+    // sequencing.
     if let Err(e) = ctx.ensure_wallet_backend_and_start_spv(sender).await {
-        tracing::warn!(error = %e, "wallet backend wiring / SPV start failed before sync wait");
+        tracing::warn!(error = %e, "storage preparation / SPV start failed before sync wait");
         return Err(McpToolError::TaskFailed(e));
     }
 
-    ensure_legacy_storage_migrated(ctx).await?;
+    // The headless binary has no frame loop and therefore no UI gate, so the
+    // `WalletStorageNotReady` fast-fail and this join stay. It now covers only a
+    // run another process or the embedded GUI started concurrently.
+    ensure_storage_ready(ctx).await?;
 
     wait_for_spv_and_refresh_platform_info(ctx, protocol_refresh).await
 }
@@ -482,6 +517,75 @@ mod tests {
             .expect("SPV readiness retries Platform metadata");
 
         assert_eq!(ctx.platform_protocol_version(), LATEST_VERSION);
+    }
+
+    /// Insert a wallet straight into the in-memory map, bypassing registration
+    /// — the shape legacy data takes when two wallets already share an alias.
+    fn insert_wallet_with_alias(ctx: &AppContext, seed_byte: u8, alias: &str) -> WalletSeedHash {
+        let wallet = crate::model::wallet::Wallet::new_from_seed(
+            [seed_byte; 64],
+            ctx.network(),
+            Some(alias.to_owned()),
+            None,
+        )
+        .expect("build wallet");
+        let seed_hash = wallet.seed_hash();
+        ctx.wallet_context()
+            .insert_test_wallet(seed_hash, Arc::new(RwLock::new(wallet)));
+        seed_hash
+    }
+
+    #[tokio::test]
+    async fn wallet_alias_shared_by_two_wallets_is_rejected() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::mcp::tests::legacy_wallet_context(temp_dir.path());
+        insert_wallet_with_alias(&ctx, 0x31, "Wallet 2");
+        insert_wallet_with_alias(&ctx, 0x32, "Wallet 2 ");
+
+        let error = wallet(&ctx, "Wallet 2").expect_err("an ambiguous alias must not resolve");
+
+        assert!(
+            matches!(error, McpToolError::InvalidParam { .. }),
+            "got {error:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn wallet_hex_seed_hash_resolves_despite_ambiguous_alias() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::mcp::tests::legacy_wallet_context(temp_dir.path());
+        let first = insert_wallet_with_alias(&ctx, 0x31, "Shared");
+        insert_wallet_with_alias(&ctx, 0x32, "Shared");
+
+        assert_eq!(wallet(&ctx, &hex::encode(first)).expect("hex id"), first);
+    }
+
+    #[tokio::test]
+    async fn wallet_unique_alias_resolves_after_cleaning() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::mcp::tests::legacy_wallet_context(temp_dir.path());
+        let savings = insert_wallet_with_alias(&ctx, 0x31, "Savings");
+        insert_wallet_with_alias(&ctx, 0x32, "Spending");
+
+        assert_eq!(wallet(&ctx, "Savings").expect("exact alias"), savings);
+        assert_eq!(
+            wallet(&ctx, "\u{200B}Savings ").expect("cleaned alias"),
+            savings
+        );
+    }
+
+    #[tokio::test]
+    async fn wallet_blank_alias_never_matches() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::mcp::tests::legacy_wallet_context(temp_dir.path());
+        insert_wallet_with_alias(&ctx, 0x31, "");
+
+        let error = wallet(&ctx, "\u{200B}").expect_err("a blank id names no wallet");
+
+        assert!(
+            matches!(error, McpToolError::WalletNotFound { .. }),
+            "got {error:?}"
+        );
     }
 
     #[tokio::test]

@@ -646,9 +646,10 @@ impl SingleKeyWalletSendScreen {
         if let Some(wallet_arc) = &self.selected_wallet
             && let Ok(wallet) = wallet_arc.read()
         {
-            let alias = wallet
-                .alias
-                .clone()
+            let alias = self
+                .app_context
+                .wallet_context()
+                .single_alias(&wallet.address.to_string())
                 .unwrap_or_else(|| "Unnamed Wallet".to_string());
             let balance = wallet.total_balance;
 

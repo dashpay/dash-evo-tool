@@ -1171,7 +1171,7 @@ impl AppContext {
     pub fn load_local_qualified_identities(
         &self,
     ) -> std::result::Result<Vec<QualifiedIdentity>, TaskError> {
-        let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
+        let wallets = self.wallet_context().wallets();
         let mut identities = self.load_identities_filtered(&wallets, |_| true)?;
         for identity in &mut identities {
             self.hydrate_top_ups(identity);
@@ -1188,7 +1188,7 @@ impl AppContext {
         &self,
         seed_hash: &WalletSeedHash,
     ) -> std::result::Result<Vec<QualifiedIdentity>, TaskError> {
-        let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
+        let wallets = self.wallet_context().wallets();
         let target = Some(*seed_hash);
         self.load_identities_filtered(&wallets, |s| {
             s.wallet_index.is_some() && s.wallet_hash == target
@@ -1286,7 +1286,7 @@ impl AppContext {
         else {
             return Ok(None);
         };
-        let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
+        let wallets = self.wallet_context().wallets();
         self.hydrate_stored_identity(&stored, &wallets).map(Some)
     }
 
@@ -1518,7 +1518,7 @@ impl AppContext {
     pub fn load_local_voting_identities(
         &self,
     ) -> std::result::Result<Vec<QualifiedIdentity>, TaskError> {
-        let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
+        let wallets = self.wallet_context().wallets();
         self.load_identities_filtered(&wallets, |s| {
             !matches!(
                 IdentityType::from_tag(&s.identity_type),
@@ -1533,7 +1533,7 @@ impl AppContext {
     pub fn load_local_user_identities(
         &self,
     ) -> std::result::Result<Vec<QualifiedIdentity>, TaskError> {
-        let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
+        let wallets = self.wallet_context().wallets();
         self.load_identities_filtered(&wallets, |s| {
             matches!(
                 IdentityType::from_tag(&s.identity_type),
@@ -2288,7 +2288,7 @@ impl AppContext {
     pub fn local_dpns_names(
         &self,
     ) -> std::result::Result<Vec<(Identifier, DPNSNameInfo)>, TaskError> {
-        let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
+        let wallets = self.wallet_context().wallets();
         let qualified_identities = self.load_identities_filtered(&wallets, |_| true)?;
 
         // Map each identity's DPNS names to (Identifier, DPNSNameInfo) tuples

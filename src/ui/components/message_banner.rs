@@ -3,14 +3,23 @@ use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::theme::{DashColors, Shape, Spacing, Typography};
 use egui::InnerResponse;
 use std::fmt;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tracing::{debug, error, warn};
 
 const DEFAULT_AUTO_DISMISS_SHORT: Duration = Duration::from_secs(5);
 const DEFAULT_AUTO_DISMISS_LONG: Duration = Duration::from_secs(9);
-const MAX_BANNERS: usize = 5;
+/// How many global banners show at once. Raising one past this cap evicts
+/// the oldest, so a handle can outlive the banner it names.
+pub(crate) const MAX_BANNERS: usize = 5;
 const BANNER_STATE_ID: &str = "__global_message_banner";
+/// Egui context-data slot holding the pending action ids that the
+/// per-frame app loop drains via [`MessageBanner::take_action`]. A
+/// banner with an attached [`BannerHandle::with_action`] pushes its
+/// `action_id` here when the user clicks the action button — the app
+/// loop consumes it to dispatch the matching backend task.
+const BANNER_ACTIONS_ID: &str = "__global_message_banner_actions";
 /// Maximum height for the expanded details section before scrolling.
 const DETAILS_MAX_HEIGHT: f32 = 120.0;
 
@@ -65,6 +74,11 @@ impl ComponentResponse for MessageBannerResponse {
 #[derive(Clone)]
 struct BannerState {
     key: u64,
+    /// Set when the cap drops this banner to make room. Shared with every
+    /// [`BannerHandle`] naming it, so the attribution lives exactly as long
+    /// as someone still holds a handle to ask — no bounded log to age out
+    /// while a warning about the user's money is still unresolved.
+    evicted: Arc<AtomicBool>,
     text: String,
     message_type: MessageType,
     created_at: Instant,
@@ -77,6 +91,12 @@ struct BannerState {
     details: Option<String>,
     /// Optional recovery suggestion (shown inline below the summary).
     suggestion: Option<String>,
+    /// Optional action button (e.g. "Retry now"). When clicked, the
+    /// `action_id` is pushed into the global [`BANNER_ACTIONS_ID`]
+    /// queue so the per-frame app loop can dispatch the matching
+    /// backend task — banners stay UI-only and never call backend
+    /// code directly. See [`BannerHandle::with_action`].
+    action: Option<(String, String)>,
     /// Whether the details section is currently expanded.
     details_expanded: bool,
     /// Whether the banner has been logged (to avoid duplicate log entries on each frame).
@@ -88,6 +108,7 @@ impl BannerState {
     fn new(key: u64, text: String, message_type: MessageType) -> Self {
         Self {
             key,
+            evicted: Arc::new(AtomicBool::new(false)),
             text,
             message_type,
             created_at: Instant::now(),
@@ -95,6 +116,7 @@ impl BannerState {
             show_elapsed: false,
             details: None,
             suggestion: None,
+            action: None,
             details_expanded: false,
             logged: false,
         }
@@ -110,6 +132,7 @@ impl BannerState {
         self.show_elapsed = false;
         self.details = None;
         self.suggestion = None;
+        self.action = None;
         self.details_expanded = false;
         self.logged = false;
     }
@@ -135,16 +158,50 @@ impl BannerState {
 /// The handle is `'static` and safe to store. Methods that modify the banner
 /// (`set_message`, `with_auto_dismiss`) take `&self` so the handle can be reused.
 ///
-/// INTENTIONAL(SEC-004): BannerHandle is Send+Sync because egui::Context is
+/// BannerHandle is deliberately Send+Sync because egui::Context is
 /// Send+Sync with internal locking. This is acceptable for a single-threaded
 /// UI app; egui's own thread-safety guarantees apply.
 #[derive(Clone)]
 pub struct BannerHandle {
     ctx: egui::Context,
     key: u64,
+    /// Shared with the banner this handle names — see [`BannerState::evicted`].
+    evicted: Arc<AtomicBool>,
 }
 
 impl BannerHandle {
+    /// Whether the banner this handle names is still in the global list.
+    ///
+    /// A handle outlives its banner: raising a new one past [`MAX_BANNERS`]
+    /// evicts the oldest without telling whoever holds its handle. Holding a
+    /// handle is therefore not proof the user can still see the message —
+    /// callers that must keep one on screen re-raise it when this is `false`.
+    pub fn is_live(&self) -> bool {
+        get_banners(&self.ctx).iter().any(|b| b.key == self.key)
+    }
+
+    /// Whether this banner is gone *because the cap took it*, rather than
+    /// because the user dismissed it or a timer retired it.
+    ///
+    /// The distinction is what lets a caller restore an important message
+    /// without overriding the user: re-raise on `true`, stay quiet otherwise.
+    /// The answer stays available for as long as the handle does.
+    pub fn was_evicted(&self) -> bool {
+        self.evicted.load(Ordering::Relaxed)
+    }
+
+    /// The banner's current display text, or `None` if it no longer exists.
+    ///
+    /// Lets a caller that adopted a banner raised elsewhere reproduce its copy
+    /// verbatim after an eviction, without having to be told the text
+    /// separately and risk the two drifting apart.
+    pub fn text(&self) -> Option<String> {
+        get_banners(&self.ctx)
+            .iter()
+            .find(|b| b.key == self.key)
+            .map(|b| b.text.clone())
+    }
+
     /// Returns how long ago this banner was created, looked up from context data.
     /// Returns `None` if the banner no longer exists.
     pub fn elapsed(&self) -> Option<Duration> {
@@ -197,9 +254,9 @@ impl BannerHandle {
     /// (nested causes, variant names) that is more useful in a diagnostic
     /// details pane than the single-line `Display` output.
     ///
-    /// INTENTIONAL(RUST-003): When plain strings are passed, `{:?}` wraps them
-    /// in quotes. This is acceptable since `with_details` is primarily for
-    /// error types, not user-facing text.
+    /// When plain strings are passed, `{:?}` wraps them in quotes. This is
+    /// acceptable since `with_details` is primarily for error types, not
+    /// user-facing text.
     ///
     /// Returns `None` if the banner no longer exists.
     pub fn with_details(&self, details: impl fmt::Debug) -> Option<&Self> {
@@ -223,6 +280,35 @@ impl BannerHandle {
         Some(self)
     }
 
+    /// Attach a primary action button (label + opaque `action_id`) to
+    /// this banner. The renderer paints the button next to the
+    /// dismiss control; clicks push `action_id` into the per-context
+    /// action queue, which the app loop drains via
+    /// [`MessageBanner::take_action`] to dispatch the matching backend
+    /// task.
+    ///
+    /// Empty `label` removes any existing action — convenient for
+    /// idempotent re-renders.
+    ///
+    /// Returns `None` if the banner no longer exists.
+    pub fn with_action(
+        &self,
+        label: impl fmt::Display,
+        action_id: impl fmt::Display,
+    ) -> Option<&Self> {
+        let label = label.to_string();
+        let action_id = action_id.to_string();
+        let mut banners = get_banners(&self.ctx);
+        let b = banners.iter_mut().find(|b| b.key == self.key)?;
+        b.action = if label.is_empty() {
+            None
+        } else {
+            Some((label, action_id))
+        };
+        set_banners(&self.ctx, banners);
+        Some(self)
+    }
+
     /// Attach an optional recovery suggestion to this banner.
     /// The suggestion is shown inline (visible without expanding).
     /// Returns `None` if the banner no longer exists.
@@ -234,6 +320,21 @@ impl BannerHandle {
         let mut banners = get_banners(&self.ctx);
         let b = banners.iter_mut().find(|b| b.key == self.key)?;
         b.suggestion = Some(suggestion);
+        set_banners(&self.ctx, banners);
+        Some(self)
+    }
+
+    /// Disable auto-dismiss for this banner so it stays visible until
+    /// manually dismissed or cleared. Intended for messages that genuinely
+    /// affect the user (data loss, a major feature not working) — these
+    /// must not vanish on a timer before the user has a chance to read
+    /// them. Mirrors [`MessageBanner::disable_auto_dismiss`] for the
+    /// per-instance API.
+    /// Returns `None` if the banner no longer exists.
+    pub fn disable_auto_dismiss(&self) -> Option<&Self> {
+        let mut banners = get_banners(&self.ctx);
+        let b = banners.iter_mut().find(|b| b.key == self.key)?;
+        b.auto_dismiss_after = None;
         set_banners(&self.ctx, banners);
         Some(self)
     }
@@ -278,6 +379,8 @@ impl MessageBanner {
 
     /// Override the auto-dismiss duration for the current message.
     /// Resets the countdown timer. No-op if no message is set.
+    // Exercised by the `kittest` integration tests (a separate crate the lib
+    // build does not see), so it is dead in a plain lib build.
     #[allow(dead_code)]
     pub fn set_auto_dismiss(&mut self, duration: Duration) -> &mut Self {
         if let Some(state) = &mut self.state {
@@ -296,6 +399,14 @@ impl MessageBanner {
     pub fn disable_auto_dismiss(&mut self) -> &mut Self {
         if let Some(state) = &mut self.state {
             state.auto_dismiss_after = None;
+        }
+        self
+    }
+
+    /// Attach structured diagnostic details to the current per-instance banner.
+    pub fn set_details(&mut self, details: impl fmt::Debug) -> &mut Self {
+        if let Some(state) = &mut self.state {
+            state.details = Some(format!("{details:?}"));
         }
         self
     }
@@ -345,32 +456,42 @@ impl MessageBanner {
             if existing.message_type != message_type {
                 existing.message_type = message_type;
                 let key = existing.key;
+                let evicted = existing.evicted.clone();
                 set_banners(ctx, banners);
                 return BannerHandle {
                     ctx: ctx.clone(),
                     key,
+                    evicted,
                 };
             }
             return BannerHandle {
                 ctx: ctx.clone(),
                 key: existing.key,
+                evicted: existing.evicted.clone(),
             };
         }
         let key = next_banner_key();
+        // An empty text raises nothing, so the handle names no banner and can
+        // never be evicted; its own cell stays false.
+        let mut lifecycle = Arc::new(AtomicBool::new(false));
         if !text.is_empty() {
-            banners.push(BannerState::new(key, text, message_type));
+            let raised = BannerState::new(key, text, message_type);
+            lifecycle = raised.evicted.clone();
+            banners.push(raised);
             if banners.len() > MAX_BANNERS {
                 let evicted = banners.remove(0);
                 warn!(
                     "Banner evicted (capacity {}): {:?}",
                     MAX_BANNERS, evicted.message_type,
                 );
+                evicted.evicted.store(true, Ordering::Relaxed);
             }
             set_banners(ctx, banners);
         }
         BannerHandle {
             ctx: ctx.clone(),
             key,
+            evicted: lifecycle,
         }
     }
 
@@ -415,32 +536,40 @@ impl MessageBanner {
             return BannerHandle {
                 ctx: ctx.clone(),
                 key: next_banner_key(),
+                evicted: Arc::new(AtomicBool::new(false)),
             };
         }
         let mut banners = get_banners(ctx);
         let key;
+        let lifecycle;
         if let Some(b) = banners.iter_mut().find(|b| b.text == old_text) {
             key = b.key;
+            lifecycle = b.evicted.clone();
             b.reset_to(new_text, message_type);
         } else if let Some(existing) = banners.iter().find(|b| b.text == new_text) {
             // Idempotent: if new_text already displayed, return handle without
             // resetting (consistent with set_global behavior).
             key = existing.key;
+            lifecycle = existing.evicted.clone();
         } else {
             key = next_banner_key();
-            banners.push(BannerState::new(key, new_text, message_type));
+            let raised = BannerState::new(key, new_text, message_type);
+            lifecycle = raised.evicted.clone();
+            banners.push(raised);
             if banners.len() > MAX_BANNERS {
                 let evicted = banners.remove(0);
                 warn!(
                     "Banner evicted (capacity {}): {:?}",
                     MAX_BANNERS, evicted.message_type,
                 );
+                evicted.evicted.store(true, Ordering::Relaxed);
             }
         }
         set_banners(ctx, banners);
         BannerHandle {
             ctx: ctx.clone(),
             key,
+            evicted: lifecycle,
         }
     }
 
@@ -461,9 +590,26 @@ impl MessageBanner {
     }
 
     /// Returns whether any global banner messages exist.
+    // Exercised by the `kittest` integration tests (a separate crate the lib
+    // build does not see), so it is dead in a plain lib build.
     #[allow(dead_code)]
     pub fn has_global(ctx: &egui::Context) -> bool {
         !get_banners(ctx).is_empty()
+    }
+
+    /// Drain and return the next pending action id queued by an
+    /// [`BannerHandle::with_action`] button click. Returns `None` when
+    /// nothing is pending. The app loop polls this each frame and
+    /// dispatches a matching backend task. Banners themselves never
+    /// touch backend code — the action id is the seam.
+    pub fn take_action(ctx: &egui::Context) -> Option<String> {
+        let mut queue = get_actions(ctx);
+        if queue.is_empty() {
+            return None;
+        }
+        let id = queue.remove(0);
+        set_actions(ctx, queue);
+        Some(id)
     }
 
     /// Renders all global banners from egui context data.
@@ -572,6 +718,7 @@ fn process_banner(ui: &mut egui::Ui, state: &mut BannerState) -> BannerStatus {
         annotation.as_deref(),
         state.suggestion.as_deref(),
         state.details.as_deref(),
+        state.action.as_ref(),
         &mut state.details_expanded,
         state.key,
     ) {
@@ -593,10 +740,11 @@ fn render_banner(
     annotation: Option<&str>,
     suggestion: Option<&str>,
     details: Option<&str>,
+    action: Option<&(String, String)>,
     details_expanded: &mut bool,
     banner_key: u64,
 ) -> bool {
-    let dark_mode = ui.ctx().style().visuals.dark_mode;
+    let dark_mode = ui.style().visuals.dark_mode;
     let fg_color = DashColors::message_color(message_type, dark_mode);
     let bg_color = DashColors::message_background_color(message_type, dark_mode);
     let secondary_color = DashColors::text_secondary(dark_mode);
@@ -676,6 +824,22 @@ fn render_banner(
                 );
             }
 
+            // Primary action button (e.g. "Retry now"). Click pushes the
+            // action id into the banner-actions queue; the app loop drains
+            // it and dispatches the matching BackendTask. Keyboard-
+            // reachable so the Diziet §2.3 a11y rule
+            // ("Retry reachable in ≤2 Tab stops") holds via standard egui
+            // focus order.
+            if let Some((label, action_id)) = action {
+                ui.add_space(4.0);
+                let response = ui.add(egui::Button::new(
+                    egui::RichText::new(label).color(fg_color).strong(),
+                ));
+                if response.clicked() {
+                    push_action(ui.ctx(), action_id);
+                }
+            }
+
             // Technical details (collapsible)
             if let Some(details) = details {
                 ui.add_space(2.0);
@@ -734,6 +898,13 @@ fn get_banners(ctx: &egui::Context) -> Vec<BannerState> {
         .unwrap_or_default()
 }
 
+/// The texts of every global banner currently set, oldest first. Test-only:
+/// lets a unit test assert which message a screen surfaced.
+#[cfg(test)]
+pub(crate) fn global_banner_texts(ctx: &egui::Context) -> Vec<String> {
+    get_banners(ctx).into_iter().map(|b| b.text).collect()
+}
+
 /// Writes the global banner list to egui context data.
 /// Removes the entry entirely when the list is empty.
 fn set_banners(ctx: &egui::Context, banners: Vec<BannerState>) {
@@ -742,6 +913,29 @@ fn set_banners(ctx: &egui::Context, banners: Vec<BannerState>) {
     } else {
         ctx.data_mut(|d| d.insert_temp(egui::Id::new(BANNER_STATE_ID), banners));
     }
+}
+
+/// Reads the pending banner-action queue (FIFO) from egui context data.
+fn get_actions(ctx: &egui::Context) -> Vec<String> {
+    ctx.data(|d| d.get_temp::<Vec<String>>(egui::Id::new(BANNER_ACTIONS_ID)))
+        .unwrap_or_default()
+}
+
+/// Writes the pending banner-action queue. Removes the slot when empty.
+fn set_actions(ctx: &egui::Context, actions: Vec<String>) {
+    if actions.is_empty() {
+        ctx.data_mut(|d| d.remove::<Vec<String>>(egui::Id::new(BANNER_ACTIONS_ID)));
+    } else {
+        ctx.data_mut(|d| d.insert_temp(egui::Id::new(BANNER_ACTIONS_ID), actions));
+    }
+}
+
+/// Appends an action id to the queue. Called from the renderer when
+/// the user clicks an [`BannerHandle::with_action`] button.
+fn push_action(ctx: &egui::Context, action_id: &str) {
+    let mut queue = get_actions(ctx);
+    queue.push(action_id.to_string());
+    set_actions(ctx, queue);
 }
 
 fn icon_for_type(message_type: MessageType) -> &'static str {
@@ -768,7 +962,7 @@ pub trait ResultBannerExt<T, E> {
     /// If `Err`, displays a global error banner with the error's `Display` text.
     /// Returns `self` unchanged — this is a side-effect-only method.
     ///
-    /// INTENTIONAL(SEC-007): Raw `Display` text is shown directly. Callers must
+    /// Deliberately shows raw `Display` text directly. Callers must
     /// ensure error types have user-friendly Display implementations.
     fn or_show_error(self, ctx: &egui::Context) -> Self;
 }
@@ -810,19 +1004,36 @@ impl<T> OptionBannerShowExt<T> for Option<T> {
 ///
 /// ```ignore
 /// self.refresh_banner.take_and_clear();
-/// self.refresh_banner.replace(ctx, "Loading...", MessageType::Info);
+/// self.refresh_banner.raise(ctx, "Loading...", MessageType::Info);
 /// self.refresh_banner.replace_with_elapsed(ctx, "Refreshing...", MessageType::Info);
 /// ```
 pub trait OptionBannerExt {
+    /// Whether a handle is held and its banner was dropped to make room.
+    ///
+    /// The check `is_some()` cannot make: possessing a handle stays true after
+    /// a capacity eviction silently removed the banner. Gate a re-raise on
+    /// this so an evicted message returns while a dismissed one stays gone.
+    fn was_evicted(&self) -> bool;
+
     /// Takes the handle (leaving `None`) and clears the associated banner.
     fn take_and_clear(&mut self);
 
     /// Clears any existing banner, sets a new global banner, and stores the handle.
-    fn replace(&mut self, ctx: &egui::Context, msg: impl fmt::Display, msg_type: MessageType);
+    fn raise(&mut self, ctx: &egui::Context, msg: impl fmt::Display, msg_type: MessageType);
 
-    /// Like [`replace`](OptionBannerExt::replace), but also enables elapsed-time display on
+    /// Like [`raise`](OptionBannerExt::raise), but also enables elapsed-time display on
     /// the new banner (useful for long-running operations).
     fn replace_with_elapsed(
+        &mut self,
+        ctx: &egui::Context,
+        msg: impl fmt::Display,
+        msg_type: MessageType,
+    );
+
+    /// Like [`raise`](OptionBannerExt::raise), but disables auto-dismiss so the banner
+    /// stays until manually dismissed. Use for messages that genuinely affect the user
+    /// (data loss, a major feature not working) — these must not disappear on a timer.
+    fn raise_persistent(
         &mut self,
         ctx: &egui::Context,
         msg: impl fmt::Display,
@@ -831,13 +1042,17 @@ pub trait OptionBannerExt {
 }
 
 impl OptionBannerExt for Option<BannerHandle> {
+    fn was_evicted(&self) -> bool {
+        self.as_ref().is_some_and(BannerHandle::was_evicted)
+    }
+
     fn take_and_clear(&mut self) {
         if let Some(h) = self.take() {
             h.clear();
         }
     }
 
-    fn replace(&mut self, ctx: &egui::Context, msg: impl fmt::Display, msg_type: MessageType) {
+    fn raise(&mut self, ctx: &egui::Context, msg: impl fmt::Display, msg_type: MessageType) {
         self.take_and_clear();
         *self = Some(MessageBanner::set_global(ctx, msg.to_string(), msg_type));
     }
@@ -852,5 +1067,171 @@ impl OptionBannerExt for Option<BannerHandle> {
         let handle = MessageBanner::set_global(ctx, msg.to_string(), msg_type);
         handle.with_elapsed();
         *self = Some(handle);
+    }
+
+    fn raise_persistent(
+        &mut self,
+        ctx: &egui::Context,
+        msg: impl fmt::Display,
+        msg_type: MessageType,
+    ) {
+        self.take_and_clear();
+        let handle = MessageBanner::set_global(ctx, msg.to_string(), msg_type);
+        handle.disable_auto_dismiss();
+        *self = Some(handle);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// TC-MIG-005 (unit) — `with_action` records `(label, id)` on the
+    /// banner state. `take_action` is initially empty until the user
+    /// clicks the button (the click path is exercised by the kittest
+    /// suite); this unit covers the wiring shape.
+    #[test]
+    fn with_action_records_label_and_id_on_banner() {
+        let ctx = egui::Context::default();
+        let handle = MessageBanner::set_global(&ctx, "boom", MessageType::Error);
+        handle.with_action("Retry now", "migration:retry");
+
+        // Inspect the stored banner state via the get_banners helper.
+        let banners = get_banners(&ctx);
+        let b = banners
+            .iter()
+            .find(|b| b.text == "boom")
+            .expect("banner present");
+        assert_eq!(
+            b.action.as_ref().map(|(l, i)| (l.as_str(), i.as_str())),
+            Some(("Retry now", "migration:retry")),
+        );
+    }
+
+    /// `with_action("")` clears any previously-attached action — keeps
+    /// per-frame reconciliation idempotent when a banner downgrades
+    /// from Failed to Running.
+    #[test]
+    fn empty_action_label_removes_action() {
+        let ctx = egui::Context::default();
+        let handle = MessageBanner::set_global(&ctx, "boom", MessageType::Error);
+        handle.with_action("Retry now", "x");
+        handle.with_action("", "x");
+
+        let banners = get_banners(&ctx);
+        let b = banners.iter().find(|b| b.text == "boom").expect("banner");
+        assert!(b.action.is_none(), "empty label must clear the action");
+    }
+
+    /// A handle names a live banner right after raising it, and can report
+    /// its copy — the pair a caller needs to restore an evicted message.
+    #[test]
+    fn a_fresh_handle_is_live_and_reports_its_text() {
+        let ctx = egui::Context::default();
+        let handle = MessageBanner::set_global(&ctx, "still here", MessageType::Error);
+
+        assert!(handle.is_live());
+        assert_eq!(handle.text().as_deref(), Some("still here"));
+    }
+
+    /// The trap `is_some()` hides: the handle is still held, the banner is
+    /// gone. Anything gating a re-raise on possession alone goes silent here.
+    #[test]
+    fn a_handle_stops_being_live_once_its_banner_is_evicted_at_capacity() {
+        let ctx = egui::Context::default();
+        let handle = MessageBanner::set_global(&ctx, "oldest", MessageType::Error);
+        for n in 0..MAX_BANNERS {
+            MessageBanner::set_global(&ctx, format!("later {n}"), MessageType::Info);
+        }
+
+        assert!(!handle.is_live(), "capacity eviction must be observable");
+        assert!(handle.text().is_none());
+        assert!(handle.was_evicted(), "and attributable to the cap");
+        assert!(
+            Some(handle).was_evicted(),
+            "the Option helper must agree with the handle it wraps"
+        );
+    }
+
+    /// The distinction the whole restore path rests on. A banner that went
+    /// away because someone closed it was not evicted — reporting otherwise
+    /// would let callers resurrect messages the user deliberately silenced,
+    /// which is the difference between restoring a message and making it
+    /// impossible to close.
+    ///
+    /// The question has to be put to a handle that outlives the dismissal.
+    /// Asking the `Option` after `take_and_clear` only ever asks a `None`, and
+    /// `Option::was_evicted` is `is_some_and(..)`, so that answer is `false`
+    /// however the eviction machinery behaves — including when it is removed
+    /// altogether. A clone keeps a live witness to interrogate instead.
+    #[test]
+    fn a_dismissed_banner_is_not_reported_as_evicted() {
+        let ctx = egui::Context::default();
+        let handle = MessageBanner::set_global(&ctx, "bye", MessageType::Info);
+        let witness = handle.clone();
+        let mut held = Some(handle);
+        assert!(!held.was_evicted());
+
+        held.take_and_clear();
+
+        assert!(
+            !witness.is_live(),
+            "dismissing must actually take the banner off the list"
+        );
+        assert!(
+            !witness.was_evicted(),
+            "a banner removed on purpose must not look like one the cap took"
+        );
+    }
+
+    /// Eviction is attributed per banner, not to whatever happens to be gone:
+    /// the survivors of a flood are still live and still not evicted.
+    #[test]
+    fn eviction_is_recorded_only_for_the_banner_actually_dropped() {
+        let ctx = egui::Context::default();
+        let oldest = MessageBanner::set_global(&ctx, "oldest", MessageType::Error);
+        let survivor = MessageBanner::set_global(&ctx, "survivor", MessageType::Error);
+        for n in 1..MAX_BANNERS {
+            MessageBanner::set_global(&ctx, format!("later {n}"), MessageType::Info);
+        }
+
+        assert!(oldest.was_evicted());
+        assert!(survivor.is_live(), "only the oldest is dropped");
+        assert!(!survivor.was_evicted());
+    }
+
+    /// Attribution used to live in a bounded log of recently-evicted keys, so
+    /// a burst of unrelated notifications could age a still-held warning out
+    /// of it and turn `was_evicted` permanently false — losing the message
+    /// for good. The cause now travels with the handle, so no amount of
+    /// later churn can forget it.
+    #[test]
+    fn eviction_stays_attributable_after_a_long_burst_of_later_evictions() {
+        let ctx = egui::Context::default();
+        let unresolved = MessageBanner::set_global(&ctx, "money in flight", MessageType::Error);
+        // Far past the old bound (MAX_BANNERS * 4) of remembered evictions.
+        for n in 0..MAX_BANNERS * 20 {
+            MessageBanner::set_global(&ctx, format!("chatter {n}"), MessageType::Info);
+        }
+
+        assert!(!unresolved.is_live());
+        assert!(
+            unresolved.was_evicted(),
+            "a handle must still recognise its own eviction after later churn"
+        );
+    }
+
+    /// TC-MIG-005 (unit) — push_action enqueues FIFO and take_action
+    /// drains in the same order, returning None once empty.
+    #[test]
+    fn action_queue_drains_fifo() {
+        let ctx = egui::Context::default();
+        assert!(MessageBanner::take_action(&ctx).is_none());
+
+        push_action(&ctx, "first");
+        push_action(&ctx, "second");
+        assert_eq!(MessageBanner::take_action(&ctx).as_deref(), Some("first"));
+        assert_eq!(MessageBanner::take_action(&ctx).as_deref(), Some("second"));
+        assert!(MessageBanner::take_action(&ctx).is_none());
     }
 }

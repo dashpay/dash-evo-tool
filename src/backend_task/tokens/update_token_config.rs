@@ -1,7 +1,7 @@
 use super::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
-use crate::model::proof_log_item::RequestType;
+use crate::model::request_type::RequestType;
 use crate::ui::tokens::tokens_screen::IdentityTokenInfo;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
@@ -118,9 +118,8 @@ impl AppContext {
 
         // Return success with fee result
         use crate::backend_task::FeeResult;
-        use crate::model::fee_estimation::PlatformFeeEstimator;
-        let estimated_fee = PlatformFeeEstimator::new().estimate_document_batch(1);
-        let fee_result = FeeResult::new(estimated_fee, estimated_fee);
+        let estimated_fee = self.fee_estimator().estimate_document_batch(1);
+        let fee_result = FeeResult::estimated_only(estimated_fee);
         Ok(BackendTaskSuccessResult::UpdatedTokenConfig(
             change_item.to_string(),
             fee_result,

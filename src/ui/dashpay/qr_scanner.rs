@@ -15,7 +15,7 @@ use crate::ui::components::wallet_unlock_popup::{
 };
 use crate::ui::components::{MessageBanner, ResultBannerExt};
 use crate::ui::dashpay::dashpay_screen::DashPaySubscreen;
-use crate::ui::identities::get_selected_wallet;
+use crate::ui::identity::get_selected_wallet;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
@@ -25,7 +25,7 @@ use std::sync::{Arc, RwLock};
 
 pub struct QRScannerScreen {
     pub app_context: Arc<AppContext>,
-    selected_identity: Option<QualifiedIdentity>,
+    pub selected_identity: Option<QualifiedIdentity>,
     selected_identity_string: String,
     qr_data_input: String,
     parsed_qr_data: Option<AutoAcceptProofData>,
@@ -37,10 +37,29 @@ pub struct QRScannerScreen {
 
 impl QRScannerScreen {
     pub fn new(app_context: Arc<AppContext>) -> Self {
+        // Seed from the app-scoped selected identity (W3 SYNC); fall back to first.
+        let identities = app_context.load_local_user_identities().unwrap_or_default();
+        let selected_identity = {
+            use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+            app_context
+                .selected_identity_id()
+                .and_then(|id| identities.iter().find(|qi| qi.identity.id() == id).cloned())
+                .or_else(|| identities.first().cloned())
+        };
+        let selected_identity_string = selected_identity
+            .as_ref()
+            .map(|qi| {
+                use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+                qi.identity
+                    .id()
+                    .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58)
+            })
+            .unwrap_or_default();
+
         Self {
             app_context,
-            selected_identity: None,
-            selected_identity_string: String::new(),
+            selected_identity,
+            selected_identity_string,
             qr_data_input: String::new(),
             parsed_qr_data: None,
             sending: false,
@@ -70,13 +89,14 @@ impl QRScannerScreen {
                     MessageType::Success,
                 );
             }
-            Err(e) => {
+            Err(error) => {
                 self.parsed_qr_data = None;
                 MessageBanner::set_global(
                     self.app_context.egui_ctx(),
-                    format!("Invalid QR code: {}", e),
+                    "The QR code is not valid for DashPay. Scan a DashPay code and try again.",
                     MessageType::Error,
-                );
+                )
+                .with_details(error);
             }
         }
     }
@@ -150,7 +170,7 @@ impl QRScannerScreen {
         // Identity selector
         let identities = self
             .app_context
-            .load_local_qualified_identities()
+            .load_local_user_identities()
             .unwrap_or_default();
 
         if identities.is_empty() {
@@ -169,6 +189,8 @@ impl QRScannerScreen {
 
                 ui.horizontal(|ui| {
                     ui.label("Identity:");
+                    // SYNC: write-back via syncing_global on user pick (FR-6: the source list is
+                    // User-only, so a masternode/evonode can never leak to the app-global identity).
                     ui.add(
                         IdentitySelector::new(
                             "qr_scanner_identity_selector",
@@ -178,7 +200,8 @@ impl QRScannerScreen {
                         .selected_identity(&mut self.selected_identity)
                         .unwrap()
                         .width(300.0)
-                        .other_option(false),
+                        .other_option(false)
+                        .syncing_global(self.app_context.clone()),
                     );
                 });
 
@@ -260,8 +283,9 @@ impl QRScannerScreen {
                     // Check wallet lock status before showing send button
                     let wallet_locked = if let Some(wallet) = &self.selected_wallet {
                         if !self.wallet_open_attempted {
-                            if let Err(e) = try_open_wallet_no_password(wallet) {
-                                MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                            if let Err(e) = try_open_wallet_no_password(&self.app_context, wallet) {
+                                MessageBanner::set_global(ui.ctx(), &e, MessageType::Error)
+                                    .disable_auto_dismiss();
                             }
                             self.wallet_open_attempted = true;
                         }
@@ -321,7 +345,7 @@ impl QRScannerScreen {
     pub fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         self.sending = false;
         if let BackendTaskSuccessResult::DashPayContactRequestSent(_)
-        | BackendTaskSuccessResult::DashPayContactAlreadyEstablished(_) = result
+        | BackendTaskSuccessResult::DashPayContactAlreadyEstablished { .. } = result
         {
             // Clear the form on success
             self.qr_data_input.clear();
@@ -331,12 +355,14 @@ impl QRScannerScreen {
 }
 
 impl ScreenLike for QRScannerScreen {
-    fn ui(&mut self, ctx: &egui::Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let mut action = AppAction::None;
 
         // Add top panel
         action |= add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 ("DashPay", AppAction::None),
@@ -346,14 +372,14 @@ impl ScreenLike for QRScannerScreen {
         );
 
         // Highlight DashPay in the main left panel
-        action |= add_left_panel(ctx, &self.app_context, RootScreenType::RootScreenDashpay);
+        action |= add_left_panel(ui, &self.app_context, RootScreenType::RootScreenDashpay);
 
         // Add DashPay subscreen chooser panel
         action |=
-            add_dashpay_subscreen_chooser_panel(ctx, &self.app_context, DashPaySubscreen::Contacts);
+            add_dashpay_subscreen_chooser_panel(ui, &self.app_context, DashPaySubscreen::Contacts);
 
         // Main content area with island styling
-        action |= island_central_panel(ctx, |ui| self.render(ui));
+        action |= island_central_panel(ui, |ui| self.render(ui));
 
         // Show wallet unlock popup if open
         if self.wallet_unlock_popup.is_open()

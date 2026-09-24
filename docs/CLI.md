@@ -38,10 +38,13 @@ Config precedence (highest to lowest):
 ### Standalone (default)
 
 When no `MCP_API_KEY` is set, `det-cli` runs its own backend in-process. No running GUI app or server required.
+Saved wallets are hydrated from the shared data directory on demand, so one-shot commands can see wallets imported by earlier `det-cli` or GUI runs.
 
 ### Connected to Dash Evo Tool GUI
 
 Set `MCP_API_KEY` (in `.env` or shell) to connect to a running Dash Evo Tool instance instead. This shares the app's live state — wallets, network, database.
+
+HTTP connections bypass system and environment proxies, keeping loopback calls on this machine.
 
 The GUI address defaults to `http://127.0.0.1:9527/mcp`. Override with `--addr`:
 
@@ -50,6 +53,62 @@ det-cli --addr http://127.0.0.1:9000/mcp core-wallets-list
 ```
 
 Force standalone mode with `--standalone` even when an API key is present.
+
+## Protected wallets and shielded operations
+
+Every shielded operation that spends or binds the wallet's Orchard keys
+(initialization, shield from Core, shield from Platform, transfer, unshield, and
+withdraw) resolves the wallet seed just in time. A password-protected (Tier-2)
+wallet therefore requires an interactive passphrase session.
+
+Standalone `det-cli`, its stdio MCP server, and the headless HTTP server use a
+null secret prompt because no authorized GUI session is available. These modes
+return `SecretPromptUnavailable` when a protected wallet needs to authorize a
+shielded operation. There is currently no environment-variable or
+CLI-passphrase workaround, so unattended shielded operations from a protected
+wallet are not supported. Use an unprotected wallet for that automation.
+The storage update is the one exception; see the next section.
+
+This limitation does not apply in the same way when `det-cli` connects to MCP
+embedded in a running GUI. The embedded server can use the GUI's existing
+interactive prompt and authorized secret session.
+
+## Finishing the storage update of password-protected wallets
+
+After an upgrade from an older version, an installation with password-protected
+wallets stops every wallet command with *"Open the Dash Evo Tool desktop app
+once to finish the storage update, then try again."* To finish the update
+without the desktop app, supply the wallet password to `app-storage-update`:
+
+```bash
+# From a file only you can read (refused if the group or others have any access)
+chmod 600 ~/det-wallet-password
+det-cli app-storage-update --password-file ~/det-wallet-password
+
+# From a pipe, e.g. a password manager (refused when stdin is a terminal)
+pass show dash/det-wallets | det-cli app-storage-update --password-stdin
+```
+
+- The password is tried on every protected wallet, so they must all share it.
+  If it does not open one of them, the command fails, no wallet is skipped, and
+  you can run it again with the right password. Wallets with different
+  passwords need the desktop app.
+- The input must be exactly one line. One trailing line ending is removed;
+  every other character, spaces included, is part of the password.
+- `--password-file` refuses a file with any group or other permission (like SSH
+  does for private keys), a directory, and — on platforms other than Linux and
+  macOS — every file, because the permissions cannot be checked there. Use
+  `--password-stdin` instead.
+- A password given as `password=...` is refused: command-line arguments are
+  visible to other users and saved in shell history. There is no environment
+  variable for it either.
+- The command is refused while the desktop app is running (`--addr` / HTTP
+  mode against the GUI): the app asks for the password in its own window.
+- In HTTP mode, a password is sent only to this computer (`127.0.0.1`, `::1`
+  or `localhost`) or to an `https` address. Any other `--addr` or `MCP_LISTEN`
+  is refused before the password is read, `0.0.0.0` included. Use
+  `--addr http://127.0.0.1:<port>/mcp` instead.
+- Once the update has finished, other commands need no password.
 
 ## Usage
 
@@ -111,8 +170,17 @@ det-cli core-wallets-list
 # Generate a receive address
 det-cli core-address-create wallet-id=savings
 
+# List locally saved identities with their DPNS names (no identity refresh)
+det-cli identity-list
+
 # Show active network and available networks
 det-cli network-info
+
+# Report schema versions, migration state and upgrade markers on disk
+det-cli app-storage-status
+
+# Finish the storage update of password-protected wallets without the desktop app
+det-cli app-storage-update --password-file ~/det-wallet-password
 
 # Check wallet balance
 det-cli core-balances-get wallet-id=savings
@@ -126,6 +194,10 @@ det-cli platform-withdrawals-get
 # Query recently completed withdrawals
 det-cli platform-withdrawals-get status=completed
 
+# Paginate: first page of 10, then continue from the returned next_cursor
+det-cli platform-withdrawals-get status=completed limit=10
+det-cli platform-withdrawals-get status=completed limit=10 start_after=<document_id>
+
 # Get full schema and description for a tool
 det-cli tool-describe name=core_funds_send
 
@@ -135,3 +207,84 @@ det-cli core-funds-send wallet-id=savings address=yXyz... amount-duffs=1000000 n
 # Run as stdio MCP server for Claude Desktop or Claude Code
 det-cli serve
 ```
+
+## Masternode / evonode credit withdrawal (headless)
+
+Withdraw a masternode/evonode identity's Platform credits without the GUI:
+first load the identity by ProTxHash + keys, then withdraw in either key mode.
+The keys are accepted as inline `key=value` arguments (WIF or 64-char hex) — see
+the private-key handling note in `MCP.md` and keep the HTTP endpoint loopback-only
+for key-bearing calls. Inline `key=value` arguments are visible to other local
+users (`ps`, `/proc/<pid>/cmdline`) and are saved to shell history. On a shared or
+untrusted host, prefer the deferred env-var/stdin entry path once available, or
+clear your shell history afterward. In transfer mode, `to-address` must be a Core
+address — Platform (bech32m `dash1…`/`tdash1…`) addresses are rejected.
+
+```bash
+# 1. Load an evonode identity (testnet). Provide at least one of the owner or
+#    payout key; voting key and alias are optional.
+det-cli masternode-identity-load \
+  pro-tx-hash=<64-hex protx> \
+  node-type=evonode \
+  owner-private-key=<WIF> \
+  payout-private-key=<WIF> \
+  network=testnet
+# -> { "identity_id": "...", "available_withdrawal_keys": ["owner","transfer"],
+#      "payout_address": "y...", ... }
+
+# 2a. Owner key — destination is forced to the registered payout address.
+#     Supplying to-address is rejected.
+det-cli masternode-credits-withdraw \
+  identity-id=<base58> \
+  key-mode=owner \
+  amount-credits=100000 \
+  network=testnet
+
+# 2b. Payout/transfer key — withdraw to any Core address.
+det-cli masternode-credits-withdraw \
+  identity-id=<base58> \
+  key-mode=transfer \
+  to-address=y... \
+  amount-credits=100000 \
+  network=testnet
+```
+
+## Shielded self-verification loop (testnet)
+
+The shielded read/control tools let an agent drive and verify a full shielded
+lifecycle headlessly — no GUI. This loop intentionally imports an unprotected
+wallet because standalone `det-cli` cannot prompt for a protected wallet's
+passphrase. Onboard a pre-funded testnet seed, prepare the wallet, then move
+funds and confirm each balance change with `shielded-sync`.
+
+```bash
+# 1. Import the funded testnet seed (returns its seed_hash; idempotent)
+det-cli core-wallet-import mnemonic="word1 word2 ... word12" network=testnet alias=shielded-test
+
+# 2. Bind shielded keys + warm the proving key (~30s; idempotent)
+det-cli shielded-init wallet-id=shielded-test
+
+# 3. Shield some Core DASH into the pool (SPV-gated — can take minutes)
+det-cli shielded-shield-from-core wallet-id=shielded-test amount-duffs=2000000 network=testnet
+
+# 4. Sync and read the new shielded balance (expect it to increase)
+det-cli shielded-sync wallet-id=shielded-test
+
+# 5. Read the wallet's own shielded address, then transfer to it privately
+det-cli shielded-address-get wallet-id=shielded-test
+det-cli shielded-transfer wallet-id=shielded-test to-address=tdash1z... amount-credits=50000 network=testnet
+
+# 6. Unshield part back to a Platform address, then withdraw part to Core
+det-cli shielded-unshield wallet-id=shielded-test to-address=tdash1... amount-credits=300000 network=testnet
+det-cli shielded-withdraw wallet-id=shielded-test to-address=yXyz... amount-credits=300000 network=testnet
+
+# 7. Final sync to confirm the closing balance
+det-cli shielded-sync wallet-id=shielded-test
+
+# Fast read at any time (no sync, returns the last synced snapshot)
+det-cli shielded-balance-get wallet-id=shielded-test
+```
+
+The `mnemonic` for the framework wallet is read from `E2E_WALLET_MNEMONIC`
+(shell env or the project-root `.env`) in the backend-e2e harness; for the
+standalone `det-cli` loop above, pass it directly to `core-wallet-import`.

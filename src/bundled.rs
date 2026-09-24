@@ -60,6 +60,16 @@ pub fn fonts() -> Result<egui::FontDefinitions, Box<dyn std::error::Error>> {
         .into(),
     );
 
+    // Symbol-block glyphs (e.g. ▾ U+25BE, ▸ U+25B8, ✓ U+2713) used as bare icon
+    // glyphs are absent from the text and emoji fonts; this covers them.
+    fonts.font_data.insert(
+        "noto_sans_symbols2".to_owned(),
+        FontData::from_static(include_bytes!(
+            "../assets/Fonts/Noto_Sans_Symbols2/static/NotoSansSymbols2-Regular.ttf"
+        ))
+        .into(),
+    );
+
     // Insert each regional font
     fonts.font_data.insert(
         "noto_sans_sc".to_owned(),
@@ -136,6 +146,7 @@ pub fn fonts() -> Result<egui::FontDefinitions, Box<dyn std::error::Error>> {
                 "Ubuntu-Light".into(),
                 "emoji-icon-font".into(),
                 "NotoEmoji-Regular".into(),
+                "noto_sans_symbols2".to_owned(), // Unicode symbol-block icon glyphs
                 "noto_sans".to_owned(),
                 "noto_sans_sc".to_owned(), // Simplified Chinese
                 "noto_sans_tc".to_owned(), // Traditional Chinese
@@ -160,6 +171,7 @@ pub fn fonts() -> Result<egui::FontDefinitions, Box<dyn std::error::Error>> {
                 "Ubuntu-Light".into(),
                 "emoji-icon-font".into(),
                 "NotoEmoji-Regular".into(),
+                "noto_sans_symbols2".to_owned(), // Unicode symbol-block icon glyphs
                 "noto_sans".to_owned(),
                 "noto_sans_sc".to_owned(), // Simplified Chinese
                 "noto_sans_tc".to_owned(), // Traditional Chinese

@@ -94,8 +94,7 @@ impl TokensScreen {
                         if ui.button("View schema").clicked() {
                             match serde_json::to_string_pretty(&token.token_configuration) {
                                 Ok(schema) => {
-                                    self.show_json_popup = true;
-                                    self.json_popup_text = schema;
+                                    self.open_data_contract_json_popup(schema);
                                 }
                                 Err(e) => {
                                     MessageBanner::set_global(

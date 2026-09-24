@@ -2,8 +2,8 @@ use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
-use crate::model::proof_log_item::RequestType;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::request_type::RequestType;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
@@ -47,44 +47,42 @@ impl AppContext {
             builder = builder.with_state_transition_creation_options(options);
         }
 
-        let result = sdk
-            .token_freeze(builder, &signing_key, actor_identity)
-            .await
-            .map_err(|e| self.log_drive_proof_error(e, RequestType::BroadcastStateTransition))?;
-
-        // Log the proof-verified freeze result
-        match result {
-            FreezeResult::IdentityInfo(identity_id, info) => {
-                tracing::info!(
-                    "FreezeTokens: identity {} frozen={}",
-                    identity_id,
-                    info.frozen()
-                );
-            }
-            FreezeResult::HistoricalDocument(document) => {
-                tracing::info!("FreezeTokens: historical document id={}", document.id());
-            }
-            FreezeResult::GroupActionWithDocument(power, doc) => {
-                tracing::info!(
-                    "FreezeTokens: group action power={}, has_doc={}",
-                    power,
-                    doc.is_some()
-                );
-            }
-            FreezeResult::GroupActionWithIdentityInfo(power, info) => {
-                tracing::info!(
-                    "FreezeTokens: group action power={}, frozen={}",
-                    power,
-                    info.frozen()
-                );
-            }
-        }
-
-        // Return success with fee result
-        use crate::backend_task::FeeResult;
-        use crate::model::fee_estimation::PlatformFeeEstimator;
-        let estimated_fee = PlatformFeeEstimator::new().estimate_document_batch(1);
-        let fee_result = FeeResult::new(estimated_fee, estimated_fee);
-        Ok(BackendTaskSuccessResult::FrozeTokens(fee_result))
+        self.execute_token_op(
+            async {
+                sdk.token_freeze(builder, &signing_key, actor_identity)
+                    .await
+                    .map_err(|e| {
+                        self.log_drive_proof_error(e, RequestType::BroadcastStateTransition)
+                    })
+            },
+            |result| match result {
+                FreezeResult::IdentityInfo(identity_id, info) => {
+                    tracing::info!(
+                        "FreezeTokens: identity {} frozen={}",
+                        identity_id,
+                        info.frozen()
+                    );
+                }
+                FreezeResult::HistoricalDocument(document) => {
+                    tracing::info!("FreezeTokens: historical document id={}", document.id());
+                }
+                FreezeResult::GroupActionWithDocument(power, doc) => {
+                    tracing::info!(
+                        "FreezeTokens: group action power={}, has_doc={}",
+                        power,
+                        doc.is_some()
+                    );
+                }
+                FreezeResult::GroupActionWithIdentityInfo(power, info) => {
+                    tracing::info!(
+                        "FreezeTokens: group action power={}, frozen={}",
+                        power,
+                        info.frozen()
+                    );
+                }
+            },
+            BackendTaskSuccessResult::FrozeTokens,
+        )
+        .await
     }
 }

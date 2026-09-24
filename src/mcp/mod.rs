@@ -19,14 +19,47 @@ mod tests;
 pub use config::McpConfig;
 
 /// Start the MCP server over stdin/stdout.
+///
+/// Runs until the stdio transport closes (client disconnects), then drains
+/// the wallet-backend persister before returning.  This does **not** prevent
+/// the coordinator timer-wheel panic that occurs on Tokio runtime drop —
+/// `shutdown_wallet_backend` does not join coordinator OS threads.
+/// `std::process::exit` in the caller is the deterministic mitigation.
 #[cfg(feature = "cli")]
 pub async fn start_stdio() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use rmcp::ServiceExt;
 
     let service = server::DashMcpService::new_lazy();
-    let server = service.serve(rmcp::transport::stdio()).await?;
-    server.waiting().await?;
-    Ok(())
+    // Keep a clone so we can access the context after `serve()` moves `service`.
+    // `DashMcpService` is cheaply cloneable (all fields are `Arc`-wrapped).
+    let service_for_shutdown = service.clone();
+
+    // S6: capture the server result WITHOUT short-circuiting via `?` so that
+    // `shutdown_wallet_backend` is ALWAYS called regardless of whether `serve`
+    // or `waiting` returns an error.  The `?` is deferred to after the shutdown.
+    //
+    // `serve().await` errors with `ServerInitializeError`; `waiting().await`
+    // errors with `JoinError` and succeeds with `QuitReason` — both are
+    // mapped to the function's `Box<dyn Error + Send + Sync>` return type.
+    let result: Result<(), Box<dyn std::error::Error + Send + Sync>> = async {
+        let server = service
+            .serve(rmcp::transport::stdio())
+            .await
+            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
+        server
+            .waiting()
+            .await
+            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })
+            .map(|_| ())
+    }
+    .await;
+
+    // Quiesce the wallet backend (coordinator threads) before returning.
+    // The caller's runtime is still alive at this point; the shutdown must
+    // complete here, inside `block_on`, NOT during runtime drop.
+    service_for_shutdown.shutdown_wallet_backend().await;
+
+    result
 }
 
 /// Start the MCP server over HTTP (embedded in GUI app).
@@ -50,12 +83,7 @@ pub async fn start_http_server(
     let mcp_service = StreamableHttpService::new(
         move || Ok(DashMcpService::new_shared(ctx.clone())),
         LocalSessionManager::default().into(),
-        {
-            StreamableHttpServerConfig {
-                cancellation_token: cancel.clone(),
-                ..Default::default()
-            }
-        },
+        StreamableHttpServerConfig::default().with_cancellation_token(cancel.clone()),
     );
 
     let health = Router::new().route("/health", axum::routing::get(|| async { "OK" }));

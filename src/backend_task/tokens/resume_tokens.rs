@@ -2,8 +2,8 @@ use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
-use crate::model::proof_log_item::RequestType;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::request_type::RequestType;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -45,25 +45,22 @@ impl AppContext {
             builder = builder.with_state_transition_creation_options(options);
         }
 
-        let state_transition = builder
-            .sign(sdk, &signing_key, actor_identity, self.platform_version())
-            .await
-            .map_err(TaskError::from)?;
-
-        // Broadcast
-        let proof_result = state_transition
-            .broadcast_and_wait::<StateTransitionProofResult>(sdk, None)
-            .await
-            .map_err(|e| self.log_drive_proof_error(e, RequestType::BroadcastStateTransition))?;
-
-        // Log proof result for audit trail
-        tracing::info!("ResumeTokens proof result: {}", proof_result);
-
-        // Return success with fee result
-        use crate::backend_task::FeeResult;
-        use crate::model::fee_estimation::PlatformFeeEstimator;
-        let estimated_fee = PlatformFeeEstimator::new().estimate_document_batch(1);
-        let fee_result = FeeResult::new(estimated_fee, estimated_fee);
-        Ok(BackendTaskSuccessResult::ResumedTokens(fee_result))
+        self.execute_token_op(
+            async {
+                let state_transition = builder
+                    .sign(sdk, &signing_key, actor_identity, self.platform_version())
+                    .await
+                    .map_err(TaskError::from)?;
+                state_transition
+                    .broadcast_and_wait::<StateTransitionProofResult>(sdk, None)
+                    .await
+                    .map_err(|e| {
+                        self.log_drive_proof_error(e, RequestType::BroadcastStateTransition)
+                    })
+            },
+            |proof_result| tracing::info!("ResumeTokens proof result: {}", proof_result),
+            BackendTaskSuccessResult::ResumedTokens,
+        )
+        .await
     }
 }

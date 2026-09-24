@@ -73,11 +73,11 @@ impl AppContext {
         token_id: Identifier,
         sdk: &Sdk,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        let token_config = self.db.get_token_config_for_id(&token_id, self)?.ok_or(
-            TaskError::TokenQueryError {
-                detail: "Token config not found in database".to_string(),
-            },
-        )?;
+        let token_config =
+            self.get_token_config_for_id(&token_id)?
+                .ok_or(TaskError::TokenQueryError {
+                    detail: "Token config not found in database".to_string(),
+                })?;
         let perpetual_distribution = token_config
             .distribution_rules()
             .perpetual_distribution()
@@ -147,6 +147,7 @@ impl AppContext {
                 start_from_moment_for_distribution,
                 current_cycle_moment,
                 max_cycles,
+                self.platform_version(),
             )
             .map_err(|e| TaskError::TokenQueryError {
                 detail: format!("Failed to calculate estimated rewards: {}", e),
@@ -246,6 +247,7 @@ impl AppContext {
                     max_cycle_moment,
                     Some(get_epoch_reward_ratio),
                     last_claim.is_none(),
+                    self.platform_version(),
                 )
                 .map_err(|e| TaskError::TokenQueryError {
                     detail: format!("Failed to calculate estimated rewards: {}", e),
@@ -258,6 +260,7 @@ impl AppContext {
                     max_cycle_moment,
                     None,
                     last_claim.is_none(),
+                    self.platform_version(),
                 )
                 .map_err(|e| TaskError::TokenQueryError {
                     detail: format!("Failed to calculate estimated rewards: {}", e),

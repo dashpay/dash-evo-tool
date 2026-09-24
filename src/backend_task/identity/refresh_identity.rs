@@ -58,7 +58,7 @@ impl AppContext {
             .map_err(|_| TaskError::InternalSendError)?;
 
         Ok(BackendTaskSuccessResult::RefreshedIdentity(
-            qualified_identity,
+            qualified_identity_to_update,
         ))
     }
 }

@@ -1,6 +1,8 @@
 //! Polling helpers for waiting on async state changes.
 
+use dash_evo_tool::backend_task::error::TaskError;
 use dash_evo_tool::context::AppContext;
+use dash_evo_tool::model::spv_status::SpvStatus;
 use dash_evo_tool::model::wallet::WalletSeedHash;
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,18 +20,7 @@ pub async fn wait_for_balance(
     timeout(wait_timeout, async {
         let mut poll_count = 0u32;
         loop {
-            // Trigger reconcile so DET wallet model reflects latest SPV state
-            if let Err(e) = app_context.reconcile_spv_wallets().await {
-                tracing::warn!("reconcile_spv_wallets failed: {e}");
-            }
-
-            let balance = {
-                let wallets = app_context.wallets().read().expect("wallets lock");
-                wallets.get(&wallet_hash).map(|wallet_arc| {
-                    let wallet = wallet_arc.read().expect("wallet lock");
-                    wallet.total_balance_duffs()
-                })
-            };
+            let balance = Some(app_context.snapshot_balance(&wallet_hash).total);
             poll_count += 1;
             if let Some(b) = balance
                 && b >= min_balance
@@ -63,11 +54,15 @@ pub async fn wait_for_balance(
     })
 }
 
-/// Wait until a wallet has at least `min_balance` **spendable** (confirmed/IS-locked) duffs.
+/// Wait until a wallet has at least `min_balance` **spendable** duffs.
 ///
-/// This is stricter than `wait_for_balance()` — it ensures the funds are actually
-/// available for transaction building, not just visible as unconfirmed balance.
-/// Triggers SPV reconciliation on each poll.
+/// "Spendable" is `DetWalletBalance::spendable()` — the exact set the upstream
+/// `CoinSelector` draws from (confirmed + unconfirmed), excluding the immature
+/// and locked duffs that only `total` counts. This is the right gate for "can
+/// this wallet fund a transaction now": funds that are IS-locked but not yet
+/// flagged as instant-locked locally land in `unconfirmed`, so polling
+/// `confirmed` alone would miss them and time out even though coin selection
+/// could already spend them. Triggers SPV reconciliation on each poll.
 pub async fn wait_for_spendable_balance(
     app_context: &Arc<AppContext>,
     wallet_hash: WalletSeedHash,
@@ -78,18 +73,7 @@ pub async fn wait_for_spendable_balance(
     timeout(wait_timeout, async {
         let mut poll_count = 0u32;
         loop {
-            // Trigger reconcile so DET wallet model reflects latest SPV state
-            if let Err(e) = app_context.reconcile_spv_wallets().await {
-                tracing::warn!("reconcile_spv_wallets failed: {e}");
-            }
-
-            let balance = {
-                let wallets = app_context.wallets().read().expect("wallets lock");
-                wallets.get(&wallet_hash).and_then(|wallet_arc| {
-                    let wallet = wallet_arc.read().expect("wallet lock");
-                    wallet.spv_confirmed_balance()
-                })
-            };
+            let balance = Some(app_context.snapshot_balance(&wallet_hash).spendable());
             poll_count += 1;
             if let Some(b) = balance
                 && b >= min_balance
@@ -116,60 +100,49 @@ pub async fn wait_for_spendable_balance(
     })
     .await
     .map_err(|_| {
-        // Report both confirmed and total for diagnostics
-        let (confirmed, total) = {
-            let wallets = app_context.wallets().read().expect("wallets lock");
-            wallets
-                .get(&wallet_hash)
-                .map(|wallet_arc| {
-                    let wallet = wallet_arc.read().expect("wallet lock");
-                    (
-                        wallet.spv_confirmed_balance().unwrap_or(0),
-                        wallet.total_balance_duffs(),
-                    )
-                })
-                .unwrap_or((0, 0))
-        };
+        // Report spendable and total for diagnostics
+        let snap = app_context.snapshot_balance(&wallet_hash);
+        let (spendable, total) = (snap.spendable(), snap.total);
         format!(
             "Timed out waiting for spendable balance >= {} duffs \
-             (confirmed: {}, total: {})",
-            min_balance, confirmed, total
+             (spendable: {}, total: {})",
+            min_balance, spendable, total
         )
     })
 }
 
-/// Wait until a wallet appears in the SPV subsystem.
+/// Ensure a DET-registered wallet is registered with the upstream wallet
+/// backend so its addresses are monitored by the `SpvRuntime`.
+///
+/// Chain sync is owned by upstream `platform-wallet`. A wallet becomes
+/// "tracked" once `WalletBackend::ensure_wallets_registered` has run
+/// `create_wallet_from_seed_bytes` for it (idempotent), at which point its
+/// derived addresses are watched and balance events flow back through the
+/// `EventBridge`. This drives that registration and confirms the upstream
+/// backend has a snapshot slot for the wallet.
 pub async fn wait_for_wallet_in_spv(
     app_context: &Arc<AppContext>,
     wallet_hash: WalletSeedHash,
     wait_timeout: Duration,
 ) -> Result<(), String> {
-    timeout(wait_timeout, async {
-        loop {
-            let snapshot = app_context.spv_manager().det_wallets_snapshot();
-            if snapshot.contains_key(&wallet_hash) {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        }
-    })
-    .await
-    .map_err(|_| "Timed out waiting for wallet in SPV".to_string())
-}
+    let backend = app_context
+        .wallet_backend()
+        .map_err(|e| format!("Wallet backend not wired: {e}"))?;
 
-/// Wait for SPV to complete initial sync (all managers including masternodes).
-///
-/// `SpvStatus::Running` is set after `SyncComplete` fires, which means
-/// MempoolManager is activated and bloom filter is built.
-pub async fn wait_for_spv_running(
-    app_context: &Arc<AppContext>,
-    wait_timeout: Duration,
-) -> Result<(), String> {
-    use dash_evo_tool::spv::SpvStatus;
     timeout(wait_timeout, async {
         loop {
-            if app_context.connection_status().spv_status() == SpvStatus::Running {
-                return;
+            match backend.ensure_wallets_registered(app_context).await {
+                Ok(()) => {
+                    if backend.is_wallet_registered(&wallet_hash) {
+                        return Ok(());
+                    }
+                }
+                // `TaskError::WalletBackend` is the upstream wallet runtime's
+                // documented "retry in a moment" signal — transient under the
+                // serial suite's burst of registrations. Retry within the
+                // existing timeout budget. Any other typed error is terminal.
+                Err(TaskError::WalletBackend { .. }) => {}
+                Err(e) => return Err(format!("ensure_wallets_registered failed: {e}")),
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
@@ -177,27 +150,362 @@ pub async fn wait_for_spv_running(
     .await
     .map_err(|_| {
         format!(
-            "Timed out after {:?} waiting for SPV to reach Running state",
+            "Timed out after {:?} waiting for wallet to register with the upstream backend",
             wait_timeout
         )
-    })
+    })?
 }
 
-/// Wait for SPV to connect to at least one peer.
+/// Longest the initial SPV sync may go without advancing its progress token
+/// before [`wait_for_spv_sync`] reports it stalled.
+pub const SPV_STALL_WINDOW: Duration = Duration::from_secs(180);
+
+/// Hard cap on the whole initial SPV sync wait, however steadily it advances.
+/// Equals the former worst case (3 init attempts × 600s), now spent on one
+/// runtime instead of restarting sync from genesis on a fresh slot.
+pub const SPV_SYNC_CAP: Duration = Duration::from_secs(1800);
+
+/// What [`wait_for_spv_sync`] does after a poll that did not see `Running`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpvWaitVerdict {
+    /// Keep waiting on the same runtime.
+    Continue,
+    /// No progress for the stall window.
+    Stalled,
+    /// The hard cap elapsed.
+    Exhausted,
+}
+
+/// Decide whether the initial SPV sync wait continues.
+///
+/// `since_progress` is the time since the progress token last advanced (or
+/// since the wait began, if it never has); `elapsed` is the total wait. The cap
+/// wins over the stall window so the wait is bounded even while progressing.
+pub fn spv_wait_verdict(
+    since_progress: Duration,
+    elapsed: Duration,
+    stall_window: Duration,
+    cap: Duration,
+) -> SpvWaitVerdict {
+    if elapsed >= cap {
+        SpvWaitVerdict::Exhausted
+    } else if since_progress >= stall_window {
+        SpvWaitVerdict::Stalled
+    } else {
+        SpvWaitVerdict::Continue
+    }
+}
+
+/// Whether the monotonic SPV progress token
+/// ([`spv_progress_token`](dash_evo_tool::context::connection_status::spv_progress_token))
+/// moved forward. `None` (no phase actively syncing) never counts as progress,
+/// and neither does a token that went back or stayed put.
+pub fn spv_progress_advanced(last: Option<u64>, now: Option<u64>) -> bool {
+    matches!((last, now), (_, Some(n)) if last.is_none_or(|l| n > l))
+}
+
+/// Why the initial SPV sync wait gave up.
+#[derive(Debug, thiserror::Error)]
+pub enum SpvSyncWaitError {
+    /// Sync stopped advancing while SPV was reporting an error.
+    ///
+    /// `SpvStatus::Error` is not terminal — the `EventBridge` recomputes the
+    /// status from every `on_progress`, so a manager error is cleared by the
+    /// next progress event — which is why this is not a fail-fast arm. It
+    /// reports the error only once the wait has actually given up, so the
+    /// operator sees the cause instead of a bare "no progress".
+    #[error(
+        "SPV sync made no progress for {stalled_for:?} while reporting an error: {}",
+        last_error.as_deref().unwrap_or("no error text recorded")
+    )]
+    ErroredAndStalled {
+        stalled_for: Duration,
+        elapsed: Duration,
+        last_token: Option<u64>,
+        last_error: Option<String>,
+    },
+
+    #[error(
+        "SPV sync made no progress for {stalled_for:?} (stall window {stall_window:?}, \
+         {elapsed:?} into the wait); last progress token {last_token:?}, status {status:?}"
+    )]
+    Stalled {
+        stalled_for: Duration,
+        stall_window: Duration,
+        elapsed: Duration,
+        last_token: Option<u64>,
+        status: SpvStatus,
+    },
+    #[error(
+        "SPV sync was still progressing but not complete after {elapsed:?} (cap {cap:?}); \
+         last progress token {last_token:?}, status {status:?}"
+    )]
+    Exhausted {
+        elapsed: Duration,
+        cap: Duration,
+        last_token: Option<u64>,
+        status: SpvStatus,
+    },
+}
+
+/// Build the failure for a wait that stopped advancing.
+///
+/// Splits on the status SPV reports at that moment: an errored SPV names its
+/// error, everything else is a plain stall. Pure, so the split is testable
+/// without a live runtime.
+fn stall_failure(
+    status: SpvStatus,
+    last_error: Option<String>,
+    stalled_for: Duration,
+    stall_window: Duration,
+    elapsed: Duration,
+    last_token: Option<u64>,
+) -> SpvSyncWaitError {
+    if status == SpvStatus::Error {
+        SpvSyncWaitError::ErroredAndStalled {
+            stalled_for,
+            elapsed,
+            last_token,
+            last_error,
+        }
+    } else {
+        SpvSyncWaitError::Stalled {
+            stalled_for,
+            stall_window,
+            elapsed,
+            last_token,
+            status,
+        }
+    }
+}
+
+/// Wait for SPV to complete initial sync (all managers including masternodes).
+///
+/// `SpvStatus::Running` is set after `SyncComplete` fires, which means
+/// MempoolManager is activated and bloom filter is built.
+///
+/// Progress-aware and bounded: the wait continues on the SAME runtime (and so
+/// the same workdir slot, with its stored headers and filters) while the
+/// progress token keeps advancing, fails once it stalls for `stall_window`, and
+/// never exceeds `cap`. A slow sync therefore resumes instead of panicking into
+/// an init retry, which would land on a fresh slot and restart from genesis.
+///
+/// `SpvStatus::Error` does not end the wait. The `EventBridge` recomputes the
+/// status on every `on_progress`, so a manager error (a peer dropping mid-sync)
+/// is cleared by the next progress event; failing fast on it would abandon a
+/// sync that recovers on its own. It is logged when first seen, and named in
+/// [`SpvSyncWaitError::ErroredAndStalled`] if the sync never resumes.
+pub async fn wait_for_spv_sync(
+    app_context: &Arc<AppContext>,
+    stall_window: Duration,
+    cap: Duration,
+) -> Result<(), SpvSyncWaitError> {
+    use dash_evo_tool::context::connection_status::spv_progress_token;
+
+    let connection = app_context.connection_status();
+    let started = tokio::time::Instant::now();
+    let mut last_progress_at = started;
+    let mut last_token: Option<u64> = None;
+    let mut errored_since: Option<tokio::time::Instant> = None;
+    loop {
+        let spv_status = connection.spv_status();
+        if spv_status == SpvStatus::Running {
+            return Ok(());
+        }
+        // An errored SPV is logged as soon as it is seen, not only when the
+        // wait gives up: the status clears itself on the next progress event,
+        // so the log is the only record that it happened at all.
+        match (spv_status, errored_since) {
+            (SpvStatus::Error, None) => {
+                errored_since = Some(tokio::time::Instant::now());
+                tracing::warn!(
+                    error = connection.spv_last_error().unwrap_or_default(),
+                    "SPV reports an error; waiting to see whether sync recovers"
+                );
+            }
+            (SpvStatus::Error, Some(_)) => {}
+            (_, Some(since)) => {
+                tracing::info!("SPV recovered from its error after {:?}", since.elapsed());
+                errored_since = None;
+            }
+            (_, None) => {}
+        }
+        let token = connection
+            .spv_sync_progress()
+            .as_ref()
+            .and_then(spv_progress_token);
+        let now = tokio::time::Instant::now();
+        if spv_progress_advanced(last_token, token) {
+            last_token = token;
+            last_progress_at = now;
+        }
+        let since_progress = now - last_progress_at;
+        let elapsed = now - started;
+        match spv_wait_verdict(since_progress, elapsed, stall_window, cap) {
+            SpvWaitVerdict::Continue => {}
+            SpvWaitVerdict::Stalled => {
+                return Err(stall_failure(
+                    spv_status,
+                    connection.spv_last_error(),
+                    since_progress,
+                    stall_window,
+                    elapsed,
+                    last_token,
+                ));
+            }
+            SpvWaitVerdict::Exhausted => {
+                return Err(SpvSyncWaitError::Exhausted {
+                    elapsed,
+                    cap,
+                    last_token,
+                    status: spv_status,
+                });
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
+/// Wait until the upstream `SpvRuntime` has connected to peers and begun
+/// syncing.
+///
+/// Chain sync is upstream-owned; the only signal DET observes is the
+/// push-based `ConnectionStatus` fed by the wallet-backend `EventBridge`.
+/// `on_progress` / `on_sync_event` move the status to `Syncing` (or
+/// `Running`) only once a peer is connected and header sync has started —
+/// upstream cannot make sync progress without a peer. The dedicated
+/// `PeersUpdated` peer-count atomic is not reliably populated by this
+/// upstream revision, so an active sync status (not the raw count) is the
+/// authoritative "we have peers" signal.
 pub async fn wait_for_spv_peers(
     app_context: &Arc<AppContext>,
     wait_timeout: Duration,
 ) -> Result<(), String> {
-    let spv = app_context.spv_manager().clone();
-    timeout(wait_timeout, async move {
+    use dash_evo_tool::model::spv_status::SpvStatus;
+    let cs = app_context.connection_status();
+    timeout(wait_timeout, async {
         loop {
-            let snapshot = spv.status_async().await;
-            if snapshot.connected_peers > 0 {
-                return;
+            // A non-zero peer count is the strongest signal when present,
+            // but `Syncing`/`Running` already implies a connected peer.
+            if cs.spv_connected_peers() > 0
+                || matches!(cs.spv_status(), SpvStatus::Syncing | SpvStatus::Running)
+            {
+                return Ok(());
+            }
+            if cs.spv_status() == SpvStatus::Error {
+                return Err(format!(
+                    "SPV entered Error state while waiting for peers: {}",
+                    cs.spv_last_error().unwrap_or_default()
+                ));
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
     })
     .await
-    .map_err(|_| format!("Timed out after {:?} waiting for SPV peers", wait_timeout))
+    .map_err(|_| {
+        format!(
+            "Timed out after {:?} waiting for SPV to connect to a peer (status: {})",
+            wait_timeout,
+            cs.spv_status()
+        )
+    })?
+}
+
+#[cfg(test)]
+mod spv_wait_tests {
+    use super::*;
+
+    const STALL: Duration = SPV_STALL_WINDOW;
+    const CAP: Duration = SPV_SYNC_CAP;
+    const fn secs(s: u64) -> Duration {
+        Duration::from_secs(s)
+    }
+
+    #[test]
+    fn keeps_waiting_while_progressing_past_the_old_600s_deadline() {
+        assert_eq!(
+            spv_wait_verdict(secs(5), secs(900), STALL, CAP),
+            SpvWaitVerdict::Continue
+        );
+    }
+
+    #[test]
+    fn stalls_after_the_stall_window_without_progress() {
+        assert_eq!(
+            spv_wait_verdict(STALL, secs(400), STALL, CAP),
+            SpvWaitVerdict::Stalled
+        );
+        assert_eq!(
+            spv_wait_verdict(STALL - secs(1), secs(400), STALL, CAP),
+            SpvWaitVerdict::Continue
+        );
+    }
+
+    #[test]
+    fn cap_bounds_the_wait_even_while_progressing() {
+        assert_eq!(
+            spv_wait_verdict(secs(0), CAP, STALL, CAP),
+            SpvWaitVerdict::Exhausted
+        );
+        // The cap wins when both limits are hit on the same poll.
+        assert_eq!(
+            spv_wait_verdict(STALL, CAP, STALL, CAP),
+            SpvWaitVerdict::Exhausted
+        );
+    }
+
+    #[test]
+    fn stall_window_is_shorter_than_the_cap() {
+        const { assert!(SPV_STALL_WINDOW.as_secs() < SPV_SYNC_CAP.as_secs()) };
+    }
+
+    #[test]
+    fn an_errored_stall_names_the_spv_error() {
+        let failure = stall_failure(
+            SpvStatus::Error,
+            Some("filter sync: peer disconnected".to_string()),
+            STALL,
+            STALL,
+            secs(400),
+            Some(7),
+        );
+        match &failure {
+            SpvSyncWaitError::ErroredAndStalled { last_error, .. } => assert_eq!(
+                last_error.as_deref(),
+                Some("filter sync: peer disconnected")
+            ),
+            other => panic!("expected ErroredAndStalled, got: {other:?}"),
+        }
+        assert!(
+            failure.to_string().contains("peer disconnected"),
+            "the SPV error must reach the message: {failure}"
+        );
+    }
+
+    /// A stall while SPV still reports itself as syncing is not an SPV error,
+    /// and must not claim one.
+    #[test]
+    fn a_plain_stall_reports_the_status_it_saw() {
+        let failure = stall_failure(SpvStatus::Syncing, None, STALL, STALL, secs(400), Some(7));
+        match failure {
+            SpvSyncWaitError::Stalled { status, .. } => assert_eq!(status, SpvStatus::Syncing),
+            other => panic!("expected Stalled, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn progress_token_advance_rules() {
+        let token = |step: u64, height: u64| Some((step << 32) | height);
+        // First token seen counts as progress.
+        assert!(spv_progress_advanced(None, token(1, 10)));
+        // Height climbing within a phase.
+        assert!(spv_progress_advanced(token(1, 10), token(1, 11)));
+        // A new phase restarts its height but the token still increases.
+        assert!(spv_progress_advanced(token(1, 1_500_000), token(2, 0)));
+        // No token yet, unchanged, or regressed: not progress.
+        assert!(!spv_progress_advanced(None, None));
+        assert!(!spv_progress_advanced(token(1, 10), None));
+        assert!(!spv_progress_advanced(token(1, 10), token(1, 10)));
+        assert!(!spv_progress_advanced(token(2, 0), token(1, 99)));
+    }
 }

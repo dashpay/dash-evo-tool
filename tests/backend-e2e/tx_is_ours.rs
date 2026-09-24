@@ -1,10 +1,10 @@
 //! Test: Verify `is_ours` flag is set correctly for SPV transactions.
 //!
-//! SPV transactions pass through bloom filter → `check_transaction()` (address
-//! matching) → `record_transaction()`. The upstream library sets `is_ours` only
-//! for sends (`net_amount < 0`). We override to `true` for all matched
-//! transactions in the SPV reconcile path, since `check_transaction` already
-//! verified address ownership (bloom filter FPs are filtered there).
+//! The upstream `platform-wallet` engine matches transactions against watched
+//! addresses and emits wallet events; DET's `EventBridge` accumulates them
+//! into the per-wallet snapshot read here via
+//! `WalletBackend::transaction_history`. Both the sender and receiver wallet
+//! must see the transaction with `is_ours: true`.
 //!
 //! This test sends funds between two wallets and verifies that both the sender
 //! and receiver have `is_ours: true` on the resulting transaction.
@@ -29,15 +29,12 @@ async fn test_spv_transactions_is_ours_flag() {
     let (hash_b, wallet_b) = ctx.create_funded_test_wallet(1_000_000).await;
 
     let send_amount: u64 = 500_000;
-    let b_address = get_receive_address(app_context, &wallet_b);
+    let b_address = get_receive_address(app_context, &wallet_b).await;
 
     // Capture B's balance BEFORE sending, so we know the exact target to
     // wait for. Reading this after the send risks including the send amount
     // (via reconciliation), which inflates the target and causes a timeout.
-    let initial_b = {
-        let w = wallet_b.read().expect("lock");
-        w.total_balance_duffs()
-    };
+    let initial_b = app_context.snapshot_balance(&hash_b).total;
     tracing::info!("initial_b balance = {} duffs", initial_b);
 
     // Wait for A to have spendable funds
@@ -61,8 +58,6 @@ async fn test_spv_transactions_is_ours_flag() {
             address: b_address.clone(),
             amount_duffs: send_amount,
         }],
-        subtract_fee_from_amount: false,
-        memo: Some("is_ours test".to_string()),
         override_fee: None,
     };
 
@@ -93,22 +88,14 @@ async fn test_spv_transactions_is_ours_flag() {
     .await
     .expect("B should receive funds");
 
-    // Force a reconcile to ensure latest SPV state is reflected
-    app_context
-        .reconcile_spv_wallets()
-        .await
-        .expect("reconcile should succeed");
+    let wallet_backend = app_context
+        .wallet_backend()
+        .expect("wallet backend available");
 
     // Check is_ours on wallet A (sender) — should be true
     {
-        let wallets = app_context.wallets().read().expect("wallets lock");
-        let wallet = wallets
-            .get(&hash_a)
-            .expect("wallet A")
-            .read()
-            .expect("lock");
-        let tx = wallet
-            .transactions
+        let history = wallet_backend.transaction_history(&hash_a);
+        let tx = history
             .iter()
             .find(|t| t.txid.to_string() == payment_txid)
             .unwrap_or_else(|| panic!("Wallet A should have tx {payment_txid}"));
@@ -124,14 +111,8 @@ async fn test_spv_transactions_is_ours_flag() {
 
     // Check is_ours on wallet B (receiver) — should be true
     {
-        let wallets = app_context.wallets().read().expect("wallets lock");
-        let wallet = wallets
-            .get(&hash_b)
-            .expect("wallet B")
-            .read()
-            .expect("lock");
-        let tx = wallet
-            .transactions
+        let history = wallet_backend.transaction_history(&hash_b);
+        let tx = history
             .iter()
             .find(|t| t.txid.to_string() == payment_txid)
             .unwrap_or_else(|| panic!("Wallet B should have tx {payment_txid}"));

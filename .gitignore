@@ -35,3 +35,7 @@ test_db*
 explorer.log
 .gitaipconfig
 .claude/worktrees
+.codex/
+
+# QA scenario screenshots — archived to /data/artifacts, not tracked in git
+docs/ai-design/*/scenarios/screenshots/

@@ -8,6 +8,7 @@ use crate::ui::theme::DashColors;
 use crate::ui::tokens::tokens_screen::{
     ContractDescriptionInfo, ContractSearchStatus, TokensScreen,
 };
+use crate::wallet_backend::poison::MutexRecover;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use eframe::emath::Align;
 use egui::{RichText, Ui};
@@ -59,7 +60,7 @@ impl TokensScreen {
 
                     if go_clicked || enter_pressed {
                         // Clear old results, set status
-                        self.search_results.lock().unwrap().clear();
+                        self.search_results.lock_recover().clear();
                         self.contract_search_status = ContractSearchStatus::WaitingForResult;
                         self.operation_banner.take_and_clear();
                         let handle = MessageBanner::set_global(
@@ -86,7 +87,7 @@ impl TokensScreen {
                         // Clear the search input
                         self.token_search_query = Some("".to_string());
                         // Clear the search results
-                        self.search_results.lock().unwrap().clear();
+                        self.search_results.lock_recover().clear();
                         // Reset the search status
                         self.contract_search_status = ContractSearchStatus::NotStarted;
                         // Clear pagination state
@@ -116,7 +117,7 @@ impl TokensScreen {
             }
             ContractSearchStatus::Complete => {
                 // Show the results
-                let results = self.search_results.lock().unwrap().clone();
+                let results = self.search_results.lock_recover().clone();
                 if results.is_empty() {
                     ui.label("No tokens match your keyword.");
                 } else {

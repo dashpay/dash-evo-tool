@@ -1,3 +1,4 @@
+use dash_evo_tool::context::SDK_THREAD_STACK_SIZE;
 use rmcp::ServiceExt;
 
 use super::McpClient;
@@ -13,7 +14,13 @@ pub(super) fn format_service_error(e: rmcp::service::ServiceError) -> String {
 }
 
 /// Run as a standalone MCP stdio server (replaces the separate dash-evo-tool-mcp binary).
-pub(super) fn run_stdio_server() -> Result<(), Box<dyn std::error::Error>> {
+///
+/// Always terminates via [`std::process::exit`] rather than returning — this
+/// bypasses Tokio runtime teardown and prevents coordinator OS threads
+/// (`identity-sync`, `platform-address-sync`, `shielded-sync`) from panicking
+/// when they poll `tokio::time::sleep` against a shutting-down timer wheel.
+/// See `DashMcpService::shutdown_wallet_backend` for the full race analysis.
+pub(super) fn run_stdio_server() -> ! {
     use dash_evo_tool::logging::initialize_logger;
 
     initialize_logger();
@@ -24,12 +31,30 @@ pub(super) fn run_stdio_server() -> Result<(), Box<dyn std::error::Error>> {
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(4)
+        .thread_stack_size(SDK_THREAD_STACK_SIZE) // 4 MiB stack size for each worker thread
         .enable_all()
-        .build()?;
+        .build()
+        .expect("failed to build Tokio runtime");
 
-    runtime
-        .block_on(dash_evo_tool::mcp::start_stdio())
-        .map_err(|e| -> Box<dyn std::error::Error> { e })
+    // `start_stdio` drains the wallet backend's persister (quiesce) before
+    // returning.  We do NOT call `runtime.shutdown_timeout` afterwards —
+    // instead we hard-exit below so coordinator threads cannot race the
+    // timer-wheel teardown.
+    let result = runtime.block_on(dash_evo_tool::mcp::start_stdio());
+
+    let exit_code: i32 = match result {
+        Ok(()) => 0,
+        Err(ref e) => {
+            eprintln!("MCP server error: {e}");
+            1
+        }
+    };
+
+    use std::io::Write as _;
+    let _ = std::io::stdout().lock().flush();
+    let _ = std::io::stderr().lock().flush();
+    // TODO(graceful-teardown): replace with normal return once WalletBackend::quiesce() joins coordinator threads.
+    std::process::exit(exit_code);
 }
 
 pub(super) async fn connect_in_process() -> Result<McpClient, Box<dyn std::error::Error>> {
@@ -64,12 +89,129 @@ pub(super) async fn connect_http(
         StreamableHttpClientTransport, StreamableHttpClientTransportConfig,
     };
 
-    let config = StreamableHttpClientTransportConfig {
-        uri: addr.into(),
-        auth_header: bearer.map(|token| format!("Bearer {token}")),
-        ..Default::default()
-    };
-    let transport = StreamableHttpClientTransport::from_config(config);
+    let mut config = StreamableHttpClientTransportConfig::with_uri(addr);
+    if let Some(token) = bearer {
+        // rmcp's `auth_header` takes the raw token and prepends `Bearer ` itself
+        // (via reqwest's `bearer_auth`). Passing a pre-prefixed value would put
+        // `Bearer Bearer <token>` on the wire and fail server-side auth.
+        config = config.auth_header(token.to_string());
+    }
+    let transport = StreamableHttpClientTransport::with_client(http_client()?, config);
     let client = ().serve(transport).await?;
     Ok(client)
+}
+
+fn http_client() -> Result<reqwest::Client, reqwest::Error> {
+    reqwest::Client::builder()
+        .pool_max_idle_per_host(0)
+        // Loopback tool arguments must never leave this machine through a proxy.
+        .no_proxy()
+        // Tool arguments must stay at the destination validated by the CLI.
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn review_regression_http_client_bypasses_environment_proxy() {
+        const CHILD: &str = "DET_PROXY_TEST_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            runtime.block_on(async {
+                let response = super::http_client()
+                    .unwrap()
+                    .post(std::env::var("DET_PROXY_TEST_URL").unwrap())
+                    .body(rand::random::<u64>().to_string())
+                    .timeout(std::time::Duration::from_secs(5))
+                    .send()
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), reqwest::StatusCode::NO_CONTENT);
+            });
+            return;
+        }
+        let destination = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let proxy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        destination.set_nonblocking(true).unwrap();
+        proxy.set_nonblocking(true).unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "connect::tests::review_regression_http_client_bypasses_environment_proxy",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env(
+                "DET_PROXY_TEST_URL",
+                format!("http://{}/", destination.local_addr().unwrap()),
+            )
+            .env(
+                "HTTP_PROXY",
+                format!("http://{}", proxy.local_addr().unwrap()),
+            )
+            .env(
+                "http_proxy",
+                format!("http://{}", proxy.local_addr().unwrap()),
+            )
+            .env_remove("NO_PROXY")
+            .env_remove("no_proxy")
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut proxied = false;
+        loop {
+            use std::io::{Read as _, Write as _};
+            for (listener, is_proxy) in [(&destination, false), (&proxy, true)] {
+                if let Ok((mut stream, _)) = listener.accept() {
+                    proxied |= is_proxy;
+                    stream
+                        .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                        .unwrap();
+                    let _ = stream.read(&mut [0; 4096]);
+                    stream
+                        .write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+                        .unwrap();
+                }
+            }
+            if let Some(status) = child.try_wait().unwrap() {
+                assert!(status.success(), "transport subprocess failed");
+                break;
+            }
+            if std::time::Instant::now() > deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("transport subprocess timed out");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(!proxied, "loopback request reached the configured proxy");
+    }
+
+    #[tokio::test]
+    async fn http_client_returns_redirect_without_following_it() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0; 1024];
+            let bytes_read = stream.read(&mut request).await.unwrap();
+            assert!(bytes_read > 0, "client closed before sending a request");
+            stream
+                .write_all(b"HTTP/1.1 302 Found\r\nLocation: /other\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+        });
+        let response = super::http_client()
+            .unwrap()
+            .get(format!("http://{addr}/"))
+            .timeout(std::time::Duration::from_secs(5))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::FOUND);
+        server.await.unwrap();
+    }
 }

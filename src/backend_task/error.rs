@@ -2227,7 +2227,9 @@ pub enum TaskError {
     // Wallet creation / import errors
     // ──────────────────────────────────────────────────────────────────────────
     /// The wallet has already been imported for this network.
-    #[error("This wallet has already been imported for this network.")]
+    #[error(
+        "This wallet has already been imported for this network. Open it from the Wallets screen, or enter a different recovery phrase."
+    )]
     WalletAlreadyImported,
 
     /// A new wallet password is shorter than the persistent secret store's

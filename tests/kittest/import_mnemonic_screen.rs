@@ -271,6 +271,12 @@ fn reimported_recovery_phrase_is_reported_to_the_user() {
                 .is_some(),
             "the duplicate import must be shown, not silently swallowed"
         );
+        assert!(
+            harness
+                .query_by_label_contains("Open it from the Wallets screen")
+                .is_some(),
+            "the duplicate-import message must tell the user what to do next"
+        );
     });
 }
 

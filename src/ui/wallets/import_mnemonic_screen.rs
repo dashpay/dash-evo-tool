@@ -13,7 +13,7 @@ use crate::model::wallet::Wallet;
 use crate::model::wallet::alias::AliasSource;
 use crate::ui::components::Component;
 use crate::ui::components::alias_input::AliasInput;
-use crate::ui::components::message_banner::MessageBanner;
+use crate::ui::components::message_banner::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use bip39::Mnemonic;
@@ -71,6 +71,9 @@ pub struct ImportMnemonicScreen {
     /// Live parse feedback for the private-key field. Save failures go to a
     /// banner instead.
     private_key_error: Option<String>,
+    /// Banner of the last rejected save; cleared on the next attempt so a
+    /// successful retry does not sit under a stale error.
+    save_error_banner: Option<BannerHandle>,
     pub app_context: Arc<AppContext>,
     wallet_imported: bool,
     show_advanced_options: bool,
@@ -101,6 +104,7 @@ impl ImportMnemonicScreen {
             password_strength: 0.0,
             estimated_time_to_crack: String::new(),
             private_key_error: None,
+            save_error_banner: None,
             app_context: app_context.clone(),
             wallet_imported: false,
             show_advanced_options: false,
@@ -711,6 +715,7 @@ impl ScreenLike for ImportMnemonicScreen {
                             ImportType::Mnemonic => self.save_wallet(),
                             ImportType::PrivateKey => self.save_private_key_wallet(),
                         };
+                        self.save_error_banner.take_and_clear();
                         match result {
                             Ok(save_action) => {
                                 inner_action = save_action;
@@ -718,10 +723,11 @@ impl ScreenLike for ImportMnemonicScreen {
                             // Every rejection must reach the user: a silent
                             // return here makes the button look broken.
                             Err(ImportSaveError::Rejected(error)) => {
-                                MessageBanner::set_global_with_error(ui.ctx(), error);
+                                self.save_error_banner =
+                                    Some(MessageBanner::set_global_with_error(ui.ctx(), error));
                             }
                             Err(error) => {
-                                MessageBanner::set_global(ui.ctx(), error, MessageType::Error);
+                                self.save_error_banner.raise(ui.ctx(), error, MessageType::Error);
                             }
                         }
                     }

@@ -228,6 +228,41 @@ fn duplicate_imported_wallet_name_is_reported_to_the_user() {
     });
 }
 
+/// A rejection banner must not outlive a successful retry: once the user
+/// fixes the name and saves, the stale "name already used" error goes away.
+#[test]
+fn successful_retry_clears_the_previous_rejection() {
+    with_isolated_data_dir(|| {
+        let (runtime, app_context) = fresh_app_context();
+        insert_wallet(&app_context, "Savings");
+        let mut harness = import_harness(runtime, &app_context, with_test_phrase);
+
+        type_name(&mut harness, "Savings");
+        harness.get_by_label("Save Wallet").click();
+        harness.run();
+        assert!(
+            harness
+                .query_by_label_contains("Another wallet already uses this name")
+                .is_some()
+        );
+
+        type_name(&mut harness, " two");
+        harness.get_by_label("Save Wallet").click();
+        harness.run();
+
+        assert_eq!(
+            sorted_wallet_aliases(&app_context),
+            vec!["Savings".to_owned(), "Savings two".to_owned()]
+        );
+        assert!(
+            harness
+                .query_by_label_contains("Another wallet already uses this name")
+                .is_none(),
+            "the earlier rejection must be cleared once the retry succeeds"
+        );
+    });
+}
+
 /// Regression: re-importing a recovery phrase that is already registered
 /// must say so instead of doing nothing.
 #[test]

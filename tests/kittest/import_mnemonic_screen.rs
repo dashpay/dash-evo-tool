@@ -387,6 +387,14 @@ fn invalid_recovery_phrase_message_follows_the_words() {
                 .is_some(),
             "a complete but invalid phrase must be flagged"
         );
+        // Every word here is spelled correctly; only the checksum fails, so
+        // the hint must also point at the word order.
+        assert!(
+            harness
+                .query_by_label_contains("in the right order")
+                .is_some(),
+            "a checksum failure must not blame spelling alone"
+        );
         assert!(
             harness.query_by_label("Save Wallet").is_none(),
             "Save Wallet must stay hidden while the phrase is invalid"

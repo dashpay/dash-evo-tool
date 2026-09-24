@@ -41,6 +41,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   slot can be chosen again. Adding a wallet key does not ask for the identity's
   password, because the key stays protected by the wallet.
 
+- A scheduled workflow renews expiring migration fixture archives without
+  changing their contents and proposes updated manifest pointers in a PR.
+
 - Migration tests also replay public user/DPNS and Evonode identities serialized
   by v0.9.3, checking their metadata and every public key after repeated startup.
 

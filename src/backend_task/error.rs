@@ -723,6 +723,23 @@ pub enum TaskError {
     )]
     IdentityKeyProtectionDowngrade,
 
+    /// A wallet refresh of an identity (discovery or "load from wallet") was
+    /// refused because only some of its keys are password-protected: the
+    /// stored record still holds unprotected keys next to protected ones, and
+    /// saving them again without that password would strip the protection.
+    /// [`Self::IdentityKeyProtectionDowngrade`] phrased for a refresh the user
+    /// did not start as a change. Removing the protection lets the next save
+    /// move the unprotected keys into the vault; protecting again seals all
+    /// of them. Carries the identity id (data, not a message) because the
+    /// automatic refresh reports it with no screen naming the identity; no
+    /// secret or raw error string is stored here.
+    #[error(
+        "Identity {identity_id} could not be updated from your wallet because only some of its keys are password-protected. Remove the password protection from this identity, load it from your wallet again, then add the protection again."
+    )]
+    IdentityRefreshBlockedByPartialProtection {
+        identity_id: dash_sdk::platform::Identifier,
+    },
+
     /// A new key was accepted onto the identity ON-CHAIN, but saving it on this
     /// device afterward failed — any post-broadcast step: the roster or record
     /// read, an occupied slot, the vault seal or write, the record write, or a
@@ -754,6 +771,26 @@ pub enum TaskError {
         "The new key was added to your identity on the network, but this identity was removed from this device before the key could be saved here. Copy the new private key now and keep it somewhere safe. To use this key here, load the identity again with that private key."
     )]
     IdentityKeyAddedButIdentityUnloaded,
+
+    /// [`Self::IdentityKeyAddedButNotSaved`] when the save was refused by the
+    /// identity's password protection (a protection-downgrade refusal): the
+    /// generic "enter its private key" remedy would be refused the same way,
+    /// so the message adds the protection step. Fieldless: the cause is fully
+    /// named by the variant and the upstream refusal carries no diagnostic.
+    #[error(
+        "The new key was added to your identity on the network, but this identity's password protection kept it from being saved on this device. Your identity and its existing keys are safe. Copy the new private key now and keep it somewhere safe. To save it here, remove the password protection from this identity, refresh the identity, open the new key and enter its private key, then add the protection again."
+    )]
+    IdentityKeyAddedButNotSavedWhileProtected,
+
+    /// [`Self::IdentityKeyAddedButNotSaved`] when a different key already held
+    /// the new key's local slot: the generic "enter its private key" remedy
+    /// would hit the same occupied slot, so the message adds removing the
+    /// other key's saved private half (listed on the identity's Keys screen).
+    /// Fieldless, like [`Self::IdentityKeySlotOccupied`].
+    #[error(
+        "The new key was added to your identity on the network, but a different key is already saved on this device under the number the new key uses. Your identity and its existing keys are safe. Copy the new private key now and keep it somewhere safe. Open the other key in this identity's key list and remove its saved private key from this device. Then refresh the identity, open the new key and enter its private key."
+    )]
+    IdentityKeyAddedButSlotOccupied,
 
     /// [`Self::IdentityKeyAddedButNotSaved`] for a wallet-derived key. No
     /// private key exists to copy — the wallet derives it again — so the

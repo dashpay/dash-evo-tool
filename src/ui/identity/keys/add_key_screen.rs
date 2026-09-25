@@ -15,6 +15,7 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ResultBannerExt};
+use crate::ui::helpers::{SECRET_CLIPBOARD_LIFETIME, clear_clipboard_later};
 use crate::ui::identity::get_selected_wallet;
 use crate::ui::state::derived_key_chooser::{ChooserStatus, DerivedKeyChooser};
 use crate::ui::theme::{DashColors, ResponseExt};
@@ -32,6 +33,7 @@ use eframe::egui::{self, Frame, Margin};
 use egui::{Color32, RichText, Ui};
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
+use zeroize::Zeroizing;
 
 #[derive(PartialEq)]
 pub enum AddKeyStatus {
@@ -65,6 +67,8 @@ impl AddKeyStatus {
 fn on_network_not_saved_status(error: &TaskError) -> Option<AddKeyStatus> {
     match error {
         TaskError::IdentityKeyAddedButNotSaved { .. }
+        | TaskError::IdentityKeyAddedButNotSavedWhileProtected
+        | TaskError::IdentityKeyAddedButSlotOccupied
         | TaskError::IdentityKeyAddedButIdentityUnloaded => {
             Some(AddKeyStatus::KeyOnNetworkNotSaved)
         }
@@ -628,6 +632,14 @@ impl AddKeyScreen {
                     )
                     .color(DashColors::warning_color(dark_mode)),
                 );
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(format!(
+                        "Other apps on this device can read the clipboard. After you copy the key, paste it somewhere safe right away: it is cleared from the clipboard after {seconds} seconds.",
+                        seconds = SECRET_CLIPBOARD_LIFETIME.as_secs(),
+                    ))
+                    .color(DashColors::text_secondary(dark_mode)),
+                );
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     ui.label("Private Key:");
@@ -635,11 +647,17 @@ impl AddKeyScreen {
                 });
                 ui.add_space(8.0);
                 if ui.button("Copy private key").clicked() {
-                    ui.ctx()
-                        .copy_text(self.submitted_private_key.text().to_string());
+                    let key = Zeroizing::new(self.submitted_private_key.text().to_owned());
+                    // egui takes an owned `String` for the platform clipboard;
+                    // that hand-off copy is outside this screen's reach.
+                    ui.ctx().copy_text(key.as_str().to_owned());
+                    clear_clipboard_later(key, SECRET_CLIPBOARD_LIFETIME);
                     MessageBanner::set_global(
                         ui.ctx(),
-                        "The private key was copied to the clipboard.",
+                        format!(
+                            "The private key was copied to the clipboard. Paste it somewhere safe now: it is cleared from the clipboard after {seconds} seconds.",
+                            seconds = SECRET_CLIPBOARD_LIFETIME.as_secs(),
+                        ),
                         MessageType::Info,
                     );
                 }
@@ -793,6 +811,13 @@ impl ScreenLike for AddKeyScreen {
                     identity_index,
                 );
             }
+            return;
+        }
+        // Only this screen's own add may complete it: a foreign success would
+        // clear the key kept for rescue should this add still fail.
+        if matches!(result, BackendTaskSuccessResult::AddedKeyToIdentity(_))
+            && context.added_key_identity() != Some(self.identity.identity.id())
+        {
             return;
         }
         self.display_task_result(result);
@@ -1616,6 +1641,40 @@ mod derived_key_tests {
         );
     }
 
+    /// Another identity's successful add must not end this screen's add nor
+    /// drop the key it would rescue if its own add then fails.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_foreign_add_success_does_not_complete_this_add() {
+        let (staged, identity) = staged_screen_parts(true).await;
+        let own_add = BackendTaskContext::IdentityKeyAdd(identity.identity.id());
+        let mut screen = AddKeyScreen::new(identity, &staged.ctx);
+        let submitted = hex::encode([0x11; 32]);
+        screen.submitted_private_key.set_text(submitted.clone());
+        screen.add_key_status = AddKeyStatus::WaitingForResult;
+
+        for foreign in [
+            BackendTaskContext::IdentityKeyAdd(Identifier::from([0x5A; 32])),
+            BackendTaskContext::Other,
+        ] {
+            screen.display_backend_task_result(
+                &foreign,
+                BackendTaskSuccessResult::AddedKeyToIdentity(FeeResult::new(1, 1)),
+            );
+            assert!(
+                screen.add_key_status == AddKeyStatus::WaitingForResult,
+                "a success that is not this screen's add leaves it running"
+            );
+            assert_eq!(screen.submitted_private_key.text(), submitted);
+        }
+
+        screen.display_backend_task_result(
+            &own_add,
+            BackendTaskSuccessResult::AddedKeyToIdentity(FeeResult::new(1, 1)),
+        );
+        assert!(screen.add_key_status == AddKeyStatus::Complete);
+        assert!(screen.submitted_private_key.text().is_empty());
+    }
+
     /// A derived key on the network but not saved here gets the no-copy
     /// state: no private key field and no copy button, since no private key
     /// exists. A user-entered key keeps both.
@@ -1685,6 +1744,14 @@ mod tests {
         );
         assert!(
             status(TaskError::IdentityKeyAddedButIdentityUnloaded)
+                == Some(AddKeyStatus::KeyOnNetworkNotSaved)
+        );
+        assert!(
+            status(TaskError::IdentityKeyAddedButNotSavedWhileProtected)
+                == Some(AddKeyStatus::KeyOnNetworkNotSaved)
+        );
+        assert!(
+            status(TaskError::IdentityKeyAddedButSlotOccupied)
                 == Some(AddKeyStatus::KeyOnNetworkNotSaved)
         );
         assert!(

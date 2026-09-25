@@ -322,6 +322,47 @@ pub fn copy_text_to_clipboard(text: &str) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// How long a secret copied to the clipboard stays there before
+/// [`clear_clipboard_later`] removes it.
+pub const SECRET_CLIPBOARD_LIFETIME: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Best-effort clipboard hygiene for a copied secret: after `after`, clear the
+/// system clipboard if it still holds `secret`.
+///
+/// Runs on a detached thread so the clear still happens after the screen that
+/// copied the secret is gone. Anything copied since is left alone, and a
+/// platform whose clipboard cannot be read is left alone too. `secret` is
+/// wiped when the thread ends.
+pub fn clear_clipboard_later(secret: zeroize::Zeroizing<String>, after: std::time::Duration) {
+    let spawned = std::thread::Builder::new()
+        .name("clipboard-clear".to_owned())
+        .spawn(move || {
+            std::thread::sleep(after);
+            clear_clipboard_if_holding(&secret);
+        });
+    if let Err(error) = spawned {
+        tracing::warn!(%error, "Could not schedule clearing a copied secret from the clipboard");
+    }
+}
+
+/// Clear the system clipboard when it still holds exactly `secret`.
+fn clear_clipboard_if_holding(secret: &str) {
+    let Ok(mut clipboard) = Clipboard::new() else {
+        return;
+    };
+    let current = clipboard.get_text().ok().map(zeroize::Zeroizing::new);
+    if clipboard_holds_secret(current.as_ref().map(|text| text.as_str()), secret)
+        && let Err(error) = clipboard.clear()
+    {
+        tracing::warn!(%error, "Could not clear a copied secret from the clipboard");
+    }
+}
+
+/// Whether the clipboard text `current` is still the copied `secret`.
+fn clipboard_holds_secret(current: Option<&str>, secret: &str) -> bool {
+    !secret.is_empty() && current == Some(secret)
+}
+
 /// Transaction types that require specific key filtering
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum TransactionType {
@@ -1110,6 +1151,17 @@ pub fn show_group_token_success_screen_with_fee(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The clear touches the clipboard only while it still holds the secret,
+    /// so a later copy by the user survives, and an empty secret never
+    /// matches an empty clipboard.
+    #[test]
+    fn the_clipboard_is_cleared_only_while_it_holds_the_secret() {
+        assert!(clipboard_holds_secret(Some("abc123"), "abc123"));
+        assert!(!clipboard_holds_secret(Some("copied later"), "abc123"));
+        assert!(!clipboard_holds_secret(None, "abc123"));
+        assert!(!clipboard_holds_secret(Some(""), ""));
+    }
 
     fn outside_press() -> egui::RawInput {
         let outside_pos = egui::pos2(0.0, 0.0);

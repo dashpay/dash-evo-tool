@@ -203,11 +203,7 @@ impl AppContext {
                         identity_id = %identity_id,
                         "Discovered identity left unstored"
                     ),
-                    Err(e) => tracing::warn!(
-                        identity_id = %identity_id,
-                        error = %e,
-                        "Failed to store discovered identity"
-                    ),
+                    Err(e) => self.report_discovered_identity_store_failure(identity_id, &e),
                 }
             }
 
@@ -222,6 +218,37 @@ impl AppContext {
         );
 
         Ok(summary)
+    }
+
+    /// Report a discovered identity that could not be stored. A pass keeps
+    /// scanning either way; most failures are logged only. A refresh blocked
+    /// by partial password protection needs the user to act, and a background
+    /// pass has no screen to report it, so it also raises a warning banner
+    /// that stays until dismissed (SEC-003).
+    fn report_discovered_identity_store_failure(
+        &self,
+        identity_id: dash_sdk::platform::Identifier,
+        error: &TaskError,
+    ) {
+        if matches!(
+            error,
+            TaskError::IdentityRefreshBlockedByPartialProtection { .. }
+        ) {
+            // `set_global` logs the banner itself.
+            let banner = crate::ui::components::MessageBanner::set_global(
+                self.egui_ctx(),
+                error,
+                crate::ui::MessageType::Warning,
+            );
+            banner.disable_auto_dismiss();
+            self.egui_ctx().request_repaint();
+            return;
+        }
+        tracing::warn!(
+            identity_id = %identity_id,
+            error = %error,
+            "Failed to store discovered identity"
+        );
     }
 
     /// Discover and load identities derived from a wallet on wallet unlock.
@@ -629,6 +656,37 @@ mod tests {
             "the identity must stay password-protected",
         );
         assert_eq!(after.alias.as_deref(), Some("mine"));
+    }
+
+    /// SEC-003: a background discovery pass that cannot refresh a partially
+    /// protected identity tells the user, naming the identity, instead of
+    /// only logging; other store failures stay in the log.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_refresh_blocked_by_partial_protection_is_shown_to_the_user() {
+        use crate::context::test_staging::stage_identity_with_vaulted_keys;
+        use crate::ui::components::message_banner::global_banner_texts;
+
+        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let ctx = &staged.ctx;
+
+        ctx.report_discovered_identity_store_failure(
+            staged.id,
+            &TaskError::IdentityNotFoundLocally,
+        );
+        assert!(
+            global_banner_texts(ctx.egui_ctx()).is_empty(),
+            "an ordinary store failure stays in the log"
+        );
+
+        let blocked = TaskError::IdentityRefreshBlockedByPartialProtection {
+            identity_id: staged.id,
+        };
+        ctx.report_discovered_identity_store_failure(staged.id, &blocked);
+        assert_eq!(
+            global_banner_texts(ctx.egui_ctx()),
+            vec![blocked.to_string()],
+            "the blocked refresh must reach the user"
+        );
     }
 
     /// The unload marker still wins: a merge must never bring back an

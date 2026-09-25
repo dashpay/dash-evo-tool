@@ -2190,7 +2190,17 @@ impl AppContext {
                         .private_keys
                         .retain_local_keys_from(stored.private_keys);
                 }
-                self.write_local_qualified_identity_locked(qualified_identity)?;
+                // The merge carries the stored record's keys; on a partially
+                // protected record that includes resident plaintext the guard
+                // refuses to save keyless. The user asked for no change, so
+                // say what blocks the refresh rather than the change wording.
+                self.write_local_qualified_identity_locked(qualified_identity)
+                    .map_err(|error| match error {
+                        TaskError::IdentityKeyProtectionDowngrade => {
+                            TaskError::IdentityRefreshBlockedByPartialProtection { identity_id }
+                        }
+                        other => other,
+                    })?;
             }
             None => self.insert_local_qualified_identity_locked(qualified_identity, wallet)?,
         }
@@ -4962,7 +4972,8 @@ mod tests {
 
     /// A discovery merge that would leave a password-protected identity with
     /// resident plaintext fails closed: the keyless vault write is refused
-    /// with `IdentityKeyProtectionDowngrade`, the stored record is left
+    /// with the refresh-worded `IdentityRefreshBlockedByPartialProtection`
+    /// (SEC-003), the stored record is left
     /// byte-for-byte untouched, and the plaintext key lands nowhere.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_discovery_merge_with_plaintext_on_a_protected_identity_is_refused() {
@@ -5010,8 +5021,12 @@ mod tests {
             .expect_err("a mixed-protection merge must fail closed");
 
         assert!(
-            matches!(err, TaskError::IdentityKeyProtectionDowngrade),
-            "expected IdentityKeyProtectionDowngrade, got {err:?}"
+            matches!(
+                err,
+                TaskError::IdentityRefreshBlockedByPartialProtection { identity_id }
+                    if identity_id == staged.id
+            ),
+            "expected IdentityRefreshBlockedByPartialProtection, got {err:?}"
         );
         assert_eq!(
             read_blob(),

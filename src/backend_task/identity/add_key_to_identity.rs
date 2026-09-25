@@ -592,11 +592,24 @@ impl AddedKeyOrigin {
     /// A user-entered key maps to [`TaskError::IdentityKeyAddedButNotSaved`]
     /// (keep the private key); a wallet-derived one to
     /// [`TaskError::DerivedIdentityKeyAddedButNotSaved`] (nothing to keep).
+    ///
+    /// Two user-entered causes get their own variant, because the generic
+    /// remedy — refresh, then enter the key — would be refused again for the
+    /// same reason: a protection-downgrade refusal and an occupied slot.
     fn not_saved(self, source: TaskError) -> TaskError {
-        let source = Box::new(source);
-        match self {
-            Self::UserEntered => TaskError::IdentityKeyAddedButNotSaved { source },
-            Self::WalletDerived => TaskError::DerivedIdentityKeyAddedButNotSaved { source },
+        match (self, source) {
+            (Self::UserEntered, TaskError::IdentityKeyProtectionDowngrade) => {
+                TaskError::IdentityKeyAddedButNotSavedWhileProtected
+            }
+            (Self::UserEntered, TaskError::IdentityKeySlotOccupied) => {
+                TaskError::IdentityKeyAddedButSlotOccupied
+            }
+            (Self::UserEntered, source) => TaskError::IdentityKeyAddedButNotSaved {
+                source: Box::new(source),
+            },
+            (Self::WalletDerived, source) => TaskError::DerivedIdentityKeyAddedButNotSaved {
+                source: Box::new(source),
+            },
         }
     }
 
@@ -1474,12 +1487,8 @@ mod tests {
             )
             .expect_err("a keyless key cannot join a protected identity");
         assert!(
-            matches!(
-                &error,
-                TaskError::IdentityKeyAddedButNotSaved { source }
-                    if matches!(**source, TaskError::IdentityKeyProtectionDowngrade)
-            ),
-            "expected IdentityKeyAddedButNotSaved over the downgrade refusal, got {error:?}",
+            matches!(&error, TaskError::IdentityKeyAddedButNotSavedWhileProtected),
+            "expected IdentityKeyAddedButNotSavedWhileProtected, got {error:?}",
         );
         let stored = ctx
             .get_local_qualified_identity(&staged.id)
@@ -1521,9 +1530,50 @@ mod tests {
             )
             .expect_err("the slot belongs to another key");
         assert!(
-            matches!(error, TaskError::IdentityKeyAddedButNotSaved { .. }),
-            "expected IdentityKeyAddedButNotSaved, got {error:?}",
+            matches!(error, TaskError::IdentityKeyAddedButSlotOccupied),
+            "expected IdentityKeyAddedButSlotOccupied, got {error:?}",
         );
+    }
+
+    /// Thread 1d955045: the two causes whose generic remedy (refresh, then
+    /// enter the key) would be refused again get their own advice; every
+    /// other cause keeps the generic, source-preserving variant.
+    #[test]
+    fn user_entered_not_saved_advice_follows_the_cause() {
+        let entered = AddedKeyOrigin::of(Some(&[0x11; 32]));
+        let protected = entered.not_saved(TaskError::IdentityKeyProtectionDowngrade);
+        assert!(matches!(
+            protected,
+            TaskError::IdentityKeyAddedButNotSavedWhileProtected
+        ));
+        assert!(
+            protected
+                .to_string()
+                .contains("remove the password protection from this identity"),
+            "the protected cause names the extra step, got {protected}"
+        );
+        let occupied = entered.not_saved(TaskError::IdentityKeySlotOccupied);
+        assert!(matches!(
+            occupied,
+            TaskError::IdentityKeyAddedButSlotOccupied
+        ));
+        assert!(
+            occupied
+                .to_string()
+                .contains("remove its saved private key"),
+            "the occupied cause names the conflict to resolve, got {occupied}"
+        );
+        for error in [&protected, &occupied] {
+            let shown = error.to_string();
+            assert!(shown.contains("added to your identity on the network"));
+            assert!(shown.contains("Copy the new private key now"));
+        }
+        // A derived key keeps its single variant: reloading from the wallet
+        // resolves an occupied slot, and reports partial protection itself.
+        assert!(matches!(
+            AddedKeyOrigin::of(None).not_saved(TaskError::IdentityKeySlotOccupied),
+            TaskError::DerivedIdentityKeyAddedButNotSaved { .. }
+        ));
     }
 
     /// O-2 fail-closed: a HEADLESS add-key precondition for a PROTECTED identity

@@ -36,6 +36,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `secrets` folder. Imported private keys are listed separately from recovery phrases.
   A database temporarily held by another session now asks you to close that
   session and try again instead of reporting incompatible data.
+  A wallet data upgrade blocked by folder permissions or a read-only disk now
+  asks you to fix access to the data folder and restart, instead of reporting
+  incompatible data.
 
 - **Upgrade backups no longer pile up or outlive deleted data**: a failed
   database upgrade no longer leaves a new backup on every attempt. Each

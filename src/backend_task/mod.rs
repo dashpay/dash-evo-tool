@@ -230,15 +230,17 @@ fn identity_load_ticket(task: &BackendTask) -> Option<(Identifier, IdentityLoadT
 }
 
 /// Whether a wallet-backend build error is terminal (storage written by a
-/// newer/incompatible app build, a data folder other accounts can modify, or
-/// a compatibility upgrade that fails the same way on every attempt). These
-/// must surface their actionable message instead of being logged-and-discarded
-/// as a transient deferral (F50); retrying cannot fix them. Every other init
-/// error is retried by the cold-boot bridge.
+/// newer/incompatible app build, a data folder the app may not write to, a
+/// data folder other accounts can modify, or a compatibility upgrade that
+/// fails the same way on every attempt). These must surface their actionable
+/// message instead of being logged-and-discarded as a transient deferral
+/// (F50); retrying cannot fix them. Every other init error is retried by the
+/// cold-boot bridge.
 pub(crate) fn is_terminal_storage_open_error(error: &TaskError) -> bool {
     match error {
         TaskError::WalletDataTooNew { .. }
         | TaskError::WalletDataIncompatible { .. }
+        | TaskError::WalletStorageAccessDenied { .. }
         | TaskError::WalletDataFolderInsecure { .. } => true,
         TaskError::PlatformDatabaseUpgrade { source } => !source.is_retryable(),
         _ => false,
@@ -2321,8 +2323,8 @@ mod tests {
     }
 
     /// Only the storage-open variants (data from a newer/incompatible
-    /// build, or an insecure data folder) are terminal; every other init
-    /// error is a transient deferral.
+    /// build, a data folder the app may not write to, or an insecure data
+    /// folder) are terminal; every other init error is a transient deferral.
     #[test]
     fn terminal_storage_open_errors_are_classified() {
         assert!(is_terminal_storage_open_error(
@@ -2346,6 +2348,13 @@ mod tests {
                         mode: 0o777,
                     },
                 },
+            }
+        ));
+        assert!(is_terminal_storage_open_error(
+            &TaskError::WalletStorageAccessDenied {
+                source: platform_wallet_storage::WalletStorageError::Io(std::io::Error::from(
+                    std::io::ErrorKind::PermissionDenied,
+                )),
             }
         ));
         use crate::wallet_backend::platform_compatibility::UpgradeError;

@@ -254,6 +254,15 @@ mod tests {
         );
     }
 
+    fn dir_entries(dir: &std::path::Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
     fn failing_retention(
         calls: &mut usize,
     ) -> impl FnMut(&engine::BackupGuard, Option<&std::path::Path>) -> std::io::Result<()> + '_
@@ -282,8 +291,17 @@ mod tests {
             drop(persister);
             assert_eq!(calls, 1);
             assert!(
-                !auto.exists() || std::fs::read_dir(&auto).unwrap().next().is_none(),
-                "no snapshot may be taken while retention is failing"
+                !auto.exists(),
+                "the probe and reopen must not create the backup directory or any snapshot"
+            );
+            // Only the database itself and its lifecycle lock may exist; the fresh
+            // profile's file is treated as current by the full reopen.
+            assert_eq!(
+                dir_entries(dir.path()),
+                vec![
+                    "wallet.sqlite".to_owned(),
+                    "wallet.sqlite.platform-upgrade.lock".to_owned()
+                ]
             );
         }
     }
@@ -315,6 +333,7 @@ mod tests {
                 .unwrap()
         };
         let before = schema();
+        let entries_before = dir_entries(dir.path());
         let mut calls = 0;
         let error = match open_with_retention(
             SqlitePersisterConfig::new(&path),
@@ -332,6 +351,12 @@ mod tests {
             schema(),
             before,
             "the original database must stay untouched"
+        );
+        let mut entries_after = dir_entries(dir.path());
+        entries_after.retain(|name| name != "wallet.sqlite.platform-upgrade.lock");
+        assert_eq!(
+            entries_after, entries_before,
+            "a refused probe must leave no files or directories behind"
         );
         let auto = platform_wallet_storage::default_auto_backup_dir(&path);
         assert!(!auto.exists() || std::fs::read_dir(&auto).unwrap().next().is_none());

@@ -51,6 +51,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Concurrent sessions now protect active snapshots from cleanup, and staged
   validation preserves retry options and guidance for temporary resource failures.
   One lock now covers the complete open, upgrade, backup, and retention cycle.
+  A backup cleanup problem no longer stops up-to-date wallet data from opening;
+  it blocks only an upgrade that would create a new backup. A new upgrade backup
+  replaces the previous one only after it is saved. Removing an identity that is
+  not stored on this device leaves upgrade backups in place.
 
 ### Added
 

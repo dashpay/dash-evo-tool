@@ -331,14 +331,70 @@ fn platform_compatibility_backup_removal_fails_when_directory_sync_fails() {
     assert_eq!(synced, expected, "every touched directory must be synced");
 }
 
-/// Nothing deleted means nothing to make durable.
+/// A retry that finds no backups left must still settle an earlier failed
+/// directory sync; otherwise the caller retires its retry state while the
+/// earlier unlink could still be lost on power failure.
 #[test]
-fn platform_compatibility_backup_removal_skips_sync_without_deletions() {
+fn platform_compatibility_backup_removal_retries_directory_sync_without_deletions() {
     let dir = tempfile::tempdir().unwrap();
-    remove_backups_with_sync(&dir.path().join("det-testnet.sqlite"), |_| {
-        panic!("no directory changed, so none may be synced")
+    let path = dir.path().join("det-testnet.sqlite");
+    let sibling = dir
+        .path()
+        .join("det-testnet.sqlite.platform-67d4ef3-backup-a1.sqlite");
+    std::fs::write(&sibling, b"backup").unwrap();
+
+    remove_backups_with_sync(&path, |_| {
+        Err(std::io::Error::other("injected directory sync failure"))
+    })
+    .unwrap_err();
+    assert!(!sibling.exists());
+
+    let mut synced = Vec::new();
+    remove_backups_with_sync(&path, |directory| {
+        synced.push(directory.to_owned());
+        Ok(())
     })
     .unwrap();
+    assert_eq!(
+        synced,
+        vec![dir.path().to_owned()],
+        "the retry must re-sync the directory whose earlier sync failed; \
+         the missing auto-backup directory is skipped"
+    );
+}
+
+/// The previous recovery snapshot must survive until its replacement is
+/// published: a failed publication must not leave zero snapshots behind.
+#[test]
+fn platform_compatibility_failed_publication_keeps_previous_snapshot() {
+    let (_dir, path, _target) = fixture();
+    let previous = backup(&path).unwrap();
+    let error = backup_with_hook(&path, |pending| {
+        // Occupy the name the replacement would be published under.
+        std::fs::write(pending.with_extension("sqlite"), b"collision")?;
+        Ok(())
+    })
+    .unwrap_err();
+    assert!(
+        matches!(&error, UpgradeError::Io(e) if e.kind() == std::io::ErrorKind::AlreadyExists),
+        "{error:?}"
+    );
+    assert!(
+        previous.exists(),
+        "the published snapshot must survive a failed replacement"
+    );
+    assert_eq!(snapshot(&previous), snapshot(&path));
+}
+
+/// A successful publication still leaves exactly one snapshot.
+#[test]
+fn platform_compatibility_publication_prunes_superseded_snapshots() {
+    let (dir, path, _target) = fixture();
+    let previous = backup(&path).unwrap();
+    let replacement = backup(&path).unwrap();
+    assert_ne!(previous, replacement);
+    assert!(!previous.exists());
+    assert_eq!(backup_files(dir.path()), vec![replacement]);
 }
 
 /// One invalid candidate must not shield the valid snapshots from deletion:

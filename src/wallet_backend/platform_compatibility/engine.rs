@@ -469,8 +469,9 @@ pub(super) fn retain_one_backup_locked(
 /// Delete every retained upgrade backup of the database at `path`.
 ///
 /// Backups never contain vault secrets. Attempts every file and returns the first failure.
-/// `Ok` means the deletions are durable: every directory an entry was removed
-/// from is synced, so callers may retire their retry state afterwards.
+/// `Ok` means the deletions are durable: every existing backup directory is
+/// synced on every call (including a retry that finds nothing left to delete),
+/// so callers may retire their retry state afterwards.
 pub(crate) fn remove_backups(path: &Path) -> std::io::Result<()> {
     remove_backups_with_sync(path, sync_directory)
 }
@@ -480,24 +481,33 @@ fn remove_backups_with_sync(
     mut sync_dir: impl FnMut(&Path) -> std::io::Result<()>,
 ) -> std::io::Result<()> {
     let _guard = backup_lock(path)?;
-    let scan = scan_backups_in(path, Some(&default_auto_dir(path)))?;
+    let auto_dir = default_auto_dir(path);
+    let scan = scan_backups_in(path, Some(&auto_dir))?;
     let mut first_error = scan.first_rejection;
-    let mut touched = std::collections::BTreeSet::new();
     for backup in scan.found {
-        match remove_backup(&backup, path) {
-            Ok(()) => {
-                if let Some(parent) = backup.parent() {
-                    touched.insert(parent.to_owned());
-                }
-            }
-            Err(error) => {
-                first_error.get_or_insert(error);
-            }
+        if let Err(error) = remove_backup(&backup, path) {
+            first_error.get_or_insert(error);
         }
     }
-    // One sync per directory after all unlinks, still under the guard.
-    for directory in touched {
-        if let Err(error) = sync_dir(&directory) {
+    // Sync every candidate directory, not just those unlinked from in this call: an
+    // earlier call may have unlinked successfully and then failed its sync, and a
+    // retry that finds nothing left to delete must still make that deletion durable.
+    for directory in [path.parent(), Some(auto_dir.as_path())]
+        .into_iter()
+        .flatten()
+    {
+        match std::fs::symlink_metadata(directory) {
+            // No directory means no entry was ever removed from it.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                first_error.get_or_insert(error);
+                continue;
+            }
+            // The scan already rejected a non-directory; never open it here.
+            Ok(metadata) if !metadata.is_dir() => continue,
+            Ok(_) => {}
+        }
+        if let Err(error) = sync_dir(directory) {
             first_error.get_or_insert(error);
         }
     }
@@ -556,16 +566,27 @@ fn backup_with_hook_locked(
     verify(&dest)?;
     drop(dest);
     file.as_file().sync_all()?;
-    // A verified snapshot supersedes old backups only while the original is still untouched.
-    for old in backups(path)? {
-        if old != file.path() {
-            remove_backup(&old, path)?;
+    // Strict scan before publication: an unexpected candidate aborts before anything changes.
+    let pending = file.path().to_owned();
+    let superseded: Vec<PathBuf> = backups(path)?
+        .into_iter()
+        .filter(|old| *old != pending)
+        .collect();
+    let kept = pending.with_extension("sqlite");
+    file.persist_noclobber(&kept).map_err(|e| e.error)?;
+    sync_directory(parent)?;
+    // Prune only once the replacement is durably published, so a failed or interrupted
+    // publication never leaves zero recovery snapshots. The original is still untouched.
+    let mut touched = BTreeSet::new();
+    for old in superseded {
+        remove_backup(&old, path)?;
+        if let Some(directory) = old.parent() {
+            touched.insert(directory.to_owned());
         }
     }
-    let kept = file.path().with_extension("sqlite");
-    file.persist_noclobber(&kept).map_err(|e| e.error)?;
-    #[cfg(unix)]
-    std::fs::File::open(parent)?.sync_all()?;
+    for directory in touched {
+        sync_directory(&directory)?;
+    }
     Ok(kept)
 }
 

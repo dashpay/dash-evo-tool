@@ -304,9 +304,9 @@ fn reimported_recovery_phrase_is_reported_to_the_user() {
         );
         assert!(
             harness
-                .query_by_label_contains("already been imported")
+                .query_by_label_contains("already been imported for this network as \"Existing\"")
                 .is_some(),
-            "the duplicate import must be shown, not silently swallowed"
+            "the duplicate import must be shown with the existing wallet's name"
         );
         assert!(
             harness

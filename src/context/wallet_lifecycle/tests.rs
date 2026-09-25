@@ -2755,8 +2755,11 @@ async fn register_wallet_reimport_reports_already_imported() {
     let result = ctx.register_wallet(wallet, &seed, WalletOrigin::Imported);
 
     assert!(
-        matches!(result, Err(TaskError::WalletAlreadyImported)),
-        "a re-import must be reported as such"
+        matches!(
+            &result,
+            Err(TaskError::WalletAlreadyImported { alias }) if alias.as_deref() == Some("Savings")
+        ),
+        "a re-import must be reported as such and name the existing wallet"
     );
 }
 

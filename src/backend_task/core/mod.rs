@@ -5,6 +5,7 @@ use crate::config::{Config, NetworkConfig};
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
 use crate::model::wallet::single_key::SingleKeyWallet;
+use dash_sdk::dash_spv::sync::ProgressPercentage;
 use dash_sdk::dashcore_rpc;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dashcore_rpc::{Auth, Client};
@@ -19,6 +20,10 @@ use std::sync::{Arc, RwLock};
 #[derive(Debug, Clone)]
 pub enum CoreTask {
     GetBestChainLocks,
+    /// Rescan the selected wallet’s Core history from genesis.
+    FullResyncWallet {
+        seed_hash: crate::model::wallet::WalletSeedHash,
+    },
     /// Refresh wallet info from Core. The bool controls whether to also sync
     /// Platform address balances (true = sync Platform, false = Core only).
     RefreshWalletInfo(Arc<RwLock<Wallet>>, bool),
@@ -44,6 +49,10 @@ impl PartialEq for CoreTask {
         matches!(
             (self, other),
             (CoreTask::GetBestChainLocks, CoreTask::GetBestChainLocks)
+                | (
+                    CoreTask::FullResyncWallet { .. },
+                    CoreTask::FullResyncWallet { .. }
+                )
                 | (
                     CoreTask::RefreshWalletInfo(_, _),
                     CoreTask::RefreshWalletInfo(_, _)
@@ -160,6 +169,42 @@ impl AppContext {
                     local_chainlock,
                     active_rpc_error,
                 )))
+            }
+            CoreTask::FullResyncWallet { seed_hash } => {
+                if self.connection_status().spv_status()
+                    != crate::model::spv_status::SpvStatus::Running
+                {
+                    return Err(TaskError::WalletResyncUnavailable);
+                }
+                let backend = self.wallet_backend()?;
+                let chain_height = self
+                    .connection_status()
+                    .spv_sync_progress()
+                    .and_then(|progress| {
+                        progress
+                            .headers()
+                            .ok()
+                            .map(|headers| headers.current_height())
+                    })
+                    .unwrap_or_default();
+                let target = backend
+                    .request_full_resync(seed_hash)
+                    .await?
+                    .max(chain_height);
+                loop {
+                    use crate::model::spv_status::SpvStatus;
+                    if !matches!(
+                        self.connection_status().spv_status(),
+                        SpvStatus::Running | SpvStatus::Syncing
+                    ) {
+                        return Err(TaskError::WalletResyncInterrupted);
+                    }
+                    if backend.full_resync_complete(seed_hash, target).await? {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                }
+                Ok(BackendTaskSuccessResult::WalletResyncCompleted { seed_hash })
             }
             CoreTask::RefreshWalletInfo(wallet, sync_platform) => {
                 // Core wallet state (balances/UTXOs/transactions) is kept
@@ -437,6 +482,28 @@ mod send_payment_unsupported_options {
             crate::model::user_role::UserRoleCell::default(),
         )
         .expect("AppContext")
+    }
+
+    #[tokio::test]
+    async fn full_resync_rejects_disconnected_and_busy_networks() {
+        use crate::model::spv_status::SpvStatus;
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let ctx = network_free_ctx(tmp.path());
+        for status in [
+            SpvStatus::Idle,
+            SpvStatus::Starting,
+            SpvStatus::Syncing,
+            SpvStatus::Stopping,
+            SpvStatus::Stopped,
+            SpvStatus::Error,
+        ] {
+            ctx.connection_status().set_spv_status(status);
+            assert!(matches!(
+                ctx.run_core_task(CoreTask::FullResyncWallet { seed_hash: [0; 32] })
+                    .await,
+                Err(TaskError::WalletResyncUnavailable)
+            ));
+        }
     }
 
     fn wallet_arc() -> Arc<RwLock<Wallet>> {

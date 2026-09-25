@@ -47,6 +47,7 @@ pub(crate) mod kv_test_support;
 pub(crate) mod leak_test_support;
 mod loader;
 mod payments;
+mod pending_transfers;
 #[cfg(test)]
 pub(crate) mod persist_fault_test_support;
 pub mod platform_compatibility;
@@ -2357,6 +2358,52 @@ impl WalletBackend {
         }
     }
 
+    /// Request a Core filter rescan from genesis without deleting wallet records.
+    pub async fn request_full_resync(&self, seed_hash: WalletSeedHash) -> Result<u32, TaskError> {
+        let wallet_id = self.inner.id_map.read()?.get(&seed_hash).copied();
+        let wallet_id = wallet_id.ok_or_else(|| self.wallet_not_loaded(&seed_hash))?;
+        let backend = self.clone();
+        let target = tokio::task::spawn_blocking(move || {
+            let target = backend
+                .inner
+                .pwm
+                .core_wallet_state_blocking(&wallet_id)?
+                .synced_height;
+            backend
+                .inner
+                .pwm
+                .spv_rescan_filters_blocking(&wallet_id, 0)
+                .then_some(target)
+        })
+        .await
+        .map_err(|source| TaskError::WalletResyncWorker { source })?;
+        target.ok_or(TaskError::WalletStateInconsistent)
+    }
+
+    /// Completion requires this wallet's rewound checkpoint and the chain pipeline to catch up.
+    pub async fn full_resync_complete(
+        &self,
+        seed_hash: WalletSeedHash,
+        target: u32,
+    ) -> Result<bool, TaskError> {
+        let wallet = self.resolve_wallet(&seed_hash).await?;
+        let caught_up = {
+            let manager = wallet.wallet_manager().read().await;
+            let info = manager
+                .get_wallet_info(&wallet.wallet_id())
+                .ok_or(TaskError::WalletStateInconsistent)?;
+            info.core_wallet.metadata.synced_height >= target
+        };
+        Ok(caught_up
+            && self
+                .inner
+                .pwm
+                .spv()
+                .sync_progress()
+                .await
+                .is_some_and(|progress| progress.is_synced()))
+    }
+
     /// Map a DET `WalletSeedHash` to the upstream wallet handle.
     async fn resolve_wallet(
         &self,
@@ -4604,5 +4651,75 @@ mod tests {
             matches!(kind, IdentityOpErrorKind::ConfirmationUnknown),
             "an ambiguous broadcast must not share a bucket with preconditions"
         );
+    }
+}
+
+#[cfg(test)]
+mod full_resync_tests {
+    use super::*;
+    use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn full_resync_rewinds_only_selected_wallet_and_retains_registration() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let ctx = crate::context::test_support::test_app_context(tmp.path());
+        let (sender, _receiver) = tokio::sync::mpsc::channel::<TaskResult>(16);
+        ctx.ensure_wallet_backend(SenderAsync::new(sender, ctx.egui_ctx().clone()))
+            .await
+            .expect("backend");
+        let backend = ctx.wallet_backend().expect("backend");
+        let mut wallets = Vec::new();
+        for byte in [51, 52] {
+            let seed = [byte; 64];
+            let wallet =
+                crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+                    .expect("wallet");
+            let hash = wallet.seed_hash();
+            backend
+                .register_wallet_from_seed(&hash, &seed, None)
+                .await
+                .expect("register");
+            let wallet = backend.resolve_wallet(&hash).await.expect("resolve");
+            wallet
+                .wallet_manager()
+                .write()
+                .await
+                .get_wallet_info_mut(&wallet.wallet_id())
+                .expect("info")
+                .core_wallet
+                .update_synced_height(100);
+            wallets.push((hash, wallet));
+        }
+        let target = backend
+            .request_full_resync(wallets[0].0)
+            .await
+            .expect("rescan");
+        assert_eq!(target, 100);
+        assert!(
+            !backend
+                .full_resync_complete(wallets[0].0, target)
+                .await
+                .expect("completion check")
+        );
+        for (index, (hash, wallet)) in wallets.iter().enumerate() {
+            assert_eq!(
+                backend
+                    .resolve_wallet(hash)
+                    .await
+                    .expect("still registered")
+                    .wallet_id(),
+                wallet.wallet_id()
+            );
+            let manager = wallet.wallet_manager().read().await;
+            let info = manager.get_wallet_info(&wallet.wallet_id()).expect("info");
+            assert_eq!(
+                info.core_wallet.metadata.synced_height,
+                if index == 0 { 0 } else { 100 }
+            );
+        }
+        assert!(matches!(
+            backend.request_full_resync([99; 32]).await,
+            Err(TaskError::WalletNotLoaded { .. })
+        ));
     }
 }

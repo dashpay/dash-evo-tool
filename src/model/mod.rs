@@ -17,6 +17,7 @@ pub mod legacy_recovery;
 /// always-compiled GUI load form and the headless MCP tools, so it must never
 /// be feature-gated.
 pub mod masternode_input;
+pub mod pending_transfers;
 pub mod qualified_contract;
 pub mod qualified_identity;
 pub mod request_type;

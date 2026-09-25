@@ -48,6 +48,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Core-to-Platform funding appears inside Dash Core Transactions with row
+  details and recorded payment conflicts. Pending transactions appear first;
+  recovered historical funding is not labelled as an unfinished transfer. Local
+  records reload through Advanced → Refresh; row buttons share the final Actions column. Cancellation
+  remains unavailable until the wallet backend supports safe reconciliation.
+- Wallet maintenance actions are grouped under Advanced: Import key, Refresh,
+  Full resync, which rescans the selected HD wallet’s Core history from genesis,
+  and Get test DASH on Testnet. Full resync uses the blocking initial-sync
+  progress window until the wallet scan completes.
+
 - A scheduled workflow renews expiring migration fixture archives without
   changing their contents and proposes updated manifest pointers in a PR.
 
@@ -134,6 +144,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   follow-up.
 
 ### Fixed
+
+- CI runs documentation tests once as part of the main test suite and uses
+  Cargo directly instead of the retired Cargo action.
 
 - Adding a voting key preserves the identity's wallet association when its only
   wallet-linked key comes from the existing identity, including password-protected

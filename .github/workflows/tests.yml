@@ -78,17 +78,9 @@ jobs:
         env:
           PROTOC: /usr/local/bin/protoc
 
-      - name: Run tests
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --all-features --workspace
+      - name: Run tests (including doc tests)
+        run: cargo test --all-features --workspace
 
-      - name: Run doc tests
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --doc --all-features --workspace
       # TODO: Re-enable after backend E2E tests are updated for TaskError migration
       # - name: Run backend E2E tests
       #   run: cargo test --test backend-e2e --all-features -- --ignored --nocapture --test-threads=1

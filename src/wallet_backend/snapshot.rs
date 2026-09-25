@@ -1097,6 +1097,53 @@ mod tests {
     }
 
     #[test]
+    fn pending_transfers_detect_a_competing_spend_restored_only_from_persistence() {
+        use crate::model::pending_transfers::TransferStage;
+        use dash_sdk::dpp::dashcore::TxIn;
+        use platform_wallet::wallet::asset_lock::tracked::{AssetLockStatus, TrackedAssetLock};
+
+        let shared = OutPoint::new(Txid::from_byte_array([42; 32]), 1);
+        let mut pending = record(1, -100);
+        pending.transaction.input.push(TxIn {
+            previous_output: shared,
+            ..Default::default()
+        });
+        pending.txid = pending.transaction.txid();
+        let mut persisted = record(2, -150);
+        persisted.transaction.input.push(TxIn {
+            previous_output: shared,
+            ..Default::default()
+        });
+        persisted.txid = persisted.transaction.txid();
+        persisted.context = TransactionContext::InChainLockedBlock(BlockInfo::new(
+            77,
+            BlockHash::from_byte_array([3; 32]),
+            123,
+        ));
+        let lock = TrackedAssetLock {
+            out_point: OutPoint::new(pending.txid, 0),
+            transaction: pending.transaction.clone(),
+            amount: 100,
+            account_index: 0,
+            identity_index: 0,
+            funding_type: platform_wallet::AssetLockFundingType::AssetLockAddressTopUp,
+            status: AssetLockStatus::Built,
+            proof: None,
+        };
+        let store = SnapshotStore::new();
+        store.accumulate_transactions(&wid(1), [&pending]);
+        store.hydrate_transactions(&wid(1), [&persisted]);
+        publish_tx_only(&store, seed(1), wid(1));
+        let snapshot = store.snapshot(&seed(1));
+        let transfers =
+            super::super::pending_transfers::assess_locks(&[lock], &snapshot.transactions);
+        assert_eq!(transfers[0].stage, TransferStage::ConflictObserved);
+        assert_eq!(transfers[0].conflicts[0].competing_txid, persisted.txid);
+        assert_eq!(transfers[0].conflicts[0].input, shared);
+        assert_eq!(snapshot.transactions.len(), 2);
+    }
+
+    #[test]
     fn wallet_snapshot_generation_advances_on_each_publish() {
         let store = SnapshotStore::new();
 

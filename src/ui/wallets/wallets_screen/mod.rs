@@ -1,6 +1,7 @@
 mod address_table;
 mod asset_locks;
 mod dialogs;
+mod pending_transfers;
 mod single_key_view;
 
 pub(crate) use single_key_view::SINGLE_KEY_SEND_UNAVAILABLE;
@@ -28,7 +29,6 @@ use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::{add_top_panel_with_global_nav_capturing, wallet_only_spec};
 use crate::ui::components::wallet_unlock_popup::{WalletUnlockPopup, WalletUnlockResult};
-use crate::ui::helpers::copy_text_to_clipboard;
 use crate::ui::helpers::{ModalOpeningGuard, clicked_outside_window_after_open};
 use crate::ui::state::TrackedAssetLockCache;
 use crate::ui::state::account_summary::{
@@ -234,16 +234,13 @@ pub struct WalletsBalancesScreen {
     shielded_tab_view: Option<ShieldedTabView>,
     /// Whether a wallet switch should trigger a Core refresh on the next frame
     pending_wallet_refresh_on_switch: bool,
-    /// Cached filtered transaction indices for the currently selected wallet.
-    /// Invalidated (set to None) on wallet switch or transaction updates.
-    cached_tx_indices: Option<Vec<usize>>,
-    /// Transaction count at the time `cached_tx_indices` was last built.
-    /// Used to detect list growth that doesn't make existing indices OOB.
-    cached_tx_source_len: Option<usize>,
     /// Last hydration notice applied to the transaction-history banner. This
     /// prevents a dismissed persistent notice from being recreated every frame.
     transaction_history_notice: Option<(WalletSeedHash, TransactionHistoryStatus)>,
     transaction_history_banner: MessageBanner,
+    pending_transfers: crate::ui::state::pending_transfers::PendingTransfersState,
+    pending_transfer_error: MessageBanner,
+    transfer_details: Option<dash_sdk::dpp::dashcore::Txid>,
     /// Persistent warning banner rendered on the single-key wallet detail
     /// view when the app is running on the SPV backend. Stored on the screen
     /// (rather than constructed fresh each frame) so the underlying tracing
@@ -368,10 +365,11 @@ impl WalletsBalancesScreen {
             selected_account_tab: AccountTab::default(),
             shielded_tab_view,
             pending_wallet_refresh_on_switch: false,
-            cached_tx_indices: None,
-            cached_tx_source_len: None,
             transaction_history_notice: None,
             transaction_history_banner: MessageBanner::new(),
+            pending_transfers: Default::default(),
+            pending_transfer_error: MessageBanner::new(),
+            transfer_details: None,
             sk_spv_warning_banner: crate::ui::components::MessageBanner::new(),
             import_single_key_dialog: ImportSingleKeyDialog::new(app_context.network),
             restore_single_key_dialog: RestoreSingleKeyDialog::new(),
@@ -420,8 +418,6 @@ impl WalletsBalancesScreen {
         self.selected_single_key_wallet = None;
         self.selected_account = None;
         self.selected_account_tab = AccountTab::default();
-        self.cached_tx_indices = None;
-        self.cached_tx_source_len = None;
 
         self.shielded_tab_view =
             seed_hash.map(|hash| ShieldedTabView::new(&self.app_context, hash));
@@ -548,6 +544,9 @@ impl WalletsBalancesScreen {
     /// Clear all transient request/pending state that could fire against the
     /// wrong context after a network switch.
     pub(crate) fn reset_transient_state(&mut self) {
+        self.pending_transfers = Default::default();
+        self.pending_transfer_error.clear();
+        self.transfer_details = None;
         self.pending_platform_balance_refresh = None;
         self.pending_refresh_after_unlock = false;
         self.pending_wallet_refresh_on_switch = false;
@@ -558,8 +557,6 @@ impl WalletsBalancesScreen {
     pub(crate) fn invalidate_address_inputs(&mut self) {
         self.mine_dialog.address_input = None;
         self.mine_dialog.validated_address = None;
-        self.cached_tx_indices = None;
-        self.cached_tx_source_len = None;
     }
 
     fn render_wallet_selection(&mut self, ui: &mut Ui) -> AppAction {
@@ -1095,7 +1092,10 @@ impl WalletsBalancesScreen {
     }
 
     fn transaction_direction_label(tx: &WalletTransaction) -> &'static str {
-        if tx.is_incoming() {
+        if tx.is_outgoing() && matches!(tx.transaction.special_transaction_payload,
+            Some(dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayload::AssetLockPayloadType(_))) {
+            "Transfer to Platform"
+        } else if tx.is_incoming() {
             "Received"
         } else if tx.is_outgoing() {
             "Sent"
@@ -1136,7 +1136,7 @@ impl WalletsBalancesScreen {
         // epoch (1970-01-01), which reads as a data bug rather than "still
         // pending".
         if ts == 0 {
-            return "Pending…".to_string();
+            return "Date unavailable".to_string();
         }
         DateTime::<Utc>::from_timestamp(ts as i64, 0)
             .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
@@ -1205,6 +1205,57 @@ impl WalletsBalancesScreen {
             .unwrap_or_default()
     }
 
+    fn advanced_menu_items(&self) -> Vec<crate::app::ToolbarMenuItem> {
+        use crate::app::ToolbarMenuItem;
+        let hd = self.selected_wallet.as_ref();
+        let has_wallet = hd.is_some() || self.selected_single_key_wallet.is_some();
+        let synced = self.app_context.connection_status().spv_status() == SpvStatus::Running;
+        let mut items = vec![
+            ToolbarMenuItem {
+                label: "Import key",
+                action: DesiredAppAction::Custom("OpenImportSingleKey".into()),
+                enabled: true,
+                tooltip: "Import a wallet from a private key.",
+            },
+            ToolbarMenuItem {
+                label: "Refresh",
+                action: DesiredAppAction::Custom(
+                    if hd.is_some() {
+                        "RefreshHDWallet"
+                    } else {
+                        "RefreshSKWallet"
+                    }
+                    .into(),
+                ),
+                enabled: has_wallet && !self.refreshing,
+                tooltip: "Select a wallet and wait for any current refresh to finish before refreshing its balances and transfer records.",
+            },
+            ToolbarMenuItem {
+                label: "Full resync",
+                action: hd
+                    .map(|wallet| {
+                        DesiredAppAction::BackendTask(Box::new(BackendTask::CoreTask(
+                            CoreTask::FullResyncWallet {
+                                seed_hash: wallet.read_recover().seed_hash(),
+                            },
+                        )))
+                    })
+                    .unwrap_or(DesiredAppAction::None),
+                enabled: hd.is_some() && synced && !self.refreshing,
+                tooltip: "Scan the selected HD wallet's Core history from the beginning. Wait for the current sync and refresh to finish. Keep the app open until scanning completes; this does not verify Platform delivery.",
+            },
+        ];
+        if self.app_context.network == dash_sdk::dpp::dashcore::Network::Testnet {
+            items.push(ToolbarMenuItem {
+                label: "Get test DASH",
+                action: DesiredAppAction::Custom("GetTestDash".into()),
+                enabled: true,
+                tooltip: "Open the Testnet faucet in your browser.",
+            });
+        }
+        items
+    }
+
     fn render_action_buttons(&mut self, ui: &mut Ui, ctx: &Context) -> AppAction {
         let mut action = AppAction::None;
         ui.add_space(10.0);
@@ -1262,22 +1313,6 @@ impl WalletsBalancesScreen {
                     egui::vec2(remaining, ui.min_size().y),
                     egui::Layout::right_to_left(egui::Align::Center),
                     |ui| {
-                        if matches!(
-                            self.app_context.network,
-                            dash_sdk::dpp::dashcore::Network::Testnet
-                        ) && ui
-                            .button(
-                                RichText::new("Get Test Dash")
-                                    .color(DashColors::text_primary(dark_mode))
-                                    .strong(),
-                            )
-                            .clicked()
-                        {
-                            ui.ctx().open_url(egui::OpenUrl::new_tab(
-                                "https://faucet.testnet.networks.dash.org/",
-                            ));
-                        }
-
                         if matches!(
                             self.app_context.network,
                             dash_sdk::dpp::dashcore::Network::Regtest
@@ -1579,21 +1614,8 @@ impl WalletsBalancesScreen {
                     action |= self.render_bottom_options(ui);
                 });
 
-                // Dash Core tab: transaction history + asset locks
+                // Asset locks belong to the Core funding account.
                 if cat == AccountCategory::Bip44 && idx == Some(0) {
-                    // Transaction History (collapsible)
-                    ui.add_space(10.0);
-                    let tx_header = egui::CollapsingHeader::new(
-                        RichText::new("Transaction History")
-                            .size(16.0)
-                            .color(DashColors::text_primary(dark_mode)),
-                    )
-                    .id_salt("transaction_history")
-                    .default_open(false);
-                    tx_header.show(ui, |ui| {
-                        self.render_transactions_section(ui);
-                    });
-
                     // Asset Locks (collapsible)
                     ui.add_space(10.0);
                     let locks_header = egui::CollapsingHeader::new(
@@ -1698,9 +1720,8 @@ impl WalletsBalancesScreen {
 
     fn render_transactions_section(&mut self, ui: &mut Ui) {
         ui.add_space(10.0);
-        // TODO: Synchronize transactions display with selected account type
-        // (main account -> Core transactions, platform account -> platform state transitions, etc.)
         ui.heading("Dash Core Transactions");
+        self.render_history_status(ui);
         let Some(wallet_arc) = self.selected_wallet.as_ref() else {
             ui.label("Select a wallet to view its transaction history.");
             return;
@@ -1741,173 +1762,132 @@ impl WalletsBalancesScreen {
         }
         self.transaction_history_banner.show(ui);
 
-        if !backend_ready {
-            ui.label("Syncing transactions from the network…");
+        let assessment = self.pending_transfers.assessment().cloned();
+        let funding = assessment
+            .as_ref()
+            .map(|a| a.transfers.as_slice())
+            .unwrap_or_default();
+        let entries = crate::model::pending_transfers::core_history_entries(&transactions, funding);
+        if entries.is_empty() {
+            ui.label(if backend_ready {
+                "No transactions found for this wallet yet."
+            } else {
+                "Syncing transactions from the network…"
+            });
             return;
         }
-
-        if transactions.is_empty() {
-            ui.label("No transactions found for this wallet yet.");
-            return;
-        }
-
-        // Filter to transactions involving this wallet's addresses (`is_ours`
-        // is always true on the per-wallet snapshot, but the filter is kept
-        // for parity and future cross-wallet views). Invalidate the index
-        // cache when the source length changes or cached indices go stale.
-        let tx_len = transactions.len();
-        if self.cached_tx_source_len != Some(tx_len)
-            || self
-                .cached_tx_indices
-                .as_ref()
-                .is_some_and(|cached| cached.iter().any(|&i| i >= tx_len))
-        {
-            self.cached_tx_indices = None;
-            self.cached_tx_source_len = Some(tx_len);
-        }
-        let relevant_indices = self
-            .cached_tx_indices
-            .get_or_insert_with(|| (0..tx_len).filter(|&i| transactions[i].is_ours).collect());
-
-        if relevant_indices.is_empty() {
-            ui.label("No transactions found for this wallet yet.");
-            return;
-        }
-
-        let dark_mode = ui.style().visuals.dark_mode;
+        let dark_mode = ui.visuals().dark_mode;
         let show_fee = self.app_context.user_role().at_least(UserRole::Power);
-        let mut order: Vec<usize> = relevant_indices.clone();
-        order.sort_by(|&a, &b| {
-            transactions[b]
-                .timestamp
-                .cmp(&transactions[a].timestamp)
-                .then_with(|| transactions[b].txid.cmp(&transactions[a].txid))
-        });
 
-        let row_height = 26.0;
-        let mut builder = TableBuilder::new(ui)
-            .id_salt("transactions_table")
-            .striped(true)
-            .column(Column::initial(150.0)) // Date
-            .column(Column::initial(80.0)) // Type
-            .column(Column::initial(120.0)); // Amount
+        egui::ScrollArea::horizontal()
+            .id_salt("core_history_scroll")
+            .show(ui, |ui| {
+                ui.set_min_width(if show_fee { 1120.0 } else { 1020.0 });
+                let row_height = 40.0;
+                let mut builder = TableBuilder::new(ui)
+                    .id_salt("transactions_table")
+                    .striped(true)
+                    .column(Column::initial(150.0)) // Date
+                    .column(Column::initial(150.0)) // Type
+                    .column(Column::initial(120.0)); // Amount
 
-        if show_fee {
-            builder = builder.column(Column::initial(100.0)); // Fee
-        }
-
-        builder
-            .column(Column::initial(150.0)) // Status
-            .column(Column::remainder()) // TxID
-            .header(row_height, |mut header| {
-                header.col(|ui| {
-                    ui.label(
-                        RichText::new("Date")
-                            .strong()
-                            .color(DashColors::text_primary(dark_mode)),
-                    );
-                });
-                header.col(|ui| {
-                    ui.label(
-                        RichText::new("Type")
-                            .strong()
-                            .color(DashColors::text_primary(dark_mode)),
-                    );
-                });
-                header.col(|ui| {
-                    ui.label(
-                        RichText::new("Amount")
-                            .strong()
-                            .color(DashColors::text_primary(dark_mode)),
-                    );
-                });
                 if show_fee {
-                    header.col(|ui| {
-                        ui.label(
-                            RichText::new("Fee")
-                                .strong()
-                                .color(DashColors::text_primary(dark_mode)),
-                        );
-                    });
+                    builder = builder.column(Column::initial(100.0)); // Fee
                 }
-                header.col(|ui| {
-                    ui.label(
-                        RichText::new("Status")
-                            .strong()
-                            .color(DashColors::text_primary(dark_mode)),
-                    );
-                });
-                header.col(|ui| {
-                    ui.label(
-                        RichText::new("TxID")
-                            .strong()
-                            .color(DashColors::text_primary(dark_mode)),
-                    );
-                });
-            })
-            .body(|mut body| {
-                for idx in order {
-                    let tx = &transactions[idx];
-                    body.row(row_height, |mut row| {
-                        row.col(|ui| {
-                            ui.label(Self::format_transaction_timestamp(tx.timestamp));
+
+                builder
+                    .column(Column::initial(150.0)) // Status
+                    .column(Column::remainder().at_least(140.0)) // TxID
+                    .column(Column::exact(240.0)) // Actions
+                    .header(row_height, |mut header| {
+                        header.col(|ui| {
+                            ui.label(
+                                RichText::new("Date")
+                                    .strong()
+                                    .color(DashColors::text_primary(dark_mode)),
+                            );
                         });
-                        row.col(|ui| {
-                            ui.label(Self::transaction_direction_label(tx));
+                        header.col(|ui| {
+                            ui.label(
+                                RichText::new("Type")
+                                    .strong()
+                                    .color(DashColors::text_primary(dark_mode)),
+                            );
                         });
-                        row.col(|ui| {
-                            let (amount_text, amount_color) =
-                                Self::transaction_amount_display(tx, dark_mode);
-                            ui.label(RichText::new(amount_text).color(amount_color).strong());
+                        header.col(|ui| {
+                            ui.label(
+                                RichText::new("Amount")
+                                    .strong()
+                                    .color(DashColors::text_primary(dark_mode)),
+                            );
                         });
                         if show_fee {
-                            row.col(|ui| {
-                                let fee_text = tx
-                                    .fee
-                                    .map(format_duffs_as_dash)
-                                    .unwrap_or_else(|| "-".to_string());
-                                ui.label(fee_text);
+                            header.col(|ui| {
+                                ui.label(
+                                    RichText::new("Fee")
+                                        .strong()
+                                        .color(DashColors::text_primary(dark_mode)),
+                                );
                             });
                         }
-                        row.col(|ui| {
-                            ui.label(Self::format_transaction_status(tx));
+                        header.col(|ui| {
+                            ui.label(
+                                RichText::new("Status")
+                                    .strong()
+                                    .color(DashColors::text_primary(dark_mode)),
+                            );
                         });
-                        row.col(|ui| {
-                            let full_txid = tx.txid.to_string();
-                            ui.horizontal(|ui| {
-                                let response = ui.label(RichText::new(&full_txid).monospace());
-                                response.info_tooltip(&full_txid);
-                                if ui
-                                    .small_button("Copy")
-                                    .clickable_tooltip("Copy transaction ID")
-                                    .clicked()
-                                {
-                                    let _ = copy_text_to_clipboard(&full_txid);
+                        header.col(|ui| {
+                            ui.label(
+                                RichText::new("TxID")
+                                    .strong()
+                                    .color(DashColors::text_primary(dark_mode)),
+                            );
+                        });
+                        header.col(|ui| { ui.strong("Actions"); });
+                    })
+                    .body(|mut body| {
+                        for entry in &entries {
+                            let tx = entry.transaction;
+                            body.row(row_height, |mut row| {
+                                row.col(|ui| {
+                                    ui.label(Self::format_transaction_timestamp(entry.timestamp()));
+                                });
+                                row.col(|ui| {
+                                    ui.label(tx.map(Self::transaction_direction_label).unwrap_or("Transfer to Platform"));
+                                });
+                                row.col(|ui| {
+                                    let (amount_text, amount_color) = tx.map(|tx| Self::transaction_amount_display(tx, dark_mode)).unwrap_or_else(|| {
+                                        (entry.funding.first().map(|f| format!("{amount} (funding)", amount = format_duffs_as_dash(f.funding_amount))).unwrap_or_else(|| "Not recorded".to_string()), DashColors::text_primary(dark_mode))
+                                    });
+                                    ui.label(RichText::new(amount_text).color(amount_color).strong());
+                                });
+                                if show_fee {
+                                    row.col(|ui| {
+                                        let fee_text = tx
+                                            .and_then(|tx| tx.fee)
+                                            .map(format_duffs_as_dash)
+                                            .unwrap_or_else(|| "-".to_string());
+                                        ui.label(fee_text);
+                                    });
                                 }
-                                // Show "View" button for networks with a public explorer
-                                let explorer_base = match self.app_context.network {
-                                    dash_sdk::dpp::dashcore::Network::Mainnet => {
-                                        Some("https://insight.dash.org/insight/tx/")
+                                row.col(|ui| {
+                                    let status = tx.map(Self::format_transaction_status).unwrap_or_else(|| if entry.unconfirmed() { "Unconfirmed".to_string() } else { "Confirmed (Core)".to_string() });
+                                    ui.label(status);
+                                    if entry.funding.iter().any(|f| f.stage == crate::model::pending_transfers::TransferStage::ConflictObserved) {
+                                        ui.label(egui::RichText::new("Input conflict").color(DashColors::WARNING));
                                     }
-                                    dash_sdk::dpp::dashcore::Network::Testnet => Some(
-                                        "https://insight.testnet.networks.dash.org/insight/tx/",
-                                    ),
-                                    _ => None,
-                                };
-                                if let Some(base_url) = explorer_base
-                                    && ui
-                                        .small_button("View")
-                                        .clickable_tooltip("View on block explorer")
-                                        .clicked()
-                                {
-                                    ui.ctx().open_url(egui::OpenUrl::new_tab(format!(
-                                        "{base_url}{full_txid}"
-                                    )));
-                                }
+                                });
+                                row.col(|ui| {
+                                    let full_txid = entry.txid.to_string();
+                                    ui.label(RichText::new(format!("{start}…{end}", start = &full_txid[..8], end = &full_txid[full_txid.len()-8..])).monospace()).info_tooltip(&full_txid);
+                                });
+                                row.col(|ui| {
+                                    self.render_transaction_actions(ui, entry.txid, !entry.funding.is_empty(), entry.unconfirmed());
+                                });
                             });
-                        });
+                        }
                     });
-                }
             });
     }
 
@@ -2108,7 +2088,7 @@ impl WalletsBalancesScreen {
             return AppAction::None;
         };
 
-        let (alias, _seed_hash, _wallet_is_main) = {
+        let (alias, seed_hash, _wallet_is_main) = {
             let wallet = wallet_arc.read_recover();
             (
                 self.app_context
@@ -2121,6 +2101,14 @@ impl WalletsBalancesScreen {
         };
         let mut action = AppAction::None;
         let dark_mode = ui.style().visuals.dark_mode;
+
+        if self
+            .pending_transfers
+            .select(self.app_context.network, seed_hash)
+        {
+            self.pending_transfer_error.clear();
+            self.transfer_details = None;
+        }
 
         let detail_width = ui.available_width();
         ui.horizontal(|row| {
@@ -2180,6 +2168,7 @@ impl WalletsBalancesScreen {
 
                         // Action buttons span full width below the header
                         action |= self.render_action_buttons(ui, ctx);
+                        self.render_transfer_history(ui);
 
                         // --- Accounts & Addresses (tabs, full-width below header) ---
                         ui.add_space(10.0);
@@ -2496,36 +2485,20 @@ impl ScreenLike for WalletsBalancesScreen {
             AppAction::None
         };
 
-        let mut right_buttons = vec![
+        let right_buttons = vec![
             (
                 "Import Wallet",
                 DesiredAppAction::AddScreenType(Box::new(ScreenType::ImportMnemonic)),
             ),
             (
-                "Import key (advanced)",
-                DesiredAppAction::Custom("OpenImportSingleKey".to_string()),
-            ),
-            (
                 "Create Wallet",
                 DesiredAppAction::AddScreenType(Box::new(ScreenType::AddNewWallet)),
             ),
+            (
+                "Advanced",
+                DesiredAppAction::Menu(self.advanced_menu_items()),
+            ),
         ];
-
-        // Add Refresh button for HD wallet
-        if !self.refreshing && self.selected_wallet.is_some() {
-            right_buttons.push((
-                "Refresh",
-                DesiredAppAction::Custom("RefreshHDWallet".to_string()),
-            ));
-        }
-
-        // Add Refresh button for single key wallet
-        if !self.refreshing && self.selected_single_key_wallet.is_some() {
-            right_buttons.push((
-                "Refresh",
-                DesiredAppAction::Custom("RefreshSKWallet".to_string()),
-            ));
-        }
         // Capturing variant: the effect is already applied to the app-global
         // selection, but this page owns the wallet-selection surface, so it must
         // also mirror the switch into its own cache — otherwise the pill and the
@@ -2849,15 +2822,23 @@ impl ScreenLike for WalletsBalancesScreen {
             }
         }
 
-        if let AppAction::BackendTask(BackendTask::CoreTask(CoreTask::RefreshWalletInfo(_, _))) =
-            action
+        if let AppAction::BackendTask(BackendTask::CoreTask(
+            CoreTask::RefreshWalletInfo(_, _) | CoreTask::FullResyncWallet { .. },
+        )) = action
         {
             self.refreshing = true;
         }
 
         // Handle custom refresh actions - check wallet lock status
         if let AppAction::Custom(ref cmd) = action {
-            if cmd == "OpenImportSingleKey" {
+            if cmd == "GetTestDash" {
+                if self.app_context.network == dash_sdk::dpp::dashcore::Network::Testnet {
+                    ui.ctx().open_url(egui::OpenUrl::new_tab(
+                        "https://faucet.testnet.networks.dash.org/",
+                    ));
+                }
+                action = AppAction::None;
+            } else if cmd == "OpenImportSingleKey" {
                 // Sync the dialog's network with the active context every
                 // open so a quick network switch can't show a stale preview.
                 self.import_single_key_dialog
@@ -2902,6 +2883,15 @@ impl ScreenLike for WalletsBalancesScreen {
         action |= pending_refresh_action;
         action |= pending_switch_action;
         action |= shielded_tick_action;
+        if self.selected_wallet.as_ref().is_some_and(|wallet| {
+            self.app_context
+                .wallet_backend()
+                .is_ok_and(|backend| backend.has_snapshot(&wallet.read_recover().seed_hash()))
+        }) && crate::ui::can_append_concurrent_backend_tasks(&action)
+            && let Some(task) = self.pending_transfers.task()
+        {
+            action = crate::ui::append_concurrent_backend_tasks(action, vec![task]);
+        }
         action
     }
 
@@ -2941,7 +2931,21 @@ impl ScreenLike for WalletsBalancesScreen {
         }
     }
 
-    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
+        if let Some((seed_hash, request_id)) = context.platform_transfer_assessment()
+            && self
+                .pending_transfers
+                .matches_request(seed_hash, request_id)
+        {
+            self.pending_transfers.fail(seed_hash, request_id);
+            self.pending_transfer_error
+                .set_message(
+                    "Transfer status could not be checked. Try again.",
+                    MessageType::Warning,
+                )
+                .set_details(error)
+                .disable_auto_dismiss();
+        }
         if self.pending_rename_context.as_ref() == Some(context)
             && context.wallet_rename_task().is_some()
         {
@@ -2954,10 +2958,38 @@ impl ScreenLike for WalletsBalancesScreen {
         backend_task_success_result: crate::ui::BackendTaskSuccessResult,
     ) {
         match backend_task_success_result {
+            crate::ui::BackendTaskSuccessResult::PlatformTransfersAssessed {
+                network,
+                seed_hash,
+                request_id,
+                assessment,
+            } => {
+                if self
+                    .pending_transfers
+                    .accept(network, seed_hash, request_id, assessment)
+                {
+                    self.pending_transfer_error.clear();
+                }
+            }
+            crate::ui::BackendTaskSuccessResult::WalletResyncCompleted { seed_hash } => {
+                if !self
+                    .selected_wallet
+                    .as_ref()
+                    .is_some_and(|wallet| wallet.read_recover().seed_hash() == seed_hash)
+                {
+                    return;
+                }
+                self.refreshing = false;
+                self.pending_transfers.refresh();
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "The wallet’s Dash Core history has been rescanned.",
+                    MessageType::Info,
+                );
+            }
             crate::ui::BackendTaskSuccessResult::RefreshedWallet { warning } => {
                 self.refreshing = false;
-                self.cached_tx_indices = None;
-                self.cached_tx_source_len = None;
+                self.pending_transfers.refresh();
                 if let Some(err) = warning {
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),
@@ -3137,6 +3169,7 @@ impl ScreenLike for WalletsBalancesScreen {
     }
 
     fn refresh_on_arrival(&mut self) {
+        self.pending_transfers.on_arrival();
         // Clear the spinner in case a refresh completed while this screen was not
         // visible (task results are dispatched to the visible screen, so ours would
         // have been silently discarded).
@@ -3210,7 +3243,7 @@ mod tests {
     #[test]
     fn format_transaction_timestamp_zero_renders_pending_placeholder() {
         let rendered = WalletsBalancesScreen::format_transaction_timestamp(0);
-        assert_eq!(rendered, "Pending…");
+        assert_eq!(rendered, "Date unavailable");
         assert!(!rendered.contains("1970"));
     }
 
@@ -3353,11 +3386,16 @@ mod tests {
 
     /// Build an offline `AppContext` (no network I/O, throwaway data dir).
     fn offline_ctx() -> (Arc<AppContext>, tempfile::TempDir) {
+        offline_ctx_for_network(dash_sdk::dpp::dashcore::Network::Testnet)
+    }
+
+    fn offline_ctx_for_network(
+        network: dash_sdk::dpp::dashcore::Network,
+    ) -> (Arc<AppContext>, tempfile::TempDir) {
         use crate::app_dir::ensure_env_file;
         use crate::context::connection_status::ConnectionStatus;
         use crate::database::test_helpers::create_database_at_path;
         use crate::utils::tasks::TaskManager;
-        use dash_sdk::dpp::dashcore::Network;
 
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let data_dir = temp_dir.path().to_path_buf();
@@ -3367,7 +3405,7 @@ mod tests {
         let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
         let ctx = AppContext::new(
             data_dir,
-            Network::Testnet,
+            network,
             db,
             Arc::new(TaskManager::new()),
             Arc::new(ConnectionStatus::new()),
@@ -3376,7 +3414,7 @@ mod tests {
             secret_store,
             crate::model::user_role::UserRoleCell::default(),
         )
-        .expect("offline testnet AppContext::new");
+        .expect("offline AppContext::new");
         (ctx, temp_dir)
     }
 
@@ -3388,6 +3426,253 @@ mod tests {
         ctx.wallet_context()
             .insert_test_wallet(seed_hash, Arc::new(RwLock::new(wallet)));
         seed_hash
+    }
+
+    #[test]
+    fn advanced_wallet_menu_hides_faucet_on_mainnet() {
+        let (ctx, _tmp) = offline_ctx_for_network(dash_sdk::dpp::dashcore::Network::Mainnet);
+        let screen = WalletsBalancesScreen::new(&ctx);
+        assert!(
+            screen
+                .advanced_menu_items()
+                .iter()
+                .all(|item| item.label != "Get test DASH")
+        );
+    }
+
+    #[test]
+    fn advanced_wallet_menu_keeps_refresh_and_resync_scoped() {
+        let (ctx, _tmp) = offline_ctx();
+        let mut screen = WalletsBalancesScreen::new(&ctx);
+        let items = screen.advanced_menu_items();
+        assert_eq!(
+            items.iter().map(|i| i.label).collect::<Vec<_>>(),
+            ["Import key", "Refresh", "Full resync", "Get test DASH"]
+        );
+        assert!(items[0].enabled);
+        assert!(!items[1].enabled);
+        assert!(!items[2].enabled);
+        let seed_hash = seed_hd_wallet(&ctx, 42);
+        screen.selected_wallet = ctx.wallet_context().hd_wallet(&seed_hash);
+        ctx.connection_status().set_spv_status(SpvStatus::Running);
+        let items = screen.advanced_menu_items();
+        assert!(items[1].enabled);
+        assert!(items[2].enabled);
+        assert!(matches!(&items[2].action,
+            DesiredAppAction::BackendTask(task) if matches!(task.as_ref(),
+                BackendTask::CoreTask(CoreTask::FullResyncWallet { seed_hash: id }) if *id == seed_hash)));
+        ctx.connection_status().set_spv_status(SpvStatus::Syncing);
+        assert!(!screen.advanced_menu_items()[2].enabled);
+        screen.refreshing = true;
+        assert!(!screen.advanced_menu_items()[1].enabled);
+    }
+
+    #[test]
+    fn pending_transfers_are_discoverable_in_both_themes_and_narrow_layouts() {
+        use crate::model::pending_transfers::{
+            PendingPlatformTransfer, TransferAssessment, TransferStage,
+        };
+        use dash_sdk::dpp::dashcore::{OutPoint, Txid, hashes::Hash};
+        use egui_kittest::{Harness, kittest::Queryable};
+
+        for (width, dark, stage) in [
+            (420.0, false, TransferStage::AwaitingConfirmation),
+            (1200.0, true, TransferStage::AwaitingConfirmation),
+            (1200.0, false, TransferStage::Recovered),
+        ] {
+            let (ctx, _tmp) = offline_ctx();
+            let seed_hash = seed_hd_wallet(&ctx, 43);
+            let mut screen = WalletsBalancesScreen::new(&ctx);
+            screen.pending_transfers.select(ctx.network, seed_hash);
+            let Some(BackendTask::WalletTask(WalletTask::AssessPlatformTransfers {
+                request_id,
+                ..
+            })) = screen.pending_transfers.task()
+            else {
+                panic!("assessment")
+            };
+            screen.display_task_result(
+                crate::ui::BackendTaskSuccessResult::PlatformTransfersAssessed {
+                    network: ctx.network,
+                    seed_hash,
+                    request_id,
+                    assessment: TransferAssessment {
+                        transfers: vec![PendingPlatformTransfer {
+                            out_point: OutPoint::new(Txid::from_byte_array([5; 32]), 0),
+                            funding_amount: 100_000_000,
+                            core_fee: None,
+                            block_time: None,
+                            stage,
+                            conflicts: vec![],
+                        }],
+                        history_complete: true,
+                        checked_at: 1_700_000_000,
+                    },
+                },
+            );
+            let mut harness = Harness::builder()
+                .with_size(egui::vec2(width, 1000.0))
+                .build_ui_state(
+                    |ui, screen: &mut WalletsBalancesScreen| {
+                        screen.render_transfer_history(ui);
+                    },
+                    screen,
+                );
+            harness.ctx.set_visuals(if dark {
+                egui::Visuals::dark()
+            } else {
+                egui::Visuals::light()
+            });
+            harness.run();
+            assert!(harness.query_by_label("Transfers to review: 1").is_none());
+            assert!(harness.query_by_label("View transfers").is_none());
+            harness.get_by_label("Transaction History").focus();
+            harness.run();
+            harness.key_press(egui::Key::Enter);
+            harness.run();
+            if width > 500.0 {
+                let status = if stage == TransferStage::Recovered {
+                    "Confirmed (Core)"
+                } else {
+                    "Unconfirmed"
+                };
+                assert!(harness.query_by_label(status).is_some());
+            }
+            if width < 1100.0 {
+                let header = harness.get_by_label("Date").rect();
+                harness.hover_at(egui::pos2(100.0, header.bottom() + 30.0));
+                harness.event(egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    phase: egui::TouchPhase::Move,
+                    delta: egui::vec2(-1600.0, 0.0),
+                    modifiers: egui::Modifiers::NONE,
+                });
+                harness.step();
+                harness.hover_at(egui::pos2(0.0, 0.0));
+                harness.run();
+            }
+            assert!(
+                harness.get_by_label("Actions").rect().left()
+                    > harness.get_by_label("TxID").rect().left()
+            );
+            let copy = harness.get_by_label("Copy").rect();
+            let view = harness.get_by_label("View").rect();
+            let details = harness.get_by_label("Details").rect();
+            assert!(copy.right() <= view.left());
+            assert!(view.right() <= details.left());
+            assert!((copy.center().y - details.center().y).abs() < 1.0);
+            assert!((copy.height() - details.height()).abs() < 1.0);
+            assert!(
+                harness.get_by_label("Details").rect().top()
+                    > harness
+                        .get_by_label("Dash Core Transactions")
+                        .rect()
+                        .bottom()
+            );
+            assert!(harness.query_by_label("Unfinished transfers").is_none());
+            assert!(harness.query_by_label("Reload wallet records").is_none());
+            assert_eq!(
+                harness.query_by_label("Cancel transfer").is_some(),
+                stage != TransferStage::Recovered
+            );
+            if stage != TransferStage::Recovered {
+                let cancel = harness.get_by_label("Cancel transfer").rect();
+                assert!(details.right() <= cancel.left());
+                assert!((copy.height() - cancel.height()).abs() < 1.0);
+            }
+            assert!(
+                details.right() <= width,
+                "Details outside viewport at width {width}: {details:?}"
+            );
+            harness.get_by_label("Details").click();
+            harness.run();
+            assert!(
+                harness.query_by_label("Transfer details").is_some(),
+                "Details did not open at width {width}: {details:?}"
+            );
+            assert!(
+                harness
+                    .query_by_label("Confirmation date: Date unavailable")
+                    .is_some()
+            );
+            if stage == TransferStage::Recovered {
+                assert!(harness.query_by_label("This historical funding record was recovered from the blockchain. Its Platform outcome is unknown; this does not mean a transfer is still pending.").is_some());
+            } else {
+                assert!(harness.query_by_label("Cancellation is unavailable: the wallet backend cannot safely stop this funding transaction and release its inputs.").is_some());
+            }
+            assert!(harness.query_by_label("Check status").is_none());
+            assert!(harness.query_by_label("Copy transaction ID").is_some());
+        }
+    }
+
+    #[test]
+    fn pending_transfers_refresh_runs_after_wallet_refresh_even_during_an_older_read() {
+        use crate::model::pending_transfers::TransferAssessment;
+        let (ctx, _tmp) = offline_ctx();
+        let seed_hash = seed_hd_wallet(&ctx, 45);
+        let mut screen = WalletsBalancesScreen::new(&ctx);
+        screen.pending_transfers.select(ctx.network, seed_hash);
+        let Some(BackendTask::WalletTask(WalletTask::AssessPlatformTransfers {
+            request_id, ..
+        })) = screen.pending_transfers.task()
+        else {
+            panic!("assessment expected");
+        };
+        screen.display_task_result(crate::ui::BackendTaskSuccessResult::RefreshedWallet {
+            warning: None,
+        });
+        assert!(screen.pending_transfers.task().is_none());
+        screen.pending_transfers.accept(
+            ctx.network,
+            seed_hash,
+            request_id,
+            TransferAssessment {
+                transfers: vec![],
+                history_complete: true,
+                checked_at: 0,
+            },
+        );
+        assert!(screen.pending_transfers.task().is_some());
+        assert!(screen.pending_transfers.task().is_none());
+    }
+
+    #[test]
+    fn pending_transfers_errors_are_scoped_and_preserve_the_previous_assessment() {
+        use crate::model::pending_transfers::TransferAssessment;
+        let (ctx, _tmp) = offline_ctx();
+        let seed_hash = seed_hd_wallet(&ctx, 44);
+        let mut screen = WalletsBalancesScreen::new(&ctx);
+        screen.pending_transfers.select(ctx.network, seed_hash);
+        let Some(BackendTask::WalletTask(WalletTask::AssessPlatformTransfers {
+            request_id, ..
+        })) = screen.pending_transfers.task()
+        else {
+            panic!("assessment")
+        };
+        screen.pending_transfers.accept(
+            ctx.network,
+            seed_hash,
+            request_id,
+            TransferAssessment {
+                transfers: vec![],
+                history_complete: true,
+                checked_at: 123,
+            },
+        );
+        screen.pending_transfers.refresh();
+        let task = screen.pending_transfers.task().expect("refresh task");
+        let context = BackendTaskContext::for_dispatch(&task);
+        screen.display_backend_task_error(&context, &TaskError::WalletNotFound);
+        assert!(screen.pending_transfers.is_failed());
+        assert_eq!(
+            screen.pending_transfers.assessment().unwrap().checked_at,
+            123
+        );
+        screen.pending_transfers.select(ctx.network, [99; 32]);
+        screen.pending_transfers.task();
+        screen.display_backend_task_error(&context, &TaskError::WalletNotFound);
+        assert!(!screen.pending_transfers.is_failed());
+        assert!(screen.pending_transfers.is_loading());
     }
 
     /// FR-GLOBAL-NAV-2 rule 2 — the Wallets page is two-way bound with the nav

@@ -1169,6 +1169,29 @@ mod tests {
 
         // What the pushed Key Info screen's restore wrote while this screen was
         // not the one receiving results.
+        store_restored_voter_association(&ctx, node);
+
+        screen.refresh_on_arrival();
+
+        let MasternodesView::Detail(detail) = &screen.view else {
+            panic!("the detail view must still be open");
+        };
+        assert!(
+            !detail.has_recovery_offer_for_test(),
+            "the stale offer must be retired on arrival, not re-shown",
+        );
+        assert!(
+            detail.key_presence_for_test().voting,
+            "the node page must show the voting key it now holds",
+        );
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    /// Write the voter association a completed restore stores for `node`.
+    fn store_restored_voter_association(ctx: &Arc<AppContext>, node: Identifier) {
+        use dash_sdk::platform::IdentityPublicKey;
+
         let mut restored = ctx
             .get_local_qualified_identity(&node)
             .expect("read the node")
@@ -1194,19 +1217,38 @@ mod tests {
         ));
         ctx.update_local_qualified_identity(&restored)
             .expect("the restore's write");
+    }
 
-        screen.refresh_on_arrival();
+    /// A restore finished for the node this page is showing reaches the list
+    /// screen's `LegacyRecoveryCompleted` arm, which falls through to the
+    /// in-place re-read: the open detail view must show the restored voting key
+    /// without the user navigating away and back.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn completed_restore_refreshes_the_open_node_in_place() {
+        let (ctx, _tmp) = offline_ctx().await;
+        let node = Identifier::from([0x34; 32]);
+        seed_masternode(&ctx, 0x34, None);
+        let mut screen = MasternodesScreen::new(&ctx);
+        screen.open_detail(node);
+        let MasternodesView::Detail(detail) = &screen.view else {
+            panic!("the detail view must be open");
+        };
+        assert!(!detail.key_presence_for_test().voting);
+
+        store_restored_voter_association(&ctx, node);
+        screen.display_task_result(BackendTaskSuccessResult::LegacyRecoveryCompleted {
+            identity_id: node,
+            applied: vec![],
+            skipped_stale: vec![],
+            excluded: vec![],
+        });
 
         let MasternodesView::Detail(detail) = &screen.view else {
             panic!("the detail view must still be open");
         };
         assert!(
-            !detail.has_recovery_offer_for_test(),
-            "the stale offer must be retired on arrival, not re-shown",
-        );
-        assert!(
             detail.key_presence_for_test().voting,
-            "the node page must show the voting key it now holds",
+            "the node page must show the voting key its restore just wrote",
         );
 
         ctx.wallet_backend().expect("backend").shutdown().await;

@@ -135,6 +135,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The dedicated migration CI workflow runs archived-profile checks without
+  repeating the helper tests and bundled migration covered by the main suite.
+
 - Adding a voting key preserves the identity's wallet association when its only
   wallet-linked key comes from the existing identity, including password-protected
   imports.

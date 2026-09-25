@@ -8,6 +8,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- Identity imports with a password now encrypt private keys before their first
+  storage write. Interrupted new imports retain protected entries, and retries
+  preserve existing keys when a supplied password or key conflicts. A durable
+  key inventory includes entries omitted on retry in password checks, protection
+  detection, and removal. Imports with a supplied password avoid a redundant
+  password prompt when merging. Resumed removal also deletes keys retained by
+  a later failed re-import before retiring their inventory. Merges revalidate the
+  current password and record new key placements under the identity record lock
+  before sealing. Protection indicators include retained keys, and unpublished
+  import retries explain that the original import password is required. Protection
+  indicators report unavailable status when the full key inventory cannot be read.
+  Identities without locally stored keys explain that a private key must be added
+  before password protection is available.
+
+- Identity reads no longer migrate or rewrite stored keys. Storage preparation
+  explicitly migrates legacy keys under each identity's record lock, propagates
+  write failures for retry, and skips undecodable records without changing them,
+  including malformed outer identity records that would otherwise block startup.
+
 - The CLI keeps MCP requests at the selected endpoint without following HTTP
   redirects or using system/environment proxies. Migration fixture packaging rejects configured credentials, and
   CI requires verified archive checksums and a runtime fixture password.
@@ -168,6 +187,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Removing a wallet deletes its cached identity public keys right away, and a
   key-slot load that finishes after the removal no longer stores them again.
+
+- Adding a voting key preserves the identity's wallet association when its only
+  wallet-linked key comes from the existing identity, including password-protected
+  imports.
 
 - A damaged legacy wallet no longer prevents healthy wallets and imported keys
   from loading at startup.

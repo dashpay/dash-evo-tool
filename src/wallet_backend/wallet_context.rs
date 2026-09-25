@@ -286,7 +286,12 @@ impl WalletContext {
         let seed = wallet.seed_hash();
         let state = read_recover(&self.state);
         if state.wallets.contains_key(&seed) || state.hd.contains_key(&seed) {
-            return Err(TaskError::WalletAlreadyImported);
+            let alias = state
+                .hd
+                .get(&seed)
+                .map(|meta| meta.alias.clone())
+                .filter(|alias| !alias.is_empty());
+            return Err(TaskError::WalletAlreadyImported { alias });
         }
         let alias = resolve_hd(
             &state,

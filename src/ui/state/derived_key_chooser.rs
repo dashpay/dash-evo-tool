@@ -106,10 +106,19 @@ impl DerivedKeyChooser {
     /// keys. One cache read; call on load, refresh and task results only.
     ///
     /// An in-flight or failed load is kept as is, so a refresh never starts a
-    /// duplicate warm task and a failure waits for an explicit retry.
+    /// duplicate warm task and a failure waits for an explicit retry. A
+    /// different wallet (or none) starts a fresh cycle instead: the old
+    /// wallet's warm result is no longer accepted, and its selection and
+    /// rejected slots do not apply to the new one.
     pub fn reload(&mut self, app_context: &AppContext, identity: &QualifiedIdentity) {
-        let was_possible = self.wallet.is_some();
+        let previous = self.wallet;
+        let was_possible = previous.is_some();
         self.wallet = derivation_wallet(identity, app_context.network);
+        if self.wallet != previous {
+            self.load = KeyLoad::Cold;
+            self.index = None;
+            self.rejected.clear();
+        }
         if self.wallet.is_none() {
             self.derived = false;
         } else if !was_possible {
@@ -209,15 +218,11 @@ impl DerivedKeyChooser {
         }
     }
 
-    /// A warm task failed. Returns `true` when it was this chooser's own.
-    pub fn warm_failed(&mut self, seed_hash: &WalletSeedHash, identity_index: u32) -> bool {
-        if !self.is_own_warm(seed_hash, identity_index) {
-            return false;
-        }
-        if self.load == KeyLoad::Loading {
+    /// A warm task failed; only this chooser's own changes its load state.
+    pub fn warm_failed(&mut self, seed_hash: &WalletSeedHash, identity_index: u32) {
+        if self.load == KeyLoad::Loading && self.is_own_warm(seed_hash, identity_index) {
             self.load = KeyLoad::Failed;
         }
-        true
     }
 
     /// Retry a failed load; the next [`Self::take_warm_task`] dispatches it.

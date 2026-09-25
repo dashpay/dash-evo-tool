@@ -2,6 +2,8 @@
 //! empty state + card grid (B3).
 
 use crate::support::{mount_app, with_isolated_data_dir};
+use dash_evo_tool::app::TaskResult;
+use dash_evo_tool::backend_task::{BackendTaskContext, BackendTaskSuccessResult};
 use dash_evo_tool::context::AppContext;
 use dash_evo_tool::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
 use dash_evo_tool::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
@@ -20,6 +22,35 @@ use egui::accesskit::{Role, Toggled};
 use egui_kittest::kittest::{NodeT, Queryable};
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+/// How long a spawned backend task gets to land its writes before a test gives
+/// up on it. Generous on purpose: the suite runs many harnesses in parallel,
+/// each with its own multi-worker runtime, so a task that finishes instantly
+/// alone can be starved for seconds. Exceeding this means something is wedged,
+/// not merely slow.
+const BACKEND_TASK_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Step `harness` until `settled` holds, or until [`BACKEND_TASK_DEADLINE`]
+/// passes.
+///
+/// Backend work runs off the frame thread, so a fixed `run_steps(n)` budget
+/// asserts on whatever happened to have landed by frame `n` — which on a loaded
+/// machine is regularly nothing. Returns quietly on timeout so the caller's own
+/// assertion is the one that reports what was still missing.
+fn settle_until(
+    harness: &mut egui_kittest::Harness<'static, dash_evo_tool::app::AppState>,
+    mut settled: impl FnMut(&egui_kittest::Harness<'static, dash_evo_tool::app::AppState>) -> bool,
+) {
+    let deadline = Instant::now() + BACKEND_TASK_DEADLINE;
+    while Instant::now() < deadline {
+        harness.step();
+        if settled(harness) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
 
 /// Seed one wallet-less masternode/evonode identity into the live per-network
 /// identity DB (alias = `alias`, id = `[byte; 32]`, no keys → read-only node).
@@ -600,6 +631,73 @@ fn dpns_section_missing_voter_scoped_prompt() {
     });
 }
 
+/// The open `Add voting key` prompt and the key typed into it belong to the
+/// user's session, not to the stored record, so a backend result that merely
+/// lands while this page is visible must leave both alone.
+///
+/// Results reach whichever screen is visible, and several arrive with no user
+/// action at all — the auto-started identity-discovery sweep emits one
+/// `Progress` per scanned index. Re-opening the detail view on each one rebuilt
+/// it from the store and silently discarded a half-entered voting key, which
+/// read to the user as the prompt collapsing by itself.
+#[test]
+fn an_unrelated_task_result_keeps_the_open_voter_key_prompt() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
+        let app_context = harness.state().current_app_context().clone();
+        seed_node(&app_context, 0x97, "mn-vote-keep", IdentityType::Masternode);
+        activate_masternodes_tab(&mut harness, &app_context);
+        harness.get_by_label("Open mn-vote-keep").click();
+        harness.run_steps(3);
+
+        harness.get_by_label("Add voting key").click();
+        harness.run_steps(3);
+        harness
+            .query_all_by_role(Role::PasswordInput)
+            .next()
+            .expect("the scoped prompt renders a masked voting-key field")
+            .focus();
+        harness.event(egui::Event::Text("a-half-typed-voting-key".to_string()));
+        harness.step();
+        assert!(
+            !harness.get_by_label("Save").accesskit_node().is_disabled(),
+            "the premise: Save arms itself once the prompt holds a key"
+        );
+
+        // A result for a task this screen never dispatched, delivered through
+        // the same channel the discovery sweep and the SPV event bridge use.
+        harness
+            .state()
+            .task_result_sender
+            .try_send(TaskResult::Success {
+                context: BackendTaskContext::Unknown,
+                result: Box::new(BackendTaskSuccessResult::Progress {
+                    message: "Searching wallet identity index 1 of about 21.".to_string(),
+                    current: 1,
+                    total: 21,
+                }),
+            })
+            .expect("the frame loop's task channel accepts a result");
+        harness.run_steps(3);
+
+        assert!(
+            harness.query_by_label("Add voting key").is_none(),
+            "an unrelated result must not collapse the prompt back to its button"
+        );
+        assert!(
+            harness.query_by_label("Save").is_some(),
+            "the open prompt must survive an unrelated backend result"
+        );
+        assert!(
+            !harness.get_by_label("Save").accesskit_node().is_disabled(),
+            "the key typed into the prompt must survive with it"
+        );
+    });
+}
+
 /// TC-NAV-12 / TC-FR6-07 (release-blocking) — selecting a masternode on the
 /// Masternodes page (opening its detail via a card click) must NEVER write the
 /// app-global identity selection. With no User identity loaded, the
@@ -688,18 +786,13 @@ fn remove_flow_deletes_only_target_node() {
         confirm.click();
         // Removal runs on the backend. Wait for its result to navigate back
         // to the list before checking the cards, not merely for the DB write.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        loop {
-            harness.step();
-            if harness.query_by_label("Open mn-keep-me").is_some() {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "removal must return to the masternode list"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
+        settle_until(&mut harness, |harness| {
+            harness.query_by_label("Open mn-keep-me").is_some()
+        });
+        assert!(
+            harness.query_by_label("Open mn-keep-me").is_some(),
+            "removal must return to the masternode list"
+        );
 
         // Only the target node was deleted; the other remains (isolation).
         let remaining = app_context
@@ -764,7 +857,20 @@ fn remove_flow_deletes_associated_voter_identity() {
             .last()
             .expect("confirm button present");
         confirm.click();
-        harness.run_steps(3);
+        // One spawned task deletes the node and then its voter twin, both off
+        // the frame thread. Wait for both writes rather than budgeting frames —
+        // a frame budget catches the task mid-way and reports whichever delete
+        // had not landed yet as a removal that never happened.
+        settle_until(&mut harness, |_| {
+            app_context
+                .load_local_masternode_identities()
+                .expect("load")
+                .is_empty()
+                && app_context
+                    .get_local_qualified_identity(&voter_id)
+                    .expect("voter read")
+                    .is_none()
+        });
 
         // Both the node and its voter identity are deleted.
         assert_eq!(

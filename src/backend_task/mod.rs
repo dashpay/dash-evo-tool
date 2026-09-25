@@ -350,6 +350,11 @@ pub enum BackendTaskContext {
     LegacyRecoveryCheck(Identifier),
     /// The restore of one identity's approved legacy-recovery items.
     LegacyRecoveryRestore(Identifier),
+    /// Recovery outcomes stay bound to their dispatch network during navigation.
+    LegacyRecoveryOnNetwork {
+        network: Network,
+        operation: Box<BackendTaskContext>,
+    },
     /// A known backend task that needs no finer UI correlation.
     Other,
     /// An error emitted without an originating backend task.
@@ -357,14 +362,17 @@ pub enum BackendTaskContext {
 }
 
 impl BackendTaskContext {
-    /// The context for `task` about to run on `network`. Identical to
-    /// `From<&BackendTask>` except that a wallet payment broadcast records the
-    /// network: the task alone cannot name it — a [`Wallet`](crate::model::wallet::Wallet)
-    /// carries none, and its extended public key cannot tell Devnet or Regtest
-    /// from Testnet — and a late "outcome unknown" error must not be adopted by
-    /// whichever network happens to be selected when it lands.
+    /// Bind payment and recovery outcomes to their dispatch network, so a late
+    /// result cannot affect a screen after the user switches networks.
     pub(crate) fn for_task_on(task: &BackendTask, network: Network) -> Self {
         match task {
+            BackendTask::IdentityTask(
+                IdentityTask::CheckLegacyRecovery { .. }
+                | IdentityTask::RecoverLegacyIdentityData { .. },
+            ) => Self::LegacyRecoveryOnNetwork {
+                network,
+                operation: Box::new(Self::from(task)),
+            },
             BackendTask::CoreTask(CoreTask::SendWalletPayment { .. }) => {
                 Self::WalletPaymentBroadcast { network }
             }
@@ -397,7 +405,8 @@ impl BackendTaskContext {
 
     fn operation(&self) -> &Self {
         match self {
-            Self::Dispatched { operation, .. } => operation,
+            Self::Dispatched { operation, .. }
+            | Self::LegacyRecoveryOnNetwork { operation, .. } => operation.operation(),
             operation => operation,
         }
     }
@@ -462,6 +471,15 @@ impl BackendTaskContext {
             Self::LegacyRecoveryCheck(identity_id) | Self::LegacyRecoveryRestore(identity_id) => {
                 Some(*identity_id)
             }
+            _ => None,
+        }
+    }
+
+    /// The dispatch network for a recovery task, including explicitly wrapped dispatches.
+    pub(crate) fn legacy_recovery_network(&self) -> Option<Network> {
+        match self {
+            Self::LegacyRecoveryOnNetwork { network, .. } => Some(*network),
+            Self::Dispatched { operation, .. } => operation.legacy_recovery_network(),
             _ => None,
         }
     }
@@ -531,6 +549,11 @@ impl From<&BackendTask> for BackendTaskContext {
     }
 }
 
+/// How one contest in a DPNS vote cast turned out: the normalized contested
+/// name, the choice sent for it, and whether Platform took it. A cast is
+/// per-contest, so one contest failing says nothing about the rest.
+pub type DPNSVoteOutcome = (String, ResourceVoteChoice, Result<(), Arc<TaskError>>);
+
 #[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
 pub enum BackendTaskSuccessResult {
@@ -568,7 +591,7 @@ pub enum BackendTaskSuccessResult {
     CoreItem(CoreItem),
     RegisteredIdentity(QualifiedIdentity, FeeResult),
     ToppedUpIdentity(QualifiedIdentity, FeeResult),
-    DPNSVoteResults(Vec<(String, ResourceVoteChoice, Result<(), Arc<TaskError>>)>),
+    DPNSVoteResults(Vec<DPNSVoteOutcome>),
     CastScheduledVote(ScheduledDPNSVote),
     /// A scheduled-vote sweep finished without a query, identity or Platform
     /// failure. The app uses this acknowledgement to retire a preserved

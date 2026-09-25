@@ -294,6 +294,11 @@ pub enum WalletTask {
     ListTrackedAssetLocks {
         seed_hash: WalletSeedHash,
     },
+    /// Assess unfinished Platform transfers without resuming or broadcasting them.
+    AssessPlatformTransfers {
+        seed_hash: WalletSeedHash,
+        request_id: u64,
+    },
     /// Dry-run the live upstream asset-lock builder to obtain the largest
     /// credit output its current UTXO set can fund.
     GetAssetLockMaxAmount {

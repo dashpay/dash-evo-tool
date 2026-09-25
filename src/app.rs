@@ -3118,6 +3118,16 @@ impl App for AppState {
                             .display_message(&msg, MessageType::Error);
                     }
                 }
+                TaskResult::Error { context, error }
+                    if context.platform_transfer_assessment().is_some() =>
+                {
+                    if let Some(screen) = self
+                        .main_screens
+                        .get_mut(&RootScreenType::RootScreenWalletsBalances)
+                    {
+                        screen.display_backend_task_error(&context, &error);
+                    }
+                }
                 TaskResult::Error {
                     context,
                     error: err,

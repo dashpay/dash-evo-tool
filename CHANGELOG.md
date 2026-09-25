@@ -48,6 +48,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Unfinished Core-to-Platform transfers are visible beside the wallet balance
+  and in wallet-level transaction history. Read-only status checks show possible
+  payment conflicts from saved history without releasing funds or resending.
+  Pending Core transactions appear before dated history. Cancellation remains
+  unavailable until the wallet backend supports safe reconciliation.
+
 - A scheduled workflow renews expiring migration fixture archives without
   changing their contents and proposes updated manifest pointers in a PR.
 

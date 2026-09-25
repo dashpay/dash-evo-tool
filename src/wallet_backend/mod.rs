@@ -47,6 +47,7 @@ pub(crate) mod kv_test_support;
 pub(crate) mod leak_test_support;
 mod loader;
 mod payments;
+mod pending_transfers;
 #[cfg(test)]
 pub(crate) mod persist_fault_test_support;
 pub mod platform_compatibility;

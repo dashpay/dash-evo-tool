@@ -176,6 +176,8 @@ As a user, I want to review my past transactions so that I can track payments se
 
 - Lists transactions with amounts, dates, and direction.
 - Priya sees TxID, block height, and confirmation count.
+- History is accessible at wallet level in every role, with pending Core
+  transactions before dated history and unknown dates explicitly labelled.
 
 ### WAL-017: Fund Platform address from wallet [Implemented]
 **Persona:** Priya, Jordan
@@ -184,6 +186,10 @@ As a user, I want to fund a Platform payment address directly from my wallet UTX
 
 - Creates asset lock automatically from wallet funds.
 - Supports fee deduction from output or wallet.
+- Unfinished funding remains discoverable beside the balance after restart.
+- Read-only status checks distinguish an unknown confirmation, an observed
+  payment conflict, and unverified Platform delivery without resending or
+  claiming that funds have been released.
 
 ### WAL-018: Fund Platform address from asset lock [Implemented]
 **Persona:** Priya, Jordan
@@ -335,6 +341,21 @@ As a user updating from any earlier version I still have installed, I want every
 - The update completes on its own. A migration that cannot finish safely is a defect in the migration, not a situation the user is asked to repair by hand.
 - Starting the updated app a second time changes nothing further, and a user whose data was already current keeps an untouched database rather than a needlessly rewritten one.
 - Currently a gap: each migration mechanism is unit-tested on synthetic data, but no automated check upgrades a data directory a *released* build actually wrote and confirms the result. The design for closing it is `docs/ai-design/2026-09-10-migration-matrix/design.md`; related implemented behaviour is covered by WAL-032, IDN-016 and IDN-020.
+
+### WAL-034: Safely stop or finish an interrupted Platform transfer [Gap]
+**Persona:** Alex, Priya
+
+As a user, I want to stop an unfinished transfer or finish its existing funding,
+so that I can recover without accidentally sending twice.
+
+- A cancellation request survives restart and stops local retries without
+  promising that the network will forget the transaction.
+- Funds become available only after verified, atomic reconciliation.
+- Late confirmation offers an explicit review before continuing to Platform.
+- Finishing reuses the original funding and reviews recipients and fees.
+- Visibility and read-only conflict reporting are implemented; cancellation,
+  durable recipient intent, and verified continuation remain a gap pending
+  upstream wallet support.
 
 ---
 

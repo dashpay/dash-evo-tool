@@ -1,6 +1,7 @@
 mod address_table;
 mod asset_locks;
 mod dialogs;
+mod pending_transfers;
 mod single_key_view;
 
 pub(crate) use single_key_view::SINGLE_KEY_SEND_UNAVAILABLE;
@@ -244,6 +245,9 @@ pub struct WalletsBalancesScreen {
     /// prevents a dismissed persistent notice from being recreated every frame.
     transaction_history_notice: Option<(WalletSeedHash, TransactionHistoryStatus)>,
     transaction_history_banner: MessageBanner,
+    pending_transfers: crate::ui::state::pending_transfers::PendingTransfersState,
+    pending_transfer_error: MessageBanner,
+    show_transfer_history: bool,
     /// Persistent warning banner rendered on the single-key wallet detail
     /// view when the app is running on the SPV backend. Stored on the screen
     /// (rather than constructed fresh each frame) so the underlying tracing
@@ -372,6 +376,9 @@ impl WalletsBalancesScreen {
             cached_tx_source_len: None,
             transaction_history_notice: None,
             transaction_history_banner: MessageBanner::new(),
+            pending_transfers: Default::default(),
+            pending_transfer_error: MessageBanner::new(),
+            show_transfer_history: false,
             sk_spv_warning_banner: crate::ui::components::MessageBanner::new(),
             import_single_key_dialog: ImportSingleKeyDialog::new(app_context.network),
             restore_single_key_dialog: RestoreSingleKeyDialog::new(),
@@ -548,6 +555,9 @@ impl WalletsBalancesScreen {
     /// Clear all transient request/pending state that could fire against the
     /// wrong context after a network switch.
     pub(crate) fn reset_transient_state(&mut self) {
+        self.pending_transfers = Default::default();
+        self.pending_transfer_error.clear();
+        self.show_transfer_history = false;
         self.pending_platform_balance_refresh = None;
         self.pending_refresh_after_unlock = false;
         self.pending_wallet_refresh_on_switch = false;
@@ -1095,7 +1105,10 @@ impl WalletsBalancesScreen {
     }
 
     fn transaction_direction_label(tx: &WalletTransaction) -> &'static str {
-        if tx.is_incoming() {
+        if tx.is_outgoing() && matches!(tx.transaction.special_transaction_payload,
+            Some(dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayload::AssetLockPayloadType(_))) {
+            "Transfer to Platform"
+        } else if tx.is_incoming() {
             "Received"
         } else if tx.is_outgoing() {
             "Sent"
@@ -1136,7 +1149,7 @@ impl WalletsBalancesScreen {
         // epoch (1970-01-01), which reads as a data bug rather than "still
         // pending".
         if ts == 0 {
-            return "Pending…".to_string();
+            return "Date unavailable".to_string();
         }
         DateTime::<Utc>::from_timestamp(ts as i64, 0)
             .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
@@ -1579,21 +1592,8 @@ impl WalletsBalancesScreen {
                     action |= self.render_bottom_options(ui);
                 });
 
-                // Dash Core tab: transaction history + asset locks
+                // Asset locks belong to the Core funding account.
                 if cat == AccountCategory::Bip44 && idx == Some(0) {
-                    // Transaction History (collapsible)
-                    ui.add_space(10.0);
-                    let tx_header = egui::CollapsingHeader::new(
-                        RichText::new("Transaction History")
-                            .size(16.0)
-                            .color(DashColors::text_primary(dark_mode)),
-                    )
-                    .id_salt("transaction_history")
-                    .default_open(false);
-                    tx_header.show(ui, |ui| {
-                        self.render_transactions_section(ui);
-                    });
-
                     // Asset Locks (collapsible)
                     ui.add_space(10.0);
                     let locks_header = egui::CollapsingHeader::new(
@@ -1698,8 +1698,6 @@ impl WalletsBalancesScreen {
 
     fn render_transactions_section(&mut self, ui: &mut Ui) {
         ui.add_space(10.0);
-        // TODO: Synchronize transactions display with selected account type
-        // (main account -> Core transactions, platform account -> platform state transitions, etc.)
         ui.heading("Dash Core Transactions");
         let Some(wallet_arc) = self.selected_wallet.as_ref() else {
             ui.label("Select a wallet to view its transaction history.");
@@ -1777,11 +1775,16 @@ impl WalletsBalancesScreen {
         let dark_mode = ui.style().visuals.dark_mode;
         let show_fee = self.app_context.user_role().at_least(UserRole::Power);
         let mut order: Vec<usize> = relevant_indices.clone();
+        if let Some(assessment) = self.pending_transfers.assessment() {
+            let displayed: std::collections::BTreeSet<_> = assessment
+                .transfers
+                .iter()
+                .map(|transfer| transfer.out_point.txid)
+                .collect();
+            order.retain(|&index| !displayed.contains(&transactions[index].txid));
+        }
         order.sort_by(|&a, &b| {
-            transactions[b]
-                .timestamp
-                .cmp(&transactions[a].timestamp)
-                .then_with(|| transactions[b].txid.cmp(&transactions[a].txid))
+            crate::model::pending_transfers::compare_history(&transactions[a], &transactions[b])
         });
 
         let row_height = 26.0;
@@ -1789,7 +1792,7 @@ impl WalletsBalancesScreen {
             .id_salt("transactions_table")
             .striped(true)
             .column(Column::initial(150.0)) // Date
-            .column(Column::initial(80.0)) // Type
+            .column(Column::initial(150.0)) // Type
             .column(Column::initial(120.0)); // Amount
 
         if show_fee {
@@ -2108,7 +2111,7 @@ impl WalletsBalancesScreen {
             return AppAction::None;
         };
 
-        let (alias, _seed_hash, _wallet_is_main) = {
+        let (alias, seed_hash, _wallet_is_main) = {
             let wallet = wallet_arc.read_recover();
             (
                 self.app_context
@@ -2121,6 +2124,13 @@ impl WalletsBalancesScreen {
         };
         let mut action = AppAction::None;
         let dark_mode = ui.style().visuals.dark_mode;
+
+        if self
+            .pending_transfers
+            .select(self.app_context.network, seed_hash)
+        {
+            self.pending_transfer_error.clear();
+        }
 
         let detail_width = ui.available_width();
         ui.horizontal(|row| {
@@ -2180,6 +2190,8 @@ impl WalletsBalancesScreen {
 
                         // Action buttons span full width below the header
                         action |= self.render_action_buttons(ui, ctx);
+                        self.render_unfinished_summary(ui);
+                        self.render_transfer_history(ui);
 
                         // --- Accounts & Addresses (tabs, full-width below header) ---
                         ui.add_space(10.0);
@@ -2866,6 +2878,7 @@ impl ScreenLike for WalletsBalancesScreen {
                 self.import_single_key_dialog.open = true;
                 action = AppAction::None;
             } else if cmd == "RefreshHDWallet" {
+                self.pending_transfers.refresh();
                 if let Some(wallet_arc) = &self.selected_wallet {
                     let is_locked = wallet_arc.read().map(|w| !w.is_open()).unwrap_or(true);
                     if is_locked {
@@ -2902,6 +2915,15 @@ impl ScreenLike for WalletsBalancesScreen {
         action |= pending_refresh_action;
         action |= pending_switch_action;
         action |= shielded_tick_action;
+        if self.selected_wallet.as_ref().is_some_and(|wallet| {
+            self.app_context
+                .wallet_backend()
+                .is_ok_and(|backend| backend.has_snapshot(&wallet.read_recover().seed_hash()))
+        }) && crate::ui::can_append_concurrent_backend_tasks(&action)
+            && let Some(task) = self.pending_transfers.task()
+        {
+            action = crate::ui::append_concurrent_backend_tasks(action, vec![task]);
+        }
         action
     }
 
@@ -2941,7 +2963,21 @@ impl ScreenLike for WalletsBalancesScreen {
         }
     }
 
-    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
+        if let Some((seed_hash, request_id)) = context.platform_transfer_assessment()
+            && self
+                .pending_transfers
+                .matches_request(seed_hash, request_id)
+        {
+            self.pending_transfers.fail(seed_hash, request_id);
+            self.pending_transfer_error
+                .set_message(
+                    "Transfer status could not be checked. Try again.",
+                    MessageType::Warning,
+                )
+                .set_details(error)
+                .disable_auto_dismiss();
+        }
         if self.pending_rename_context.as_ref() == Some(context)
             && context.wallet_rename_task().is_some()
         {
@@ -2954,6 +2990,19 @@ impl ScreenLike for WalletsBalancesScreen {
         backend_task_success_result: crate::ui::BackendTaskSuccessResult,
     ) {
         match backend_task_success_result {
+            crate::ui::BackendTaskSuccessResult::PlatformTransfersAssessed {
+                network,
+                seed_hash,
+                request_id,
+                assessment,
+            } => {
+                if self
+                    .pending_transfers
+                    .accept(network, seed_hash, request_id, assessment)
+                {
+                    self.pending_transfer_error.clear();
+                }
+            }
             crate::ui::BackendTaskSuccessResult::RefreshedWallet { warning } => {
                 self.refreshing = false;
                 self.cached_tx_indices = None;
@@ -3137,6 +3186,7 @@ impl ScreenLike for WalletsBalancesScreen {
     }
 
     fn refresh_on_arrival(&mut self) {
+        self.pending_transfers.on_arrival();
         // Clear the spinner in case a refresh completed while this screen was not
         // visible (task results are dispatched to the visible screen, so ours would
         // have been silently discarded).
@@ -3210,7 +3260,7 @@ mod tests {
     #[test]
     fn format_transaction_timestamp_zero_renders_pending_placeholder() {
         let rendered = WalletsBalancesScreen::format_transaction_timestamp(0);
-        assert_eq!(rendered, "Pending…");
+        assert_eq!(rendered, "Date unavailable");
         assert!(!rendered.contains("1970"));
     }
 
@@ -3388,6 +3438,121 @@ mod tests {
         ctx.wallet_context()
             .insert_test_wallet(seed_hash, Arc::new(RwLock::new(wallet)));
         seed_hash
+    }
+
+    #[test]
+    fn pending_transfers_are_discoverable_in_both_themes_and_narrow_layouts() {
+        use crate::model::pending_transfers::{
+            PendingPlatformTransfer, TransferAssessment, TransferStage,
+        };
+        use dash_sdk::dpp::dashcore::{OutPoint, Txid, hashes::Hash};
+        use egui_kittest::{Harness, kittest::Queryable};
+
+        for (width, dark) in [(420.0, false), (900.0, true)] {
+            let (ctx, _tmp) = offline_ctx();
+            let seed_hash = seed_hd_wallet(&ctx, 43);
+            let mut screen = WalletsBalancesScreen::new(&ctx);
+            screen.pending_transfers.select(ctx.network, seed_hash);
+            let Some(BackendTask::WalletTask(WalletTask::AssessPlatformTransfers {
+                request_id,
+                ..
+            })) = screen.pending_transfers.task()
+            else {
+                panic!("assessment")
+            };
+            screen.display_task_result(
+                crate::ui::BackendTaskSuccessResult::PlatformTransfersAssessed {
+                    network: ctx.network,
+                    seed_hash,
+                    request_id,
+                    assessment: TransferAssessment {
+                        transfers: vec![PendingPlatformTransfer {
+                            out_point: OutPoint::new(Txid::from_byte_array([5; 32]), 0),
+                            funding_amount: 100_000_000,
+                            core_fee: None,
+                            block_time: None,
+                            stage: TransferStage::AwaitingConfirmation,
+                            conflicts: vec![],
+                        }],
+                        history_complete: true,
+                        checked_at: 1_700_000_000,
+                    },
+                },
+            );
+            let mut harness = Harness::builder()
+                .with_size(egui::vec2(width, 1000.0))
+                .build_ui_state(
+                    |ui, screen: &mut WalletsBalancesScreen| {
+                        screen.render_unfinished_summary(ui);
+                        screen.render_transfer_history(ui);
+                    },
+                    screen,
+                );
+            harness.ctx.set_visuals(if dark {
+                egui::Visuals::dark()
+            } else {
+                egui::Visuals::light()
+            });
+            harness.run();
+            assert!(harness.query_by_label("Unfinished transfers: 1").is_some());
+            assert!(harness.get_by_label("View transfers").rect().right() <= width);
+            harness.get_by_label("View transfers").focus();
+            harness.run();
+            harness.key_press(egui::Key::Enter);
+            harness.run();
+            assert!(harness.query_by_label("Awaiting confirmation").is_some());
+            assert!(harness.query_by_label("Check status").is_some());
+            assert!(harness.get_by_label("Check status").rect().right() <= width);
+            assert!(harness.query_by_label("Cancel transfer").is_none());
+            harness.get_by_label("View details").click();
+            harness.run();
+            assert!(
+                harness
+                    .query_by_label("Confirmation date: Date unavailable")
+                    .is_some()
+            );
+            assert!(harness.query_by_label("Cancellation is not available for this transfer. Check its status for updates.").is_some());
+            assert!(harness.query_by_label("Copy transaction ID").is_some());
+        }
+    }
+
+    #[test]
+    fn pending_transfers_errors_are_scoped_and_preserve_the_previous_assessment() {
+        use crate::model::pending_transfers::TransferAssessment;
+        let (ctx, _tmp) = offline_ctx();
+        let seed_hash = seed_hd_wallet(&ctx, 44);
+        let mut screen = WalletsBalancesScreen::new(&ctx);
+        screen.pending_transfers.select(ctx.network, seed_hash);
+        let Some(BackendTask::WalletTask(WalletTask::AssessPlatformTransfers {
+            request_id, ..
+        })) = screen.pending_transfers.task()
+        else {
+            panic!("assessment")
+        };
+        screen.pending_transfers.accept(
+            ctx.network,
+            seed_hash,
+            request_id,
+            TransferAssessment {
+                transfers: vec![],
+                history_complete: true,
+                checked_at: 123,
+            },
+        );
+        screen.pending_transfers.refresh();
+        let task = screen.pending_transfers.task().expect("refresh task");
+        let context = BackendTaskContext::for_dispatch(&task);
+        screen.display_backend_task_error(&context, &TaskError::WalletNotFound);
+        assert!(screen.pending_transfers.is_failed());
+        assert_eq!(
+            screen.pending_transfers.assessment().unwrap().checked_at,
+            123
+        );
+        screen.pending_transfers.select(ctx.network, [99; 32]);
+        screen.pending_transfers.task();
+        screen.display_backend_task_error(&context, &TaskError::WalletNotFound);
+        assert!(!screen.pending_transfers.is_failed());
+        assert!(screen.pending_transfers.is_loading());
     }
 
     /// FR-GLOBAL-NAV-2 rule 2 — the Wallets page is two-way bound with the nav

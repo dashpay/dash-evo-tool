@@ -78,9 +78,8 @@ pub struct IdentityInputToLoad {
     pub selected_wallet_seed_hash: Option<WalletSeedHash>,
     /// Optional load-time key encryption (FR-8). When `Some`, the loaded
     /// voting/owner/payout and identity keys are sealed Tier-2 under this
-    /// password at load time through the existing per-identity protect
-    /// envelope (Argon2id + XChaCha20-Poly1305) — no new crypto, no second
-    /// persistence path. When `None`, the keyless Tier-1 path is unchanged.
+    /// password before their first storage write, using the existing per-identity
+    /// envelope. When `None`, the keyless Tier-1 path is unchanged.
     pub encryption_password: Option<Secret>,
     /// How this load resolves against an already-stored identity of the same id.
     pub load_mode: IdentityLoadMode,
@@ -1078,7 +1077,7 @@ impl AppContext {
         // Update destination address balances in any wallets that contain them
         // (using proof-verified data from the SDK response)
         {
-            let wallets = self.wallets.read()?;
+            let wallets = self.wallet_context().wallets();
             for (seed_hash, wallet_arc) in wallets.iter() {
                 if let Err(e) =
                     self.update_wallet_platform_address_info_from_sdk(*seed_hash, &address_infos)

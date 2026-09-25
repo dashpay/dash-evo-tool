@@ -931,7 +931,7 @@ pub enum BackendTaskSuccessResult {
     ContractSavedAfterProofError,
 
     // Wallet operation results (replacing string messages)
-    WalletResyncRequested {
+    WalletResyncCompleted {
         seed_hash: crate::model::wallet::WalletSeedHash,
     },
     RefreshedWallet {

@@ -2359,19 +2359,49 @@ impl WalletBackend {
     }
 
     /// Request a Core filter rescan from genesis without deleting wallet records.
-    pub async fn request_full_resync(&self, seed_hash: WalletSeedHash) -> Result<(), TaskError> {
+    pub async fn request_full_resync(&self, seed_hash: WalletSeedHash) -> Result<u32, TaskError> {
         let wallet_id = self.inner.id_map.read()?.get(&seed_hash).copied();
         let wallet_id = wallet_id.ok_or_else(|| self.wallet_not_loaded(&seed_hash))?;
         let backend = self.clone();
-        let found = tokio::task::spawn_blocking(move || {
-            backend.inner.pwm.spv_rescan_filters_blocking(&wallet_id, 0)
+        let target = tokio::task::spawn_blocking(move || {
+            let target = backend
+                .inner
+                .pwm
+                .core_wallet_state_blocking(&wallet_id)?
+                .synced_height;
+            backend
+                .inner
+                .pwm
+                .spv_rescan_filters_blocking(&wallet_id, 0)
+                .then_some(target)
         })
         .await
         .map_err(|source| TaskError::WalletResyncWorker { source })?;
-        if !found {
-            return Err(TaskError::WalletStateInconsistent);
-        }
-        Ok(())
+        target.ok_or(TaskError::WalletStateInconsistent)
+    }
+
+    /// Completion requires this wallet's rewound checkpoint and the chain pipeline to catch up.
+    pub async fn full_resync_complete(
+        &self,
+        seed_hash: WalletSeedHash,
+        target: u32,
+    ) -> Result<bool, TaskError> {
+        let wallet = self.resolve_wallet(&seed_hash).await?;
+        let caught_up = {
+            let manager = wallet.wallet_manager().read().await;
+            let info = manager
+                .get_wallet_info(&wallet.wallet_id())
+                .ok_or(TaskError::WalletStateInconsistent)?;
+            info.core_wallet.metadata.synced_height >= target
+        };
+        Ok(caught_up
+            && self
+                .inner
+                .pwm
+                .spv()
+                .sync_progress()
+                .await
+                .is_some_and(|progress| progress.is_synced()))
     }
 
     /// Map a DET `WalletSeedHash` to the upstream wallet handle.
@@ -4660,10 +4690,17 @@ mod full_resync_tests {
                 .update_synced_height(100);
             wallets.push((hash, wallet));
         }
-        backend
+        let target = backend
             .request_full_resync(wallets[0].0)
             .await
             .expect("rescan");
+        assert_eq!(target, 100);
+        assert!(
+            !backend
+                .full_resync_complete(wallets[0].0, target)
+                .await
+                .expect("completion check")
+        );
         for (index, (hash, wallet)) in wallets.iter().enumerate() {
             assert_eq!(
                 backend

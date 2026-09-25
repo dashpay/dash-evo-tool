@@ -55,7 +55,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   remains unavailable until the wallet backend supports safe reconciliation.
 - Wallet maintenance actions are grouped under Advanced: Import key, Refresh,
   Full resync, which rescans the selected HD wallet’s Core history from genesis,
-  and Get test DASH on Testnet.
+  and Get test DASH on Testnet. Full resync uses the blocking initial-sync
+  progress window until the wallet scan completes.
 
 - A scheduled workflow renews expiring migration fixture archives without
   changing their contents and proposes updated manifest pointers in a PR.

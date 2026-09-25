@@ -2971,7 +2971,7 @@ impl ScreenLike for WalletsBalancesScreen {
                     self.pending_transfer_error.clear();
                 }
             }
-            crate::ui::BackendTaskSuccessResult::WalletResyncRequested { seed_hash } => {
+            crate::ui::BackendTaskSuccessResult::WalletResyncCompleted { seed_hash } => {
                 if !self
                     .selected_wallet
                     .as_ref()
@@ -2983,7 +2983,7 @@ impl ScreenLike for WalletsBalancesScreen {
                 self.pending_transfers.refresh();
                 MessageBanner::set_global(
                     self.app_context.egui_ctx(),
-                    "Full resync requested. Keep the app open and follow scanning progress in the connection status. If you restart the app before it finishes, request Full resync again.",
+                    "The wallet’s Dash Core history has been rescanned.",
                     MessageType::Info,
                 );
             }

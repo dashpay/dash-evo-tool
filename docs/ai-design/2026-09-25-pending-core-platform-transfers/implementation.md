@@ -67,7 +67,12 @@ manager call runs off the async executor. The backend rejects requests while
 Core is disconnected or already syncing, and an unknown wallet cannot trigger
 a scan of another wallet. Wallet records and keys are retained.
 
-Connection status displays the subsequent scan progress. The request rewinds an
+The same blocking progress overlay used for initial sync displays scan progress.
+It stays open until the selected wallet catches up and the Core sync pipeline
+finishes, even if the previous network status still says Synced when the request
+starts. Cancellation uses the existing two-step Stop syncing flow. Task errors
+and network switches clear the overlay; stale task results cannot clear a newer
+scan’s overlay. The request rewinds an
 in-memory checkpoint: closing the app before completion requires requesting the
 scan again. This is a Core rescan, not a rebuild of Platform/shielded state or a
 verified Platform delivery check. Historical conflict cleanup is not guaranteed.

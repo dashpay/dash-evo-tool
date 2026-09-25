@@ -5,6 +5,7 @@ use crate::config::{Config, NetworkConfig};
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
 use crate::model::wallet::single_key::SingleKeyWallet;
+use dash_sdk::dash_spv::sync::ProgressPercentage;
 use dash_sdk::dashcore_rpc;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dashcore_rpc::{Auth, Client};
@@ -175,10 +176,35 @@ impl AppContext {
                 {
                     return Err(TaskError::WalletResyncUnavailable);
                 }
-                self.wallet_backend()?
+                let backend = self.wallet_backend()?;
+                let chain_height = self
+                    .connection_status()
+                    .spv_sync_progress()
+                    .and_then(|progress| {
+                        progress
+                            .headers()
+                            .ok()
+                            .map(|headers| headers.current_height())
+                    })
+                    .unwrap_or_default();
+                let target = backend
                     .request_full_resync(seed_hash)
-                    .await?;
-                Ok(BackendTaskSuccessResult::WalletResyncRequested { seed_hash })
+                    .await?
+                    .max(chain_height);
+                loop {
+                    use crate::model::spv_status::SpvStatus;
+                    if !matches!(
+                        self.connection_status().spv_status(),
+                        SpvStatus::Running | SpvStatus::Syncing
+                    ) {
+                        return Err(TaskError::WalletResyncInterrupted);
+                    }
+                    if backend.full_resync_complete(seed_hash, target).await? {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                }
+                Ok(BackendTaskSuccessResult::WalletResyncCompleted { seed_hash })
             }
             CoreTask::RefreshWalletInfo(wallet, sync_platform) => {
                 // Core wallet state (balances/UTXOs/transactions) is kept

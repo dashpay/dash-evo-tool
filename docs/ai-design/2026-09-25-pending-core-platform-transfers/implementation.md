@@ -1,56 +1,47 @@
-# Unfinished Core → Platform transfers
+# Core → Platform funding history
 
 ## Delivered scope
 
-This change implements the visibility/status-only option of the transfer recovery
-plan. The wallet shows unfinished Platform-address funding beside its balance,
-with a link to wallet-level Transaction History in every user role. Pending Core
-transactions sort ahead of dated history. An unresolved funding operation appears
-once, with its Core transaction ID, funding amount, known fee, and confirmation
-date (or an explicit unknown value).
+Funding observations enrich rows inside the wallet-level **Dash Core
+Transactions** table. Each Core TXID appears once, including a tracked funding
+transaction missing from hydrated history. Unconfirmed transactions sort first;
+confirmed funding retains its chronological position. **Details** opens the
+recorded funding information and any observed competing input spend.
 
-Status checking reads the upstream tracked locks and DET's event-sourced history,
-which is hydrated from persistence at wallet load. A confirmed competing input
-spend is reported even when evicted from upstream's live transaction list. This
-is an observation, not a finality verdict or permission to release funds.
-Requests run through BackendTask, coalesce, retain previous data on failure, and
-reject responses for an obsolete wallet/network/request. Refreshing status never
-resumes or broadcasts a transaction.
+The balance summary counts transfers that need review. A `RecoveredFromChain`
+record represents historical funding with an unknown Platform outcome, not
+proof of an unfinished operation, and is excluded from that count. Recovered
+records remain in history. Core confirmation and Platform delivery are distinct.
 
-## Backend limits
+**Reload wallet records** reads tracked locks and hydrated local history. It
+neither queries Platform consumption nor broadcasts or resumes a transaction.
+The details explain that limitation. **Open Core explorer** provides an optional
+external check of Core confirmation only; the explorer is not an accounting
+or cancellation authority. Async requests remain scoped to wallet/network,
+coalesced, and timeout-bounded. Details close when wallet/network changes.
+
+## Cancellation and expiration remain unavailable
 
 The pinned platform revision is `9f7ed16935bd540e4c2a542688800d2953f9f67a`.
-Its `wallet/asset_lock/sync/recovery.rs` explicitly lacks a verified finalized
-ancestry predicate. `abandon_transaction` applies to a signed Core transaction
-chosen not to be sent, not an already-broadcast funding lock. There is no durable
-asset-lock cancellation/rebroadcast-control API. These limitations prevent safe
-cancellation and reconciliation in a DET-only change.
+Its `wallet/asset_lock/sync/recovery.rs` lacks a verified finalized-ancestry
+predicate. `abandon_transaction` releases a signed Core payment the caller
+chose not to send; it is not an API for cancelling an already-broadcast asset
+lock. The backend also lacks durable asset-lock cancellation/rebroadcast control.
 
-Tracked locks persist the funding transaction but not the requested Platform
-recipients, original transfer amount, fee strategy, or creation time. The UI
-therefore labels the funding amount accurately, does not invent recipient intent
-or unavailable totals, and treats confirmed-but-unconsumed/recovered locks as
-delivery unverified. A consumed lock is excluded from the unfinished group.
-No new ledger, reservations, or secret storage is introduced.
+Unconfirmed funding rows expose a disabled **Cancel transfer** action with the
+reason in the details. Confirmed funding cannot be reversed by deleting a local
+record. Neither age, absence from an explorer, nor a provisional input conflict
+is sufficient to release inputs or expire funding. No records or reservations
+are deleted by this UI.
 
-## Follow-up requirements
+Tracked locks also lack durable recipient intent and creation time. Safe
+cancellation, verified Platform consumption, and idempotent continuation require
+upstream support; they remain WAL-034 gaps rather than implemented actions.
 
-- Upstream read-only evidence assessment with verified chain membership/finality,
-  historical record lookup, atomic reconciliation, and durable retry suppression.
-- Durable operation intent recorded before dispatch on both funding paths,
-  including recipients, fee strategy, creation time, and an unambiguous TXID link.
-- Cancellation confirmation, crash recovery, and per-input release only after
-  those backend contracts are available. No timeout-based refunds.
-- Verified Platform consumption status and a reviewed, idempotent continuation
-  of the same funding operation. Existing advanced funding tools are unchanged;
-  this status view does not add a new retry/finish action.
-- Exact backend-attributed unavailable amounts and fee/delivery reconciliation.
+## Regression checks
 
-## Acceptance checks
-
-Use synthetic wallets and transactions only. Verify pending-first ordering,
-conflict observations from restored history, missing-history uncertainty,
-consumed/identity/shielded exclusions, late response rejection, and refresh
-coalescing. In the UI, verify discovery from the balance, one funding entry,
-unknown values, offline guidance, both themes, narrow layouts, and keyboard
-navigation. No live fund movement is required for this scope.
+Synthetic tests cover merged history without duplicate TXIDs, funding-only
+records, pending-first ordering, historical recovery excluded from review counts,
+restored-history conflicts, stale async results, and light/dark/narrow UI layouts.
+The UI regression fails on the card-based version because it has no Unconfirmed
+row in the Core table. No live fund movement is used for these tests.

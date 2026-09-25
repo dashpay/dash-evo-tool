@@ -186,10 +186,12 @@ As a user, I want to fund a Platform payment address directly from my wallet UTX
 
 - Creates asset lock automatically from wallet funds.
 - Supports fee deduction from output or wallet.
-- Unfinished funding remains discoverable beside the balance after restart.
-- Read-only status checks distinguish an unknown confirmation, an observed
-  payment conflict, and unverified Platform delivery without resending or
-  claiming that funds have been released.
+- Funding appears once inside Dash Core Transactions, with row details and
+  observed input conflicts. Unconfirmed funding remains discoverable after restart.
+- Historical funding recovered from the chain is not counted as an unfinished
+  transfer solely because its Platform outcome is unknown.
+- Reloading wallet records is explicitly local; Core explorer links do not claim
+  to verify Platform delivery. Cancellation remains unavailable pending WAL-034.
 
 ### WAL-018: Fund Platform address from asset lock [Implemented]
 **Persona:** Priya, Jordan

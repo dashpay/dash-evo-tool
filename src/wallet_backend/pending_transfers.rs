@@ -82,6 +82,8 @@ pub(super) fn assess_locks(
                 block_time: record.and_then(|tx| (tx.timestamp != 0).then_some(tx.timestamp)),
                 stage: if !conflicts.is_empty() {
                     TransferStage::ConflictObserved
+                } else if lock.status == AssetLockStatus::RecoveredFromChain {
+                    TransferStage::Recovered
                 } else if confirmed {
                     TransferStage::DeliveryUnknown
                 } else {
@@ -190,7 +192,8 @@ mod tests {
         let mut recovered = lock();
         recovered.status = AssetLockStatus::RecoveredFromChain;
         let assessed = assess_locks(&[recovered], &[]);
-        assert_eq!(assessed[0].stage, TransferStage::DeliveryUnknown);
+        assert_eq!(assessed[0].stage, TransferStage::Recovered);
+        assert!(!assessed[0].stage.needs_attention());
         assert_eq!(assessed[0].funding_amount, 100);
         assert_eq!(assessed[0].core_fee, None);
         assert_eq!(assessed[0].block_time, None);

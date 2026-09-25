@@ -235,12 +235,6 @@ pub struct WalletsBalancesScreen {
     shielded_tab_view: Option<ShieldedTabView>,
     /// Whether a wallet switch should trigger a Core refresh on the next frame
     pending_wallet_refresh_on_switch: bool,
-    /// Cached filtered transaction indices for the currently selected wallet.
-    /// Invalidated (set to None) on wallet switch or transaction updates.
-    cached_tx_indices: Option<Vec<usize>>,
-    /// Transaction count at the time `cached_tx_indices` was last built.
-    /// Used to detect list growth that doesn't make existing indices OOB.
-    cached_tx_source_len: Option<usize>,
     /// Last hydration notice applied to the transaction-history banner. This
     /// prevents a dismissed persistent notice from being recreated every frame.
     transaction_history_notice: Option<(WalletSeedHash, TransactionHistoryStatus)>,
@@ -248,6 +242,7 @@ pub struct WalletsBalancesScreen {
     pending_transfers: crate::ui::state::pending_transfers::PendingTransfersState,
     pending_transfer_error: MessageBanner,
     show_transfer_history: bool,
+    transfer_details: Option<dash_sdk::dpp::dashcore::Txid>,
     /// Persistent warning banner rendered on the single-key wallet detail
     /// view when the app is running on the SPV backend. Stored on the screen
     /// (rather than constructed fresh each frame) so the underlying tracing
@@ -372,12 +367,11 @@ impl WalletsBalancesScreen {
             selected_account_tab: AccountTab::default(),
             shielded_tab_view,
             pending_wallet_refresh_on_switch: false,
-            cached_tx_indices: None,
-            cached_tx_source_len: None,
             transaction_history_notice: None,
             transaction_history_banner: MessageBanner::new(),
             pending_transfers: Default::default(),
             pending_transfer_error: MessageBanner::new(),
+            transfer_details: None,
             show_transfer_history: false,
             sk_spv_warning_banner: crate::ui::components::MessageBanner::new(),
             import_single_key_dialog: ImportSingleKeyDialog::new(app_context.network),
@@ -427,8 +421,6 @@ impl WalletsBalancesScreen {
         self.selected_single_key_wallet = None;
         self.selected_account = None;
         self.selected_account_tab = AccountTab::default();
-        self.cached_tx_indices = None;
-        self.cached_tx_source_len = None;
 
         self.shielded_tab_view =
             seed_hash.map(|hash| ShieldedTabView::new(&self.app_context, hash));
@@ -557,6 +549,7 @@ impl WalletsBalancesScreen {
     pub(crate) fn reset_transient_state(&mut self) {
         self.pending_transfers = Default::default();
         self.pending_transfer_error.clear();
+        self.transfer_details = None;
         self.show_transfer_history = false;
         self.pending_platform_balance_refresh = None;
         self.pending_refresh_after_unlock = false;
@@ -568,8 +561,6 @@ impl WalletsBalancesScreen {
     pub(crate) fn invalidate_address_inputs(&mut self) {
         self.mine_dialog.address_input = None;
         self.mine_dialog.validated_address = None;
-        self.cached_tx_indices = None;
-        self.cached_tx_source_len = None;
     }
 
     fn render_wallet_selection(&mut self, ui: &mut Ui) -> AppAction {
@@ -1699,6 +1690,7 @@ impl WalletsBalancesScreen {
     fn render_transactions_section(&mut self, ui: &mut Ui) {
         ui.add_space(10.0);
         ui.heading("Dash Core Transactions");
+        self.render_history_refresh(ui);
         let Some(wallet_arc) = self.selected_wallet.as_ref() else {
             ui.label("Select a wallet to view its transaction history.");
             return;
@@ -1739,178 +1731,169 @@ impl WalletsBalancesScreen {
         }
         self.transaction_history_banner.show(ui);
 
-        if !backend_ready {
-            ui.label("Syncing transactions from the network…");
+        let assessment = self.pending_transfers.assessment().cloned();
+        let funding = assessment
+            .as_ref()
+            .map(|a| a.transfers.as_slice())
+            .unwrap_or_default();
+        let entries = crate::model::pending_transfers::core_history_entries(&transactions, funding);
+        if entries.is_empty() {
+            ui.label(if backend_ready {
+                "No transactions found for this wallet yet."
+            } else {
+                "Syncing transactions from the network…"
+            });
             return;
         }
-
-        if transactions.is_empty() {
-            ui.label("No transactions found for this wallet yet.");
-            return;
-        }
-
-        // Filter to transactions involving this wallet's addresses (`is_ours`
-        // is always true on the per-wallet snapshot, but the filter is kept
-        // for parity and future cross-wallet views). Invalidate the index
-        // cache when the source length changes or cached indices go stale.
-        let tx_len = transactions.len();
-        if self.cached_tx_source_len != Some(tx_len)
-            || self
-                .cached_tx_indices
-                .as_ref()
-                .is_some_and(|cached| cached.iter().any(|&i| i >= tx_len))
-        {
-            self.cached_tx_indices = None;
-            self.cached_tx_source_len = Some(tx_len);
-        }
-        let relevant_indices = self
-            .cached_tx_indices
-            .get_or_insert_with(|| (0..tx_len).filter(|&i| transactions[i].is_ours).collect());
-
-        if relevant_indices.is_empty() {
-            ui.label("No transactions found for this wallet yet.");
-            return;
-        }
-
-        let dark_mode = ui.style().visuals.dark_mode;
+        let dark_mode = ui.visuals().dark_mode;
         let show_fee = self.app_context.user_role().at_least(UserRole::Power);
-        let mut order: Vec<usize> = relevant_indices.clone();
-        if let Some(assessment) = self.pending_transfers.assessment() {
-            let displayed: std::collections::BTreeSet<_> = assessment
-                .transfers
-                .iter()
-                .map(|transfer| transfer.out_point.txid)
-                .collect();
-            order.retain(|&index| !displayed.contains(&transactions[index].txid));
-        }
-        order.sort_by(|&a, &b| {
-            crate::model::pending_transfers::compare_history(&transactions[a], &transactions[b])
-        });
 
-        let row_height = 26.0;
-        let mut builder = TableBuilder::new(ui)
-            .id_salt("transactions_table")
-            .striped(true)
-            .column(Column::initial(150.0)) // Date
-            .column(Column::initial(150.0)) // Type
-            .column(Column::initial(120.0)); // Amount
+        egui::ScrollArea::horizontal()
+            .id_salt("core_history_scroll")
+            .show(ui, |ui| {
+                ui.set_min_width(980.0);
+                let row_height = 56.0;
+                let mut builder = TableBuilder::new(ui)
+                    .id_salt("transactions_table")
+                    .striped(true)
+                    .column(Column::initial(120.0)) // Actions
+                    .column(Column::initial(150.0)) // Date
+                    .column(Column::initial(150.0)) // Type
+                    .column(Column::initial(120.0)); // Amount
 
-        if show_fee {
-            builder = builder.column(Column::initial(100.0)); // Fee
-        }
-
-        builder
-            .column(Column::initial(150.0)) // Status
-            .column(Column::remainder()) // TxID
-            .header(row_height, |mut header| {
-                header.col(|ui| {
-                    ui.label(
-                        RichText::new("Date")
-                            .strong()
-                            .color(DashColors::text_primary(dark_mode)),
-                    );
-                });
-                header.col(|ui| {
-                    ui.label(
-                        RichText::new("Type")
-                            .strong()
-                            .color(DashColors::text_primary(dark_mode)),
-                    );
-                });
-                header.col(|ui| {
-                    ui.label(
-                        RichText::new("Amount")
-                            .strong()
-                            .color(DashColors::text_primary(dark_mode)),
-                    );
-                });
                 if show_fee {
-                    header.col(|ui| {
-                        ui.label(
-                            RichText::new("Fee")
-                                .strong()
-                                .color(DashColors::text_primary(dark_mode)),
-                        );
-                    });
+                    builder = builder.column(Column::initial(100.0)); // Fee
                 }
-                header.col(|ui| {
-                    ui.label(
-                        RichText::new("Status")
-                            .strong()
-                            .color(DashColors::text_primary(dark_mode)),
-                    );
-                });
-                header.col(|ui| {
-                    ui.label(
-                        RichText::new("TxID")
-                            .strong()
-                            .color(DashColors::text_primary(dark_mode)),
-                    );
-                });
-            })
-            .body(|mut body| {
-                for idx in order {
-                    let tx = &transactions[idx];
-                    body.row(row_height, |mut row| {
-                        row.col(|ui| {
-                            ui.label(Self::format_transaction_timestamp(tx.timestamp));
+
+                builder
+                    .column(Column::initial(150.0)) // Status
+                    .column(Column::remainder()) // TxID
+                    .header(row_height, |mut header| {
+                        header.col(|ui| { ui.strong("Actions"); });
+                        header.col(|ui| {
+                            ui.label(
+                                RichText::new("Date")
+                                    .strong()
+                                    .color(DashColors::text_primary(dark_mode)),
+                            );
                         });
-                        row.col(|ui| {
-                            ui.label(Self::transaction_direction_label(tx));
+                        header.col(|ui| {
+                            ui.label(
+                                RichText::new("Type")
+                                    .strong()
+                                    .color(DashColors::text_primary(dark_mode)),
+                            );
                         });
-                        row.col(|ui| {
-                            let (amount_text, amount_color) =
-                                Self::transaction_amount_display(tx, dark_mode);
-                            ui.label(RichText::new(amount_text).color(amount_color).strong());
+                        header.col(|ui| {
+                            ui.label(
+                                RichText::new("Amount")
+                                    .strong()
+                                    .color(DashColors::text_primary(dark_mode)),
+                            );
                         });
                         if show_fee {
-                            row.col(|ui| {
-                                let fee_text = tx
-                                    .fee
-                                    .map(format_duffs_as_dash)
-                                    .unwrap_or_else(|| "-".to_string());
-                                ui.label(fee_text);
+                            header.col(|ui| {
+                                ui.label(
+                                    RichText::new("Fee")
+                                        .strong()
+                                        .color(DashColors::text_primary(dark_mode)),
+                                );
                             });
                         }
-                        row.col(|ui| {
-                            ui.label(Self::format_transaction_status(tx));
+                        header.col(|ui| {
+                            ui.label(
+                                RichText::new("Status")
+                                    .strong()
+                                    .color(DashColors::text_primary(dark_mode)),
+                            );
                         });
-                        row.col(|ui| {
-                            let full_txid = tx.txid.to_string();
-                            ui.horizontal(|ui| {
-                                let response = ui.label(RichText::new(&full_txid).monospace());
-                                response.info_tooltip(&full_txid);
-                                if ui
-                                    .small_button("Copy")
-                                    .clickable_tooltip("Copy transaction ID")
-                                    .clicked()
-                                {
-                                    let _ = copy_text_to_clipboard(&full_txid);
-                                }
-                                // Show "View" button for networks with a public explorer
-                                let explorer_base = match self.app_context.network {
-                                    dash_sdk::dpp::dashcore::Network::Mainnet => {
-                                        Some("https://insight.dash.org/insight/tx/")
+                        header.col(|ui| {
+                            ui.label(
+                                RichText::new("TxID")
+                                    .strong()
+                                    .color(DashColors::text_primary(dark_mode)),
+                            );
+                        });
+                    })
+                    .body(|mut body| {
+                        for entry in &entries {
+                            let tx = entry.transaction;
+                            body.row(row_height, |mut row| {
+                                row.col(|ui| {
+                                    if !entry.funding.is_empty() && ui.small_button("Details").clicked() {
+                                        self.transfer_details = Some(entry.txid);
                                     }
-                                    dash_sdk::dpp::dashcore::Network::Testnet => Some(
-                                        "https://insight.testnet.networks.dash.org/insight/tx/",
-                                    ),
-                                    _ => None,
-                                };
-                                if let Some(base_url) = explorer_base
-                                    && ui
-                                        .small_button("View")
-                                        .clickable_tooltip("View on block explorer")
-                                        .clicked()
-                                {
-                                    ui.ctx().open_url(egui::OpenUrl::new_tab(format!(
-                                        "{base_url}{full_txid}"
-                                    )));
+                                    if !entry.funding.is_empty() && entry.unconfirmed() {
+                                        ui.add_enabled_ui(false, |ui| {
+                                            ComponentStyles::add_secondary_button(ui, "Cancel transfer", dark_mode)
+                                        }).response.on_hover_text("The wallet backend cannot safely cancel this funding transaction. Open Details for the recorded evidence.");
+                                    }
+                                });
+                                row.col(|ui| {
+                                    ui.label(Self::format_transaction_timestamp(entry.timestamp()));
+                                });
+                                row.col(|ui| {
+                                    ui.label(tx.map(Self::transaction_direction_label).unwrap_or("Transfer to Platform"));
+                                });
+                                row.col(|ui| {
+                                    let (amount_text, amount_color) = tx.map(|tx| Self::transaction_amount_display(tx, dark_mode)).unwrap_or_else(|| {
+                                        (entry.funding.first().map(|f| format!("{amount} (funding)", amount = format_duffs_as_dash(f.funding_amount))).unwrap_or_else(|| "Not recorded".to_string()), DashColors::text_primary(dark_mode))
+                                    });
+                                    ui.label(RichText::new(amount_text).color(amount_color).strong());
+                                });
+                                if show_fee {
+                                    row.col(|ui| {
+                                        let fee_text = tx
+                                            .and_then(|tx| tx.fee)
+                                            .map(format_duffs_as_dash)
+                                            .unwrap_or_else(|| "-".to_string());
+                                        ui.label(fee_text);
+                                    });
                                 }
+                                row.col(|ui| {
+                                    let status = tx.map(Self::format_transaction_status).unwrap_or_else(|| if entry.unconfirmed() { "Unconfirmed".to_string() } else { "Confirmed (Core)".to_string() });
+                                    ui.label(status);
+                                    if entry.funding.iter().any(|f| f.stage == crate::model::pending_transfers::TransferStage::ConflictObserved) {
+                                        ui.label(egui::RichText::new("Input conflict").color(DashColors::WARNING));
+                                    }
+                                });
+                                row.col(|ui| {
+                                    let full_txid = entry.txid.to_string();
+                                    ui.horizontal(|ui| {
+                                        let response = ui.label(RichText::new(format!("{start}…{end}", start = &full_txid[..8], end = &full_txid[full_txid.len()-8..])).monospace());
+                                        response.info_tooltip(&full_txid);
+                                        if ui
+                                            .small_button("Copy")
+                                            .clickable_tooltip("Copy transaction ID")
+                                            .clicked()
+                                        {
+                                            let _ = copy_text_to_clipboard(&full_txid);
+                                        }
+                                        // Show "View" button for networks with a public explorer
+                                        let explorer_base = match self.app_context.network {
+                                            dash_sdk::dpp::dashcore::Network::Mainnet => {
+                                                Some("https://insight.dash.org/insight/tx/")
+                                            }
+                                            dash_sdk::dpp::dashcore::Network::Testnet => Some(
+                                                "https://insight.testnet.networks.dash.org/insight/tx/",
+                                            ),
+                                            _ => None,
+                                        };
+                                        if let Some(base_url) = explorer_base
+                                            && ui
+                                                .small_button("View")
+                                                .clickable_tooltip("View on block explorer")
+                                                .clicked()
+                                        {
+                                            ui.ctx().open_url(egui::OpenUrl::new_tab(format!(
+                                                "{base_url}{full_txid}"
+                                            )));
+                                        }
+                                    });
+                                });
                             });
-                        });
+                        }
                     });
-                }
             });
     }
 
@@ -2130,6 +2113,7 @@ impl WalletsBalancesScreen {
             .select(self.app_context.network, seed_hash)
         {
             self.pending_transfer_error.clear();
+            self.transfer_details = None;
         }
 
         let detail_width = ui.available_width();
@@ -3005,8 +2989,6 @@ impl ScreenLike for WalletsBalancesScreen {
             }
             crate::ui::BackendTaskSuccessResult::RefreshedWallet { warning } => {
                 self.refreshing = false;
-                self.cached_tx_indices = None;
-                self.cached_tx_source_len = None;
                 if let Some(err) = warning {
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),
@@ -3448,7 +3430,11 @@ mod tests {
         use dash_sdk::dpp::dashcore::{OutPoint, Txid, hashes::Hash};
         use egui_kittest::{Harness, kittest::Queryable};
 
-        for (width, dark) in [(420.0, false), (900.0, true)] {
+        for (width, dark, stage) in [
+            (420.0, false, TransferStage::AwaitingConfirmation),
+            (900.0, true, TransferStage::AwaitingConfirmation),
+            (900.0, false, TransferStage::Recovered),
+        ] {
             let (ctx, _tmp) = offline_ctx();
             let seed_hash = seed_hd_wallet(&ctx, 43);
             let mut screen = WalletsBalancesScreen::new(&ctx);
@@ -3471,7 +3457,7 @@ mod tests {
                             funding_amount: 100_000_000,
                             core_fee: None,
                             block_time: None,
-                            stage: TransferStage::AwaitingConfirmation,
+                            stage,
                             conflicts: vec![],
                         }],
                         history_complete: true,
@@ -3479,6 +3465,7 @@ mod tests {
                     },
                 },
             );
+            screen.show_transfer_history = stage == TransferStage::Recovered;
             let mut harness = Harness::builder()
                 .with_size(egui::vec2(width, 1000.0))
                 .build_ui_state(
@@ -3494,24 +3481,47 @@ mod tests {
                 egui::Visuals::light()
             });
             harness.run();
-            assert!(harness.query_by_label("Unfinished transfers: 1").is_some());
-            assert!(harness.get_by_label("View transfers").rect().right() <= width);
-            harness.get_by_label("View transfers").focus();
-            harness.run();
-            harness.key_press(egui::Key::Enter);
-            harness.run();
-            assert!(harness.query_by_label("Awaiting confirmation").is_some());
-            assert!(harness.query_by_label("Check status").is_some());
-            assert!(harness.get_by_label("Check status").rect().right() <= width);
-            assert!(harness.query_by_label("Cancel transfer").is_none());
-            harness.get_by_label("View details").click();
+            if stage == TransferStage::Recovered {
+                assert!(harness.query_by_label("Transfers to review: 1").is_none());
+                assert!(harness.query_by_label("Confirmed (Core)").is_some());
+            } else {
+                assert!(harness.query_by_label("Transfers to review: 1").is_some());
+                assert!(harness.get_by_label("View transfers").rect().right() <= width);
+                harness.get_by_label("View transfers").focus();
+                harness.run();
+                harness.key_press(egui::Key::Enter);
+                harness.run();
+                if width > 500.0 {
+                    assert!(harness.query_by_label("Unconfirmed").is_some());
+                }
+            }
+            assert!(
+                harness.get_by_label("Details").rect().top()
+                    > harness
+                        .get_by_label("Dash Core Transactions")
+                        .rect()
+                        .bottom()
+            );
+            assert!(harness.query_by_label("Unfinished transfers").is_none());
+            assert!(harness.query_by_label("Reload wallet records").is_some());
+            assert!(harness.get_by_label("Reload wallet records").rect().right() <= width);
+            assert_eq!(
+                harness.query_by_label("Cancel transfer").is_some(),
+                stage != TransferStage::Recovered
+            );
+            harness.get_by_label("Details").click();
             harness.run();
             assert!(
                 harness
                     .query_by_label("Confirmation date: Date unavailable")
                     .is_some()
             );
-            assert!(harness.query_by_label("Cancellation is not available for this transfer. Check its status for updates.").is_some());
+            if stage == TransferStage::Recovered {
+                assert!(harness.query_by_label("This historical funding record was recovered from the blockchain. Its Platform outcome is unknown; this does not mean a transfer is still pending.").is_some());
+            } else {
+                assert!(harness.query_by_label("Cancellation is unavailable: the wallet backend cannot safely stop this funding transaction and release its inputs.").is_some());
+            }
+            assert!(harness.query_by_label("Check status").is_none());
             assert!(harness.query_by_label("Copy transaction ID").is_some());
         }
     }

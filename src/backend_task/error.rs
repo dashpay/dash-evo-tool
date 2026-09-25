@@ -2220,9 +2220,10 @@ pub enum TaskError {
     // ──────────────────────────────────────────────────────────────────────────
     // Wallet creation / import errors
     // ──────────────────────────────────────────────────────────────────────────
-    /// The wallet has already been imported for this network.
-    #[error("This wallet has already been imported for this network.")]
-    WalletAlreadyImported,
+    /// The wallet has already been imported for this network. `alias` is the
+    /// existing wallet's local name, `None` when it was never named.
+    #[error("{}", wallet_already_imported_message(.alias.as_deref()))]
+    WalletAlreadyImported { alias: Option<String> },
 
     /// A new wallet password is shorter than the persistent secret store's
     /// minimum and therefore could not be migrated to Tier-2 protection.
@@ -3561,6 +3562,17 @@ fn sdk_error_is_dapi_reachability_failure(error: &SdkError) -> bool {
         | SdkError::DapiClientError(DapiClientError::NoAvailableAddressesToRetry(_))
         | SdkError::NoAvailableAddressesToRetry(_) => true,
         _ => false,
+    }
+}
+
+/// User-facing text for [`TaskError::WalletAlreadyImported`]: names the existing
+/// wallet so the user knows which one to open.
+fn wallet_already_imported_message(alias: Option<&str>) -> String {
+    match alias {
+        Some(alias) => format!(
+            "This wallet has already been imported for this network as \"{alias}\". Open it from the Wallets screen, or enter a different recovery phrase."
+        ),
+        None => "This wallet has already been imported for this network. Open it from the Wallets screen, or enter a different recovery phrase.".to_owned(),
     }
 }
 

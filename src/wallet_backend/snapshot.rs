@@ -37,7 +37,7 @@ use std::sync::Mutex;
 use arc_swap::ArcSwap;
 use dash_sdk::dpp::dashcore::blockdata::transaction::special_transaction::TransactionPayload;
 use dash_sdk::dpp::dashcore::blockdata::transaction::special_transaction::asset_lock::AssetLockPayload;
-use dash_sdk::dpp::dashcore::{Address, OutPoint, ScriptBuf, Transaction, TxOut, Txid};
+use dash_sdk::dpp::dashcore::{Address, BlockHash, OutPoint, ScriptBuf, Transaction, TxOut, Txid};
 #[cfg(test)]
 use dash_sdk::dpp::key_wallet::Utxo;
 use dash_sdk::dpp::key_wallet::account::Account;
@@ -586,6 +586,7 @@ pub(super) struct SnapshotStore {
     /// `Txid`. A `BTreeMap` per wallet so re-seen records (mempool → block →
     /// chainlock) upsert in place and iteration is deterministic.
     tx_log: Mutex<HashMap<WalletId, BTreeMap<Txid, WalletTransaction>>>,
+    history_resets: Mutex<HashMap<WalletId, BTreeMap<Txid, WalletTransaction>>>,
     transaction_history_status: Mutex<HashMap<WalletId, TransactionHistoryStatus>>,
     /// Per-wallet registration: upstream `WalletId` → (DET `WalletSeedHash`,
     /// cheap shared `PlatformWallet` handle). The handle gives lock-free
@@ -618,6 +619,7 @@ impl SnapshotStore {
             snapshots: ArcSwap::from_pointee(HashMap::new()),
             generations: Mutex::new(HashMap::new()),
             tx_log: Mutex::new(HashMap::new()),
+            history_resets: Mutex::new(HashMap::new()),
             transaction_history_status: Mutex::new(HashMap::new()),
             registered: Mutex::new(HashMap::new()),
         }
@@ -655,6 +657,9 @@ impl SnapshotStore {
         }
         if let Ok(mut log) = self.tx_log.lock() {
             log.remove(wallet_id);
+        }
+        if let Ok(mut resets) = self.history_resets.lock() {
+            resets.remove(wallet_id);
         }
         if let Ok(mut statuses) = self.transaction_history_status.lock() {
             statuses.remove(wallet_id);
@@ -702,6 +707,92 @@ impl SnapshotStore {
         self.snapshots.load().contains_key(seed_hash)
     }
 
+    /// Clear display history durably without changing upstream spend accounting.
+    pub(super) fn reset_transaction_history(
+        &self,
+        wallet_id: &WalletId,
+        persist: impl FnOnce(&[(Txid, Option<BlockHash>)]) -> Result<(), TaskError>,
+    ) -> Result<(), TaskError> {
+        let mut resets = self.history_resets.lock()?;
+        let mut log = self.tx_log.lock()?;
+        let mut archived = resets.get(wallet_id).cloned().unwrap_or_default();
+        archived.extend(log.get(wallet_id).cloned().unwrap_or_default());
+        let marker: Vec<_> = archived
+            .values()
+            .map(|tx| (tx.txid, tx.block_hash))
+            .collect();
+        persist(&marker)?;
+        resets.insert(*wallet_id, archived);
+        log.remove(wallet_id);
+        Ok(())
+    }
+
+    pub(super) fn restore_history_reset(
+        &self,
+        wallet_id: &WalletId,
+        marker: &[(Txid, Option<BlockHash>)],
+    ) -> Result<(), TaskError> {
+        let mut resets = self.history_resets.lock()?;
+        let mut log = self.tx_log.lock()?;
+        let archived = resets.entry(*wallet_id).or_default();
+        if let Some(records) = log.get_mut(wallet_id) {
+            for (txid, block_hash) in marker {
+                if records
+                    .get(txid)
+                    .is_some_and(|tx| tx.block_hash == *block_hash)
+                {
+                    archived.insert(*txid, records.remove(txid).expect("record checked above"));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn persist_history_reset(
+        &self,
+        wallet_id: &WalletId,
+        persist: impl FnOnce(&[(Txid, Option<BlockHash>)]) -> Result<(), TaskError>,
+    ) -> Result<(), TaskError> {
+        let resets = self.history_resets.lock()?;
+        let marker: Vec<_> = resets
+            .get(wallet_id)
+            .into_iter()
+            .flat_map(|records| records.values())
+            .map(|tx| (tx.txid, tx.block_hash))
+            .collect();
+        persist(&marker)
+    }
+
+    /// Replay can skip finalized record events; the block event still proves inclusion.
+    pub(super) fn restore_scanned_history(
+        &self,
+        wallet_id: &WalletId,
+        txids: &[Txid],
+        height: u32,
+        block_hash: BlockHash,
+    ) {
+        let Ok(mut resets) = self.history_resets.lock() else {
+            return;
+        };
+        let Some(archived) = resets.get_mut(wallet_id) else {
+            return;
+        };
+        let Ok(mut log) = self.tx_log.lock() else {
+            return;
+        };
+        let records = log.entry(*wallet_id).or_default();
+        for txid in txids {
+            if let Some(mut tx) = archived.remove(txid) {
+                if tx.block_hash != Some(block_hash) || !tx.is_confirmed() {
+                    tx.status = TransactionStatus::Confirmed;
+                }
+                tx.height = Some(height);
+                tx.block_hash = Some(block_hash);
+                records.entry(*txid).or_insert(tx);
+            }
+        }
+    }
+
     /// Merge freshly-seen transaction records into the per-wallet log.
     /// Upsert-keyed by `Txid` so a record re-seen at a higher confirmation
     /// tier replaces the lower one.
@@ -709,11 +800,25 @@ impl SnapshotStore {
     where
         I: IntoIterator<Item = &'a TransactionRecord>,
     {
+        let Ok(mut resets) = self.history_resets.lock() else {
+            return;
+        };
         let Ok(mut log) = self.tx_log.lock() else {
             return;
         };
         let per_wallet = log.entry(*wallet_id).or_default();
         for record in records {
+            if let Some(archived) = resets.get_mut(wallet_id)
+                && archived.contains_key(&record.txid)
+            {
+                if !matches!(
+                    record.context,
+                    TransactionContext::InBlock(_) | TransactionContext::InChainLockedBlock(_)
+                ) {
+                    continue;
+                }
+                archived.remove(&record.txid);
+            }
             per_wallet.insert(record.txid, map_transaction_record(record));
         }
     }
@@ -1081,6 +1186,67 @@ mod tests {
                 address_paths: BTreeMap::new(),
             },
         );
+    }
+
+    #[test]
+    fn full_resync_history_clears_selected_wallet_and_replays_confirmed_records() {
+        let store = SnapshotStore::new();
+        let pending = record(1, -100);
+        let confirmed = record(2, 200);
+        store.accumulate_transactions(&wid(1), [&pending, &confirmed]);
+        store.accumulate_transactions(&wid(2), [&pending]);
+        let mut marker = Vec::new();
+        store
+            .reset_transaction_history(&wid(1), |entries| {
+                marker = entries.to_vec();
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(store.transaction_count(&wid(1)), 0);
+        assert_eq!(store.transaction_count(&wid(2)), 1);
+        store.accumulate_transactions(&wid(1), [&pending]);
+        assert_eq!(
+            store.transaction_count(&wid(1)),
+            0,
+            "old mempool events cannot undo reset"
+        );
+        let hash = BlockHash::from_byte_array([7; 32]);
+        store.restore_scanned_history(&wid(1), &[confirmed.txid], 100, hash);
+        assert_eq!(store.transaction_count(&wid(1)), 1);
+        assert_eq!(
+            store.transaction_status(&wid(1), &confirmed.txid),
+            Some(TransactionStatus::Confirmed)
+        );
+        store
+            .persist_history_reset(&wid(1), |entries| {
+                assert_eq!(entries.len(), 1);
+                assert_eq!(entries[0].0, pending.txid);
+                Ok(())
+            })
+            .unwrap();
+        let restarted = SnapshotStore::new();
+        restarted.hydrate_transactions(&wid(1), [&pending, &confirmed]);
+        restarted.restore_history_reset(&wid(1), &marker).unwrap();
+        assert_eq!(
+            restarted.transaction_count(&wid(1)),
+            0,
+            "interrupted rescan must not resurrect history"
+        );
+        restarted.restore_scanned_history(&wid(1), &[confirmed.txid], 100, hash);
+        assert_eq!(restarted.transaction_count(&wid(1)), 1);
+    }
+
+    #[test]
+    fn full_resync_history_failed_persistence_keeps_visible_history() {
+        let store = SnapshotStore::new();
+        let tx = record(1, 100);
+        store.accumulate_transactions(&wid(1), [&tx]);
+        assert!(
+            store
+                .reset_transaction_history(&wid(1), |_| Err(TaskError::WalletStateInconsistent))
+                .is_err()
+        );
+        assert_eq!(store.transaction_count(&wid(1)), 1);
     }
 
     #[test]

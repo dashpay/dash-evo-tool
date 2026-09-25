@@ -1242,7 +1242,7 @@ impl WalletsBalancesScreen {
                     })
                     .unwrap_or(DesiredAppAction::None),
                 enabled: hd.is_some() && synced && !self.refreshing,
-                tooltip: "Scan the selected HD wallet's Core history from the beginning. Wait for the current sync and refresh to finish. Keep the app open until scanning completes; this does not verify Platform delivery.",
+                tooltip: "Clear and rebuild the selected wallet's Core transaction history. Keep the app open until scanning completes. This does not cancel payments, release reserved funds, or verify Platform delivery.",
             },
         ];
         if self.app_context.network == dash_sdk::dpp::dashcore::Network::Testnet {

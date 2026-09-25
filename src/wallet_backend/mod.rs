@@ -1467,10 +1467,21 @@ impl WalletBackend {
             }
         }
 
+        let marker: Vec<(
+            dash_sdk::dpp::dashcore::Txid,
+            Option<dash_sdk::dpp::dashcore::BlockHash>,
+        )> = self
+            .kv()
+            .get(DetScope::Wallet(wallet_id), "det:core_history_reset:v1")
+            .map_err(|source| TaskError::WalletHistoryReset { source })?
+            .unwrap_or_default();
         let hydrated_rows = records.len();
         self.inner
             .snapshots
             .hydrate_transactions(wallet_id, records.iter());
+        self.inner
+            .snapshots
+            .restore_history_reset(wallet_id, &marker)?;
         if skipped_rows > 0 {
             tracing::warn!(
                 wallet_id = %hex::encode(wallet_id),
@@ -2358,26 +2369,60 @@ impl WalletBackend {
         }
     }
 
-    /// Request a Core filter rescan from genesis without deleting wallet records.
+    /// Clear display history and replay Core from genesis, retaining spend accounting.
     pub async fn request_full_resync(&self, seed_hash: WalletSeedHash) -> Result<u32, TaskError> {
         let wallet_id = self.inner.id_map.read()?.get(&seed_hash).copied();
         let wallet_id = wallet_id.ok_or_else(|| self.wallet_not_loaded(&seed_hash))?;
         let backend = self.clone();
-        let target = tokio::task::spawn_blocking(move || {
+        tokio::task::spawn_blocking(move || {
             let target = backend
                 .inner
                 .pwm
-                .core_wallet_state_blocking(&wallet_id)?
+                .core_wallet_state_blocking(&wallet_id)
+                .ok_or(TaskError::WalletStateInconsistent)?
                 .synced_height;
+            let kv = backend.kv();
             backend
                 .inner
-                .pwm
-                .spv_rescan_filters_blocking(&wallet_id, 0)
-                .then_some(target)
+                .snapshots
+                .reset_transaction_history(&wallet_id, |marker| {
+                    kv.put(
+                        DetScope::Wallet(&wallet_id),
+                        "det:core_history_reset:v1",
+                        &marker,
+                    )
+                    .map_err(|source| TaskError::WalletHistoryReset { source })
+                })?;
+            backend.inner.snapshots.recompute(&wallet_id);
+            if !backend.inner.pwm.spv_rescan_filters_blocking(&wallet_id, 0) {
+                return Err(TaskError::WalletStateInconsistent);
+            }
+            Ok(target)
         })
         .await
-        .map_err(|source| TaskError::WalletResyncWorker { source })?;
-        target.ok_or(TaskError::WalletStateInconsistent)
+        .map_err(|source| TaskError::WalletResyncWorker { source })?
+    }
+
+    pub async fn finish_history_resync(&self, seed_hash: WalletSeedHash) -> Result<(), TaskError> {
+        let wallet = self.resolve_wallet(&seed_hash).await?;
+        let wallet_id = wallet.wallet_id();
+        let backend = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let kv = backend.kv();
+            backend
+                .inner
+                .snapshots
+                .persist_history_reset(&wallet_id, |marker| {
+                    kv.put(
+                        DetScope::Wallet(&wallet_id),
+                        "det:core_history_reset:v1",
+                        &marker,
+                    )
+                    .map_err(|source| TaskError::WalletHistoryReset { source })
+                })
+        })
+        .await
+        .map_err(|source| TaskError::WalletResyncWorker { source })?
     }
 
     /// Completion requires this wallet's rewound checkpoint and the chain pipeline to catch up.
@@ -3229,7 +3274,6 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::WalletAlreadyExists(_)
         | P::IdentityAlreadyExists(_)
         | P::IdentityNotFound(_)
-        | P::IdentityBalanceUnavailable(_)
         | P::NoPrimaryIdentity
         | P::InvalidIdentityData(_)
         | P::ContactRequestNotFound(_)
@@ -3620,7 +3664,6 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         // know", so it is not `NotManaged` (which asserts the identity is
         // absent and must be reloaded); upstream's contract is to retry.
         | P::IdentityDiscoveryIncomplete { .. }
-        | P::IdentityBalanceUnavailable(_)
         // Background sync failed to quiesce — a shutdown fault, unrelated to
         // whether this op reached Platform.
         | P::ShutdownIncomplete(_) => IdentityOpErrorKind::Other,
@@ -4692,11 +4735,91 @@ mod full_resync_tests {
                 .update_synced_height(100);
             wallets.push((hash, wallet));
         }
+        use dash_sdk::dpp::dashcore::{Transaction, hashes::Hash};
+        use dash_sdk::dpp::key_wallet::{
+            account::{AccountType, StandardAccountType},
+            managed_account::transaction_record::{TransactionDirection, TransactionRecord},
+            transaction_checking::{TransactionContext, transaction_router::TransactionType},
+        };
+        let pending = TransactionRecord::new(
+            Transaction {
+                version: 1,
+                lock_time: 0,
+                input: vec![],
+                output: vec![],
+                special_transaction_payload: None,
+            },
+            AccountType::Standard {
+                index: 0,
+                standard_account_type: StandardAccountType::BIP44Account,
+            },
+            TransactionContext::Mempool,
+            TransactionType::Standard,
+            TransactionDirection::Outgoing,
+            vec![],
+            vec![],
+            -100,
+        );
+        let wallet_id = wallets[0].1.wallet_id();
+        let blob = bincode::serde::encode_to_vec(&pending, bincode::config::standard()).unwrap();
+        let connection = rusqlite::Connection::open(&backend.inner.wallet_database_path).unwrap();
+        connection.execute("INSERT INTO core_transactions (wallet_id, txid, finalized, record_blob) VALUES (?1, ?2, 0, ?3)",
+            rusqlite::params![wallet_id.as_slice(), pending.txid.to_byte_array().as_slice(), &blob]).unwrap();
+        backend.hydrate_persisted_transactions(&wallet_id).unwrap();
+        assert_eq!(backend.inner.snapshots.transaction_count(&wallet_id), 1);
         let target = backend
             .request_full_resync(wallets[0].0)
             .await
             .expect("rescan");
         assert_eq!(target, 100);
+        let marker: Option<
+            Vec<(
+                dash_sdk::dpp::dashcore::Txid,
+                Option<dash_sdk::dpp::dashcore::BlockHash>,
+            )>,
+        > = backend
+            .kv()
+            .get(
+                DetScope::Wallet(&wallets[0].1.wallet_id()),
+                "det:core_history_reset:v1",
+            )
+            .unwrap();
+        assert_eq!(marker, Some(vec![(pending.txid, None)]));
+        assert_eq!(backend.inner.snapshots.transaction_count(&wallet_id), 0);
+        backend.finish_history_resync(wallets[0].0).await.unwrap();
+        backend.hydrate_persisted_transactions(&wallet_id).unwrap();
+        assert_eq!(
+            backend.inner.snapshots.transaction_count(&wallet_id),
+            0,
+            "reload must not resurrect cleared history"
+        );
+        let retained: Vec<u8> = connection
+            .query_row(
+                "SELECT record_blob FROM core_transactions WHERE wallet_id=?1 AND txid=?2",
+                rusqlite::params![
+                    wallet_id.as_slice(),
+                    pending.txid.to_byte_array().as_slice()
+                ],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            retained, blob,
+            "upstream reconciliation data must remain unchanged"
+        );
+        let other: Option<
+            Vec<(
+                dash_sdk::dpp::dashcore::Txid,
+                Option<dash_sdk::dpp::dashcore::BlockHash>,
+            )>,
+        > = backend
+            .kv()
+            .get(
+                DetScope::Wallet(&wallets[1].1.wallet_id()),
+                "det:core_history_reset:v1",
+            )
+            .unwrap();
+        assert_eq!(other, None);
         assert!(
             !backend
                 .full_resync_complete(wallets[0].0, target)

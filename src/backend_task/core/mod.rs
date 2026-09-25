@@ -204,6 +204,7 @@ impl AppContext {
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
                 }
+                backend.finish_history_resync(seed_hash).await?;
                 Ok(BackendTaskSuccessResult::WalletResyncCompleted { seed_hash })
             }
             CoreTask::RefreshWalletInfo(wallet, sync_platform) => {

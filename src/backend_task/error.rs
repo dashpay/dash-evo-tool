@@ -1150,6 +1150,12 @@ pub enum TaskError {
     #[error("The wallet scan stopped before finishing. Reconnect and run Full resync again.")]
     WalletResyncInterrupted,
 
+    #[error("The wallet history could not be reset. Retry Full resync.")]
+    WalletHistoryReset {
+        #[source]
+        source: crate::wallet_backend::KvAdapterError,
+    },
+
     #[error("The wallet scan could not be requested. Retry Full resync.")]
     WalletResyncWorker {
         #[source]

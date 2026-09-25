@@ -509,8 +509,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- Pin Platform dependencies to PR #4777 (`f2c162ab`) to preserve Core wallet
-  snapshots across restarts.
+- Full resync clears the selected wallet’s displayed Core history across restarts
+  and rebuilds it from observed blocks, retaining spend accounting and reservations.
 
 - Wallet registries and live names now share one WalletContext across the UI,
   MCP tools and password prompts. Metadata writes are serialized while wallet

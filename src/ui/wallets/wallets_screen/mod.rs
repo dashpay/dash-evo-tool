@@ -29,7 +29,6 @@ use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::{add_top_panel_with_global_nav_capturing, wallet_only_spec};
 use crate::ui::components::wallet_unlock_popup::{WalletUnlockPopup, WalletUnlockResult};
-use crate::ui::helpers::copy_text_to_clipboard;
 use crate::ui::helpers::{ModalOpeningGuard, clicked_outside_window_after_open};
 use crate::ui::state::TrackedAssetLockCache;
 use crate::ui::state::account_summary::{
@@ -1690,7 +1689,7 @@ impl WalletsBalancesScreen {
     fn render_transactions_section(&mut self, ui: &mut Ui) {
         ui.add_space(10.0);
         ui.heading("Dash Core Transactions");
-        self.render_history_refresh(ui);
+        self.render_history_status(ui);
         let Some(wallet_arc) = self.selected_wallet.as_ref() else {
             ui.label("Select a wallet to view its transaction history.");
             return;
@@ -1751,12 +1750,11 @@ impl WalletsBalancesScreen {
         egui::ScrollArea::horizontal()
             .id_salt("core_history_scroll")
             .show(ui, |ui| {
-                ui.set_min_width(980.0);
-                let row_height = 56.0;
+                ui.set_min_width(if show_fee { 1120.0 } else { 1020.0 });
+                let row_height = 40.0;
                 let mut builder = TableBuilder::new(ui)
                     .id_salt("transactions_table")
                     .striped(true)
-                    .column(Column::initial(120.0)) // Actions
                     .column(Column::initial(150.0)) // Date
                     .column(Column::initial(150.0)) // Type
                     .column(Column::initial(120.0)); // Amount
@@ -1767,9 +1765,9 @@ impl WalletsBalancesScreen {
 
                 builder
                     .column(Column::initial(150.0)) // Status
-                    .column(Column::remainder()) // TxID
+                    .column(Column::remainder().at_least(140.0)) // TxID
+                    .column(Column::exact(240.0)) // Actions
                     .header(row_height, |mut header| {
-                        header.col(|ui| { ui.strong("Actions"); });
                         header.col(|ui| {
                             ui.label(
                                 RichText::new("Date")
@@ -1814,21 +1812,12 @@ impl WalletsBalancesScreen {
                                     .color(DashColors::text_primary(dark_mode)),
                             );
                         });
+                        header.col(|ui| { ui.strong("Actions"); });
                     })
                     .body(|mut body| {
                         for entry in &entries {
                             let tx = entry.transaction;
                             body.row(row_height, |mut row| {
-                                row.col(|ui| {
-                                    if !entry.funding.is_empty() && ui.small_button("Details").clicked() {
-                                        self.transfer_details = Some(entry.txid);
-                                    }
-                                    if !entry.funding.is_empty() && entry.unconfirmed() {
-                                        ui.add_enabled_ui(false, |ui| {
-                                            ComponentStyles::add_secondary_button(ui, "Cancel transfer", dark_mode)
-                                        }).response.on_hover_text("The wallet backend cannot safely cancel this funding transaction. Open Details for the recorded evidence.");
-                                    }
-                                });
                                 row.col(|ui| {
                                     ui.label(Self::format_transaction_timestamp(entry.timestamp()));
                                 });
@@ -1859,37 +1848,10 @@ impl WalletsBalancesScreen {
                                 });
                                 row.col(|ui| {
                                     let full_txid = entry.txid.to_string();
-                                    ui.horizontal(|ui| {
-                                        let response = ui.label(RichText::new(format!("{start}…{end}", start = &full_txid[..8], end = &full_txid[full_txid.len()-8..])).monospace());
-                                        response.info_tooltip(&full_txid);
-                                        if ui
-                                            .small_button("Copy")
-                                            .clickable_tooltip("Copy transaction ID")
-                                            .clicked()
-                                        {
-                                            let _ = copy_text_to_clipboard(&full_txid);
-                                        }
-                                        // Show "View" button for networks with a public explorer
-                                        let explorer_base = match self.app_context.network {
-                                            dash_sdk::dpp::dashcore::Network::Mainnet => {
-                                                Some("https://insight.dash.org/insight/tx/")
-                                            }
-                                            dash_sdk::dpp::dashcore::Network::Testnet => Some(
-                                                "https://insight.testnet.networks.dash.org/insight/tx/",
-                                            ),
-                                            _ => None,
-                                        };
-                                        if let Some(base_url) = explorer_base
-                                            && ui
-                                                .small_button("View")
-                                                .clickable_tooltip("View on block explorer")
-                                                .clicked()
-                                        {
-                                            ui.ctx().open_url(egui::OpenUrl::new_tab(format!(
-                                                "{base_url}{full_txid}"
-                                            )));
-                                        }
-                                    });
+                                    ui.label(RichText::new(format!("{start}…{end}", start = &full_txid[..8], end = &full_txid[full_txid.len()-8..])).monospace()).info_tooltip(&full_txid);
+                                });
+                                row.col(|ui| {
+                                    self.render_transaction_actions(ui, entry.txid, !entry.funding.is_empty(), entry.unconfirmed());
                                 });
                             });
                         }
@@ -2862,7 +2824,6 @@ impl ScreenLike for WalletsBalancesScreen {
                 self.import_single_key_dialog.open = true;
                 action = AppAction::None;
             } else if cmd == "RefreshHDWallet" {
-                self.pending_transfers.refresh();
                 if let Some(wallet_arc) = &self.selected_wallet {
                     let is_locked = wallet_arc.read().map(|w| !w.is_open()).unwrap_or(true);
                     if is_locked {
@@ -2989,6 +2950,7 @@ impl ScreenLike for WalletsBalancesScreen {
             }
             crate::ui::BackendTaskSuccessResult::RefreshedWallet { warning } => {
                 self.refreshing = false;
+                self.pending_transfers.refresh();
                 if let Some(err) = warning {
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),
@@ -3432,8 +3394,8 @@ mod tests {
 
         for (width, dark, stage) in [
             (420.0, false, TransferStage::AwaitingConfirmation),
-            (900.0, true, TransferStage::AwaitingConfirmation),
-            (900.0, false, TransferStage::Recovered),
+            (1200.0, true, TransferStage::AwaitingConfirmation),
+            (1200.0, false, TransferStage::Recovered),
         ] {
             let (ctx, _tmp) = offline_ctx();
             let seed_hash = seed_hd_wallet(&ctx, 43);
@@ -3495,6 +3457,30 @@ mod tests {
                     assert!(harness.query_by_label("Unconfirmed").is_some());
                 }
             }
+            if width < 1100.0 {
+                let header = harness.get_by_label("Date").rect();
+                harness.hover_at(egui::pos2(100.0, header.bottom() + 30.0));
+                harness.event(egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    phase: egui::TouchPhase::Move,
+                    delta: egui::vec2(-1600.0, 0.0),
+                    modifiers: egui::Modifiers::NONE,
+                });
+                harness.step();
+                harness.hover_at(egui::pos2(0.0, 0.0));
+                harness.run();
+            }
+            assert!(
+                harness.get_by_label("Actions").rect().left()
+                    > harness.get_by_label("TxID").rect().left()
+            );
+            let copy = harness.get_by_label("Copy").rect();
+            let view = harness.get_by_label("View").rect();
+            let details = harness.get_by_label("Details").rect();
+            assert!(copy.right() <= view.left());
+            assert!(view.right() <= details.left());
+            assert!((copy.center().y - details.center().y).abs() < 1.0);
+            assert!((copy.height() - details.height()).abs() < 1.0);
             assert!(
                 harness.get_by_label("Details").rect().top()
                     > harness
@@ -3503,14 +3489,26 @@ mod tests {
                         .bottom()
             );
             assert!(harness.query_by_label("Unfinished transfers").is_none());
-            assert!(harness.query_by_label("Reload wallet records").is_some());
-            assert!(harness.get_by_label("Reload wallet records").rect().right() <= width);
+            assert!(harness.query_by_label("Reload wallet records").is_none());
             assert_eq!(
                 harness.query_by_label("Cancel transfer").is_some(),
                 stage != TransferStage::Recovered
             );
+            if stage != TransferStage::Recovered {
+                let cancel = harness.get_by_label("Cancel transfer").rect();
+                assert!(details.right() <= cancel.left());
+                assert!((copy.height() - cancel.height()).abs() < 1.0);
+            }
+            assert!(
+                details.right() <= width,
+                "Details outside viewport at width {width}: {details:?}"
+            );
             harness.get_by_label("Details").click();
             harness.run();
+            assert!(
+                harness.query_by_label("Transfer details").is_some(),
+                "Details did not open at width {width}: {details:?}"
+            );
             assert!(
                 harness
                     .query_by_label("Confirmation date: Date unavailable")
@@ -3524,6 +3522,37 @@ mod tests {
             assert!(harness.query_by_label("Check status").is_none());
             assert!(harness.query_by_label("Copy transaction ID").is_some());
         }
+    }
+
+    #[test]
+    fn pending_transfers_refresh_runs_after_wallet_refresh_even_during_an_older_read() {
+        use crate::model::pending_transfers::TransferAssessment;
+        let (ctx, _tmp) = offline_ctx();
+        let seed_hash = seed_hd_wallet(&ctx, 45);
+        let mut screen = WalletsBalancesScreen::new(&ctx);
+        screen.pending_transfers.select(ctx.network, seed_hash);
+        let Some(BackendTask::WalletTask(WalletTask::AssessPlatformTransfers {
+            request_id, ..
+        })) = screen.pending_transfers.task()
+        else {
+            panic!("assessment expected");
+        };
+        screen.display_task_result(crate::ui::BackendTaskSuccessResult::RefreshedWallet {
+            warning: None,
+        });
+        assert!(screen.pending_transfers.task().is_none());
+        screen.pending_transfers.accept(
+            ctx.network,
+            seed_hash,
+            request_id,
+            TransferAssessment {
+                transfers: vec![],
+                history_complete: true,
+                checked_at: 0,
+            },
+        );
+        assert!(screen.pending_transfers.task().is_some());
+        assert!(screen.pending_transfers.task().is_none());
     }
 
     #[test]

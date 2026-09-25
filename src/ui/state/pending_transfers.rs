@@ -34,11 +34,9 @@ impl PendingTransfersState {
         false
     }
 
-    /// Queue an explicit refresh without clearing the last successful assessment.
+    /// Queue one refresh, including after an in-flight read, without clearing existing data.
     pub fn refresh(&mut self) {
-        if self.pending.is_none() {
-            self.refresh_requested = true;
-        }
+        self.refresh_requested = true;
     }
 
     /// Results may be discarded while a different screen is visible; fetch again on arrival.
@@ -158,11 +156,16 @@ mod tests {
         state.select(Network::Testnet, [1; 32]);
         let id = request(&mut state);
         state.refresh();
+        state.refresh();
         assert!(state.task().is_none());
         state.fail([2; 32], id);
         assert!(state.is_loading());
         state.accept(Network::Testnet, [1; 32], id, assessment());
         assert!(!state.is_loading());
+        let next = request(&mut state);
+        assert_ne!(next, id);
+        assert!(state.task().is_none());
+        state.accept(Network::Testnet, [1; 32], next, assessment());
         assert!(state.task().is_none());
     }
 

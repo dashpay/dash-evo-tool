@@ -50,27 +50,14 @@ impl WalletsBalancesScreen {
         self.render_transfer_details(ui);
     }
 
-    pub(super) fn render_history_refresh(&mut self, ui: &mut Ui) {
+    pub(super) fn render_history_status(&mut self, ui: &mut Ui) {
         self.pending_transfer_error.show(ui);
-        ui.horizontal_wrapped(|ui| {
-            if ui
-                .add_enabled_ui(!self.pending_transfers.is_loading(), |ui| {
-                    ComponentStyles::add_secondary_button(
-                        ui,
-                        "Reload wallet records",
-                        ui.visuals().dark_mode,
-                    )
-                })
-                .inner
-                .clicked()
-            {
-                self.pending_transfers.refresh();
-            }
-            if self.pending_transfers.show_progress() {
+        if self.pending_transfers.show_progress() {
+            ui.horizontal(|ui| {
                 ui.spinner();
                 ui.label("Loading wallet records…");
-            }
-        });
+            });
+        }
         if self.app_context.connection_status.spv_status() != SpvStatus::Running
             || self.app_context.connection_status.spv_connected_peers() == 0
         {
@@ -81,6 +68,37 @@ impl WalletsBalancesScreen {
         {
             ui.label("Some saved transactions could not be loaded. Restart the app to try again.");
         }
+    }
+
+    pub(super) fn render_transaction_actions(
+        &mut self,
+        ui: &mut Ui,
+        txid: dash_sdk::dpp::dashcore::Txid,
+        has_funding: bool,
+        unconfirmed: bool,
+    ) {
+        use crate::ui::theme::ResponseExt;
+        ui.horizontal(|ui| {
+            if ui.small_button("Copy").clickable_tooltip("Copy transaction ID").clicked() {
+                ui.ctx().copy_text(txid.to_string());
+            }
+            let explorer = match self.app_context.network {
+                dash_sdk::dpp::dashcore::Network::Mainnet => Some("https://insight.dash.org/insight/tx/"),
+                dash_sdk::dpp::dashcore::Network::Testnet => Some("https://insight.testnet.networks.dash.org/insight/tx/"),
+                _ => None,
+            };
+            if let Some(base) = explorer
+                && ui.small_button("View").clickable_tooltip("View on block explorer").clicked() {
+                ui.ctx().open_url(egui::OpenUrl::new_tab(format!("{base}{txid}")));
+            }
+            if has_funding && ui.small_button("Details").clicked() {
+                self.transfer_details = Some(txid);
+            }
+            if has_funding && unconfirmed {
+                ui.add_enabled(false, egui::Button::new("Cancel transfer").small())
+                    .on_disabled_hover_text("The wallet backend does not support safe cancellation of a broadcast funding transaction. Open Details for the recorded evidence.");
+            }
+        });
     }
 
     fn render_transfer_details(&mut self, ui: &mut Ui) {
@@ -136,7 +154,7 @@ impl WalletsBalancesScreen {
         ui.label(match transfer.stage {
             TransferStage::AwaitingConfirmation => "Core confirmation has not been recorded. Keep the wallet connected to receive updates.",
             TransferStage::ConflictObserved => "Another confirmed transaction spends an input used by this transfer. This wallet cannot yet safely cancel the conflicting transfer or release its funds.",
-            TransferStage::DeliveryUnknown => "Core funding is confirmed. This wallet cannot verify delivery on Platform; reloading wallet records does not perform that verification.",
+            TransferStage::DeliveryUnknown => "Core funding is confirmed. This wallet cannot verify delivery on Platform; Refresh does not perform that verification.",
             TransferStage::Recovered => "This historical funding record was recovered from the blockchain. Its Platform outcome is unknown; this does not mean a transfer is still pending.",
         });
         ui.label("Recipient: Not recorded.");

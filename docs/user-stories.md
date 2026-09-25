@@ -190,8 +190,11 @@ As a user, I want to fund a Platform payment address directly from my wallet UTX
   observed input conflicts. Unconfirmed funding remains discoverable after restart.
 - Historical funding recovered from the chain is not counted as an unfinished
   transfer solely because its Platform outcome is unknown.
-- Reloading wallet records is explicitly local; Core explorer links do not claim
-  to verify Platform delivery. Cancellation remains unavailable pending WAL-034.
+- The existing Refresh action also reloads transfer records after wallet refresh.
+  Core explorer links do not claim to verify Platform delivery. Cancellation
+  remains unavailable pending WAL-034.
+- Copy, View, Details, and unavailable cancellation share the final Actions
+  column and compact button style.
 
 ### WAL-018: Fund Platform address from asset lock [Implemented]
 **Persona:** Priya, Jordan

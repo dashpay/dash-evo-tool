@@ -1589,7 +1589,7 @@ mod derived_key_tests {
         // The user picks another slot before the rejection arrives.
         *screen.derivation.index_mut() = Some(3);
         screen.display_backend_task_error(
-            &BackendTaskContext::Other,
+            &BackendTaskContext::IdentityKeyAdd(screen.identity.identity.id()),
             &TaskError::DerivedKeyIndexUnavailable,
         );
         screen.display_message("rejected", MessageType::Error);

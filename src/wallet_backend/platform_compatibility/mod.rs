@@ -200,7 +200,11 @@ mod tests {
             let old = auto.join(format!(
                 "pre-migration-wallet-1-to-2-20260915T12000{attempt}Z.db"
             ));
-            std::fs::write(&old, b"snapshot from an earlier attempt").unwrap();
+            // A complete snapshot: retention only prunes in favour of a proven-usable copy.
+            rusqlite::Connection::open(&old)
+                .unwrap()
+                .execute_batch(include_str!("fixtures/67d4ef3.sql"))
+                .unwrap();
             assert!(open(SqlitePersisterConfig::new(&path)).is_err());
             assert_eq!(std::fs::read_dir(&auto).unwrap().count(), 1);
             let retained = std::fs::read_dir(&auto)

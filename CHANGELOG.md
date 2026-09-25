@@ -54,7 +54,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   A backup cleanup problem no longer stops up-to-date wallet data from opening;
   it blocks only an upgrade that would create a new backup. A new upgrade backup
   replaces the previous one only after it is saved. Removing an identity that is
-  not stored on this device leaves upgrade backups in place.
+  not stored on this device leaves upgrade backups in place. The retained backup
+  is always one that opens and passes an integrity check, so an unfinished copy
+  never replaces a complete one. Clearing a network's data still removes upgrade
+  backups when an old shielded file cannot be deleted, and reports the clear as
+  incomplete.
 
 ### Added
 

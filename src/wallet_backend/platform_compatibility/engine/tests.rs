@@ -812,3 +812,111 @@ fn platform_compatibility_one_guard_covers_retention_and_upgrade() {
     retain_one_backup_locked(&guard, None).unwrap();
     assert_eq!(snapshot(&backup), before);
 }
+
+fn set_mtime(path: &Path, seconds_from_now: i64) {
+    let now = std::time::SystemTime::now();
+    let offset = std::time::Duration::from_secs(seconds_from_now.unsigned_abs());
+    let time = if seconds_from_now < 0 {
+        now - offset
+    } else {
+        now + offset
+    };
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(time)
+        .unwrap();
+}
+
+/// An interrupted copy left under a final snapshot name (empty or truncated)
+/// must never replace an older, complete recovery snapshot — in either format.
+#[test]
+fn platform_compatibility_retention_keeps_valid_snapshot_over_newer_incomplete_one() {
+    let (dir, path, _target) = fixture();
+    let before = snapshot(&path);
+    let full = std::fs::read(backup(&path).unwrap()).unwrap();
+    let auto = dir.path().join("backups/auto");
+    std::fs::create_dir_all(&auto).unwrap();
+    let cases: [(&str, &[u8], PathBuf); 4] = [
+        (
+            "empty bridge",
+            b"",
+            dir.path()
+                .join("wallet.sqlite.platform-67d4ef3-backup-killed.sqlite"),
+        ),
+        (
+            "truncated bridge",
+            &full[..full.len() / 2],
+            dir.path()
+                .join("wallet.sqlite.platform-67d4ef3-backup-killed.sqlite"),
+        ),
+        (
+            "header-only bridge",
+            &full[..100],
+            dir.path()
+                .join("wallet.sqlite.platform-67d4ef3-backup-killed.sqlite"),
+        ),
+        (
+            "empty upstream",
+            b"",
+            auto.join("pre-migration-wallet-1-to-2-20260915T120000Z.db"),
+        ),
+    ];
+    for (case, bytes, incomplete) in cases {
+        let valid = backup_files(dir.path())
+            .into_iter()
+            .find(|p| *p != incomplete)
+            .unwrap();
+        set_mtime(&valid, -3600);
+        std::fs::write(&incomplete, bytes).unwrap();
+        retain_one_backup(&path, Some(&auto)).unwrap();
+        assert!(valid.exists(), "{case}: the valid snapshot must survive");
+        assert_eq!(snapshot(&valid), before, "{case}");
+        assert!(
+            !incomplete.exists(),
+            "{case}: the incomplete copy is pruned"
+        );
+    }
+}
+
+/// With no snapshot proven usable, retention deletes nothing.
+#[test]
+fn platform_compatibility_retention_keeps_all_when_none_is_usable() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("wallet.sqlite");
+    let older = dir
+        .path()
+        .join("wallet.sqlite.platform-67d4ef3-backup-a1.sqlite");
+    let newer = dir
+        .path()
+        .join("wallet.sqlite.platform-67d4ef3-backup-b2.sqlite");
+    std::fs::write(&older, b"not a database").unwrap();
+    std::fs::write(&newer, b"").unwrap();
+    set_mtime(&older, -3600);
+    retain_one_backup(&path, None).unwrap();
+    assert!(older.exists());
+    assert!(newer.exists());
+}
+
+/// Validating a snapshot copied from a WAL-mode database opens it read-only
+/// without leaving journal sidecars next to it.
+#[test]
+fn platform_compatibility_snapshot_validation_leaves_no_sidecars() {
+    let (dir, path, _target) = fixture();
+    Connection::open(&path)
+        .unwrap()
+        .query_row("PRAGMA journal_mode=WAL", [], |_| Ok(()))
+        .unwrap();
+    let kept = backup(&path).unwrap();
+    let before: BTreeSet<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert!(usable_snapshot(&kept));
+    let after: BTreeSet<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(after, before);
+}

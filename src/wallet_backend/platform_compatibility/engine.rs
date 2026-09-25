@@ -434,7 +434,7 @@ pub(super) fn backup_lock(path: &Path) -> std::io::Result<BackupGuard> {
     })
 }
 
-/// Retain the newest snapshot across both upgrade-backup formats.
+/// Retain the newest usable snapshot across both upgrade-backup formats.
 #[cfg(test)]
 pub(super) fn retain_one_backup(path: &Path, auto_dir: Option<&Path>) -> std::io::Result<()> {
     let guard = backup_lock(path)?;
@@ -459,11 +459,70 @@ pub(super) fn retain_one_backup_locked(
         }
     }
     snapshots.sort();
-    snapshots.pop();
+    // Keep the newest snapshot that proves usable. An interrupted copy (e.g. a killed
+    // bridge from an older build that wrote straight to the final name) can be the newest
+    // file; it must never supersede an older complete snapshot.
+    let Some(survivor) = snapshots
+        .iter()
+        .rposition(|(_, backup)| usable_snapshot(backup))
+    else {
+        if !snapshots.is_empty() {
+            // Nothing is proven usable, so nothing is proven expendable either.
+            tracing::warn!(
+                count = snapshots.len(),
+                "No upgrade backup passed validation; keeping all of them"
+            );
+        }
+        return Ok(());
+    };
+    snapshots.remove(survivor);
     for (_, backup) in snapshots {
         remove_backup(&backup, path)?;
     }
     Ok(())
+}
+
+/// Whether `backup` is a complete, readable wallet database snapshot.
+///
+/// Opens the file as immutable and read-only, then requires a clean `PRAGMA quick_check`
+/// plus a non-empty migration history — an empty or truncated file fails one of these.
+/// Any error while checking counts as unusable: retention then keeps an older proven copy.
+fn usable_snapshot(backup: &Path) -> bool {
+    let check = || -> Result<bool, Box<dyn std::error::Error>> {
+        // `immutable=1`: snapshots copied from a WAL database carry a WAL header, and a plain
+        // read-only open would leave `-wal`/`-shm` sidecars next to them. The caller holds
+        // the backup lock, so no DET writer changes the file while it is checked.
+        let mut uri = url::Url::from_file_path(std::path::absolute(backup)?)
+            .map_err(|()| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+        uri.set_query(Some("immutable=1"));
+        let conn = Connection::open_with_flags(
+            uri.as_str(),
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+                | OpenFlags::SQLITE_OPEN_URI
+                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )?;
+        let mut rows = conn.prepare("PRAGMA quick_check")?;
+        let report = rows
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        if report != ["ok"] {
+            return Ok(false);
+        }
+        let has_history = conn
+            .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1")?
+            .exists([HISTORY])?;
+        Ok(has_history
+            && conn
+                .prepare(&format!("SELECT 1 FROM {}", quote(HISTORY)))?
+                .exists([])?)
+    };
+    match check() {
+        Ok(usable) => usable,
+        Err(error) => {
+            tracing::debug!(backup = %backup.display(), ?error, "Upgrade backup is not usable");
+            false
+        }
+    }
 }
 
 /// Delete every retained upgrade backup of the database at `path`.

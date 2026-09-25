@@ -2489,6 +2489,43 @@ async fn clear_network_database_reports_incomplete_when_shielded_clear_fails() {
     }
 }
 
+/// A legacy shielded-file removal failure must not skip upgrade-backup removal:
+/// the backups copy the wallet data being cleared, and the failure still makes
+/// the clear incomplete.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clear_network_database_removes_backups_when_legacy_shielded_cleanup_fails() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+    // A directory at a legacy file path makes its unlink fail.
+    let blocker = backend.spv_storage_dir().join("det-shielded.sqlite");
+    std::fs::create_dir_all(blocker.join("occupied")).unwrap();
+    let backup = ctx
+        .data_dir()
+        .join("det-app.sqlite.platform-67d4ef3-backup-fixture.sqlite");
+    std::fs::write(&backup, b"old wallet history").unwrap();
+
+    let result = ctx.clear_network_database().await;
+
+    backend.shutdown().await;
+    assert!(!backup.exists(), "upgrade backups must still be removed");
+    match result {
+        Err(TaskError::WalletDataClearIncomplete {
+            failed,
+            first_error,
+        }) => {
+            assert_eq!(failed, 1, "the legacy cleanup should be the only failure");
+            assert!(
+                matches!(*first_error, TaskError::FileSystem { .. }),
+                "the aggregate must preserve the legacy cleanup error: {first_error:?}"
+            );
+        }
+        other => panic!("legacy cleanup failure must make clear incomplete: {other:?}"),
+    }
+}
+
 /// Clear-all must fail before changing any state when the wallet backend is
 /// unavailable, because persisted secrets from an earlier run may still exist.
 #[tokio::test]

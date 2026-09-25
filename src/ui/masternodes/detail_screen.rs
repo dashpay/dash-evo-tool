@@ -22,6 +22,7 @@ use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoic
 
 use crate::app::AppAction;
 use crate::backend_task::contested_names::ContestedResourceTask;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::{IdentityInputToLoad, IdentityLoadMode, IdentityTask};
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
@@ -383,20 +384,23 @@ impl MasternodeDetailView {
     }
 
     /// Probe the at-rest protection posture of this node's vault keys.
-    fn protection_tier(&self) -> ProtectionTier {
-        let Ok(backend) = self.app_context.wallet_backend() else {
-            return ProtectionTier::NoVaultKeys;
-        };
+    fn protection_tier(&self) -> Result<ProtectionTier, TaskError> {
+        let backend = self.app_context.wallet_backend()?;
         let view = IdentityKeyView::new(
             backend.secret_store(),
             self.identity.identity.id().to_buffer(),
         );
         let (mut protected, mut unprotected) = (0usize, 0usize);
-        for (target, key_id) in self.identity.private_keys.keys_set() {
-            match view.scheme(&target, key_id) {
-                Ok(SecretScheme::Protected) => protected += 1,
-                Ok(SecretScheme::Unprotected) => unprotected += 1,
-                _ => {}
+        let mut placements = self.identity.private_keys.keys_set();
+        placements.extend(
+            self.app_context
+                .retained_identity_import_keys(&self.identity.identity.id())?,
+        );
+        for (target, key_id) in placements {
+            match view.scheme(&target, key_id)? {
+                SecretScheme::Protected => protected += 1,
+                SecretScheme::Unprotected => unprotected += 1,
+                SecretScheme::Absent => {}
             }
         }
         // TODO: a mixed state (some Tier-1, some Tier-2) currently maps to
@@ -405,11 +409,11 @@ impl MasternodeDetailView {
         // Manage-keys list (each unprotected key can still be sealed from its
         // KeyInfoScreen); a dedicated "partially protected" tier could re-offer
         // the aggregate CTA.
-        match (protected, unprotected) {
+        Ok(match (protected, unprotected) {
             (0, 0) => ProtectionTier::NoVaultKeys,
             (0, _) => ProtectionTier::Unprotected,
             _ => ProtectionTier::Protected,
-        }
+        })
     }
 
     pub fn show(&mut self, ui: &mut Ui, network_accent: Color32) -> DetailOutcome {
@@ -653,7 +657,20 @@ impl MasternodeDetailView {
 
         // Protection tier + conditional Add-protection (FR-8 / NFR-4).
         let tier = self.protection_tier();
-        ui.label(RichText::new(tier.label()).color(DashColors::text_secondary(dark_mode)));
+        match &tier {
+            Ok(tier) => {
+                ui.label(RichText::new(tier.label()).color(DashColors::text_secondary(dark_mode)));
+            }
+            Err(error) => {
+                ui.label("Key protection status is unavailable. Refresh to try again.");
+                MessageBanner::set_global(
+                    ui.ctx(),
+                    "Key protection status is unavailable. Refresh to try again.",
+                    MessageType::Warning,
+                )
+                .with_details(error);
+            }
+        }
 
         // Per-key "Manage keys" list. Each key opens its own `KeyInfoScreen`,
         // the interactive per-key screen with view/sign/seal actions. This
@@ -684,7 +701,7 @@ impl MasternodeDetailView {
         // `IdentityTask::ProtectIdentityKeys`, which seals the whole identity)
         // lives inside `KeyInfoScreen`. Open the first held key so the user
         // lands directly on the interactive seal flow.
-        if tier.offers_add_protection()
+        if tier.is_ok_and(ProtectionTier::offers_add_protection)
             && let Some(key) = self.first_protectable_key()
             && ui.button("Add password protection…").clicked()
         {
@@ -1213,12 +1230,12 @@ mod tests {
         // Before sealing: the key is keyless (Tier-1) → Unprotected.
         let view = MasternodeDetailView::new(&ctx, qi.clone());
         assert_eq!(
-            view.protection_tier(),
+            view.protection_tier().unwrap(),
             ProtectionTier::Unprotected,
             "an unsealed keyed node must report Unprotected",
         );
         assert!(
-            view.protection_tier().offers_add_protection(),
+            view.protection_tier().unwrap().offers_add_protection(),
             "an unsealed node must offer Add-protection",
         );
 
@@ -1240,16 +1257,51 @@ mod tests {
 
         // After sealing: the detail view reports Protected and stops offering
         // Add-protection. Rebuild the view to re-read the vault scheme.
-        let view = MasternodeDetailView::new(&ctx, qi);
+        let view = MasternodeDetailView::new(&ctx, qi.clone());
         assert_eq!(
-            view.protection_tier(),
+            view.protection_tier().unwrap(),
             ProtectionTier::Protected,
             "a Tier-2 sealed node must report Protected",
         );
         assert!(
-            !view.protection_tier().offers_add_protection(),
+            !view.protection_tier().unwrap().offers_add_protection(),
             "a sealed node must not re-offer Add-protection",
         );
+
+        let mut retained_only = qi.clone();
+        let lock = ctx.identity_record_lock(identity_id);
+        {
+            let _guard = lock.lock().unwrap();
+            ctx.record_identity_import_keys(&identity_id, &qi.private_keys.keys_set())
+                .unwrap();
+        }
+        retained_only.private_keys = KeyStorage::default();
+        let retained_view = MasternodeDetailView::new(&ctx, retained_only);
+        assert_eq!(
+            retained_view.protection_tier().unwrap(),
+            ProtectionTier::Protected,
+            "retained protected keys must determine the displayed tier"
+        );
+
+        ctx.det_kv()
+            .unwrap()
+            .put(
+                crate::wallet_backend::DetScope::Global,
+                &format!(
+                    "det:identity_import_keys:v1:{}",
+                    identity_id.to_string(Encoding::Base58)
+                ),
+                &1u8,
+            )
+            .unwrap();
+        for checked_view in [&view, &retained_view] {
+            assert!(matches!(
+                checked_view.protection_tier(),
+                Err(TaskError::IdentityStorage {
+                    source: crate::wallet_backend::KvAdapterError::Decode(_),
+                })
+            ));
+        }
 
         ctx.wallet_backend().expect("backend").shutdown().await;
     }

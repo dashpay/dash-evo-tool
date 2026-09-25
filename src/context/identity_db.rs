@@ -4970,6 +4970,109 @@ mod tests {
         );
     }
 
+    /// SEC-002 end to end: a stale plaintext key filed at the id the
+    /// on-chain key uses is never destroyed. The first refresh keeps it and
+    /// the save moves its bytes into the vault; the next refresh hands the
+    /// slot to the on-chain key while the vault still holds the stale secret.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stale_plaintext_key_survives_refreshes_and_yields_its_slot() {
+        use crate::model::qualified_identity::encrypted_key_storage::WalletDerivationPath;
+        use dash_sdk::dpp::identity::KeyID;
+        use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
+
+        const KEY_ID: KeyID = 9;
+        const STALE_SECRET: [u8; 32] = [0x77; 32];
+        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let id = staged.id.to_buffer();
+        let placement = (PrivateKeyTarget::PrivateKeyOnMainIdentity, KEY_ID);
+        let pv = PlatformVersion::latest();
+        let stale = IdentityPublicKey::random_key(KEY_ID, Some(91), pv);
+        let on_chain = IdentityPublicKey::random_key(KEY_ID, Some(92), pv);
+
+        // A legacy blob still carrying the stale key as resident plaintext.
+        let kv = staged.ctx.det_kv().expect("identity kv");
+        let mut record = kv
+            .get::<StoredQualifiedIdentity>(DetScope::Identity(&id), IDENTITY_KEY)
+            .expect("read the stored record")
+            .expect("record present");
+        let mut legacy = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read the staged identity")
+            .expect("identity present");
+        legacy.private_keys.insert_at(
+            placement.clone(),
+            (
+                QualifiedIdentityPublicKey::from(stale.clone()),
+                PrivateKeyData::Clear(STALE_SECRET),
+            ),
+        );
+        record.qi_bytes = legacy.to_bytes();
+        kv.put(DetScope::Identity(&id), IDENTITY_KEY, &record)
+            .expect("write the legacy blob");
+
+        let rebuild = || {
+            let mut rebuilt = legacy.clone();
+            let mut keys = KeyStorage::default();
+            keys.insert_at(
+                placement.clone(),
+                (
+                    QualifiedIdentityPublicKey::from(on_chain.clone()),
+                    PrivateKeyData::AtWalletDerivationPath(WalletDerivationPath {
+                        wallet_seed_hash: [0x02; 32],
+                        derivation_path: DerivationPath::from(vec![]),
+                    }),
+                ),
+            );
+            rebuilt.private_keys = keys;
+            rebuilt
+        };
+        let vault = IdentityKeyView::new(&staged.store, id);
+
+        staged
+            .ctx
+            .store_discovered_identity(&mut rebuild(), &None, DiscoveryIntent::Automatic)
+            .expect("first refresh");
+        let after_first = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read back")
+            .expect("identity present");
+        assert!(
+            matches!(
+                after_first.private_keys.entry_at(&placement),
+                Some((key, PrivateKeyData::InVault)) if key.identity_public_key == stale
+            ),
+            "the first refresh keeps the stale key and saves it to the vault"
+        );
+
+        staged
+            .ctx
+            .store_discovered_identity(&mut rebuild(), &None, DiscoveryIntent::Automatic)
+            .expect("second refresh");
+        let after_second = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read back")
+            .expect("identity present");
+        assert!(
+            after_second
+                .private_keys
+                .candidates(&on_chain)
+                .next()
+                .is_some(),
+            "the second refresh hands the slot to the on-chain key"
+        );
+        assert_eq!(
+            vault
+                .get(&placement.0, KEY_ID)
+                .expect("read the vault")
+                .map(|secret| *secret),
+            Some(STALE_SECRET),
+            "the stale secret is still recoverable from the vault"
+        );
+    }
+
     /// A discovery merge that would leave a password-protected identity with
     /// resident plaintext fails closed: the keyless vault write is refused
     /// with the refresh-worded `IdentityRefreshBlockedByPartialProtection`

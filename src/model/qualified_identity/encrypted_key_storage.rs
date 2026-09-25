@@ -697,15 +697,22 @@ impl KeyStorage {
     ///   the rebuild, so an on-chain `disabled_at` is not pinned stale.
     ///
     /// A held stored entry whose public key differs from the rebuild's
-    /// (on-chain) key at the same id — a stale local entry such as a
-    /// `max_id + 1` saved but never broadcast, while a different key took
-    /// that id elsewhere — yields to the rebuild, with a warning. `KeyStorage`
-    /// has one slot per placement, so keeping the stale entry would shadow the
-    /// on-chain key and leave the identity unable to sign with it (SEC-002).
-    /// The stale half authorizes nothing at that id on-chain. An `InVault`
-    /// stale secret stays under the same vault label, and the placement is
-    /// still in [`keys_set`](Self::keys_set), so protection changes and
-    /// identity removal still reach it.
+    /// (on-chain) key at the same id is a stale local entry, such as a
+    /// `max_id + 1` saved but never broadcast while a different key took that
+    /// id elsewhere. `KeyStorage` has one slot per placement, so the stale
+    /// entry and the on-chain key cannot both be filed there. The stale half
+    /// authorizes nothing at that id on-chain, but it may be the only copy of
+    /// its secret, and this merge never destroys secret material:
+    /// - `InVault`: the rebuild takes the slot, so the on-chain key stays
+    ///   usable (SEC-002). The secret stays in the vault under the same label,
+    ///   and the placement is still in [`keys_set`](Self::keys_set), so
+    ///   protection changes and identity removal still reach it.
+    /// - `Clear`, `AlwaysClear`, `Encrypted`: the blob holds the only copy, so
+    ///   the stale entry keeps the slot for now. The Keys screen lists it as
+    ///   a saved key on none of the identity's lists, where it can be copied
+    ///   or removed. Saving the record moves `Clear`/`AlwaysClear` bytes into
+    ///   the vault, so the next refresh takes the `InVault` path and hands the
+    ///   slot to the on-chain key.
     pub(crate) fn retain_local_keys_from(&mut self, stored: KeyStorage) {
         for (placement, mut entry) in stored.private_keys {
             let rebuilt = self.private_keys.get(&placement);
@@ -715,16 +722,20 @@ impl KeyStorage {
             }
             if let Some((on_chain, _)) = rebuilt {
                 if !same_key(&entry.0.identity_public_key, &on_chain.identity_public_key) {
+                    if matches!(entry.1, PrivateKeyData::InVault) {
+                        tracing::warn!(
+                            target = "model::qualified_identity",
+                            key_id = placement.1,
+                            "A saved private key differs from the identity's key with the same id; the identity's key takes the slot and the saved secret stays in the vault",
+                        );
+                        continue;
+                    }
                     tracing::warn!(
                         target = "model::qualified_identity",
                         key_id = placement.1,
-                        "A saved private key differs from the identity's key with the same id; the identity's key replaces it",
+                        "A saved private key differs from the identity's key with the same id; it is kept until it is saved to the vault, since this device holds no other copy",
                     );
-                    if let PrivateKeyData::Clear(bytes) | PrivateKeyData::AlwaysClear(bytes) =
-                        &mut entry.1
-                    {
-                        zeroize::Zeroize::zeroize(bytes);
-                    }
+                    self.private_keys.insert(placement, entry);
                     continue;
                 }
                 // Same key: keep the held private half, but take the
@@ -1538,17 +1549,17 @@ mod tests {
         );
     }
 
-    /// SEC-002: a held stored secret whose public key no longer matches the
-    /// on-chain key at that id (a stale local entry) must not displace the
-    /// rebuilt on-chain entry: the identity keeps signing with the key the
-    /// wallet derives. The stale half authorizes nothing at that id on-chain.
+    /// SEC-002: a stale stored entry held in the vault never displaces the
+    /// on-chain key at its id: the rebuild takes the slot, so the identity
+    /// keeps signing with the key the wallet derives. The vault keeps the
+    /// secret.
     #[test]
-    fn a_stale_stored_secret_never_displaces_the_on_chain_key() {
+    fn a_stale_vaulted_secret_never_displaces_the_on_chain_key() {
         let pv = PlatformVersion::latest();
         let stale = IdentityPublicKey::random_key(7, Some(71), pv);
         let on_chain = IdentityPublicKey::random_key(7, Some(72), pv);
         assert!(!same_key(&stale, &on_chain), "fixture: two different keys");
-        let stored = filed_under(&stale, &[(MAIN, PrivateKeyData::Clear([0x77; 32]))]);
+        let stored = filed_under(&stale, &[(MAIN, PrivateKeyData::InVault)]);
         let mut rebuilt = filed_under(
             &on_chain,
             &[(
@@ -1572,6 +1583,41 @@ mod tests {
             rebuilt.candidates(&on_chain).next().is_some(),
             "the on-chain key must remain usable for signing"
         );
+    }
+
+    /// A stale stored secret whose only copy is in the blob is never
+    /// destroyed: it keeps the slot, bytes intact, until a save moves it into
+    /// the vault.
+    #[test]
+    fn a_stale_secret_held_only_in_the_blob_is_kept() {
+        let pv = PlatformVersion::latest();
+        let stale = IdentityPublicKey::random_key(7, Some(71), pv);
+        let on_chain = IdentityPublicKey::random_key(7, Some(72), pv);
+        for data in [
+            PrivateKeyData::Clear([0x77; 32]),
+            PrivateKeyData::AlwaysClear([0x78; 32]),
+            PrivateKeyData::Encrypted(vec![0x79; 48]),
+        ] {
+            let stored = filed_under(&stale, &[(MAIN, data.clone())]);
+            let mut rebuilt = filed_under(
+                &on_chain,
+                &[(
+                    MAIN,
+                    PrivateKeyData::AtWalletDerivationPath(derivation_path(0x02)),
+                )],
+            );
+
+            rebuilt.retain_local_keys_from(stored);
+
+            assert!(
+                matches!(
+                    rebuilt.entry_at(&(MAIN, 7)),
+                    Some((public_key, kept))
+                        if *kept == data && same_key(&public_key.identity_public_key, &stale)
+                ),
+                "the only copy of a stale secret must survive the rebuild: {data:?}"
+            );
+        }
     }
 
     /// A held stored secret for the same key keeps its private half but takes

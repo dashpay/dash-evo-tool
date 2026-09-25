@@ -135,7 +135,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and could no longer be used here. Those refreshes now keep every key already
   saved for the identity, with its password protection unchanged. A saved key
   that no longer matches the identity's key with the same number gives way to
-  the identity's key, so the identity can still sign with it. When only some of
+  the identity's key once its private key is kept safely on this device, so the
+  identity can still sign with it and the old private key is not lost. When only some of
   an identity's keys are password-protected, the refresh stops and a message
   names the identity and explains how to finish, even when the refresh ran in
   the background. Adding a key also no longer erases a key, name or protection
@@ -147,8 +148,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   most failures showed a generic storage message, and a randomly generated
   private key could be lost for good. Every such failure now says the key is
   already on the network, and the Add Key screen keeps its private key
-  available to copy. A copied key is cleared from the clipboard after 60
-  seconds, and the screen warns that other apps can read the clipboard. When
+  available to copy, with a warning that other apps can read the clipboard. When
   the key could not be saved because of the identity's password protection, or
   because a different key is saved under the same number, the message says
   what to do first. A key created from your wallet has no private key to

@@ -15,7 +15,6 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ResultBannerExt};
-use crate::ui::helpers::{SECRET_CLIPBOARD_LIFETIME, clear_clipboard_later};
 use crate::ui::identity::get_selected_wallet;
 use crate::ui::state::derived_key_chooser::{ChooserStatus, DerivedKeyChooser};
 use crate::ui::theme::{DashColors, ResponseExt};
@@ -33,7 +32,6 @@ use eframe::egui::{self, Frame, Margin};
 use egui::{Color32, RichText, Ui};
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
-use zeroize::Zeroizing;
 
 #[derive(PartialEq)]
 pub enum AddKeyStatus {
@@ -634,10 +632,9 @@ impl AddKeyScreen {
                 );
                 ui.add_space(4.0);
                 ui.label(
-                    RichText::new(format!(
-                        "Other apps on this device can read the clipboard. After you copy the key, paste it somewhere safe right away: it is cleared from the clipboard after {seconds} seconds.",
-                        seconds = SECRET_CLIPBOARD_LIFETIME.as_secs(),
-                    ))
+                    RichText::new(
+                        "Other apps on this device can read the clipboard. After you paste the key somewhere safe, copy something else so the key does not stay on the clipboard.",
+                    )
                     .color(DashColors::text_secondary(dark_mode)),
                 );
                 ui.add_space(8.0);
@@ -647,17 +644,11 @@ impl AddKeyScreen {
                 });
                 ui.add_space(8.0);
                 if ui.button("Copy private key").clicked() {
-                    let key = Zeroizing::new(self.submitted_private_key.text().to_owned());
-                    // egui takes an owned `String` for the platform clipboard;
-                    // that hand-off copy is outside this screen's reach.
-                    ui.ctx().copy_text(key.as_str().to_owned());
-                    clear_clipboard_later(key, SECRET_CLIPBOARD_LIFETIME);
+                    ui.ctx()
+                        .copy_text(self.submitted_private_key.text().to_owned());
                     MessageBanner::set_global(
                         ui.ctx(),
-                        format!(
-                            "The private key was copied to the clipboard. Paste it somewhere safe now: it is cleared from the clipboard after {seconds} seconds.",
-                            seconds = SECRET_CLIPBOARD_LIFETIME.as_secs(),
-                        ),
+                        "The private key was copied to the clipboard. Paste it somewhere safe now, then copy something else so the key does not stay on the clipboard.",
                         MessageType::Info,
                     );
                 }

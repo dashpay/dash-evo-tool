@@ -1,7 +1,8 @@
-//! Kittest coverage for the name step of the Import Wallet screen, for both
-//! recovery-phrase (HD wallet) and private-key imports.
+//! Kittest coverage for the Import Wallet screen, for both recovery-phrase
+//! (HD wallet) and private-key imports: naming, phrase validation, and
+//! reporting save rejections to the user.
 //!
-//! The screen passes the raw name to the backend, which cleans it, fills in
+//! For naming, the screen passes the raw name to the backend, which cleans it, fills in
 //! the smallest unused "Wallet N" / "Key N" when it is blank, and rejects a
 //! name another wallet of the same kind already uses.
 
@@ -10,6 +11,7 @@ use bip39::Mnemonic;
 use dash_evo_tool::context::AppContext;
 use dash_evo_tool::model::wallet::Wallet;
 use dash_evo_tool::model::wallet::alias::AliasSource;
+use dash_evo_tool::model::wallet::birth_height::WalletOrigin;
 use dash_evo_tool::ui::ScreenLike;
 use dash_evo_tool::ui::wallets::import_mnemonic_screen::ImportMnemonicScreen;
 use dash_sdk::dpp::dashcore::PrivateKey;
@@ -17,6 +19,8 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use std::sync::{Arc, RwLock};
 use zeroize::Zeroize;
+
+const INVALID_PHRASE_TEXT: &str = "This recovery phrase is not valid";
 
 fn import_harness(
     runtime: tokio::runtime::Runtime,
@@ -38,9 +42,13 @@ fn import_harness(
     harness
 }
 
+/// Fixed test entropy — never a literal recovery phrase.
+fn test_mnemonic() -> Mnemonic {
+    Mnemonic::from_entropy(&[0u8; 16]).expect("valid entropy")
+}
+
 fn with_test_phrase(screen: &mut ImportMnemonicScreen) {
-    // Fixed test entropy — never a literal recovery phrase.
-    screen.set_seed_phrase_for_test(&Mnemonic::from_entropy(&[0u8; 16]).expect("valid entropy"));
+    screen.set_seed_phrase_for_test(&test_mnemonic());
 }
 
 fn test_wif(app_context: &AppContext, byte: u8) -> String {
@@ -189,6 +197,221 @@ fn duplicate_imported_key_name_is_rejected_and_not_saved() {
             sorted_key_aliases(&app_context),
             vec![Some("Savings".to_owned())],
             "a second key must not be saved under a name already in use"
+        );
+        assert!(
+            harness
+                .query_by_label_contains("already uses this name")
+                .is_some(),
+            "the rejection must be shown, not silently swallowed"
+        );
+    });
+}
+
+/// Pressing "Save Wallet" when the backend rejects the name must show the
+/// rejection and save nothing.
+#[test]
+fn duplicate_imported_wallet_name_is_reported_to_the_user() {
+    with_isolated_data_dir(|| {
+        let (runtime, app_context) = fresh_app_context();
+        insert_wallet(&app_context, "Savings");
+        let mut harness = import_harness(runtime, &app_context, with_test_phrase);
+
+        type_name(&mut harness, "Savings");
+        harness.get_by_label("Save Wallet").click();
+        harness.run();
+
+        assert_eq!(
+            sorted_wallet_aliases(&app_context),
+            vec!["Savings".to_owned()],
+            "a second wallet must not be saved under a name already in use"
+        );
+        assert!(
+            harness
+                .query_by_label_contains("Another wallet already uses this name")
+                .is_some(),
+            "the rejection must be shown, not silently swallowed"
+        );
+    });
+}
+
+/// A rejection banner must not outlive a successful retry: once the user
+/// fixes the name and saves, the stale "name already used" error goes away.
+#[test]
+fn successful_retry_clears_the_previous_rejection() {
+    with_isolated_data_dir(|| {
+        let (runtime, app_context) = fresh_app_context();
+        insert_wallet(&app_context, "Savings");
+        let mut harness = import_harness(runtime, &app_context, with_test_phrase);
+
+        type_name(&mut harness, "Savings");
+        harness.get_by_label("Save Wallet").click();
+        harness.run();
+        assert!(
+            harness
+                .query_by_label_contains("Another wallet already uses this name")
+                .is_some(),
+            "the first attempt must be rejected"
+        );
+
+        type_name(&mut harness, " two");
+        harness.get_by_label("Save Wallet").click();
+        harness.run();
+
+        assert_eq!(
+            sorted_wallet_aliases(&app_context),
+            vec!["Savings".to_owned(), "Savings two".to_owned()],
+            "the retry with a new name must be saved"
+        );
+        assert!(
+            harness
+                .query_by_label_contains("Another wallet already uses this name")
+                .is_none(),
+            "the earlier rejection must be cleared once the retry succeeds"
+        );
+    });
+}
+
+/// Regression: re-importing a recovery phrase that is already registered
+/// must say so instead of doing nothing.
+#[test]
+fn reimported_recovery_phrase_is_reported_to_the_user() {
+    with_isolated_data_dir(|| {
+        let (runtime, app_context) = fresh_app_context();
+        {
+            let _runtime_guard = runtime.enter();
+            let seed = test_mnemonic().to_seed("");
+            let wallet = Wallet::new_from_seed(
+                seed,
+                app_context.network(),
+                Some("Existing".to_owned()),
+                None,
+            )
+            .expect("wallet fixture");
+            app_context
+                .register_wallet(wallet, &seed, WalletOrigin::Imported)
+                .expect("first import");
+        }
+        let mut harness = import_harness(runtime, &app_context, with_test_phrase);
+
+        type_name(&mut harness, "Second copy");
+        harness.get_by_label("Save Wallet").click();
+        harness.run();
+
+        assert_eq!(
+            sorted_wallet_aliases(&app_context),
+            vec!["Existing".to_owned()],
+            "the same recovery phrase must not be imported twice"
+        );
+        assert!(
+            harness
+                .query_by_label_contains("already been imported for this network as \"Existing\"")
+                .is_some(),
+            "the duplicate import must be shown with the existing wallet's name"
+        );
+        assert!(
+            harness
+                .query_by_label_contains("Open it from the Wallets screen")
+                .is_some(),
+            "the duplicate-import message must tell the user what to do next"
+        );
+    });
+}
+
+/// Regression: a password below the vault minimum is refused by the wallet
+/// model, not by `register_wallet`; that rejection must reach the user too.
+#[test]
+fn too_short_import_password_is_reported_to_the_user() {
+    with_isolated_data_dir(|| {
+        let (runtime, app_context) = fresh_app_context();
+        let mut harness = import_harness(runtime, &app_context, |screen| {
+            with_test_phrase(screen);
+            screen.set_password_for_test("short");
+        });
+
+        harness.get_by_label("Save Wallet").click();
+        harness.run();
+
+        assert!(
+            sorted_wallet_aliases(&app_context).is_empty(),
+            "no wallet may be saved with a password below the minimum"
+        );
+        assert!(
+            harness
+                .query_by_label_contains("Wallet passwords must be at least")
+                .is_some(),
+            "the password rejection must be shown, not silently swallowed"
+        );
+    });
+}
+
+/// A private-key import with a password fails this screen's own pre-checks;
+/// the typed rejection must be shown and nothing imported.
+#[test]
+fn private_key_import_with_password_is_reported_to_the_user() {
+    with_isolated_data_dir(|| {
+        let (runtime, app_context) = fresh_app_context();
+        let wif = test_wif(&app_context, 0x33);
+        let mut harness = import_harness(runtime, &app_context, |screen| {
+            screen.set_private_key_for_test(&wif);
+            screen.set_password_for_test("long enough password");
+        });
+
+        harness.get_by_label("Import Key").click();
+        harness.run();
+
+        assert!(
+            sorted_key_aliases(&app_context).is_empty(),
+            "nothing may be imported when the key has a password"
+        );
+        assert!(
+            harness
+                .query_by_label_contains("Per-key passwords are not supported")
+                .is_some(),
+            "the password rejection must be shown, not silently swallowed"
+        );
+    });
+}
+
+#[test]
+fn invalid_recovery_phrase_message_follows_the_words() {
+    with_isolated_data_dir(|| {
+        let (runtime, app_context) = fresh_app_context();
+        // Twelve copies of the first BIP39 word fail the checksum.
+        let mut harness = import_harness(runtime, &app_context, |screen| {
+            screen.set_seed_words_for_test(&["abandon"; 12]);
+        });
+
+        assert!(
+            harness
+                .query_by_label_contains(INVALID_PHRASE_TEXT)
+                .is_some(),
+            "a complete but invalid phrase must be flagged"
+        );
+        // Every word here is spelled correctly; only the checksum fails, so
+        // the hint must also point at the word order.
+        assert!(
+            harness
+                .query_by_label_contains("in the right order")
+                .is_some(),
+            "a checksum failure must not blame spelling alone"
+        );
+        assert!(
+            harness.query_by_label("Save Wallet").is_none(),
+            "Save Wallet must stay hidden while the phrase is invalid"
+        );
+
+        with_test_phrase(harness.state_mut());
+        harness.run();
+
+        assert!(
+            harness
+                .query_by_label_contains(INVALID_PHRASE_TEXT)
+                .is_none(),
+            "the message must clear once the phrase is valid"
+        );
+        assert!(
+            harness.query_by_label("Save Wallet").is_some(),
+            "Save Wallet must appear once the phrase is valid"
         );
     });
 }

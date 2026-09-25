@@ -192,7 +192,8 @@ As a user, I want to fund a Platform payment address directly from my wallet UTX
   transfer solely because its Platform outcome is unknown.
 - Transfer information stays in transaction history, without a separate balance
   summary or View transfers button.
-- The existing Refresh action also reloads transfer records after wallet refresh.
+- The Advanced menu groups Import key, Refresh, Full resync, and Get test DASH (Testnet only). Refresh also reloads transfer records after wallet refresh.
+- Full resync scans the selected HD wallet’s Core history from the beginning without deleting wallet records. It requires a connected, synced wallet and does not verify Platform delivery.
   Core explorer links do not claim to verify Platform delivery. Cancellation
   remains unavailable pending WAL-034.
 - Copy, View, Details, and unavailable cancellation share the final Actions

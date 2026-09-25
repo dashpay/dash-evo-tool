@@ -931,6 +931,9 @@ pub enum BackendTaskSuccessResult {
     ContractSavedAfterProofError,
 
     // Wallet operation results (replacing string messages)
+    WalletResyncRequested {
+        seed_hash: crate::model::wallet::WalletSeedHash,
+    },
     RefreshedWallet {
         /// Set when Core refresh succeeded but the Platform balance sync
         /// failed; carries the typed error for the banner's details panel.

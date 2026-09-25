@@ -1205,6 +1205,57 @@ impl WalletsBalancesScreen {
             .unwrap_or_default()
     }
 
+    fn advanced_menu_items(&self) -> Vec<crate::app::ToolbarMenuItem> {
+        use crate::app::ToolbarMenuItem;
+        let hd = self.selected_wallet.as_ref();
+        let has_wallet = hd.is_some() || self.selected_single_key_wallet.is_some();
+        let synced = self.app_context.connection_status().spv_status() == SpvStatus::Running;
+        let mut items = vec![
+            ToolbarMenuItem {
+                label: "Import key",
+                action: DesiredAppAction::Custom("OpenImportSingleKey".into()),
+                enabled: true,
+                tooltip: "Import a wallet from a private key.",
+            },
+            ToolbarMenuItem {
+                label: "Refresh",
+                action: DesiredAppAction::Custom(
+                    if hd.is_some() {
+                        "RefreshHDWallet"
+                    } else {
+                        "RefreshSKWallet"
+                    }
+                    .into(),
+                ),
+                enabled: has_wallet && !self.refreshing,
+                tooltip: "Select a wallet and wait for any current refresh to finish before refreshing its balances and transfer records.",
+            },
+            ToolbarMenuItem {
+                label: "Full resync",
+                action: hd
+                    .map(|wallet| {
+                        DesiredAppAction::BackendTask(Box::new(BackendTask::CoreTask(
+                            CoreTask::FullResyncWallet {
+                                seed_hash: wallet.read_recover().seed_hash(),
+                            },
+                        )))
+                    })
+                    .unwrap_or(DesiredAppAction::None),
+                enabled: hd.is_some() && synced && !self.refreshing,
+                tooltip: "Scan the selected HD wallet's Core history from the beginning. Wait for the current sync and refresh to finish. Keep the app open until scanning completes; this does not verify Platform delivery.",
+            },
+        ];
+        if self.app_context.network == dash_sdk::dpp::dashcore::Network::Testnet {
+            items.push(ToolbarMenuItem {
+                label: "Get test DASH",
+                action: DesiredAppAction::Custom("GetTestDash".into()),
+                enabled: true,
+                tooltip: "Open the Testnet faucet in your browser.",
+            });
+        }
+        items
+    }
+
     fn render_action_buttons(&mut self, ui: &mut Ui, ctx: &Context) -> AppAction {
         let mut action = AppAction::None;
         ui.add_space(10.0);
@@ -1262,22 +1313,6 @@ impl WalletsBalancesScreen {
                     egui::vec2(remaining, ui.min_size().y),
                     egui::Layout::right_to_left(egui::Align::Center),
                     |ui| {
-                        if matches!(
-                            self.app_context.network,
-                            dash_sdk::dpp::dashcore::Network::Testnet
-                        ) && ui
-                            .button(
-                                RichText::new("Get Test Dash")
-                                    .color(DashColors::text_primary(dark_mode))
-                                    .strong(),
-                            )
-                            .clicked()
-                        {
-                            ui.ctx().open_url(egui::OpenUrl::new_tab(
-                                "https://faucet.testnet.networks.dash.org/",
-                            ));
-                        }
-
                         if matches!(
                             self.app_context.network,
                             dash_sdk::dpp::dashcore::Network::Regtest
@@ -2450,36 +2485,20 @@ impl ScreenLike for WalletsBalancesScreen {
             AppAction::None
         };
 
-        let mut right_buttons = vec![
+        let right_buttons = vec![
             (
                 "Import Wallet",
                 DesiredAppAction::AddScreenType(Box::new(ScreenType::ImportMnemonic)),
             ),
             (
-                "Import key (advanced)",
-                DesiredAppAction::Custom("OpenImportSingleKey".to_string()),
-            ),
-            (
                 "Create Wallet",
                 DesiredAppAction::AddScreenType(Box::new(ScreenType::AddNewWallet)),
             ),
+            (
+                "Advanced",
+                DesiredAppAction::Menu(self.advanced_menu_items()),
+            ),
         ];
-
-        // Add Refresh button for HD wallet
-        if !self.refreshing && self.selected_wallet.is_some() {
-            right_buttons.push((
-                "Refresh",
-                DesiredAppAction::Custom("RefreshHDWallet".to_string()),
-            ));
-        }
-
-        // Add Refresh button for single key wallet
-        if !self.refreshing && self.selected_single_key_wallet.is_some() {
-            right_buttons.push((
-                "Refresh",
-                DesiredAppAction::Custom("RefreshSKWallet".to_string()),
-            ));
-        }
         // Capturing variant: the effect is already applied to the app-global
         // selection, but this page owns the wallet-selection surface, so it must
         // also mirror the switch into its own cache — otherwise the pill and the
@@ -2803,15 +2822,23 @@ impl ScreenLike for WalletsBalancesScreen {
             }
         }
 
-        if let AppAction::BackendTask(BackendTask::CoreTask(CoreTask::RefreshWalletInfo(_, _))) =
-            action
+        if let AppAction::BackendTask(BackendTask::CoreTask(
+            CoreTask::RefreshWalletInfo(_, _) | CoreTask::FullResyncWallet { .. },
+        )) = action
         {
             self.refreshing = true;
         }
 
         // Handle custom refresh actions - check wallet lock status
         if let AppAction::Custom(ref cmd) = action {
-            if cmd == "OpenImportSingleKey" {
+            if cmd == "GetTestDash" {
+                if self.app_context.network == dash_sdk::dpp::dashcore::Network::Testnet {
+                    ui.ctx().open_url(egui::OpenUrl::new_tab(
+                        "https://faucet.testnet.networks.dash.org/",
+                    ));
+                }
+                action = AppAction::None;
+            } else if cmd == "OpenImportSingleKey" {
                 // Sync the dialog's network with the active context every
                 // open so a quick network switch can't show a stale preview.
                 self.import_single_key_dialog
@@ -2943,6 +2970,22 @@ impl ScreenLike for WalletsBalancesScreen {
                 {
                     self.pending_transfer_error.clear();
                 }
+            }
+            crate::ui::BackendTaskSuccessResult::WalletResyncRequested { seed_hash } => {
+                if !self
+                    .selected_wallet
+                    .as_ref()
+                    .is_some_and(|wallet| wallet.read_recover().seed_hash() == seed_hash)
+                {
+                    return;
+                }
+                self.refreshing = false;
+                self.pending_transfers.refresh();
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "Full resync requested. Keep the app open and follow scanning progress in the connection status. If you restart the app before it finishes, request Full resync again.",
+                    MessageType::Info,
+                );
             }
             crate::ui::BackendTaskSuccessResult::RefreshedWallet { warning } => {
                 self.refreshing = false;
@@ -3343,11 +3386,16 @@ mod tests {
 
     /// Build an offline `AppContext` (no network I/O, throwaway data dir).
     fn offline_ctx() -> (Arc<AppContext>, tempfile::TempDir) {
+        offline_ctx_for_network(dash_sdk::dpp::dashcore::Network::Testnet)
+    }
+
+    fn offline_ctx_for_network(
+        network: dash_sdk::dpp::dashcore::Network,
+    ) -> (Arc<AppContext>, tempfile::TempDir) {
         use crate::app_dir::ensure_env_file;
         use crate::context::connection_status::ConnectionStatus;
         use crate::database::test_helpers::create_database_at_path;
         use crate::utils::tasks::TaskManager;
-        use dash_sdk::dpp::dashcore::Network;
 
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let data_dir = temp_dir.path().to_path_buf();
@@ -3357,7 +3405,7 @@ mod tests {
         let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
         let ctx = AppContext::new(
             data_dir,
-            Network::Testnet,
+            network,
             db,
             Arc::new(TaskManager::new()),
             Arc::new(ConnectionStatus::new()),
@@ -3366,7 +3414,7 @@ mod tests {
             secret_store,
             crate::model::user_role::UserRoleCell::default(),
         )
-        .expect("offline testnet AppContext::new");
+        .expect("offline AppContext::new");
         (ctx, temp_dir)
     }
 
@@ -3378,6 +3426,45 @@ mod tests {
         ctx.wallet_context()
             .insert_test_wallet(seed_hash, Arc::new(RwLock::new(wallet)));
         seed_hash
+    }
+
+    #[test]
+    fn advanced_wallet_menu_hides_faucet_on_mainnet() {
+        let (ctx, _tmp) = offline_ctx_for_network(dash_sdk::dpp::dashcore::Network::Mainnet);
+        let screen = WalletsBalancesScreen::new(&ctx);
+        assert!(
+            screen
+                .advanced_menu_items()
+                .iter()
+                .all(|item| item.label != "Get test DASH")
+        );
+    }
+
+    #[test]
+    fn advanced_wallet_menu_keeps_refresh_and_resync_scoped() {
+        let (ctx, _tmp) = offline_ctx();
+        let mut screen = WalletsBalancesScreen::new(&ctx);
+        let items = screen.advanced_menu_items();
+        assert_eq!(
+            items.iter().map(|i| i.label).collect::<Vec<_>>(),
+            ["Import key", "Refresh", "Full resync", "Get test DASH"]
+        );
+        assert!(items[0].enabled);
+        assert!(!items[1].enabled);
+        assert!(!items[2].enabled);
+        let seed_hash = seed_hd_wallet(&ctx, 42);
+        screen.selected_wallet = ctx.wallet_context().hd_wallet(&seed_hash);
+        ctx.connection_status().set_spv_status(SpvStatus::Running);
+        let items = screen.advanced_menu_items();
+        assert!(items[1].enabled);
+        assert!(items[2].enabled);
+        assert!(matches!(&items[2].action,
+            DesiredAppAction::BackendTask(task) if matches!(task.as_ref(),
+                BackendTask::CoreTask(CoreTask::FullResyncWallet { seed_hash: id }) if *id == seed_hash)));
+        ctx.connection_status().set_spv_status(SpvStatus::Syncing);
+        assert!(!screen.advanced_menu_items()[2].enabled);
+        screen.refreshing = true;
+        assert!(!screen.advanced_menu_items()[1].enabled);
     }
 
     #[test]

@@ -298,9 +298,56 @@ fn render_top_island(
                                 // Render other buttons normally
                                 for (text, btn_act) in other_actions.into_iter().rev() {
                                     ui.add_space(3.0);
-                                    if ComponentStyles::add_toolbar_button(ui, text, network_accent)
-                                        .clicked()
-                                    {
+                                    let label = if matches!(btn_act, DesiredAppAction::Menu(_)) {
+                                        format!("{text} ▾")
+                                    } else {
+                                        text.to_owned()
+                                    };
+                                    let response = ComponentStyles::add_toolbar_button(
+                                        ui,
+                                        &label,
+                                        network_accent,
+                                    );
+                                    if let DesiredAppAction::Menu(items) = btn_act {
+                                        egui::Popup::new(
+                                            ui.make_persistent_id(text),
+                                            ui.ctx().clone(),
+                                            &response,
+                                            response.layer_id,
+                                        )
+                                        .open_memory(
+                                            response
+                                                .clicked()
+                                                .then_some(egui::SetOpenCommand::Toggle),
+                                        )
+                                        .close_behavior(
+                                            egui::PopupCloseBehavior::CloseOnClickOutside,
+                                        )
+                                        .frame(
+                                            egui::Frame::popup(ui.style()).fill(
+                                                DashColors::popup_fill(ui.visuals().dark_mode),
+                                            ),
+                                        )
+                                        .show(|ui| {
+                                            for item in items {
+                                                let clicked = ui
+                                                    .add_enabled_ui(item.enabled, |ui| {
+                                                        ComponentStyles::add_button(
+                                                            ui,
+                                                            egui::Button::new(item.label),
+                                                        )
+                                                    })
+                                                    .inner
+                                                    .clickable_tooltip(item.tooltip)
+                                                    .disabled_tooltip(item.tooltip)
+                                                    .clicked();
+                                                if clicked {
+                                                    action = item.action.create_action(app_context);
+                                                    ui.close();
+                                                }
+                                            }
+                                        });
+                                    } else if response.clicked() {
                                         action = btn_act.create_action(app_context);
                                     }
                                 }
@@ -471,6 +518,70 @@ pub fn add_top_panel_with_global_nav_capturing(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn advanced_menu_opens_dispatches_and_closes_in_both_themes() {
+        use crate::app::ToolbarMenuItem;
+        use egui_kittest::{
+            Harness,
+            kittest::{NodeT, Queryable},
+        };
+        for dark in [false, true] {
+            let tmp = tempfile::tempdir().expect("temp dir");
+            let ctx = crate::context::test_support::test_app_context(tmp.path());
+            let mut harness = Harness::builder()
+                .with_size(egui::vec2(1200.0, 400.0))
+                .build_ui_state(
+                    |ui, last_action| {
+                        let action = render_top_island(
+                            ui,
+                            &ctx,
+                            |_| AppAction::None,
+                            vec![(
+                                "Advanced",
+                                DesiredAppAction::Menu(vec![
+                                    ToolbarMenuItem {
+                                        label: "Import key",
+                                        action: DesiredAppAction::Custom("import".into()),
+                                        enabled: true,
+                                        tooltip: "Import a key.",
+                                    },
+                                    ToolbarMenuItem {
+                                        label: "Full resync",
+                                        action: DesiredAppAction::Custom("resync".into()),
+                                        enabled: false,
+                                        tooltip: "Wait for sync.",
+                                    },
+                                ]),
+                            )],
+                        );
+                        if action != AppAction::None {
+                            *last_action = action;
+                        }
+                    },
+                    AppAction::None,
+                );
+            harness.ctx.set_visuals(if dark {
+                egui::Visuals::dark()
+            } else {
+                egui::Visuals::light()
+            });
+            harness.run();
+            assert!(harness.query_by_label("Import key").is_none());
+            harness.get_by_label("Advanced ▾").click();
+            harness.run();
+            assert!(
+                harness
+                    .get_by_label("Full resync")
+                    .accesskit_node()
+                    .is_disabled()
+            );
+            harness.get_by_label("Import key").click();
+            harness.run();
+            assert_eq!(harness.state(), &AppAction::Custom("import".into()));
+            assert!(harness.query_by_label("Import key").is_none());
+        }
+    }
 
     /// TC-WALLETLINK-02: the Wallets page's spec exposes an **interactive**
     /// (`Consumed`) wallet pill with no how-to tooltip — the pill drives the

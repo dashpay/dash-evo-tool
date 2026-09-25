@@ -1144,6 +1144,15 @@ pub enum TaskError {
     #[error("Wallet not found. Please check your wallet list and try again.")]
     WalletNotFound,
 
+    #[error("Full resync is unavailable. Connect to the network and wait for the current sync to finish, then try again.")]
+    WalletResyncUnavailable,
+
+    #[error("The wallet scan could not be requested. Retry Full resync.")]
+    WalletResyncWorker {
+        #[source]
+        source: tokio::task::JoinError,
+    },
+
     /// The wallet is locked and must be unlocked before this operation can proceed.
     #[error("Wallet is locked. Please unlock your wallet and try again.")]
     WalletLocked,

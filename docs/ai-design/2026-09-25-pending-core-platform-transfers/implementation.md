@@ -56,3 +56,18 @@ records, pending-first ordering, historical recovery distinguished from pending 
 restored-history conflicts, stale async results, and light/dark/narrow UI layouts.
 The UI regression fails on the card-based version because it has no Unconfirmed
 row in the Core table. No live fund movement is used for these tests.
+
+## Advanced wallet actions
+
+The toolbar groups Import key, Refresh, Full resync, and (on Testnet) Get test
+DASH in Advanced. Refresh retains its existing balance/transfer-record behavior.
+Full resync requests a Core filter scan from genesis for the selected HD wallet
+through the pinned manager's `spv_rescan_filters_blocking` API. The blocking
+manager call runs off the async executor. The backend rejects requests while
+Core is disconnected or already syncing, and an unknown wallet cannot trigger
+a scan of another wallet. Wallet records and keys are retained.
+
+Connection status displays the subsequent scan progress. The request rewinds an
+in-memory checkpoint: closing the app before completion requires requesting the
+scan again. This is a Core rescan, not a rebuild of Platform/shielded state or a
+verified Platform delivery check. Historical conflict cleanup is not guaranteed.

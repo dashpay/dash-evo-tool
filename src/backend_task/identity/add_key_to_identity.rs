@@ -5,7 +5,7 @@ use crate::context::AppContext;
 use crate::model::derived_identity_key::{
     derivation_index_limit, derivation_wallet, is_derivable_key_type, occupied_indices,
 };
-use crate::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity;
+use crate::model::qualified_identity::PrivateKeyTarget::{self, PrivateKeyOnMainIdentity};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::qualified_identity::encrypted_key_storage::{
     PrivateKeyData, WalletDerivationPath,
@@ -306,37 +306,31 @@ impl AppContext {
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
 
-        // A password-protected identity must never acquire a keyless
-        // key. The object password was already verified up front (before the
-        // broadcast above), so here we just seal the newly-added key Tier-2
-        // under that SAME password and mark it `InVault` BEFORE saving, so the
-        // at-rest encode writes no plaintext for it. The encode-path guard
-        // (`encode_identity_blob_vault_first` → `IdentityKeyProtectionDowngrade`)
-        // still fails closed if this seal is ever skipped.
-        //
-        // This seal is the one fallible disk write between the broadcast above
-        // and the persist below, and on-chain + local cannot be made atomic. If
-        // it fails (I/O error, corrupt keystore), the key is already on-chain but
-        // not saved here: fail with the typed, actionable
-        // `IdentityKeyAddedButNotSaved` (the key is on the network; retry after
-        // freeing disk space) instead of a silent loss or a misleading storage
-        // error — and NEVER fall back to a keyless write (that would strip the
-        // protection this branch exists to preserve).
+        // Past this point the key is on the network: persist it, reporting any
+        // failure as "added but not saved" (see `persist_added_identity_key`).
         let new_key = (
             PrivateKeyOnMainIdentity,
             public_key_to_add.identity_public_key.id(),
         );
         self.persist_added_identity_key(
-            &mut qualified_identity,
+            &qualified_identity,
             new_key,
+            &public_key_to_add,
             private_key.as_ref(),
             verified_password,
         )?;
         Ok(BackendTaskSuccessResult::AddedKeyToIdentity(fee_result))
     }
 
-    /// Seal the new key and store the updated record, both under this
-    /// identity's record guard.
+    /// Seal the new key and store it on the identity's record, both under
+    /// this identity's record guard.
+    ///
+    /// The record is re-read under the guard and only this add is applied to
+    /// it: the post-broadcast on-chain identity (new public key, balance,
+    /// revision) and the one new private-key entry. `snapshot` — taken before
+    /// the network round trips — is never written back, so a key, alias or
+    /// protection change another writer saved during the broadcast survives
+    /// (SEC-101).
     ///
     /// The guard spans the seal because the seal writes private key material
     /// and the write is what makes anything point at it. Without it, an unload
@@ -346,57 +340,113 @@ impl AppContext {
     /// the record write is declined. The key would sit in the vault for an
     /// identity with no record, no roster entry and no manifest: unreachable
     /// through the identity model, so no sweep can ever collect it, on a device
-    /// that told the user it had destroyed that identity's keys.
-    ///
-    /// So the roster is rechecked under the guard first, and a delisted
-    /// identity ends the task before anything is sealed. Nothing is lost that
-    /// the user does not already have: a `Some(private_key)` came from the
-    /// add-key screen, typed in by them.
+    /// that told the user it had destroyed that identity's keys. So the roster
+    /// is rechecked under the guard first, and a delisted identity ends the
+    /// task before anything is sealed.
     ///
     /// `private_key` is `None` for a wallet-derived key, stored as
     /// `AtWalletDerivationPath`: there is no private material to seal, even
     /// for a password-protected identity, so the seal is skipped. That key
     /// stays protected by its wallet and recoverable from the wallet's
     /// recovery phrase.
+    ///
+    /// Everything here runs after the key was accepted on the network, so
+    /// every failure is reported as
+    /// [`TaskError::IdentityKeyAddedButNotSaved`] (or
+    /// [`TaskError::IdentityKeyAddedButIdentityUnloaded`]) — never as a raw
+    /// storage error that reads like the add failed (SEC-104). The add-key
+    /// screen keeps a user-entered private key on hand in both cases; a
+    /// wallet-derived key needs no copy, the wallet can derive it again.
     fn persist_added_identity_key(
         &self,
-        qualified_identity: &mut QualifiedIdentity,
-        new_key: (crate::model::qualified_identity::PrivateKeyTarget, KeyID),
+        snapshot: &QualifiedIdentity,
+        new_key: (PrivateKeyTarget, KeyID),
+        public_key: &QualifiedIdentityPublicKey,
         private_key: Option<&[u8; 32]>,
         verified_password: Option<VerifiedIdentityPassword>,
     ) -> Result<(), TaskError> {
-        let identity_id = qualified_identity.identity.id();
+        let identity_id = snapshot.identity.id();
         let lock = self.identity_record_lock(identity_id);
         let _record_guard = lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-        if !self.is_identity_listed(&identity_id)? {
+        let origin = AddedKeyOrigin::of(private_key);
+        let not_saved = |source| origin.not_saved(source);
+        if !self.is_identity_listed(&identity_id).map_err(not_saved)? {
             tracing::warn!(
                 target = "backend_task::identity",
                 identity_id = %identity_id,
                 "Identity was removed from this device while its new key was being added; the key is on the network and was not sealed here",
             );
-            return Err(TaskError::IdentityKeyAddedButIdentityUnloaded);
+            return Err(origin.identity_unloaded());
         }
 
-        // A password-protected identity must never acquire a keyless
-        // key. The object password was already verified up front (before the
-        // broadcast above), so here we just seal the newly-added key Tier-2
-        // under that SAME password and mark it `InVault` BEFORE saving, so the
-        // at-rest encode writes no plaintext for it. The encode-path guard
-        // (`encode_identity_blob_vault_first` → `IdentityKeyProtectionDowngrade`)
-        // still fails closed if this seal is ever skipped.
-        //
-        // This seal is the one fallible disk write between the broadcast above
-        // and the persist below, and on-chain + local cannot be made atomic. If
-        // it fails (I/O error, corrupt keystore), the key is already on-chain but
-        // not saved here: fail with the typed, actionable
-        // `IdentityKeyAddedButNotSaved` (the key is on the network; retry after
-        // freeing disk space) instead of a silent loss or a misleading storage
-        // error — and NEVER fall back to a keyless write (that would strip the
-        // protection this branch exists to preserve).
-        if let (Some(password), Some(private_key)) = (verified_password, private_key) {
+        self.store_added_identity_key_locked(
+            snapshot,
+            new_key,
+            public_key,
+            private_key,
+            verified_password,
+        )
+        .map_err(not_saved)
+    }
+
+    /// The body of [`Self::persist_added_identity_key`]; the caller holds the
+    /// identity's record guard and maps every error.
+    fn store_added_identity_key_locked(
+        &self,
+        snapshot: &QualifiedIdentity,
+        new_key: (PrivateKeyTarget, KeyID),
+        public_key: &QualifiedIdentityPublicKey,
+        private_key: Option<&[u8; 32]>,
+        verified_password: Option<VerifiedIdentityPassword>,
+    ) -> Result<(), TaskError> {
+        let identity_id = snapshot.identity.id();
+        // Listed but without a blob is a torn record; the snapshot is the best
+        // base there is, as before.
+        let mut record = self
+            .get_local_qualified_identity(&identity_id)?
+            .unwrap_or_else(|| snapshot.clone());
+
+        // The on-chain identity as the broadcast left it. Public keys only
+        // accumulate on-chain, so any key the stored copy knows and the
+        // snapshot does not is kept rather than dropped.
+        let mut identity = snapshot.identity.clone();
+        for (key_id, stored_key) in record.identity.public_keys() {
+            if !identity.public_keys().contains_key(key_id) {
+                identity.add_public_key(stored_key.clone());
+            }
+        }
+        record.identity = identity;
+
+        // Both inserts refuse a slot another writer filled with a different
+        // key meanwhile, before anything is sealed.
+        let Some(private_key) = private_key else {
+            // A wallet-derived key: file its derivation path only. Nothing to
+            // seal — the key stays protected by its wallet.
+            let path = public_key
+                .in_wallet_at_derivation_path
+                .clone()
+                .ok_or(TaskError::DerivedKeyWalletRequired)?;
+            record
+                .private_keys
+                .insert_wallet_derived(new_key, public_key.clone(), path)?;
+            return self.write_local_qualified_identity_locked(&record);
+        };
+        record
+            .private_keys
+            .insert_non_encrypted(new_key.clone(), (public_key.clone(), *private_key))?;
+
+        // A password-protected identity must never acquire a keyless key. The
+        // object password was verified before the broadcast, so the new key is
+        // sealed Tier-2 under that SAME password and marked `InVault` BEFORE
+        // saving, so the at-rest encode writes no plaintext for it. The
+        // encode-path guard (`encode_identity_blob_vault_first` →
+        // `IdentityKeyProtectionDowngrade`) still fails closed if this seal is
+        // skipped — including when the identity was protected during the
+        // broadcast of a keyless add. NEVER fall back to a keyless write.
+        if let Some(password) = verified_password {
             self.wallet_backend()?
                 .secret_access()
                 .seal_new_identity_key_with_password(
@@ -405,15 +455,12 @@ impl AppContext {
                     new_key.1,
                     private_key,
                     &password,
-                )
-                .map_err(key_added_but_not_saved)?;
-            // O-1: `mark_in_vault` reports whether the key was present to flip.
-            // In this single-threaded flow the key we just inserted is always
-            // present, so a `false` is an unexpected invariant break — warn.
-            // Persistence stays safe regardless: the at-rest encode guard fails
-            // closed on any unmarked resident plaintext key of a protected
-            // identity, so no keyless key can ever be written.
-            if !qualified_identity.private_keys.mark_in_vault(&new_key) {
+                )?;
+            // The entry was inserted just above under the record guard, so a
+            // `false` is an invariant break — warn. Persistence stays safe
+            // regardless: the at-rest encode guard fails closed on any
+            // unmarked resident plaintext key of a protected identity.
+            if !record.private_keys.mark_in_vault(&new_key) {
                 tracing::warn!(
                     target = "backend_task::identity",
                     "Sealed identity key was unexpectedly absent when marking it in-vault",
@@ -421,7 +468,7 @@ impl AppContext {
             }
         }
 
-        self.write_local_qualified_identity_locked(qualified_identity)
+        self.write_local_qualified_identity_locked(&record)
     }
 }
 
@@ -514,16 +561,64 @@ async fn verify_protected_identity_precondition(
     }
 }
 
-/// Map a POST-broadcast seal failure to the typed
-/// [`TaskError::IdentityKeyAddedButNotSaved`]. By the time the seal runs the new
-/// key is already accepted on-chain, so a vault-write failure here cannot be
-/// undone — surface a loud, actionable error (the key is on the network; retry
-/// after freeing disk space) that preserves the upstream seal failure in its
-/// `#[source]` chain, rather than a silent loss or a misleading storage message.
-/// Never falls back to a keyless write (the protected invariant holds).
-fn key_added_but_not_saved(source: TaskError) -> TaskError {
-    TaskError::IdentityKeyAddedButNotSaved {
-        source: Box::new(source),
+/// Where the private half of a just-broadcast key lives, which decides the
+/// recovery advice when saving it on this device fails.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AddedKeyOrigin {
+    /// Pasted or generated: the private key in the form may be the only copy.
+    UserEntered,
+    /// Wallet-derived: the wallet derives it again, so there is nothing to keep.
+    WalletDerived,
+}
+
+impl AddedKeyOrigin {
+    /// Classify by key material: a key added without a private half is one the
+    /// wallet derives.
+    fn of(private_key: Option<&[u8; 32]>) -> Self {
+        match private_key {
+            Some(_) => Self::UserEntered,
+            None => Self::WalletDerived,
+        }
+    }
+
+    /// Map a POST-broadcast failure (roster read, record read, occupied slot,
+    /// seal, vault or record write, protection-downgrade refusal) to the typed
+    /// "added but not saved" error. The new key is already accepted on-chain,
+    /// so the failure cannot be undone — surface a loud, actionable error that
+    /// preserves the upstream failure in its `#[source]` chain, rather than a
+    /// raw storage message that reads like the add failed. Never falls back to
+    /// a keyless write.
+    ///
+    /// A user-entered key maps to [`TaskError::IdentityKeyAddedButNotSaved`]
+    /// (keep the private key); a wallet-derived one to
+    /// [`TaskError::DerivedIdentityKeyAddedButNotSaved`] (nothing to keep).
+    ///
+    /// Two user-entered causes get their own variant, because the generic
+    /// remedy — refresh, then enter the key — would be refused again for the
+    /// same reason: a protection-downgrade refusal and an occupied slot.
+    fn not_saved(self, source: TaskError) -> TaskError {
+        match (self, source) {
+            (Self::UserEntered, TaskError::IdentityKeyProtectionDowngrade) => {
+                TaskError::IdentityKeyAddedButNotSavedWhileProtected
+            }
+            (Self::UserEntered, TaskError::IdentityKeySlotOccupied) => {
+                TaskError::IdentityKeyAddedButSlotOccupied
+            }
+            (Self::UserEntered, source) => TaskError::IdentityKeyAddedButNotSaved {
+                source: Box::new(source),
+            },
+            (Self::WalletDerived, source) => TaskError::DerivedIdentityKeyAddedButNotSaved {
+                source: Box::new(source),
+            },
+        }
+    }
+
+    /// The identity was removed from this device while its key was added.
+    fn identity_unloaded(self) -> TaskError {
+        match self {
+            Self::UserEntered => TaskError::IdentityKeyAddedButIdentityUnloaded,
+            Self::WalletDerived => TaskError::DerivedIdentityKeyAddedButIdentityUnloaded,
+        }
     }
 }
 
@@ -536,6 +631,7 @@ mod tests {
     use crate::wallet_backend::secret_prompt::{NullSecretPrompt, SecretPrompt};
     use crate::wallet_backend::single_key::open_secret_store;
     use dash_sdk::dpp::dashcore::Network;
+    use dash_sdk::platform::Identifier;
     use platform_wallet_storage::secrets::{
         SecretBytes, SecretStore, SecretString, WalletId as SecretWalletId,
     };
@@ -578,7 +674,7 @@ mod tests {
         let placement = (PrivateKeyOnMainIdentity, 5);
         staged
             .ctx
-            .persist_added_identity_key(&mut identity, placement.clone(), None, None)
+            .persist_added_identity_key(&identity, placement.clone(), &key, None, None)
             .unwrap();
         let restored = staged
             .ctx
@@ -1229,10 +1325,12 @@ mod tests {
             .expect("unload the identity");
 
         let new_key = (PrivateKeyTarget::PrivateKeyOnMainIdentity, NEW_KEY_ID);
+        let public_key = add_new_key_to_snapshot(&mut qualified_identity, NEW_KEY_ID, [0xCD; 32]);
         let error = ctx
             .persist_added_identity_key(
-                &mut qualified_identity,
+                &qualified_identity,
                 (new_key.0.clone(), new_key.1),
+                &public_key,
                 Some(&[0xCD; 32]),
                 Some(password),
             )
@@ -1254,6 +1352,228 @@ mod tests {
             !ctx.is_identity_listed(&staged.id).expect("read the roster"),
             "and the identity must not be put back on the roster",
         );
+    }
+
+    /// What `add_key_to_identity` does to its snapshot before the broadcast:
+    /// the new public key joins the identity and its private half is filed
+    /// at `(main, key_id)`. Returns the new public key.
+    fn add_new_key_to_snapshot(
+        snapshot: &mut QualifiedIdentity,
+        key_id: KeyID,
+        private_key: [u8; 32],
+    ) -> QualifiedIdentityPublicKey {
+        use dash_sdk::dpp::version::PlatformVersion;
+        use dash_sdk::platform::IdentityPublicKey;
+
+        let public_key: QualifiedIdentityPublicKey = IdentityPublicKey::random_key(
+            key_id,
+            Some(u64::from(key_id)),
+            PlatformVersion::latest(),
+        )
+        .into();
+        snapshot
+            .identity
+            .add_public_key(public_key.identity_public_key.clone());
+        snapshot
+            .private_keys
+            .insert_non_encrypted(
+                (PrivateKeyTarget::PrivateKeyOnMainIdentity, key_id),
+                (public_key.clone(), private_key),
+            )
+            .expect("file the new key on the snapshot");
+        public_key
+    }
+
+    /// Another writer lands a manual key (and an alias) while the add-key
+    /// broadcast is in flight, as a load-merge, discovery or key paste would.
+    fn save_concurrent_key_and_alias(ctx: &AppContext, identity_id: &Identifier, key_id: KeyID) {
+        use dash_sdk::dpp::version::PlatformVersion;
+        use dash_sdk::platform::IdentityPublicKey;
+
+        let concurrent: QualifiedIdentityPublicKey =
+            IdentityPublicKey::random_key(key_id, Some(99), PlatformVersion::latest()).into();
+        ctx.edit_local_qualified_identity(identity_id, |fresh| {
+            fresh
+                .identity
+                .add_public_key(concurrent.identity_public_key.clone());
+            fresh.private_keys.insert_non_encrypted(
+                (PrivateKeyTarget::PrivateKeyOnMainIdentity, key_id),
+                (concurrent.clone(), [0x11; 32]),
+            )
+        })
+        .expect("save the concurrent key");
+        ctx.set_identity_alias(identity_id, Some("renamed meanwhile"))
+            .expect("rename the identity");
+    }
+
+    /// SEC-101: the post-broadcast persist applies only this add to the record
+    /// as it is on disk now; a key and an alias another writer saved during
+    /// the broadcast survive.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn persisting_an_added_key_keeps_what_others_saved_during_the_broadcast() {
+        use crate::context::test_staging::stage_identity_with_vaulted_keys;
+
+        const NEW_KEY_ID: KeyID = 10;
+        const CONCURRENT_KEY_ID: KeyID = 9;
+        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let ctx = &staged.ctx;
+        let mut snapshot = ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read the identity")
+            .expect("identity present");
+        let public_key = add_new_key_to_snapshot(&mut snapshot, NEW_KEY_ID, [0xCD; 32]);
+
+        save_concurrent_key_and_alias(ctx, &staged.id, CONCURRENT_KEY_ID);
+
+        ctx.persist_added_identity_key(
+            &snapshot,
+            (PrivateKeyTarget::PrivateKeyOnMainIdentity, NEW_KEY_ID),
+            &public_key,
+            Some(&[0xCD; 32]),
+            None,
+        )
+        .expect("persist the added key");
+
+        let stored = ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read back")
+            .expect("identity present");
+        let keys = stored.private_keys.keys_set();
+        for key_id in [1, 2, 3, CONCURRENT_KEY_ID, NEW_KEY_ID] {
+            assert!(
+                keys.contains(&(PrivateKeyTarget::PrivateKeyOnMainIdentity, key_id)),
+                "key {key_id} must be on the stored record, found {keys:?}",
+            );
+        }
+        assert_eq!(
+            stored.alias.as_deref(),
+            Some("renamed meanwhile"),
+            "an alias saved during the broadcast must survive",
+        );
+        assert!(
+            stored.identity.public_keys().contains_key(&NEW_KEY_ID),
+            "the refreshed on-chain identity is stored with the new key",
+        );
+    }
+
+    /// SEC-104: the identity got password-protected while a keyless add was
+    /// in flight. The key is on the network but cannot be stored without a
+    /// protection downgrade, so the task reports the typed "added but not
+    /// saved" outcome — not a raw storage error — and writes nothing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_protect_during_the_broadcast_reports_the_key_as_not_saved() {
+        use crate::context::test_staging::stage_identity_with_vaulted_keys;
+        use crate::model::secret::Secret;
+
+        const NEW_KEY_ID: KeyID = 10;
+        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let ctx = &staged.ctx;
+        let mut snapshot = ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read the identity")
+            .expect("identity present");
+        let public_key = add_new_key_to_snapshot(&mut snapshot, NEW_KEY_ID, [0xCD; 32]);
+
+        ctx.protect_identity_keys(staged.id, Secret::new("identity-object-passwordpw"), None)
+            .expect("protect the identity meanwhile");
+
+        let error = ctx
+            .persist_added_identity_key(
+                &snapshot,
+                (PrivateKeyTarget::PrivateKeyOnMainIdentity, NEW_KEY_ID),
+                &public_key,
+                Some(&[0xCD; 32]),
+                None,
+            )
+            .expect_err("a keyless key cannot join a protected identity");
+        assert!(
+            matches!(&error, TaskError::IdentityKeyAddedButNotSavedWhileProtected),
+            "expected IdentityKeyAddedButNotSavedWhileProtected, got {error:?}",
+        );
+        let stored = ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read back")
+            .expect("identity present");
+        assert!(
+            !stored
+                .private_keys
+                .keys_set()
+                .contains(&(PrivateKeyTarget::PrivateKeyOnMainIdentity, NEW_KEY_ID)),
+            "nothing is written for the refused key",
+        );
+    }
+
+    /// SEC-104: a slot taken on disk during the broadcast by a different key
+    /// is a post-broadcast failure too, reported as "added but not saved".
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_occupied_slot_after_the_broadcast_reports_the_key_as_not_saved() {
+        use crate::context::test_staging::stage_identity_with_vaulted_keys;
+
+        const NEW_KEY_ID: KeyID = 10;
+        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let ctx = &staged.ctx;
+        let mut snapshot = ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read the identity")
+            .expect("identity present");
+        let public_key = add_new_key_to_snapshot(&mut snapshot, NEW_KEY_ID, [0xCD; 32]);
+        // A different key lands in the same slot on disk.
+        save_concurrent_key_and_alias(ctx, &staged.id, NEW_KEY_ID);
+
+        let error = ctx
+            .persist_added_identity_key(
+                &snapshot,
+                (PrivateKeyTarget::PrivateKeyOnMainIdentity, NEW_KEY_ID),
+                &public_key,
+                Some(&[0xCD; 32]),
+                None,
+            )
+            .expect_err("the slot belongs to another key");
+        assert!(
+            matches!(error, TaskError::IdentityKeyAddedButSlotOccupied),
+            "expected IdentityKeyAddedButSlotOccupied, got {error:?}",
+        );
+    }
+
+    /// Thread 1d955045: the two causes whose generic remedy (refresh, then
+    /// enter the key) would be refused again get their own advice; every
+    /// other cause keeps the generic, source-preserving variant.
+    #[test]
+    fn user_entered_not_saved_advice_follows_the_cause() {
+        let entered = AddedKeyOrigin::of(Some(&[0x11; 32]));
+        let protected = entered.not_saved(TaskError::IdentityKeyProtectionDowngrade);
+        assert!(matches!(
+            protected,
+            TaskError::IdentityKeyAddedButNotSavedWhileProtected
+        ));
+        assert!(
+            protected
+                .to_string()
+                .contains("remove the password protection from this identity"),
+            "the protected cause names the extra step, got {protected}"
+        );
+        let occupied = entered.not_saved(TaskError::IdentityKeySlotOccupied);
+        assert!(matches!(
+            occupied,
+            TaskError::IdentityKeyAddedButSlotOccupied
+        ));
+        assert!(
+            occupied
+                .to_string()
+                .contains("remove its saved private key"),
+            "the occupied cause names the conflict to resolve, got {occupied}"
+        );
+        for error in [&protected, &occupied] {
+            let shown = error.to_string();
+            assert!(shown.contains("added to your identity on the network"));
+            assert!(shown.contains("Copy the new private key now"));
+        }
+        // A derived key keeps its single variant: reloading from the wallet
+        // resolves an occupied slot, and reports partial protection itself.
+        assert!(matches!(
+            AddedKeyOrigin::of(None).not_saved(TaskError::IdentityKeySlotOccupied),
+            TaskError::DerivedIdentityKeyAddedButNotSaved { .. }
+        ));
     }
 
     /// O-2 fail-closed: a HEADLESS add-key precondition for a PROTECTED identity
@@ -1354,10 +1674,17 @@ mod tests {
         use std::error::Error as _;
         // Any upstream seal error stands in for a vault-write failure; the
         // mapping wraps it without inspecting the specific variant.
-        let mapped = key_added_but_not_saved(TaskError::IdentityKeyMissing);
+        let mapped = AddedKeyOrigin::of(Some(&[0x11; 32])).not_saved(TaskError::IdentityKeyMissing);
         assert!(
             matches!(mapped, TaskError::IdentityKeyAddedButNotSaved { .. }),
             "a post-broadcast seal failure must map to the typed orphan error, got {mapped:?}"
+        );
+        assert!(
+            matches!(
+                AddedKeyOrigin::of(Some(&[0x11; 32])).identity_unloaded(),
+                TaskError::IdentityKeyAddedButIdentityUnloaded
+            ),
+            "a user-entered key keeps the copy-your-key advice when its identity was unloaded"
         );
         // The upstream cause survives in the source chain (Display/Debug split).
         let source = mapped.source().expect("upstream seal error is preserved");
@@ -1373,6 +1700,168 @@ mod tests {
         assert!(
             shown.contains("added to your identity on the network"),
             "message must tell the user the key is on-chain, got {shown}"
+        );
+    }
+
+    /// A wallet-derived key has no private half to copy, so its "added but
+    /// not saved" outcomes are dedicated variants that never ask for one.
+    #[test]
+    fn derived_post_broadcast_failure_never_asks_to_copy_a_private_key() {
+        use std::error::Error as _;
+        let mapped = AddedKeyOrigin::of(None).not_saved(TaskError::IdentityKeyMissing);
+        assert!(
+            matches!(mapped, TaskError::DerivedIdentityKeyAddedButNotSaved { .. }),
+            "a derived key maps to the derived variant, got {mapped:?}"
+        );
+        assert!(mapped.source().is_some(), "the upstream cause is preserved");
+        for error in [mapped, AddedKeyOrigin::of(None).identity_unloaded()] {
+            let shown = error.to_string();
+            assert!(
+                shown.contains("added to your identity on the network"),
+                "message must tell the user the key is on-chain, got {shown}"
+            );
+            assert!(
+                !shown.contains("Copy") && !shown.contains("private key"),
+                "a derived key has no private key to copy, got {shown}"
+            );
+        }
+    }
+
+    /// A staged identity's snapshot with a wallet-derived key filed at
+    /// `(main, key_id)` the way `add_identity_key` files it before the
+    /// broadcast. Returns the snapshot and the new key.
+    async fn derived_snapshot(
+        key_id: KeyID,
+    ) -> (
+        crate::context::test_staging::StagedIdentity,
+        QualifiedIdentity,
+        QualifiedIdentityPublicKey,
+    ) {
+        use crate::context::test_staging::stage_identity_with_vaulted_keys;
+        use crate::model::derived_identity_key::test_support::fixture;
+
+        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let (fixture_identity, cache, seed_hash, _) = fixture();
+        let mut snapshot = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read the identity")
+            .expect("identity present");
+        let mut key = fixture_identity.private_keys.identity_public_keys()[0]
+            .1
+            .clone();
+        key.identity_public_key.set_id(key_id);
+        key.identity_public_key
+            .set_security_level(dash_sdk::dpp::identity::SecurityLevel::HIGH);
+        key.identity_public_key
+            .set_data(cache.get(Network::Testnet, 0, 3).unwrap().to_bytes().into());
+        key.in_wallet_at_derivation_path = Some(WalletDerivationPath {
+            wallet_seed_hash: seed_hash,
+            derivation_path: DerivationPath::identity_authentication_path(
+                Network::Testnet,
+                KeyDerivationType::ECDSA,
+                0,
+                3,
+            ),
+        });
+        insert_derived_key(&mut snapshot, &key).expect("file the derived key");
+        snapshot
+            .identity
+            .add_public_key(key.identity_public_key.clone());
+        (staged, snapshot, key)
+    }
+
+    /// SEC-101 for a derived key: the persist files only the derivation path
+    /// onto the record as it is on disk now, so a key and an alias saved
+    /// during the broadcast survive.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn persisting_a_derived_key_keeps_what_others_saved_during_the_broadcast() {
+        const NEW_KEY_ID: KeyID = 10;
+        const CONCURRENT_KEY_ID: KeyID = 9;
+        let (staged, snapshot, key) = derived_snapshot(NEW_KEY_ID).await;
+        let ctx = &staged.ctx;
+        save_concurrent_key_and_alias(ctx, &staged.id, CONCURRENT_KEY_ID);
+
+        let placement = (PrivateKeyTarget::PrivateKeyOnMainIdentity, NEW_KEY_ID);
+        ctx.persist_added_identity_key(&snapshot, placement.clone(), &key, None, None)
+            .expect("persist the derived key");
+
+        let stored = ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read back")
+            .expect("identity present");
+        let (data, path) = stored
+            .private_keys
+            .get_cloned_private_key_data_and_wallet_info(&placement)
+            .expect("the derived key is filed");
+        assert!(matches!(data, PrivateKeyData::AtWalletDerivationPath(_)));
+        assert_eq!(path, key.in_wallet_at_derivation_path);
+        assert!(
+            stored.private_keys.keys_set().contains(&(
+                PrivateKeyTarget::PrivateKeyOnMainIdentity,
+                CONCURRENT_KEY_ID
+            )),
+            "a key saved during the broadcast survives"
+        );
+        assert_eq!(stored.alias.as_deref(), Some("renamed meanwhile"));
+    }
+
+    /// A derived key whose slot another key took during the broadcast is
+    /// refused and reported with the derived "added but not saved" variant.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_occupied_slot_reports_the_derived_key_as_not_saved() {
+        const NEW_KEY_ID: KeyID = 10;
+        let (staged, snapshot, key) = derived_snapshot(NEW_KEY_ID).await;
+        let ctx = &staged.ctx;
+        save_concurrent_key_and_alias(ctx, &staged.id, NEW_KEY_ID);
+
+        let error = ctx
+            .persist_added_identity_key(
+                &snapshot,
+                (PrivateKeyTarget::PrivateKeyOnMainIdentity, NEW_KEY_ID),
+                &key,
+                None,
+                None,
+            )
+            .expect_err("the slot belongs to another key");
+        assert!(
+            matches!(
+                &error,
+                TaskError::DerivedIdentityKeyAddedButNotSaved { source }
+                    if matches!(**source, TaskError::IdentityKeySlotOccupied)
+            ),
+            "expected DerivedIdentityKeyAddedButNotSaved over the occupied slot, got {error:?}",
+        );
+    }
+
+    /// A derived key for an identity unloaded during the broadcast reports
+    /// the derived "unloaded" variant and writes nothing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unload_during_the_broadcast_reports_the_derived_key_as_unloaded() {
+        const NEW_KEY_ID: KeyID = 10;
+        let (staged, snapshot, key) = derived_snapshot(NEW_KEY_ID).await;
+        let ctx = &staged.ctx;
+        ctx.delete_local_qualified_identity(&staged.id)
+            .expect("unload the identity");
+
+        let error = ctx
+            .persist_added_identity_key(
+                &snapshot,
+                (PrivateKeyTarget::PrivateKeyOnMainIdentity, NEW_KEY_ID),
+                &key,
+                None,
+                None,
+            )
+            .expect_err("an identity that is gone cannot take a new key");
+        assert!(
+            matches!(error, TaskError::DerivedIdentityKeyAddedButIdentityUnloaded),
+            "expected DerivedIdentityKeyAddedButIdentityUnloaded, got {error:?}",
+        );
+        assert!(
+            ctx.get_local_qualified_identity(&staged.id)
+                .expect("read back")
+                .is_none(),
+            "nothing is written for an unloaded identity",
         );
     }
 }

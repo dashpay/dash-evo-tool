@@ -358,6 +358,9 @@ pub enum BackendTaskContext {
     },
     /// A network refresh of one identity.
     IdentityRefresh(Identifier),
+    /// Adding a key (entered or wallet-derived) to one identity, so the Add
+    /// Key screen can tell its own failed add from other tasks' errors.
+    IdentityKeyAdd(Identifier),
     /// A known backend task that needs no finer UI correlation.
     Other,
     /// An error emitted without an originating backend task.
@@ -494,6 +497,14 @@ impl BackendTaskContext {
             _ => None,
         }
     }
+
+    /// The identity this operation adds a key to, or `None` for anything else.
+    pub(crate) fn added_key_identity(&self) -> Option<Identifier> {
+        match self.operation() {
+            Self::IdentityKeyAdd(identity_id) => Some(*identity_id),
+            _ => None,
+        }
+    }
 }
 
 impl From<&BackendTask> for BackendTaskContext {
@@ -539,6 +550,10 @@ impl From<&BackendTask> for BackendTaskContext {
             BackendTask::IdentityTask(IdentityTask::RefreshIdentity(identity)) => {
                 Self::IdentityRefresh(identity.identity.id())
             }
+            BackendTask::IdentityTask(
+                IdentityTask::AddKeyToIdentity(identity, ..)
+                | IdentityTask::AddDerivedKeyToIdentity { identity, .. },
+            ) => Self::IdentityKeyAdd(identity.identity.id()),
             BackendTask::WalletTask(WalletTask::WarmIdentityAuthPubkeys {
                 seed_hash,
                 identity_index,

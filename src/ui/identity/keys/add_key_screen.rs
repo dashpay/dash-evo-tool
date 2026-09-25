@@ -754,8 +754,12 @@ impl ScreenLike for AddKeyScreen {
 
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
         self.add_error_pending = context.added_key_identity() == Some(self.identity.identity.id());
+        // Every slot-load failure is consumed here, even another wallet's: it
+        // is never a failed submission, so the follow-up `display_message`
+        // must not mark the form failed.
         if let Some((seed_hash, identity_index)) = context.identity_auth_pubkey_warm() {
-            self.warm_error_pending = self.derivation.warm_failed(&seed_hash, identity_index);
+            self.derivation.warm_failed(&seed_hash, identity_index);
+            self.warm_error_pending = true;
             return;
         }
         if context.refreshed_identity() == Some(self.identity.identity.id()) {
@@ -1197,6 +1201,7 @@ impl ScreenLike for AddKeyScreen {
 #[cfg(test)]
 mod derived_key_tests {
     use super::*;
+    use crate::backend_task::wallet::WalletTask;
     use crate::context::test_staging::{StagedIdentity, stage_identity_with_vaulted_keys};
     use crate::model::derived_identity_key::test_support::fixture;
     use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
@@ -1441,6 +1446,67 @@ mod derived_key_tests {
         assert_eq!(screen.derivation.status(), ChooserStatus::Ready);
         assert!(screen.derivation.selected_index().is_some());
         assert!(screen.add_blocked_reason().is_none());
+    }
+
+    /// Another wallet's slot-load failure is not this form's failed
+    /// submission, and leaves this chooser's own load untouched.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn derived_key_another_wallet_warm_error_does_not_fail_the_form() {
+        let (staged, identity) = staged_screen_parts(false).await;
+        let mut screen = AddKeyScreen::new(identity, &staged.ctx);
+        let warm = screen.derivation.take_warm_task().unwrap();
+        let (mut other_seed_hash, identity_index) = BackendTaskContext::from(&warm)
+            .identity_auth_pubkey_warm()
+            .unwrap();
+        other_seed_hash[0] ^= 1;
+        let other_context = BackendTaskContext::IdentityAuthPubkeyWarm {
+            seed_hash: other_seed_hash,
+            identity_index,
+        };
+
+        screen.display_backend_task_error(&other_context, &TaskError::WalletLocked);
+        screen.display_message("The wallet is locked.", MessageType::Error);
+
+        assert!(
+            screen.add_key_status == AddKeyStatus::NotStarted,
+            "another wallet's slot load is not a failed submission"
+        );
+        assert_eq!(screen.derivation.status(), ChooserStatus::Loading);
+    }
+
+    /// A refresh that drops the identity's wallet path while a slot load is in
+    /// flight, then restores it, starts a fresh load instead of waiting
+    /// forever on a result the chooser no longer accepts.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn derived_key_wallet_change_while_loading_restarts_the_load() {
+        let (staged, identity) = staged_screen_parts(false).await;
+        let mut screen = AddKeyScreen::new(identity.clone(), &staged.ctx);
+        let warm = screen.derivation.take_warm_task().unwrap();
+        let (seed_hash, identity_index) = BackendTaskContext::from(&warm)
+            .identity_auth_pubkey_warm()
+            .unwrap();
+
+        let mut without_wallet = identity.clone();
+        without_wallet.wallet_index = Some(identity_index + 1);
+        screen.derivation.reload(&staged.ctx, &without_wallet);
+        assert_eq!(screen.derivation.status(), ChooserStatus::NoWallet);
+
+        screen.derivation.reload(&staged.ctx, &identity);
+        // The first wallet's stale completion arrives after the change and is
+        // ignored.
+        screen.display_backend_task_result(
+            &BackendTaskContext::from(&warm),
+            BackendTaskSuccessResult::IdentityAuthPubkeysWarmed { identity_index },
+        );
+        assert_eq!(screen.derivation.status(), ChooserStatus::Loading);
+        let Some(BackendTask::WalletTask(WalletTask::WarmIdentityAuthPubkeys {
+            seed_hash: warmed_seed_hash,
+            ..
+        })) = screen.derivation.take_warm_task()
+        else {
+            panic!("the restored wallet must dispatch a fresh slot load");
+        };
+        assert_eq!(warmed_seed_hash, seed_hash);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

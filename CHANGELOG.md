@@ -159,6 +159,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The Add Key screen ignores key-slot loading results from other wallets, so
   concurrent loading cannot leave its wallet slots unavailable.
 
+- Switching networks closes open detail screens, such as Add Key, so an action
+  prepared on the previous network cannot be submitted on the new one.
+
+- On the Add Key screen, a key-slot loading error from another wallet no longer
+  marks the form as failed. The slot list reloads when the identity's wallet
+  changes while slots are loading, instead of staying in the loading state.
+
+- Removing a wallet deletes its cached identity public keys right away, and a
+  key-slot load that finishes after the removal no longer stores them again.
+
 - A damaged legacy wallet no longer prevents healthy wallets and imported keys
   from loading at startup.
 

@@ -34,6 +34,7 @@ use crate::wallet_backend::kv::{KvAdapterError, map_kv_storage_error};
 #[cfg(test)]
 use crate::wallet_backend::sidecar::sidecar_key;
 use crate::wallet_backend::sidecar::{SidecarScope, SidecarValue, SidecarView};
+use crate::wallet_backend::wallet_context::WalletContext;
 
 /// Colon-separated namespace for the per-wallet auth-pubkey blob. The
 /// full key is `<network>:auth_pubkeys:<seed_hash_base58>`.
@@ -57,18 +58,47 @@ impl SidecarValue for AuthPubkeyCache {}
 ///
 /// Every write is a read-modify-write of the whole per-wallet blob, so writers
 /// go through [`Self::update`], which serialises them on `write_lock`.
+///
+/// Wallet removal pairs with the same lock: the wallet leaves the loaded
+/// [`WalletContext`] first, then [`Self::delete`] clears its entry under the
+/// lock, and [`Self::update`] writes only while the wallet is still loaded. A
+/// writer that finished deriving after the removal therefore cannot recreate
+/// an entry the wallet-scope cascade would never clean up.
 pub struct AuthPubkeyCacheView<'a> {
     sidecar: SidecarView<'a, AuthPubkeyCache>,
     /// Serialises read-modify-writes of the blobs this view writes. Owned by
     /// the wallet backend, whose views are the only writers of its network's
     /// entries.
     write_lock: &'a Mutex<()>,
+    /// Loaded wallets; writes for a wallet not in it are dropped. `None` only
+    /// in unit tests of the storage behaviour itself.
+    loaded_wallets: Option<&'a WalletContext>,
 }
 
 impl<'a> AuthPubkeyCacheView<'a> {
     /// Borrow a [`DetKv`] handle as a typed auth-pubkey-cache view whose
-    /// writes serialise on `write_lock`.
-    pub fn new(kv: &'a Arc<DetKv>, write_lock: &'a Mutex<()>) -> Self {
+    /// writes serialise on `write_lock` and only land for wallets loaded in
+    /// `loaded_wallets`.
+    pub fn new(
+        kv: &'a Arc<DetKv>,
+        write_lock: &'a Mutex<()>,
+        loaded_wallets: &'a WalletContext,
+    ) -> Self {
+        Self::with_wallet_gate(kv, write_lock, Some(loaded_wallets))
+    }
+
+    /// A view that writes regardless of which wallets are loaded. Tests of
+    /// the storage behaviour only.
+    #[cfg(test)]
+    pub(crate) fn without_wallet_gate(kv: &'a Arc<DetKv>, write_lock: &'a Mutex<()>) -> Self {
+        Self::with_wallet_gate(kv, write_lock, None)
+    }
+
+    fn with_wallet_gate(
+        kv: &'a Arc<DetKv>,
+        write_lock: &'a Mutex<()>,
+        loaded_wallets: Option<&'a WalletContext>,
+    ) -> Self {
         Self {
             sidecar: SidecarView::new(
                 kv,
@@ -77,6 +107,7 @@ impl<'a> AuthPubkeyCacheView<'a> {
                 map_kv_error_to_task_error,
             ),
             write_lock,
+            loaded_wallets,
         }
     }
 
@@ -99,6 +130,10 @@ impl<'a> AuthPubkeyCacheView<'a> {
     /// `edit` must only touch the cache it is given: taking another lock or
     /// prompting inside it could deadlock.
     ///
+    /// When the wallet is no longer loaded (it was removed while the caller
+    /// was deriving), `edit` still runs but nothing is written, so a late
+    /// writer cannot leave an orphaned entry behind.
+    ///
     /// The map is tiny (a handful of identities x a few keys), so a
     /// whole-blob write matches the `WalletMeta` discipline — no need for
     /// row-granular storage.
@@ -115,9 +150,23 @@ impl<'a> AuthPubkeyCacheView<'a> {
         let mut cache = self.get(network, seed_hash);
         let before = cache.clone();
         let result = edit(&mut cache);
-        if cache != before {
-            self.sidecar.set(network, seed_hash, &cache)?;
+        if cache == before {
+            return Ok(result);
         }
+        // Checked under the write lock: removal drops the wallet from the
+        // loaded set before `delete` takes this lock, so either this write
+        // lands first and is deleted, or the wallet is already gone here.
+        if self
+            .loaded_wallets
+            .is_some_and(|wallets| !wallets.contains_hd(seed_hash))
+        {
+            tracing::debug!(
+                wallet = %hex::encode(seed_hash),
+                "Skipping auth-pubkey cache write for a wallet that is no longer loaded"
+            );
+            return Ok(result);
+        }
+        self.sidecar.set(network, seed_hash, &cache)?;
         Ok(result)
     }
 
@@ -137,11 +186,15 @@ impl<'a> AuthPubkeyCacheView<'a> {
         self.sidecar.set(network, seed_hash, cache)
     }
 
-    /// Delete the cache for one wallet. Idempotent — a missing key
-    /// returns `Ok(())`. The wallet-scope cascade is the real deletion
-    /// mechanism in production; this direct delete exists for tests.
-    #[cfg(test)]
+    /// Delete the cache for one wallet, serialised with [`Self::update`].
+    /// Idempotent — a missing key returns `Ok(())`. Called on wallet removal
+    /// after the wallet left the loaded set; the wallet-scope cascade only
+    /// runs once the upstream wallet row is gone, which may be later or never.
     pub fn delete(&self, network: Network, seed_hash: &WalletSeedHash) -> Result<(), TaskError> {
+        let _guard = self
+            .write_lock
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         self.sidecar.delete(network, seed_hash)
     }
 }
@@ -183,7 +236,7 @@ mod tests {
     fn put_then_get_round_trips() {
         let kv = kv();
         let lock = Mutex::new(());
-        let view = AuthPubkeyCacheView::new(&kv, &lock);
+        let view = AuthPubkeyCacheView::without_wallet_gate(&kv, &lock);
         let seed: WalletSeedHash = [0x11; 32];
         let mut cache = AuthPubkeyCache::default();
         cache.insert(Network::Testnet, 0, 0, &pubkey(5));
@@ -200,7 +253,7 @@ mod tests {
     fn get_missing_returns_cold_default() {
         let kv = kv();
         let lock = Mutex::new(());
-        let view = AuthPubkeyCacheView::new(&kv, &lock);
+        let view = AuthPubkeyCacheView::without_wallet_gate(&kv, &lock);
         let seed: WalletSeedHash = [0x66; 32];
         let got = view.get(Network::Devnet, &seed);
         assert!(got.is_empty());
@@ -213,7 +266,7 @@ mod tests {
     fn get_partitions_by_network() {
         let kv = kv();
         let lock = Mutex::new(());
-        let view = AuthPubkeyCacheView::new(&kv, &lock);
+        let view = AuthPubkeyCacheView::without_wallet_gate(&kv, &lock);
         let seed: WalletSeedHash = [0x33; 32];
         let mut mainnet = AuthPubkeyCache::default();
         mainnet.insert(Network::Mainnet, 0, 0, &pubkey(11));
@@ -231,7 +284,7 @@ mod tests {
     fn put_upserts() {
         let kv = kv();
         let lock = Mutex::new(());
-        let view = AuthPubkeyCacheView::new(&kv, &lock);
+        let view = AuthPubkeyCacheView::without_wallet_gate(&kv, &lock);
         let seed: WalletSeedHash = [0x22; 32];
         let mut first = AuthPubkeyCache::default();
         first.insert(Network::Mainnet, 0, 0, &pubkey(1));
@@ -247,7 +300,7 @@ mod tests {
     fn delete_is_idempotent() {
         let kv = kv();
         let lock = Mutex::new(());
-        let view = AuthPubkeyCacheView::new(&kv, &lock);
+        let view = AuthPubkeyCacheView::without_wallet_gate(&kv, &lock);
         let seed: WalletSeedHash = [0x55; 32];
         view.delete(Network::Testnet, &seed).expect("delete absent");
         let mut cache = AuthPubkeyCache::default();
@@ -265,7 +318,7 @@ mod tests {
     fn update_merges_into_the_fresh_blob_instead_of_a_stale_snapshot() {
         let kv = kv();
         let lock = Mutex::new(());
-        let view = AuthPubkeyCacheView::new(&kv, &lock);
+        let view = AuthPubkeyCacheView::without_wallet_gate(&kv, &lock);
         let seed: WalletSeedHash = [0x77; 32];
         let (bad, genuine, other) = (pubkey(1), pubkey(2), pubkey(3));
         let mut poisoned = AuthPubkeyCache::default();
@@ -316,7 +369,7 @@ mod tests {
             for thread in 0..THREADS {
                 let (kv, lock) = (&kv, &lock);
                 scope.spawn(move || {
-                    let view = AuthPubkeyCacheView::new(kv, lock);
+                    let view = AuthPubkeyCacheView::without_wallet_gate(kv, lock);
                     for i in 0..PER_THREAD {
                         view.update(Network::Testnet, &seed, |cache| {
                             cache.insert(Network::Testnet, thread, i, &key)
@@ -326,7 +379,7 @@ mod tests {
                 });
             }
         });
-        let view = AuthPubkeyCacheView::new(&kv, &lock);
+        let view = AuthPubkeyCacheView::without_wallet_gate(&kv, &lock);
         let got = view.get(Network::Testnet, &seed);
         for thread in 0..THREADS {
             for i in 0..PER_THREAD {
@@ -337,6 +390,48 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// AUTH-CACHE-VIEW-010 — a warm that finishes after its wallet was
+    /// removed cannot recreate the entry the removal deleted.
+    #[test]
+    fn late_write_after_wallet_removal_leaves_no_entry() {
+        use crate::model::wallet::Wallet;
+        use std::sync::RwLock;
+
+        let kv = kv();
+        let lock = Mutex::new(());
+        let wallets = WalletContext::default();
+        let wallet = Wallet::new_from_seed([7; 64], Network::Testnet, None, None).unwrap();
+        let seed = wallet.seed_hash();
+        wallets.insert_test_wallet(seed, Arc::new(RwLock::new(wallet)));
+        let view = AuthPubkeyCacheView::new(&kv, &lock, &wallets);
+
+        view.update(Network::Testnet, &seed, |cache| {
+            cache.insert(Network::Testnet, 0, 0, &pubkey(1))
+        })
+        .unwrap();
+        assert!(
+            view.get(Network::Testnet, &seed)
+                .get(Network::Testnet, 0, 0)
+                .is_some(),
+            "a loaded wallet's entry is written"
+        );
+
+        // Removal: the wallet leaves the loaded set, then its entry is deleted.
+        wallets.remove_wallet(&seed).unwrap();
+        view.delete(Network::Testnet, &seed).unwrap();
+
+        // The in-flight warm completes afterwards.
+        view.update(Network::Testnet, &seed, |cache| {
+            cache.insert(Network::Testnet, 0, 1, &pubkey(2))
+        })
+        .unwrap();
+        assert_eq!(
+            view.get(Network::Testnet, &seed),
+            AuthPubkeyCache::default(),
+            "a removed wallet's cache must stay deleted"
+        );
     }
 
     /// AUTH-CACHE-VIEW-006 — the canonical key shape uses the

@@ -1556,6 +1556,21 @@ impl WalletBackend {
             first_error.get_or_insert(e);
         }
 
+        // DET auth-pubkey cache. The wallet-scope cascade removes it only with
+        // the upstream wallet row; deleting it here, under the cache's write
+        // lock, also stops a warm still in flight from writing it back.
+        if let Err(e) = self
+            .auth_pubkey_cache()
+            .delete(self.inner.network, seed_hash)
+        {
+            tracing::warn!(
+                wallet = %hex::encode(seed_hash),
+                error = ?e,
+                "Failed to delete auth-pubkey cache"
+            );
+            first_error.get_or_insert(e);
+        }
+
         // Plaintext Orchard state (notes + nullifier cursor) now lives in the
         // upstream coordinator store; `remove_upstream_wallet` detaches it.
 
@@ -2238,7 +2253,11 @@ impl WalletBackend {
     /// key schema. The cache memoises the hardened-path identity-auth
     /// pubkeys so the steady-state read is seed-free.
     pub fn auth_pubkey_cache(&self) -> AuthPubkeyCacheView<'_> {
-        AuthPubkeyCacheView::new(&self.inner.app_kv, &self.inner.auth_pubkey_cache_lock)
+        AuthPubkeyCacheView::new(
+            &self.inner.app_kv,
+            &self.inner.auth_pubkey_cache_lock,
+            &self.inner.wallet_context,
+        )
     }
 
     /// View over the DET-owned avatar image cache. Backed by the

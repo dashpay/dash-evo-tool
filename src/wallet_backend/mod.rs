@@ -63,6 +63,7 @@ pub mod single_key;
 pub(crate) mod single_key;
 pub mod single_key_entry;
 mod snapshot;
+mod spend_history;
 mod token_balance;
 mod versioned_bincode;
 #[cfg(any(test, feature = "bench"))]

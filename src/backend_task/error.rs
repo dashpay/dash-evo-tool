@@ -1150,6 +1150,24 @@ pub enum TaskError {
     #[error("The wallet scan stopped before finishing. Reconnect and run Full resync again.")]
     WalletResyncInterrupted,
 
+    #[error("This wallet lists already-spent funds as available. Use another wallet to send this payment.")]
+    WalletConfirmedInputConflict {
+        outpoint: dash_sdk::dpp::dashcore::OutPoint,
+        confirmed_txid: dash_sdk::dpp::dashcore::Txid,
+    },
+
+    #[error("The payment was not sent because its funding history could not be checked. Restart the application and try again.")]
+    WalletSpendHistoryCheck {
+        #[source]
+        source: WalletTransactionHistoryError,
+    },
+
+    #[error("The payment was not sent because its funding check stopped. Try again.")]
+    WalletSpendHistoryWorker {
+        #[source]
+        source: tokio::task::JoinError,
+    },
+
     #[error("The wallet history could not be reset. Retry Full resync.")]
     WalletHistoryReset {
         #[source]

@@ -193,6 +193,7 @@ As a user, I want to fund a Platform payment address directly from my wallet UTX
 - Transfer information stays in transaction history, without a separate balance
   summary or View transfers button.
 - The Advanced menu groups Import key, Refresh, Full resync, and Get test DASH (Testnet only). Refresh also reloads transfer records after wallet refresh.
+- Before signing a new Core payment or asset lock, the wallet checks its live funding outputs against persisted confirmed spends. Contradictory history blocks the operation with an actionable message, even after visible history is cleared. This conservative check covers the entire wallet; it does not repair balances or release reservations.
 - Full resync clears the selected HD wallet’s displayed Core history durably and rebuilds it from observed blocks. Keys, spend accounting, reservations, and Platform transfer records are retained. It requires a connected, synced wallet and does not verify Platform delivery. A blocking progress window stays open until the scan finishes and offers the same cancellation flow as initial sync.
   Core explorer links do not claim to verify Platform delivery. Cancellation
   remains unavailable pending WAL-034.

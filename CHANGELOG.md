@@ -48,6 +48,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Core payments and new asset locks are blocked before signing when persisted
+  confirmed history shows that the wallet still offers already-spent inputs.
+  This consistency check remains active after Full resync clears visible history.
 - Core-to-Platform funding appears inside Dash Core Transactions with row
   details and recorded payment conflicts. Pending transactions appear first;
   recovered historical funding is not labelled as an unfinished transfer. Local

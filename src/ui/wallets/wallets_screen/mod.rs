@@ -240,7 +240,6 @@ pub struct WalletsBalancesScreen {
     transaction_history_banner: MessageBanner,
     pending_transfers: crate::ui::state::pending_transfers::PendingTransfersState,
     pending_transfer_error: MessageBanner,
-    show_transfer_history: bool,
     transfer_details: Option<dash_sdk::dpp::dashcore::Txid>,
     /// Persistent warning banner rendered on the single-key wallet detail
     /// view when the app is running on the SPV backend. Stored on the screen
@@ -371,7 +370,6 @@ impl WalletsBalancesScreen {
             pending_transfers: Default::default(),
             pending_transfer_error: MessageBanner::new(),
             transfer_details: None,
-            show_transfer_history: false,
             sk_spv_warning_banner: crate::ui::components::MessageBanner::new(),
             import_single_key_dialog: ImportSingleKeyDialog::new(app_context.network),
             restore_single_key_dialog: RestoreSingleKeyDialog::new(),
@@ -549,7 +547,6 @@ impl WalletsBalancesScreen {
         self.pending_transfers = Default::default();
         self.pending_transfer_error.clear();
         self.transfer_details = None;
-        self.show_transfer_history = false;
         self.pending_platform_balance_refresh = None;
         self.pending_refresh_after_unlock = false;
         self.pending_wallet_refresh_on_switch = false;
@@ -2136,7 +2133,6 @@ impl WalletsBalancesScreen {
 
                         // Action buttons span full width below the header
                         action |= self.render_action_buttons(ui, ctx);
-                        self.render_unfinished_summary(ui);
                         self.render_transfer_history(ui);
 
                         // --- Accounts & Addresses (tabs, full-width below header) ---
@@ -3427,12 +3423,10 @@ mod tests {
                     },
                 },
             );
-            screen.show_transfer_history = stage == TransferStage::Recovered;
             let mut harness = Harness::builder()
                 .with_size(egui::vec2(width, 1000.0))
                 .build_ui_state(
                     |ui, screen: &mut WalletsBalancesScreen| {
-                        screen.render_unfinished_summary(ui);
                         screen.render_transfer_history(ui);
                     },
                     screen,
@@ -3443,19 +3437,19 @@ mod tests {
                 egui::Visuals::light()
             });
             harness.run();
-            if stage == TransferStage::Recovered {
-                assert!(harness.query_by_label("Transfers to review: 1").is_none());
-                assert!(harness.query_by_label("Confirmed (Core)").is_some());
-            } else {
-                assert!(harness.query_by_label("Transfers to review: 1").is_some());
-                assert!(harness.get_by_label("View transfers").rect().right() <= width);
-                harness.get_by_label("View transfers").focus();
-                harness.run();
-                harness.key_press(egui::Key::Enter);
-                harness.run();
-                if width > 500.0 {
-                    assert!(harness.query_by_label("Unconfirmed").is_some());
-                }
+            assert!(harness.query_by_label("Transfers to review: 1").is_none());
+            assert!(harness.query_by_label("View transfers").is_none());
+            harness.get_by_label("Transaction History").focus();
+            harness.run();
+            harness.key_press(egui::Key::Enter);
+            harness.run();
+            if width > 500.0 {
+                let status = if stage == TransferStage::Recovered {
+                    "Confirmed (Core)"
+                } else {
+                    "Unconfirmed"
+                };
+                assert!(harness.query_by_label(status).is_some());
             }
             if width < 1100.0 {
                 let header = harness.get_by_label("Date").rect();

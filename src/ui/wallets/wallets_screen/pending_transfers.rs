@@ -3,50 +3,14 @@ use crate::model::fee_estimation::format_duffs_as_dash;
 use crate::model::pending_transfers::{PendingPlatformTransfer, TransferStage};
 use crate::model::spv_status::SpvStatus;
 use crate::ui::components::component_trait::Component;
-use crate::ui::theme::{ComponentStyles, Spacing};
+use crate::ui::theme::ComponentStyles;
 use eframe::egui::{self, Ui};
 
 impl WalletsBalancesScreen {
-    pub(super) fn render_unfinished_summary(&mut self, ui: &mut Ui) {
-        let assessment = self.pending_transfers.assessment();
-        let count = assessment.map(|a| {
-            a.transfers
-                .iter()
-                .filter(|t| t.stage.needs_attention())
-                .count()
-        });
-        if count == Some(0) && !self.pending_transfers.is_failed() {
-            return;
-        }
-        ui.add_space(Spacing::SM);
-        ui.horizontal_wrapped(|ui| {
-            match count {
-                Some(count) => {
-                    ui.strong(format!("Transfers to review: {count}"));
-                }
-                None => {
-                    ui.label("Transfer information is loading.");
-                }
-            }
-            if ComponentStyles::add_secondary_button(ui, "View transfers", ui.visuals().dark_mode)
-                .clicked()
-            {
-                self.show_transfer_history = true;
-            }
-        });
-    }
-
     pub(super) fn render_transfer_history(&mut self, ui: &mut Ui) {
-        let response = egui::CollapsingHeader::new("Transaction History")
+        egui::CollapsingHeader::new("Transaction History")
             .id_salt("wallet_transfer_history")
-            .open(self.show_transfer_history.then_some(true))
             .show(ui, |ui| self.render_transactions_section(ui));
-        if self.show_transfer_history {
-            response
-                .header_response
-                .scroll_to_me(Some(egui::Align::Min));
-            self.show_transfer_history = false;
-        }
         self.render_transfer_details(ui);
     }
 

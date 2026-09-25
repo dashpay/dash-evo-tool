@@ -50,7 +50,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Core-to-Platform funding appears inside Dash Core Transactions with row
   details and recorded payment conflicts. Pending transactions appear first;
-  recovered historical funding is not counted as an unfinished transfer. Local
+  recovered historical funding is not labelled as an unfinished transfer. Local
   records reload through Refresh; row buttons share the final Actions column. Cancellation
   remains unavailable until the wallet backend supports safe reconciliation.
 

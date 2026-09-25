@@ -193,7 +193,6 @@ mod tests {
         recovered.status = AssetLockStatus::RecoveredFromChain;
         let assessed = assess_locks(&[recovered], &[]);
         assert_eq!(assessed[0].stage, TransferStage::Recovered);
-        assert!(!assessed[0].stage.needs_attention());
         assert_eq!(assessed[0].funding_amount, 100);
         assert_eq!(assessed[0].core_fee, None);
         assert_eq!(assessed[0].block_time, None);

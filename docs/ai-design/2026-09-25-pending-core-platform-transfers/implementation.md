@@ -10,10 +10,10 @@ recorded funding information and any observed competing input spend. The final
 Actions column groups Copy, View, Details, and the unavailable cancellation
 action using the same compact button style.
 
-The balance summary counts transfers that need review. A `RecoveredFromChain`
-record represents historical funding with an unknown Platform outcome, not
-proof of an unfinished operation, and is excluded from that count. Recovered
-records remain in history. Core confirmation and Platform delivery are distinct.
+Funding records appear only in transaction history, without a separate summary
+or navigation button beside the balance. A `RecoveredFromChain` record represents
+historical funding with an unknown Platform outcome, not proof of an unfinished
+operation. Core confirmation and Platform delivery are distinct.
 
 **Refresh** refreshes wallet balances and then queues a read of tracked locks
 and hydrated local history. If a read is already running, one follow-up read is
@@ -52,7 +52,7 @@ upstream support; they remain WAL-034 gaps rather than implemented actions.
 ## Regression checks
 
 Synthetic tests cover merged history without duplicate TXIDs, funding-only
-records, pending-first ordering, historical recovery excluded from review counts,
+records, pending-first ordering, historical recovery distinguished from pending transfers,
 restored-history conflicts, stale async results, and light/dark/narrow UI layouts.
 The UI regression fails on the card-based version because it has no Unconfirmed
 row in the Core table. No live fund movement is used for these tests.

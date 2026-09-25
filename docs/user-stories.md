@@ -188,8 +188,10 @@ As a user, I want to fund a Platform payment address directly from my wallet UTX
 - Supports fee deduction from output or wallet.
 - Funding appears once inside Dash Core Transactions, with row details and
   observed input conflicts. Unconfirmed funding remains discoverable after restart.
-- Historical funding recovered from the chain is not counted as an unfinished
+- Historical funding recovered from the chain is not labelled as an unfinished
   transfer solely because its Platform outcome is unknown.
+- Transfer information stays in transaction history, without a separate balance
+  summary or View transfers button.
 - The existing Refresh action also reloads transfer records after wallet refresh.
   Core explorer links do not claim to verify Platform delivery. Cancellation
   remains unavailable pending WAL-034.

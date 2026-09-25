@@ -27,13 +27,6 @@ pub enum TransferStage {
     Recovered,
 }
 
-impl TransferStage {
-    /// Historical recovery alone is not evidence of an unfinished user transfer.
-    pub fn needs_attention(self) -> bool {
-        self != Self::Recovered
-    }
-}
-
 /// A single Core history row, optionally enriched with funding observations.
 #[derive(Debug)]
 pub struct CoreHistoryEntry<'a> {
@@ -229,6 +222,5 @@ mod tests {
         assert_eq!(entries[2].txid, history[1].txid);
         assert!(!entries[2].unconfirmed());
         assert_eq!(entries[2].funding.len(), 1);
-        assert!(!entries[2].funding[0].stage.needs_attention());
     }
 }

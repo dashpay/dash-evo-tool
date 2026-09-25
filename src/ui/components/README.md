@@ -15,7 +15,7 @@ Concise catalog of all reusable UI components. Consult before creating new UI el
 |-----------|------|------------|-------------|
 | `AmountInput` | `amount_input.rs` | `Amount` | Decimal amount with validation, min/max, Max button, unit name |
 | `AddressInput` | `address_input.rs` | `ValidatedAddress` | Unified address with autocomplete, type detection (Core/Platform/Shielded/Identity), DPNS resolution. GitHub-style tag search (`type:core\|platform\|…`, `wallet:name`; unrecognized tokens are free text). Rows render `[wallet pill] address (name) [type pill] balance`; when no explicit hint is set the placeholder is a live `type:…|… wallet:…|…` legend |
-| `PasswordInput` | `password_input.rs` | N/A (security) | Masked input with hold-to-reveal, zeroizes on drop. NOT ComponentResponse |
+| `PasswordInput` | `password_input.rs` | N/A (security) | Masked input with hold-to-reveal, zeroizes on drop; `with_read_only()` for display-only secrets. NOT ComponentResponse |
 | `AliasInput` | `alias_input.rs` | `String` | Wallet/key name field. Optional label wired as the field's accessible name, live counter of the cleaned length (`model::wallet::alias::alias_char_count`), truncation at 64 characters on a grapheme-cluster boundary, helper text. Collects raw text only — cleaning, default naming, and uniqueness are resolved by the backend on save |
 | `IdentitySelector` | `identity_selector.rs` | N/A (Widget) | ComboBox dropdown for identity selection |
 

@@ -203,11 +203,7 @@ impl AppContext {
                         identity_id = %identity_id,
                         "Discovered identity left unstored"
                     ),
-                    Err(e) => tracing::warn!(
-                        identity_id = %identity_id,
-                        error = %e,
-                        "Failed to store discovered identity"
-                    ),
+                    Err(e) => self.report_discovered_identity_store_failure(identity_id, &e),
                 }
             }
 
@@ -222,6 +218,37 @@ impl AppContext {
         );
 
         Ok(summary)
+    }
+
+    /// Report a discovered identity that could not be stored. A pass keeps
+    /// scanning either way; most failures are logged only. A refresh blocked
+    /// by partial password protection needs the user to act, and a background
+    /// pass has no screen to report it, so it also raises a warning banner
+    /// that stays until dismissed (SEC-003).
+    fn report_discovered_identity_store_failure(
+        &self,
+        identity_id: dash_sdk::platform::Identifier,
+        error: &TaskError,
+    ) {
+        if matches!(
+            error,
+            TaskError::IdentityRefreshBlockedByPartialProtection { .. }
+        ) {
+            // `set_global` logs the banner itself.
+            let banner = crate::ui::components::MessageBanner::set_global(
+                self.egui_ctx(),
+                error,
+                crate::ui::MessageType::Warning,
+            );
+            banner.disable_auto_dismiss();
+            self.egui_ctx().request_repaint();
+            return;
+        }
+        tracing::warn!(
+            identity_id = %identity_id,
+            error = %error,
+            "Failed to store discovered identity"
+        );
     }
 
     /// Discover and load identities derived from a wallet on wallet unlock.
@@ -546,6 +573,152 @@ mod tests {
                 .map(|identity| identity.id()),
             Some(Identifier::from([7u8; 32])),
             "a stored identity must be adopted under the index it was found at",
+        );
+    }
+
+    /// The shape `build_qualified_identity_from_wallet` yields for `stored`:
+    /// the same identity, holding only the wallet-derivable key (id 3) as a
+    /// derivation path, with no alias.
+    fn wallet_only_rebuild_of(
+        stored: &crate::model::qualified_identity::QualifiedIdentity,
+    ) -> crate::model::qualified_identity::QualifiedIdentity {
+        use crate::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity;
+        use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
+
+        let mut rebuilt = stored.clone();
+        rebuilt.alias = None;
+        let mut wallet_keys = KeyStorage::default();
+        for (placement, entry) in stored.private_keys.clone().into_entries() {
+            if placement == (PrivateKeyOnMainIdentity, 3) {
+                wallet_keys.insert_if_absent(placement, entry);
+            }
+        }
+        rebuilt.private_keys = wallet_keys;
+        rebuilt
+    }
+
+    /// SEC-102: automatic discovery on unlock/boot rebuilds the identity from
+    /// the wallet alone. Storing that rebuild must not drop the keys the user
+    /// added by hand — nor strip their password protection.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn automatic_discovery_keeps_manual_and_protected_keys() {
+        use crate::context::test_staging::stage_identity_with_vaulted_keys;
+        use crate::model::identity_discovery::DiscoveryIntent;
+        use crate::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity;
+        use crate::model::secret::Secret;
+
+        const PW: &str = "identity-object-passwordpw";
+        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let ctx = &staged.ctx;
+        // Keys 1 and 2 are manual keys; seal them Tier-2 behind a password.
+        ctx.protect_identity_keys(staged.id, Secret::new(PW), None)
+            .expect("seal the identity Tier-2");
+        ctx.set_identity_alias(&staged.id, Some("mine"))
+            .expect("name the identity");
+        let before = ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read the staged identity")
+            .expect("identity present");
+        assert!(
+            ctx.protected_identity_verify_scope(&before)
+                .expect("read the verify scope")
+                .is_some(),
+            "precondition: the identity is password-protected",
+        );
+
+        let mut rebuilt = wallet_only_rebuild_of(&before);
+        let stored = ctx
+            .store_discovered_identity(&mut rebuilt, &None, DiscoveryIntent::Automatic)
+            .expect("store the rediscovered identity");
+        assert!(stored, "a listed identity is refreshed");
+
+        let after = ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read back")
+            .expect("identity present");
+        assert_eq!(
+            after.private_keys.keys_set(),
+            before.private_keys.keys_set(),
+            "discovery must not drop keys it did not recreate",
+        );
+        for key_id in [1, 2] {
+            assert!(
+                after
+                    .private_keys
+                    .is_in_vault(&(PrivateKeyOnMainIdentity, key_id)),
+                "manual key {key_id} must still point at its vault secret",
+            );
+        }
+        assert!(
+            ctx.protected_identity_verify_scope(&after)
+                .expect("read the verify scope")
+                .is_some(),
+            "the identity must stay password-protected",
+        );
+        assert_eq!(after.alias.as_deref(), Some("mine"));
+    }
+
+    /// SEC-003: a background discovery pass that cannot refresh a partially
+    /// protected identity tells the user, naming the identity, instead of
+    /// only logging; other store failures stay in the log.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_refresh_blocked_by_partial_protection_is_shown_to_the_user() {
+        use crate::context::test_staging::stage_identity_with_vaulted_keys;
+        use crate::ui::components::message_banner::global_banner_texts;
+
+        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let ctx = &staged.ctx;
+
+        ctx.report_discovered_identity_store_failure(
+            staged.id,
+            &TaskError::IdentityNotFoundLocally,
+        );
+        assert!(
+            global_banner_texts(ctx.egui_ctx()).is_empty(),
+            "an ordinary store failure stays in the log"
+        );
+
+        let blocked = TaskError::IdentityRefreshBlockedByPartialProtection {
+            identity_id: staged.id,
+        };
+        ctx.report_discovered_identity_store_failure(staged.id, &blocked);
+        assert_eq!(
+            global_banner_texts(ctx.egui_ctx()),
+            vec![blocked.to_string()],
+            "the blocked refresh must reach the user"
+        );
+    }
+
+    /// The unload marker still wins: a merge must never bring back an
+    /// identity (and its keys) that the user removed from this device.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn automatic_discovery_still_refuses_an_unloaded_identity() {
+        use crate::context::test_staging::stage_identity_with_vaulted_keys;
+        use crate::model::identity_discovery::DiscoveryIntent;
+
+        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let ctx = &staged.ctx;
+        let before = ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read the staged identity")
+            .expect("identity present");
+        ctx.delete_local_qualified_identity(&staged.id)
+            .expect("unload the identity");
+
+        let mut rebuilt = wallet_only_rebuild_of(&before);
+        let stored = ctx
+            .store_discovered_identity(&mut rebuilt, &None, DiscoveryIntent::Automatic)
+            .expect("a refusal is not an error");
+
+        assert!(
+            !stored,
+            "discovery must refuse an identity the user unloaded"
+        );
+        assert!(
+            ctx.get_local_qualified_identity(&staged.id)
+                .expect("read back")
+                .is_none(),
+            "the refused identity must stay off disk",
         );
     }
 }

@@ -48,6 +48,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Platform dependencies track PR #4814 at `81f1a1c7`, which restores known
+  confirmed spends when loading a wallet. DET retains its pre-send history check.
+
 - Core payments and new asset locks are blocked before signing when persisted
   confirmed history shows that the wallet still offers already-spent inputs.
   This consistency check remains active after Full resync clears visible history.

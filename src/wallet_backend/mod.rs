@@ -3275,6 +3275,7 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::WalletAlreadyExists(_)
         | P::IdentityAlreadyExists(_)
         | P::IdentityNotFound(_)
+        | P::IdentityBalanceUnavailable(_)
         | P::NoPrimaryIdentity
         | P::InvalidIdentityData(_)
         | P::ContactRequestNotFound(_)
@@ -3665,6 +3666,7 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         // know", so it is not `NotManaged` (which asserts the identity is
         // absent and must be reloaded); upstream's contract is to retry.
         | P::IdentityDiscoveryIncomplete { .. }
+        | P::IdentityBalanceUnavailable(_)
         // Background sync failed to quiesce — a shutdown fault, unrelated to
         // whether this op reached Platform.
         | P::ShutdownIncomplete(_) => IdentityOpErrorKind::Other,

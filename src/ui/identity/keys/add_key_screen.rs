@@ -238,7 +238,7 @@ impl AddKeyScreen {
         };
 
         if self.derivation.derived() {
-            let Some(index) = self.derivation.selected_index() else {
+            let Some(index) = self.derivation.submit() else {
                 return app_action;
             };
             let new_key = IdentityPublicKeyV0 {
@@ -1359,6 +1359,10 @@ mod derived_key_tests {
         let mut screen = AddKeyScreen::new(identity.clone(), &staged.ctx);
         assert_eq!(screen.derivation.selected_index(), Some(1));
 
+        assert!(matches!(
+            screen.validate_and_add_key(),
+            AppAction::BackendTask(_)
+        ));
         screen.add_key_status = AddKeyStatus::WaitingForResult;
         screen.display_backend_task_error(
             &BackendTaskContext::Other,
@@ -1378,6 +1382,53 @@ mod derived_key_tests {
         assert_eq!(screen.derivation.status(), ChooserStatus::Ready);
         assert_eq!(screen.derivation.selected_index(), Some(2));
         assert!(screen.derivation.is_occupied(1));
+    }
+
+    /// A slot changed while the add is pending does not take the blame for
+    /// the submitted slot's rejection: the submitted slot is marked used and
+    /// the new selection survives the reload.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn derived_key_rejection_marks_the_submitted_slot_not_the_current_one() {
+        let (staged, identity) = staged_screen_parts(true).await;
+        for (seed, wallet) in &identity.associated_wallets {
+            staged
+                .ctx
+                .wallet_context()
+                .insert_test_wallet(*seed, Arc::clone(wallet));
+        }
+        let mut screen = AddKeyScreen::new(identity.clone(), &staged.ctx);
+        assert_eq!(screen.derivation.selected_index(), Some(1));
+
+        let action = screen.validate_and_add_key();
+        let AppAction::BackendTask(BackendTask::IdentityTask(
+            IdentityTask::AddDerivedKeyToIdentity { index, .. },
+        )) = action
+        else {
+            panic!("a derived add must dispatch AddDerivedKeyToIdentity");
+        };
+        assert_eq!(index, 1);
+        screen.add_key_status = AddKeyStatus::WaitingForResult;
+
+        // The user picks another slot before the rejection arrives.
+        *screen.derivation.index_mut() = Some(3);
+        screen.display_backend_task_error(
+            &BackendTaskContext::Other,
+            &TaskError::DerivedKeyIndexUnavailable,
+        );
+        screen.display_message("rejected", MessageType::Error);
+        assert!(screen.derivation.take_identity_refresh());
+
+        screen.display_task_result(BackendTaskSuccessResult::RefreshedIdentity(identity));
+        assert_eq!(screen.derivation.status(), ChooserStatus::Ready);
+        assert!(
+            screen.derivation.is_occupied(1),
+            "the submitted slot is used"
+        );
+        assert!(
+            !screen.derivation.is_occupied(3),
+            "the slot selected later is not blamed"
+        );
+        assert_eq!(screen.derivation.selected_index(), Some(3));
     }
 
     /// SEC-103: when the network assigned a different key id than the one the

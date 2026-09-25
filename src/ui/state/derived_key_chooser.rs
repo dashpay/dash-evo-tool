@@ -71,6 +71,10 @@ pub struct DerivedKeyChooser {
     /// Slots the backend rejected as used during this screen's lifetime. Kept
     /// out of selection even if the local identity has not caught up yet.
     rejected: BTreeSet<u32>,
+    /// The wallet and slot of the last submitted add. The selection stays
+    /// editable while the add is pending, so a rejection applies to this
+    /// snapshot, not to whatever is selected when the error arrives.
+    submitted: Option<((WalletSeedHash, u32), u32)>,
     /// The local identity's highest key id; the next added key gets the one
     /// after it.
     max_key_id: u32,
@@ -93,6 +97,7 @@ impl DerivedKeyChooser {
             limit: 0,
             occupied: BTreeSet::new(),
             rejected: BTreeSet::new(),
+            submitted: None,
             max_key_id: 0,
             refreshing_identity: false,
             pending_identity_refresh: false,
@@ -118,6 +123,7 @@ impl DerivedKeyChooser {
             self.load = KeyLoad::Cold;
             self.index = None;
             self.rejected.clear();
+            self.submitted = None;
         }
         if self.wallet.is_none() {
             self.derived = false;
@@ -232,12 +238,28 @@ impl DerivedKeyChooser {
         }
     }
 
-    /// The backend refused the selected slot. Keep it out of selection and
+    /// The selected slot, recorded as submitted: a later
+    /// [`Self::slot_rejected`] applies to this slot even if the selection
+    /// changes while the add is pending.
+    pub fn submit(&mut self) -> Option<u32> {
+        let index = self.selected_index()?;
+        self.submitted = self.wallet.map(|wallet| (wallet, index));
+        Some(index)
+    }
+
+    /// The backend refused the submitted slot. Keep it out of selection and
     /// reload the identity from the network so slots used elsewhere show up.
+    /// A different wallet's submission is not this wallet's slot, so only the
+    /// refresh applies then.
     pub fn slot_rejected(&mut self) {
-        if let Some(index) = self.index.take() {
+        if let Some((wallet, index)) = self.submitted.take()
+            && self.wallet == Some(wallet)
+        {
             self.rejected.insert(index);
             self.occupied.insert(index);
+            if self.index == Some(index) {
+                self.index = None;
+            }
         }
         self.request_identity_refresh();
     }

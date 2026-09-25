@@ -509,6 +509,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Pin Platform dependencies to PR #4777 (`f2c162ab`) to preserve Core wallet
+  snapshots across restarts.
+
 - Wallet registries and live names now share one WalletContext across the UI,
   MCP tools and password prompts. Metadata writes are serialized while wallet
   names and password prompts continue to use the last committed snapshot.

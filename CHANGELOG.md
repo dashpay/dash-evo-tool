@@ -188,6 +188,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Removing a wallet deletes its cached identity public keys right away, and a
   key-slot load that finishes after the removal no longer stores them again.
 
+- Background task results preserve the masternode voting-key prompt, vote
+  selections, removal dialog, and key-recovery offer or operation in progress.
+  Completed votes clear only unchanged selections from the same cast.
+
 - Adding a voting key preserves the identity's wallet association when its only
   wallet-linked key comes from the existing identity, including password-protected
   imports.

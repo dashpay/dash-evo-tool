@@ -151,6 +151,14 @@ enum ProtectionStage {
 }
 
 impl ScreenLike for KeyInfoScreen {
+    fn accepts_legacy_recovery_result(
+        &self,
+        context: &BackendTaskContext,
+        completed: bool,
+    ) -> bool {
+        self.recovery.accepts_result(context, completed)
+    }
+
     /// Re-read the record this screen persists, because another writer may have
     /// changed it while the screen sat in the stack.
     ///
@@ -170,7 +178,7 @@ impl ScreenLike for KeyInfoScreen {
     fn refresh(&mut self) {
         self.reload_identity();
         self.protection_status = None;
-        self.recovery.completed();
+        self.recovery.refresh_on_arrival();
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
@@ -836,13 +844,13 @@ impl ScreenLike for KeyInfoScreen {
         // Legacy recovery: the passive check goes out once per opened screen,
         // and a restore only after the user pressed Restore — so the two can
         // never contend for `action`, which keeps only its most recent value.
-        if let Some(task) = self.recovery.ensure_checked() {
-            action |= AppAction::BackendTask(task);
+        if let Some((task, context)) = self.recovery.ensure_checked() {
+            action |= AppAction::BackendTaskWithContext { task, context };
         }
         if let Some(approved) = self.pending_recovery_restore.take()
-            && let Some(task) = self.recovery.restore(approved)
+            && let Some((task, context)) = self.recovery.restore(approved)
         {
-            action |= AppAction::BackendTask(task);
+            action |= AppAction::BackendTaskWithContext { task, context };
         }
 
         action
@@ -2626,10 +2634,8 @@ mod tests {
             );
         }
 
-        screen.display_backend_task_error(
-            &BackendTaskContext::LegacyRecoveryRestore(on_screen_id),
-            &error,
-        );
+        let own_context = screen.recovery.pending_context_for_test();
+        screen.display_backend_task_error(&own_context, &error);
         assert!(
             !screen.recovery.is_restoring(),
             "this restore's own failure must return the offer so it can be retried",

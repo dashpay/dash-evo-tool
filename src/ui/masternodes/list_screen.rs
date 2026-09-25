@@ -1139,7 +1139,6 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn arrival_re_reads_the_open_node_and_re_arms_its_recovery_offer() {
         use crate::model::legacy_recovery::{RecoveryItem, RecoveryItemDescriptor, RecoveryPlan};
-        use dash_sdk::platform::IdentityPublicKey;
 
         let (ctx, _tmp) = offline_ctx().await;
         let node = Identifier::from([0x33; 32]);

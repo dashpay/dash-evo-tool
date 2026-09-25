@@ -141,6 +141,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- CI runs documentation tests once as part of the main test suite and uses
+  Cargo directly instead of the retired Cargo action.
+
 - Adding a voting key preserves the identity's wallet association when its only
   wallet-linked key comes from the existing identity, including password-protected
   imports.

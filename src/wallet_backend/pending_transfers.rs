@@ -158,7 +158,7 @@ mod tests {
     #[test]
     fn pending_transfers_missing_or_unconfirmed_competitor_proves_nothing() {
         let lock = lock();
-        let history = vec![competing_record(&lock, TransactionStatus::Unconfirmed)];
+        let history = [competing_record(&lock, TransactionStatus::Unconfirmed)];
         for history in [&history[..], &[][..]] {
             let assessed = assess_locks(std::slice::from_ref(&lock), history);
             assert_eq!(assessed[0].stage, TransferStage::AwaitingConfirmation);

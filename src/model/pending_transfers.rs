@@ -112,7 +112,7 @@ mod tests {
 
     #[test]
     fn pending_transfers_have_stable_order_and_instant_locked_records_are_not_pending() {
-        let mut history = vec![
+        let mut history = [
             record(1, 0, TransactionStatus::Unconfirmed),
             record(2, 0, TransactionStatus::InstantSendLocked),
             record(3, 0, TransactionStatus::Unconfirmed),

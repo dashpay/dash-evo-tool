@@ -230,17 +230,19 @@ fn identity_load_ticket(task: &BackendTask) -> Option<(Identifier, IdentityLoadT
 }
 
 /// Whether a wallet-backend build error is terminal (storage written by a
-/// newer/incompatible app build, or a data folder other accounts can modify).
-/// These must surface their actionable message instead of being
-/// logged-and-discarded as a transient deferral (F50); retrying cannot fix
-/// them. Every other init error is retried by the cold-boot bridge.
+/// newer/incompatible app build, a data folder other accounts can modify, or
+/// a compatibility upgrade that fails the same way on every attempt). These
+/// must surface their actionable message instead of being logged-and-discarded
+/// as a transient deferral (F50); retrying cannot fix them. Every other init
+/// error is retried by the cold-boot bridge.
 pub(crate) fn is_terminal_storage_open_error(error: &TaskError) -> bool {
-    matches!(
-        error,
+    match error {
         TaskError::WalletDataTooNew { .. }
-            | TaskError::WalletDataIncompatible { .. }
-            | TaskError::WalletDataFolderInsecure { .. }
-    )
+        | TaskError::WalletDataIncompatible { .. }
+        | TaskError::WalletDataFolderInsecure { .. } => true,
+        TaskError::PlatformDatabaseUpgrade { source } => !source.is_retryable(),
+        _ => false,
+    }
 }
 
 /// Information about fees for a platform state transition.
@@ -2367,6 +2369,24 @@ mod tests {
                         mode: 0o777,
                     },
                 },
+            }
+        ));
+        use crate::wallet_backend::platform_compatibility::UpgradeError;
+        for source in [
+            UpgradeError::Unrecognized,
+            UpgradeError::IdentityRoster { source: None },
+            UpgradeError::Verification,
+            UpgradeError::TypedValidation(Box::new(std::io::Error::other("fixture"))),
+        ] {
+            assert!(
+                is_terminal_storage_open_error(&TaskError::PlatformDatabaseUpgrade { source }),
+                "a deterministic upgrade failure must surface instead of re-running"
+            );
+        }
+        // A user-clearable upgrade failure keeps offering a retry.
+        assert!(!is_terminal_storage_open_error(
+            &TaskError::PlatformDatabaseUpgrade {
+                source: UpgradeError::from(std::io::Error::from(std::io::ErrorKind::StorageFull)),
             }
         ));
         // A transient pre-wire state must NOT be treated as terminal.

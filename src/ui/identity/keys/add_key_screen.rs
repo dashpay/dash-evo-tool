@@ -1,6 +1,7 @@
 use crate::app::AppAction;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::IdentityTask;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
+use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -8,13 +9,14 @@ use crate::model::qualified_identity::qualified_identity_public_key::QualifiedId
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::password_input::PasswordInput;
-use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::styled::{StyledButton, island_central_panel};
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ResultBannerExt};
 use crate::ui::identity::get_selected_wallet;
+use crate::ui::state::derived_key_chooser::{ChooserStatus, DerivedKeyChooser};
 use crate::ui::theme::{DashColors, ResponseExt};
 use crate::ui::{MessageType, ScreenLike};
 use bip39::rand::{SeedableRng, rngs::StdRng};
@@ -36,13 +38,79 @@ pub enum AddKeyStatus {
     NotStarted,
     WaitingForResult,
     Error,
+    /// The key was added on the network but could not be saved on this
+    /// device; the screen keeps its private key on hand to copy.
+    KeyOnNetworkNotSaved,
+    /// A wallet-derived key was added on the network but could not be saved
+    /// on this device. There is no private key to copy: the wallet derives it
+    /// again.
+    DerivedKeyOnNetworkNotSaved,
     Complete,
+}
+
+impl AddKeyStatus {
+    /// The add reached the network but nothing was saved on this device.
+    fn is_on_network_not_saved(&self) -> bool {
+        matches!(
+            self,
+            Self::KeyOnNetworkNotSaved | Self::DerivedKeyOnNetworkNotSaved
+        )
+    }
+}
+
+/// The screen state for `error` when it means the new key is already on the
+/// network but was not saved on this device, or `None` for any other error.
+/// For a user-entered key the private key in the form may be the only copy
+/// there is; a wallet-derived key has none to keep.
+fn on_network_not_saved_status(error: &TaskError) -> Option<AddKeyStatus> {
+    match error {
+        TaskError::IdentityKeyAddedButNotSaved { .. }
+        | TaskError::IdentityKeyAddedButNotSavedWhileProtected
+        | TaskError::IdentityKeyAddedButSlotOccupied
+        | TaskError::IdentityKeyAddedButIdentityUnloaded => {
+            Some(AddKeyStatus::KeyOnNetworkNotSaved)
+        }
+        TaskError::DerivedIdentityKeyAddedButNotSaved { .. }
+        | TaskError::DerivedIdentityKeyAddedButIdentityUnloaded => {
+            Some(AddKeyStatus::DerivedKeyOnNetworkNotSaved)
+        }
+        _ => None,
+    }
+}
+
+/// The read-only field holding the key the last add submitted.
+fn submitted_private_key_field() -> PasswordInput {
+    PasswordInput::new()
+        .with_char_limit(64)
+        .with_monospace()
+        .with_read_only()
 }
 
 pub struct AddKeyScreen {
     pub identity: QualifiedIdentity,
     pub app_context: Arc<AppContext>,
     private_key_input: PasswordInput,
+    /// The private key as submitted with the last add, read-only. The rescue
+    /// view shows and copies this rather than the editable form field, so an
+    /// edit after the submit cannot change the key the user is told to keep.
+    submitted_private_key: PasswordInput,
+    /// "Create from wallet" state: availability, slot load and selection.
+    derivation: DerivedKeyChooser,
+    /// The next error routed to `display_message` belongs to the chooser's own
+    /// warm task (already handled in `display_backend_task_error`), not to a
+    /// key submission. `AppState` calls `display_message` right after
+    /// `display_backend_task_error` for an unhandled error, and this screen
+    /// never handles or suppresses one, so the flag is always consumed.
+    warm_error_pending: bool,
+    /// The error being routed belongs to this screen's own key add, as told
+    /// by `display_backend_task_error` (always called first). Other tasks'
+    /// errors — e.g. a scheduled-vote sweep — can arrive mid-add and must not
+    /// end it or drop the submitted key.
+    add_error_pending: bool,
+    /// The slot chooser was rendered this frame. A slot load (which may open
+    /// the wallet's secret prompt) is dispatched only then — never while the
+    /// wallet-locked notice or the success page hides the chooser.
+    derivation_visible: bool,
     key_type: KeyType,
     purpose: Purpose,
     security_level: SecurityLevel,
@@ -70,14 +138,20 @@ impl AddKeyScreen {
         let selected_wallet = get_selected_wallet(&identity, None, selected_key)
             .or_show_error(app_context.egui_ctx())
             .unwrap_or(None);
+        let derivation = DerivedKeyChooser::new(app_context, &identity, KeyType::ECDSA_SECP256K1);
 
         Self {
             identity,
             app_context: app_context.clone(),
+            derivation,
+            warm_error_pending: false,
+            add_error_pending: false,
+            derivation_visible: false,
             private_key_input: PasswordInput::new()
                 .with_hint_text("Private key (hex)")
                 .with_char_limit(64)
                 .with_monospace(),
+            submitted_private_key: submitted_private_key_field(),
             key_type: KeyType::ECDSA_SECP256K1,
             purpose: Purpose::AUTHENTICATION,
             security_level: SecurityLevel::HIGH,
@@ -109,6 +183,7 @@ impl AddKeyScreen {
         let selected_wallet = get_selected_wallet(&identity, None, selected_key)
             .or_show_error(app_context.egui_ctx())
             .unwrap_or(None);
+        let derivation = DerivedKeyChooser::new(app_context, &identity, KeyType::ECDSA_SECP256K1);
 
         let dashpay_contract_id = app_context
             .dashpay_contract
@@ -118,10 +193,15 @@ impl AddKeyScreen {
         Self {
             identity,
             app_context: app_context.clone(),
+            derivation,
+            warm_error_pending: false,
+            add_error_pending: false,
+            derivation_visible: false,
             private_key_input: PasswordInput::new()
                 .with_hint_text("Private key (hex)")
                 .with_char_limit(64)
                 .with_monospace(),
+            submitted_private_key: submitted_private_key_field(),
             key_type: KeyType::ECDSA_SECP256K1,
             purpose: Purpose::ENCRYPTION,
             security_level: SecurityLevel::MEDIUM,
@@ -153,6 +233,7 @@ impl AddKeyScreen {
         let selected_wallet = get_selected_wallet(&identity, None, selected_key)
             .or_show_error(app_context.egui_ctx())
             .unwrap_or(None);
+        let derivation = DerivedKeyChooser::new(app_context, &identity, KeyType::ECDSA_SECP256K1);
 
         let dashpay_contract_id = app_context
             .dashpay_contract
@@ -162,10 +243,15 @@ impl AddKeyScreen {
         Self {
             identity,
             app_context: app_context.clone(),
+            derivation,
+            warm_error_pending: false,
+            add_error_pending: false,
+            derivation_visible: false,
             private_key_input: PasswordInput::new()
                 .with_hint_text("Private key (hex)")
                 .with_char_limit(64)
                 .with_monospace(),
+            submitted_private_key: submitted_private_key_field(),
             key_type: KeyType::ECDSA_SECP256K1,
             purpose: Purpose::DECRYPTION,
             security_level: SecurityLevel::MEDIUM,
@@ -183,6 +269,59 @@ impl AddKeyScreen {
 
     fn validate_and_add_key(&mut self) -> AppAction {
         let mut app_action = AppAction::None;
+        // Handle contract bounds if enabled
+        let contract_bounds = if self.enable_contract_bounds && !self.contract_id_input.is_empty() {
+            match Identifier::from_string(&self.contract_id_input, Encoding::Base58) {
+                Ok(contract_id) => {
+                    if self.document_type_input.is_empty() {
+                        Some(ContractBounds::SingleContract { id: contract_id })
+                    } else {
+                        Some(ContractBounds::SingleContractDocumentType {
+                            id: contract_id,
+                            document_type_name: self.document_type_input.clone(),
+                        })
+                    }
+                }
+                Err(error) => {
+                    self.add_key_status = AddKeyStatus::Error;
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        "The contract ID is not valid. Check the ID and try again.",
+                        MessageType::Error,
+                    )
+                    .with_details(error);
+                    return app_action;
+                }
+            }
+        } else {
+            None
+        };
+
+        if self.derivation.derived() {
+            let Some(index) = self.derivation.submit() else {
+                return app_action;
+            };
+            let new_key = IdentityPublicKeyV0 {
+                id: 0,
+                key_type: self.key_type,
+                purpose: self.purpose,
+                security_level: self.security_level,
+                data: Vec::new().into(),
+                read_only: false,
+                disabled_at: None,
+                contract_bounds,
+            };
+            return AppAction::BackendTask(BackendTask::IdentityTask(
+                IdentityTask::AddDerivedKeyToIdentity {
+                    identity: self.identity.clone(),
+                    key: QualifiedIdentityPublicKey::from(
+                        dash_sdk::platform::IdentityPublicKey::from(new_key),
+                    ),
+                    index,
+                    expected_key_id: self.derivation.expected_key_id(),
+                },
+            ));
+        }
         // Convert the input string to bytes (hex decoding)
         match hex::decode(self.private_key_input.text()) {
             Ok(private_key_bytes_vec) if private_key_bytes_vec.len() == 32 => {
@@ -202,36 +341,6 @@ impl AddKeyScreen {
                     )
                     .with_details(error);
                 } else {
-                    // Handle contract bounds if enabled
-                    let contract_bounds = if self.enable_contract_bounds
-                        && !self.contract_id_input.is_empty()
-                    {
-                        match Identifier::from_string(&self.contract_id_input, Encoding::Base58) {
-                            Ok(contract_id) => {
-                                if self.document_type_input.is_empty() {
-                                    Some(ContractBounds::SingleContract { id: contract_id })
-                                } else {
-                                    Some(ContractBounds::SingleContractDocumentType {
-                                        id: contract_id,
-                                        document_type_name: self.document_type_input.clone(),
-                                    })
-                                }
-                            }
-                            Err(error) => {
-                                self.add_key_status = AddKeyStatus::Error;
-                                MessageBanner::set_global(
-                                    self.app_context.egui_ctx(),
-                                    "The contract ID is not valid. Check the ID and try again.",
-                                    MessageType::Error,
-                                )
-                                .with_details(error);
-                                return app_action;
-                            }
-                        }
-                    } else {
-                        None
-                    };
-
                     let new_key = IdentityPublicKeyV0 {
                         id: self.identity.identity.get_public_key_max_id() + 1,
                         key_type: self.key_type,
@@ -263,6 +372,8 @@ impl AddKeyScreen {
                             identity_public_key: new_key.into(),
                             in_wallet_at_derivation_path: None,
                         };
+                        self.submitted_private_key
+                            .set_text(hex::encode(private_key_bytes));
                         app_action = AppAction::BackendTask(BackendTask::IdentityTask(
                             IdentityTask::AddKeyToIdentity(
                                 self.identity.clone(),
@@ -300,6 +411,186 @@ impl AddKeyScreen {
         app_action
     }
 
+    fn show_key_source(&mut self, ui: &mut Ui) {
+        ui.label("Key source:");
+        let possible = self.derivation.is_possible();
+        ui.vertical(|ui| {
+            let response = ui
+                .add_enabled(
+                    possible,
+                    egui::Checkbox::new(self.derivation.derived_mut(), "Create from wallet"),
+                )
+                .clickable_tooltip(
+                    "A key created from your wallet can be restored later with your wallet's recovery phrase.",
+                )
+                .disabled_tooltip(
+                    "A single matching wallet could not be identified on this device. Enter a private key instead.",
+                );
+            if response.changed() {
+                self.private_key_input.clear();
+            }
+            if !possible {
+                ui.label(
+                    "A single matching wallet could not be identified on this device. Enter a private key instead.",
+                );
+            }
+        });
+        ui.end_row();
+        if self.derivation.derived() {
+            self.show_derivation_index(ui);
+        } else {
+            ui.label("Private Key:");
+            ui.horizontal(|ui| {
+                self.private_key_input.show(ui);
+                if ui.button("Generate Random").clicked() {
+                    self.generate_random_private_key();
+                }
+            });
+            ui.end_row();
+        }
+    }
+
+    fn show_derivation_index(&mut self, ui: &mut Ui) {
+        self.derivation_visible = true;
+        ui.label("Wallet key slot:");
+        ui.vertical(|ui| {
+            match self.derivation.status() {
+                // Unreachable while "Create from wallet" is on; kept for totality.
+                ChooserStatus::NoWallet => {
+                    ui.label(
+                        "A single matching wallet could not be identified on this device. Enter a private key instead.",
+                    );
+                }
+                ChooserStatus::UnsupportedKeyType => {
+                    ui.label(
+                        "This key type cannot be created from a wallet. Choose ECDSA_SECP256K1 or ECDSA_HASH160 as the key type, or turn off Create from wallet to enter a private key.",
+                    );
+                }
+                ChooserStatus::WalletUnavailable => {
+                    ui.label("The wallet is unavailable. Reopen the wallet and try again.");
+                }
+                ChooserStatus::RefreshingIdentity => {
+                    ui.horizontal(|ui| {
+                        ui.add(egui::Spinner::new().color(DashColors::DASH_BLUE));
+                        ui.label("Updating this identity from the network…");
+                    });
+                }
+                ChooserStatus::Loading => {
+                    ui.horizontal(|ui| {
+                        ui.add(egui::Spinner::new().color(DashColors::DASH_BLUE));
+                        ui.label("Loading wallet key slots…");
+                    });
+                }
+                ChooserStatus::LoadFailed => {
+                    ui.horizontal(|ui| {
+                        ui.label("The wallet key slots could not be loaded.");
+                        if StyledButton::new("Retry").show(ui).clicked() {
+                            self.derivation.retry();
+                        }
+                    });
+                }
+                ChooserStatus::NoFreeSlot => {
+                    ui.label(
+                        "All wallet key slots available to this identity are in use. Turn off Create from wallet to enter a private key instead.",
+                    );
+                }
+                ChooserStatus::Ready => self.show_slot_list(ui),
+            }
+            if self.derivation.identity_protected() {
+                ui.label(
+                    "This key will be protected by your wallet, not by this identity's password.",
+                );
+            }
+        });
+        ui.end_row();
+    }
+
+    fn show_slot_list(&mut self, ui: &mut Ui) {
+        let limit = self.derivation.limit();
+        let selected = self.derivation.selected_index();
+        egui::ComboBox::from_id_salt("derived_key_index")
+            .selected_text(selected.map_or_else(String::new, |index| format!("Slot {index}")))
+            .show_ui(ui, |ui| {
+                for index in 0..limit {
+                    let used = self.derivation.is_occupied(index);
+                    let label = if used {
+                        format!("Slot {index} (in use)")
+                    } else {
+                        format!("Slot {index}")
+                    };
+                    let response = ui.add_enabled_ui(!used, |ui| {
+                        ui.selectable_value(self.derivation.index_mut(), Some(index), label)
+                    });
+                    response
+                        .inner
+                        .disabled_tooltip("This slot is already used by a key on this identity.");
+                }
+            });
+        if let Some(suggested) = self.derivation.suggested_index() {
+            ui.label(format!(
+                "Other wallet apps restore this key most reliably from slot {suggested}. Choose slot {suggested} unless you need a different one."
+            ));
+        }
+    }
+
+    /// Why the Add Key button is disabled, or `None` when it is enabled.
+    fn add_blocked_reason(&self) -> Option<&'static str> {
+        if self.add_key_status == AddKeyStatus::WaitingForResult {
+            return Some("The key is being added. Wait for it to finish.");
+        }
+        if !self.derivation.derived() {
+            return None;
+        }
+        match self.derivation.status() {
+            ChooserStatus::Ready => None,
+            ChooserStatus::NoWallet => Some(
+                "A single matching wallet could not be identified on this device. Enter a private key instead.",
+            ),
+            ChooserStatus::UnsupportedKeyType => Some(
+                "Choose a key type that can be created from a wallet, or turn off Create from wallet.",
+            ),
+            ChooserStatus::WalletUnavailable => {
+                Some("The wallet is unavailable. Reopen the wallet and try again.")
+            }
+            ChooserStatus::RefreshingIdentity => {
+                Some("Wait for this identity to finish updating from the network.")
+            }
+            ChooserStatus::Loading => Some("Wait for the wallet key slots to load."),
+            ChooserStatus::LoadFailed => {
+                Some("The wallet key slots could not be loaded. Select Retry to try again.")
+            }
+            ChooserStatus::NoFreeSlot => Some(
+                "All wallet key slots available to this identity are in use. Turn off Create from wallet to enter a private key instead.",
+            ),
+        }
+    }
+
+    /// Reload the identity from local storage and recompute the chooser.
+    fn reload_identity(&mut self) {
+        self.load_identity();
+        self.derivation.reload(&self.app_context, &self.identity);
+    }
+
+    /// Reload the identity from local storage; keeps the current copy when it
+    /// is not stored here.
+    fn load_identity(&mut self) {
+        match self
+            .app_context
+            .get_local_qualified_identity(&self.identity.identity.id())
+        {
+            Ok(Some(identity)) => self.identity = identity,
+            Ok(None) => {}
+            Err(error) => {
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "This identity could not be reloaded from this device. Go back and open it again.",
+                    MessageType::Error,
+                )
+                .with_details(error);
+            }
+        }
+    }
+
     fn generate_random_private_key(&mut self) {
         // Create a new random number generator
         let mut rng = StdRng::from_entropy();
@@ -319,6 +610,81 @@ impl AddKeyScreen {
                 MessageType::Error,
             );
         }
+    }
+
+    /// The key is on the network but not saved here: keep its private key
+    /// available so the user can copy it before leaving the screen.
+    fn show_key_not_saved(&mut self, ui: &mut Ui) -> AppAction {
+        let mut action = AppAction::None;
+        let dark_mode = ui.style().visuals.dark_mode;
+        ui.heading("Save your new private key");
+        ui.add_space(10.0);
+        Frame::new()
+            .fill(DashColors::surface(dark_mode))
+            .inner_margin(Margin::symmetric(10, 8))
+            .corner_radius(5.0)
+            .show(ui, |ui| {
+                ui.label(
+                    RichText::new(
+                        "The new key is already on your identity on the network, but it is not saved on this device. Copy its private key now and keep it somewhere safe. It will be gone when you leave this screen.",
+                    )
+                    .color(DashColors::warning_color(dark_mode)),
+                );
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(
+                        "Other apps on this device can read the clipboard. After you paste the key somewhere safe, copy something else so the key does not stay on the clipboard.",
+                    )
+                    .color(DashColors::text_secondary(dark_mode)),
+                );
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.label("Private Key:");
+                    self.submitted_private_key.show(ui);
+                });
+                ui.add_space(8.0);
+                if ui.button("Copy private key").clicked() {
+                    ui.ctx()
+                        .copy_text(self.submitted_private_key.text().to_owned());
+                    MessageBanner::set_global(
+                        ui.ctx(),
+                        "The private key was copied to the clipboard. Paste it somewhere safe now, then copy something else so the key does not stay on the clipboard.",
+                        MessageType::Info,
+                    );
+                }
+            });
+        ui.add_space(20.0);
+        if ui.button("Back to Identities Screen").clicked() {
+            action = AppAction::PopScreenAndRefresh;
+        }
+        action
+    }
+
+    /// A wallet-derived key is on the network but not saved here. Nothing is
+    /// at risk — the wallet derives the key again — so there is no private
+    /// key to show or copy.
+    fn show_derived_key_not_saved(&mut self, ui: &mut Ui) -> AppAction {
+        let mut action = AppAction::None;
+        let dark_mode = ui.style().visuals.dark_mode;
+        ui.heading("Your new key is not saved on this device");
+        ui.add_space(10.0);
+        Frame::new()
+            .fill(DashColors::surface(dark_mode))
+            .inner_margin(Margin::symmetric(10, 8))
+            .corner_radius(5.0)
+            .show(ui, |ui| {
+                ui.label(
+                    RichText::new(
+                        "The new key is already on your identity on the network, but it is not saved on this device. It was created from your wallet, so it is not lost and there is nothing to copy. To save it here, load this identity from your wallet again.",
+                    )
+                    .color(DashColors::warning_color(dark_mode)),
+                );
+            });
+        ui.add_space(20.0);
+        if ui.button("Back to Identities Screen").clicked() {
+            action = AppAction::PopScreenAndRefresh;
+        }
+        action
     }
 
     pub fn show_success(&mut self, ui: &mut Ui) -> AppAction {
@@ -343,6 +709,10 @@ impl AddKeyScreen {
             && s == "add_another"
         {
             self.private_key_input.clear();
+            self.submitted_private_key.clear();
+            // Hold the slot list until the refreshed identity arrives, so the
+            // slot just used is never offered again.
+            self.derivation.await_identity_refresh();
             self.contract_id_input = String::new();
             self.document_type_input = String::new();
             self.enable_contract_bounds = false;
@@ -359,25 +729,93 @@ impl AddKeyScreen {
 
 impl ScreenLike for AddKeyScreen {
     fn refresh(&mut self) {
-        let identities = self
-            .app_context
-            .load_local_user_identities()
-            .or_show_error(self.app_context.egui_ctx())
-            .unwrap_or_default();
-        if let Some(refreshed_identity) = identities
-            .iter()
-            .find(|identity| identity.identity.id() == self.identity.identity.id())
-        {
-            self.identity = refreshed_identity.clone();
-        }
+        // Keeps an in-flight slot load and a still-valid selection: refresh
+        // nudges arrive from unrelated tasks too.
+        self.reload_identity();
     }
 
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Error/success display is handled by the global MessageBanner.
         if matches!(message_type, MessageType::Error | MessageType::Warning) {
+            if std::mem::take(&mut self.warm_error_pending)
+                || !std::mem::take(&mut self.add_error_pending)
+            {
+                return;
+            }
             self.refresh_banner.take_and_clear();
-            self.add_key_status = AddKeyStatus::Error;
+            // Keep the "save your private key" state that
+            // `display_task_error` set for this same error.
+            if !self.add_key_status.is_on_network_not_saved() {
+                self.submitted_private_key.clear();
+                self.add_key_status = AddKeyStatus::Error;
+            }
         }
+    }
+
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
+        self.add_error_pending = context.added_key_identity() == Some(self.identity.identity.id());
+        // Every slot-load failure is consumed here, even another wallet's: it
+        // is never a failed submission, so the follow-up `display_message`
+        // must not mark the form failed.
+        if let Some((seed_hash, identity_index)) = context.identity_auth_pubkey_warm() {
+            self.derivation.warm_failed(&seed_hash, identity_index);
+            self.warm_error_pending = true;
+            return;
+        }
+        if context.refreshed_identity() == Some(self.identity.identity.id()) {
+            self.derivation
+                .identity_refresh_finished(&self.app_context, &self.identity);
+            return;
+        }
+        if !self.add_error_pending {
+            return;
+        }
+        match error {
+            TaskError::DerivedKeyIndexUnavailable => self.derivation.slot_rejected(),
+            TaskError::DerivedKeyIdChanged => self.derivation.key_id_changed(),
+            TaskError::DerivedKeySeedMismatch => self.derivation.key_unconfirmed(),
+            _ => {}
+        }
+    }
+
+    fn display_task_error(&mut self, error: &TaskError) -> bool {
+        if self.add_error_pending
+            && let Some(status) = on_network_not_saved_status(error)
+        {
+            self.refresh_banner.take_and_clear();
+            self.add_key_status = status;
+        }
+        // The global banner still reports the error.
+        false
+    }
+
+    fn display_backend_task_result(
+        &mut self,
+        context: &BackendTaskContext,
+        result: BackendTaskSuccessResult,
+    ) {
+        if matches!(
+            result,
+            BackendTaskSuccessResult::IdentityAuthPubkeysWarmed { .. }
+        ) {
+            if let Some((seed_hash, identity_index)) = context.identity_auth_pubkey_warm() {
+                self.derivation.warm_finished(
+                    &self.app_context,
+                    &self.identity,
+                    &seed_hash,
+                    identity_index,
+                );
+            }
+            return;
+        }
+        // Only this screen's own add may complete it: a foreign success would
+        // clear the key kept for rescue should this add still fail.
+        if matches!(result, BackendTaskSuccessResult::AddedKeyToIdentity(_))
+            && context.added_key_identity() != Some(self.identity.identity.id())
+        {
+            return;
+        }
+        self.display_task_result(result);
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
@@ -385,16 +823,22 @@ impl ScreenLike for AddKeyScreen {
             BackendTaskSuccessResult::AddedKeyToIdentity(fee_result) => {
                 self.refresh_banner.take_and_clear();
                 self.completed_fee_result = Some(fee_result);
+                self.submitted_private_key.clear();
                 self.add_key_status = AddKeyStatus::Complete;
             }
-            BackendTaskSuccessResult::RefreshedIdentity(_) => {
-                self.refresh();
+            BackendTaskSuccessResult::RefreshedIdentity(identity)
+                if identity.identity.id() == self.identity.identity.id() =>
+            {
+                self.load_identity();
+                self.derivation
+                    .identity_refresh_finished(&self.app_context, &self.identity);
             }
             _ => {}
         }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        self.derivation_visible = false;
         let ctx = ui.ctx().clone();
         let ctx = &ctx;
         let mut action = add_top_panel(
@@ -419,6 +863,14 @@ impl ScreenLike for AddKeyScreen {
             // Show the success screen if the key was added successfully
             if self.add_key_status == AddKeyStatus::Complete {
                 inner_action |= self.show_success(ui);
+                return inner_action;
+            }
+            if self.add_key_status == AddKeyStatus::KeyOnNetworkNotSaved {
+                inner_action |= self.show_key_not_saved(ui);
+                return inner_action;
+            }
+            if self.add_key_status == AddKeyStatus::DerivedKeyOnNetworkNotSaved {
+                inner_action |= self.show_derived_key_not_saved(ui);
                 return inner_action;
             }
 
@@ -590,6 +1042,7 @@ impl ScreenLike for AddKeyScreen {
 
                     // Key Type
                     ui.label("Key Type:");
+                    let prev_key_type = self.key_type;
                     egui::ComboBox::from_id_salt("key_type_selector")
                         .selected_text(format!("{key_type:?}", key_type = self.key_type))
                         .show_ui(ui, |ui| {
@@ -619,15 +1072,12 @@ impl ScreenLike for AddKeyScreen {
                             //     "BIP13_SCRIPT_HASH",
                             // );
                         });
-                    ui.end_row();
-
-                    // Private Key Input
-                    ui.label("Private Key:");
-                    self.private_key_input.show(ui);
-                    if ui.button("Generate Random").clicked() {
-                        self.generate_random_private_key();
+                    if self.key_type != prev_key_type {
+                        self.derivation.set_key_type(self.key_type);
                     }
                     ui.end_row();
+
+                    self.show_key_source(ui);
 
                     // Contract Bounds Toggle
                     ui.label("Enable Contract Bounds:");
@@ -695,7 +1145,13 @@ impl ScreenLike for AddKeyScreen {
                 .fill(DashColors::DASH_BLUE)
                 .frame(true)
                 .corner_radius(3.0);
-            if ui.add(button).clicked() {
+            let blocked_reason = self.add_blocked_reason();
+            let add_response = ui.add_enabled(blocked_reason.is_none(), button);
+            let add_response = match blocked_reason {
+                Some(reason) => add_response.disabled_tooltip(reason),
+                None => add_response,
+            };
+            if add_response.clicked() {
                 let validation_action = self.validate_and_add_key();
                 if matches!(&validation_action, AppAction::BackendTask(_)) {
                     self.add_key_status = AddKeyStatus::WaitingForResult;
@@ -711,6 +1167,21 @@ impl ScreenLike for AddKeyScreen {
             inner_action
         });
 
+        // Chooser follow-ups go out only on an otherwise idle frame:
+        // `AppAction` keeps a single task, and a dropped warm or refresh would
+        // leave the chooser waiting forever.
+        if matches!(action, AppAction::None) {
+            if self.derivation.take_identity_refresh() {
+                action = AppAction::BackendTask(BackendTask::IdentityTask(
+                    IdentityTask::RefreshIdentity(self.identity.clone()),
+                ));
+            } else if self.derivation_visible
+                && let Some(task) = self.derivation.take_warm_task()
+            {
+                action = AppAction::BackendTask(task);
+            }
+        }
+
         // Show wallet unlock popup if open
         if self.wallet_unlock_popup.is_open()
             && let Some(wallet) = &self.selected_wallet
@@ -724,5 +1195,683 @@ impl ScreenLike for AddKeyScreen {
         }
 
         action
+    }
+}
+
+#[cfg(test)]
+mod derived_key_tests {
+    use super::*;
+    use crate::backend_task::wallet::WalletTask;
+    use crate::context::test_staging::{StagedIdentity, stage_identity_with_vaulted_keys};
+    use crate::model::derived_identity_key::test_support::fixture;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+    use egui_kittest::{
+        Harness,
+        kittest::{NodeT, Queryable},
+    };
+
+    /// A staged context plus the derivation fixture's identity; the public-key
+    /// cache is warm when `warm` is set.
+    async fn staged_screen_parts(warm: bool) -> (StagedIdentity, QualifiedIdentity) {
+        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let (identity, cache, seed_hash, _) = fixture();
+        if warm {
+            staged
+                .ctx
+                .wallet_backend()
+                .unwrap()
+                .auth_pubkey_cache()
+                .put(staged.ctx.network, &seed_hash, &cache)
+                .unwrap();
+        }
+        (staged, identity)
+    }
+
+    fn source_harness(screen: AddKeyScreen) -> Harness<'static, AddKeyScreen> {
+        Harness::builder().with_max_steps(30).build_ui_state(
+            |ui, screen: &mut AddKeyScreen| {
+                egui::Grid::new("source").show(ui, |ui| {
+                    screen.show_key_source(ui);
+                });
+            },
+            screen,
+        )
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn derived_key_checkbox_defaults_on_and_switches_private_input() {
+        let (staged, identity) = staged_screen_parts(true).await;
+        let screen = AddKeyScreen::new(identity, &staged.ctx);
+        assert!(screen.derivation.derived());
+        let mut harness = source_harness(screen);
+        harness.run();
+        assert_eq!(harness.state().derivation.selected_index(), Some(1));
+        assert!(harness.query_by_label("Private Key:").is_none());
+        harness.get_by_label("Create from wallet").click();
+        harness.run();
+        assert!(!harness.state().derivation.derived());
+        assert!(harness.query_by_label("Private Key:").is_some());
+        assert!(harness.query_by_label("Wallet key slot:").is_none());
+        harness
+            .state_mut()
+            .private_key_input
+            .set_text("sensitive input".to_string());
+        harness.get_by_label("Create from wallet").click();
+        harness.run();
+        assert!(harness.state().private_key_input.text().is_empty());
+        assert_eq!(harness.state().derivation.selected_index(), Some(1));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn derived_key_occupied_index_cannot_be_selected_and_submit_carries_only_index() {
+        let (staged, identity) = staged_screen_parts(true).await;
+        let screen = AddKeyScreen::new(identity, &staged.ctx);
+        let mut harness = source_harness(screen);
+        harness.run();
+        harness.get_by_role(egui::accesskit::Role::ComboBox).click();
+        harness.run();
+        assert!(
+            harness
+                .get_by_label("Slot 0 (in use)")
+                .accesskit_node()
+                .is_disabled()
+        );
+        harness.get_by_label("Slot 0 (in use)").click();
+        harness.run();
+        assert_eq!(harness.state().derivation.selected_index(), Some(1));
+        if harness.query_by_label("Slot 2").is_none() {
+            harness.get_by_role(egui::accesskit::Role::ComboBox).click();
+            harness.run();
+        }
+        harness.get_by_label("Slot 2").click();
+        harness.run();
+        assert_eq!(harness.state().derivation.selected_index(), Some(2));
+        let AppAction::BackendTask(BackendTask::IdentityTask(
+            IdentityTask::AddDerivedKeyToIdentity {
+                key,
+                index,
+                expected_key_id,
+                ..
+            },
+        )) = harness.state_mut().validate_and_add_key()
+        else {
+            panic!("derived submission must use the derived backend task");
+        };
+        assert_eq!(index, 2);
+        // SEC-103: the key id the slot was chosen against travels with the
+        // add, even when the user picked a slot off it.
+        assert_eq!(expected_key_id, 1);
+        assert!(key.identity_public_key.data().is_empty());
+        assert!(key.in_wallet_at_derivation_path.is_none());
+    }
+
+    /// CALL-001: an identity with no wallet path opens on manual entry, and the
+    /// screen says why a wallet key is not offered.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn derived_key_defaults_to_manual_entry_without_a_wallet_path() {
+        let (staged, mut identity) = staged_screen_parts(true).await;
+        identity.private_keys = Default::default();
+        let screen = AddKeyScreen::new(identity, &staged.ctx);
+        assert!(!screen.derivation.derived());
+        assert_eq!(screen.add_blocked_reason(), None);
+        let mut harness = source_harness(screen);
+        harness.run();
+        assert!(harness.query_by_label("Private Key:").is_some());
+        assert!(
+            harness
+                .get_by_label("Create from wallet")
+                .accesskit_node()
+                .is_disabled()
+        );
+        assert!(
+            harness
+                .query_by_label(
+                    "A single matching wallet could not be identified on this device. Enter a private key instead."
+                )
+                .is_some()
+        );
+    }
+
+    /// SEC-002: the default slot is the one matching the new key's id, even
+    /// when a lower slot is free.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn derived_key_default_slot_matches_the_new_key_id() {
+        use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+        let (staged, mut identity) = staged_screen_parts(true).await;
+        // A manually entered key takes id 2; the new key will get id 3.
+        identity.identity.add_public_key(
+            IdentityPublicKeyV0 {
+                id: 2,
+                key_type: KeyType::ECDSA_SECP256K1,
+                purpose: Purpose::AUTHENTICATION,
+                security_level: SecurityLevel::HIGH,
+                contract_bounds: None,
+                read_only: false,
+                disabled_at: None,
+                data: dash_sdk::dpp::dashcore::secp256k1::PublicKey::from_slice(&[
+                    0x02, 0x79, 0xBE, 0x66, 0x7E, 0xF9, 0xDC, 0xBB, 0xAC, 0x55, 0xA0, 0x62, 0x95,
+                    0xCE, 0x87, 0x0B, 0x07, 0x02, 0x9B, 0xFC, 0xDB, 0x2D, 0xCE, 0x28, 0xD9, 0x59,
+                    0xF2, 0x81, 0x5B, 0x16, 0xF8, 0x17, 0x98,
+                ])
+                .unwrap()
+                .serialize()
+                .to_vec()
+                .into(),
+            }
+            .into(),
+        );
+        let screen = AddKeyScreen::new(identity, &staged.ctx);
+        assert_eq!(screen.derivation.selected_index(), Some(3));
+        assert_eq!(screen.derivation.suggested_index(), None);
+    }
+
+    /// RUST-007 / QA-003: the slot load is tracked apart from the submission,
+    /// dispatched once, never re-dispatched by a refresh, and Retry appears
+    /// only after it actually failed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn derived_key_slot_load_fails_and_retries_independently_of_submission() {
+        let (staged, identity) = staged_screen_parts(false).await;
+        let mut screen = AddKeyScreen::new(identity, &staged.ctx);
+        assert_eq!(screen.derivation.status(), ChooserStatus::Loading);
+        assert_eq!(
+            screen.add_blocked_reason(),
+            Some("Wait for the wallet key slots to load.")
+        );
+        let warm = screen
+            .derivation
+            .take_warm_task()
+            .expect("a cold cache dispatches one warm task");
+        assert!(screen.derivation.take_warm_task().is_none());
+        screen.refresh();
+        assert!(
+            screen.derivation.take_warm_task().is_none(),
+            "a refresh must not dispatch a duplicate warm task"
+        );
+
+        let context = BackendTaskContext::from(&warm);
+        screen.display_backend_task_error(&context, &TaskError::WalletLocked);
+        screen.display_message("The wallet is locked.", MessageType::Error);
+        assert_eq!(screen.derivation.status(), ChooserStatus::LoadFailed);
+        assert!(
+            screen.add_key_status == AddKeyStatus::NotStarted,
+            "a failed slot load is not a failed submission"
+        );
+
+        // A submission error is still recorded as one.
+        let own_add = BackendTaskContext::IdentityKeyAdd(screen.identity.identity.id());
+        screen.display_backend_task_error(&own_add, &TaskError::WalletLocked);
+        screen.display_message("The wallet is locked.", MessageType::Error);
+        assert!(screen.add_key_status == AddKeyStatus::Error);
+
+        let mut harness = source_harness(screen);
+        harness.run();
+        harness.get_by_label("Retry").click();
+        // The spinner that follows repaints forever; step instead of `run`.
+        harness.run_steps(2);
+        assert!(harness.state_mut().derivation.take_warm_task().is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn derived_key_ignores_another_wallet_warm_before_its_own_completion() {
+        let (staged, identity) = staged_screen_parts(false).await;
+        let mut screen = AddKeyScreen::new(identity, &staged.ctx);
+        let warm = screen.derivation.take_warm_task().unwrap();
+        let own_context = BackendTaskContext::from(&warm);
+        let (seed_hash, identity_index) = own_context.identity_auth_pubkey_warm().unwrap();
+        let mut other_seed_hash = seed_hash;
+        other_seed_hash[0] ^= 1;
+        let other_context = BackendTaskContext::IdentityAuthPubkeyWarm {
+            seed_hash: other_seed_hash,
+            identity_index,
+        };
+        screen.display_backend_task_result(
+            &other_context,
+            BackendTaskSuccessResult::IdentityAuthPubkeysWarmed { identity_index },
+        );
+        assert_eq!(screen.derivation.status(), ChooserStatus::Loading);
+        assert!(screen.derivation.take_warm_task().is_none());
+
+        let (_, cache, _, _) = fixture();
+        staged
+            .ctx
+            .wallet_backend()
+            .unwrap()
+            .auth_pubkey_cache()
+            .put(staged.ctx.network, &seed_hash, &cache)
+            .unwrap();
+        screen.display_backend_task_result(
+            &own_context,
+            BackendTaskSuccessResult::IdentityAuthPubkeysWarmed { identity_index },
+        );
+        assert_eq!(screen.derivation.status(), ChooserStatus::Ready);
+        assert!(screen.derivation.selected_index().is_some());
+        assert!(screen.add_blocked_reason().is_none());
+    }
+
+    /// Another wallet's slot-load failure is not this form's failed
+    /// submission, and leaves this chooser's own load untouched.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn derived_key_another_wallet_warm_error_does_not_fail_the_form() {
+        let (staged, identity) = staged_screen_parts(false).await;
+        let mut screen = AddKeyScreen::new(identity, &staged.ctx);
+        let warm = screen.derivation.take_warm_task().unwrap();
+        let (mut other_seed_hash, identity_index) = BackendTaskContext::from(&warm)
+            .identity_auth_pubkey_warm()
+            .unwrap();
+        other_seed_hash[0] ^= 1;
+        let other_context = BackendTaskContext::IdentityAuthPubkeyWarm {
+            seed_hash: other_seed_hash,
+            identity_index,
+        };
+
+        screen.display_backend_task_error(&other_context, &TaskError::WalletLocked);
+        screen.display_message("The wallet is locked.", MessageType::Error);
+
+        assert!(
+            screen.add_key_status == AddKeyStatus::NotStarted,
+            "another wallet's slot load is not a failed submission"
+        );
+        assert_eq!(screen.derivation.status(), ChooserStatus::Loading);
+    }
+
+    /// A refresh that drops the identity's wallet path while a slot load is in
+    /// flight, then restores it, starts a fresh load instead of waiting
+    /// forever on a result the chooser no longer accepts.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn derived_key_wallet_change_while_loading_restarts_the_load() {
+        let (staged, identity) = staged_screen_parts(false).await;
+        let mut screen = AddKeyScreen::new(identity.clone(), &staged.ctx);
+        let warm = screen.derivation.take_warm_task().unwrap();
+        let (seed_hash, identity_index) = BackendTaskContext::from(&warm)
+            .identity_auth_pubkey_warm()
+            .unwrap();
+
+        let mut without_wallet = identity.clone();
+        without_wallet.wallet_index = Some(identity_index + 1);
+        screen.derivation.reload(&staged.ctx, &without_wallet);
+        assert_eq!(screen.derivation.status(), ChooserStatus::NoWallet);
+
+        screen.derivation.reload(&staged.ctx, &identity);
+        // The first wallet's stale completion arrives after the change and is
+        // ignored.
+        screen.display_backend_task_result(
+            &BackendTaskContext::from(&warm),
+            BackendTaskSuccessResult::IdentityAuthPubkeysWarmed { identity_index },
+        );
+        assert_eq!(screen.derivation.status(), ChooserStatus::Loading);
+        let Some(BackendTask::WalletTask(WalletTask::WarmIdentityAuthPubkeys {
+            seed_hash: warmed_seed_hash,
+            ..
+        })) = screen.derivation.take_warm_task()
+        else {
+            panic!("the restored wallet must dispatch a fresh slot load");
+        };
+        assert_eq!(warmed_seed_hash, seed_hash);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn derived_key_warm_that_leaves_the_cache_cold_does_not_loop() {
+        let (staged, identity) = staged_screen_parts(false).await;
+        let mut screen = AddKeyScreen::new(identity, &staged.ctx);
+        let warm = screen.derivation.take_warm_task().unwrap();
+        screen.display_backend_task_result(
+            &BackendTaskContext::from(&warm),
+            BackendTaskSuccessResult::IdentityAuthPubkeysWarmed { identity_index: 0 },
+        );
+        assert_eq!(screen.derivation.status(), ChooserStatus::LoadFailed);
+        assert!(screen.derivation.take_warm_task().is_none());
+    }
+
+    /// RUST-005: a slot the backend rejects is dropped, the identity is
+    /// reloaded from the network, and a new free slot is selected.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn derived_key_rejected_slot_refreshes_and_selects_another() {
+        let (staged, identity) = staged_screen_parts(true).await;
+        for (seed, wallet) in &identity.associated_wallets {
+            staged
+                .ctx
+                .wallet_context()
+                .insert_test_wallet(*seed, Arc::clone(wallet));
+        }
+        let mut screen = AddKeyScreen::new(identity.clone(), &staged.ctx);
+        assert_eq!(screen.derivation.selected_index(), Some(1));
+
+        assert!(matches!(
+            screen.validate_and_add_key(),
+            AppAction::BackendTask(_)
+        ));
+        screen.add_key_status = AddKeyStatus::WaitingForResult;
+        screen.display_backend_task_error(
+            &BackendTaskContext::IdentityKeyAdd(screen.identity.identity.id()),
+            &TaskError::DerivedKeyIndexUnavailable,
+        );
+        screen.display_message("rejected", MessageType::Error);
+        assert!(screen.add_key_status == AddKeyStatus::Error);
+        assert_eq!(
+            screen.derivation.status(),
+            ChooserStatus::RefreshingIdentity
+        );
+        assert!(screen.add_blocked_reason().is_some());
+        assert!(screen.derivation.take_identity_refresh());
+        assert!(!screen.derivation.take_identity_refresh());
+
+        screen.display_task_result(BackendTaskSuccessResult::RefreshedIdentity(identity));
+        assert_eq!(screen.derivation.status(), ChooserStatus::Ready);
+        assert_eq!(screen.derivation.selected_index(), Some(2));
+        assert!(screen.derivation.is_occupied(1));
+    }
+
+    /// A slot changed while the add is pending does not take the blame for
+    /// the submitted slot's rejection: the submitted slot is marked used and
+    /// the new selection survives the reload.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn derived_key_rejection_marks_the_submitted_slot_not_the_current_one() {
+        let (staged, identity) = staged_screen_parts(true).await;
+        for (seed, wallet) in &identity.associated_wallets {
+            staged
+                .ctx
+                .wallet_context()
+                .insert_test_wallet(*seed, Arc::clone(wallet));
+        }
+        let mut screen = AddKeyScreen::new(identity.clone(), &staged.ctx);
+        assert_eq!(screen.derivation.selected_index(), Some(1));
+
+        let action = screen.validate_and_add_key();
+        let AppAction::BackendTask(BackendTask::IdentityTask(
+            IdentityTask::AddDerivedKeyToIdentity { index, .. },
+        )) = action
+        else {
+            panic!("a derived add must dispatch AddDerivedKeyToIdentity");
+        };
+        assert_eq!(index, 1);
+        screen.add_key_status = AddKeyStatus::WaitingForResult;
+
+        // The user picks another slot before the rejection arrives.
+        *screen.derivation.index_mut() = Some(3);
+        screen.display_backend_task_error(
+            &BackendTaskContext::IdentityKeyAdd(screen.identity.identity.id()),
+            &TaskError::DerivedKeyIndexUnavailable,
+        );
+        screen.display_message("rejected", MessageType::Error);
+        assert!(screen.derivation.take_identity_refresh());
+
+        screen.display_task_result(BackendTaskSuccessResult::RefreshedIdentity(identity));
+        assert_eq!(screen.derivation.status(), ChooserStatus::Ready);
+        assert!(
+            screen.derivation.is_occupied(1),
+            "the submitted slot is used"
+        );
+        assert!(
+            !screen.derivation.is_occupied(3),
+            "the slot selected later is not blamed"
+        );
+        assert_eq!(screen.derivation.selected_index(), Some(3));
+    }
+
+    /// SEC-103: when the network assigned a different key id than the one the
+    /// slot was chosen against, the selection is dropped (not blacklisted),
+    /// the identity is reloaded, and the default slot and expected key id
+    /// follow the fresh record.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn derived_key_id_change_refreshes_and_reselects_the_matching_slot() {
+        use dash_sdk::dpp::dashcore::secp256k1::{PublicKey, Secp256k1, SecretKey};
+        use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+
+        let (staged, mut identity) = staged_screen_parts(true).await;
+        identity.identity.set_id(staged.id);
+        for (seed, wallet) in &identity.associated_wallets {
+            staged
+                .ctx
+                .wallet_context()
+                .insert_test_wallet(*seed, Arc::clone(wallet));
+        }
+        staged
+            .ctx
+            .update_local_qualified_identity(&identity)
+            .unwrap();
+        let mut screen = AddKeyScreen::new(identity.clone(), &staged.ctx);
+        assert_eq!(screen.derivation.selected_index(), Some(1));
+        assert_eq!(screen.derivation.expected_key_id(), 1);
+
+        screen.add_key_status = AddKeyStatus::WaitingForResult;
+        screen.display_backend_task_error(
+            &BackendTaskContext::IdentityKeyAdd(screen.identity.identity.id()),
+            &TaskError::DerivedKeyIdChanged,
+        );
+        screen.display_message("changed", MessageType::Error);
+        assert_eq!(
+            screen.derivation.status(),
+            ChooserStatus::RefreshingIdentity
+        );
+        assert!(screen.derivation.take_identity_refresh());
+
+        // Another device added a key (not from this wallet) at id 1.
+        let mut refreshed = identity.clone();
+        let mut foreign = identity.identity.public_keys()[&0].clone();
+        foreign.set_id(1);
+        let secret = SecretKey::from_slice(&[9; 32]).unwrap();
+        foreign.set_data(
+            PublicKey::from_secret_key(&Secp256k1::new(), &secret)
+                .serialize()
+                .to_vec()
+                .into(),
+        );
+        refreshed.identity.add_public_key(foreign);
+        staged
+            .ctx
+            .update_local_qualified_identity(&refreshed)
+            .unwrap();
+        screen.display_task_result(BackendTaskSuccessResult::RefreshedIdentity(refreshed));
+
+        assert_eq!(screen.derivation.status(), ChooserStatus::Ready);
+        assert_eq!(screen.derivation.expected_key_id(), 2);
+        assert_eq!(screen.derivation.selected_index(), Some(2));
+        assert!(
+            !screen.derivation.is_occupied(1),
+            "a key-id change does not mark the slot used"
+        );
+    }
+
+    /// The rescue view shows and copies the key as it was submitted: editing
+    /// the form field afterwards cannot change the key the user copies.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_rescued_key_is_the_submitted_key_not_the_live_field() {
+        let (staged, identity) = staged_screen_parts(true).await;
+        let mut harness = source_harness(AddKeyScreen::new(identity, &staged.ctx));
+        harness.run();
+        harness.get_by_label("Create from wallet").click();
+        harness.run();
+        let mut screen = harness.into_state();
+        assert!(!screen.derivation.derived());
+
+        let submitted = hex::encode([0x11; 32]);
+        screen.private_key_input.set_text(submitted.clone());
+        let AppAction::BackendTask(
+            task @ BackendTask::IdentityTask(IdentityTask::AddKeyToIdentity(..)),
+        ) = screen.validate_and_add_key()
+        else {
+            panic!("a valid key submits an add");
+        };
+        let own_context = BackendTaskContext::from(&task);
+        screen.add_key_status = AddKeyStatus::WaitingForResult;
+        // A stray edit lands in the form after the submit.
+        screen.private_key_input.set_text(hex::encode([0x22; 32]));
+
+        // An unrelated task fails while the add is still running.
+        let unrelated = TaskError::WalletLocked;
+        screen.display_backend_task_error(&BackendTaskContext::Other, &unrelated);
+        assert!(!screen.display_task_error(&unrelated));
+        screen.display_message("unrelated", MessageType::Error);
+        assert!(
+            screen.add_key_status == AddKeyStatus::WaitingForResult,
+            "another task's error does not end the add"
+        );
+        assert_eq!(screen.submitted_private_key.text(), submitted);
+
+        // A post-broadcast failure for another identity's add is not ours.
+        let other_context = BackendTaskContext::IdentityKeyAdd(Identifier::from([0x5A; 32]));
+        let not_saved = TaskError::IdentityKeyAddedButIdentityUnloaded;
+        screen.display_backend_task_error(&other_context, &not_saved);
+        screen.display_task_error(&not_saved);
+        screen.display_message("not saved elsewhere", MessageType::Error);
+        assert!(screen.add_key_status == AddKeyStatus::WaitingForResult);
+
+        screen.display_backend_task_error(&own_context, &not_saved);
+        screen.display_task_error(&not_saved);
+        screen.display_message("not saved", MessageType::Error);
+        assert!(screen.add_key_status == AddKeyStatus::KeyOnNetworkNotSaved);
+
+        let mut harness = Harness::builder().with_max_steps(30).build_ui_state(
+            |ui, screen: &mut AddKeyScreen| {
+                screen.show_key_not_saved(ui);
+            },
+            screen,
+        );
+        harness.run();
+        harness.get_by_label("Copy private key").click();
+        // One frame: the copy command is in that frame's output only.
+        harness.step();
+        let copied: Vec<String> = harness
+            .output()
+            .platform_output
+            .commands
+            .iter()
+            .filter_map(|command| match command {
+                egui::OutputCommand::CopyText(text) => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            copied,
+            vec![submitted],
+            "the submitted key is what is copied"
+        );
+    }
+
+    /// Another identity's successful add must not end this screen's add nor
+    /// drop the key it would rescue if its own add then fails.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_foreign_add_success_does_not_complete_this_add() {
+        let (staged, identity) = staged_screen_parts(true).await;
+        let own_add = BackendTaskContext::IdentityKeyAdd(identity.identity.id());
+        let mut screen = AddKeyScreen::new(identity, &staged.ctx);
+        let submitted = hex::encode([0x11; 32]);
+        screen.submitted_private_key.set_text(submitted.clone());
+        screen.add_key_status = AddKeyStatus::WaitingForResult;
+
+        for foreign in [
+            BackendTaskContext::IdentityKeyAdd(Identifier::from([0x5A; 32])),
+            BackendTaskContext::Other,
+        ] {
+            screen.display_backend_task_result(
+                &foreign,
+                BackendTaskSuccessResult::AddedKeyToIdentity(FeeResult::new(1, 1)),
+            );
+            assert!(
+                screen.add_key_status == AddKeyStatus::WaitingForResult,
+                "a success that is not this screen's add leaves it running"
+            );
+            assert_eq!(screen.submitted_private_key.text(), submitted);
+        }
+
+        screen.display_backend_task_result(
+            &own_add,
+            BackendTaskSuccessResult::AddedKeyToIdentity(FeeResult::new(1, 1)),
+        );
+        assert!(screen.add_key_status == AddKeyStatus::Complete);
+        assert!(screen.submitted_private_key.text().is_empty());
+    }
+
+    /// A derived key on the network but not saved here gets the no-copy
+    /// state: no private key field and no copy button, since no private key
+    /// exists. A user-entered key keeps both.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn derived_key_not_saved_offers_nothing_to_copy() {
+        let not_saved_harness = |screen: AddKeyScreen| {
+            Harness::builder().with_max_steps(30).build_ui_state(
+                |ui, screen: &mut AddKeyScreen| {
+                    if screen.add_key_status == AddKeyStatus::DerivedKeyOnNetworkNotSaved {
+                        screen.show_derived_key_not_saved(ui);
+                    } else {
+                        screen.show_key_not_saved(ui);
+                    }
+                },
+                screen,
+            )
+        };
+        let (staged, identity) = staged_screen_parts(true).await;
+
+        let own_add = BackendTaskContext::IdentityKeyAdd(identity.identity.id());
+        let mut screen = AddKeyScreen::new(identity.clone(), &staged.ctx);
+        screen.add_key_status = AddKeyStatus::WaitingForResult;
+        let not_saved = TaskError::DerivedIdentityKeyAddedButNotSaved {
+            source: Box::new(TaskError::IdentityKeySlotOccupied),
+        };
+        screen.display_backend_task_error(&own_add, &not_saved);
+        assert!(!screen.display_task_error(&not_saved));
+        screen.display_message("not saved", MessageType::Error);
+        assert!(screen.add_key_status == AddKeyStatus::DerivedKeyOnNetworkNotSaved);
+        let mut harness = not_saved_harness(screen);
+        harness.run();
+        assert!(harness.query_by_label("Copy private key").is_none());
+        assert!(harness.query_by_label("Private Key:").is_none());
+        assert!(
+            harness
+                .query_by_label("Back to Identities Screen")
+                .is_some()
+        );
+
+        let mut screen = AddKeyScreen::new(identity, &staged.ctx);
+        screen.add_key_status = AddKeyStatus::WaitingForResult;
+        screen
+            .display_backend_task_error(&own_add, &TaskError::IdentityKeyAddedButIdentityUnloaded);
+        screen.display_task_error(&TaskError::IdentityKeyAddedButIdentityUnloaded);
+        screen.display_message("not saved", MessageType::Error);
+        assert!(screen.add_key_status == AddKeyStatus::KeyOnNetworkNotSaved);
+        let mut harness = not_saved_harness(screen);
+        harness.run();
+        assert!(harness.query_by_label("Copy private key").is_some());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// SEC-104: both "on the network, not saved here" outcomes switch the
+    /// screen to keeping the private key on hand; the derived-key ones switch
+    /// it to the no-copy state; ordinary failures do neither.
+    #[test]
+    fn only_post_broadcast_save_failures_keep_the_private_key_on_screen() {
+        let status = |error: TaskError| on_network_not_saved_status(&error);
+        assert!(
+            status(TaskError::IdentityKeyAddedButNotSaved {
+                source: Box::new(TaskError::IdentityKeyProtectionDowngrade),
+            }) == Some(AddKeyStatus::KeyOnNetworkNotSaved)
+        );
+        assert!(
+            status(TaskError::IdentityKeyAddedButIdentityUnloaded)
+                == Some(AddKeyStatus::KeyOnNetworkNotSaved)
+        );
+        assert!(
+            status(TaskError::IdentityKeyAddedButNotSavedWhileProtected)
+                == Some(AddKeyStatus::KeyOnNetworkNotSaved)
+        );
+        assert!(
+            status(TaskError::IdentityKeyAddedButSlotOccupied)
+                == Some(AddKeyStatus::KeyOnNetworkNotSaved)
+        );
+        assert!(
+            status(TaskError::DerivedIdentityKeyAddedButNotSaved {
+                source: Box::new(TaskError::IdentityKeySlotOccupied),
+            }) == Some(AddKeyStatus::DerivedKeyOnNetworkNotSaved)
+        );
+        assert!(
+            status(TaskError::DerivedIdentityKeyAddedButIdentityUnloaded)
+                == Some(AddKeyStatus::DerivedKeyOnNetworkNotSaved)
+        );
+        assert!(status(TaskError::MasterKeyNotFound).is_none());
+        assert!(status(TaskError::IdentityKeyProtectionDowngrade).is_none());
     }
 }

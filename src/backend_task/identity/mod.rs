@@ -471,6 +471,17 @@ pub enum IdentityTask {
         wallet_seed_hash: WalletSeedHash,
     },
     AddKeyToIdentity(QualifiedIdentity, QualifiedIdentityPublicKey, [u8; 32]),
+    /// Add a key from the identity's wallet at the selected derivation index.
+    AddDerivedKeyToIdentity {
+        identity: QualifiedIdentity,
+        key: QualifiedIdentityPublicKey,
+        /// Wallet derivation index of the new key.
+        index: u32,
+        /// Key id the screen showed the slot choice against (the local
+        /// record's highest key id + 1). The add is refused if the network
+        /// assigns a different one.
+        expected_key_id: KeyID,
+    },
     /// Opt-in: seal every keyless (Tier-1) vault-stored key of this
     /// identity under ONE per-identity object `password` (Tier-2), and store
     /// `hint` for the sign-time prompt copy. Idempotent (an already-protected
@@ -882,6 +893,15 @@ impl AppContext {
                 self.add_key_to_identity(sdk, qualified_identity, public_key_to_add, private_key)
                     .await
             }
+            IdentityTask::AddDerivedKeyToIdentity {
+                identity,
+                key,
+                index,
+                expected_key_id,
+            } => {
+                self.add_derived_key_to_identity(sdk, identity, key, index, expected_key_id)
+                    .await
+            }
             IdentityTask::RegisterIdentity(registration_info) => {
                 Ok(self.register_identity(registration_info).await?)
             }
@@ -1124,6 +1144,43 @@ impl AppContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// RUST-001: every seed-recovery scan must cover the highest derivation
+    /// index the Add Key chooser can offer. Once the derived key is on-chain the
+    /// identity's highest key id is at least `max_key_id + 1`; a restore scan
+    /// that stops short of `derivation_index_limit(max_key_id) - 1` would lose
+    /// the key the user was told is recoverable from the recovery phrase.
+    #[test]
+    fn every_recovery_scan_covers_the_highest_selectable_derivation_index() {
+        use crate::model::derived_identity_key::derivation_index_limit;
+        for max_key_id in [0, 1, 2, 5, 31, 100, 4089, 4090, 4095, 10_000, u32::MAX - 1] {
+            let limit = derivation_index_limit(max_key_id);
+            assert!(limit > 0, "the chooser must offer at least one index");
+            let highest_selectable = limit - 1;
+            let after_add = max_key_id.saturating_add(1);
+            let scans = [
+                (
+                    "load_identity",
+                    load_identity::identity_key_scan_bound(after_add),
+                ),
+                (
+                    "load_identity_from_wallet",
+                    load_identity_from_wallet::wallet_key_scan_bound(after_add, 0),
+                ),
+                (
+                    "discover_identities",
+                    discover_identities::discovered_key_scan_bound(after_add),
+                ),
+            ];
+            for (site, bound) in scans {
+                assert!(
+                    highest_selectable < bound,
+                    "{site} scans 0..{bound} but the chooser offers index \
+                     {highest_selectable} for max key id {max_key_id}",
+                );
+            }
+        }
+    }
 
     /// Test that the default identity keys include the correct number of keys
     #[test]

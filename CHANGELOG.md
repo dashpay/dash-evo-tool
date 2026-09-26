@@ -48,6 +48,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Add wallet-created identity keys**: for identities loaded from a wallet on
+  this device, the Add Key screen defaults to "Create from wallet", which
+  creates an ECDSA_SECP256K1 or ECDSA_HASH160 key from that wallet so it can be
+  restored with the wallet's recovery phrase. The slot matching the new key's
+  number is selected by default, so other wallet apps can restore the key too;
+  used slots cannot be chosen. Other identities open on manual private-key
+  entry, with an explanation. The wallet's key is verified before it is added.
+  If the identity gained a key on another device in the meantime, the add is
+  stopped before anything is sent and the screen reloads the identity so the
+  slot can be chosen again. Adding a wallet key does not ask for the identity's
+  password, because the key stays protected by the wallet.
+
 - A scheduled workflow renews expiring migration fixture archives without
   changing their contents and proposes updated manifest pointers in a PR.
 
@@ -134,6 +146,47 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   follow-up.
 
 ### Fixed
+
+- **Identity keys added by hand no longer disappear**: unlocking a wallet,
+  starting the app or loading an identity from a wallet refreshed the identity
+  with only the keys the wallet can recreate, so keys you had pasted or
+  generated — including password-protected ones — vanished from the identity
+  and could no longer be used here. Those refreshes now keep every key already
+  saved for the identity, with its password protection unchanged. A saved key
+  that no longer matches the identity's key with the same number gives way to
+  the identity's key once its private key is kept safely on this device, so the
+  identity can still sign with it and the old private key is not lost. When only some of
+  an identity's keys are password-protected, the refresh stops and a message
+  names the identity and explains how to finish, even when the refresh ran in
+  the background. Adding a key also no longer erases a key, name or protection
+  change saved for the same identity while the new key was being sent to the
+  network.
+
+- **A new key that could not be saved here is no longer lost**: when a key was
+  added to the identity on the network but saving it on this device failed,
+  most failures showed a generic storage message, and a randomly generated
+  private key could be lost for good. Every such failure now says the key is
+  already on the network, and the Add Key screen keeps its private key
+  available to copy, with a warning that other apps can read the clipboard. When
+  the key could not be saved because of the identity's password protection, or
+  because a different key is saved under the same number, the message says
+  what to do first. A key created from your wallet has no private key to
+  copy, so the screen says instead that it can be saved again by loading the
+  identity from your wallet. Another identity's key add finishing no longer
+  closes this screen's rescue view.
+
+- The Add Key screen ignores key-slot loading results from other wallets, so
+  concurrent loading cannot leave its wallet slots unavailable.
+
+- Switching networks closes open detail screens, such as Add Key, so an action
+  prepared on the previous network cannot be submitted on the new one.
+
+- On the Add Key screen, a key-slot loading error from another wallet no longer
+  marks the form as failed. The slot list reloads when the identity's wallet
+  changes while slots are loading, instead of staying in the loading state.
+
+- Removing a wallet deletes its cached identity public keys right away, and a
+  key-slot load that finishes after the removal no longer stores them again.
 
 - Background task results preserve the masternode voting-key prompt, vote
   selections, removal dialog, and key-recovery offer or operation in progress.

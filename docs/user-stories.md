@@ -617,7 +617,12 @@ As an everyday user, I want to open a Receive view for my identity so that anoth
 As a power user, I want to add a new key to my identity so that I can authorize additional operations or devices.
 
 - Select key type and purpose.
-- Key is added via state transition.
+- “Create from wallet” is selected by default when the identity was loaded from a wallet on this device; choose a wallet key slot instead of entering a private key.
+- The slot matching the new key's number is selected automatically, so other wallet apps can restore the key; the lowest unused slot is used only when that one is taken. Used slots, including disabled keys and HASH160 equivalents, cannot be selected and say why.
+- Keys created from the wallet (secp256k1 and HASH160) retain their wallet path for signing and recovery-phrase restore. Slots stay within the recovery search range.
+- Identities without a wallet path on this device open on manual entry, with an explanation. Turn off “Create from wallet” to enter or randomly generate a private key; other key types use this manual option.
+- For a password-protected identity, the screen states that a key created from the wallet is protected by the wallet, not by the identity's password.
+- Key is added via state transition. The key is checked against the wallet's recovery phrase, and stale or reused slots are rejected, before submission; after a rejection the identity is updated from the network and another free slot is selected.
 
 ### IDN-008: View identity keys and details [Implemented]
 **Persona:** Alex, Priya, Jordan

@@ -656,7 +656,7 @@ pub enum TaskError {
     /// example added on another device. Nothing was broadcast. Fieldless: no
     /// upstream error.
     #[error(
-        "This wallet key slot is already used by a key on this identity, possibly one added on another device. Choose a different slot and add the key again."
+        "This wallet key slot cannot take a new key. It is already used by a key on this identity, possibly one added on another device, or it is outside the range this wallet can recover. Choose a different slot and add the key again."
     )]
     DerivedKeyIndexUnavailable,
 

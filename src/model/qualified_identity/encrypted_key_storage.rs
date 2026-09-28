@@ -694,7 +694,8 @@ impl KeyStorage {
     ///   half (`Clear`, `AlwaysClear`, `Encrypted`, `InVault`) is therefore
     ///   never replaced by a derivation path: no protection downgrade, and the
     ///   vault secret stays referenced. Its public key is still refreshed from
-    ///   the rebuild, so an on-chain `disabled_at` is not pinned stale.
+    ///   the rebuild, so an on-chain `disabled_at` is not pinned stale, and a
+    ///   missing wallet path is taken from the rebuild.
     ///
     /// A held stored entry whose public key differs from the rebuild's
     /// (on-chain) key at the same id is a stale local entry, such as a
@@ -739,9 +740,13 @@ impl KeyStorage {
                     continue;
                 }
                 // Same key: keep the held private half, but take the
-                // rebuild's public key. They can differ only in
-                // `disabled_at`, which moves on-chain after a save.
+                // rebuild's public key (only `disabled_at` can differ) and the
+                // wallet path it found for a key imported before the wallet.
                 entry.0.identity_public_key = on_chain.identity_public_key.clone();
+                if entry.0.in_wallet_at_derivation_path.is_none() {
+                    entry.0.in_wallet_at_derivation_path =
+                        on_chain.in_wallet_at_derivation_path.clone();
+                }
             }
             self.private_keys.insert(placement, entry);
         }
@@ -1546,6 +1551,49 @@ mod tests {
                     if path.wallet_seed_hash == [0x02; 32]
             ),
             "a stored derivation path is refreshed by the rebuild"
+        );
+    }
+
+    /// A key imported before its wallet was loaded carries no wallet path; the
+    /// rebuild that finds it in the wallet supplies one, and the merge keeps
+    /// it alongside the held private half, or the identity loses its wallet.
+    #[test]
+    fn a_held_key_takes_the_wallet_path_the_rebuild_discovered() {
+        let pv = PlatformVersion::latest();
+        let imported = IdentityPublicKey::random_key(4, Some(4), pv);
+        let mut stored = KeyStorage::default();
+        stored.insert_at(
+            (MAIN, 4),
+            (
+                QualifiedIdentityPublicKey::from(imported.clone()),
+                PrivateKeyData::InVault,
+            ),
+        );
+        let mut rebuilt = KeyStorage::default();
+        rebuilt.insert_at(
+            (MAIN, 4),
+            (
+                QualifiedIdentityPublicKey::from_identity_public_key_in_wallet(
+                    imported,
+                    Some(derivation_path(0x02)),
+                ),
+                PrivateKeyData::AtWalletDerivationPath(derivation_path(0x02)),
+            ),
+        );
+
+        rebuilt.retain_local_keys_from(stored);
+
+        assert!(
+            rebuilt.is_in_vault(&(MAIN, 4)),
+            "the held private half is kept"
+        );
+        assert_eq!(
+            rebuilt
+                .entry_at(&(MAIN, 4))
+                .and_then(|(key, _)| key.in_wallet_at_derivation_path.as_ref())
+                .map(|path| path.wallet_seed_hash),
+            Some([0x02; 32]),
+            "the wallet path the rebuild discovered is kept"
         );
     }
 

@@ -3331,6 +3331,7 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::ContestedNameNotTradable { .. }
         | P::DocumentNotForSale { .. }
         | P::DocumentPriceChanged { .. }
+        | P::InvitationNetworkMismatch { .. }
         | P::InvalidParameter(_)
         | P::MessageSigningAddressInvalid { .. }
         | P::MessageSigningMessageInvalid { .. }
@@ -3655,6 +3656,7 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         | P::ContestedNameNotTradable { .. }
         | P::DocumentNotForSale { .. }
         | P::DocumentPriceChanged { .. }
+        | P::InvitationNetworkMismatch { .. }
         | P::InvalidParameter(_)
         // Message signing is a wallet-local operation with no Platform
         // submission at all.

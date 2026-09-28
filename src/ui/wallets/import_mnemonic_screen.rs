@@ -1,4 +1,5 @@
 use crate::app::AppAction;
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::wallet::single_key::SingleKeyWallet;
 use crate::ui::components::left_panel::add_left_panel;
@@ -6,12 +7,13 @@ use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::identity::add_existing_identity_screen::AddExistingIdentityScreen;
 use crate::ui::identity::add_new_identity_screen::AddNewIdentityScreen;
-use crate::ui::{RootScreenType, Screen, ScreenLike};
+use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
 
 use crate::model::wallet::Wallet;
 use crate::model::wallet::alias::AliasSource;
 use crate::ui::components::Component;
 use crate::ui::components::alias_input::AliasInput;
+use crate::ui::components::message_banner::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use bip39::Mnemonic;
@@ -19,6 +21,40 @@ use egui::{ComboBox, Grid, RichText, Ui, Vec2};
 use std::sync::Arc;
 use zeroize::Zeroize;
 use zxcvbn::zxcvbn;
+
+/// Shown under the recovery-phrase grid while the filled-in words are not a
+/// valid recovery phrase (unknown word, or correct words failing the
+/// checksum — hence the word-order hint).
+const INVALID_SEED_PHRASE_MESSAGE: &str = "This recovery phrase is not valid. Check that every word is spelled correctly and in the right order.";
+
+/// Why pressing "Save Wallet" / "Import Key" did not import anything. Every
+/// variant is shown to the user as an error banner; `Display` is the banner
+/// text.
+#[derive(Debug, thiserror::Error)]
+enum ImportSaveError {
+    /// The wallet model or backend refused the import (name already used,
+    /// phrase already imported, password out of bounds, storage failure).
+    #[error(transparent)]
+    Rejected(#[from] TaskError),
+    /// The private-key field is blank.
+    #[error("Enter a private key to import.")]
+    PrivateKeyMissing,
+    /// A password was entered for a single-key import, which has no per-key
+    /// password layer yet (T-MIG-03).
+    #[error(
+        "Per-key passwords are not supported in this version. Leave the password field blank to import the key; your wallet vault protects all imported keys."
+    )]
+    PrivateKeyPasswordUnsupported,
+    /// The input is neither WIF nor hexadecimal.
+    #[error("This does not look like a valid WIF or hex private key. Check the input.")]
+    PrivateKeyUnrecognized,
+    /// Hexadecimal input that does not decode to 32 bytes.
+    #[error("Hex private keys must be exactly 32 bytes; got {byte_count} bytes.")]
+    PrivateKeyWrongLength { byte_count: usize },
+    /// 32 hexadecimal bytes that are not a valid secp256k1 secret key.
+    #[error("The private key is not valid. Check the hexadecimal value and try again.")]
+    PrivateKeyInvalid,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImportType {
@@ -33,7 +69,12 @@ pub struct ImportMnemonicScreen {
     alias_input: AliasInput,
     password_strength: f64,
     estimated_time_to_crack: String,
-    error: Option<String>,
+    /// Live parse feedback for the private-key field. Save failures go to a
+    /// banner instead.
+    private_key_error: Option<String>,
+    /// Banner of the last rejected save; cleared on the next attempt so a
+    /// successful retry does not sit under a stale error.
+    save_error_banner: Option<BannerHandle>,
     pub app_context: Arc<AppContext>,
     wallet_imported: bool,
     show_advanced_options: bool,
@@ -63,7 +104,8 @@ impl ImportMnemonicScreen {
                 .with_desired_width(250.0),
             password_strength: 0.0,
             estimated_time_to_crack: String::new(),
-            error: None,
+            private_key_error: None,
+            save_error_banner: None,
             app_context: app_context.clone(),
             wallet_imported: false,
             show_advanced_options: false,
@@ -89,9 +131,17 @@ impl ImportMnemonicScreen {
     /// Not exposed for production callers.
     #[doc(hidden)]
     pub fn set_seed_phrase_for_test(&mut self, mnemonic: &Mnemonic) {
-        let words: Vec<String> = mnemonic.words().map(str::to_owned).collect();
+        let words: Vec<&str> = mnemonic.words().collect();
+        self.set_seed_words_for_test(&words);
+    }
+
+    /// Test-only seam: fill the recovery-phrase grid with `words` exactly as
+    /// typed, valid or not, with identity auto-discovery off. Not exposed for
+    /// production callers.
+    #[doc(hidden)]
+    pub fn set_seed_words_for_test(&mut self, words: &[&str]) {
         self.selected_seed_phrase_length = words.len();
-        self.seed_phrase_words = words;
+        self.seed_phrase_words = words.iter().map(|word| (*word).to_owned()).collect();
         self.import_type = ImportType::Mnemonic;
         self.identity_scan_count = 0;
     }
@@ -107,11 +157,18 @@ impl ImportMnemonicScreen {
         self.try_parse_private_key();
     }
 
+    /// Test-only seam: enter `password` in the optional password field the
+    /// way typing into it does. Not exposed for production callers.
+    #[doc(hidden)]
+    pub fn set_password_for_test(&mut self, password: &str) {
+        self.password_input.set_text(password.to_owned());
+    }
+
     fn try_parse_private_key(&mut self) {
         let input = self.private_key_input.text().trim();
         if input.is_empty() {
             self.parsed_single_key_wallet = None;
-            self.error = None;
+            self.private_key_error = None;
             return;
         }
 
@@ -122,24 +179,24 @@ impl ImportMnemonicScreen {
         match result {
             Ok(wallet) => {
                 self.parsed_single_key_wallet = Some(wallet);
-                self.error = None;
+                self.private_key_error = None;
             }
             Err(error) => {
                 tracing::debug!(?error, "Imported private-key preview parsing failed");
                 self.parsed_single_key_wallet = None;
-                self.error = Some(
+                self.private_key_error = Some(
                     "The private key is not valid. Check the WIF or hexadecimal value.".to_string(),
                 );
             }
         }
     }
 
-    fn save_private_key_wallet(&mut self) -> Result<AppAction, String> {
+    fn save_private_key_wallet(&mut self) -> Result<AppAction, ImportSaveError> {
         use dash_sdk::dpp::dashcore::PrivateKey;
 
         let input = self.private_key_input.text().trim();
         if input.is_empty() {
-            return Err("Please enter a private key".to_string());
+            return Err(ImportSaveError::PrivateKeyMissing);
         }
 
         // T-W-01b: imported keys live in the upstream `SecretStore` vault,
@@ -148,11 +205,7 @@ impl ImportMnemonicScreen {
         // (T-MIG-03); until then, reject password-protected single-key
         // imports rather than silently storing them in the clear.
         if !self.password_input.is_empty() {
-            return Err(
-                "Per-key passwords are not supported in this version. Leave the password \
-                 field blank to import the key; your wallet vault protects all imported keys."
-                    .to_string(),
-            );
+            return Err(ImportSaveError::PrivateKeyPasswordUnsupported);
         }
 
         // The backend cleans the raw name, replaces a blank one with the
@@ -165,15 +218,12 @@ impl ImportMnemonicScreen {
         let wif = match PrivateKey::from_wif(input) {
             Ok(_) => input.to_string(),
             Err(_) => {
-                let bytes = hex::decode(input).map_err(|_| {
-                    "This does not look like a valid WIF or hex private key. Check the input."
-                        .to_string()
-                })?;
+                let bytes =
+                    hex::decode(input).map_err(|_| ImportSaveError::PrivateKeyUnrecognized)?;
                 if bytes.len() != 32 {
-                    return Err(format!(
-                        "Hex private keys must be exactly 32 bytes; got {byte_count} bytes.",
-                        byte_count = bytes.len()
-                    ));
+                    return Err(ImportSaveError::PrivateKeyWrongLength {
+                        byte_count: bytes.len(),
+                    });
                 }
                 let mut buf = [0u8; 32];
                 buf.copy_from_slice(&bytes);
@@ -181,10 +231,7 @@ impl ImportMnemonicScreen {
                     Ok(private_key) => private_key.to_wif(),
                     Err(error) => {
                         tracing::debug!(?error, "Imported hexadecimal private key was rejected");
-                        return Err(
-                            "The private key is not valid. Check the hexadecimal value and try again."
-                                .to_string(),
-                        );
+                        return Err(ImportSaveError::PrivateKeyInvalid);
                     }
                 }
             }
@@ -193,19 +240,17 @@ impl ImportMnemonicScreen {
         // Consolidated import: vault write + sidecar + in-memory mirror,
         // shared with the advanced import dialog (#192). Per-key passwords
         // are rejected above, so this screen always imports unprotected.
-        self.app_context
-            .import_single_key_wif(
-                &wif,
-                alias,
-                crate::wallet_backend::single_key::ImportPassphrase::default(),
-            )
-            .map_err(|e| e.to_string())?;
+        self.app_context.import_single_key_wif(
+            &wif,
+            alias,
+            crate::wallet_backend::single_key::ImportPassphrase::default(),
+        )?;
 
         self.wallet_imported = true;
         Ok(AppAction::None)
     }
 
-    fn save_wallet(&mut self) -> Result<AppAction, String> {
+    fn save_wallet(&mut self) -> Result<AppAction, ImportSaveError> {
         if let Some(mnemonic) = &self.seed_phrase {
             let seed = mnemonic.to_seed("");
 
@@ -224,16 +269,13 @@ impl ImportMnemonicScreen {
                 Some(self.alias_input.text().to_owned()),
                 password.as_ref(),
             )
-            .map_err(|e| e.to_string())?;
+            .map_err(TaskError::from)?;
 
-            let (new_wallet_seed_hash, wallet_arc) = self
-                .app_context
-                .register_wallet(
-                    wallet,
-                    &seed,
-                    crate::model::wallet::birth_height::WalletOrigin::Imported,
-                )
-                .map_err(|e| e.to_string())?;
+            let (new_wallet_seed_hash, wallet_arc) = self.app_context.register_wallet(
+                wallet,
+                &seed,
+                crate::model::wallet::birth_height::WalletOrigin::Imported,
+            )?;
 
             // Set pending wallet selection so the wallet screen auto-selects this wallet
             if let Ok(mut pending) = self.app_context.pending_wallet_selection.lock() {
@@ -309,7 +351,7 @@ impl ImportMnemonicScreen {
             self.alias_input.clear();
             self.password_strength = 0.0;
             self.estimated_time_to_crack = String::new();
-            self.error = None;
+            self.private_key_error = None;
             self.wallet_imported = false;
             self.identity_scan_count = 5;
             return AppAction::None;
@@ -427,7 +469,7 @@ impl ImportMnemonicScreen {
         }
 
         // Show error if any
-        if let Some(ref err) = self.error {
+        if let Some(ref err) = self.private_key_error {
             ui.add_space(5.0);
             ui.colored_label(DashColors::ERROR, err);
         }
@@ -540,37 +582,20 @@ impl ScreenLike for ImportMnemonicScreen {
                             ui.heading(format!("{step}. Select the seed phrase length and enter all words."));
                             self.render_seed_phrase_input(ui);
 
-                            // Check seed phrase validity whenever all words are filled
-                            if self.seed_phrase_words.iter().all(|string| !string.is_empty()) {
-                                match Mnemonic::parse_normalized(self.seed_phrase_words.join(" ").as_str()) {
-                                    Ok(mnemonic) => {
-                                        self.seed_phrase = Some(mnemonic);
-                                        // Clear any existing seed phrase error
-                                        if let Some(ref mut error) = self.error
-                                            && error.contains("Invalid seed phrase") {
-                                                self.error = None;
-                                            }
-                                    }
-                                    Err(_) => {
-                                        self.seed_phrase = None;
-                                        self.error = Some("Invalid seed phrase. Please check that all words are spelled correctly and are valid BIP39 words.".to_string());
-                                    }
-                                }
+                            // Re-derived every frame from the grid, so the
+                            // validity message can never go stale: the phrase
+                            // is only checked once every word is filled in.
+                            let phrase_complete =
+                                self.seed_phrase_words.iter().all(|word| !word.is_empty());
+                            self.seed_phrase = if phrase_complete {
+                                Mnemonic::parse_normalized(self.seed_phrase_words.join(" ").as_str()).ok()
                             } else {
-                                // Clear seed phrase and error if not all words are filled
-                                self.seed_phrase = None;
-                                if let Some(ref mut error) = self.error
-                                    && error.contains("Invalid seed phrase") {
-                                        self.error = None;
-                                    }
+                                None
+                            };
+                            if phrase_complete && self.seed_phrase.is_none() {
+                                ui.add_space(10.0);
+                                ui.colored_label(DashColors::ERROR, INVALID_SEED_PHRASE_MESSAGE);
                             }
-
-                            // Display error message if seed phrase is invalid
-                            if let Some(ref error_msg) = self.error
-                                && error_msg.contains("Invalid seed phrase") {
-                                    ui.add_space(10.0);
-                                    ui.colored_label(DashColors::ERROR, error_msg);
-                                }
 
                             if self.seed_phrase.is_none() {
                                 return;
@@ -691,12 +716,19 @@ impl ScreenLike for ImportMnemonicScreen {
                             ImportType::Mnemonic => self.save_wallet(),
                             ImportType::PrivateKey => self.save_private_key_wallet(),
                         };
+                        self.save_error_banner.take_and_clear();
                         match result {
                             Ok(save_action) => {
                                 inner_action = save_action;
                             }
-                            Err(e) => {
-                                self.error = Some(e)
+                            // Every rejection must reach the user: a silent
+                            // return here makes the button look broken.
+                            Err(ImportSaveError::Rejected(error)) => {
+                                self.save_error_banner =
+                                    Some(MessageBanner::set_global_with_error(ui.ctx(), error));
+                            }
+                            Err(error) => {
+                                self.save_error_banner.raise(ui.ctx(), error, MessageType::Error);
                             }
                         }
                     }

@@ -86,6 +86,46 @@ pub const MIGRATION_UNREADABLE_ACK_ACTION_ID: &str =
 const WALLET_BACKEND_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 const SHUTDOWN_DEADLINE_MARGIN: Duration = Duration::from_secs(5);
 
+/// Settle recovery operations on retained screens, including hosts hidden by navigation.
+pub(crate) fn deliver_legacy_recovery_result(
+    roots: &mut BTreeMap<RootScreenType, Screen>,
+    stack: &mut [Screen],
+    task_result: &TaskResult,
+) -> bool {
+    let context = match task_result {
+        TaskResult::Success { context, result }
+            if matches!(
+                result.as_ref(),
+                BackendTaskSuccessResult::LegacyRecoveryCandidates { .. }
+                    | BackendTaskSuccessResult::LegacyRecoveryCompleted { .. }
+            ) =>
+        {
+            context
+        }
+        TaskResult::Error { context, .. } if context.legacy_recovery_identity().is_some() => {
+            context
+        }
+        _ => return false,
+    };
+    let completed = matches!(task_result, TaskResult::Success { result, .. }
+        if matches!(result.as_ref(), BackendTaskSuccessResult::LegacyRecoveryCompleted { .. }));
+    for screen in roots.values_mut().chain(stack.iter_mut()) {
+        if !screen.accepts_legacy_recovery_result(context, completed) {
+            continue;
+        }
+        match task_result {
+            TaskResult::Success { result, .. } => {
+                screen.display_backend_task_result(context, *result.clone());
+            }
+            TaskResult::Error { error, .. } => {
+                screen.display_backend_task_error(context, error);
+            }
+            _ => unreachable!(),
+        }
+    }
+    true
+}
+
 /// Deliver removal outcomes to persistent roots even while another screen is visible.
 pub(crate) fn deliver_identity_removal_result(
     ctx: &egui::Context,
@@ -2860,6 +2900,15 @@ impl App for AppState {
                 .connection_status()
                 .handle_task_result(&task_result, active_context.network);
 
+            let recovery_delivered = deliver_legacy_recovery_result(
+                &mut self.main_screens,
+                &mut self.screen_stack,
+                &task_result,
+            );
+            if recovery_delivered && matches!(task_result, TaskResult::Success { .. }) {
+                continue;
+            }
+
             // Handle the result on the main thread
             match task_result {
                 TaskResult::Success {
@@ -3131,6 +3180,7 @@ impl App for AppState {
                     self.route_contact_request_error_to_hidden_hub(&err);
                     let is_database_clear = context == BackendTaskContext::ClearNetworkDatabase;
                     let suppress_stale_error = !is_database_clear
+                        && !recovery_delivered
                         && self
                             .visible_screen_mut()
                             .should_suppress_backend_task_error(&context, &err);
@@ -3141,7 +3191,7 @@ impl App for AppState {
                         {
                             screen.display_backend_task_error(&context, &err);
                         }
-                    } else {
+                    } else if !recovery_delivered {
                         self.visible_screen_mut()
                             .display_backend_task_error(&context, &err);
                     }
@@ -3149,6 +3199,7 @@ impl App for AppState {
                     // If handled, skip the generic error banner.
                     let handled = suppress_stale_error
                         || (!is_database_clear
+                            && !recovery_delivered
                             && self.visible_screen_mut().display_task_error(&err));
 
                     if !handled {
@@ -3184,7 +3235,7 @@ impl App for AppState {
                             }
                             _ => {}
                         }
-                        if !is_database_clear {
+                        if !is_database_clear && !recovery_delivered {
                             self.visible_screen_mut()
                                 .display_message(&msg, MessageType::Error);
                         }

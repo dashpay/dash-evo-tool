@@ -683,6 +683,14 @@ pub enum TaskError {
     #[error("That password is not correct. Try again.")]
     IdentityKeyPassphraseIncorrect,
 
+    /// Import would replace different private material already saved at the same placement.
+    #[error("A different private key is already saved for this identity. Check the keys you are importing and try again.")]
+    IdentityImportKeyConflict,
+
+    /// An unpublished import retained protected keys that need the original import password.
+    #[error("This import has password-protected keys saved from an earlier attempt. Retry the import with the password you chose for that attempt.")]
+    IdentityImportPasswordRequired,
+
     /// A keyless (unprotected) write was refused over a password-protected
     /// identity key, which would have silently stripped its protection. Raised
     /// by the protection-aware store guard so adding or changing a key on a
@@ -722,31 +730,17 @@ pub enum TaskError {
     )]
     IdentityKeyAddedButIdentityUnloaded,
 
-    /// Fail-closed guard at the opt-in protect boundary: the task found
-    /// keys still resident as plaintext on disk after the eager load-path vault
-    /// migration, so the identity cannot be reported as fully protected. The
-    /// migration only leaves resident plaintext when its vault write failed or
-    /// was skipped; proceeding would let the seal step silently skip those keys
-    /// and emit a false-protected result. Refusing here keeps the user from
-    /// believing the identity is sealed when it is not. Fieldless: the load-path
-    /// migration outcome is logged where it happens; no secret or raw error
-    /// string is stored here.
+    /// Resident plaintext remains after startup migration was skipped or failed.
+    /// Protection must refuse it; storage preparation retries write failures,
+    /// while already-protected identities require explicit key recovery.
     #[error(
         "Some of this identity's keys are not fully protected yet. \
         Close and reopen the application, then try protecting this identity again."
     )]
     IdentityKeyProtectionIncomplete,
 
-    /// Fail-closed guard at the opt-in protect boundary: the identity
-    /// still carries one or more keys saved in the legacy on-disk format this
-    /// version can neither read nor migrate into the protected store. Unlike
-    /// resident plaintext — which the load-path migration finishes on the next
-    /// launch — there is NO automatic migration for these keys, so reopening the
-    /// application would loop on the same error. The only way forward is to add
-    /// the identity again from its recovery phrase or private key, which replaces
-    /// the legacy key entries with ones this version can protect. Fieldless: the
-    /// offending key's presence is logged at the guard; no secret or raw error
-    /// string is stored here.
+    /// Legacy encrypted keys cannot be converted by startup migration.
+    /// Reloading from recovery material is required; restarting cannot repair them.
     #[error(
         "Some of this identity's keys are saved in an older format that cannot be protected. \
         Load this identity again using its recovery phrase or private key, then try protecting it."
@@ -2247,9 +2241,10 @@ pub enum TaskError {
     // ──────────────────────────────────────────────────────────────────────────
     // Wallet creation / import errors
     // ──────────────────────────────────────────────────────────────────────────
-    /// The wallet has already been imported for this network.
-    #[error("This wallet has already been imported for this network.")]
-    WalletAlreadyImported,
+    /// The wallet has already been imported for this network. `alias` is the
+    /// existing wallet's local name, `None` when it was never named.
+    #[error("{}", wallet_already_imported_message(.alias.as_deref()))]
+    WalletAlreadyImported { alias: Option<String> },
 
     /// A new wallet password is shorter than the persistent secret store's
     /// minimum and therefore could not be migrated to Tier-2 protection.
@@ -3652,6 +3647,17 @@ fn sdk_error_is_dapi_reachability_failure(error: &SdkError) -> bool {
         | SdkError::DapiClientError(DapiClientError::NoAvailableAddressesToRetry(_))
         | SdkError::NoAvailableAddressesToRetry(_) => true,
         _ => false,
+    }
+}
+
+/// User-facing text for [`TaskError::WalletAlreadyImported`]: names the existing
+/// wallet so the user knows which one to open.
+fn wallet_already_imported_message(alias: Option<&str>) -> String {
+    match alias {
+        Some(alias) => format!(
+            "This wallet has already been imported for this network as \"{alias}\". Open it from the Wallets screen, or enter a different recovery phrase."
+        ),
+        None => "This wallet has already been imported for this network. Open it from the Wallets screen, or enter a different recovery phrase.".to_owned(),
     }
 }
 

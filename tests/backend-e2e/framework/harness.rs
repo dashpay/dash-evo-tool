@@ -396,7 +396,7 @@ impl BackendTestContext {
             Ok((hash, _)) => {
                 tracing::info!("Registered framework wallet (seed_hash: {:?})", &hash[..4]);
             }
-            Err(TaskError::WalletAlreadyImported) => {
+            Err(TaskError::WalletAlreadyImported { .. }) => {
                 tracing::info!("Framework wallet already registered (reusing from persistent DB)");
             }
             Err(e) => panic!("Failed to register framework wallet: {}", e),

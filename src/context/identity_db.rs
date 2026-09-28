@@ -2013,7 +2013,8 @@ impl AppContext {
 
         let kv = self.det_kv()?;
         let id = identity_id.to_buffer();
-        if self.is_identity_unloaded(&kv, &id)? {
+        let was_unloaded = self.is_identity_unloaded(&kv, &id)?;
+        if was_unloaded {
             if !intent.may_restore_unloaded() {
                 tracing::debug!(
                     identity_id = %identity_id,
@@ -2035,12 +2036,13 @@ impl AppContext {
             // A record on file: refresh it, keeping the user's own alias, which
             // a freshly built identity never carries, and every key the
             // wallet-only rebuild did not recreate (SEC-102). A delisted
-            // record is a removal that stopped part-way — its vault keys may
-            // already be gone — so it is replaced, not merged.
+            // record that was unloaded is a removal that stopped part-way — its
+            // vault keys may already be gone — so it is replaced, not merged.
+            // Delisted without the marker, no removal ran: its keys are live.
             Some(stored) => {
                 let stored = decode_stored_identity(&stored.qi_bytes, self.network)?;
                 qualified_identity.alias = stored.alias;
-                if identity_is_listed(&kv, &id)? {
+                if !was_unloaded || identity_is_listed(&kv, &id)? {
                     qualified_identity
                         .private_keys
                         .retain_local_keys_from(stored.private_keys);
@@ -5232,6 +5234,44 @@ mod tests {
                 .expect("read the roster")
                 .contains(&staged.id),
             "with no unload marker, an update must still restore the record",
+        );
+    }
+
+    /// Off the roster but never unloaded — an insert that stopped between its
+    /// blob write and its roster add — is not a removal: its vault keys are
+    /// live, so a refresh must merge them, not replace them.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_refresh_keeps_the_keys_of_an_unlisted_identity_never_unloaded() {
+        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let stored = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read the staged identity")
+            .expect("identity present");
+        let stored_keys = stored.private_keys.keys_set();
+        assert!(!stored_keys.is_empty(), "fixture: the identity holds keys");
+
+        let kv = staged.ctx.det_kv().expect("identity kv");
+        index_remove_identity(&kv, &staged.id.to_buffer()).expect("delist the identity");
+
+        let mut rebuilt = stored.clone();
+        rebuilt.private_keys = KeyStorage::default();
+        assert!(
+            staged
+                .ctx
+                .store_discovered_identity(&mut rebuilt, &None, DiscoveryIntent::Automatic)
+                .expect("store"),
+        );
+
+        let after = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read back")
+            .expect("identity present");
+        assert_eq!(
+            after.private_keys.keys_set(),
+            stored_keys,
+            "every stored key survives the refresh, so no vault secret is orphaned"
         );
     }
 

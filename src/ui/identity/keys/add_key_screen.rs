@@ -757,8 +757,8 @@ impl ScreenLike for AddKeyScreen {
         // Every slot-load failure is consumed here, even another wallet's: it
         // is never a failed submission, so the follow-up `display_message`
         // must not mark the form failed.
-        if let Some((seed_hash, identity_index)) = context.identity_auth_pubkey_warm() {
-            self.derivation.warm_failed(&seed_hash, identity_index);
+        if context.identity_auth_pubkey_warm().is_some() {
+            self.derivation.warm_failed(context);
             self.warm_error_pending = true;
             return;
         }
@@ -798,14 +798,8 @@ impl ScreenLike for AddKeyScreen {
             result,
             BackendTaskSuccessResult::IdentityAuthPubkeysWarmed { .. }
         ) {
-            if let Some((seed_hash, identity_index)) = context.identity_auth_pubkey_warm() {
-                self.derivation.warm_finished(
-                    &self.app_context,
-                    &self.identity,
-                    &seed_hash,
-                    identity_index,
-                );
-            }
+            self.derivation
+                .warm_finished(&self.app_context, &self.identity, context);
             return;
         }
         // Only this screen's own add may complete it: a foreign success would
@@ -1176,9 +1170,9 @@ impl ScreenLike for AddKeyScreen {
                     IdentityTask::RefreshIdentity(self.identity.clone()),
                 ));
             } else if self.derivation_visible
-                && let Some(task) = self.derivation.take_warm_task()
+                && let Some((task, context)) = self.derivation.take_warm_task()
             {
-                action = AppAction::BackendTask(task);
+                action = AppAction::BackendTaskWithContext { task, context };
             }
         }
 
@@ -1377,7 +1371,7 @@ mod derived_key_tests {
             screen.add_blocked_reason(),
             Some("Wait for the wallet key slots to load.")
         );
-        let warm = screen
+        let (_, context) = screen
             .derivation
             .take_warm_task()
             .expect("a cold cache dispatches one warm task");
@@ -1388,7 +1382,6 @@ mod derived_key_tests {
             "a refresh must not dispatch a duplicate warm task"
         );
 
-        let context = BackendTaskContext::from(&warm);
         screen.display_backend_task_error(&context, &TaskError::WalletLocked);
         screen.display_message("The wallet is locked.", MessageType::Error);
         assert_eq!(screen.derivation.status(), ChooserStatus::LoadFailed);
@@ -1415,8 +1408,7 @@ mod derived_key_tests {
     async fn derived_key_ignores_another_wallet_warm_before_its_own_completion() {
         let (staged, identity) = staged_screen_parts(false).await;
         let mut screen = AddKeyScreen::new(identity, &staged.ctx);
-        let warm = screen.derivation.take_warm_task().unwrap();
-        let own_context = BackendTaskContext::from(&warm);
+        let (_, own_context) = screen.derivation.take_warm_task().unwrap();
         let (seed_hash, identity_index) = own_context.identity_auth_pubkey_warm().unwrap();
         let mut other_seed_hash = seed_hash;
         other_seed_hash[0] ^= 1;
@@ -1448,16 +1440,48 @@ mod derived_key_tests {
         assert!(screen.add_blocked_reason().is_none());
     }
 
+    /// A slot load left running by a closed Add Key screen targets the same
+    /// wallet slots, but its failure is not this screen's load: only the
+    /// screen's own dispatch settles its chooser.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn derived_key_ignores_a_stale_same_wallet_warm_failure() {
+        let (staged, identity) = staged_screen_parts(false).await;
+        let mut closed = AddKeyScreen::new(identity.clone(), &staged.ctx);
+        let (_, stale_context) = closed.derivation.take_warm_task().unwrap();
+        drop(closed);
+
+        let mut screen = AddKeyScreen::new(identity, &staged.ctx);
+        let (_, own_context) = screen.derivation.take_warm_task().unwrap();
+        let (seed_hash, identity_index) = own_context.identity_auth_pubkey_warm().unwrap();
+
+        screen.display_backend_task_error(&stale_context, &TaskError::WalletLocked);
+        screen.display_message("The wallet is locked.", MessageType::Error);
+        assert_eq!(screen.derivation.status(), ChooserStatus::Loading);
+
+        let (_, cache, _, _) = fixture();
+        staged
+            .ctx
+            .wallet_backend()
+            .unwrap()
+            .auth_pubkey_cache()
+            .put(staged.ctx.network, &seed_hash, &cache)
+            .unwrap();
+        screen.display_backend_task_result(
+            &own_context,
+            BackendTaskSuccessResult::IdentityAuthPubkeysWarmed { identity_index },
+        );
+        assert_eq!(screen.derivation.status(), ChooserStatus::Ready);
+    }
+
     /// Another wallet's slot-load failure is not this form's failed
     /// submission, and leaves this chooser's own load untouched.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn derived_key_another_wallet_warm_error_does_not_fail_the_form() {
         let (staged, identity) = staged_screen_parts(false).await;
         let mut screen = AddKeyScreen::new(identity, &staged.ctx);
-        let warm = screen.derivation.take_warm_task().unwrap();
-        let (mut other_seed_hash, identity_index) = BackendTaskContext::from(&warm)
-            .identity_auth_pubkey_warm()
-            .unwrap();
+        let (_, own_context) = screen.derivation.take_warm_task().unwrap();
+        let (mut other_seed_hash, identity_index) =
+            own_context.identity_auth_pubkey_warm().unwrap();
         other_seed_hash[0] ^= 1;
         let other_context = BackendTaskContext::IdentityAuthPubkeyWarm {
             seed_hash: other_seed_hash,
@@ -1481,10 +1505,8 @@ mod derived_key_tests {
     async fn derived_key_wallet_change_while_loading_restarts_the_load() {
         let (staged, identity) = staged_screen_parts(false).await;
         let mut screen = AddKeyScreen::new(identity.clone(), &staged.ctx);
-        let warm = screen.derivation.take_warm_task().unwrap();
-        let (seed_hash, identity_index) = BackendTaskContext::from(&warm)
-            .identity_auth_pubkey_warm()
-            .unwrap();
+        let (_, stale_context) = screen.derivation.take_warm_task().unwrap();
+        let (seed_hash, identity_index) = stale_context.identity_auth_pubkey_warm().unwrap();
 
         let mut without_wallet = identity.clone();
         without_wallet.wallet_index = Some(identity_index + 1);
@@ -1495,14 +1517,17 @@ mod derived_key_tests {
         // The first wallet's stale completion arrives after the change and is
         // ignored.
         screen.display_backend_task_result(
-            &BackendTaskContext::from(&warm),
+            &stale_context,
             BackendTaskSuccessResult::IdentityAuthPubkeysWarmed { identity_index },
         );
         assert_eq!(screen.derivation.status(), ChooserStatus::Loading);
-        let Some(BackendTask::WalletTask(WalletTask::WarmIdentityAuthPubkeys {
-            seed_hash: warmed_seed_hash,
-            ..
-        })) = screen.derivation.take_warm_task()
+        let Some((
+            BackendTask::WalletTask(WalletTask::WarmIdentityAuthPubkeys {
+                seed_hash: warmed_seed_hash,
+                ..
+            }),
+            _,
+        )) = screen.derivation.take_warm_task()
         else {
             panic!("the restored wallet must dispatch a fresh slot load");
         };
@@ -1513,9 +1538,9 @@ mod derived_key_tests {
     async fn derived_key_warm_that_leaves_the_cache_cold_does_not_loop() {
         let (staged, identity) = staged_screen_parts(false).await;
         let mut screen = AddKeyScreen::new(identity, &staged.ctx);
-        let warm = screen.derivation.take_warm_task().unwrap();
+        let (_, context) = screen.derivation.take_warm_task().unwrap();
         screen.display_backend_task_result(
-            &BackendTaskContext::from(&warm),
+            &context,
             BackendTaskSuccessResult::IdentityAuthPubkeysWarmed { identity_index: 0 },
         );
         assert_eq!(screen.derivation.status(), ChooserStatus::LoadFailed);

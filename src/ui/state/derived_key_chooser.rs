@@ -11,8 +11,8 @@ use std::collections::BTreeSet;
 use dash_sdk::dpp::identity::KeyType;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 
-use crate::backend_task::BackendTask;
 use crate::backend_task::wallet::WalletTask;
+use crate::backend_task::{BackendTask, BackendTaskContext};
 use crate::context::AppContext;
 use crate::model::derived_identity_key::{
     default_derivation_index, derivation_index_limit, derivation_wallet, is_derivable_key_type,
@@ -66,6 +66,9 @@ pub struct DerivedKeyChooser {
     derivable_type: bool,
     backend_available: bool,
     load: KeyLoad,
+    /// The dispatch of the in-flight warm. Only its outcome settles the load:
+    /// a warm of the same wallet slots left running by a closed screen is not.
+    warm_dispatch: Option<BackendTaskContext>,
     limit: u32,
     occupied: BTreeSet<u32>,
     /// Slots the backend rejected as used during this screen's lifetime. Kept
@@ -94,6 +97,7 @@ impl DerivedKeyChooser {
             derivable_type: is_derivable_key_type(key_type),
             backend_available: false,
             load: KeyLoad::Cold,
+            warm_dispatch: None,
             limit: 0,
             occupied: BTreeSet::new(),
             rejected: BTreeSet::new(),
@@ -121,6 +125,7 @@ impl DerivedKeyChooser {
         self.wallet = derivation_wallet(identity, app_context.network);
         if self.wallet != previous {
             self.load = KeyLoad::Cold;
+            self.warm_dispatch = None;
             self.index = None;
             self.rejected.clear();
             self.submitted = None;
@@ -177,9 +182,10 @@ impl DerivedKeyChooser {
         self.derivable_type = is_derivable_key_type(key_type);
     }
 
-    /// The warm task to dispatch, if the chooser needs keys it does not have.
-    /// Marks the load in flight, so it is returned at most once per cycle.
-    pub fn take_warm_task(&mut self) -> Option<BackendTask> {
+    /// The warm task to dispatch with its context, if the chooser needs keys it
+    /// does not have. Marks the load in flight, so it is returned at most once
+    /// per cycle; only an outcome carrying that context settles the load.
+    pub fn take_warm_task(&mut self) -> Option<(BackendTask, BackendTaskContext)> {
         if !self.derived
             || !self.derivable_type
             || !self.backend_available
@@ -190,31 +196,36 @@ impl DerivedKeyChooser {
         }
         let (seed_hash, identity_index) = self.wallet?;
         self.load = KeyLoad::Loading;
-        Some(BackendTask::WalletTask(
-            WalletTask::WarmIdentityAuthPubkeys {
-                seed_hash,
-                identity_index,
-                key_count: self.limit,
-            },
-        ))
+        let task = BackendTask::WalletTask(WalletTask::WarmIdentityAuthPubkeys {
+            seed_hash,
+            identity_index,
+            key_count: self.limit,
+        });
+        let context = BackendTaskContext::for_dispatch(&task);
+        self.warm_dispatch = Some(context.clone());
+        Some((task, context))
     }
 
-    /// Whether a warm for `(seed_hash, identity_index)` is this chooser's own.
-    fn is_own_warm(&self, seed_hash: &WalletSeedHash, identity_index: u32) -> bool {
-        self.wallet == Some((*seed_hash, identity_index))
+    /// Whether `context` is the in-flight warm this chooser dispatched; takes
+    /// it, so each dispatch settles the load once.
+    fn take_own_warm(&mut self, context: &BackendTaskContext) -> bool {
+        let own = self.load == KeyLoad::Loading && self.warm_dispatch.as_ref() == Some(context);
+        if own {
+            self.warm_dispatch = None;
+        }
+        own
     }
 
-    /// This wallet's warm task finished. A load that still finds keys
+    /// This chooser's warm task finished. A load that still finds keys
     /// missing becomes a failure instead of re-dispatching, so a lost race can
     /// never loop warm tasks.
     pub fn warm_finished(
         &mut self,
         app_context: &AppContext,
         identity: &QualifiedIdentity,
-        seed_hash: &WalletSeedHash,
-        identity_index: u32,
+        context: &BackendTaskContext,
     ) {
-        if self.load != KeyLoad::Loading || !self.is_own_warm(seed_hash, identity_index) {
+        if !self.take_own_warm(context) {
             return;
         }
         self.load = KeyLoad::Cold;
@@ -224,9 +235,10 @@ impl DerivedKeyChooser {
         }
     }
 
-    /// A warm task failed; only this chooser's own changes its load state.
-    pub fn warm_failed(&mut self, seed_hash: &WalletSeedHash, identity_index: u32) {
-        if self.load == KeyLoad::Loading && self.is_own_warm(seed_hash, identity_index) {
+    /// A warm task failed; only this chooser's own dispatch changes its load
+    /// state.
+    pub fn warm_failed(&mut self, context: &BackendTaskContext) {
+        if self.take_own_warm(context) {
             self.load = KeyLoad::Failed;
         }
     }

@@ -492,8 +492,14 @@ fn usable_snapshot(backup: &Path) -> bool {
         // `immutable=1`: snapshots copied from a WAL database carry a WAL header, and a plain
         // read-only open would leave `-wal`/`-shm` sidecars next to them. The caller holds
         // the backup lock, so no DET writer changes the file while it is checked.
-        let mut uri = url::Url::from_file_path(std::path::absolute(backup)?)
-            .map_err(|()| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+        // `SQLITE_OPEN_NOFOLLOW` rejects a symlink anywhere in the path, so resolve the
+        // parent directory (e.g. macOS `/var` -> `/private/var`) and keep the entry name:
+        // a symlink at the snapshot itself is still refused.
+        let invalid = || std::io::Error::from(std::io::ErrorKind::InvalidInput);
+        let absolute = std::path::absolute(backup)?;
+        let parent = absolute.parent().ok_or_else(invalid)?.canonicalize()?;
+        let name = absolute.file_name().ok_or_else(invalid)?;
+        let mut uri = url::Url::from_file_path(parent.join(name)).map_err(|()| invalid())?;
         uri.set_query(Some("immutable=1"));
         let conn = Connection::open_with_flags(
             uri.as_str(),

@@ -920,3 +920,20 @@ fn platform_compatibility_snapshot_validation_leaves_no_sidecars() {
         .collect();
     assert_eq!(after, before);
 }
+
+/// A symlinked ancestor directory (e.g. macOS `/var` -> `/private/var`) does not make a
+/// complete snapshot unusable, while a symlink at the snapshot entry itself still does.
+#[cfg(unix)]
+#[test]
+fn platform_compatibility_snapshot_validation_follows_ancestor_symlinks() {
+    let (dir, path, _target) = fixture();
+    let kept = backup(&path).unwrap();
+    let links = tempfile::tempdir().unwrap();
+    let alias = links.path().join("alias");
+    std::os::unix::fs::symlink(dir.path(), &alias).unwrap();
+    let name = kept.file_name().unwrap();
+    assert!(usable_snapshot(&alias.join(name)));
+    let entry_link = links.path().join(name);
+    std::os::unix::fs::symlink(&kept, &entry_link).unwrap();
+    assert!(!usable_snapshot(&entry_link));
+}

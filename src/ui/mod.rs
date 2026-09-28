@@ -863,6 +863,15 @@ pub trait ScreenLike {
     /// UI-safe operation context; unattributed errors use `Unknown`.
     fn display_backend_task_error(&mut self, _context: &BackendTaskContext, _error: &TaskError) {}
 
+    /// Whether a recovery outcome belongs to this host's pending operation or settled offer.
+    fn accepts_legacy_recovery_result(
+        &self,
+        _context: &BackendTaskContext,
+        _completed: bool,
+    ) -> bool {
+        false
+    }
+
     /// Returns `true` when an outdated correlated error must not reach the
     /// global banner.
     fn should_suppress_backend_task_error(
@@ -1168,6 +1177,14 @@ impl ScreenLike for Screen {
 
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
         delegate_to_screen!(self, screen => screen.display_backend_task_error(context, error))
+    }
+
+    fn accepts_legacy_recovery_result(
+        &self,
+        context: &BackendTaskContext,
+        completed: bool,
+    ) -> bool {
+        delegate_to_screen!(self, screen => screen.accepts_legacy_recovery_result(context, completed))
     }
 
     fn should_suppress_backend_task_error(

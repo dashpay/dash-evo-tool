@@ -395,6 +395,10 @@ struct Inner {
     clear_shielded_test_failure: std::sync::atomic::AtomicBool,
     #[cfg(test)]
     forget_wallet_local_state_test_failure: std::sync::atomic::AtomicBool,
+    /// Runs once at the end of [`WalletBackend::forget_all_wallets_local`],
+    /// standing in for a writer that lands while the wallets are still loaded.
+    #[cfg(test)]
+    after_forget_all_test_hook: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
     /// Injected persister faults for the identity-funding account
     /// registration write. Inert until a test arms it.
     #[cfg(test)]
@@ -511,6 +515,9 @@ pub struct WalletBackend {
 /// partial wipe instead of a false success.
 pub(crate) struct ClearAllOutcome {
     pub(crate) upstream_ids: Vec<WalletId>,
+    /// Every HD wallet the sweep reached; their auth-pubkey caches need a
+    /// final [`WalletBackend::forget_auth_pubkey_caches`] once they are unloaded.
+    pub(crate) hd_seed_hashes: Vec<WalletSeedHash>,
     pub(crate) failures: Vec<TaskError>,
 }
 
@@ -640,6 +647,8 @@ impl WalletBackend {
                 clear_shielded_test_failure: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(test)]
                 forget_wallet_local_state_test_failure: std::sync::atomic::AtomicBool::new(false),
+                #[cfg(test)]
+                after_forget_all_test_hook: std::sync::Mutex::new(None),
                 #[cfg(test)]
                 persist_faults: persist_fault_test_support::PersistFaults::default(),
                 #[cfg(test)]
@@ -1180,6 +1189,15 @@ impl WalletBackend {
     }
 
     #[cfg(test)]
+    pub(crate) fn set_after_forget_all_test_hook(&self, hook: impl FnOnce() + Send + 'static) {
+        *self
+            .inner
+            .after_forget_all_test_hook
+            .lock()
+            .expect("test hook lock") = Some(Box::new(hook));
+    }
+
+    #[cfg(test)]
     pub(crate) fn set_forget_wallet_local_state_test_failure(&self, fail: bool) {
         self.inner
             .forget_wallet_local_state_test_failure
@@ -1703,8 +1721,10 @@ impl WalletBackend {
         // HD wallets: enumerate from the persisted wallet-meta sidecar so a
         // never-loaded wallet is still wiped.
         let mut upstream_ids = Vec::new();
+        let mut hd_seed_hashes = Vec::new();
         let mut failures: Vec<TaskError> = Vec::new();
         for (seed_hash, _meta) in self.wallet_meta().list(network) {
+            hd_seed_hashes.push(seed_hash);
             let wallet_id = self.registered_wallet_id(&seed_hash);
             if let Some(id) = wallet_id {
                 upstream_ids.push(id);
@@ -1734,10 +1754,48 @@ impl WalletBackend {
         // (single-key forget does not clear the session cache).
         self.forget_all_secrets();
 
+        #[cfg(test)]
+        if let Some(hook) = self
+            .inner
+            .after_forget_all_test_hook
+            .lock()
+            .expect("test hook lock")
+            .take()
+        {
+            hook();
+        }
+
         ClearAllOutcome {
             upstream_ids,
+            hd_seed_hashes,
             failures,
         }
+    }
+
+    /// Delete the auth-pubkey cache of every wallet in `seed_hashes`, returning
+    /// each failure. Call only once the wallets left the loaded
+    /// [`WalletContext`](wallet_context::WalletContext): from then on a warm
+    /// still in flight cannot write an entry back, so this deletion is final.
+    pub(crate) fn forget_auth_pubkey_caches(
+        &self,
+        seed_hashes: &[WalletSeedHash],
+    ) -> Vec<TaskError> {
+        let cache = self.auth_pubkey_cache();
+        seed_hashes
+            .iter()
+            .filter_map(|seed_hash| {
+                cache
+                    .delete(self.inner.network, seed_hash)
+                    .inspect_err(|error| {
+                        tracing::warn!(
+                            wallet = %hex::encode(seed_hash),
+                            ?error,
+                            "Failed to delete auth-pubkey cache after unloading wallets"
+                        );
+                    })
+                    .err()
+            })
+            .collect()
     }
 
     /// Start chain sync and the periodic upstream coordinators.

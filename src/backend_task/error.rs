@@ -365,6 +365,12 @@ pub enum TaskError {
     )]
     AssetLockNotEligibleForTopUp,
 
+    /// Invitation credit keys are bearer vouchers and must not be reclaimed by generic funding.
+    #[error(
+        "This funding transaction belongs to a DashPay invitation. Choose a different funding transaction."
+    )]
+    AssetLockReservedForInvitation,
+
     /// A top-up of an identity outside this wallet was handed a funding mode
     /// this path cannot build — currently only the whole-account drain, which
     /// no flow here requests. Rejected before any funds move rather than

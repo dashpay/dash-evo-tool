@@ -152,6 +152,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Funding a Platform address from a saved asset lock now resolves its signing key
+  through platform-wallet, including locks absent from DET’s local address cache.
+
 - Backend E2E funding waits for final, unreserved asset-lock inputs and recovers
   leftover test funds before checking the suite budget. Asset-lock tests select
   the newly broadcast transaction in duffs; shielded tests wait for balance

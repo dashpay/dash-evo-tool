@@ -151,6 +151,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Backend E2E funded test wallets use unique names so successive tests can
+  register wallets in the shared persistent database.
+
 - CI runs documentation tests once as part of the main test suite and uses
   Cargo directly instead of the retired Cargo action.
 

@@ -297,6 +297,49 @@ fn platform_compatibility_removes_only_matching_upstream_backups() {
     assert!(kept.exists());
 }
 
+/// A captured name set reaches exactly the snapshots it names: snapshots created
+/// afterwards survive, already-removed names are skipped, and a named candidate
+/// that cannot be removed still fails the call.
+#[test]
+fn platform_compatibility_named_removal_keeps_later_snapshots() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("det-testnet.sqlite");
+    let auto = dir.path().join("backups/auto");
+    std::fs::create_dir_all(&auto).unwrap();
+    let sibling = dir
+        .path()
+        .join("det-testnet.sqlite.platform-67d4ef3-backup-a1.sqlite");
+    let upstream = auto.join("pre-migration-det-testnet-1-to-2-20260915T120000Z.db");
+    let blocked = dir
+        .path()
+        .join("det-testnet.sqlite.platform-67d4ef3-backup-blocked.sqlite");
+    for backup in [&sibling, &upstream] {
+        std::fs::write(backup, b"backup").unwrap();
+    }
+    std::fs::create_dir(&blocked).unwrap();
+    let names = backup_names(&path).unwrap();
+    assert_eq!(
+        names.len(),
+        3,
+        "rejected candidates are named too: {names:?}"
+    );
+
+    let later = dir
+        .path()
+        .join("det-testnet.sqlite.platform-67d4ef3-backup-b2.sqlite");
+    std::fs::write(&later, b"backup").unwrap();
+    remove_named_backups(&path, &names).unwrap_err();
+    assert!(!sibling.exists());
+    assert!(!upstream.exists());
+
+    std::fs::remove_dir(&blocked).unwrap();
+    remove_named_backups(&path, &names).unwrap();
+    assert!(
+        later.exists(),
+        "a snapshot created after the capture is kept"
+    );
+}
+
 /// An unlink is only durable once its directory is synced: removal must sync
 /// every directory it deleted from, and a failed sync must fail the removal so
 /// callers keep their retry state (the identity-cleanup manifest) instead of
@@ -316,10 +359,14 @@ fn platform_compatibility_backup_removal_fails_when_directory_sync_fails() {
     }
 
     let mut synced = Vec::new();
-    let error = remove_backups_with_sync(&path, |directory| {
-        synced.push(directory.to_owned());
-        Err(std::io::Error::other("injected directory sync failure"))
-    })
+    let error = remove_backups_with_sync(
+        &path,
+        |_| true,
+        |directory| {
+            synced.push(directory.to_owned());
+            Err(std::io::Error::other("injected directory sync failure"))
+        },
+    )
     .unwrap_err();
 
     assert_eq!(error.kind(), std::io::ErrorKind::Other);
@@ -343,17 +390,23 @@ fn platform_compatibility_backup_removal_retries_directory_sync_without_deletion
         .join("det-testnet.sqlite.platform-67d4ef3-backup-a1.sqlite");
     std::fs::write(&sibling, b"backup").unwrap();
 
-    remove_backups_with_sync(&path, |_| {
-        Err(std::io::Error::other("injected directory sync failure"))
-    })
+    remove_backups_with_sync(
+        &path,
+        |_| true,
+        |_| Err(std::io::Error::other("injected directory sync failure")),
+    )
     .unwrap_err();
     assert!(!sibling.exists());
 
     let mut synced = Vec::new();
-    remove_backups_with_sync(&path, |directory| {
-        synced.push(directory.to_owned());
-        Ok(())
-    })
+    remove_backups_with_sync(
+        &path,
+        |_| true,
+        |directory| {
+            synced.push(directory.to_owned());
+            Ok(())
+        },
+    )
     .unwrap();
     assert_eq!(
         synced,

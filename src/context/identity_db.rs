@@ -1,4 +1,5 @@
 use super::AppContext;
+use super::wallet_lifecycle::UpgradeBackupScope;
 use crate::backend_task::contested_names::ScheduledDPNSVote;
 use crate::backend_task::error::TaskError;
 use crate::model::identity_discovery::DiscoveryIntent;
@@ -73,9 +74,12 @@ const VAULT_CLEANUP_PENDING_PREFIX: &str = "det:vault_cleanup_pending:v1:";
 /// Written only once the identity is confirmed listed, before it is delisted, so a
 /// retry or the startup sweep deletes backups only for a removal of stored data;
 /// a vault-cleanup manifest alone (e.g. from an unknown id) never authorizes it.
+/// The value is an [`UpgradeBackupScope`]: it names the snapshots that existed at that
+/// point, so a marker that outlives its removal can never reach later snapshots.
 /// Global-scoped for the same reason as the manifest. Key shape:
-/// `det:upgrade_backup_cleanup_pending:v1:<identity_b58>`.
-const UPGRADE_BACKUP_CLEANUP_PENDING_PREFIX: &str = "det:upgrade_backup_cleanup_pending:v1:";
+/// `det:upgrade_backup_cleanup_pending:v2:<identity_b58>`; unscoped `v1` markers are
+/// ignored, which keeps the backups they would have authorized.
+const UPGRADE_BACKUP_CLEANUP_PENDING_PREFIX: &str = "det:upgrade_backup_cleanup_pending:v2:";
 
 /// Per-identity marker recording that the user deliberately unloaded an
 /// identity from this device. Global-scoped for the same reason the
@@ -1652,11 +1656,13 @@ impl AppContext {
         // stored data. That authorization is persisted before delisting, so a retry or the
         // startup sweep inherits it; the manifest alone never grants it, since an unknown id
         // also leaves one behind and must not delete unrelated wallets' recovery snapshots.
+        // It names the snapshots that exist now: only those can copy this identity.
         if identity_is_listed(&kv, &id)? {
+            let scope = self.upgrade_backup_scope()?;
             kv.put(
                 DetScope::Global,
                 &upgrade_backup_cleanup_pending_key(&id),
-                &true,
+                &scope,
             )
             .map_err(identity_err)?;
         }
@@ -1705,16 +1711,17 @@ impl AppContext {
         let mut sidecar_cleanup =
             sidecar_cleanup_outcome(dashpay_cleanup, token_cleanup, &identifier);
         let backup_marker = upgrade_backup_cleanup_pending_key(id);
-        let removes_upgrade_backups = kv
-            .get::<bool>(DetScope::Global, &backup_marker)
-            .map_err(identity_err)?
-            .is_some();
-        if removes_upgrade_backups {
-            match self.remove_upgrade_backups() {
-                // Retired at once, so a later retry of unrelated sidecar cleanup cannot
-                // delete snapshots taken after this identity was already gone.
+        let backup_scope = kv
+            .get::<UpgradeBackupScope>(DetScope::Global, &backup_marker)
+            .map_err(identity_err)?;
+        if let Some(scope) = backup_scope {
+            // The scope never reaches snapshots taken after this identity was gone, so
+            // repeating this after a failed retirement below is harmless.
+            match self.remove_scoped_upgrade_backups(&scope) {
                 Ok(()) => {
+                    // Keep the manifest while the marker remains, so startup retries it.
                     if let Err(error) = kv.delete(DetScope::Global, &backup_marker) {
+                        sidecar_cleanup = IdentitySidecarCleanup::Incomplete;
                         tracing::warn!(identity_id = %identifier, %error, "Upgrade backups removed but their cleanup marker remains");
                     }
                 }
@@ -5508,6 +5515,71 @@ mod tests {
         assert!(
             backup.exists(),
             "a bare manifest never authorizes backup removal"
+        );
+        staged.ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
+    /// Retiring the backup-removal marker can fail after its snapshots are gone. That
+    /// removal must stay incomplete, and neither the startup sweep nor a later retry of
+    /// the absent identity may delete snapshots created after the identity was removed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn failed_backup_marker_retirement_never_deletes_newer_snapshots() {
+        let staged = stage_identity_with_vaulted_keys([0x33; 32], [0x44; 32]).await;
+        let kv = staged.ctx.det_kv().unwrap();
+        let data_dir = staged.ctx.data_dir().to_path_buf();
+        let copied = data_dir.join("det-app.sqlite.platform-67d4ef3-backup-copied.sqlite");
+        std::fs::write(&copied, b"backup").unwrap();
+        let conn = rusqlite::Connection::open(data_dir.join("det-testnet.sqlite")).unwrap();
+        conn.execute_batch(&format!(
+            "CREATE TRIGGER fail_marker_retirement BEFORE DELETE ON meta_global \
+             WHEN OLD.key LIKE '{UPGRADE_BACKUP_CLEANUP_PENDING_PREFIX}%' \
+             BEGIN SELECT RAISE(FAIL, 'injected marker retirement failure'); END;"
+        ))
+        .unwrap();
+
+        assert!(matches!(
+            staged.ctx.delete_local_qualified_identity(&staged.id),
+            Err(TaskError::IdentitySidecarCleanupIncomplete)
+        ));
+        assert!(
+            !copied.exists(),
+            "the snapshot copying the identity is removed"
+        );
+        assert!(
+            !kv.list(DetScope::Global, Some(VAULT_CLEANUP_PENDING_PREFIX))
+                .unwrap()
+                .is_empty(),
+            "an unretired marker keeps the removal discoverable at startup"
+        );
+
+        conn.execute_batch("DROP TRIGGER fail_marker_retirement;")
+            .unwrap();
+        let newer = data_dir.join("det-app.sqlite.platform-67d4ef3-backup-newer.sqlite");
+        std::fs::write(&newer, b"backup").unwrap();
+        staged.ctx.resume_pending_vault_cleanups();
+        assert!(newer.exists(), "the startup sweep keeps later snapshots");
+        assert!(
+            kv.list(
+                DetScope::Global,
+                Some(UPGRADE_BACKUP_CLEANUP_PENDING_PREFIX)
+            )
+            .unwrap()
+            .is_empty(),
+            "the startup sweep retires the marker"
+        );
+        assert!(
+            kv.list(DetScope::Global, Some(VAULT_CLEANUP_PENDING_PREFIX))
+                .unwrap()
+                .is_empty(),
+            "the startup sweep retires the repaired removal"
+        );
+        staged
+            .ctx
+            .delete_local_qualified_identity(&staged.id)
+            .expect("removing an absent identity is a no-op");
+        assert!(
+            newer.exists(),
+            "a retry of the absent identity keeps later snapshots"
         );
         staged.ctx.wallet_backend().unwrap().shutdown().await;
     }

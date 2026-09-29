@@ -256,31 +256,31 @@ fn default_auto_dir(path: &Path) -> PathBuf {
     platform_wallet_storage::default_auto_backup_dir(path)
 }
 
-/// Backup candidates that passed validation, plus the first rejected one.
+/// Backup candidates that passed validation, plus every rejected one with its reason.
 ///
 /// Directory-level failures still abort the scan; a single rejected
 /// candidate does not, so deletion can remove every valid snapshot before
 /// reporting the rejection.
 struct BackupScan {
     found: Vec<PathBuf>,
-    first_rejection: Option<std::io::Error>,
+    rejected: Vec<(PathBuf, std::io::Error)>,
 }
 
 /// Strict scan: any rejected candidate fails the whole scan. Retention and
 /// publication rely on this to never proceed past an unexpected file.
 fn backups_in(path: &Path, auto_dir: Option<&Path>) -> std::io::Result<Vec<PathBuf>> {
     let scan = scan_backups_in(path, auto_dir)?;
-    scan.first_rejection.map_or(Ok(scan.found), Err)
+    match scan.rejected.into_iter().next() {
+        Some((_, error)) => Err(error),
+        None => Ok(scan.found),
+    }
 }
 
 fn scan_backups_in(path: &Path, auto_dir: Option<&Path>) -> std::io::Result<BackupScan> {
     let mut found = Vec::new();
-    let mut first_rejection = None;
+    let mut rejected = Vec::new();
     let (Some(parent), Some(prefix)) = (path.parent(), backup_prefix(path)) else {
-        return Ok(BackupScan {
-            found,
-            first_rejection,
-        });
+        return Ok(BackupScan { found, rejected });
     };
     for directory in [Some(parent), auto_dir].into_iter().flatten() {
         let metadata = match std::fs::symlink_metadata(directory) {
@@ -312,19 +312,14 @@ fn scan_backups_in(path: &Path, auto_dir: Option<&Path>) -> std::io::Result<Back
             if bridge || upstream {
                 match validate_backup_file(&entry.path(), path) {
                     Ok(()) => found.push(entry.path()),
-                    Err(error) => {
-                        first_rejection.get_or_insert(error);
-                    }
+                    Err(error) => rejected.push((entry.path(), error)),
                 }
             }
         }
     }
     found.sort();
     found.dedup();
-    Ok(BackupScan {
-        found,
-        first_rejection,
-    })
+    Ok(BackupScan { found, rejected })
 }
 
 fn upstream_backup_name(path: &Path, name: &str) -> bool {
@@ -538,18 +533,52 @@ fn usable_snapshot(backup: &Path) -> bool {
 /// synced on every call (including a retry that finds nothing left to delete),
 /// so callers may retire their retry state afterwards.
 pub(crate) fn remove_backups(path: &Path) -> std::io::Result<()> {
-    remove_backups_with_sync(path, sync_directory)
+    remove_backups_with_sync(path, |_| true, sync_directory)
+}
+
+/// File names of every retained upgrade-backup candidate of the database at `path`,
+/// including candidates that fail validation (removing those later reports the failure).
+///
+/// Snapshot names are never reused (random or timestamped suffixes), so a name set
+/// captured now identifies exactly the snapshots that exist now.
+pub(crate) fn backup_names(path: &Path) -> std::io::Result<BTreeSet<String>> {
+    let _guard = backup_lock(path)?;
+    let scan = scan_backups_in(path, Some(&default_auto_dir(path)))?;
+    Ok(scan
+        .found
+        .iter()
+        .chain(scan.rejected.iter().map(|(backup, _)| backup))
+        .filter_map(|backup| backup.file_name()?.to_str().map(str::to_owned))
+        .collect())
+}
+
+/// [`remove_backups`] limited to the snapshots named in `names`, as captured by
+/// [`backup_names`]. Named snapshots already gone are skipped, and snapshots created
+/// since are kept, so a retry never reaches data the caller was not granted.
+pub(crate) fn remove_named_backups(path: &Path, names: &BTreeSet<String>) -> std::io::Result<()> {
+    let named = |backup: &Path| {
+        backup
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| names.contains(name))
+    };
+    remove_backups_with_sync(path, named, sync_directory)
 }
 
 fn remove_backups_with_sync(
     path: &Path,
+    selected: impl Fn(&Path) -> bool,
     mut sync_dir: impl FnMut(&Path) -> std::io::Result<()>,
 ) -> std::io::Result<()> {
     let _guard = backup_lock(path)?;
     let auto_dir = default_auto_dir(path);
     let scan = scan_backups_in(path, Some(&auto_dir))?;
-    let mut first_error = scan.first_rejection;
-    for backup in scan.found {
+    let mut first_error = scan
+        .rejected
+        .into_iter()
+        .find(|(backup, _)| selected(backup))
+        .map(|(_, error)| error);
+    for backup in scan.found.into_iter().filter(|backup| selected(backup)) {
         if let Err(error) = remove_backup(&backup, path) {
             first_error.get_or_insert(error);
         }

@@ -2,7 +2,7 @@
 
 mod engine;
 pub use engine::UpgradeError;
-pub(crate) use engine::remove_backups;
+pub(crate) use engine::{backup_names, remove_backups, remove_named_backups};
 
 use platform_wallet::changeset::PlatformWalletPersistence;
 use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig, WalletStorageError};

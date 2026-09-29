@@ -358,8 +358,9 @@ pub enum BackendTaskContext {
     },
     /// A network refresh of one identity.
     IdentityRefresh(Identifier),
-    /// Adding a key (entered or wallet-derived) to one identity, so the Add
-    /// Key screen can tell its own failed add from other tasks' errors.
+    /// Adding a key (entered or wallet-derived) to one identity. The Add Key
+    /// screen wraps it in a dispatch, since another screen's add of the same
+    /// identity yields the same operation.
     IdentityKeyAdd(Identifier),
     /// Recovery outcomes stay bound to their dispatch network during navigation.
     LegacyRecoveryOnNetwork {
@@ -503,14 +504,6 @@ impl BackendTaskContext {
     pub(crate) fn refreshed_identity(&self) -> Option<Identifier> {
         match self.operation() {
             Self::IdentityRefresh(identity_id) => Some(*identity_id),
-            _ => None,
-        }
-    }
-
-    /// The identity this operation adds a key to, or `None` for anything else.
-    pub(crate) fn added_key_identity(&self) -> Option<Identifier> {
-        match self.operation() {
-            Self::IdentityKeyAdd(identity_id) => Some(*identity_id),
             _ => None,
         }
     }

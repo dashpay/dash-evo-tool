@@ -20,10 +20,17 @@ or private keys. It was prepared programmatically, not captured through the GUI.
 `public_identity_fixture_migrates` restores this SQL and boots the real CLI twice.
 It checks aliases, types, status, balances, revisions, DPNS names and timestamps,
 and every public key including contract bounds against independent expected
-metadata, then verifies `identity-list`. It runs in the matrix CI job and with
+metadata, then verifies `identity-list`. It runs in the main `Tests` CI job with
 `--all-features`; a testing-only build needs `DET_CLI_BIN`. No live explorer
 access or fixture password is required. This covers public metadata preservation,
 not signing, voter/operator associations, or fetching proofs with the old SDK.
+
+The main `Tests` workflow also runs the migration harness's helper tests.
+`Migration Matrix` selects only `migration_matrix` with `--exact` to replay
+downloaded archived profiles; it also runs the separate real-data platform
+compatibility check. It requires evidence that at least one archive was
+exercised and exactly one test passed. Clippy checks all test targets without
+executing them.
 
 ## Why this exists
 

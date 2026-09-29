@@ -49,7 +49,7 @@ use platform_wallet_storage::secrets::SecretStore;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::BitOrAssign;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::vec;
 use tokio::sync::mpsc as tokiompsc;

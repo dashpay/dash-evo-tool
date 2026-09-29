@@ -48,7 +48,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- Platform dependencies track `fix/pr-5126` at `82cec940`, which reconciles
+- Platform dependencies track `fix/pr-5126` at `37ea1bbb`, which reconciles
   persisted Core transaction accounting. DET retains its pre-send history check.
 
 - Core payments and new asset locks are blocked before signing when persisted

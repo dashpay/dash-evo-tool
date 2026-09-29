@@ -152,6 +152,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Backend E2E funding waits for final, unreserved asset-lock inputs and recovers
+  leftover test funds before checking the suite budget. Asset-lock tests select
+  the newly broadcast transaction in duffs; shielded tests wait for balance
+  propagation and use a withdrawal amount above the protocol minimum.
+
 - Backend E2E funded test wallets use unique names so successive tests can
   register wallets in the shared persistent database.
 

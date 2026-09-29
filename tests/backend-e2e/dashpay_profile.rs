@@ -71,6 +71,14 @@ async fn profile_create_and_replace(key_type: KeyType, unavailable_hash160: bool
         signing_keys,
     );
 
+    let balance = ctx.app_context.snapshot_balance(&seed_hash);
+    let (_, inputs, _) = backend.asset_lock_probe_snapshot(&seed_hash);
+    tracing::info!(
+        confirmed = balance.confirmed,
+        unconfirmed = balance.unconfirmed,
+        final_funds = inputs.final_funds_duffs,
+        "DashPay registration funding state"
+    );
     let result = run_task(
         &ctx.app_context,
         BackendTask::IdentityTask(IdentityTask::RegisterIdentity(registration)),

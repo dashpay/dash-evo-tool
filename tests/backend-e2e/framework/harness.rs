@@ -537,13 +537,13 @@ impl BackendTestContext {
             }
         }
 
-        // Verify balance is above minimum threshold
-        funding::verify_framework_funded(&app_context, framework_wallet_hash).await;
-
         // Sweep orphaned test wallets from previous runs (e.g., a test panicked
         // before cleanup). Wallets persist in the DB, so AppContext loaded them
         // automatically and SPV synced their balances.
         crate::framework::cleanup::cleanup_test_wallets(&app_context, framework_wallet_hash).await;
+
+        // Include funds recovered from earlier runs before enforcing the suite budget.
+        funding::verify_framework_funded(&app_context, framework_wallet_hash).await;
 
         // Init succeeded — clear the cancellation token so the panic hook
         // won't kill SPV when individual tests panic. The hook is only
@@ -679,7 +679,7 @@ impl BackendTestContext {
         // Funds MUST be confirmed or IS-locked before proceeding — unconfirmed
         // UTXOs cannot be used for asset-lock transactions.
         tracing::trace!(seed_hash = ?&seed_hash[..4], min = amount_duffs, "create_funded_test_wallet: waiting for spendable balance (IS lock)...");
-        match wait::wait_for_spendable_balance(
+        match wait::wait_for_asset_lock_funds(
             app_context,
             seed_hash,
             amount_duffs,
@@ -703,7 +703,7 @@ impl BackendTestContext {
                     amount_duffs,
                     "create_funded_test_wallet: IS lock timed out, waiting for block confirmation..."
                 );
-                wait::wait_for_spendable_balance(
+                wait::wait_for_asset_lock_funds(
                     app_context,
                     seed_hash,
                     amount_duffs,

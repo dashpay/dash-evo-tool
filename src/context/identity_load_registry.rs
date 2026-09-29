@@ -9,9 +9,8 @@
 //! - **"the task holds a claim"** does not mean "running": a load is outstanding
 //!   from the moment it is dispatched, and only claims its identity once its task
 //!   starts.
-//! - **"the node is in the store"** does not mean "succeeded": `load_identity`
-//!   inserts the node before sealing its keys, so a failed seal leaves the node
-//!   persisted by a load that errored.
+//! - **"the node is in the store"** does not mean "succeeded": an identity may
+//!   already exist, or storage may complete before a final wallet update fails.
 //!
 //! So each load reports its own phase here, and the registry is the single source
 //! of truth for it. Loads are dispatched from several places — the Masternodes
@@ -22,7 +21,7 @@
 //! or publish each other's outcome.
 //!
 //! The records also give a load exclusive use of its identity for its whole
-//! check → fetch → insert → seal span, which is what makes
+//! check → fetch → seal → insert span, which is what makes
 //! `IdentityLoadMode::RejectIfExists` safe: those steps are not one atomic
 //! operation, so two overlapping loads of one identity would otherwise both pass
 //! the duplicate check and clobber each other's insert.
@@ -47,9 +46,8 @@ pub enum IdentityLoadPhase {
     Running,
     /// Finished, fully applied — the node is stored, with its keys as requested.
     Loaded,
-    /// Finished with an error. The node may still have been persisted: the insert
-    /// precedes the key seal, and a failed seal leaves the insert behind. Anything
-    /// resuming from this phase must offer a retry, not report success.
+    /// Finished with an error. Storage may have completed before a final wallet
+    /// update failed. Offer a retry instead of inferring success from storage.
     Failed,
 }
 

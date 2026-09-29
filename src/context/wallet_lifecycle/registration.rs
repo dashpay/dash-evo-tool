@@ -107,11 +107,9 @@ impl AppContext {
         let uses_password = wallet.uses_password;
 
         let wallet_arc = self.wallet_context().register_hd(wallet, |wallet| {
-            if WalletMetaView::new(&self.app_kv)
-                .get(self.network, &seed_hash)
-                .is_some()
-            {
-                return Err(TaskError::WalletAlreadyImported);
+            if let Some(meta) = WalletMetaView::new(&self.app_kv).get(self.network, &seed_hash) {
+                let alias = Some(meta.alias).filter(|alias| !alias.is_empty());
+                return Err(TaskError::WalletAlreadyImported { alias });
             }
             self.write_seed_envelope(wallet)?;
             self.write_wallet_meta(wallet)

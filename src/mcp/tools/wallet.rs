@@ -466,7 +466,7 @@ impl AsyncTool<DashMcpService> for ImportWallet {
                 alias: ctx.wallet_context().hd_alias(&hash),
                 already_imported: false,
             }),
-            Err(TaskError::WalletAlreadyImported) => Ok(ImportWalletOutput {
+            Err(TaskError::WalletAlreadyImported { .. }) => Ok(ImportWalletOutput {
                 seed_hash: hex::encode(seed_hash),
                 alias: ctx.wallet_context().hd_alias(&seed_hash),
                 already_imported: true,

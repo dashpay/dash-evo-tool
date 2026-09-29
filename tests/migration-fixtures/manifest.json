@@ -91,6 +91,49 @@
       },
       "notes": "First current-era fixture, and the first that runs the platform_compatibility bridge on real bytes. The released v1.0.0-weekly.20260908 build (commit 13d8309e3) pins Platform 67d4ef3f, whose wallet-storage migration history diverges from the current pin at V003 (3:unified 4:invitations). Booting it with the current build therefore upgrades det-app.sqlite and det-testnet.sqlite through the bridge, which keeps a *.platform-67d4ef3-backup-*.sqlite copy of each. The wallet lives in det-testnet.sqlite, not data.db (data.db is at version 38 with no wallet table), so the harness asserts it by alias through expect.wallet_aliases rather than contents.wallets. Wallet: alias weekly-fixture, seed hash 0a90903e8dfb8ea0bf5a89c6524df7d8daa7e0024a312c2c751b27901714e929. It is a fresh, public, testnet-only wallet whose recovery phrase is read from MIGRATION_FIXTURE_WEEKLY_MNEMONIC and never committed. It was funded with one 1 tDASH payment from the public testnet faucet (txid 5b5a40a0595f7a591e3e9f0d34a2e28d2e1f45a88aa3e8083299711bbcb53b78), which gives real core_transactions, core_utxos and core_instant_locks rows, plus 400 core_address_pool rows, 13 account_registrations and sync state. The capture ran the weekly's own det-cli serve (import, two addresses, balance, discovery), then launched the weekly GUI once on a private Xvfb display to select testnet (det-cli's network switch is not persisted) and quit cleanly. src/wallet_backend/platform_compatibility/real_fixture_tests.rs opens the same archive directly through the bridge.",
       "known_limitations": "wallet-only: no identity and no DPNS name. The weekly det-cli cannot register an identity; the bridge's synthetic public-rows.sql covers identity and contact rows. The app's clean shutdown does not checkpoint the SQLite WAL, so the archive carries the -wal sidecars (det-testnet.sqlite-wal is 3.6 MB uncompressed). They are kept on purpose, because that is the state a real profile is in, and they are why the archive is 277 KB. The GUI's first start on mainnet also left empty det-mainnet*.sqlite files."
+    },
+    {
+      "id": "v1.0.0-weekly.20260915-wallet-only",
+      "git_tag": "v1.0.0-weekly.20260915",
+      "det_version": "1.0.0-weekly.20260915+bdfad2f92",
+      "capture_method": "release-chain",
+      "profile": "wallet-only",
+      "network": "testnet",
+      "host_platform": "x86_64-linux",
+      "binary_asset": "dash-evo-tool-linux-x86_64.zip",
+      "platform_rev": "63cf57f40d0000bf3b2b26026c8fa1c71162852d",
+      "captured_at": "2026-09-29",
+      "provenance": {
+        "source": {
+          "git_tag": "v1.0.0-weekly.20260908",
+          "archive": "v1.0.0-weekly.20260908-wallet-only.tar.zst",
+          "sha256": "c7e21762a762c6a5892dcdff952c54583c7df8bd649fbd3c960696057ca17624"
+        },
+        "binary_sha256": "ec1195ad4bed29c9548edc4c754288ae71bf9d82d2f5a94957dc2b34da7d0ede"
+      },
+      "artifact": {
+        "workflow_name": "migration-fixture-bootstrap.yml",
+        "workflow_run_id": 36553576984,
+        "artifact_name": "migration-fixture-v1.0.0-weekly.20260915-wallet-only",
+        "archive_filename": "v1.0.0-weekly.20260915-wallet-only.tar.zst",
+        "sha256": "c0bb5430a15835de9c2e77547f87de2785cd1fb6ae801dc65cf65320ead1e30b",
+        "bytes": 267105,
+        "retention_days": 90,
+        "expires_at": "2026-12-28T10:07:22Z"
+      },
+      "expect": {
+        "wallet_aliases": [
+          "weekly-fixture"
+        ],
+        "starting_db_version": 38,
+        "derive_address": false
+      },
+      "contents": {
+        "wallets": [],
+        "identity": null
+      },
+      "notes": "Derived from a verified copy of the September 8 fixture by the original September 15 released det-cli. Both releases booted twice on persisted testnet and listed the same wallet identity and alias. The source archive is unchanged. RPC credentials were cleared only in the capture copy before packing. Direct upgrade with the current v1.0-dev CI binary also lists the same wallet. Wallet seed hash: 0a90903e8dfb8ea0bf5a89c6524df7d8daa7e0024a312c2c751b27901714e929.",
+      "known_limitations": "Inherits the September 8 single unprotected wallet profile: no protected wallet, identity or DPNS name. This is an upgrade-derived snapshot, not a fresh import. Offline capture does not exercise network discovery or address derivation. Empty mainnet databases from the original source remain present; all wallet data is testnet."
     }
   ]
 }

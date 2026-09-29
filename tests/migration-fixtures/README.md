@@ -236,6 +236,47 @@ headless.
   carries `-wal` sidecars. That is the state a real profile is in: do not
   checkpoint or `VACUUM` a capture to shrink it.
 
+### `release-chain` — advance an existing fixture
+
+Use `scripts/migration-fixtures/chain.py` to resume from an archived profile
+instead of importing another wallet for every weekly. Download and verify the
+source artifact with `download-fixtures.sh`, and download each intervening
+release's own Linux binary. Supply the source tag and digest from the manifest:
+
+```bash
+python3 scripts/migration-fixtures/chain.py \
+  --archive /path/to/v1.0.0-weekly.20260908-wallet-only.tar.zst \
+  --sha256 c7e21762a762c6a5892dcdff952c54583c7df8bd649fbd3c960696057ca17624 \
+  --source-tag v1.0.0-weekly.20260908 \
+  --release v1.0.0-weekly.20260908=/path/to/20260908/det-cli \
+  --release v1.0.0-weekly.20260915=/path/to/20260915/det-cli \
+  --work-dir /private/staging \
+  --output-dir /path/to/new-output-directory
+```
+
+Requires Python 3.12+, jq, tar and zstd. Staging ancestors must not be writable
+by other users, as required by the wallet vault. The first binary checks the
+source profile; subsequent versions must be strictly increasing and match their
+embedded version strings. The script never alters the source archive. Each
+hop boots on testnet, hydrates wallets twice in standalone mode, and checks that
+wallet identities and aliases survive. It removes RPC/MCP credential settings
+only in the staged `.env`. Each successful hop produces an archive, checksum,
+and receipt linking the source archive and the binary's SHA-256. A failed hop
+produces no fixture; earlier successful snapshots remain available.
+
+These checks do not prove preservation of every address, transaction, identity,
+or password. The resulting fixture inherits the source profile's limitations;
+do not claim a new capture profile or newly exercised features. Record
+`capture_method: "release-chain"` and the receipt's provenance in the manifest,
+then upload through `migration-fixture-bootstrap.yml` as for a hand capture.
+Every archived version remains an independent input to the migration matrix
+against the current build, so skipped-release upgrades are still exercised.
+
+The v0.9.3 baseline remains a direct-upgrade test. It predates `det-cli`, so its
+first hop requires that newer release's GUI when the legacy wallet password
+cannot be supplied headlessly. Archive that completed hop, then resume the CLI
+chain from it. Never use today's binary to manufacture an older release's data.
+
 ## Adding a fixture for a new version
 
 1. **Pick the profile.** See [`profiles/`](profiles/). `wallet-only` is the
@@ -248,8 +289,8 @@ headless.
    for v0.9.3 that means registering the identity and its DPNS name, since that
    binary has no SPV and can only see funds through a local Dash Core node.
 4. **Capture with the released binary**, in a fully reset, isolated data
-   directory. Never capture two fixtures into the same directory, and never
-   capture on top of a directory a previous run touched.
+   directory, or advance a copy of an existing fixture using `release-chain`
+   above. Keep original archives immutable and record the chain's provenance.
 5. **Confirm the profile checklist item by item before quitting the app.**
    Discovery that has not finished yet is the most common way to capture a
    fixture that silently proves nothing.

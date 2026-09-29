@@ -19,7 +19,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 
 
 def run(args: list[str], *, env: dict[str, str] | None = None) -> str:
-    """Run one bounded command, retaining diagnostics outside the repository."""
+    """Run one bounded command and propagate failures."""
     result = subprocess.run(args, env=env, text=True, capture_output=True, timeout=180)
     if result.returncode:
         raise RuntimeError(f"{Path(args[0]).name} failed: {result.stderr.strip()}")
@@ -121,6 +121,20 @@ def probe(binary: Path, profile: Path) -> list[dict]:
     return wallets
 
 
+def pack(profile: Path, output: Path, tag: str) -> Path:
+    """Expose an archive only after packing and credential checks succeed."""
+    with tempfile.TemporaryDirectory(prefix="packing-", dir=output) as tmp:
+        prefix = Path(tmp) / f"{tag}-wallet-only"
+        archive = Path(
+            run(
+                ["bash", str(SCRIPT_DIR / "pack.sh"), str(profile), str(prefix)]
+            ).splitlines()[-1]
+        )
+        checksum = Path(f"{archive}.sha256")
+        checksum.replace(output / checksum.name)
+        return archive.replace(output / archive.name)
+
+
 def releases(values: list[str]) -> list[tuple[str, Path]]:
     """Validate version order and every binary before opening any wallet data."""
     result = []
@@ -220,11 +234,7 @@ def main() -> None:
             wallets = probe(binary, profile)
             check_wallets(baseline, wallets)
             prefix = output / f"{tag}-wallet-only"
-            packed = Path(
-                run(
-                    ["bash", str(SCRIPT_DIR / "pack.sh"), str(profile), str(prefix)]
-                ).splitlines()[-1]
-            )
+            packed = pack(profile, output, tag)
             receipt = {
                 "capture_method": "release-chain",
                 "git_tag": tag,

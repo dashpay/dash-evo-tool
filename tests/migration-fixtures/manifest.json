@@ -113,12 +113,13 @@
       },
       "artifact": {
         "workflow_name": "migration-fixture-bootstrap.yml",
-        "workflow_run_id": 0,
+        "workflow_run_id": 36553576984,
         "artifact_name": "migration-fixture-v1.0.0-weekly.20260915-wallet-only",
         "archive_filename": "v1.0.0-weekly.20260915-wallet-only.tar.zst",
         "sha256": "c0bb5430a15835de9c2e77547f87de2785cd1fb6ae801dc65cf65320ead1e30b",
         "bytes": 267105,
-        "retention_days": 90
+        "retention_days": 90,
+        "expires_at": "2026-12-28T10:07:22Z"
       },
       "expect": {
         "wallet_aliases": [

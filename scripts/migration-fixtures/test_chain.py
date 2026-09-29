@@ -13,6 +13,19 @@ import chain
 
 
 class ChainTests(unittest.TestCase):
+    def test_failed_pack_does_not_leave_a_partial_archive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp)
+
+            def partial_pack(args):
+                Path(args[-1] + ".tar.zst").write_bytes(b"incomplete")
+                raise RuntimeError("pack failed")
+
+            with patch.object(chain, "run", side_effect=partial_pack):
+                with self.assertRaises(RuntimeError):
+                    chain.pack(Path("profile"), output, "v1.0.1")
+            self.assertEqual(list(output.iterdir()), [])
+
     def test_credentials_are_cleared_without_changing_network_configuration(self):
         with tempfile.TemporaryDirectory() as tmp:
             profile = Path(tmp)

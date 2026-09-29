@@ -526,6 +526,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   network charges today, so fees are unchanged, and the Platform Info screen now
   says plainly that the rate shown is fixed rather than read from the network.
 
+- Funding from a previously used asset lock now reports that the deposit was
+  already used instead of suggesting a generic retry. SQLite can retain the
+  recovery record without requiring full-wallet restoration support.
+
 ### Changed
 
 - Full resync clears the selected wallet’s displayed Core history across restarts

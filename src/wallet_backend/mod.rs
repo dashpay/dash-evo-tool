@@ -3499,6 +3499,11 @@ fn map_platform_address_fund_error(e: platform_wallet::error::PlatformWalletErro
                 source: Box::new(e),
             });
         }
+        source @ platform_wallet::error::PlatformWalletError::AssetLockAlreadyConsumed(_) => {
+            return TaskError::AssetLockReportedUsed {
+                source: Box::new(source),
+            };
+        }
         other => other,
     };
     match identity_op_error_kind(&e) {
@@ -4261,6 +4266,23 @@ mod tests {
             matches!(mapped, TaskError::AssetLockOutPointAlreadyConsumed { .. }),
             "Expected AssetLockOutPointAlreadyConsumed, got: {mapped:?}"
         );
+    }
+
+    #[test]
+    fn map_platform_address_fund_error_preserves_reconciled_consumption_report() {
+        use dash_sdk::dpp::dashcore::{OutPoint, Txid, hashes::Hash};
+        let outpoint = OutPoint::new(Txid::from_byte_array([0x42; 32]), 0);
+        let mapped = map_platform_address_fund_error(
+            platform_wallet::error::PlatformWalletError::AssetLockAlreadyConsumed(outpoint),
+        );
+        match mapped {
+            TaskError::AssetLockReportedUsed { source } => assert!(matches!(
+                *source,
+                platform_wallet::error::PlatformWalletError::AssetLockAlreadyConsumed(actual)
+                    if actual == outpoint
+            )),
+            other => panic!("Consumed report must not invite a generic retry: {other:?}"),
+        }
     }
 
     /// An unclassified SDK broadcast rejection during platform-address

@@ -26,7 +26,7 @@ coalesced, and timeout-bounded. Details close when wallet/network changes.
 
 ## Cancellation and expiration remain unavailable
 
-The pinned platform revision is `37ea1bbb975c8c922a8a9a84bff565d0055f68e0`.
+The pinned platform revision is `c0425f7bdcc29776f6d5f0f35a56cde7eb368c7f`.
 Its `wallet/asset_lock/sync/recovery.rs` lacks a verified finalized-ancestry
 predicate. `abandon_transaction` releases a signed Core payment the caller
 chose not to send; it is not an API for cancelling an already-broadcast asset

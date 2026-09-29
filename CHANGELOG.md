@@ -49,7 +49,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - Platform dependencies track `fix/sqlite-asset-lock-reconciliation` at
-  `9a21b34e`, which restores confirmed spends and finality on wallet load and
+  `c0fd3b13`, which restores confirmed spends and finality on wallet load and
   reconciles persisted Core transaction accounting. DET retains its pre-send
   history check.
 

@@ -135,6 +135,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Migration fixture coverage skips historical non-SemVer release tags instead
+  of failing to parse them and blocking weekly builds. Missing fixtures for
+  newer versioned releases still block the build.
+- Migration fixtures can be advanced through released binaries, preserving
+  the original archives and recording each step's provenance. The September 15
+  weekly fixture is derived from the September 8 fixture.
+
 - Background task results preserve the masternode voting-key prompt, vote
   selections, removal dialog, and key-recovery offer or operation in progress.
   Completed votes clear only unchanged selections from the same cast.

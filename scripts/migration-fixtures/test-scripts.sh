@@ -108,4 +108,16 @@ check_coverage v1.0.0-weekly.9 v1.0.0-weekly.10 missing
 check_coverage v1.0.0-beta.11 v1.0.0-rc.1 missing
 check_coverage v1.9.0 v1.10.0 missing
 check_coverage v1.0.0+one v1.0.0+two covered
+check_coverage v1.0.0-weekly.20260908 $'test-fix-directory-searching\nv0.9-Developer-Preview-3\nv1.0.0-weekly.20260908' covered
+grep -q 'Skipping non-SemVer release tag: test-fix-directory-searching' "$scratch/coverage.log" || fail 'historical tag was not reported'
+check_coverage v1.0.0-weekly.20260908 $'test-fix-directory-searching\nv1.0.0-weekly.20260915' missing
+grep -q '^  v1.0.0-weekly.20260915$' "$scratch/coverage.log" || fail 'missing weekly fixture was not reported'
+
+jq -n '{fixtures:[{git_tag:"invalid-fixture-tag"}]}' > "$scratch/manifest.json"
+if bash "$SCRIPT_DIR/check-coverage.sh" --manifest "$scratch/manifest.json" > "$scratch/coverage.log" 2>&1; then
+    fail 'coverage accepted an invalid fixture tag'
+fi
+grep -q 'Invalid release tag: invalid-fixture-tag' "$scratch/coverage.log" || fail 'fixture tag validation failed for an unrelated reason'
 echo 'PASS: release precedence coverage'
+
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "$SCRIPT_DIR" -p test_chain.py -v

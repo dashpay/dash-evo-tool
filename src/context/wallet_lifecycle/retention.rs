@@ -8,7 +8,8 @@ use std::time::SystemTime;
 pub struct BackupPruneReport {
     /// Expired backups deleted. Undercounts when a location fails part-way.
     pub deleted: usize,
-    /// The first failure; the remaining expired backups are retried at the next start.
+    /// The first failure; the remaining expired backups are retried the next time
+    /// wallet data opens.
     pub failure: Option<TaskError>,
 }
 
@@ -230,11 +231,13 @@ mod tests {
             "the newest backup of each database is kept"
         );
         assert!(
-            !crate::wallet_backend::wallet_database_path(
-                ctx.data_dir(),
-                dash_sdk::dpp::dashcore::Network::Devnet
+            !crate::wallet_backend::platform_compatibility::backup_lock_path(
+                &crate::wallet_backend::wallet_database_path(
+                    ctx.data_dir(),
+                    dash_sdk::dpp::dashcore::Network::Devnet
+                )
             )
-            .with_extension("sqlite.platform-upgrade.lock")
+            .unwrap()
             .exists(),
             "a database without backups is not locked or touched"
         );
@@ -263,10 +266,8 @@ mod tests {
         let ctx = test_app_context(tmp.path());
         let fixture = backups(&ctx);
         let wallet = crate::wallet_backend::wallet_database_path(ctx.data_dir(), ctx.network);
-        let lock = wallet.with_file_name(format!(
-            "{}.platform-upgrade.lock",
-            wallet.file_name().unwrap().to_string_lossy()
-        ));
+        let lock =
+            crate::wallet_backend::platform_compatibility::backup_lock_path(&wallet).unwrap();
         let held = std::fs::File::create(&lock).unwrap();
         held.try_lock().unwrap();
 

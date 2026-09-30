@@ -67,7 +67,7 @@ impl AppContext {
     /// Backend-task handler for `SystemTask::UpdateBackupRetention`.
     ///
     /// Only the save can fail the task. Pruning under the new policy is
-    /// best-effort and is retried on every start.
+    /// best-effort and is retried the next time wallet data opens.
     pub fn handle_update_backup_retention(
         self: &Arc<Self>,
         retention: BackupRetention,
@@ -75,8 +75,8 @@ impl AppContext {
         let retention = retention.sanitized();
         self.set_backup_retention(retention)
             .map_err(|source| TaskError::AppSettingsWrite { source })?;
-        // Only the databases this process has already opened successfully are safe
-        // to prune; before the wallet backend is up, the next start applies it.
+        // Before wallet storage is up, its start-up applies the saved policy; the
+        // newest usable backup of every database is kept either way.
         let report = if self.wallet_backend().is_ok() {
             self.prune_expired_upgrade_backups_best_effort()
         } else {

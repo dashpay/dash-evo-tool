@@ -163,7 +163,7 @@ fn check_dir_scope(dir: &Path, intent: DeletionIntent<'_>) -> std::io::Result<()
     let located = canonical_location(dir)?;
     let allowed = match intent {
         DeletionIntent::NetworkClear { data_dir, network } => {
-            let root = canonical_dir(&network_spv_dir(data_dir, network));
+            let root = canonical_dir(&crate::wallet_backend::spv_storage_dir(data_dir, network));
             located.starts_with(&root) && located != root
         }
         DeletionIntent::Backup { .. } | DeletionIntent::Log { .. } => false,
@@ -205,12 +205,6 @@ fn unlink(path: &Path, metadata: &std::fs::Metadata) -> std::io::Result<()> {
     #[cfg(not(windows))]
     let _ = metadata;
     std::fs::remove_file(path)
-}
-
-fn network_spv_dir(data_dir: &Path, network: Network) -> PathBuf {
-    data_dir
-        .join("spv")
-        .join(crate::wallet_backend::network_prefix(network))
 }
 
 /// Every check before an unlink; returns the target's own (unfollowed) metadata.
@@ -390,8 +384,9 @@ fn in_scope(located: &Path, name: &str, intent: DeletionIntent<'_>) -> bool {
         DeletionIntent::NetworkClear { data_dir, network } => {
             let spv = data_dir.join("spv");
             let lock = format!("{}.lock", crate::wallet_backend::network_prefix(network));
-            parent.starts_with(canonical_dir(&network_spv_dir(data_dir, network)))
-                || (is(&spv) && name == lock)
+            parent.starts_with(canonical_dir(&crate::wallet_backend::spv_storage_dir(
+                data_dir, network,
+            ))) || (is(&spv) && name == lock)
         }
         DeletionIntent::Log { dir, stem } => {
             is(dir) && crate::logging::parse_rotated_ts(name, stem).is_some()

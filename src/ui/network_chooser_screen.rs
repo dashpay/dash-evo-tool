@@ -1,7 +1,7 @@
 use crate::app::AppAction;
 use crate::backend_task::core::CoreTask;
 use crate::backend_task::dapi_discovery::persist_dapi_addresses;
-use crate::backend_task::error::TaskError;
+use crate::backend_task::error::{BACKUP_RETENTION_SAVED_CLEANUP_INCOMPLETE, TaskError};
 use crate::backend_task::system_task::SystemTask;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
@@ -1382,18 +1382,14 @@ impl NetworkChooserScreen {
 /// Shown when the retention setting cannot be read; the backend then deletes nothing.
 const BACKUP_RETENTION_UNREADABLE: &str = "Your backup retention setting could not be read, so no old upgrade backups are deleted. Choose a backup retention setting and save it.";
 
-/// Shown when the new policy was saved but some expired backups could not be deleted.
-const BACKUP_RETENTION_CLEANUP_INCOMPLETE: &str = "Your backup retention setting was saved, but some old upgrade backups could not be deleted. The app will try again the next time it starts.";
-
 /// Result banner after saving a retention policy.
 fn backup_retention_saved_banner(
     deleted: usize,
     cleanup_incomplete: bool,
 ) -> (String, MessageType) {
-    // The wording matches `TaskError::UpgradeBackupCleanup`, prefixed by the save outcome.
     if cleanup_incomplete {
         return (
-            BACKUP_RETENTION_CLEANUP_INCOMPLETE.to_owned(),
+            BACKUP_RETENTION_SAVED_CLEANUP_INCOMPLETE.to_owned(),
             MessageType::Warning,
         );
     }
@@ -2056,7 +2052,7 @@ mod tests {
         assert_eq!(
             backup_retention_saved_banner(3, true),
             (
-                BACKUP_RETENTION_CLEANUP_INCOMPLETE.to_owned(),
+                BACKUP_RETENTION_SAVED_CLEANUP_INCOMPLETE.to_owned(),
                 MessageType::Warning
             )
         );

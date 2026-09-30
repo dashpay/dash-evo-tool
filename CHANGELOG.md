@@ -51,9 +51,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Upgrade backup retention setting**: Settings → Upgrade Backups controls how
   long the backup copies taken before a storage upgrade are kept. By default,
   backups older than 90 days are now deleted automatically; choose another
-  period (1 to 3650 days) or keep them forever. The newest backup of each
-  database is always kept, and a shorter period asks for confirmation because
-  it deletes backups at once.
+  period (1 to 3650 days) or keep them forever. The newest complete backup of
+  each database is always kept, and a shorter period asks for confirmation
+  because it deletes backups at once.
 
 - **Add wallet-created identity keys**: for identities loaded from a wallet on
   this device, the Add Key screen defaults to "Create from wallet", which

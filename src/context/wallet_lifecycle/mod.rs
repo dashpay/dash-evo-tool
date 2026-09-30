@@ -24,10 +24,10 @@ use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::utils::file_deletion::{DeletionIntent, delete_file, delete_tree};
 use crate::wallet_backend::poison::RwLockRecover;
 use crate::wallet_backend::{
-    ClearAllOutcome, DetScope, WalletBackend, WalletMetaView, WalletSeedView, network_prefix,
+    ClearAllOutcome, DetScope, WalletBackend, WalletMetaView, WalletSeedView, spv_storage_dir,
 };
 use dash_sdk::dpp::dashcore::Network;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 
@@ -65,13 +65,6 @@ pub enum WalletUnlockRetention {
     UntilStorageUpdateComplete,
     /// Keep the seed available until the application closes.
     UntilAppClose,
-}
-
-/// Per-network SPV storage directory: `<data_dir>/spv/<network>/`. Mirrors
-/// `WalletBackend::resolve_spv_storage_dir` so the path resolves identically
-/// whether or not the wallet backend is wired yet.
-fn spv_storage_dir(data_dir: &Path, network: Network) -> PathBuf {
-    data_dir.join("spv").join(network_prefix(network))
 }
 
 /// Remove the upstream chain-sync cache files under `spv_dir`, leaving the

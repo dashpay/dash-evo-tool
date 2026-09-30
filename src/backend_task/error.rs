@@ -110,6 +110,13 @@ impl std::error::Error for BackendTaskJoinError {}
 const RPC_WALLET_NOT_SPECIFIED: i32 = -19;
 
 /// Shown whenever another window or session holds the wallet database.
+/// Some expired upgrade backups remain. Retention runs again whenever wallet data
+/// is opened (start, network switch) and whenever the setting is saved.
+pub(crate) const UPGRADE_BACKUP_CLEANUP_INCOMPLETE: &str = "Some old upgrade backups could not be deleted. The app tries again the next time it opens your wallet data.";
+
+/// [`UPGRADE_BACKUP_CLEANUP_INCOMPLETE`] after a retention setting save.
+pub(crate) const BACKUP_RETENTION_SAVED_CLEANUP_INCOMPLETE: &str = "Your backup retention setting was saved, but some old upgrade backups could not be deleted. The app tries again the next time it opens your wallet data.";
+
 pub(crate) const WALLET_DATA_IN_USE: &str = "Your wallet data is open in another Dash Evo Tool window or command-line session. Close it and try again.";
 
 /// App-level error envelope for backend tasks.
@@ -1198,9 +1205,7 @@ pub enum TaskError {
     },
 
     /// Expired upgrade backups could not all be deleted.
-    #[error(
-        "Some old upgrade backups could not be deleted. The app will try again the next time it starts."
-    )]
+    #[error("{}", UPGRADE_BACKUP_CLEANUP_INCOMPLETE)]
     UpgradeBackupCleanup {
         #[source]
         source: std::io::Error,
@@ -3767,6 +3772,23 @@ fn wallet_already_imported_message(alias: Option<&str>) -> String {
 mod tests {
     use super::*;
     use dash_sdk::dapi_client::DapiClientError;
+
+    /// Both cleanup messages promise the same, truthful retry.
+    #[test]
+    fn upgrade_backup_cleanup_messages_share_the_retry_promise() {
+        let error = TaskError::UpgradeBackupCleanup {
+            source: std::io::Error::other("permission denied"),
+        };
+        assert_eq!(error.to_string(), UPGRADE_BACKUP_CLEANUP_INCOMPLETE);
+        let (_, retry) = UPGRADE_BACKUP_CLEANUP_INCOMPLETE
+            .split_once(". ")
+            .expect("two sentences");
+        assert_eq!(
+            retry,
+            "The app tries again the next time it opens your wallet data."
+        );
+        assert!(BACKUP_RETENTION_SAVED_CLEANUP_INCOMPLETE.ends_with(retry));
+    }
     use dash_sdk::dapi_client::transport::TransportError;
     use dash_sdk::dpp::consensus::basic::data_contract::{
         DecimalsOverLimitError, InvalidTokenBaseSupplyError, InvalidTokenLanguageCodeError,

@@ -561,6 +561,18 @@ pub(crate) fn wallet_database_path(data_dir: &Path, network: Network) -> std::pa
     data_dir.join(format!("det-{}.sqlite", network_prefix(network)))
 }
 
+/// Parent of every network's [`spv_storage_dir`].
+const SPV_ROOT_DIR: &str = "spv";
+
+/// The per-network chain-sync (SPV) cache directory, `<data_dir>/spv/<network>/`.
+///
+/// The single definition shared by the backend (which creates it), the network
+/// clear (which empties it) and the deletion chokepoint (which confines that clear
+/// to it).
+pub(crate) fn spv_storage_dir(data_dir: &Path, network: Network) -> std::path::PathBuf {
+    data_dir.join(SPV_ROOT_DIR).join(network_prefix(network))
+}
+
 /// The upstream shielded coordinator's store,
 /// `<data_dir>/det-<network>-shielded.sqlite` — the sibling of
 /// [`wallet_database_path`] holding all Orchard state.
@@ -3067,12 +3079,12 @@ impl WalletBackend {
         app_data_dir: &Path,
         network: Network,
     ) -> Result<std::path::PathBuf, TaskError> {
-        let mut dir = app_data_dir.join("spv");
-        crate::app_dir::ensure_data_dir_exists(&dir)
-            .map_err(|source| TaskError::FileSystem { source })?;
-        dir.push(kv::network_prefix(network));
-        crate::app_dir::ensure_data_dir_exists(&dir)
-            .map_err(|source| TaskError::FileSystem { source })?;
+        let dir = spv_storage_dir(app_data_dir, network);
+        // Create (and lock down) the shared `spv` root before the network directory.
+        for directory in [app_data_dir.join(SPV_ROOT_DIR), dir.clone()] {
+            crate::app_dir::ensure_data_dir_exists(&directory)
+                .map_err(|source| TaskError::FileSystem { source })?;
+        }
         Ok(dir)
     }
 }

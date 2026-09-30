@@ -263,7 +263,7 @@ fn delete_file_refuses_targets_outside_the_intent_scope() {
             },
         ),
         (
-            dir.path().join("det-app.sqlite.platform-upgrade.lock"),
+            crate::wallet_backend::platform_compatibility::backup_lock_path(&database).unwrap(),
             DeletionIntent::Backup {
                 database: &database,
             },

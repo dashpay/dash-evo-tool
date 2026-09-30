@@ -287,7 +287,7 @@ fn platform_compatibility_backup_removal_only_touches_the_named_database() {
             "det-mainnet.sqlite.platform-67d4ef3-backup-c3.sqlite",
             "det-testnet-shielded.sqlite",
             "det-testnet.sqlite",
-            "det-testnet.sqlite.platform-upgrade.lock",
+            format!("det-testnet.sqlite{LOCK_SUFFIX}").as_str(),
         ]
     );
     remove_backups(&dir.path().join("absent.sqlite")).unwrap();
@@ -671,6 +671,10 @@ fn platform_compatibility_wal_snapshot_includes_committed_uncheckpointed_data() 
     live.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; INSERT INTO meta_global VALUES ('wal-fixture', X'00ff', 42)").unwrap();
     let before = snapshot(&path);
     let backup = upgrade(&path, &target, |_| Ok(())).unwrap().unwrap();
+    assert!(
+        crate::utils::backup_prune::usable_snapshot(&backup),
+        "a snapshot of a WAL database must count as usable"
+    );
     assert_eq!(snapshot(&backup), before);
     let conn = Connection::open(&path).unwrap();
     assert_eq!(
@@ -1015,6 +1019,115 @@ fn platform_compatibility_prune_keeps_newest_snapshot_for_any_clock() {
     );
     assert_eq!(backups(&path).unwrap(), vec![newest]);
     drop(dir);
+}
+
+/// An interrupted copy left under a final snapshot name (empty, truncated or
+/// header-only) never becomes the floor: the newest complete snapshot survives any
+/// age, and the expired interrupted copy is deleted.
+#[test]
+fn platform_compatibility_prune_floor_skips_interrupted_newest_copy() {
+    const DAY_SECONDS: i64 = 24 * 60 * 60;
+    for (incomplete_age, expected_removed) in [(0, 0), (-100 * DAY_SECONDS, 1)] {
+        for case in [
+            "empty bridge",
+            "truncated bridge",
+            "header-only bridge",
+            "truncated upstream",
+            "empty upstream",
+        ] {
+            let (dir, path, _target) = fixture();
+            let valid = backup(&path).unwrap();
+            let full = std::fs::read(&valid).unwrap();
+            set_mtime(&valid, -200 * DAY_SECONDS);
+            let auto = dir.path().join("backups/auto");
+            std::fs::create_dir_all(&auto).unwrap();
+            let (incomplete, bytes): (PathBuf, &[u8]) = match case {
+                "empty bridge" => (
+                    dir.path()
+                        .join("wallet.sqlite.platform-67d4ef3-backup-killed.sqlite"),
+                    b"",
+                ),
+                "truncated bridge" => (
+                    dir.path()
+                        .join("wallet.sqlite.platform-67d4ef3-backup-killed.sqlite"),
+                    &full[..full.len() / 2],
+                ),
+                "header-only bridge" => (
+                    dir.path()
+                        .join("wallet.sqlite.platform-67d4ef3-backup-killed.sqlite"),
+                    &full[..100],
+                ),
+                "truncated upstream" => (
+                    auto.join("pre-migration-wallet-1-to-2-20200101T000000Z.db"),
+                    &full[..full.len() - 1],
+                ),
+                _ => (
+                    auto.join("pre-migration-wallet-1-to-2-20200101T000000Z.db"),
+                    b"",
+                ),
+            };
+            std::fs::write(&incomplete, bytes).unwrap();
+            set_mtime(&incomplete, incomplete_age);
+
+            let removed =
+                prune_expired_backups(&path, RETENTION_DAY * 90, std::time::SystemTime::now())
+                    .unwrap();
+
+            assert!(
+                valid.exists(),
+                "{case}: the only complete snapshot must be kept"
+            );
+            assert_eq!(removed, expected_removed, "{case}");
+            assert_eq!(incomplete.exists(), expected_removed == 0, "{case}");
+        }
+    }
+}
+
+/// A snapshot written while the clock ran ahead is dated in the future; it must not
+/// displace the genuinely newer snapshot taken after the clock was corrected.
+#[test]
+fn platform_compatibility_prune_floor_resists_forward_clock_skew() {
+    let (_dir, path, _target) = fixture();
+    let skewed = backup(&path).unwrap();
+    let current = backup(&path).unwrap();
+    set_mtime(&skewed, 30 * 24 * 60 * 60);
+    set_mtime(&current, -100 * 24 * 60 * 60);
+
+    assert_eq!(
+        prune_expired_backups(&path, RETENTION_DAY * 90, std::time::SystemTime::now()).unwrap(),
+        0
+    );
+    assert!(
+        current.exists(),
+        "the newest snapshot dated in the past is kept"
+    );
+    assert!(skewed.exists(), "a future-dated snapshot is never expired");
+}
+
+/// Upstream snapshots name the migration they precede, a clock-independent order:
+/// the snapshot of the latest migration survives even when an older migration's
+/// snapshot carries later dates.
+#[test]
+fn platform_compatibility_prune_floor_keeps_latest_migration_snapshot() {
+    let (dir, path, _target) = fixture();
+    let valid = backup(&path).unwrap();
+    let auto = dir.path().join("backups/auto");
+    std::fs::create_dir_all(&auto).unwrap();
+    let latest_migration = auto.join("pre-migration-wallet-2-to-3-20200101T000000Z.db");
+    let earlier_migration = auto.join("pre-migration-wallet-1-to-2-20200601T000000Z.db");
+    std::fs::copy(&valid, &latest_migration).unwrap();
+    std::fs::copy(&valid, &earlier_migration).unwrap();
+    set_mtime(&latest_migration, -400 * 24 * 60 * 60);
+    set_mtime(&earlier_migration, -300 * 24 * 60 * 60);
+    set_mtime(&valid, -500 * 24 * 60 * 60);
+
+    assert_eq!(
+        prune_expired_backups(&path, RETENTION_DAY * 90, std::time::SystemTime::now()).unwrap(),
+        1
+    );
+    assert!(!valid.exists());
+    assert!(latest_migration.exists(), "newest by migration order");
+    assert!(earlier_migration.exists(), "newest by creation time");
 }
 
 /// A rejected candidate is reported, but expired valid snapshots are still removed and

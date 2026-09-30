@@ -345,7 +345,7 @@ As a user whose wallet data was copied before a storage upgrade, I want old upgr
 - Upgrade backups older than 90 days are deleted automatically by default, covering app, wallet, upstream pre-migration and legacy `data.db` backups.
 - Settings → Upgrade Backups lets the user change the period (1 to 3650 days) or keep backups forever. Turning automatic deletion on lets the user choose the period before applying it, and any stricter setting asks for confirmation first, because it deletes backups immediately. A period outside the range is shown with an error and never saved.
 - The setting is one policy for every backup in the data directory, whichever network is open; a saved change applies to every network's backups as soon as the wallet data has opened.
-- The newest backup of each database is always kept, whatever its age or the system clock, so the last recovery copy is never deleted automatically.
+- The newest complete backup of each database is always kept, whatever its age or the system clock, so the last recovery copy is never deleted automatically. An empty or cut-off copy never counts as that backup.
 - With "keep forever", no published backup is deleted automatically. Opening the data removes only unfinished copies left by a crash and exact duplicates of a newer backup.
 - Removing a wallet or an identity does not delete upgrade backups. Clearing a network's data deletes that network's wallet backups; backups of the shared app data stay under the retention setting.
 

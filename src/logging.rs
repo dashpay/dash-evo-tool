@@ -546,8 +546,6 @@ fn rotated_name(stem: &str, ts: i64) -> String {
     format!("{stem}.{ts:010}.log")
 }
 
-/// Parses the timestamp out of a rotated log file name produced by
-/// [`rotated_name`], returning `None` for names that don't match the stem.
 /// The timestamp in a rotated log name `<stem>.<digits>.log`, or `None` for any
 /// other name. Also the deletion chokepoint's definition of a rotated log.
 pub(crate) fn parse_rotated_ts(name: &str, stem: &str) -> Option<i64> {

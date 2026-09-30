@@ -3,6 +3,8 @@
 mod engine;
 mod storage_failure;
 pub use engine::UpgradeError;
+#[cfg(test)]
+pub(crate) use engine::{LOCK_SUFFIX, backup_lock_path};
 pub(crate) use engine::{
     is_bridge_backup_name, prune_expired_backups, remove_backups, upstream_backup_timestamp,
 };
@@ -153,11 +155,17 @@ mod tests {
     use super::*;
     use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 
-    /// Repeated failed opens can leave identical copies of the unchanged database;
-    /// the open's own tidying collapses them to the newest, even when the open fails.
+    /// Every failed open of an unsupported database makes upstream write another
+    /// `pre-migration-*` copy of the unchanged database; the open's own tidying
+    /// collapses them to the newest, even when the open fails.
+    ///
+    /// Upstream refuses a group- or world-writable data or backup directory before
+    /// taking any snapshot, so the data directory is made owner-only and the backup
+    /// directory is left for upstream to create; neither may depend on the umask.
     #[test]
     fn platform_compatibility_bounds_upstream_backups_after_failed_opens() {
         let dir = tempfile::tempdir().unwrap();
+        crate::app_dir::ensure_data_dir_exists(dir.path()).unwrap();
         let path = dir.path().join("wallet.sqlite");
         rusqlite::Connection::open(&path)
             .unwrap()
@@ -168,19 +176,36 @@ mod tests {
             .execute_batch("ALTER TABLE wallets ADD COLUMN unsupported INTEGER;")
             .unwrap();
         let auto = platform_wallet_storage::default_auto_backup_dir(&path);
-        std::fs::create_dir_all(&auto).unwrap();
-        let copy = std::fs::read(&path).unwrap();
+        let mut previous: Option<String> = None;
         for attempt in 1..=3 {
-            let snapshot = auto.join(format!(
-                "pre-migration-wallet-1-to-2-20260915T12000{attempt}Z.db"
-            ));
-            std::fs::write(&snapshot, &copy).unwrap();
             assert!(open(SqlitePersisterConfig::new(&path)).is_err());
-            let retained: Vec<_> = std::fs::read_dir(&auto)
-                .unwrap()
-                .map(|entry| entry.unwrap().path())
-                .collect();
-            assert_eq!(retained, vec![snapshot], "attempt {attempt}");
+            let retained = dir_entries(&auto);
+            assert_eq!(
+                retained.len(),
+                1,
+                "attempt {attempt}: one snapshot must remain, got {retained:?}"
+            );
+            let snapshot = retained[0].clone();
+            assert!(
+                snapshot.starts_with("pre-migration-wallet-") && snapshot.ends_with(".db"),
+                "attempt {attempt}: unexpected entry {snapshot}"
+            );
+            assert!(
+                crate::utils::backup_prune::usable_snapshot(&auto.join(&snapshot)),
+                "attempt {attempt}: a real upstream snapshot must count as usable"
+            );
+            if let Some(previous) = &previous {
+                assert_ne!(
+                    &snapshot, previous,
+                    "attempt {attempt}: the newest copy must be the one kept"
+                );
+            }
+            // Age the kept copy's name so the next open's copy gets a distinct,
+            // newer name even within the same second.
+            let (head, _) = snapshot.rsplit_once('-').unwrap();
+            let aged = format!("{head}-2020010{attempt}T000000Z.db");
+            std::fs::rename(auto.join(&snapshot), auto.join(&aged)).unwrap();
+            previous = Some(aged);
         }
     }
 
@@ -297,7 +322,7 @@ mod tests {
                 dir_entries(dir.path()),
                 vec![
                     "wallet.sqlite".to_owned(),
-                    "wallet.sqlite.platform-upgrade.lock".to_owned()
+                    format!("wallet.sqlite{}", engine::LOCK_SUFFIX)
                 ]
             );
         }
@@ -350,7 +375,7 @@ mod tests {
             "the original database must stay untouched"
         );
         let mut entries_after = dir_entries(dir.path());
-        entries_after.retain(|name| name != "wallet.sqlite.platform-upgrade.lock");
+        entries_after.retain(|name| *name != format!("wallet.sqlite{}", engine::LOCK_SUFFIX));
         assert_eq!(
             entries_after, entries_before,
             "a refused probe must leave no files or directories behind"

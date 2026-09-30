@@ -29,7 +29,7 @@ pub(crate) fn backup_timestamp(name: &str) -> Option<SystemTime> {
 }
 
 /// Delete legacy backups in `<data_dir>/backups` older than `max_age`, always
-/// keeping the newest one.
+/// keeping the newest usable one.
 ///
 /// Deletion goes through the [`delete_file`](crate::utils::file_deletion::delete_file)
 /// chokepoint, which refuses live databases, aliases and hard links.
@@ -66,7 +66,11 @@ pub(crate) fn prune_expired(
             other => other,
         };
         let created = metadata.and_then(|metadata| Ok(named.max(metadata.modified()?)));
-        candidates.push((entry.path(), created));
+        candidates.push(crate::utils::backup_prune::Candidate {
+            path: entry.path(),
+            created,
+            sequence: None,
+        });
     }
     crate::utils::backup_prune::prune_expired(
         candidates,
@@ -232,6 +236,30 @@ mod tests {
         assert!(newest.exists(), "the newest backup is the floor");
         assert_eq!(prune_expired(dir.path(), DAY, far_future).unwrap(), 0);
         assert!(newest.exists());
+    }
+
+    /// An interrupted legacy copy is never the floor: the newest complete backup
+    /// survives, and the expired interrupted copy is deleted.
+    #[test]
+    fn newest_legacy_backup_floor_must_be_a_complete_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let backups = dir.path().join(BACKUP_DIR);
+        std::fs::create_dir_all(&backups).unwrap();
+        let complete = backups.join("data_backup_20200101_000000.db");
+        rusqlite::Connection::open(&complete)
+            .unwrap()
+            .execute_batch("CREATE TABLE settings (v INTEGER); INSERT INTO settings VALUES (1);")
+            .unwrap();
+        let bytes = std::fs::read(&complete).unwrap();
+        let truncated = backups.join("data_backup_20200601_000000.db");
+        std::fs::write(&truncated, &bytes[..bytes.len() / 2]).unwrap();
+        let now = SystemTime::now();
+        set_mtime(&complete, now - DAY * 200);
+        set_mtime(&truncated, now - DAY * 100);
+
+        assert_eq!(prune_expired(dir.path(), DAY * 90, now).unwrap(), 1);
+        assert!(complete.exists(), "the only complete backup is the floor");
+        assert!(!truncated.exists());
     }
 
     #[cfg(unix)]

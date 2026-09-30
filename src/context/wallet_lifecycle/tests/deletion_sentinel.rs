@@ -5,6 +5,7 @@
 use super::*;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
 const DAY: Duration = Duration::from_secs(24 * 60 * 60);
@@ -54,9 +55,14 @@ fn written_by_context(data_dir: &Path, path: &Path) -> bool {
     path.parent() == Some(data_dir)
         && live.iter().any(|base| {
             name == *base
-                || ["-wal", "-shm", "-journal", ".platform-upgrade.lock"]
-                    .iter()
-                    .any(|suffix| name == format!("{base}{suffix}"))
+                || [
+                    "-wal",
+                    "-shm",
+                    "-journal",
+                    crate::wallet_backend::platform_compatibility::LOCK_SUFFIX,
+                ]
+                .iter()
+                .any(|suffix| name == format!("{base}{suffix}"))
         })
 }
 
@@ -130,8 +136,10 @@ async fn deletion_paths_leave_every_untargeted_file_intact() {
         "det-testnet.sqlite.platform-67d4ef3-backup-old.sqlite",
         "backups/auto/pre-migration-det-testnet-1-to-2-20000101T000000Z.db",
         "backups/data_backup_20000101_000000.db",
-        // Network clear: every remaining testnet upgrade backup.
+        // Network clear: every remaining testnet upgrade backup, including the
+        // expired one retention keeps as the latest migration's snapshot.
         "det-testnet.sqlite.platform-67d4ef3-backup-new.sqlite",
+        "backups/auto/pre-migration-det-testnet-2-to-3-20000102T000000Z.db",
         // Network clear (SPV cache + retired shielded files): testnet only.
         "spv/testnet/blocks/segment.dat",
         "spv/testnet/filters/nested/segment.dat",

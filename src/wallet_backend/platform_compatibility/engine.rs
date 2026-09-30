@@ -378,29 +378,40 @@ fn scan_backups_in(path: &Path, auto_dir: Option<&Path>) -> std::io::Result<Back
     Ok(BackupScan { found, rejected })
 }
 
-/// Scan-time classification of a candidate; the deletion itself is policed by the
+/// Why a file with a backup (or lifecycle-lock) name is not treated as one. Wrapped
+/// in an [`std::io::Error`]; only logs and error details show it.
+#[derive(Debug, thiserror::Error)]
+enum UnexpectedBackupFile {
+    #[error("A file named like an upgrade backup is not a regular file.")]
+    NotRegularFile,
+    #[error("A file named like an upgrade backup is the live database.")]
+    LiveDatabase,
+    #[error("A file named like an upgrade backup has more than one hard link.")]
+    HardLinked,
+}
+
+/// Scan-time classification of a candidate (also used to vet the lifecycle lock
+/// file); the deletion itself is policed by the
 /// [`delete_file`](crate::utils::file_deletion::delete_file) chokepoint.
 fn validate_backup_file(backup: &Path, database: &Path) -> std::io::Result<()> {
+    let unexpected = |kind| Err(std::io::Error::other(kind));
     let metadata = std::fs::symlink_metadata(backup)?;
-    if !metadata.is_file() || backup == database {
-        return Err(std::io::Error::other(
-            "Refusing to remove a non-regular backup file",
-        ));
+    if !metadata.is_file() {
+        return unexpected(UnexpectedBackupFile::NotRegularFile);
+    }
+    if backup == database {
+        return unexpected(UnexpectedBackupFile::LiveDatabase);
     }
     if let Ok(live_path) = database.canonicalize()
         && backup.canonicalize()? == live_path
     {
-        return Err(std::io::Error::other(
-            "Refusing to remove the live database",
-        ));
+        return unexpected(UnexpectedBackupFile::LiveDatabase);
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
         if metadata.nlink() != 1 {
-            return Err(std::io::Error::other(
-                "Refusing to remove a hard-linked backup file",
-            ));
+            return unexpected(UnexpectedBackupFile::HardLinked);
         }
     }
     Ok(())
@@ -439,13 +450,21 @@ fn lock_with_grace(file: &std::fs::File) -> std::io::Result<()> {
     }
 }
 
+/// Suffix appended to a database's file name to form its lifecycle lock file.
+pub(crate) const LOCK_SUFFIX: &str = ".platform-upgrade.lock";
+
+/// The lifecycle lock file of the database at `database`; `None` when the path has
+/// no file name.
+pub(crate) fn backup_lock_path(database: &Path) -> Option<PathBuf> {
+    let mut name = database.file_name()?.to_os_string();
+    name.push(LOCK_SUFFIX);
+    Some(database.with_file_name(name))
+}
+
 pub(super) fn backup_lock(path: &Path) -> std::io::Result<BackupGuard> {
-    let Some(name) = path.file_name() else {
+    let Some(lock_path) = backup_lock_path(path) else {
         return Err(std::io::ErrorKind::InvalidInput.into());
     };
-    let mut lock_name = name.to_os_string();
-    lock_name.push(".platform-upgrade.lock");
-    let lock_path = path.with_file_name(lock_name);
     let mut options = std::fs::File::options();
     options.read(true).write(true).create_new(true);
     #[cfg(unix)]
@@ -577,8 +596,10 @@ pub(crate) fn remove_backups(path: &Path) -> std::io::Result<()> {
 /// Delete the upgrade backups of the database at `path` that are older than `max_age`.
 ///
 /// Covers both the bridge snapshots next to the database and upstream `pre-migration-*`
-/// snapshots, and always keeps the newest one, so it is safe whether or not the database
-/// currently opens. A database with no backups is skipped without taking its lock, and
+/// snapshots, and always keeps the newest usable one (see
+/// [`prune_expired`](crate::utils::backup_prune::prune_expired)), so it is safe
+/// whether or not the database currently opens. A database with no backups is
+/// skipped without taking its lock, and
 /// one whose lock is held (another context is opening or upgrading it) is skipped too;
 /// the next pass covers it.
 ///
@@ -615,7 +636,17 @@ pub(crate) fn prune_expired_backups(
         })
         .map(|backup| {
             let created = backup_created(path, &backup);
-            (backup, created)
+            // A later migration is a later snapshot, whatever the clock said.
+            let sequence = backup
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| parse_upstream_name(path, name))
+                .map(|snapshot| (snapshot.to, snapshot.from));
+            crate::utils::backup_prune::Candidate {
+                path: backup,
+                created,
+                sequence,
+            }
         })
         .collect();
     let pruned = crate::utils::backup_prune::prune_expired(

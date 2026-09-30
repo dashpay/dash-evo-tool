@@ -72,7 +72,10 @@ name format and be regular files, not symbolic links (or hard links on Unix).
 Backups older than a user-configurable retention period (default 90 days, or
 never) are deleted by one global policy covering every database in the data
 directory: bridge, upstream pre-migration, and legacy `data.db` backups. The
-newest backup of each database is always kept, whatever its age or the clock.
+newest usable backup of each database is always kept, whatever its age or the
+clock: an empty or truncated file never counts, a backup dated in the future does
+not displace one dated in the past, and the upstream snapshot of the latest
+migration is kept as well.
 Clearing a network's data deletes that network's wallet database backups, because
 they copy its wallet and identity history; backups of the shared `det-app.sqlite`
 also hold other networks' data and stay under retention. Removing a single wallet

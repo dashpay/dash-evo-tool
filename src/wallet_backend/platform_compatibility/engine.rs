@@ -323,8 +323,8 @@ fn default_auto_dir(path: &Path) -> PathBuf {
     platform_wallet_storage::default_auto_backup_dir(path)
 }
 
-/// Regular files named like a backup of the database at `path`, next to it or in
-/// `auto_dir`. Anything else is skipped; [`remove_backup`] refuses what must never go.
+/// Single-link regular files named like a backup of the database at `path`, next to it
+/// or in `auto_dir`. Anything else is skipped; [`remove_backup`] refuses what must never go.
 fn backups_in(path: &Path, auto_dir: Option<&Path>) -> std::io::Result<Vec<PathBuf>> {
     let mut found = Vec::new();
     let Some(parent) = path.parent() else {
@@ -347,8 +347,10 @@ fn backups_in(path: &Path, auto_dir: Option<&Path>) -> std::io::Result<Vec<PathB
             let Some(name) = name.to_str() else { continue };
             let bridge = directory == parent && is_bridge_backup_name(path, name);
             let upstream = Some(directory) == auto_dir && parse_upstream_name(path, name).is_some();
-            // Symlinks and directories are skipped; an unreadable type surfaces on use.
-            let other_type = entry.file_type().is_ok_and(|kind| !kind.is_file());
+            // Symlinks, directories and hard links (which may alias a live database)
+            // are skipped; an entry whose metadata cannot be read surfaces on use.
+            let other_type = std::fs::symlink_metadata(entry.path())
+                .is_ok_and(|metadata| !is_single_link_file(&metadata));
             if (bridge || upstream) && !other_type {
                 found.push(entry.path());
             }
@@ -403,14 +405,18 @@ pub(crate) fn backup_lock_path(database: &Path) -> Option<PathBuf> {
     Some(database.with_file_name(name))
 }
 
-/// Refuse an existing lock path that is a symlink, not a regular file, or hard-linked.
-fn check_lock_file(lock: &Path) -> std::io::Result<()> {
-    let metadata = std::fs::symlink_metadata(lock)?;
+/// Whether `metadata` (not followed) is a regular file with no other hard link.
+fn is_single_link_file(metadata: &std::fs::Metadata) -> bool {
     #[cfg(unix)]
-    let single_link = std::os::unix::fs::MetadataExt::nlink(&metadata) == 1;
+    let single_link = std::os::unix::fs::MetadataExt::nlink(metadata) == 1;
     #[cfg(not(unix))]
     let single_link = true;
-    if metadata.is_file() && single_link {
+    metadata.is_file() && single_link
+}
+
+/// Refuse an existing lock path that is a symlink, not a regular file, or hard-linked.
+fn check_lock_file(lock: &Path) -> std::io::Result<()> {
+    if is_single_link_file(&std::fs::symlink_metadata(lock)?) {
         Ok(())
     } else {
         Err(std::io::Error::other(

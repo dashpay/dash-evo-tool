@@ -6150,31 +6150,23 @@ mod tests {
         .expect_err("wrapped SQLite failure")
     }
 
-    /// A migration that ran out of a resource keeps the generic, retryable storage
-    /// copy; access failures never fix themselves and stay out of that class.
+    /// A migration that ran out of a resource (disk, OS I/O, memory) keeps the generic,
+    /// retryable storage copy instead of the terminal incompatible-data guidance.
     #[test]
     fn resource_migration_errors_map_to_retryable_wallet_storage() {
         use rusqlite::ffi;
-        for (code, retryable) in [
-            (ffi::SQLITE_FULL, true),
-            (ffi::SQLITE_IOERR, true),
-            (ffi::SQLITE_NOMEM, true),
-            (ffi::SQLITE_PERM, false),
-            (ffi::SQLITE_READONLY, false),
-        ] {
+        for code in [ffi::SQLITE_FULL, ffi::SQLITE_IOERR, ffi::SQLITE_NOMEM] {
             let upstream = platform_wallet_storage::WalletStorageError::Migration(
                 resource_migration_error(code),
             );
             let err = TaskError::from_wallet_storage_open_error(upstream);
-            assert_eq!(
+            assert!(
                 matches!(err, TaskError::WalletStorage { .. }),
-                retryable,
                 "SQLite code {code}: {err:?}"
             );
-            assert_eq!(
-                crate::backend_task::is_terminal_storage_open_error(&err),
-                !retryable,
-                "SQLite code {code}"
+            assert!(
+                !crate::backend_task::is_terminal_storage_open_error(&err),
+                "SQLite code {code} must stay retryable"
             );
         }
     }

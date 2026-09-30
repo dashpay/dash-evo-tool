@@ -1,8 +1,3 @@
-#![expect(
-    clippy::disallowed_methods,
-    reason = "test fixture setup/teardown outside any production deletion path"
-)]
-
 use super::*;
 
 fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
@@ -393,22 +388,24 @@ fn platform_compatibility_tidy_removes_only_identical_copies() {
     assert_eq!(backup_files(dir.path()), vec![copy]);
 }
 
-/// A candidate the deletion chokepoint refuses (a hard link, possibly to a live
-/// database) never shields the others: every other backup is removed and the refusal
-/// is reported. Directories and symlinks named like backups are skipped.
+/// Removal deletes every backup and skips entries named like one that are directories,
+/// symlinks or hard links (here to the live database), which are never followed.
 #[cfg(unix)]
 #[test]
-fn platform_compatibility_refused_candidate_does_not_block_removal_of_valid_backups() {
+fn platform_compatibility_removal_skips_links_and_directories() {
     let (dir, path, _target) = fixture();
     let bridge = |suffix: &str| {
         dir.path()
             .join(format!("wallet.sqlite.platform-67d4ef3-backup-{suffix}"))
     };
-    let linked = bridge("link.sqlite");
-    std::fs::hard_link(&path, &linked).unwrap();
-    let skipped = [bridge("dir.pending"), bridge("symlink.sqlite")];
-    std::fs::create_dir(&skipped[0]).unwrap();
-    std::os::unix::fs::symlink(&path, &skipped[1]).unwrap();
+    let skipped = [
+        bridge("link.sqlite"),
+        bridge("dir.pending"),
+        bridge("symlink.sqlite"),
+    ];
+    std::fs::hard_link(&path, &skipped[0]).unwrap();
+    std::fs::create_dir(&skipped[1]).unwrap();
+    std::os::unix::fs::symlink(&path, &skipped[2]).unwrap();
     let valid = [bridge("b1.sqlite"), bridge("c2.pending")];
     for backup in &valid {
         std::fs::write(backup, b"backup").unwrap();
@@ -418,16 +415,14 @@ fn platform_compatibility_refused_candidate_does_not_block_removal_of_valid_back
     let upstream = auto.join("pre-migration-wallet-1-to-2-20260915T120000Z.db");
     std::fs::write(&upstream, b"backup").unwrap();
 
-    assert!(remove_backups(&path).is_err());
+    remove_backups(&path).unwrap();
     for backup in valid.iter().chain([&upstream]) {
         assert!(!backup.exists(), "{} must be removed", backup.display());
     }
-    assert!(linked.exists() && path.exists());
+    assert!(path.exists());
     for entry in &skipped {
         assert!(entry.symlink_metadata().is_ok(), "{}", entry.display());
     }
-    std::fs::remove_file(&linked).unwrap();
-    remove_backups(&path).expect("skipped entries are not failures");
 }
 
 /// An existing lifecycle lock path that is a symlink is refused, never followed.
@@ -917,30 +912,23 @@ fn platform_compatibility_prune_floor_keeps_latest_migration_snapshot() {
     assert!(earlier_migration.exists(), "newest by creation time");
 }
 
-/// A refused candidate is reported, but expired valid snapshots are still removed and
-/// the refused entry is left alone.
+/// A backup-named hard link (here to the live database) is never a candidate, so it
+/// cannot become the floor and let the real newest backup expire.
 #[cfg(unix)]
 #[test]
-fn platform_compatibility_prune_reports_refused_candidate_after_removing_others() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("det-testnet.sqlite");
-    let bridge = |suffix| bridge_backup_path(&path, suffix);
-    let expired = bridge("old");
-    std::fs::write(&expired, b"backup").unwrap();
-    set_mtime(&expired, -10 * 24 * 60 * 60);
-    let newest = bridge("new");
-    std::fs::write(&newest, b"newer backup").unwrap();
-    let outside = dir.path().join("outside.bin");
-    std::fs::write(&outside, b"keep").unwrap();
-    let linked = bridge("linked");
-    std::fs::hard_link(&outside, &linked).unwrap();
-    set_mtime(&linked, -10 * 24 * 60 * 60);
+fn platform_compatibility_prune_skips_hard_linked_backup_names() {
+    let (_dir, path, _target) = fixture();
+    let real = backup(&path).unwrap();
+    set_mtime(&real, -200 * 24 * 60 * 60);
+    let linked = bridge_backup_path(&path, "linked");
+    std::fs::hard_link(&path, &linked).unwrap();
 
-    prune_expired_backups(&path, RETENTION_DAY, std::time::SystemTime::now()).unwrap_err();
-
-    assert!(!expired.exists());
-    assert!(newest.exists());
-    assert!(linked.exists() && outside.exists());
+    assert_eq!(
+        prune_expired_backups(&path, RETENTION_DAY * 90, std::time::SystemTime::now()).unwrap(),
+        0
+    );
+    assert!(real.exists(), "the only real backup is the floor");
+    assert!(linked.exists() && path.exists());
 }
 
 /// A held lifecycle lock means an open or upgrade is running: pruning skips the

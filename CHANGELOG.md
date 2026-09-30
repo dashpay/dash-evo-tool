@@ -48,9 +48,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- Platform dependencies track `fix/pr-5126` at `c0425f7b`, which restores
-  confirmed spends and finality on wallet load and reconciles persisted Core
-  transaction accounting. DET retains its pre-send history check.
+- Platform dependencies track `fix/sqlite-asset-lock-reconciliation` at
+  `c0fd3b13`, which restores confirmed spends and finality on wallet load and
+  reconciles persisted Core transaction accounting. DET retains its pre-send
+  history check.
 
 - Core payments and new asset locks are blocked before signing when persisted
   confirmed history shows that the wallet still offers already-spent inputs.
@@ -588,6 +589,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   released. The send-fee rate it was meant to refresh is the standard rate every
   network charges today, so fees are unchanged, and the Platform Info screen now
   says plainly that the rate shown is fixed rather than read from the network.
+
+- Funding from a previously used asset lock now reports that the deposit was
+  already used instead of suggesting a generic retry. SQLite can retain the
+  recovery record without requiring full-wallet restoration support.
 
 ### Changed
 

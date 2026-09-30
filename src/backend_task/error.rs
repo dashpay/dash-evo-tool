@@ -356,6 +356,15 @@ pub enum TaskError {
     )]
     AssetLockAlreadyUsed,
 
+    /// A resumed deposit is locally consumed or reported used by Platform.
+    #[error(
+        "This deposit is reported as already used. Choose a different deposit, or check whether the earlier payment arrived."
+    )]
+    AssetLockReportedUsed {
+        #[source]
+        source: Box<platform_wallet::error::PlatformWalletError>,
+    },
+
     /// A resumed funding lock is bound to a role that cannot pay for an
     /// identity outside this wallet — a registration slot of this wallet's own
     /// identity, an invitation voucher whose key the invitee holds, or a lock

@@ -48,6 +48,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Platform dependencies track `fix/pr-5126` at `c0425f7b`, which restores
+  confirmed spends and finality on wallet load and reconciles persisted Core
+  transaction accounting. DET retains its pre-send history check.
+
+- Core payments and new asset locks are blocked before signing when persisted
+  confirmed history shows that the wallet still offers already-spent inputs.
+  This consistency check remains active after Full resync clears visible history.
+- Core-to-Platform funding appears inside Dash Core Transactions with row
+  details and recorded payment conflicts. Pending transactions appear first;
+  recovered historical funding is not labelled as an unfinished transfer. Local
+  records reload through Advanced → Refresh; row buttons share the final Actions column. Cancellation
+  remains unavailable until the wallet backend supports safe reconciliation.
+- Wallet maintenance actions are grouped under Advanced: Import key, Refresh,
+  Full resync, which rescans the selected HD wallet’s Core history from genesis,
+  and Get test DASH on Testnet. Full resync uses the blocking initial-sync
+  progress window until the wallet scan completes.
+
 - **Add wallet-created identity keys**: for identities loaded from a wallet on
   this device, the Add Key screen defaults to "Create from wallet", which
   creates an ECDSA_SECP256K1 or ECDSA_HASH160 key from that wallet so it can be
@@ -146,6 +163,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   follow-up.
 
 ### Fixed
+
+- Backend E2E funding waits for final, unreserved asset-lock inputs and recovers
+  leftover test funds before checking the suite budget. Asset-lock tests select
+  the newly broadcast transaction in duffs; shielded tests wait for balance
+  propagation and use a withdrawal amount above the protocol minimum.
+
+- Backend E2E funded test wallets use unique names so successive tests can
+  register wallets in the shared persistent database.
+
+- CI runs documentation tests once as part of the main test suite and uses
+  Cargo directly instead of the retired Cargo action.
 
 - **Identity keys added by hand no longer disappear**: unlocking a wallet,
   starting the app or loading an identity from a wallet refreshed the identity
@@ -562,6 +590,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   says plainly that the rate shown is fixed rather than read from the network.
 
 ### Changed
+
+- Full resync clears the selected wallet’s displayed Core history across restarts
+  and rebuilds it from observed blocks, retaining spend accounting and reservations.
 
 - Wallet registries and live names now share one WalletContext across the UI,
   MCP tools and password prompts. Metadata writes are serialized while wallet

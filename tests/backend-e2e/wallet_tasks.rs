@@ -8,6 +8,7 @@ use dash_evo_tool::backend_task::core::CoreTask;
 use dash_evo_tool::backend_task::wallet::WalletTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_evo_tool::model::wallet::WalletSeedHash;
+use dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayload;
 use dash_sdk::dpp::identity::core_script::CoreScript;
 use dash_sdk::dpp::state_transition::address_credit_withdrawal_transition::AddressCreditWithdrawalTransition;
 use dash_sdk::dpp::version::PlatformVersion;
@@ -677,14 +678,6 @@ async fn tc_014_wallet_platform_lifecycle() {
 
 /// TC-018: FundPlatformAddressFromAssetLock — create an asset lock via CoreTask and then
 /// fund a platform address directly from it.
-///
-/// TODO(#799): This test fails because CreateRegistrationAssetLock generates a
-/// one-time key address for the credit output that is NOT registered in
-/// `known_addresses`. When the IS lock arrives, `received_asset_lock_finality`
-/// skips the wallet (address not recognized), so `unused_asset_locks` is never
-/// populated and the test times out waiting for the proof. Fix is tracked in
-/// issue #799 (unify asset lock paths). The workaround would be to register
-/// the one-time key address in known_addresses during asset lock creation.
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 #[ignore]
 async fn tc_018_fund_platform_address_from_asset_lock() {
@@ -709,16 +702,17 @@ async fn tc_018_fund_platform_address_from_asset_lock() {
         .await
         .expect("TC-018: CreateRegistrationAssetLock failed");
 
-    // The task broadcasts the funding tx and answers with its txid. The IS lock
-    // arrives asynchronously via SPV and populates unused_asset_locks.
-    let txid = expect_asset_lock_broadcast(create_result, "TC-018");
+    // Track the broadcast transaction's own credit output and finality proof.
+    let txid = expect_asset_lock_broadcast(create_result, "TC-018")
+        .parse::<dash_sdk::dpp::dashcore::Txid>()
+        .expect("TC-018: broadcast must return a valid transaction ID");
     tracing::info!("TC-018: asset lock broadcast in {}", txid);
 
     // Step 2: Wait for a tracked asset lock with the expected amount and a
     // ready proof from the upstream `AssetLockManager`.
     tracing::info!("TC-018: waiting for tracked asset lock IS proof...");
     let proof_timeout = harness::MAX_TEST_TIMEOUT;
-    let min_credits: u64 = 90_000_000;
+    let expected_duffs = 100_000;
     let backend = ctx
         .app_context
         .wallet_backend()
@@ -731,7 +725,10 @@ async fn tc_018_fund_platform_address_from_asset_lock() {
                 .ok()
                 .and_then(|locks| {
                     locks.into_iter().find_map(|l| {
-                        if l.amount >= min_credits && l.proof.is_some() {
+                        if l.out_point.txid == txid
+                            && l.amount == expected_duffs
+                            && l.proof.is_some()
+                        {
                             Some(l.out_point)
                         } else {
                             None
@@ -751,6 +748,31 @@ async fn tc_018_fund_platform_address_from_asset_lock() {
         "TC-018: tracked asset lock ready, out_point={}",
         tracked_out_point
     );
+
+    let tracked = backend
+        .list_tracked_asset_locks(&seed_hash)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|lock| lock.out_point == tracked_out_point)
+        .unwrap();
+    let payload = match tracked.transaction.special_transaction_payload.as_ref() {
+        Some(TransactionPayload::AssetLockPayloadType(payload)) => payload,
+        _ => panic!("TC-018: tracked lock must retain its asset-lock payload"),
+    };
+    let credit_output = payload.credit_outputs.first().expect("credit output");
+    let credit_address = dash_sdk::dpp::dashcore::Address::from_script(
+        &credit_output.script_pubkey,
+        ctx.app_context.network(),
+    )
+    .expect("credit output address");
+    let known_locally = wallet_arc
+        .read()
+        .unwrap()
+        .known_addresses
+        .contains_key(&credit_address);
+    tracing::info!(%credit_address, known_locally, proof_present = tracked.proof.is_some(),
+        "TC-018: credit-output signing lookup");
 
     // Step 3: Derive a fresh platform address for funding
     let platform_addr = crate::framework::funding::derive_platform_receive_address(

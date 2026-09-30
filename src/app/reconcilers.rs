@@ -100,6 +100,7 @@ pub(super) struct SpvBlockReconciler {
     overlay: Option<OverlayHandle>,
     /// Whether a user-initiated sync episode is armed for blocking.
     armed: bool,
+    resync: Option<crate::backend_task::BackendTaskContext>,
     /// Whether the block is showing the Cancel confirmation rather than progress.
     confirming_cancel: bool,
 }
@@ -109,6 +110,7 @@ impl SpvBlockReconciler {
         Self {
             overlay: None,
             armed,
+            resync: None,
             confirming_cancel: false,
         }
     }
@@ -117,7 +119,20 @@ impl SpvBlockReconciler {
     /// post-onboarding auto-start).
     pub(super) fn arm(&mut self) {
         self.armed = true;
+        self.resync = None;
         self.confirming_cancel = false;
+    }
+
+    /// Keep the block until this exact wallet rescan task finishes.
+    pub(super) fn arm_resync(&mut self, context: crate::backend_task::BackendTaskContext) {
+        self.arm();
+        self.resync = Some(context);
+    }
+
+    pub(super) fn finish_resync(&mut self, context: &crate::backend_task::BackendTaskContext) {
+        if self.resync.as_ref() == Some(context) {
+            self.reset();
+        }
     }
 
     /// Whether an episode is currently armed (test seam / observation).
@@ -134,7 +149,8 @@ impl SpvBlockReconciler {
 
     /// Drop the overlay and disarm the episode (used on network switch).
     pub(super) fn reset(&mut self) {
-        self.overlay = None;
+        self.overlay.take_and_clear();
+        self.resync = None;
         self.armed = false;
         self.confirming_cancel = false;
     }
@@ -154,7 +170,12 @@ impl SpvBlockReconciler {
     ) -> Option<AppAction> {
         let cs = app_context.connection_status();
         let state = cs.overall_state();
-        match spv_block_step(self.armed, state) {
+        let decision = if self.resync.is_some() {
+            SpvBlockStep::Block
+        } else {
+            spv_block_step(self.armed, state)
+        };
+        match decision {
             SpvBlockStep::Block => {
                 // F-SPV-B: plain, jargon-free copy — the determinate granularity
                 // is the "Step N of 5" counter, NOT raw phase names / heights.
@@ -166,6 +187,8 @@ impl SpvBlockReconciler {
                 let token = progress.as_ref().and_then(spv_progress_token);
                 let description = if self.confirming_cancel {
                     SPV_CANCEL_QUESTION
+                } else if self.resync.is_some() {
+                    "Rescanning your wallet’s Dash Core history. Keep the app open until the scan finishes."
                 } else if step.is_some() {
                     SPV_SYNCING_DESCRIPTION
                 } else {
@@ -256,6 +279,7 @@ impl SpvBlockReconciler {
                 self.confirming_cancel = false;
                 self.overlay.take_and_clear();
                 self.armed = false;
+                self.resync = None;
                 return Some(AppAction::StopSpv);
             }
         }
@@ -1487,6 +1511,51 @@ mod tests {
             crate::model::user_role::UserRoleCell::default(),
         )
         .expect("AppContext")
+    }
+
+    #[test]
+    fn full_resync_overlay_waits_for_matching_completion_despite_synced_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app = test_app_context(tmp.path());
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(640.0, 480.0))
+            .build_ui(|ui| {
+                crate::ui::components::ProgressOverlay::render_global(ui.ctx(), false);
+            });
+        let ctx = harness.ctx.clone();
+        let request =
+            crate::backend_task::BackendTaskContext::for_dispatch(&BackendTask::CoreTask(
+                crate::backend_task::core::CoreTask::FullResyncWallet { seed_hash: [1; 32] },
+            ));
+        let other = crate::backend_task::BackendTaskContext::for_dispatch(&BackendTask::CoreTask(
+            crate::backend_task::core::CoreTask::FullResyncWallet { seed_hash: [1; 32] },
+        ));
+        let mut block = SpvBlockReconciler::new(false);
+        block.arm_resync(request.clone());
+        block.update(&ctx, &app);
+        assert!(block.is_overlaying());
+        block.finish_resync(&other);
+        assert!(block.armed);
+        block.finish_resync(&request);
+        assert!(!block.is_overlaying());
+        assert!(!crate::ui::components::ProgressOverlay::has_global(&ctx));
+        assert!(!block.armed);
+        block.arm_resync(request.clone());
+        block.update(&ctx, &app);
+        harness.run_steps(3);
+        harness.get_by_label("Cancel").click();
+        harness.run_steps(3);
+        assert!(block.update(&ctx, &app).is_none());
+        block.update(&ctx, &app);
+        harness.run_steps(3);
+        harness.get_by_label("Stop syncing").click();
+        harness.run_steps(3);
+        assert_eq!(block.update(&ctx, &app), Some(AppAction::StopSpv));
+        assert!(!block.is_overlaying());
+        block.arm_resync(request);
+        block.update(&ctx, &app);
+        block.reset();
+        assert!(!block.is_overlaying());
     }
 
     /// Publish `state`, let the reconciler build its banner, click the named

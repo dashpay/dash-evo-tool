@@ -1253,6 +1253,42 @@ pub enum TaskError {
     #[error("Wallet not found. Please check your wallet list and try again.")]
     WalletNotFound,
 
+    #[error("Full resync is unavailable. Connect to the network and wait for the current sync to finish, then try again.")]
+    WalletResyncUnavailable,
+
+    #[error("The wallet scan stopped before finishing. Reconnect and run Full resync again.")]
+    WalletResyncInterrupted,
+
+    #[error("This wallet lists already-spent funds as available. Use another wallet to send this payment.")]
+    WalletConfirmedInputConflict {
+        outpoint: dash_sdk::dpp::dashcore::OutPoint,
+        confirmed_txid: dash_sdk::dpp::dashcore::Txid,
+    },
+
+    #[error("The payment was not sent because its funding history could not be checked. Restart the application and try again.")]
+    WalletSpendHistoryCheck {
+        #[source]
+        source: WalletTransactionHistoryError,
+    },
+
+    #[error("The payment was not sent because its funding check stopped. Try again.")]
+    WalletSpendHistoryWorker {
+        #[source]
+        source: tokio::task::JoinError,
+    },
+
+    #[error("The wallet history could not be reset. Retry Full resync.")]
+    WalletHistoryReset {
+        #[source]
+        source: crate::wallet_backend::KvAdapterError,
+    },
+
+    #[error("The wallet scan could not be requested. Retry Full resync.")]
+    WalletResyncWorker {
+        #[source]
+        source: tokio::task::JoinError,
+    },
+
     /// The wallet is locked and must be unlocked before this operation can proceed.
     #[error("Wallet is locked. Please unlock your wallet and try again.")]
     WalletLocked,

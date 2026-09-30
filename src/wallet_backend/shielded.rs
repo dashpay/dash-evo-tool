@@ -157,6 +157,12 @@ impl WalletBackend {
         dummy_outputs: usize,
         settings: Option<dash_sdk::platform::transition::put_settings::PutSettings>,
     ) -> Result<(), TaskError> {
+        if !matches!(
+            funding,
+            platform_wallet::wallet::asset_lock::AssetLockFunding::FromExistingAssetLock { .. }
+        ) {
+            self.validate_core_spend_history(seed_hash).await?;
+        }
         let coordinator = self.shielded_coordinator_arc().await?;
         let scope = Self::hd_scope(seed_hash);
         self.inner

@@ -1249,8 +1249,18 @@ pub struct AppState {
     prompt_was_blocking: bool,
 }
 
+/// An action displayed in a toolbar dropdown.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolbarMenuItem {
+    pub label: &'static str,
+    pub action: DesiredAppAction,
+    pub enabled: bool,
+    pub tooltip: &'static str,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum DesiredAppAction {
+    Menu(Vec<ToolbarMenuItem>),
     None,
     Refresh,
     AddScreenType(Box<ScreenType>),
@@ -1262,7 +1272,7 @@ pub enum DesiredAppAction {
 impl DesiredAppAction {
     pub fn create_action(&self, app_context: &Arc<AppContext>) -> AppAction {
         match self {
-            DesiredAppAction::None => AppAction::None,
+            DesiredAppAction::None | DesiredAppAction::Menu(_) => AppAction::None,
             DesiredAppAction::Refresh => AppAction::Refresh,
             DesiredAppAction::Custom(message) => AppAction::Custom(message.clone()),
             DesiredAppAction::AddScreenType(screen_type) => {
@@ -2103,12 +2113,30 @@ impl AppState {
     //
     // Uses spawn_blocking + block_on to avoid Send bound issues with platform
     // SDK types (DataContract/Sdk references across await points).
+    fn prepare_backend_task_context(
+        &mut self,
+        task: &BackendTask,
+        context: BackendTaskContext,
+    ) -> BackendTaskContext {
+        if matches!(
+            task,
+            BackendTask::CoreTask(crate::backend_task::core::CoreTask::FullResyncWallet { .. })
+        ) {
+            let context = BackendTaskContext::for_dispatch(task);
+            self.spv_block.arm_resync(context.clone());
+            context
+        } else {
+            context
+        }
+    }
+
     fn handle_backend_task(&mut self, task: BackendTask) {
         let context = BackendTaskContext::for_task_on(&task, self.current_app_context().network);
         self.handle_backend_task_with_context(task, context);
     }
 
     fn handle_backend_task_with_context(&mut self, task: BackendTask, context: BackendTaskContext) {
+        let context = self.prepare_backend_task_context(&task, context);
         let request_id = crate::backend_task::dashpay_request_id(&task);
         let sender = self.task_result_sender.clone();
         let watcher_sender = sender.clone();
@@ -2140,14 +2168,32 @@ impl AppState {
     }
 
     /// Handle the backend tasks and send the results through the channel
-    fn handle_backend_tasks(&self, tasks: Vec<BackendTask>, mode: BackendTasksExecutionMode) {
+    fn handle_backend_tasks(&mut self, tasks: Vec<BackendTask>, mode: BackendTasksExecutionMode) {
         let sender = self.task_result_sender.clone();
         let watcher_sender = sender.clone();
         let app_context = self.current_app_context().clone();
         let contexts = tasks
             .iter()
-            .map(|task| BackendTaskContext::for_task_on(task, app_context.network))
+            .map(|task| {
+                self.prepare_backend_task_context(
+                    task,
+                    BackendTaskContext::for_task_on(task, app_context.network),
+                )
+            })
             .collect::<Vec<_>>();
+        let watcher_context = tasks
+            .iter()
+            .zip(&contexts)
+            .find_map(|(task, context)| {
+                matches!(
+                    task,
+                    BackendTask::CoreTask(
+                        crate::backend_task::core::CoreTask::FullResyncWallet { .. }
+                    )
+                )
+                .then(|| context.clone())
+            })
+            .unwrap_or(BackendTaskContext::Unknown);
         let handle = tokio::runtime::Handle::current();
 
         let _ = self.subtasks.spawn_blocking_sync(
@@ -2178,12 +2224,7 @@ impl AppState {
                 });
             },
             move |join_result| {
-                forward_backend_task_join_error(
-                    join_result,
-                    watcher_sender,
-                    None,
-                    BackendTaskContext::Unknown,
-                )
+                forward_backend_task_join_error(join_result, watcher_sender, None, watcher_context)
             },
         );
     }
@@ -2906,6 +2947,12 @@ impl App for AppState {
                 .connection_status()
                 .handle_task_result(&task_result, active_context.network);
 
+            if let TaskResult::Success { context, .. } | TaskResult::Error { context, .. } =
+                &task_result
+            {
+                self.spv_block.finish_resync(context);
+            }
+
             let recovery_delivered = deliver_legacy_recovery_result(
                 &mut self.main_screens,
                 &mut self.screen_stack,
@@ -3171,6 +3218,16 @@ impl App for AppState {
                         handle.with_details(&err);
                         self.visible_screen_mut()
                             .display_message(&msg, MessageType::Error);
+                    }
+                }
+                TaskResult::Error { context, error }
+                    if context.platform_transfer_assessment().is_some() =>
+                {
+                    if let Some(screen) = self
+                        .main_screens
+                        .get_mut(&RootScreenType::RootScreenWalletsBalances)
+                    {
+                        screen.display_backend_task_error(&context, &error);
                     }
                 }
                 TaskResult::Error {

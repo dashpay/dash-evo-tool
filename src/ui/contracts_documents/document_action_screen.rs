@@ -732,6 +732,7 @@ impl DocumentActionScreen {
                         | DocumentPropertyType::U64
                         | DocumentPropertyType::I64
                         | DocumentPropertyType::U32
+                        | DocumentPropertyType::KeyIdWithReference(_)
                         | DocumentPropertyType::I32
                         | DocumentPropertyType::U16
                         | DocumentPropertyType::I16
@@ -806,6 +807,7 @@ impl DocumentActionScreen {
                         }
                         DocumentPropertyType::Object(_)
                         | DocumentPropertyType::Array(_)
+                        | DocumentPropertyType::TypedArray(_)
                         | DocumentPropertyType::VariableTypeArray(_) => {
                             let dark_mode = ui.style().visuals.dark_mode;
                             ui.add(
@@ -1300,7 +1302,7 @@ impl DocumentActionScreen {
                         .map_err(|_| format!("{} must be a signed 64-bit integer", name))?;
                     Value::I64(n)
                 }
-                DocumentPropertyType::U32 => {
+                DocumentPropertyType::U32 | DocumentPropertyType::KeyIdWithReference(_) => {
                     let n = input_str
                         .parse::<u32>()
                         .map_err(|_| format!("{} must be an unsigned 32-bit integer", name))?;
@@ -1378,7 +1380,9 @@ impl DocumentActionScreen {
                         name
                     ));
                 }
-                DocumentPropertyType::Array(_) | DocumentPropertyType::VariableTypeArray(_) => {
+                DocumentPropertyType::Array(_)
+                | DocumentPropertyType::TypedArray(_)
+                | DocumentPropertyType::VariableTypeArray(_) => {
                     return Err(format!(
                         "Array field {} must be supplied via JSON textarea",
                         name
@@ -1479,7 +1483,7 @@ impl DocumentActionScreen {
                         .map_err(|_| format!("{} must be a signed 64-bit integer", name))?;
                     Value::I64(n)
                 }
-                DocumentPropertyType::U32 => {
+                DocumentPropertyType::U32 | DocumentPropertyType::KeyIdWithReference(_) => {
                     let n = input_str
                         .parse::<u32>()
                         .map_err(|_| format!("{} must be an unsigned 32-bit integer", name))?;
@@ -1557,7 +1561,9 @@ impl DocumentActionScreen {
                         name
                     ));
                 }
-                DocumentPropertyType::Array(_) | DocumentPropertyType::VariableTypeArray(_) => {
+                DocumentPropertyType::Array(_)
+                | DocumentPropertyType::TypedArray(_)
+                | DocumentPropertyType::VariableTypeArray(_) => {
                     return Err(format!(
                         "Array field {} must be supplied via JSON textarea",
                         name

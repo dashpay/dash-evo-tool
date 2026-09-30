@@ -154,8 +154,8 @@ move to a fresh slot (the previous slot's SPV lock cannot be released
 in-process) and restart the sync from genesis. A fresh workdir needs a full
 testnet sync, which can take well over 10 minutes; later runs resume from the
 stored data.
-9. Verify balance is above minimum threshold (10 tDASH).
-10. Sweep orphaned test wallets from previous runs back to the framework wallet.
+9. Sweep orphaned test wallets from previous runs back to the framework wallet.
+10. Verify balance is above minimum threshold (10 tDASH), including recovered funds.
 
 ### Persistent workdir
 
@@ -194,7 +194,7 @@ This method:
 2. Creates and registers the wallet with `AppContext`.
 3. Waits for SPV to pick up the wallet (30s timeout).
 4. Sends `amount_duffs` from the framework wallet via `CoreTask::SendWalletPayment`.
-5. Waits for the full `amount_duffs` to become spendable in the test wallet (120s timeout).
+5. Waits for the full `amount_duffs` to be confirmed or InstantSend-locked and unreserved, using the asset-lock input snapshot (120s, then a block-confirmation fallback).
 6. Waits for the framework wallet's change output to become spendable (so the
    next call to `create_funded_test_wallet` can succeed).
 
@@ -344,9 +344,12 @@ confirmed/InstantSend-locked set actually usable for spending. This means:
 
 The framework mitigates this with:
 
-- **`wait_for_spendable_balance()`** -- polls
-  `AppContext::snapshot_balance().confirmed` (the EventBridge-pushed snapshot),
-  waiting until confirmed funds reach the target.
+- **`wait_for_asset_lock_funds()`** -- polls the builder-input snapshot for
+  confirmed or InstantSend-locked, unreserved funds. Funded test wallets use
+  this before returning to callers that may create an asset lock.
+- **`wait_for_spendable_balance()`** -- polls the display subtotal of confirmed
+  and unconfirmed funds. It is not an asset-lock readiness check or a guarantee
+  that a transaction builder can select those inputs.
 - **Post-send wait** -- after funding a test wallet, `create_funded_test_wallet()`
   waits for the full funded amount to become spendable, then waits for the
   framework wallet's change output to settle before returning.

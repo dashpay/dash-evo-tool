@@ -56,13 +56,8 @@ pub async fn wait_for_balance(
 
 /// Wait until a wallet has at least `min_balance` **spendable** duffs.
 ///
-/// "Spendable" is `DetWalletBalance::spendable()` — the exact set the upstream
-/// `CoinSelector` draws from (confirmed + unconfirmed), excluding the immature
-/// and locked duffs that only `total` counts. This is the right gate for "can
-/// this wallet fund a transaction now": funds that are IS-locked but not yet
-/// flagged as instant-locked locally land in `unconfirmed`, so polling
-/// `confirmed` alone would miss them and time out even though coin selection
-/// could already spend them. Triggers SPV reconciliation on each poll.
+/// This display subtotal includes unconfirmed funds and does not guarantee coin selection.
+/// Use `wait_for_asset_lock_funds` when the next operation requires final inputs.
 pub async fn wait_for_spendable_balance(
     app_context: &Arc<AppContext>,
     wallet_hash: WalletSeedHash,
@@ -107,6 +102,33 @@ pub async fn wait_for_spendable_balance(
             "Timed out waiting for spendable balance >= {} duffs \
              (spendable: {}, total: {})",
             min_balance, spendable, total
+        )
+    })
+}
+
+/// Wait for confirmed or InstantSend-locked, unreserved asset-lock inputs.
+pub async fn wait_for_asset_lock_funds(
+    app_context: &Arc<AppContext>,
+    wallet_hash: WalletSeedHash,
+    min_balance: u64,
+    wait_timeout: Duration,
+) -> Result<u64, String> {
+    let backend = app_context.wallet_backend().map_err(|e| format!("{e:?}"))?;
+    timeout(wait_timeout, async {
+        loop {
+            let (_, inputs, _) = backend.asset_lock_probe_snapshot(&wallet_hash);
+            if inputs.final_funds_duffs >= min_balance {
+                return inputs.final_funds_duffs;
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    })
+    .await
+    .map_err(|_| {
+        let (_, inputs, _) = backend.asset_lock_probe_snapshot(&wallet_hash);
+        format!(
+            "Timed out waiting for asset-lock inputs >= {min_balance} duffs (available: {})",
+            inputs.final_funds_duffs
         )
     })
 }

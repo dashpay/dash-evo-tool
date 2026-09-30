@@ -630,7 +630,7 @@ impl WalletBackend {
     /// transitions (Platform-address top-up, shielded deposit). The seed is
     /// the one already held open by the surrounding `with_secret_session`
     /// scope, so this never re-prompts.
-    fn derive_private_key_from_held(
+    pub(super) fn derive_private_key_from_held(
         &self,
         plaintext: SecretPlaintext<'_>,
         path: &dash_sdk::dpp::key_wallet::bip32::DerivationPath,

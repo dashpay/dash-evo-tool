@@ -279,6 +279,15 @@ async fn persist_account_registrations(
     .await
 }
 
+fn validate_manual_asset_lock_role(
+    funding_type: platform_wallet::AssetLockFundingType,
+) -> Result<(), TaskError> {
+    if funding_type == platform_wallet::AssetLockFundingType::IdentityInvitation {
+        return Err(TaskError::AssetLockReservedForInvitation);
+    }
+    Ok(())
+}
+
 impl WalletBackend {
     /// Register a new identity on Platform funded by an asset lock built and
     /// tracked-to-finality by the upstream `AssetLockManager`. Returns the
@@ -821,6 +830,65 @@ impl WalletBackend {
             .await
     }
 
+    /// Fund destinations outside the upstream address pool using a tracked lock.
+    /// The credit key comes from the upstream funding account, independently of
+    /// DET's display address cache. Secrets stay inside one held session.
+    pub(crate) async fn fund_platform_address_from_tracked_lock_manual(
+        &self,
+        seed_hash: &WalletSeedHash,
+        out_point: dash_sdk::dpp::dashcore::OutPoint,
+        outputs: std::collections::BTreeMap<
+            dash_sdk::dpp::address_funds::PlatformAddress,
+            Option<dash_sdk::dpp::balances::credits::Credits>,
+        >,
+        path_index: &PlatformPathIndex,
+    ) -> Result<(), TaskError> {
+        use dash_sdk::dpp::address_funds::AddressFundsFeeStrategyStep;
+        use dash_sdk::platform::transition::top_up_address::TopUpAddress;
+
+        let tracked = self
+            .list_tracked_asset_locks(seed_hash)
+            .await?
+            .into_iter()
+            .find(|lock| lock.out_point == out_point)
+            .ok_or(TaskError::AssetLockAddressNotFound)?;
+        validate_manual_asset_lock_role(tracked.funding_type)?;
+
+        let scope = Self::hd_scope(seed_hash);
+        self.inner
+            .secret_access
+            .with_secret_session(&scope, async |session| {
+                let wallet = self.resolve_wallet(seed_hash).await?;
+                let (proof, credit_output_path) = wallet
+                    .asset_locks()
+                    .resume_asset_lock(&out_point, None)
+                    .await
+                    .map_err(|source| TaskError::WalletBackend {
+                        source: Arc::new(source),
+                    })?;
+                let private_key =
+                    self.derive_private_key_from_held(session.plaintext(), &credit_output_path)?;
+                let plaintext = session.plaintext();
+                let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
+                let signer = DetPlatformSigner::from_held(seed, self.inner.network, path_index);
+                // Non-pool destinations use the SDK directly; upstream's
+                // orchestrated consume/retry requires pool-owned recipients.
+                outputs
+                    .top_up(
+                        self.sdk(),
+                        proof,
+                        private_key,
+                        vec![AddressFundsFeeStrategyStep::ReduceOutput(0)],
+                        &signer,
+                        None,
+                    )
+                    .await
+                    .map(|_| ())
+                    .map_err(TaskError::from)
+            })
+            .await
+    }
+
     // UPSTREAM GAP: rs-platform-wallet has no identity-funding-account
     // registrar (sibling to register_contact_account). Contained exception —
     // key_wallet plumbing lives ONLY here, never leaks past WalletBackend.
@@ -1213,6 +1281,24 @@ mod tests {
     use super::*;
     use platform_wallet::changeset::ClientStartState;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn manual_asset_lock_funding_protects_invitation_vouchers() {
+        use platform_wallet::AssetLockFundingType::*;
+        assert!(matches!(
+            validate_manual_asset_lock_role(IdentityInvitation),
+            Err(TaskError::AssetLockReservedForInvitation)
+        ));
+        for funding_type in [
+            IdentityRegistration,
+            IdentityTopUp,
+            IdentityTopUpNotBound,
+            AssetLockAddressTopUp,
+            AssetLockShieldedAddressTopUp,
+        ] {
+            validate_manual_asset_lock_role(funding_type).expect("non-voucher lock can be funded");
+        }
+    }
 
     /// Counts the writes [`persist_account_registrations`] issues, answering
     /// the inline-commit question however the test asks it to.

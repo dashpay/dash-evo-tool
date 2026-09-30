@@ -323,31 +323,12 @@ fn default_auto_dir(path: &Path) -> PathBuf {
     platform_wallet_storage::default_auto_backup_dir(path)
 }
 
-/// Backup candidates that passed validation, plus every rejected one with its reason.
-///
-/// Directory-level failures still abort the scan; a single rejected
-/// candidate does not, so deletion can remove every valid snapshot before
-/// reporting the rejection.
-struct BackupScan {
-    found: Vec<PathBuf>,
-    rejected: Vec<(PathBuf, std::io::Error)>,
-}
-
-/// Strict scan: any rejected candidate fails the whole scan. Retention and
-/// publication rely on this to never proceed past an unexpected file.
+/// Regular files named like a backup of the database at `path`, next to it or in
+/// `auto_dir`. Anything else is skipped; [`remove_backup`] refuses what must never go.
 fn backups_in(path: &Path, auto_dir: Option<&Path>) -> std::io::Result<Vec<PathBuf>> {
-    let scan = scan_backups_in(path, auto_dir)?;
-    match scan.rejected.into_iter().next() {
-        Some((_, error)) => Err(error),
-        None => Ok(scan.found),
-    }
-}
-
-fn scan_backups_in(path: &Path, auto_dir: Option<&Path>) -> std::io::Result<BackupScan> {
     let mut found = Vec::new();
-    let mut rejected = Vec::new();
     let Some(parent) = path.parent() else {
-        return Ok(BackupScan { found, rejected });
+        return Ok(found);
     };
     for directory in [Some(parent), auto_dir].into_iter().flatten() {
         let metadata = match std::fs::symlink_metadata(directory) {
@@ -366,56 +347,16 @@ fn scan_backups_in(path: &Path, auto_dir: Option<&Path>) -> std::io::Result<Back
             let Some(name) = name.to_str() else { continue };
             let bridge = directory == parent && is_bridge_backup_name(path, name);
             let upstream = Some(directory) == auto_dir && parse_upstream_name(path, name).is_some();
-            if bridge || upstream {
-                match validate_backup_file(&entry.path(), path) {
-                    Ok(()) => found.push(entry.path()),
-                    Err(error) => rejected.push((entry.path(), error)),
-                }
+            // Symlinks and directories are skipped; an unreadable type surfaces on use.
+            let other_type = entry.file_type().is_ok_and(|kind| !kind.is_file());
+            if (bridge || upstream) && !other_type {
+                found.push(entry.path());
             }
         }
     }
     found.sort();
     found.dedup();
-    Ok(BackupScan { found, rejected })
-}
-
-/// Why a file with a backup (or lifecycle-lock) name is not treated as one. Wrapped
-/// in an [`std::io::Error`]; only logs and error details show it.
-#[derive(Debug, thiserror::Error)]
-enum UnexpectedBackupFile {
-    #[error("A file named like an upgrade backup is not a regular file.")]
-    NotRegularFile,
-    #[error("A file named like an upgrade backup is the live database.")]
-    LiveDatabase,
-    #[error("A file named like an upgrade backup has more than one hard link.")]
-    HardLinked,
-}
-
-/// Scan-time classification of a candidate (also used to vet the lifecycle lock
-/// file); the deletion itself is policed by the
-/// [`delete_file`](crate::utils::file_deletion::delete_file) chokepoint.
-fn validate_backup_file(backup: &Path, database: &Path) -> std::io::Result<()> {
-    let unexpected = |kind| Err(std::io::Error::other(kind));
-    let metadata = std::fs::symlink_metadata(backup)?;
-    if !metadata.is_file() {
-        return unexpected(UnexpectedBackupFile::NotRegularFile);
-    }
-    if backup == database {
-        return unexpected(UnexpectedBackupFile::LiveDatabase);
-    }
-    if let Ok(live_path) = database.canonicalize()
-        && backup.canonicalize()? == live_path
-    {
-        return unexpected(UnexpectedBackupFile::LiveDatabase);
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if metadata.nlink() != 1 {
-            return unexpected(UnexpectedBackupFile::HardLinked);
-        }
-    }
-    Ok(())
+    Ok(found)
 }
 
 fn remove_backup(backup: &Path, database: &Path) -> std::io::Result<()> {
@@ -462,6 +403,22 @@ pub(crate) fn backup_lock_path(database: &Path) -> Option<PathBuf> {
     Some(database.with_file_name(name))
 }
 
+/// Refuse an existing lock path that is a symlink, not a regular file, or hard-linked.
+fn check_lock_file(lock: &Path) -> std::io::Result<()> {
+    let metadata = std::fs::symlink_metadata(lock)?;
+    #[cfg(unix)]
+    let single_link = std::os::unix::fs::MetadataExt::nlink(&metadata) == 1;
+    #[cfg(not(unix))]
+    let single_link = true;
+    if metadata.is_file() && single_link {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(
+            "Upgrade lock path is not a single-link regular file",
+        ))
+    }
+}
+
 pub(super) fn backup_lock(path: &Path) -> std::io::Result<BackupGuard> {
     let Some(lock_path) = backup_lock_path(path) else {
         return Err(std::io::ErrorKind::InvalidInput.into());
@@ -476,7 +433,7 @@ pub(super) fn backup_lock(path: &Path) -> std::io::Result<BackupGuard> {
     let file = match options.open(&lock_path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            validate_backup_file(&lock_path, path)?;
+            check_lock_file(&lock_path)?;
             std::fs::File::options()
                 .read(true)
                 .write(true)
@@ -491,7 +448,6 @@ pub(super) fn backup_lock(path: &Path) -> std::io::Result<BackupGuard> {
         }
         Err(error) => return Err(error),
     };
-    validate_backup_file(&lock_path, path)?;
     lock_with_grace(&file)?;
     // Keep the pathname stable: unlinking it could let contenders lock different files.
     Ok(BackupGuard {
@@ -579,10 +535,26 @@ fn same_contents(a: &Path, b: &Path) -> std::io::Result<bool> {
     }
 }
 
-/// Delete every upgrade backup of the database at `path`; attempts all and returns the
-/// first failure.
+/// Delete every upgrade backup of the database at `path` and sync the directories
+/// deleted from; attempts all and returns the first failure.
 pub(crate) fn remove_backups(path: &Path) -> std::io::Result<()> {
-    remove_backups_with_sync(path, crate::utils::backup_prune::sync_directory)
+    let _guard = backup_lock(path)?;
+    let mut first_error = None;
+    let mut touched = BTreeSet::new();
+    for backup in backups_in(path, Some(&default_auto_dir(path)))? {
+        match remove_backup(&backup, path) {
+            Ok(()) => touched.extend(backup.parent().map(Path::to_owned)),
+            Err(error) => {
+                first_error.get_or_insert(error);
+            }
+        }
+    }
+    for directory in touched {
+        if let Err(error) = crate::utils::backup_prune::sync_directory(&directory) {
+            first_error.get_or_insert(error);
+        }
+    }
+    first_error.map_or(Ok(()), Err)
 }
 
 /// [`prune_expired`](crate::utils::backup_prune::prune_expired) over the bridge and
@@ -594,8 +566,7 @@ pub(crate) fn prune_expired_backups(
     now: std::time::SystemTime,
 ) -> std::io::Result<usize> {
     let auto_dir = default_auto_dir(path);
-    let unlocked = scan_backups_in(path, Some(&auto_dir))?;
-    if unlocked.found.is_empty() && unlocked.rejected.is_empty() {
+    if backups_in(path, Some(&auto_dir))?.is_empty() {
         return Ok(0);
     }
     let _guard = match backup_lock(path) {
@@ -606,10 +577,7 @@ pub(crate) fn prune_expired_backups(
         }
         Err(error) => return Err(error),
     };
-    let scan = scan_backups_in(path, Some(&auto_dir))?;
-    let rejected = scan.rejected.into_iter().next().map(|(_, error)| error);
-    let candidates = scan
-        .found
+    let candidates = backups_in(path, Some(&auto_dir))?
         .into_iter()
         .filter(|backup| {
             backup
@@ -631,16 +599,12 @@ pub(crate) fn prune_expired_backups(
             }
         })
         .collect();
-    let pruned = crate::utils::backup_prune::prune_expired(
+    crate::utils::backup_prune::prune_expired(
         candidates,
         now,
         max_age,
         crate::utils::file_deletion::DeletionIntent::Backup { database: path },
-    );
-    match (pruned, rejected) {
-        (Err(error), _) | (Ok(_), Some(error)) => Err(error),
-        (Ok(removed), None) => Ok(removed),
-    }
+    )
 }
 
 fn backup_created(database: &Path, backup: &Path) -> std::io::Result<std::time::SystemTime> {
@@ -649,44 +613,6 @@ fn backup_created(database: &Path, backup: &Path) -> std::io::Result<std::time::
         .and_then(|name| name.to_str())
         .and_then(|name| upstream_backup_timestamp(database, name));
     crate::utils::backup_prune::created_at(backup, named)
-}
-
-fn remove_backups_with_sync(
-    path: &Path,
-    mut sync_dir: impl FnMut(&Path) -> std::io::Result<()>,
-) -> std::io::Result<()> {
-    let _guard = backup_lock(path)?;
-    let auto_dir = default_auto_dir(path);
-    let scan = scan_backups_in(path, Some(&auto_dir))?;
-    let mut first_error = scan.rejected.into_iter().next().map(|(_, error)| error);
-    for backup in scan.found {
-        if let Err(error) = remove_backup(&backup, path) {
-            first_error.get_or_insert(error);
-        }
-    }
-    // Sync every candidate directory, not just those unlinked from in this call: an
-    // earlier call may have unlinked successfully and then failed its sync, and a
-    // retry that finds nothing left to delete must still make that deletion durable.
-    for directory in [path.parent(), Some(auto_dir.as_path())]
-        .into_iter()
-        .flatten()
-    {
-        match std::fs::symlink_metadata(directory) {
-            // No directory means no entry was ever removed from it.
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => {
-                first_error.get_or_insert(error);
-                continue;
-            }
-            // The scan already rejected a non-directory; never open it here.
-            Ok(metadata) if !metadata.is_dir() => continue,
-            Ok(_) => {}
-        }
-        if let Err(error) = sync_dir(directory) {
-            first_error.get_or_insert(error);
-        }
-    }
-    first_error.map_or(Ok(()), Err)
 }
 
 #[cfg(test)]

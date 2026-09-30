@@ -25,50 +25,20 @@ fn open_with_housekeeping(
 ) -> Result<SqlitePersister, TaskError> {
     let guard = engine::backup_lock(&config.path).map_err(lock_error)?;
     let auto_dir = config.auto_backup_dir.as_deref();
-    // Tidy (strict scan, crash leftovers, identical copies) before another attempt can create
-    // a snapshot, including after a restart. It stays strict only when a snapshot could
-    // follow: a database that is already current still opens, since failed housekeeping
-    // does not endanger it.
-    if let Err(housekeeping) = tidy(&guard, auto_dir) {
-        return open_current_only(&config).map_err(|probe| {
-            tracing::debug!(
-                error = ?probe,
-                "Wallet database is not openable without a snapshot; backup housekeeping failure stands"
+    // Best-effort both times: tidy before a snapshot can be taken, and again to drop a
+    // copy a failed open just duplicated. A failure never decides the open's result.
+    let mut tidy_best_effort = || {
+        if let Err(error) = tidy(&guard, auto_dir) {
+            tracing::warn!(
+                ?error,
+                "Upgrade backup housekeeping failed; retrying on the next open"
             );
-            lock_error(housekeeping)
-        });
-    }
+        }
+    };
+    tidy_best_effort();
     let result = open_inner(&config, &guard);
-    // Post-open tidying is best-effort: it must neither discard a successful open nor mask
-    // the open's own error. It also drops a copy a failed open just duplicated. The next
-    // open retries it before any new snapshot.
-    if let Err(error) = tidy(&guard, auto_dir) {
-        tracing::warn!(
-            ?error,
-            "Upgrade backup housekeeping failed after opening the wallet database"
-        );
-    }
+    tidy_best_effort();
     result
-}
-
-/// Open only when no snapshot can be taken: with automatic backups disabled, upstream
-/// refuses any pending migration before touching the database, and a brand-new database
-/// has nothing to back up. The pinned-profile upgrade is never attempted here.
-///
-/// On success the probe is dropped and the database reopened with the caller's config —
-/// the database is current, so that open creates no snapshot, while the persister keeps
-/// its backup directory for later destructive operations (e.g. wallet deletion).
-/// The caller holds the lifecycle guard, so no other DET open can migrate in between.
-fn open_current_only(config: &SqlitePersisterConfig) -> Result<SqlitePersister, TaskError> {
-    let probe = SqlitePersister::open(config.clone().with_auto_backup_dir(None))
-        .map_err(TaskError::from_wallet_storage_open_error)?;
-    drop(probe);
-    let persister =
-        SqlitePersister::open(config.clone()).map_err(TaskError::from_wallet_storage_open_error)?;
-    tracing::warn!(
-        "Upgrade backup housekeeping failed; opened the current wallet database and will retry it on the next open"
-    );
-    Ok(persister)
 }
 
 fn open_inner(
@@ -237,42 +207,42 @@ mod tests {
         }
     }
 
+    /// Housekeeping is best-effort before and after the open: its failure neither
+    /// blocks nor discards a successful open, nor masks the open's own error.
     #[test]
-    fn platform_compatibility_post_open_retention_failure_keeps_open_result() {
+    fn platform_compatibility_housekeeping_failure_never_decides_the_open() {
+        fn failing(
+            calls: &mut usize,
+        ) -> impl FnMut(&engine::BackupGuard, Option<&std::path::Path>) -> std::io::Result<()> + '_
+        {
+            move |_, _| {
+                *calls += 1;
+                Err(std::io::Error::other("housekeeping failure"))
+            }
+        }
         let dir = tempfile::tempdir().unwrap();
         crate::app_dir::ensure_data_dir_exists(dir.path()).unwrap();
-        let path = dir.path().join("wallet.sqlite");
         let mut calls = 0;
-        let persister = open_with_housekeeping(SqlitePersisterConfig::new(&path), |_, _| {
-            calls += 1;
-            if calls == 1 {
-                Ok(())
-            } else {
-                Err(std::io::Error::other("stray entry rejected by backup scan"))
-            }
-        })
-        .expect("a post-open retention failure must not discard a successful open");
+        let persister = open_with_housekeeping(
+            SqlitePersisterConfig::new(dir.path().join("wallet.sqlite")),
+            failing(&mut calls),
+        )
+        .expect("failed housekeeping must not block or discard an open");
         assert_eq!(calls, 2);
         persister.load().unwrap();
 
         let bad = dir.path().join("corrupt.sqlite");
         std::fs::write(&bad, b"not a sqlite database, just candy wrappers").unwrap();
         let mut calls = 0;
-        let error = match open_with_housekeeping(SqlitePersisterConfig::new(&bad), |_, _| {
-            calls += 1;
-            if calls == 1 {
-                Ok(())
-            } else {
-                Err(std::io::Error::other("retention failure"))
-            }
-        }) {
-            Ok(_) => panic!("open unexpectedly succeeded on a corrupt database"),
-            Err(error) => error,
-        };
+        let error =
+            match open_with_housekeeping(SqlitePersisterConfig::new(&bad), failing(&mut calls)) {
+                Ok(_) => panic!("open unexpectedly succeeded on a corrupt database"),
+                Err(error) => error,
+            };
         assert_eq!(calls, 2);
         assert!(
-            !matches!(&error, TaskError::FileSystem { source } if source.to_string() == "retention failure"),
-            "the open error must not be masked by retention: {error:?}"
+            !matches!(&error, TaskError::FileSystem { source } if source.to_string() == "housekeeping failure"),
+            "the open error must not be masked by housekeeping: {error:?}"
         );
     }
 
@@ -283,112 +253,6 @@ mod tests {
             .collect();
         names.sort();
         names
-    }
-
-    fn failing_retention(
-        calls: &mut usize,
-    ) -> impl FnMut(&engine::BackupGuard, Option<&std::path::Path>) -> std::io::Result<()> + '_
-    {
-        move |_, _| {
-            *calls += 1;
-            Err(std::io::Error::other("stray entry rejected by backup scan"))
-        }
-    }
-
-    #[test]
-    fn platform_compatibility_pre_open_retention_failure_still_opens_current_database() {
-        let dir = tempfile::tempdir().unwrap();
-        crate::app_dir::ensure_data_dir_exists(dir.path()).unwrap();
-        let path = dir.path().join("wallet.sqlite");
-        let auto = platform_wallet_storage::default_auto_backup_dir(&path);
-        // First a brand-new database, then the same database once it is current.
-        for _ in 0..2 {
-            let mut calls = 0;
-            let persister = open_with_housekeeping(
-                SqlitePersisterConfig::new(&path),
-                failing_retention(&mut calls),
-            )
-            .expect("failed housekeeping must not block a database that needs no snapshot");
-            persister.load().unwrap();
-            drop(persister);
-            assert_eq!(calls, 1);
-            assert!(
-                !auto.exists(),
-                "the probe and reopen must not create the backup directory or any snapshot"
-            );
-            // Only the database itself and its lifecycle lock may exist; the fresh
-            // profile's file is treated as current by the full reopen.
-            assert_eq!(
-                dir_entries(dir.path()),
-                vec![
-                    "wallet.sqlite".to_owned(),
-                    format!("wallet.sqlite{}", engine::LOCK_SUFFIX)
-                ]
-            );
-        }
-    }
-
-    #[test]
-    fn platform_compatibility_pre_open_retention_failure_blocks_upgrade() {
-        let dir = tempfile::tempdir().unwrap();
-        crate::app_dir::ensure_data_dir_exists(dir.path()).unwrap();
-        let path = dir.path().join("wallet.sqlite");
-        rusqlite::Connection::open(&path)
-            .unwrap()
-            .execute_batch(include_str!("fixtures/67d4ef3.sql"))
-            .unwrap();
-        let schema = || {
-            rusqlite::Connection::open(&path)
-                .unwrap()
-                .prepare("SELECT type, name, sql FROM sqlite_master ORDER BY type, name")
-                .unwrap()
-                .query_map([], |r| {
-                    Ok(format!(
-                        "{}|{}|{:?}",
-                        r.get::<_, String>(0)?,
-                        r.get::<_, String>(1)?,
-                        r.get::<_, Option<String>>(2)?
-                    ))
-                })
-                .unwrap()
-                .collect::<Result<Vec<_>, _>>()
-                .unwrap()
-        };
-        let before = schema();
-        let entries_before = dir_entries(dir.path());
-        let mut calls = 0;
-        let error = match open_with_housekeeping(
-            SqlitePersisterConfig::new(&path),
-            failing_retention(&mut calls),
-        ) {
-            Ok(_) => panic!("an upgrade must not run while backup retention is failing"),
-            Err(error) => error,
-        };
-        assert_eq!(calls, 1);
-        assert!(
-            matches!(&error, TaskError::FileSystem { source } if source.to_string() == "stray entry rejected by backup scan"),
-            "the strict retention failure must be reported: {error:?}"
-        );
-        assert_eq!(
-            schema(),
-            before,
-            "the original database must stay untouched"
-        );
-        let mut entries_after = dir_entries(dir.path());
-        entries_after.retain(|name| *name != format!("wallet.sqlite{}", engine::LOCK_SUFFIX));
-        assert_eq!(
-            entries_after, entries_before,
-            "a refused probe must leave no files or directories behind"
-        );
-        let auto = platform_wallet_storage::default_auto_backup_dir(&path);
-        assert!(!auto.exists() || std::fs::read_dir(&auto).unwrap().next().is_none());
-        assert!(
-            std::fs::read_dir(dir.path())
-                .unwrap()
-                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-                .all(|name| !name.contains(".platform-67d4ef3-backup-")),
-            "no bridge snapshot may be published while retention is failing"
-        );
     }
 
     #[test]

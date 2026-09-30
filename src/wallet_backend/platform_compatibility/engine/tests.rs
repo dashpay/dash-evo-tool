@@ -308,72 +308,6 @@ fn platform_compatibility_removes_only_matching_upstream_backups() {
     assert!(kept.exists());
 }
 
-/// An unlink is only durable once its directory is synced: removal must sync
-/// every directory it deleted from, and a failed sync must fail the removal so
-/// callers keep their retry state instead of
-/// retiring it while the deletion could still be lost on power failure.
-#[test]
-fn platform_compatibility_backup_removal_fails_when_directory_sync_fails() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("det-testnet.sqlite");
-    let auto = dir.path().join("backups/auto");
-    std::fs::create_dir_all(&auto).unwrap();
-    let sibling = dir
-        .path()
-        .join("det-testnet.sqlite.platform-67d4ef3-backup-a1.sqlite");
-    let upstream = auto.join("pre-migration-det-testnet-1-to-2-20260915T120000Z.db");
-    for backup in [&sibling, &upstream] {
-        std::fs::write(backup, b"backup").unwrap();
-    }
-
-    let mut synced = Vec::new();
-    let error = remove_backups_with_sync(&path, |directory| {
-        synced.push(directory.to_owned());
-        Err(std::io::Error::other("injected directory sync failure"))
-    })
-    .unwrap_err();
-
-    assert_eq!(error.kind(), std::io::ErrorKind::Other);
-    assert!(!sibling.exists());
-    assert!(!upstream.exists());
-    synced.sort();
-    let mut expected = vec![dir.path().to_owned(), auto];
-    expected.sort();
-    assert_eq!(synced, expected, "every touched directory must be synced");
-}
-
-/// A retry that finds no backups left must still settle an earlier failed
-/// directory sync; otherwise the caller retires its retry state while the
-/// earlier unlink could still be lost on power failure.
-#[test]
-fn platform_compatibility_backup_removal_retries_directory_sync_without_deletions() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("det-testnet.sqlite");
-    let sibling = dir
-        .path()
-        .join("det-testnet.sqlite.platform-67d4ef3-backup-a1.sqlite");
-    std::fs::write(&sibling, b"backup").unwrap();
-
-    remove_backups_with_sync(&path, |_| {
-        Err(std::io::Error::other("injected directory sync failure"))
-    })
-    .unwrap_err();
-    assert!(!sibling.exists());
-
-    let mut synced = Vec::new();
-    remove_backups_with_sync(&path, |directory| {
-        synced.push(directory.to_owned());
-        Ok(())
-    })
-    .unwrap();
-    assert_eq!(
-        synced,
-        vec![dir.path().to_owned()],
-        "the retry must re-sync the directory whose earlier sync failed; \
-         the missing auto-backup directory is skipped"
-    );
-}
-
 /// The previous recovery snapshot must survive until its replacement is
 /// published: a failed publication must not leave zero snapshots behind.
 #[test]
@@ -459,86 +393,53 @@ fn platform_compatibility_tidy_removes_only_identical_copies() {
     assert_eq!(backup_files(dir.path()), vec![copy]);
 }
 
-/// One invalid candidate must not shield the valid snapshots from deletion:
-/// every valid backup is removed and the rejection is still reported.
+/// A candidate the deletion chokepoint refuses (a hard link, possibly to a live
+/// database) never shields the others: every other backup is removed and the refusal
+/// is reported. Directories and symlinks named like backups are skipped.
+#[cfg(unix)]
 #[test]
-fn platform_compatibility_invalid_candidate_does_not_block_removal_of_valid_backups() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("det-testnet.sqlite");
-    let blocked = dir
-        .path()
-        .join("det-testnet.sqlite.platform-67d4ef3-backup-a0.pending");
-    std::fs::create_dir(&blocked).unwrap();
-    let valid = [
+fn platform_compatibility_refused_candidate_does_not_block_removal_of_valid_backups() {
+    let (dir, path, _target) = fixture();
+    let bridge = |suffix: &str| {
         dir.path()
-            .join("det-testnet.sqlite.platform-67d4ef3-backup-b1.sqlite"),
-        dir.path()
-            .join("det-testnet.sqlite.platform-67d4ef3-backup-c2.pending"),
-    ];
+            .join(format!("wallet.sqlite.platform-67d4ef3-backup-{suffix}"))
+    };
+    let linked = bridge("link.sqlite");
+    std::fs::hard_link(&path, &linked).unwrap();
+    let skipped = [bridge("dir.pending"), bridge("symlink.sqlite")];
+    std::fs::create_dir(&skipped[0]).unwrap();
+    std::os::unix::fs::symlink(&path, &skipped[1]).unwrap();
+    let valid = [bridge("b1.sqlite"), bridge("c2.pending")];
     for backup in &valid {
         std::fs::write(backup, b"backup").unwrap();
     }
     let auto = dir.path().join("backups/auto");
     std::fs::create_dir_all(&auto).unwrap();
-    let upstream = auto.join("pre-migration-det-testnet-1-to-2-20260915T120000Z.db");
+    let upstream = auto.join("pre-migration-wallet-1-to-2-20260915T120000Z.db");
     std::fs::write(&upstream, b"backup").unwrap();
 
     assert!(remove_backups(&path).is_err());
     for backup in valid.iter().chain([&upstream]) {
         assert!(!backup.exists(), "{} must be removed", backup.display());
     }
-    assert!(
-        blocked.is_dir(),
-        "the rejected candidate must be left alone"
-    );
+    assert!(linked.exists() && path.exists());
+    for entry in &skipped {
+        assert!(entry.symlink_metadata().is_ok(), "{}", entry.display());
+    }
+    std::fs::remove_file(&linked).unwrap();
+    remove_backups(&path).expect("skipped entries are not failures");
 }
 
-#[test]
-fn platform_compatibility_tidy_rejects_unexpected_candidate_without_changes() {
-    let (dir, path, _target) = fixture();
-    let before = snapshot(&path);
-    let pending = dir
-        .path()
-        .join("wallet.sqlite.platform-67d4ef3-backup-crash.pending");
-    std::fs::copy(&path, &pending).unwrap();
-    std::fs::create_dir(
-        dir.path()
-            .join("wallet.sqlite.platform-67d4ef3-backup-blocked.sqlite"),
-    )
-    .unwrap();
-    assert!(tidy_backups(&path, None).is_err());
-    assert!(pending.exists(), "a strict scan failure deletes nothing");
-    assert_eq!(snapshot(&path), before);
-}
-
+/// An existing lifecycle lock path that is a symlink is refused, never followed.
 #[cfg(unix)]
 #[test]
-fn platform_compatibility_rejects_backup_links_to_live_databases() {
-    let (dir, path, target) = fixture();
-    for extension in ["sqlite", "pending"] {
-        let candidate = dir.path().join(format!(
-            "wallet.sqlite.platform-67d4ef3-backup-link.{extension}"
-        ));
-        for live in [&path, &target] {
-            std::os::unix::fs::symlink(live, &candidate).unwrap();
-            assert!(remove_backups(&path).is_err());
-            assert!(live.exists());
-            assert!(candidate.symlink_metadata().is_ok());
-            std::fs::remove_file(&candidate).unwrap();
-            std::fs::hard_link(live, &candidate).unwrap();
-            assert!(remove_backups(&path).is_err());
-            assert!(live.exists());
-            std::fs::remove_file(&candidate).unwrap();
-        }
-    }
-    let live_alias = dir.path().join("alias.sqlite");
-    let live_target = dir
-        .path()
-        .join("alias.sqlite.platform-67d4ef3-backup-live.sqlite");
-    std::fs::write(&live_target, b"live database").unwrap();
-    std::os::unix::fs::symlink(&live_target, &live_alias).unwrap();
-    assert!(remove_backups(&live_alias).is_err());
-    assert!(live_target.exists());
+fn platform_compatibility_lock_refuses_a_symlinked_lock_file() {
+    let (dir, path, _target) = fixture();
+    let elsewhere = dir.path().join("elsewhere");
+    std::fs::write(&elsewhere, b"keep").unwrap();
+    std::os::unix::fs::symlink(&elsewhere, backup_lock_path(&path).unwrap()).unwrap();
+    assert!(backup_lock(&path).is_err());
+    assert_eq!(std::fs::read(&elsewhere).unwrap(), b"keep");
 }
 
 fn sqlite_failure(code: std::ffi::c_int) -> rusqlite::Error {
@@ -1016,31 +917,30 @@ fn platform_compatibility_prune_floor_keeps_latest_migration_snapshot() {
     assert!(earlier_migration.exists(), "newest by creation time");
 }
 
-/// A rejected candidate is reported, but expired valid snapshots are still removed and
-/// the rejected entry is left alone.
+/// A refused candidate is reported, but expired valid snapshots are still removed and
+/// the refused entry is left alone.
+#[cfg(unix)]
 #[test]
-fn platform_compatibility_prune_reports_rejected_candidate_after_removing_others() {
+fn platform_compatibility_prune_reports_refused_candidate_after_removing_others() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("det-testnet.sqlite");
-    let expired = dir
-        .path()
-        .join("det-testnet.sqlite.platform-67d4ef3-backup-old.sqlite");
+    let bridge = |suffix| bridge_backup_path(&path, suffix);
+    let expired = bridge("old");
     std::fs::write(&expired, b"backup").unwrap();
     set_mtime(&expired, -10 * 24 * 60 * 60);
-    let newest = dir
-        .path()
-        .join("det-testnet.sqlite.platform-67d4ef3-backup-new.sqlite");
+    let newest = bridge("new");
     std::fs::write(&newest, b"newer backup").unwrap();
-    let blocked = dir
-        .path()
-        .join("det-testnet.sqlite.platform-67d4ef3-backup-blocked.sqlite");
-    std::fs::create_dir(&blocked).unwrap();
+    let outside = dir.path().join("outside.bin");
+    std::fs::write(&outside, b"keep").unwrap();
+    let linked = bridge("linked");
+    std::fs::hard_link(&outside, &linked).unwrap();
+    set_mtime(&linked, -10 * 24 * 60 * 60);
 
     prune_expired_backups(&path, RETENTION_DAY, std::time::SystemTime::now()).unwrap_err();
 
     assert!(!expired.exists());
     assert!(newest.exists());
-    assert!(blocked.is_dir());
+    assert!(linked.exists() && outside.exists());
 }
 
 /// A held lifecycle lock means an open or upgrade is running: pruning skips the

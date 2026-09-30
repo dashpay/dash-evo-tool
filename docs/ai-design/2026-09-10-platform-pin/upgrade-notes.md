@@ -65,9 +65,10 @@ the rebuild. Opening a database never deletes a published backup except an exact
 duplicate of a newer backup of the same migration (each failed attempt copies the
 unchanged original again); it also removes unfinished `.pending` copies left by a
 crash. Upstream `backups/auto/pre-migration-<database>-*.db` snapshots are covered
-too. A housekeeping error blocks a new upgrade backup, but not opening a database
-that is already current. Backup candidates must have the exact database-specific
-name format and be regular files, not symbolic links (or hard links on Unix).
+too. Housekeeping is best-effort: an error is logged and retried on the next open,
+and never blocks opening. Backup candidates must have the exact database-specific
+name format and be regular files; symbolic links and directories are skipped, and
+the deletion chokepoint refuses hard links and live databases.
 
 Backups older than a user-configurable retention period (default 90 days, or
 never) are deleted by one global policy covering every database in the data

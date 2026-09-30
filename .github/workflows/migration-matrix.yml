@@ -249,7 +249,7 @@ jobs:
           echo "count=$count" >>"$GITHUB_OUTPUT"
           echo "dir=$dest" >>"$GITHUB_OUTPUT"
 
-      - name: Run migration matrix
+      - name: Run archived-profile migration matrix
         env:
           # Directory of fixture archives (.tar.zst / .tar.gz plus .sha256),
           # exactly as pack.sh produced them.
@@ -264,11 +264,18 @@ jobs:
           MIGRATION_V093_WALLET_PASSWORD: ${{ secrets.MIGRATION_V093_WALLET_PASSWORD }}
           MIGRATION_MATRIX_SKIP_PASSWORDS: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
         run: |
+          set -euo pipefail
           if [ "$MIGRATION_MATRIX_SKIP_PASSWORDS" = "true" ]; then
             echo "::notice::Fork PR: password scenarios are skipped because repository secrets are unavailable. Password-free migration scenarios still run."
             echo "Migration coverage: password-free scenarios only (fork PR)." >>"$GITHUB_STEP_SUMMARY"
           fi
-          cargo test --locked --test migration-matrix --features testing -- --nocapture
+          # Tests owns harness unit tests and the bundled public-identity migration.
+          log="$RUNNER_TEMP/migration-matrix.log"
+          cargo test --locked --test migration-matrix --features testing -- migration_matrix --exact --nocapture 2>&1 | tee "$log"
+          if ! grep -Eq 'Running [1-9][0-9]* migration fixture\(s\)' "$log" || ! grep -q 'test result: ok. 1 passed; 0 failed;' "$log"; then
+            echo "::error::The migration matrix did not run against the downloaded fixtures."
+            exit 1
+          fi
 
       # The weekly profile once more, opened directly through the
       # platform_compatibility bridge instead of through a det-cli boot: the

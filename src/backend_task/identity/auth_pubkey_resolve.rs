@@ -86,13 +86,47 @@ impl AppContext {
                         TaskError::WalletAddressDerivationFailed
                     })?;
 
-                let mut cache = cache;
-                if cache.insert(network, identity_index, key_index, &public_key) {
-                    backend
-                        .auth_pubkey_cache()
-                        .put(network, &seed_hash, &cache)?;
-                }
+                backend
+                    .auth_pubkey_cache()
+                    .update(network, &seed_hash, |cache| {
+                        cache.insert(network, identity_index, key_index, &public_key)
+                    })?;
                 Ok(public_key)
+            })
+            .await
+    }
+
+    /// Derive one identity-auth ECDSA public key straight from the seed,
+    /// never from the cache.
+    ///
+    /// The cache is an unauthenticated sidecar; this is the authoritative
+    /// value a cached key is checked against before it is registered on-chain.
+    /// One `with_secret` scope; the seed never leaves it.
+    pub(super) async fn derive_identity_auth_pubkey_from_seed(
+        &self,
+        wallet: &Arc<RwLock<Wallet>>,
+        identity_index: u32,
+        key_index: u32,
+    ) -> Result<PublicKey, TaskError> {
+        let network = self.network;
+        let seed_hash = wallet.read()?.seed_hash();
+        let wallet = Arc::clone(wallet);
+        self.wallet_backend()?
+            .secret_access()
+            .with_secret(&SecretScope::HdSeed { seed_hash }, |plaintext| {
+                let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
+                wallet
+                    .read()?
+                    .identity_authentication_ecdsa_public_key_from_seed(
+                        seed,
+                        network,
+                        identity_index,
+                        key_index,
+                    )
+                    .map_err(|detail| {
+                        tracing::warn!(error = %detail, "identity-auth key derivation failed");
+                        TaskError::WalletAddressDerivationFailed
+                    })
             })
             .await
     }
@@ -189,16 +223,11 @@ impl AppContext {
                 public_key_hash_map.extend(miss_hash_map);
 
                 if !derived.is_empty() {
-                    let mut cache = cache;
-                    let mut changed = false;
-                    for (key_index, public_key) in &derived {
-                        changed |= cache.insert(network, identity_index, *key_index, public_key);
-                    }
-                    if changed {
-                        backend
-                            .auth_pubkey_cache()
-                            .put(network, &seed_hash, &cache)?;
-                    }
+                    backend.auth_pubkey_cache().update(network, &seed_hash, |cache| {
+                        for (key_index, public_key) in &derived {
+                            cache.insert(network, identity_index, *key_index, public_key);
+                        }
+                    })?;
                 }
                 Ok((public_key_map, public_key_hash_map))
             })

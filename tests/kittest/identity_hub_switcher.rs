@@ -753,7 +753,8 @@ fn ui_polish_picker_uses_profile_avatar_and_keeps_missing_avatar_fallback() {
             .expect("top breadcrumb")
             .click();
         harness.run_steps(5);
-        let card = harness.get_by_label("Open Avatar identity").rect();
+        let card = harness.get_by_label("Open Profile name").rect();
+        assert!(harness.query_by_label("Open Avatar identity").is_none());
         assert_eq!(
             harness
                 .query_all_by_role(egui::accesskit::Role::Image)

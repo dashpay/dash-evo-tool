@@ -2477,14 +2477,19 @@ mod tests {
     }
 
     #[test]
-    fn identity_entry_uses_alias_when_no_dpns() {
+    fn identity_entry_ignores_legacy_alias_without_username() {
         let input = identity_input(Some("bob-alias"), None);
         let entry = input
             .all_entries
             .iter()
             .find(|e| e.address_kind == AddressKind::Identity)
             .expect("identity entry present");
-        assert_eq!(entry.name_label.as_deref(), Some("bob-alias"));
+        assert_eq!(
+            entry.name_label,
+            Some(crate::model::identity_name::shorten_id(
+                &entry.address_string
+            ))
+        );
         assert_eq!(entry.wallet_name, None);
     }
 
@@ -2500,14 +2505,19 @@ mod tests {
     }
 
     #[test]
-    fn identity_entry_has_no_name_when_neither() {
+    fn identity_entry_uses_short_id_without_profile_or_username() {
         let input = identity_input(None, None);
         let entry = input
             .all_entries
             .iter()
             .find(|e| e.address_kind == AddressKind::Identity)
             .expect("identity entry present");
-        assert_eq!(entry.name_label, None);
+        assert_eq!(
+            entry.name_label,
+            Some(crate::model::identity_name::shorten_id(
+                &entry.address_string
+            ))
+        );
     }
 
     // --- Dynamic hint legend ---

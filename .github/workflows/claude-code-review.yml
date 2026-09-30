@@ -21,10 +21,10 @@ jobs:
       cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    # GITHUB_TOKEN only checks out the PR; all GitHub writes use the claudbot
+    # App token below.
     permissions:
       contents: read
-      issues: write
-      pull-requests: write
     env:
       ANTHROPIC_MODEL: ${{ vars.CLAUDE_MODEL || 'opus' }}
       CLAUDE_CODE_OAUTH_TOKEN_LKLIMEK: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_LKLIMEK }}
@@ -33,11 +33,11 @@ jobs:
       # The private key only reaches create-github-app-token; the review
       # action gets a 1h token scoped to this repo. Never put the key in
       # job-level env: the review agent's step would see it. Keep this the
-      # first step: the token must outlive timeout-minutes (60). Without the
-      # CLAUDBOT_CLIENT_ID variable the review falls back to GITHUB_TOKEN.
+      # first step: the token must outlive timeout-minutes (60). Required:
+      # there is no GITHUB_TOKEN fallback.
       - name: Create claudbot token
         id: app-token
-        if: ${{ env.CLAUDE_CODE_OAUTH_TOKEN_LKLIMEK != '' && vars.CLAUDBOT_CLIENT_ID != '' }}
+        if: ${{ env.CLAUDE_CODE_OAUTH_TOKEN_LKLIMEK != '' }}
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
         with:
           client-id: ${{ vars.CLAUDBOT_CLIENT_ID }}
@@ -52,7 +52,7 @@ jobs:
         uses: lklimek/claudius-review-action@main
         with:
           claude_code_oauth_token: ${{ env.CLAUDE_CODE_OAUTH_TOKEN_LKLIMEK }}
-          github_token: ${{ steps.app-token.outputs.token || github.token }}
+          github_token: ${{ steps.app-token.outputs.token }}
           memcan_url: ${{ vars.MEMCAN_URL }}
           memcan_api_key: ${{ secrets.MEMCAN_API_KEY }}
           claude_extra_args: "--permission-mode auto"

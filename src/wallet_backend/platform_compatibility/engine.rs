@@ -246,6 +246,13 @@ fn backup_prefix(path: &Path) -> Option<String> {
     ))
 }
 
+/// The published bridge snapshot of `database` named with `suffix`; a test fixture.
+#[cfg(test)]
+pub(crate) fn bridge_backup_path(database: &Path, suffix: &str) -> PathBuf {
+    let prefix = backup_prefix(database).expect("database path has a file name");
+    database.with_file_name(format!("{prefix}{suffix}.sqlite"))
+}
+
 /// Upstream snapshot names: `pre-migration-<stem>-<from>-to-<to>-<timestamp>.db`.
 const UPSTREAM_PREFIX: &str = "pre-migration-";
 const UPSTREAM_SUFFIX: &str = ".db";
@@ -310,12 +317,6 @@ pub(crate) fn upstream_backup_timestamp(
     name: &str,
 ) -> Option<std::time::SystemTime> {
     parse_upstream_name(database, name).map(|snapshot| snapshot.taken)
-}
-
-/// Retained upgrade backups of the database at `path`.
-#[cfg(test)]
-fn backups(path: &Path) -> std::io::Result<Vec<PathBuf>> {
-    backups_in(path, Some(&default_auto_dir(path)))
 }
 
 fn default_auto_dir(path: &Path) -> PathBuf {
@@ -506,13 +507,8 @@ pub(super) fn tidy_backups(path: &Path, auto_dir: Option<&Path>) -> std::io::Res
     tidy_backups_locked(&guard, auto_dir)
 }
 
-/// Housekeeping that loses no recovery data: delete unpublished `.pending` copies left
-/// by a crash, and published snapshots that are byte-identical to a newer retained
-/// snapshot of the same migration (each failed open writes another copy of the
-/// unchanged database). Every other snapshot is left to time-based retention.
-///
-/// The scan is strict, so an unexpected candidate fails the call before anything is
-/// deleted.
+/// Delete crash-left `.pending` copies and published snapshots byte-identical to a newer
+/// one of the same migration (each failed open writes another); the rest is left to retention.
 pub(super) fn tidy_backups_locked(
     guard: &BackupGuard,
     auto_dir: Option<&Path>,
@@ -583,29 +579,15 @@ fn same_contents(a: &Path, b: &Path) -> std::io::Result<bool> {
     }
 }
 
-/// Delete every retained upgrade backup of the database at `path`.
-///
-/// Backups never contain vault secrets. Attempts every file and returns the first failure.
-/// `Ok` means the deletions are durable: every existing backup directory is
-/// synced on every call (including a retry that finds nothing left to delete),
-/// so callers may retire their retry state afterwards.
+/// Delete every upgrade backup of the database at `path`; attempts all and returns the
+/// first failure.
 pub(crate) fn remove_backups(path: &Path) -> std::io::Result<()> {
-    remove_backups_with_sync(path, |_| true, crate::utils::backup_prune::sync_directory)
+    remove_backups_with_sync(path, crate::utils::backup_prune::sync_directory)
 }
 
-/// Delete the upgrade backups of the database at `path` that are older than `max_age`.
-///
-/// Covers both the bridge snapshots next to the database and upstream `pre-migration-*`
-/// snapshots, and always keeps the newest usable one (see
-/// [`prune_expired`](crate::utils::backup_prune::prune_expired)), so it is safe
-/// whether or not the database currently opens. A database with no backups is
-/// skipped without taking its lock, and
-/// one whose lock is held (another context is opening or upgrading it) is skipped too;
-/// the next pass covers it.
-///
-/// Attempts every candidate and returns the first failure; a candidate that fails
-/// validation is reported but never blocks removing the others. `Ok` carries the number
-/// of backups deleted, and their directories are synced.
+/// [`prune_expired`](crate::utils::backup_prune::prune_expired) over the bridge and
+/// upstream backups of the database at `path`. Skips a database without backups or
+/// whose lifecycle lock is held (the next pass covers it); returns the number deleted.
 pub(crate) fn prune_expired_backups(
     path: &Path,
     max_age: std::time::Duration,
@@ -661,32 +643,23 @@ pub(crate) fn prune_expired_backups(
     }
 }
 
-/// When `backup` of `database` was created: the later of its modification time and
-/// the timestamp in its name, if any. Taking the later one means a reset or skewed
-/// signal only delays deletion, never hastens it.
 fn backup_created(database: &Path, backup: &Path) -> std::io::Result<std::time::SystemTime> {
-    let modified = std::fs::symlink_metadata(backup)?.modified()?;
     let named = backup
         .file_name()
         .and_then(|name| name.to_str())
         .and_then(|name| upstream_backup_timestamp(database, name));
-    Ok(named.map_or(modified, |named| named.max(modified)))
+    crate::utils::backup_prune::created_at(backup, named)
 }
 
 fn remove_backups_with_sync(
     path: &Path,
-    selected: impl Fn(&Path) -> bool,
     mut sync_dir: impl FnMut(&Path) -> std::io::Result<()>,
 ) -> std::io::Result<()> {
     let _guard = backup_lock(path)?;
     let auto_dir = default_auto_dir(path);
     let scan = scan_backups_in(path, Some(&auto_dir))?;
-    let mut first_error = scan
-        .rejected
-        .into_iter()
-        .find(|(backup, _)| selected(backup))
-        .map(|(_, error)| error);
-    for backup in scan.found.into_iter().filter(|backup| selected(backup)) {
+    let mut first_error = scan.rejected.into_iter().next().map(|(_, error)| error);
+    for backup in scan.found {
         if let Err(error) = remove_backup(&backup, path) {
             first_error.get_or_insert(error);
         }

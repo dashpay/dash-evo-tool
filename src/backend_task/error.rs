@@ -109,11 +109,7 @@ impl std::error::Error for BackendTaskJoinError {}
 /// Dash Core RPC error code: wallet file not specified (multi-wallet node).
 const RPC_WALLET_NOT_SPECIFIED: i32 = -19;
 
-/// Some expired upgrade backups remain. Retention runs again whenever wallet data
-/// is opened (start, network switch) and whenever the setting is saved.
-pub(crate) const UPGRADE_BACKUP_CLEANUP_INCOMPLETE: &str = "Some old upgrade backups could not be deleted. The app tries again the next time it opens your wallet data.";
-
-/// [`UPGRADE_BACKUP_CLEANUP_INCOMPLETE`] after a retention setting save.
+/// Some expired upgrade backups remain after a retention setting save.
 pub(crate) const BACKUP_RETENTION_SAVED_CLEANUP_INCOMPLETE: &str = "Your backup retention setting was saved, but some old upgrade backups could not be deleted. The app tries again the next time it opens your wallet data.";
 
 /// Shown whenever another window or session holds the wallet database.
@@ -1205,7 +1201,9 @@ pub enum TaskError {
     },
 
     /// Expired upgrade backups could not all be deleted.
-    #[error("{}", UPGRADE_BACKUP_CLEANUP_INCOMPLETE)]
+    #[error(
+        "Some old upgrade backups could not be deleted. The app tries again the next time it opens your wallet data."
+    )]
     UpgradeBackupCleanup {
         #[source]
         source: std::io::Error,
@@ -3785,23 +3783,6 @@ mod tests {
     use dash_sdk::dpp::identity::Purpose;
     use dash_sdk::platform::Identifier;
 
-    /// Both cleanup messages promise the same, truthful retry.
-    #[test]
-    fn upgrade_backup_cleanup_messages_share_the_retry_promise() {
-        let error = TaskError::UpgradeBackupCleanup {
-            source: std::io::Error::other("permission denied"),
-        };
-        assert_eq!(error.to_string(), UPGRADE_BACKUP_CLEANUP_INCOMPLETE);
-        let (_, retry) = UPGRADE_BACKUP_CLEANUP_INCOMPLETE
-            .split_once(". ")
-            .expect("two sentences");
-        assert_eq!(
-            retry,
-            "The app tries again the next time it opens your wallet data."
-        );
-        assert!(BACKUP_RETENTION_SAVED_CLEANUP_INCOMPLETE.ends_with(retry));
-    }
-
     const DAPI_EXHAUSTED_MESSAGE: &str =
         "All Dash network servers are temporarily unreachable. Please wait a minute and retry.";
 
@@ -6169,44 +6150,31 @@ mod tests {
         .expect_err("wrapped SQLite failure")
     }
 
-    /// Running out of disk space, an OS I/O failure or memory exhaustion
-    /// during a migration is recoverable by freeing the resource and
-    /// retrying. It must keep the generic, non-terminal storage copy instead
-    /// of the terminal move-the-databases-aside guidance.
+    /// A migration that ran out of a resource keeps the generic, retryable storage
+    /// copy; access failures never fix themselves and stay out of that class.
     #[test]
     fn resource_migration_errors_map_to_retryable_wallet_storage() {
-        for code in [
-            rusqlite::ffi::SQLITE_FULL,
-            rusqlite::ffi::SQLITE_IOERR,
-            rusqlite::ffi::SQLITE_NOMEM,
+        use rusqlite::ffi;
+        for (code, retryable) in [
+            (ffi::SQLITE_FULL, true),
+            (ffi::SQLITE_IOERR, true),
+            (ffi::SQLITE_NOMEM, true),
+            (ffi::SQLITE_PERM, false),
+            (ffi::SQLITE_READONLY, false),
         ] {
             let upstream = platform_wallet_storage::WalletStorageError::Migration(
                 resource_migration_error(code),
             );
             let err = TaskError::from_wallet_storage_open_error(upstream);
-            assert!(
+            assert_eq!(
                 matches!(err, TaskError::WalletStorage { .. }),
-                "Expected WalletStorage for SQLite code {code}, got: {err:?}"
+                retryable,
+                "SQLite code {code}: {err:?}"
             );
-            assert!(
-                !crate::backend_task::is_terminal_storage_open_error(&err),
-                "SQLite code {code} must stay retryable"
-            );
-        }
-    }
-
-    /// Access failures are not fixed by freeing space or retrying, so they
-    /// stay out of the retryable resource class.
-    #[test]
-    fn access_migration_errors_do_not_map_to_retryable_wallet_storage() {
-        for code in [rusqlite::ffi::SQLITE_PERM, rusqlite::ffi::SQLITE_READONLY] {
-            let upstream = platform_wallet_storage::WalletStorageError::Migration(
-                resource_migration_error(code),
-            );
-            let err = TaskError::from_wallet_storage_open_error(upstream);
-            assert!(
-                !matches!(err, TaskError::WalletStorage { .. }),
-                "SQLite code {code} must not be classified as a resource failure, got: {err:?}"
+            assert_eq!(
+                crate::backend_task::is_terminal_storage_open_error(&err),
+                !retryable,
+                "SQLite code {code}"
             );
         }
     }

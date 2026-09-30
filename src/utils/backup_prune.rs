@@ -1,31 +1,11 @@
-//! Time-based expiry shared by every upgrade-backup location.
+//! Time-based expiry shared by every upgrade-backup location (bridge, upstream
+//! `pre-migration-*`, legacy `data.db`).
 //!
-//! One algorithm for the bridge, upstream `pre-migration-*` and legacy `data.db`
-//! backups: delete those older than the retention period, except the newest usable
-//! backup of the database, which is kept whatever its age. An interrupted copy can
-//! therefore never delete the last recovery copy.
-//!
-//! "Newest" is judged by every ordering signal a backup carries, and the newest by
-//! each signal is kept:
-//! - its creation time, preferring backups not dated in the future. A copy taken
-//!   while the clock ran ahead does not displace a genuinely newer one, but only
-//!   while its date is still in the future: once real time catches up, it counts as
-//!   the newest again and the newer copy expires normally. No clock-based order can
-//!   do better without remembering past passes;
-//! - its position in the database's upgrade history (upstream snapshots name the
-//!   migration they precede), which no clock can skew.
-//!
-//! Usability is a cheap structural check ([`check_snapshot`]) with three outcomes:
-//! - usable: only these can be the newest backup that is kept;
-//! - unusable (empty, truncated, header-only or not SQLite): expires like any other;
-//! - undetermined (the file cannot be read, or a non-empty rollback journal lies
-//!   beside it, so it may hold a torn write): never deleted automatically, and never
-//!   the reason an older usable copy stops being kept. A read error is also reported,
-//!   so the pass is retried; a leftover journal keeps the copy until the user removes
-//!   the journal.
-//!
-//! When no backup of a database is usable, the newest files are kept anyway, so a
-//! false negative of the check can never delete every backup.
+//! Backups older than the retention period are deleted, except the newest usable one
+//! of each database by creation time (preferring those not dated in the future) and by
+//! upgrade-history position. Copies whose usability is undetermined (unreadable, or
+//! with a non-empty rollback journal beside them) are never deleted. With no usable
+//! backup, the newest files are kept anyway.
 
 use super::file_deletion::{DeletionIntent, delete_file};
 use std::collections::BTreeSet;
@@ -68,15 +48,8 @@ enum Usability {
     Undetermined,
 }
 
-/// Delete every candidate older than `max_age` at `now`, except the newest usable one
-/// by each ordering signal and any whose usability is undetermined (see the module
-/// docs).
-///
-/// All candidates must be backups of the database named by `intent`. A candidate
-/// whose creation time or contents cannot be read is kept and reported. A candidate
-/// that is already gone (e.g. pruned concurrently from another network's context)
-/// counts as handled. Attempts every candidate, syncs the directories it deleted from,
-/// and returns the first failure; `Ok` carries the number of backups deleted.
+/// Delete expired `candidates` (all backups of `intent`'s database) as the module docs
+/// describe. Attempts every one and returns the first failure, or the number deleted.
 pub(crate) fn prune_expired(
     candidates: Vec<Candidate>,
     now: SystemTime,
@@ -168,6 +141,13 @@ fn floors(dated: &[Dated], now: SystemTime) -> BTreeSet<usize> {
         .max_by_key(|(_, sequence, backup)| (*sequence, backup.created, &backup.path))
         .map(|(index, _, _)| index);
     by_time.into_iter().chain(by_sequence).collect()
+}
+
+/// When `backup` was created: the later of its modification time and `named` (the
+/// timestamp in its name), so a reset or skewed signal only delays deletion.
+pub(crate) fn created_at(backup: &Path, named: Option<SystemTime>) -> std::io::Result<SystemTime> {
+    let modified = std::fs::symlink_metadata(backup)?.modified()?;
+    Ok(named.map_or(modified, |named| named.max(modified)))
 }
 
 /// Length of the SQLite database header.

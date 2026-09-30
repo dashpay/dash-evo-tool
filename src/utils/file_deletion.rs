@@ -1,34 +1,16 @@
-//! The single chokepoint for deleting files from disk.
+//! The single chokepoint for deleting files from disk: every production deletion goes
+//! through [`delete_file`] (or [`delete_tree`]) with a [`DeletionIntent`]. Before any
+//! unlink it refuses, in order:
 //!
-//! Every production file deletion goes through [`delete_file`] (or
-//! [`delete_tree`], which unlinks each file through [`delete_file`]). A deletion
-//! states its purpose as a [`DeletionIntent`], and the chokepoint enforces, in
-//! this order, before anything is unlinked:
+//! 1. anything but a regular file (a symlink is unlinked, never followed, only under
+//!    [`DeletionIntent::NetworkClear`]);
+//! 2. live application files by name (app/legacy/wallet/shielded databases, vaults,
+//!    `.env`, `*.premigration`, with SQLite sidecars), independent of caller paths;
+//! 3. the same files by canonical location and, on Unix, device/inode;
+//! 4. on Unix, files with more than one hard link (on Windows, alias-prone names);
+//! 5. anything outside the intent's directories and file-name grammar.
 //!
-//! 1. the target is a regular file — never a directory, and a symlink only under
-//!    [`DeletionIntent::NetworkClear`], where the link itself is unlinked and its
-//!    target is never followed;
-//! 2. a hard deny-list of live application files by **name** — `det-app.sqlite`,
-//!    `data.db`, every network's wallet and shielded database, `*.pwsvault`,
-//!    `.env`, `*.premigration`, each with its `-wal`/`-shm`/`-journal` sidecar.
-//!    It depends on no caller-supplied path, so a caller's matcher bug or a
-//!    wrong data directory can never reach these files;
-//! 3. the same deny-list by **identity** — the canonical location, and on Unix
-//!    the device/inode, of every protected file in the intent's data directory,
-//!    which catches `..`, symlinked-directory and case aliases;
-//! 4. on Unix, a single hard link, so no alias of another file is removed;
-//! 5. the intent's scope — the directories that purpose may delete from and,
-//!    for backups and logs, the exact file-name grammar of that purpose.
-//!
-//! Per platform: Unix gets every layer. Windows has no device/inode or hard-link
-//! check, so it instead refuses names that can alias another file there (8.3
-//! short names with `~`, `:` stream suffixes, a trailing `.` or space).
-//!
-//! The chokepoint needs no `AppContext`: each intent carries the paths it is
-//! confined to, so it also serves pre-context callers such as log rotation.
-//!
-//! A check and the unlink that follows it are not atomic; a concurrent rename in
-//! the window is out of scope. The data directory is owner-only.
+//! Check and unlink are not atomic; a concurrent rename in the window is out of scope.
 
 use dash_sdk::dpp::dashcore::Network;
 use std::path::{Path, PathBuf};

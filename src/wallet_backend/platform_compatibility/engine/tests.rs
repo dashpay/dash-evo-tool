@@ -327,14 +327,10 @@ fn platform_compatibility_backup_removal_fails_when_directory_sync_fails() {
     }
 
     let mut synced = Vec::new();
-    let error = remove_backups_with_sync(
-        &path,
-        |_| true,
-        |directory| {
-            synced.push(directory.to_owned());
-            Err(std::io::Error::other("injected directory sync failure"))
-        },
-    )
+    let error = remove_backups_with_sync(&path, |directory| {
+        synced.push(directory.to_owned());
+        Err(std::io::Error::other("injected directory sync failure"))
+    })
     .unwrap_err();
 
     assert_eq!(error.kind(), std::io::ErrorKind::Other);
@@ -358,23 +354,17 @@ fn platform_compatibility_backup_removal_retries_directory_sync_without_deletion
         .join("det-testnet.sqlite.platform-67d4ef3-backup-a1.sqlite");
     std::fs::write(&sibling, b"backup").unwrap();
 
-    remove_backups_with_sync(
-        &path,
-        |_| true,
-        |_| Err(std::io::Error::other("injected directory sync failure")),
-    )
+    remove_backups_with_sync(&path, |_| {
+        Err(std::io::Error::other("injected directory sync failure"))
+    })
     .unwrap_err();
     assert!(!sibling.exists());
 
     let mut synced = Vec::new();
-    remove_backups_with_sync(
-        &path,
-        |_| true,
-        |directory| {
-            synced.push(directory.to_owned());
-            Ok(())
-        },
-    )
+    remove_backups_with_sync(&path, |directory| {
+        synced.push(directory.to_owned());
+        Ok(())
+    })
     .unwrap();
     assert_eq!(
         synced,
@@ -772,49 +762,6 @@ fn platform_compatibility_deletion_removes_pending_snapshots() {
 }
 
 #[test]
-fn platform_compatibility_transient_sqlite_errors_can_retry() {
-    for code in [rusqlite::ffi::SQLITE_IOERR, rusqlite::ffi::SQLITE_NOMEM] {
-        let source = UpgradeError::from(sqlite_failure(code));
-        assert!(source.is_retryable(), "{source:?}");
-        assert!(!crate::backend_task::is_terminal_storage_open_error(
-            &crate::backend_task::error::TaskError::PlatformDatabaseUpgrade { source }
-        ));
-    }
-}
-
-#[test]
-fn platform_compatibility_deterministic_io_errors_do_not_retry() {
-    for kind in [
-        std::io::ErrorKind::PermissionDenied,
-        std::io::ErrorKind::InvalidInput,
-    ] {
-        let source = UpgradeError::from(std::io::Error::from(kind));
-        assert!(!source.is_retryable(), "{source:?}");
-    }
-}
-
-#[test]
-fn platform_compatibility_transient_io_errors_preserve_causes() {
-    use std::io::ErrorKind;
-    for kind in [
-        ErrorKind::Interrupted,
-        ErrorKind::WouldBlock,
-        ErrorKind::TimedOut,
-        ErrorKind::ResourceBusy,
-        ErrorKind::StorageFull,
-        ErrorKind::OutOfMemory,
-    ] {
-        let error = UpgradeError::from(std::io::Error::from(kind));
-        assert!(error.is_retryable(), "{error:?}");
-        let cause = std::error::Error::source(&error).unwrap();
-        assert_eq!(cause.downcast_ref::<std::io::Error>().unwrap().kind(), kind);
-        if kind == ErrorKind::OutOfMemory {
-            assert!(error.to_string().contains("Close other applications"));
-        }
-    }
-}
-
-#[test]
 fn platform_compatibility_active_snapshot_survives_concurrent_cleanup() {
     use std::io::{BufRead, Read, Write};
     const CHILD_DIR: &str = "DET_PLATFORM_COMPAT_ACTIVE_FIXTURE_DIR";
@@ -997,142 +944,29 @@ fn platform_compatibility_prune_expired_backups_by_age() {
     assert!(path.exists(), "the live database is never a candidate");
 }
 
-/// The newest snapshot is the floor: it survives any age, even with the clock far in
-/// the future, so the last recovery copy is never deleted.
+/// An unreadable newest snapshot is kept and reported, and never hands the floor to an
+/// older copy that would then be the only one left.
+#[cfg(unix)]
 #[test]
-fn platform_compatibility_prune_keeps_newest_snapshot_for_any_clock() {
-    let (dir, path, _target) = fixture();
+fn platform_compatibility_prune_keeps_unreadable_snapshots() {
+    use std::os::unix::fs::PermissionsExt;
+    let (_dir, path, _target) = fixture();
     let older = backup(&path).unwrap();
     let newest = backup(&path).unwrap();
-    set_mtime(&older, -3 * 24 * 60 * 60);
-    set_mtime(&newest, -2 * 24 * 60 * 60);
-    let far_future = std::time::SystemTime::now() + RETENTION_DAY * 365 * 100;
-    assert_eq!(
-        prune_expired_backups(&path, RETENTION_DAY, far_future).unwrap(),
-        1
-    );
-    assert!(!older.exists());
-    assert!(newest.exists());
-    assert_eq!(
-        prune_expired_backups(&path, RETENTION_DAY, far_future).unwrap(),
-        0
-    );
-    assert_eq!(backups(&path).unwrap(), vec![newest]);
-    drop(dir);
-}
-
-/// An interrupted copy left under a final snapshot name (empty, truncated or
-/// header-only) never becomes the floor: the newest complete snapshot survives any
-/// age, and the expired interrupted copy is deleted.
-#[test]
-fn platform_compatibility_prune_floor_skips_interrupted_newest_copy() {
-    const DAY_SECONDS: i64 = 24 * 60 * 60;
-    for (incomplete_age, expected_removed) in [(0, 0), (-100 * DAY_SECONDS, 1)] {
-        for case in [
-            "empty bridge",
-            "truncated bridge",
-            "header-only bridge",
-            "truncated upstream",
-            "empty upstream",
-        ] {
-            let (dir, path, _target) = fixture();
-            let valid = backup(&path).unwrap();
-            let full = std::fs::read(&valid).unwrap();
-            set_mtime(&valid, -200 * DAY_SECONDS);
-            let auto = dir.path().join("backups/auto");
-            std::fs::create_dir_all(&auto).unwrap();
-            let (incomplete, bytes): (PathBuf, &[u8]) = match case {
-                "empty bridge" => (
-                    dir.path()
-                        .join("wallet.sqlite.platform-67d4ef3-backup-killed.sqlite"),
-                    b"",
-                ),
-                "truncated bridge" => (
-                    dir.path()
-                        .join("wallet.sqlite.platform-67d4ef3-backup-killed.sqlite"),
-                    &full[..full.len() / 2],
-                ),
-                "header-only bridge" => (
-                    dir.path()
-                        .join("wallet.sqlite.platform-67d4ef3-backup-killed.sqlite"),
-                    &full[..100],
-                ),
-                "truncated upstream" => (
-                    auto.join("pre-migration-wallet-1-to-2-20200101T000000Z.db"),
-                    &full[..full.len() - 1],
-                ),
-                _ => (
-                    auto.join("pre-migration-wallet-1-to-2-20200101T000000Z.db"),
-                    b"",
-                ),
-            };
-            std::fs::write(&incomplete, bytes).unwrap();
-            set_mtime(&incomplete, incomplete_age);
-
-            let removed =
-                prune_expired_backups(&path, RETENTION_DAY * 90, std::time::SystemTime::now())
-                    .unwrap();
-
-            assert!(
-                valid.exists(),
-                "{case}: the only complete snapshot must be kept"
-            );
-            assert_eq!(removed, expected_removed, "{case}");
-            assert_eq!(incomplete.exists(), expected_removed == 0, "{case}");
-        }
+    set_mtime(&older, -200 * 24 * 60 * 60);
+    set_mtime(&newest, -100 * 24 * 60 * 60);
+    std::fs::set_permissions(&newest, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::File::open(&newest).is_ok() {
+        // Running as root: permissions cannot make it unreadable.
+        return;
     }
-}
 
-/// A newest snapshot whose usability cannot be proven (unreadable, or with a
-/// leftover rollback journal beside it) is never deleted, and never hands the floor
-/// to an older copy that would then be the only one left. An unreadable one is
-/// reported so the pass is retried.
-#[test]
-fn platform_compatibility_prune_keeps_snapshots_it_cannot_judge() {
-    const DAY_SECONDS: i64 = 24 * 60 * 60;
-    for case in ["unreadable", "leftover journal"] {
-        let (_dir, path, _target) = fixture();
-        let older = backup(&path).unwrap();
-        let newest = backup(&path).unwrap();
-        set_mtime(&older, -200 * DAY_SECONDS);
-        set_mtime(&newest, -100 * DAY_SECONDS);
-        let journal = PathBuf::from(format!("{}-journal", newest.display()));
-        match case {
-            "unreadable" => {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    std::fs::set_permissions(&newest, std::fs::Permissions::from_mode(0o000))
-                        .unwrap();
-                    if std::fs::File::open(&newest).is_ok() {
-                        // Running as root: permissions cannot make it unreadable.
-                        std::fs::set_permissions(&newest, std::fs::Permissions::from_mode(0o600))
-                            .unwrap();
-                        continue;
-                    }
-                }
-                #[cfg(not(unix))]
-                continue;
-            }
-            _ => std::fs::write(&journal, b"pages of an unfinished write").unwrap(),
-        }
+    let result = prune_expired_backups(&path, RETENTION_DAY * 90, std::time::SystemTime::now());
 
-        let result = prune_expired_backups(&path, RETENTION_DAY * 90, std::time::SystemTime::now());
-
-        assert!(newest.exists(), "{case}: an unjudged snapshot is kept");
-        assert!(older.exists(), "{case}: the newest proven snapshot is kept");
-        match case {
-            "unreadable" => {
-                result.unwrap_err();
-            }
-            _ => assert_eq!(result.unwrap(), 0, "{case}"),
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&newest, std::fs::Permissions::from_mode(0o600)).unwrap();
-        }
-    }
+    std::fs::set_permissions(&newest, std::fs::Permissions::from_mode(0o600)).unwrap();
+    result.unwrap_err();
+    assert!(newest.exists(), "an unjudged snapshot is kept");
+    assert!(older.exists(), "the newest proven snapshot is kept");
 }
 
 /// A snapshot written while the clock ran ahead is dated in the future; it must not

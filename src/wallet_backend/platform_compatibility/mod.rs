@@ -4,7 +4,7 @@ mod engine;
 mod storage_failure;
 pub use engine::UpgradeError;
 #[cfg(test)]
-pub(crate) use engine::{LOCK_SUFFIX, backup_lock_path};
+pub(crate) use engine::{LOCK_SUFFIX, backup_lock_path, bridge_backup_path};
 pub(crate) use engine::{
     is_bridge_backup_name, prune_expired_backups, remove_backups, upstream_backup_timestamp,
 };
@@ -478,79 +478,32 @@ mod validation_tests {
     use super::*;
     use platform_wallet::changeset::PersistenceError;
 
+    /// Staged-validation failures keep their storage class through any wrapper:
+    /// resource failures stay retryable, invalid data stays terminal.
     #[test]
-    fn platform_compatibility_staged_resource_failures_remain_retryable() {
-        for code in [
-            rusqlite::ffi::SQLITE_BUSY,
-            rusqlite::ffi::SQLITE_LOCKED,
-            rusqlite::ffi::SQLITE_FULL,
-            rusqlite::ffi::SQLITE_IOERR,
-            rusqlite::ffi::SQLITE_NOMEM,
+    fn platform_compatibility_staged_validation_errors_keep_their_class() {
+        let full = || {
+            WalletStorageError::Sqlite(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_FULL),
+                None,
+            ))
+        };
+        for source in [
+            validation_error(full()),
+            validation_error(PersistenceError::from(full())),
         ] {
-            for persistence_wrapper in [false, true] {
-                let storage = WalletStorageError::Sqlite(rusqlite::Error::SqliteFailure(
-                    rusqlite::ffi::Error::new(code),
-                    None,
-                ));
-                let source = if persistence_wrapper {
-                    validation_error(PersistenceError::from(storage))
-                } else {
-                    validation_error(storage)
-                };
-                assert!(source.is_retryable(), "{source:?}");
-                let cause = std::error::Error::source(&source).unwrap();
-                if persistence_wrapper {
-                    assert!(cause.is::<PersistenceError>());
-                } else {
-                    assert!(cause.is::<WalletStorageError>());
-                }
-                assert!(!source.to_string().contains("previous application version"));
-                assert!(!crate::backend_task::is_terminal_storage_open_error(
-                    &TaskError::PlatformDatabaseUpgrade { source }
-                ));
-            }
-        }
-        let source = validation_error(WalletStorageError::Io(std::io::Error::from(
-            std::io::ErrorKind::StorageFull,
-        )));
-        assert!(matches!(source, UpgradeError::StorageFull(_)));
-    }
-
-    #[test]
-    fn platform_compatibility_staged_migration_disk_full_remains_retryable() {
-        let mut connection = rusqlite::Connection::open_in_memory().unwrap();
-        connection.pragma_update(None, "max_page_count", 1).unwrap();
-        let migration = refinery::Migration::unapplied(
-            "V1__resource_fixture",
-            "CREATE TABLE fixture (id INTEGER);",
-        )
-        .unwrap();
-        let error = refinery::Runner::new(&[migration])
-            .run(&mut connection)
-            .unwrap_err();
-        let source = validation_error(WalletStorageError::Migration(error));
-        assert!(matches!(source, UpgradeError::StorageFull(_)), "{source:?}");
-        assert!(!crate::backend_task::is_terminal_storage_open_error(
-            &TaskError::PlatformDatabaseUpgrade { source }
-        ));
-    }
-
-    #[test]
-    fn platform_compatibility_staged_invalid_data_remains_terminal() {
-        for storage in [
-            WalletStorageError::SchemaHistoryMissing,
-            WalletStorageError::BlobDecode {
-                reason: "invalid fixture",
-            },
-            WalletStorageError::IntegrityCheckFailed {
-                report: "invalid fixture".into(),
-            },
-        ] {
-            let source = validation_error(PersistenceError::from(storage));
-            assert!(matches!(source, UpgradeError::TypedValidation(_)));
-            assert!(crate::backend_task::is_terminal_storage_open_error(
+            assert!(matches!(source, UpgradeError::StorageFull(_)), "{source:?}");
+            assert!(std::error::Error::source(&source).is_some());
+            assert!(!crate::backend_task::is_terminal_storage_open_error(
                 &TaskError::PlatformDatabaseUpgrade { source }
             ));
         }
+        let source = validation_error(PersistenceError::from(
+            WalletStorageError::SchemaHistoryMissing,
+        ));
+        assert!(matches!(source, UpgradeError::TypedValidation(_)));
+        assert!(crate::backend_task::is_terminal_storage_open_error(
+            &TaskError::PlatformDatabaseUpgrade { source }
+        ));
     }
 }

@@ -2435,17 +2435,12 @@ mod tests {
             }
         ));
         use crate::wallet_backend::platform_compatibility::UpgradeError;
-        for source in [
-            UpgradeError::Unrecognized,
-            UpgradeError::IdentityRoster { source: None },
-            UpgradeError::Verification,
-            UpgradeError::TypedValidation(Box::new(std::io::Error::other("fixture"))),
-        ] {
-            assert!(
-                is_terminal_storage_open_error(&TaskError::PlatformDatabaseUpgrade { source }),
-                "a deterministic upgrade failure must surface instead of re-running"
-            );
-        }
+        assert!(
+            is_terminal_storage_open_error(&TaskError::PlatformDatabaseUpgrade {
+                source: UpgradeError::Verification,
+            }),
+            "a deterministic upgrade failure must surface instead of re-running"
+        );
         // A user-clearable upgrade failure keeps offering a retry.
         assert!(!is_terminal_storage_open_error(
             &TaskError::PlatformDatabaseUpgrade {

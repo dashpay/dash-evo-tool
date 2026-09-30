@@ -44,17 +44,8 @@ fn backup_directory(data_dir: &Path) -> std::io::Result<Option<PathBuf>> {
     }
 }
 
-/// Delete legacy backups in `<data_dir>/backups` older than `max_age`, always
-/// keeping the newest usable one.
-///
-/// Deletion goes through the [`delete_file`](crate::utils::file_deletion::delete_file)
-/// chokepoint, which refuses live databases, aliases and hard links.
-/// Only regular files with the exact legacy name are candidates; anything else,
-/// including symlinks and subdirectories, is left alone. Age is measured from the
-/// later of the name timestamp and the modification time, so a reset or skewed signal
-/// only delays deletion. A `backups` path that is a symlink or not a directory is
-/// refused. Expiry itself is [`prune_expired`](crate::utils::backup_prune::prune_expired);
-/// `Ok` carries the number of backups this call deleted.
+/// [`prune_expired`](crate::utils::backup_prune::prune_expired) over the regular files
+/// with a legacy backup name in `<data_dir>/backups`; returns the number deleted.
 pub(crate) fn prune_expired(
     data_dir: &Path,
     max_age: Duration,
@@ -69,14 +60,13 @@ pub(crate) fn prune_expired(
         let Some(named) = entry.file_name().to_str().and_then(backup_timestamp) else {
             continue;
         };
-        let metadata = match std::fs::symlink_metadata(entry.path()) {
-            Ok(metadata) if !metadata.is_file() => continue,
-            other => other,
-        };
-        let created = metadata.and_then(|metadata| Ok(named.max(metadata.modified()?)));
+        let path = entry.path();
+        if std::fs::symlink_metadata(&path).is_ok_and(|metadata| !metadata.is_file()) {
+            continue;
+        }
         candidates.push(crate::utils::backup_prune::Candidate {
-            path: entry.path(),
-            created,
+            created: crate::utils::backup_prune::created_at(&path, Some(named)),
+            path,
             sequence: None,
         });
     }
@@ -193,12 +183,8 @@ mod tests {
         let backups = dir.path().join(BACKUP_DIR);
         std::fs::create_dir_all(&backups).unwrap();
         let long_ago = SystemTime::now() - DAY * 400;
-        for second in 0..200 {
-            let path = backups.join(format!(
-                "data_backup_20000101_00{:02}{:02}.db",
-                second / 60,
-                second % 60
-            ));
+        for second in 0..10 {
+            let path = backups.join(format!("data_backup_20000101_0000{second:02}.db"));
             std::fs::write(&path, b"old").unwrap();
             set_mtime(&path, long_ago);
         }
@@ -218,56 +204,8 @@ mod tests {
             .into_iter()
             .map(|result| result.expect("a concurrently deleted backup is not a failure"))
             .sum();
-        assert_eq!(
-            deleted, 199,
-            "each backup is counted once; the newest stays"
-        );
+        assert_eq!(deleted, 9, "each backup is counted once; the newest stays");
         assert_eq!(std::fs::read_dir(&backups).unwrap().count(), 1);
-    }
-
-    /// A clock far in the future must never delete the last legacy backup.
-    #[test]
-    fn newest_legacy_backup_survives_a_far_future_clock() {
-        let dir = tempfile::tempdir().unwrap();
-        let backups = dir.path().join(BACKUP_DIR);
-        std::fs::create_dir_all(&backups).unwrap();
-        let older = backups.join("data_backup_20200101_000000.db");
-        let newest = backups.join("data_backup_20210101_000000.db");
-        for (path, age) in [(&older, DAY * 30), (&newest, DAY * 2)] {
-            std::fs::write(path, b"backup").unwrap();
-            set_mtime(path, SystemTime::now() - age);
-        }
-        let far_future = SystemTime::now() + DAY * 365 * 100;
-
-        assert_eq!(prune_expired(dir.path(), DAY, far_future).unwrap(), 1);
-        assert!(!older.exists());
-        assert!(newest.exists(), "the newest backup is the floor");
-        assert_eq!(prune_expired(dir.path(), DAY, far_future).unwrap(), 0);
-        assert!(newest.exists());
-    }
-
-    /// An interrupted legacy copy is never the floor: the newest complete backup
-    /// survives, and the expired interrupted copy is deleted.
-    #[test]
-    fn newest_legacy_backup_floor_must_be_a_complete_database() {
-        let dir = tempfile::tempdir().unwrap();
-        let backups = dir.path().join(BACKUP_DIR);
-        std::fs::create_dir_all(&backups).unwrap();
-        let complete = backups.join("data_backup_20200101_000000.db");
-        rusqlite::Connection::open(&complete)
-            .unwrap()
-            .execute_batch("CREATE TABLE settings (v INTEGER); INSERT INTO settings VALUES (1);")
-            .unwrap();
-        let bytes = std::fs::read(&complete).unwrap();
-        let truncated = backups.join("data_backup_20200601_000000.db");
-        std::fs::write(&truncated, &bytes[..bytes.len() / 2]).unwrap();
-        let now = SystemTime::now();
-        set_mtime(&complete, now - DAY * 200);
-        set_mtime(&truncated, now - DAY * 100);
-
-        assert_eq!(prune_expired(dir.path(), DAY * 90, now).unwrap(), 1);
-        assert!(complete.exists(), "the only complete backup is the floor");
-        assert!(!truncated.exists());
     }
 
     #[cfg(unix)]

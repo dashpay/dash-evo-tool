@@ -158,10 +158,8 @@ mod tests {
             staged.ctx.data_dir(),
             staged.ctx.network(),
         );
-        let backup = database.with_file_name(format!(
-            "{}.platform-67d4ef3-backup-fixture.sqlite",
-            database.file_name().unwrap().to_string_lossy()
-        ));
+        let backup =
+            crate::wallet_backend::platform_compatibility::bridge_backup_path(&database, "fixture");
         std::fs::write(&backup, b"old identity rows").unwrap();
 
         staged

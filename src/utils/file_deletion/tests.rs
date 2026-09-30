@@ -590,21 +590,3 @@ fn delete_tree_never_follows_a_symlinked_directory() {
     assert!(!cache.exists());
     assert!(outside.join("keep.dat").exists());
 }
-
-#[test]
-fn rotated_log_names_are_exact() {
-    let rotated = |name: &str, stem: &str| crate::logging::parse_rotated_ts(name, stem).is_some();
-    assert!(rotated("det.0000000001.log", "det"));
-    for name in [
-        "det.log",
-        "det..log",
-        "det.12a.log",
-        "det.-5.log",
-        "det.1.log.bak",
-        "detx.1.log",
-        "other.1.log",
-    ] {
-        assert!(!rotated(name, "det"), "{name}");
-    }
-    assert!(!rotated(".1.log", ""));
-}

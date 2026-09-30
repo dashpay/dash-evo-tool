@@ -3497,7 +3497,12 @@ impl App for AppState {
                 }
                 AppAction::OpenIdentityPicker => {
                     self.screen_stack.clear();
-                    self.set_main_screen(RootScreenType::RootScreenIdentityHub);
+                    // Shared identity forms also return to an open masternode detail.
+                    if self.selected_main_screen == RootScreenType::RootScreenMasternodes {
+                        self.active_root_screen_mut().refresh_on_arrival();
+                    } else {
+                        self.set_main_screen(RootScreenType::RootScreenIdentityHub);
+                    }
                     if let Screen::IdentityHubScreen(hub) = self.active_root_screen_mut() {
                         hub.open_picker();
                     }

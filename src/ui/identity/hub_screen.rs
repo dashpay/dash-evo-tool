@@ -349,15 +349,8 @@ impl IdentityHubScreen {
                 self.selection.open_picker();
                 AppAction::None
             }
-            BreadcrumbEffect::ClearWallet => {
-                self.app_context.set_selected_hd_wallet(None);
-                self.selection.open_picker();
-                self.reset_contacts_for_identity_change();
-                self.profile_cache.reset();
-                AppAction::None
-            }
             BreadcrumbEffect::SwitchWallet(hash) => {
-                self.app_context.set_selected_hd_wallet(Some(hash));
+                self.app_context.set_selected_hd_wallet(hash);
                 self.selection.open_picker();
                 self.reset_contacts_for_identity_change();
                 self.profile_cache.reset();

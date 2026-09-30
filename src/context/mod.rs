@@ -1159,6 +1159,9 @@ impl AppContext {
         .await?;
         self.wallet_backend.store(Some(Arc::new(backend)));
         drop(_build_guard);
+        // Both databases opened successfully, so an expired snapshot is no longer
+        // needed for recovery.
+        self.prune_expired_upgrade_backups_best_effort();
         if let Err(error) = self.refresh_pending_dpns_usernames() {
             tracing::warn!(
                 ?error,

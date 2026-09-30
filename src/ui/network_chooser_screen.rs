@@ -6,6 +6,7 @@ use crate::backend_task::system_task::SystemTask;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::context::connection_status::OverallConnectionState;
+use crate::model::backup_retention::{BackupRetention, validate_retention_days};
 use crate::model::spv_status::{SpvStatus, SpvStatusSnapshot};
 use crate::model::user_role::UserRole;
 use crate::ui::components::MessageBanner;
@@ -80,6 +81,7 @@ pub struct NetworkChooserScreen {
     db_clear_in_progress: bool,
     wipe_platform_data_dialog: Option<ConfirmationDialog>,
     auto_start_spv: bool,
+    backup_retention: BackupRetentionForm,
     discovery_in_progress: bool,
     fetch_confirmation_dialog: Option<ConfirmationDialog>,
     /// Set when DAPI discovery completes and an SDK reinit is needed.
@@ -100,6 +102,14 @@ impl NetworkChooserScreen {
         let settings = current_context.get_app_settings();
         let theme_preference = settings.theme_mode;
         let auto_start_spv = settings.auto_start_spv;
+        let backup_retention =
+            BackupRetentionForm::new(current_context.backup_retention().unwrap_or_else(|error| {
+                tracing::warn!(
+                    ?error,
+                    "Backup retention setting unreadable; showing the default"
+                );
+                BackupRetention::default()
+            }));
 
         Self {
             network_contexts: contexts.clone(),
@@ -120,6 +130,7 @@ impl NetworkChooserScreen {
             db_clear_in_progress: false,
             wipe_platform_data_dialog: None,
             auto_start_spv,
+            backup_retention,
             discovery_in_progress: false,
             fetch_confirmation_dialog: None,
             pending_reinit_after_discovery: false,
@@ -690,6 +701,12 @@ impl NetworkChooserScreen {
                         );
                     });
                 }
+
+                ui.add_space(12.0);
+                ui.separator();
+                ui.add_space(12.0);
+
+                app_action |= self.backup_retention.show(ui, dark_mode);
 
                 ui.add_space(12.0);
                 ui.separator();
@@ -1362,6 +1379,102 @@ impl NetworkChooserScreen {
     }
 }
 
+/// Settings-screen state for the upgrade-backup retention policy.
+struct BackupRetentionForm {
+    /// Whether old backups are deleted automatically.
+    enabled: bool,
+    /// Retention period being edited, in days.
+    days: u32,
+    /// The policy last sent for saving; edits that match it are not re-sent.
+    saved: BackupRetention,
+}
+
+impl BackupRetentionForm {
+    fn new(saved: BackupRetention) -> Self {
+        let days = match saved {
+            BackupRetention::DeleteAfterDays(days) => days,
+            BackupRetention::KeepForever => BackupRetention::DEFAULT_DAYS,
+        };
+        Self {
+            enabled: saved != BackupRetention::KeepForever,
+            days: u32::from(days),
+            saved,
+        }
+    }
+
+    /// The policy the form currently describes, or `None` while the period is invalid.
+    fn desired(&self) -> Option<BackupRetention> {
+        if !self.enabled {
+            return Some(BackupRetention::KeepForever);
+        }
+        validate_retention_days(self.days)
+            .ok()
+            .map(BackupRetention::DeleteAfterDays)
+    }
+
+    /// The save task for a finished edit that differs from the saved policy.
+    fn commit(&mut self) -> AppAction {
+        match self.desired() {
+            Some(desired) if desired != self.saved => {
+                self.saved = desired;
+                AppAction::BackendTask(BackendTask::SystemTask(SystemTask::UpdateBackupRetention(
+                    desired,
+                )))
+            }
+            _ => AppAction::None,
+        }
+    }
+
+    fn show(&mut self, ui: &mut Ui, dark_mode: bool) -> AppAction {
+        ui.label(
+            egui::RichText::new("Upgrade Backups")
+                .strong()
+                .color(DashColors::text_primary(dark_mode)),
+        );
+        ui.add_space(6.0);
+        ui.label(
+            egui::RichText::new(
+                "Before a storage upgrade, the app saves a backup copy of your wallet data on this device. Old backups can be deleted automatically.",
+            )
+            .color(DashColors::text_secondary(dark_mode)),
+        );
+        ui.add_space(8.0);
+
+        StyledCheckbox::new(
+            &mut self.enabled,
+            "Delete old upgrade backups automatically",
+        )
+        .show(ui);
+        let mut editing = false;
+        if self.enabled {
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label("Keep upgrade backups for this many days:");
+                let response = ui.add(
+                    egui::DragValue::new(&mut self.days)
+                        .range(BackupRetention::MIN_DAYS..=BackupRetention::MAX_DAYS)
+                        .speed(1),
+                );
+                // Save only a finished edit, not every intermediate drag or keystroke.
+                editing = response.dragged() || response.has_focus();
+            });
+            if let Err(error) = validate_retention_days(self.days) {
+                ui.colored_label(DashColors::ERROR, error.to_string());
+            }
+        } else {
+            ui.label(
+                egui::RichText::new("Upgrade backups are kept until you delete them.")
+                    .color(DashColors::text_secondary(dark_mode)),
+            );
+        }
+        if editing {
+            AppAction::None
+        } else {
+            self.commit()
+        }
+    }
+}
+
 fn wipe_platform_data_available(role: UserRole, network: Network) -> bool {
     role.at_least(UserRole::Developer) && network == Network::Devnet
 }
@@ -1511,6 +1624,47 @@ mod tests {
         assert_eq!(chooser_network_label(Network::Testnet), "Testnet");
         assert_eq!(chooser_network_label(Network::Devnet), "Devnet");
         assert_eq!(chooser_network_label(Network::Regtest), "Local");
+    }
+
+    fn saved_retention(action: AppAction) -> Option<BackupRetention> {
+        match action {
+            AppAction::BackendTask(BackendTask::SystemTask(SystemTask::UpdateBackupRetention(
+                retention,
+            ))) => Some(retention),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn backup_retention_form_saves_only_changed_valid_policies() {
+        let mut form = BackupRetentionForm::new(BackupRetention::default());
+        assert!(form.enabled);
+        assert_eq!(form.days, 90);
+        assert_eq!(saved_retention(form.commit()), None, "unchanged");
+
+        form.days = 30;
+        assert_eq!(
+            saved_retention(form.commit()),
+            Some(BackupRetention::DeleteAfterDays(30))
+        );
+        assert_eq!(saved_retention(form.commit()), None, "already sent");
+
+        form.days = 0;
+        assert_eq!(saved_retention(form.commit()), None, "invalid period");
+
+        form.enabled = false;
+        assert_eq!(
+            saved_retention(form.commit()),
+            Some(BackupRetention::KeepForever)
+        );
+    }
+
+    #[test]
+    fn keep_forever_backup_retention_form_starts_disabled() {
+        let form = BackupRetentionForm::new(BackupRetention::KeepForever);
+        assert!(!form.enabled);
+        assert_eq!(form.days, u32::from(BackupRetention::DEFAULT_DAYS));
+        assert_eq!(form.desired(), Some(BackupRetention::KeepForever));
     }
 
     #[test]

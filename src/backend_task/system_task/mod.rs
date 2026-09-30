@@ -2,6 +2,7 @@ use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::model::backup_retention::BackupRetention;
 use crate::ui::theme::ThemeMode;
 use std::sync::Arc;
 
@@ -10,6 +11,8 @@ pub enum SystemTask {
     ClearNetworkDatabase,
     WipePlatformData,
     UpdateThemePreference(ThemeMode),
+    /// Persist the upgrade-backup retention policy and apply it right away.
+    UpdateBackupRetention(BackupRetention),
 }
 
 impl AppContext {
@@ -28,6 +31,9 @@ impl AppContext {
             SystemTask::WipePlatformData => self.wipe_devnet(),
             SystemTask::UpdateThemePreference(theme_mode) => {
                 self.handle_update_theme_preference(theme_mode)
+            }
+            SystemTask::UpdateBackupRetention(retention) => {
+                self.handle_update_backup_retention(retention)
             }
         }
     }
@@ -56,5 +62,24 @@ impl AppContext {
             .map_err(|source| TaskError::AppSettingsWrite { source })?;
 
         Ok(BackendTaskSuccessResult::UpdatedThemePreference(theme_mode))
+    }
+
+    /// Backend-task handler for `SystemTask::UpdateBackupRetention`.
+    ///
+    /// Only the save can fail the task. Pruning under the new policy is
+    /// best-effort and is retried on every start.
+    pub fn handle_update_backup_retention(
+        self: &Arc<Self>,
+        retention: BackupRetention,
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
+        let retention = retention.sanitized();
+        self.set_backup_retention(retention)
+            .map_err(|source| TaskError::AppSettingsWrite { source })?;
+        // Only the databases this process has already opened successfully are safe
+        // to prune; before the wallet backend is up, the next start applies it.
+        if self.wallet_backend().is_ok() {
+            self.prune_expired_upgrade_backups_best_effort();
+        }
+        Ok(BackendTaskSuccessResult::UpdatedBackupRetention(retention))
     }
 }

@@ -1,5 +1,4 @@
 use super::AppContext;
-use super::wallet_lifecycle::UpgradeBackupScope;
 use crate::backend_task::contested_names::ScheduledDPNSVote;
 use crate::backend_task::error::TaskError;
 use crate::model::identity_discovery::DiscoveryIntent;
@@ -70,17 +69,6 @@ const TOP_UPS_KEY: &str = "det:top_ups:v1";
 /// `det:vault_cleanup_pending:v1:<identity_b58>`.
 const VAULT_CLEANUP_PENDING_PREFIX: &str = "det:vault_cleanup_pending:v1:";
 
-/// Per-identity marker authorizing upgrade-backup removal for an identity removal.
-/// Written only once the identity is confirmed listed, before it is delisted, so a
-/// retry or the startup sweep deletes backups only for a removal of stored data;
-/// a vault-cleanup manifest alone (e.g. from an unknown id) never authorizes it.
-/// The value is an [`UpgradeBackupScope`]: it names the snapshots that existed at that
-/// point, so a marker that outlives its removal can never reach later snapshots.
-/// Global-scoped for the same reason as the manifest. Key shape:
-/// `det:upgrade_backup_cleanup_pending:v2:<identity_b58>`; unscoped `v1` markers are
-/// ignored, which keeps the backups they would have authorized.
-const UPGRADE_BACKUP_CLEANUP_PENDING_PREFIX: &str = "det:upgrade_backup_cleanup_pending:v2:";
-
 /// Per-identity marker recording that the user deliberately unloaded an
 /// identity from this device. Global-scoped for the same reason the
 /// vault-cleanup manifest is: an `Identity`-scoped key is reaped by
@@ -142,13 +130,6 @@ fn sidecar_cleanup_outcome(
 fn identity_unloaded_key(id: &[u8; 32]) -> String {
     format!(
         "{IDENTITY_UNLOADED_PREFIX}{}",
-        Identifier::from(*id).to_string(Encoding::Base58)
-    )
-}
-
-fn upgrade_backup_cleanup_pending_key(id: &[u8; 32]) -> String {
-    format!(
-        "{UPGRADE_BACKUP_CLEANUP_PENDING_PREFIX}{}",
         Identifier::from(*id).to_string(Encoding::Base58)
     )
 }
@@ -1650,22 +1631,6 @@ impl AppContext {
         // error, and cleared only once every key and owner sidecar is removed.
         let vault_keys = self.pending_vault_key_placements(&kv, &id)?;
         self.persist_vault_cleanup_manifest(&kv, &id, &vault_keys)?;
-        // Read the roster only after the manifest is durable, so an unreadable index
-        // still leaves the retry record behind.
-        // Upgrade backups copy every identity, so they are wiped only for a removal of
-        // stored data. That authorization is persisted before delisting, so a retry or the
-        // startup sweep inherits it; the manifest alone never grants it, since an unknown id
-        // also leaves one behind and must not delete unrelated wallets' recovery snapshots.
-        // It names the snapshots that exist now: only those can copy this identity.
-        if identity_is_listed(&kv, &id)? {
-            let scope = self.upgrade_backup_scope()?;
-            kv.put(
-                DetScope::Global,
-                &upgrade_backup_cleanup_pending_key(&id),
-                &scope,
-            )
-            .map_err(identity_err)?;
-        }
         // Before delisting, so a failure between the two leaves a marker for a
         // still-listed identity — inert, since discovery only consults it when
         // storage says the identity is absent. The reverse order would leave a
@@ -1684,7 +1649,6 @@ impl AppContext {
                 "Deleted identity still registered with the wallet store"
             );
         }
-
         Ok(sidecar_cleanup)
     }
 
@@ -1708,29 +1672,7 @@ impl AppContext {
             .wallet_backend()
             .and_then(|backend| backend.dashpay_clear_owner_overlays(&identifier));
         let token_cleanup = super::contract_token_db::forget_identity_token_state(kv, &identifier);
-        let mut sidecar_cleanup =
-            sidecar_cleanup_outcome(dashpay_cleanup, token_cleanup, &identifier);
-        let backup_marker = upgrade_backup_cleanup_pending_key(id);
-        let backup_scope = kv
-            .get::<UpgradeBackupScope>(DetScope::Global, &backup_marker)
-            .map_err(identity_err)?;
-        if let Some(scope) = backup_scope {
-            // The scope never reaches snapshots taken after this identity was gone, so
-            // repeating this after a failed retirement below is harmless.
-            match self.remove_scoped_upgrade_backups(&scope) {
-                Ok(()) => {
-                    // Keep the manifest while the marker remains, so startup retries it.
-                    if let Err(error) = kv.delete(DetScope::Global, &backup_marker) {
-                        sidecar_cleanup = IdentitySidecarCleanup::Incomplete;
-                        tracing::warn!(identity_id = %identifier, %error, "Upgrade backups removed but their cleanup marker remains");
-                    }
-                }
-                Err(error) => {
-                    sidecar_cleanup = IdentitySidecarCleanup::Incomplete;
-                    tracing::warn!(identity_id = %identifier, ?error, "Upgrade backup removal remains pending after identity deletion");
-                }
-            }
-        }
+        let sidecar_cleanup = sidecar_cleanup_outcome(dashpay_cleanup, token_cleanup, &identifier);
         if !sidecar_cleanup.is_incomplete() {
             clear_vault_cleanup_manifest(kv, id);
         }
@@ -5659,187 +5601,6 @@ mod tests {
         );
         kv.delete(DetScope::Global, "det:token_order:v1").unwrap();
         staged.ctx.resume_pending_vault_cleanups();
-        assert!(
-            kv.list(DetScope::Global, Some(VAULT_CLEANUP_PENDING_PREFIX))
-                .unwrap()
-                .is_empty()
-        );
-        staged.ctx.wallet_backend().unwrap().shutdown().await;
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn removing_unknown_identity_keeps_upgrade_backups() {
-        let staged = stage_identity_with_vaulted_keys([0x33; 32], [0x44; 32]).await;
-        let backup = staged
-            .ctx
-            .data_dir()
-            .join("det-app.sqlite.platform-67d4ef3-backup-kept.sqlite");
-        std::fs::write(&backup, b"backup").unwrap();
-        let unknown = Identifier::from([0x77; 32]);
-        staged
-            .ctx
-            .delete_local_qualified_identity(&unknown)
-            .expect("removing an unknown identity is a no-op");
-        assert!(
-            backup.exists(),
-            "an unknown identity must not delete other data's recovery snapshots"
-        );
-        staged
-            .ctx
-            .delete_local_qualified_identity(&staged.id)
-            .unwrap();
-        assert!(
-            !backup.exists(),
-            "removing a stored identity still deletes the snapshots that copy it"
-        );
-        staged.ctx.wallet_backend().unwrap().shutdown().await;
-    }
-
-    /// An interrupted unknown-id removal leaves a manifest behind; neither the startup sweep
-    /// nor a direct retry may treat that manifest as permission to delete upgrade backups.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn interrupted_unknown_identity_removal_keeps_upgrade_backups() {
-        let staged = stage_identity_with_vaulted_keys([0x33; 32], [0x44; 32]).await;
-        let kv = staged.ctx.det_kv().unwrap();
-        let backup = staged
-            .ctx
-            .data_dir()
-            .join("det-app.sqlite.platform-67d4ef3-backup-kept.sqlite");
-        std::fs::write(&backup, b"backup").unwrap();
-        let unknown = Identifier::from([0x77; 32]);
-        kv.put(DetScope::Global, "det:token_order:v1", &"invalid ordering")
-            .unwrap();
-        assert!(matches!(
-            staged.ctx.delete_local_qualified_identity(&unknown),
-            Err(TaskError::IdentitySidecarCleanupIncomplete)
-        ));
-        assert!(
-            kv.get::<Vec<(StoredPrivateKeyTarget, KeyID)>>(
-                DetScope::Global,
-                &vault_cleanup_pending_key(&unknown.to_buffer()),
-            )
-            .unwrap()
-            .is_some(),
-            "the interrupted removal leaves its manifest for a retry"
-        );
-        assert!(matches!(
-            staged.ctx.delete_local_qualified_identity(&unknown),
-            Err(TaskError::IdentitySidecarCleanupIncomplete)
-        ));
-        assert!(backup.exists(), "a direct retry keeps unrelated backups");
-        kv.delete(DetScope::Global, "det:token_order:v1").unwrap();
-        staged.ctx.resume_pending_vault_cleanups();
-        assert!(
-            kv.list(DetScope::Global, Some(VAULT_CLEANUP_PENDING_PREFIX))
-                .unwrap()
-                .is_empty(),
-            "the sweep retires the repaired removal"
-        );
-        assert!(backup.exists(), "the startup sweep keeps unrelated backups");
-
-        // A crash right after the manifest write leaves no backup-removal marker either.
-        kv.put(
-            DetScope::Global,
-            &vault_cleanup_pending_key(&unknown.to_buffer()),
-            &Vec::<(StoredPrivateKeyTarget, KeyID)>::new(),
-        )
-        .unwrap();
-        staged.ctx.resume_pending_vault_cleanups();
-        assert!(
-            backup.exists(),
-            "a bare manifest never authorizes backup removal"
-        );
-        staged.ctx.wallet_backend().unwrap().shutdown().await;
-    }
-
-    /// Retiring the backup-removal marker can fail after its snapshots are gone. That
-    /// removal must stay incomplete, and neither the startup sweep nor a later retry of
-    /// the absent identity may delete snapshots created after the identity was removed.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn failed_backup_marker_retirement_never_deletes_newer_snapshots() {
-        let staged = stage_identity_with_vaulted_keys([0x33; 32], [0x44; 32]).await;
-        let kv = staged.ctx.det_kv().unwrap();
-        let data_dir = staged.ctx.data_dir().to_path_buf();
-        let copied = data_dir.join("det-app.sqlite.platform-67d4ef3-backup-copied.sqlite");
-        std::fs::write(&copied, b"backup").unwrap();
-        let conn = rusqlite::Connection::open(data_dir.join("det-testnet.sqlite")).unwrap();
-        conn.execute_batch(&format!(
-            "CREATE TRIGGER fail_marker_retirement BEFORE DELETE ON meta_global \
-             WHEN OLD.key LIKE '{UPGRADE_BACKUP_CLEANUP_PENDING_PREFIX}%' \
-             BEGIN SELECT RAISE(FAIL, 'injected marker retirement failure'); END;"
-        ))
-        .unwrap();
-
-        assert!(matches!(
-            staged.ctx.delete_local_qualified_identity(&staged.id),
-            Err(TaskError::IdentitySidecarCleanupIncomplete)
-        ));
-        assert!(
-            !copied.exists(),
-            "the snapshot copying the identity is removed"
-        );
-        assert!(
-            !kv.list(DetScope::Global, Some(VAULT_CLEANUP_PENDING_PREFIX))
-                .unwrap()
-                .is_empty(),
-            "an unretired marker keeps the removal discoverable at startup"
-        );
-
-        conn.execute_batch("DROP TRIGGER fail_marker_retirement;")
-            .unwrap();
-        let newer = data_dir.join("det-app.sqlite.platform-67d4ef3-backup-newer.sqlite");
-        std::fs::write(&newer, b"backup").unwrap();
-        staged.ctx.resume_pending_vault_cleanups();
-        assert!(newer.exists(), "the startup sweep keeps later snapshots");
-        assert!(
-            kv.list(
-                DetScope::Global,
-                Some(UPGRADE_BACKUP_CLEANUP_PENDING_PREFIX)
-            )
-            .unwrap()
-            .is_empty(),
-            "the startup sweep retires the marker"
-        );
-        assert!(
-            kv.list(DetScope::Global, Some(VAULT_CLEANUP_PENDING_PREFIX))
-                .unwrap()
-                .is_empty(),
-            "the startup sweep retires the repaired removal"
-        );
-        staged
-            .ctx
-            .delete_local_qualified_identity(&staged.id)
-            .expect("removing an absent identity is a no-op");
-        assert!(
-            newer.exists(),
-            "a retry of the absent identity keeps later snapshots"
-        );
-        staged.ctx.wallet_backend().unwrap().shutdown().await;
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn removal_recovery_retains_manifest_until_backups_are_removed() {
-        let staged = stage_identity_with_vaulted_keys([0x33; 32], [0x44; 32]).await;
-        let kv = staged.ctx.det_kv().unwrap();
-        let blocked = staged
-            .ctx
-            .data_dir()
-            .join("det-app.sqlite.platform-67d4ef3-backup-blocked.sqlite");
-        std::fs::create_dir(&blocked).unwrap();
-        assert!(matches!(
-            staged.ctx.delete_local_qualified_identity(&staged.id),
-            Err(TaskError::IdentitySidecarCleanupIncomplete)
-        ));
-        staged.ctx.resume_pending_vault_cleanups();
-        assert!(
-            !kv.list(DetScope::Global, Some(VAULT_CLEANUP_PENDING_PREFIX))
-                .unwrap()
-                .is_empty()
-        );
-        std::fs::remove_dir(&blocked).unwrap();
-        std::fs::write(&blocked, b"backup").unwrap();
-        staged.ctx.resume_pending_vault_cleanups();
-        assert!(!blocked.exists());
         assert!(
             kv.list(DetScope::Global, Some(VAULT_CLEANUP_PENDING_PREFIX))
                 .unwrap()

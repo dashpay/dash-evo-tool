@@ -99,55 +99,14 @@ impl AppContext {
         first_error.map_or(Ok(()), Err)
     }
 
-    /// Name every upgrade backup [`Self::remove_upgrade_backups`] would delete right now.
-    pub(crate) fn upgrade_backup_scope(&self) -> Result<UpgradeBackupScope, TaskError> {
-        let [app, wallet] = self.upgrade_backup_databases().map(|database| {
-            crate::wallet_backend::platform_compatibility::backup_names(&database)
-                .map_err(|source| TaskError::FileSystem { source })
-        });
-        Ok(UpgradeBackupScope {
-            app: app?,
-            wallet: wallet?,
-        })
-    }
-
-    /// Delete only the upgrade backups named in `scope`; later snapshots are kept.
-    pub(crate) fn remove_scoped_upgrade_backups(
-        &self,
-        scope: &UpgradeBackupScope,
-    ) -> Result<(), TaskError> {
-        let mut first_error = None;
-        for (database, names) in self
-            .upgrade_backup_databases()
-            .into_iter()
-            .zip([&scope.app, &scope.wallet])
-        {
-            if let Err(source) = crate::wallet_backend::platform_compatibility::remove_named_backups(
-                &database, names,
-            ) {
-                first_error.get_or_insert(TaskError::FileSystem { source });
-            }
-        }
-        first_error.map_or(Ok(()), Err)
-    }
-
     /// The app database and this network's wallet database, whose upgrade backups
     /// copy wallet and identity history.
-    fn upgrade_backup_databases(&self) -> [std::path::PathBuf; 2] {
+    pub(super) fn upgrade_backup_databases(&self) -> [std::path::PathBuf; 2] {
         [
             self.data_dir().join("det-app.sqlite"),
             crate::wallet_backend::wallet_database_path(self.data_dir(), self.network),
         ]
     }
-}
-
-/// The upgrade backups that existed when a deletion was authorized, by file name per
-/// database. Persisted so a retried deletion reaches exactly these snapshots and never
-/// ones created afterwards, which cannot contain the deleted data.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct UpgradeBackupScope {
-    app: std::collections::BTreeSet<String>,
-    wallet: std::collections::BTreeSet<String>,
 }
 
 #[cfg(test)]

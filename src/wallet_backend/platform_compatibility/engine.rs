@@ -536,33 +536,73 @@ pub(crate) fn remove_backups(path: &Path) -> std::io::Result<()> {
     remove_backups_with_sync(path, |_| true, sync_directory)
 }
 
-/// File names of every retained upgrade-backup candidate of the database at `path`,
-/// including candidates that fail validation (removing those later reports the failure).
+/// Delete the upgrade backups of the database at `path` that are older than `max_age`.
 ///
-/// Snapshot names are never reused (random or timestamped suffixes), so a name set
-/// captured now identifies exactly the snapshots that exist now.
-pub(crate) fn backup_names(path: &Path) -> std::io::Result<BTreeSet<String>> {
+/// Covers both the bridge snapshots next to the database and upstream `pre-migration-*`
+/// snapshots. Call it only once the database has opened successfully: it may remove the
+/// last snapshot, which is safe only when the database no longer needs recovery.
+///
+/// Attempts every candidate and returns the first failure; a candidate that fails
+/// validation is reported but never blocks removing the others. `Ok` carries the number
+/// of backups deleted, and their directories are synced.
+pub(crate) fn prune_expired_backups(
+    path: &Path,
+    max_age: std::time::Duration,
+    now: std::time::SystemTime,
+) -> std::io::Result<usize> {
     let _guard = backup_lock(path)?;
     let scan = scan_backups_in(path, Some(&default_auto_dir(path)))?;
-    Ok(scan
-        .found
-        .iter()
-        .chain(scan.rejected.iter().map(|(backup, _)| backup))
-        .filter_map(|backup| backup.file_name()?.to_str().map(str::to_owned))
-        .collect())
+    let mut first_error = scan.rejected.into_iter().next().map(|(_, error)| error);
+    let mut removed = 0;
+    let mut touched = BTreeSet::new();
+    for backup in scan.found {
+        let outcome = backup_created(&backup).and_then(|created| {
+            if !crate::model::backup_retention::backup_expired(created, now, max_age) {
+                return Ok(false);
+            }
+            remove_backup(&backup, path).map(|()| true)
+        });
+        match outcome {
+            Ok(true) => {
+                removed += 1;
+                if let Some(directory) = backup.parent() {
+                    touched.insert(directory.to_owned());
+                }
+            }
+            Ok(false) => {}
+            Err(error) => {
+                first_error.get_or_insert(error);
+            }
+        }
+    }
+    for directory in touched {
+        if let Err(error) = sync_directory(&directory) {
+            first_error.get_or_insert(error);
+        }
+    }
+    first_error.map_or(Ok(removed), Err)
 }
 
-/// [`remove_backups`] limited to the snapshots named in `names`, as captured by
-/// [`backup_names`]. Named snapshots already gone are skipped, and snapshots created
-/// since are kept, so a retry never reaches data the caller was not granted.
-pub(crate) fn remove_named_backups(path: &Path, names: &BTreeSet<String>) -> std::io::Result<()> {
-    let named = |backup: &Path| {
-        backup
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| names.contains(name))
-    };
-    remove_backups_with_sync(path, named, sync_directory)
+/// When `backup` was created: the later of its modification time and the timestamp in
+/// its name, if any. Taking the later one means a reset or skewed signal only delays
+/// deletion, never hastens it.
+fn backup_created(backup: &Path) -> std::io::Result<std::time::SystemTime> {
+    let modified = std::fs::symlink_metadata(backup)?.modified()?;
+    let named = backup
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(upstream_backup_timestamp);
+    Ok(named.map_or(modified, |named| named.max(modified)))
+}
+
+/// The UTC creation timestamp embedded in an upstream `pre-migration-*` snapshot name.
+fn upstream_backup_timestamp(name: &str) -> Option<std::time::SystemTime> {
+    let (_, timestamp) = name
+        .strip_prefix("pre-migration-")?
+        .strip_suffix(".db")?
+        .rsplit_once('-')?;
+    let parsed = chrono::NaiveDateTime::parse_from_str(timestamp, "%Y%m%dT%H%M%SZ").ok()?;
+    Some(parsed.and_utc().into())
 }
 
 fn remove_backups_with_sync(

@@ -297,52 +297,9 @@ fn platform_compatibility_removes_only_matching_upstream_backups() {
     assert!(kept.exists());
 }
 
-/// A captured name set reaches exactly the snapshots it names: snapshots created
-/// afterwards survive, already-removed names are skipped, and a named candidate
-/// that cannot be removed still fails the call.
-#[test]
-fn platform_compatibility_named_removal_keeps_later_snapshots() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("det-testnet.sqlite");
-    let auto = dir.path().join("backups/auto");
-    std::fs::create_dir_all(&auto).unwrap();
-    let sibling = dir
-        .path()
-        .join("det-testnet.sqlite.platform-67d4ef3-backup-a1.sqlite");
-    let upstream = auto.join("pre-migration-det-testnet-1-to-2-20260915T120000Z.db");
-    let blocked = dir
-        .path()
-        .join("det-testnet.sqlite.platform-67d4ef3-backup-blocked.sqlite");
-    for backup in [&sibling, &upstream] {
-        std::fs::write(backup, b"backup").unwrap();
-    }
-    std::fs::create_dir(&blocked).unwrap();
-    let names = backup_names(&path).unwrap();
-    assert_eq!(
-        names.len(),
-        3,
-        "rejected candidates are named too: {names:?}"
-    );
-
-    let later = dir
-        .path()
-        .join("det-testnet.sqlite.platform-67d4ef3-backup-b2.sqlite");
-    std::fs::write(&later, b"backup").unwrap();
-    remove_named_backups(&path, &names).unwrap_err();
-    assert!(!sibling.exists());
-    assert!(!upstream.exists());
-
-    std::fs::remove_dir(&blocked).unwrap();
-    remove_named_backups(&path, &names).unwrap();
-    assert!(
-        later.exists(),
-        "a snapshot created after the capture is kept"
-    );
-}
-
 /// An unlink is only durable once its directory is synced: removal must sync
 /// every directory it deleted from, and a failed sync must fail the removal so
-/// callers keep their retry state (the identity-cleanup manifest) instead of
+/// callers keep their retry state instead of
 /// retiring it while the deletion could still be lost on power failure.
 #[test]
 fn platform_compatibility_backup_removal_fails_when_directory_sync_fails() {
@@ -989,4 +946,117 @@ fn platform_compatibility_snapshot_validation_follows_ancestor_symlinks() {
     let entry_link = links.path().join(name);
     std::os::unix::fs::symlink(&kept, &entry_link).unwrap();
     assert!(!usable_snapshot(&entry_link));
+}
+
+const RETENTION_DAY: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+/// Expiry covers both backup formats, measures age from the later of the file's
+/// modification time and its name timestamp, and never touches the database itself.
+#[test]
+fn platform_compatibility_prune_expired_backups_by_age() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("det-testnet.sqlite");
+    std::fs::write(&path, b"live database").unwrap();
+    let auto = dir.path().join("backups/auto");
+    std::fs::create_dir_all(&auto).unwrap();
+    let old_bridge = dir
+        .path()
+        .join("det-testnet.sqlite.platform-67d4ef3-backup-old.sqlite");
+    let fresh_bridge = dir
+        .path()
+        .join("det-testnet.sqlite.platform-67d4ef3-backup-fresh.sqlite");
+    let old_upstream = auto.join("pre-migration-det-testnet-1-to-2-20200101T000000Z.db");
+    // An old name whose file was rewritten recently (e.g. restored from a copy).
+    let old_name_fresh_file = auto.join("pre-migration-det-testnet-2-to-3-20200102T000000Z.db");
+    // A recent name whose modification time was reset to long ago.
+    let fresh_name_old_file = auto.join("pre-migration-det-testnet-3-to-4-20991231T000000Z.db");
+    let unrelated = auto.join("pre-migration-det-mainnet-1-to-2-20200101T000000Z.db");
+    for file in [
+        &old_bridge,
+        &fresh_bridge,
+        &old_upstream,
+        &old_name_fresh_file,
+        &fresh_name_old_file,
+        &unrelated,
+    ] {
+        std::fs::write(file, b"backup").unwrap();
+    }
+    let hundred_days = -100 * 24 * 60 * 60;
+    for file in [&old_bridge, &old_upstream, &fresh_name_old_file, &unrelated] {
+        set_mtime(file, hundred_days);
+    }
+    set_mtime(&path, hundred_days);
+
+    let removed =
+        prune_expired_backups(&path, RETENTION_DAY * 90, std::time::SystemTime::now()).unwrap();
+
+    assert_eq!(removed, 2);
+    assert!(!old_bridge.exists());
+    assert!(!old_upstream.exists());
+    assert!(fresh_bridge.exists());
+    assert!(
+        old_name_fresh_file.exists(),
+        "a recent modification time keeps an old-named snapshot"
+    );
+    assert!(
+        fresh_name_old_file.exists(),
+        "a recent name timestamp keeps a snapshot with an old modification time"
+    );
+    assert!(unrelated.exists(), "another database's snapshot is kept");
+    assert!(path.exists(), "the live database is never a candidate");
+}
+
+/// Expiry also removes the only remaining snapshot: callers run it after a successful
+/// open, when the database no longer needs recovery.
+#[test]
+fn platform_compatibility_prune_removes_expired_sole_snapshot() {
+    let (dir, path, _target) = fixture();
+    let snapshot = backup(&path).unwrap();
+    set_mtime(&snapshot, -2 * 24 * 60 * 60);
+    assert_eq!(
+        prune_expired_backups(&path, RETENTION_DAY, std::time::SystemTime::now()).unwrap(),
+        1
+    );
+    assert!(!snapshot.exists());
+    assert!(backups(&path).unwrap().is_empty());
+    drop(dir);
+}
+
+/// A rejected candidate is reported, but expired valid snapshots are still removed and
+/// the rejected entry is left alone.
+#[test]
+fn platform_compatibility_prune_reports_rejected_candidate_after_removing_others() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("det-testnet.sqlite");
+    let expired = dir
+        .path()
+        .join("det-testnet.sqlite.platform-67d4ef3-backup-old.sqlite");
+    std::fs::write(&expired, b"backup").unwrap();
+    set_mtime(&expired, -10 * 24 * 60 * 60);
+    let blocked = dir
+        .path()
+        .join("det-testnet.sqlite.platform-67d4ef3-backup-blocked.sqlite");
+    std::fs::create_dir(&blocked).unwrap();
+
+    prune_expired_backups(&path, RETENTION_DAY, std::time::SystemTime::now()).unwrap_err();
+
+    assert!(!expired.exists());
+    assert!(blocked.is_dir());
+}
+
+/// A held lifecycle lock means an open or upgrade is running: pruning backs off.
+#[test]
+fn platform_compatibility_prune_backs_off_while_lock_is_held() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("det-testnet.sqlite");
+    let expired = dir
+        .path()
+        .join("det-testnet.sqlite.platform-67d4ef3-backup-old.sqlite");
+    std::fs::write(&expired, b"backup").unwrap();
+    set_mtime(&expired, -10 * 24 * 60 * 60);
+    let _guard = backup_lock(&path).unwrap();
+    let error =
+        prune_expired_backups(&path, RETENTION_DAY, std::time::SystemTime::now()).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+    assert!(expired.exists());
 }

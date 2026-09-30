@@ -109,7 +109,7 @@ mod prepare;
 pub use prepare::PrepareGateGuard;
 mod registration;
 mod removal;
-pub(crate) use removal::UpgradeBackupScope;
+mod retention;
 mod spv;
 mod unlock;
 

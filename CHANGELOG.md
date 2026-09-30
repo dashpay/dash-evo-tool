@@ -56,15 +56,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   A database temporarily held by another session now asks you to close that
   session and try again instead of reporting incompatible data.
 
-- **Upgrade backups no longer pile up or outlive deleted data**: a failed
-  database upgrade no longer leaves a new backup on every attempt. Each
+- **Upgrade backups no longer pile up, and old ones expire automatically**: a
+  failed database upgrade no longer leaves a new backup on every attempt. Each
   database keeps at most one upgrade backup, and it is deleted when you remove
-  a wallet or identity or clear a network's data. An upgrade that can never
-  succeed now shows its message instead of being retried silently.
-  Retention and deletion cover upstream pre-migration snapshots too. Cleanup
-  rejects links and non-files, reports pruning failures, and retries incomplete
-  identity backup deletion at the next startup.
-  Cleanup also removes unfinished snapshots left by a crash and runs when
+  a wallet or clear a network's data. Upgrade backups older than 90 days are
+  deleted automatically once the app has opened your data successfully; change
+  the period or keep backups forever under Settings → Upgrade Backups. The same
+  retention covers upstream pre-migration snapshots and legacy `data.db`
+  migration backups. Removing an identity no longer touches upgrade backups.
+  An upgrade that can never succeed now shows its message instead of being
+  retried silently. Cleanup rejects links and non-files, reports pruning
+  failures, removes unfinished snapshots left by a crash, and runs when
   removing a wallet without an available backend. Temporary storage and memory
   failures remain retryable; permission and invalid-input failures surface directly.
   Concurrent sessions now protect active snapshots from cleanup, and staged
@@ -72,8 +74,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   One lock now covers the complete open, upgrade, backup, and retention cycle.
   A backup cleanup problem no longer stops up-to-date wallet data from opening;
   it blocks only an upgrade that would create a new backup. A new upgrade backup
-  replaces the previous one only after it is saved. Removing an identity that is
-  not stored on this device leaves upgrade backups in place. The retained backup
+  replaces the previous one only after it is saved. The retained backup
   is always one that opens and passes an integrity check, so an unfinished copy
   never replaces a complete one. Clearing a network's data still removes upgrade
   backups when an old shielded file cannot be deleted, and reports the clear as

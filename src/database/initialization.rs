@@ -713,7 +713,7 @@ impl Database {
             let backups_dir = db_file_path
                 .parent()
                 .expect("Expected parent directory in creating db backup folder")
-                .join("backups");
+                .join(super::legacy_backups::BACKUP_DIR);
             fs::create_dir_all(&backups_dir).map_err(|e| {
                 rusqlite::Error::ToSqlConversionFailure(
                     format!("Failed to create db backups directory: {}", e).into(),
@@ -721,8 +721,7 @@ impl Database {
             })?;
 
             // Generate a unique filename with a timestamp for the backup
-            let timestamp = Utc::now().format("%Y%m%d_%H%M%S");
-            let backup_filename = format!("data_backup_{}.db", timestamp);
+            let backup_filename = super::legacy_backups::backup_file_name(Utc::now());
             let backup_path = backups_dir.join(backup_filename);
 
             // Copy `data.db` to the unique backup file

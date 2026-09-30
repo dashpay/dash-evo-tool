@@ -1185,6 +1185,25 @@ pub enum TaskError {
     )]
     WalletSeedDecryptFailed,
 
+    /// The upgrade-backup retention setting could not be read, so no backup was
+    /// deleted.
+    #[error(
+        "Could not read your backup retention setting, so no old backups were deleted. Restart the application to try again."
+    )]
+    BackupRetentionRead {
+        #[source]
+        source: crate::wallet_backend::KvAdapterError,
+    },
+
+    /// Expired upgrade backups could not all be deleted.
+    #[error(
+        "Some old upgrade backups could not be deleted. The app will try again the next time it starts."
+    )]
+    UpgradeBackupCleanup {
+        #[source]
+        source: std::io::Error,
+    },
+
     /// A local filesystem operation failed (e.g. creating a data directory).
     #[error(
         "Could not access local files. Check available disk space and restart the application."
@@ -1381,7 +1400,7 @@ pub enum TaskError {
     /// The identity and its private keys are gone, but at least one optional
     /// owner-scoped sidecar could not be removed.
     #[error(
-        "The identity was removed, but some local identity data or upgrade backups may still be stored on this device. The app will keep trying to clear this local data automatically."
+        "The identity was removed, but some DashPay or token-list data may still be stored on this device. The app will keep trying to clear this local data automatically."
     )]
     IdentitySidecarCleanupIncomplete,
 

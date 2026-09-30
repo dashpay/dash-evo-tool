@@ -675,6 +675,8 @@ pub enum BackendTaskSuccessResult {
         prices: Option<TokenPricingSchedule>,
     },
     UpdatedThemePreference(crate::ui::theme::ThemeMode),
+    /// The upgrade-backup retention policy was saved.
+    UpdatedBackupRetention(crate::model::backup_retention::BackupRetention),
     PlatformInfo(PlatformInfoTaskResult),
 
     // DashPay related results

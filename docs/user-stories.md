@@ -325,6 +325,16 @@ As a user opening an older wallet installation, I want the app to update its sto
 - Standalone command-line and MCP use never wait for a window that is not present. Without a password they ask the user to open the desktop app once, then try again.
 - An operator without the desktop app can supply the wallet password non-interactively (`app_storage_update`; det-cli `--password-stdin` or `--password-file`, never as a command-line argument or environment variable). The update then finishes for every wallet sharing that password, or fails at once without skipping any wallet.
 
+### WAL-034: Control how long upgrade backups are kept [Implemented]
+**Persona:** Alex, Priya, Jordan
+
+As a user whose wallet data was copied before a storage upgrade, I want old upgrade backups to be deleted after a while so that copies of my wallet data do not stay on this device forever.
+
+- Upgrade backups older than 90 days are deleted automatically by default, covering app, wallet, upstream pre-migration and legacy `data.db` backups.
+- Settings → Upgrade Backups lets the user change the period (1 to 3650 days) or keep backups forever; a change applies right away.
+- Old backups are deleted only after the app has opened the data they protect, so a backup is never removed while it may still be needed for recovery.
+- Removing an identity does not delete upgrade backups; retention alone decides when they go.
+
 ### WAL-033: Wallets, addresses and identities survive an app upgrade [Gap]
 **Persona:** Alex, Priya, Jordan
 

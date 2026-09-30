@@ -102,7 +102,6 @@ pub struct AddNewIdentityScreen {
     user_chose_funding_method: bool,
     funding_amount: Option<Amount>,
     funding_amount_input: Option<AmountInput>,
-    alias_input: String,
     copied_to_clipboard: Option<Option<String>>,
     /// The chosen key set, public-only. Populated from the identity-auth
     /// public-key cache (D4b); `master` is `None` until the cache is warm,
@@ -188,7 +187,6 @@ impl AddNewIdentityScreen {
             user_chose_funding_method: false,
             funding_amount: None,
             funding_amount_input: None,
-            alias_input: String::new(),
             copied_to_clipboard: None,
             // updated later
             identity_keys: IdentityKeySpecs::empty(),
@@ -1089,7 +1087,6 @@ impl AddNewIdentityScreen {
             FundingMethod::UseUnusedAssetLock => {
                 if let Some(out_point) = self.funding_asset_lock {
                     let identity_input = IdentityRegistrationInfo {
-                        alias_input: self.alias_input.clone(),
                         keys: self.identity_keys.clone(),
                         wallet: Arc::clone(selected_wallet), // Clone the Arc reference
                         wallet_identity_index: self.identity_id_number,
@@ -1161,7 +1158,6 @@ impl AddNewIdentityScreen {
                 let wallet_seed_hash = hex::encode(selected_wallet.read_recover().seed_hash());
                 tracing::debug!(wallet_seed_hash, "funding with wallet balance");
                 let identity_input = IdentityRegistrationInfo {
-                    alias_input: self.alias_input.clone(),
                     keys: self.identity_keys.clone(),
                     wallet: Arc::clone(selected_wallet), // Clone the Arc reference
                     wallet_identity_index: self.identity_id_number,
@@ -1206,7 +1202,6 @@ impl AddNewIdentityScreen {
                 inputs.insert(platform_addr, amount);
 
                 let identity_input = IdentityRegistrationInfo {
-                    alias_input: self.alias_input.clone(),
                     keys: self.identity_keys.clone(),
                     wallet: Arc::clone(selected_wallet),
                     wallet_identity_index: self.identity_id_number,
@@ -1281,51 +1276,6 @@ impl AddNewIdentityScreen {
         if should_prefill {
             self.prefill_funding_amount = false;
         }
-
-        ui.add_space(10.0);
-    }
-
-    /// The optional local-alias step (design-spec §B.10: fund-first).
-    ///
-    /// Rendered by each funding-method branch just before its Create/Register
-    /// button, once the amount or lock for that method is chosen. This is a
-    /// Dash Evo Tool alias stored locally, not a DPNS username.
-    fn render_alias_input(&mut self, ui: &mut egui::Ui, step_number: u32) {
-        ui.add_space(10.0);
-        ui.separator();
-        ui.add_space(10.0);
-
-        ui.horizontal(|ui| {
-            ui.heading(format!("{step_number}. Set a local alias (optional)."));
-            crate::ui::helpers::info_icon_button(
-                ui,
-                "This is a local alias stored only in Dash Evo Tool to help you identify this identity.\n\n\
-                This is NOT a DPNS username. DPNS names are registered on-chain after creating the identity.\n\n\
-                You can change this alias anytime from the identity details screen.",
-            );
-        });
-
-        ui.add_space(8.0);
-
-        ui.horizontal(|ui| {
-            ui.label("Alias:");
-            let dark_mode = ui.style().visuals.dark_mode;
-            ui.add(
-                egui::TextEdit::singleline(&mut self.alias_input)
-                    .hint_text(
-                        egui::RichText::new("e.g., My Main Identity")
-                            .color(DashColors::text_secondary(dark_mode)),
-                    )
-                    .desired_width(250.0),
-            );
-        });
-
-        let dark_mode = ui.style().visuals.dark_mode;
-        ui.label(
-            egui::RichText::new("Note: This is a Dash Evo Tool alias, not a DPNS username.")
-                .small()
-                .color(DashColors::text_secondary(dark_mode)),
-        );
 
         ui.add_space(10.0);
     }
@@ -1753,9 +1703,7 @@ impl ScreenLike for AddNewIdentityScreen {
                 ui.add_space(10.0);
 
                 // Fund-first (design-spec §B.10): the funding method chooser is the
-                // first everyday-facing step. The local alias (optional) moves to a
-                // later step, rendered just before the Create button for whichever
-                // funding method is chosen (see `render_alias_input`).
+                // first everyday-facing step.
                 ui.heading(
                     format!("{}. Choose your funding method.", step_number).as_str()
                 );

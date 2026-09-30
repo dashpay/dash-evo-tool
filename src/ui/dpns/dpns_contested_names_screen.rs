@@ -891,7 +891,6 @@ impl DPNSScreen {
                 .column(Column::auto().resizable(true)) // DPNS Name
                 .column(Column::auto().resizable(true)) // Owner ID
                 .column(Column::auto().resizable(true)) // Acquired At
-                .column(Column::auto().resizable(true)) // Actions
                 .header(30.0, |mut header| {
                     header.col(|ui| {
                         if ui.button("Name").clicked() {
@@ -908,21 +907,15 @@ impl DPNSScreen {
                             self.toggle_sort(SortColumn::EndingTime);
                         }
                     });
-                    header.col(|ui| {
-                        let dark_mode = ui.style().visuals.dark_mode;
-                        ui.label(
-                            RichText::new("Actions").color(DashColors::text_primary(dark_mode)),
-                        );
-                    });
                 })
                 .body(|mut body| {
                     for (identifier, dpns_info) in filtered_names {
-                        let name_for_alias = dpns_info.name.clone();
+                        let username = dpns_info.name.clone();
                         // Display name with .dash suffix
-                        let display_name = if name_for_alias.ends_with(".dash") {
-                            name_for_alias.clone()
+                        let display_name = if username.ends_with(".dash") {
+                            username.clone()
                         } else {
-                            format!("{}.dash", name_for_alias)
+                            format!("{}.dash", username)
                         };
                         body.row(25.0, |mut row| {
                             row.col(|ui| {
@@ -950,37 +943,6 @@ impl DPNSScreen {
                                 ui.label(
                                     RichText::new(dt).color(DashColors::text_primary(dark_mode)),
                                 );
-                            });
-                            row.col(|ui| {
-                                if ui.small_button("Set Alias").clicked() {
-                                    // Append .dash suffix for DPNS names
-                                    let alias_with_suffix = if name_for_alias.ends_with(".dash") {
-                                        name_for_alias.clone()
-                                    } else {
-                                        format!("{}.dash", name_for_alias)
-                                    };
-                                    if let Err(e) = self
-                                        .app_context
-                                        .set_identity_alias(&identifier, Some(&alias_with_suffix))
-                                    {
-                                        MessageBanner::set_global(
-                                            ui.ctx(),
-                                        "The alias could not be saved. Check available disk space and try again.",
-                                        MessageType::Error,
-                                        )
-                                        .with_details(e);
-                                    } else {
-                                        MessageBanner::set_global(
-                                            ui.ctx(),
-                                            format!(
-                                            "Alias set to '{alias}' for identity {identity_id}",
-                                            alias = alias_with_suffix,
-                                            identity_id = identifier.to_string(Encoding::Base58)
-                                            ),
-                                            MessageType::Success,
-                                        );
-                                    }
-                                }
                             });
                         });
                     }
@@ -1435,10 +1397,7 @@ impl DPNSScreen {
             for (i, identity) in self.voting_identities.iter().enumerate() {
                 ui.group(|ui| {
                     ui.horizontal(|ui| {
-                        let label = identity
-                            .alias
-                            .clone()
-                            .unwrap_or_else(|| identity.identity.id().to_string(Encoding::Base58));
+                        let label = self.app_context.identity_display_label(identity);
                         let dark_mode = ui.style().visuals.dark_mode;
                         ui.label(
                             RichText::new(format!("Identity: {}", label))

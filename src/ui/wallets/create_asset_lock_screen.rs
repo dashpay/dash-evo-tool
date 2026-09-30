@@ -403,7 +403,7 @@ impl ScreenLike for CreateAssetLockScreen {
                                 "top_up_identity_selector",
                                 &mut self.selected_identity_string,
                                 &identities
-                            )
+                            ).with_context(&self.app_context)
                             .selected_identity(&mut self.selected_identity).unwrap()
                             .with_app_default(&self.app_context)
                             .label("Identity to top up:")

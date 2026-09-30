@@ -151,7 +151,7 @@ impl TokensScreen {
                                     "simple_identity_selector",
                                     &mut self.identity_id_string,
                                     &all_identities,
-                                )
+                                ).with_context(&self.app_context)
                                 .selected_identity(&mut self.selected_identity)
                                 .expect("selected_identity should not fail")
                                 .other_option(false)

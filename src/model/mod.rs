@@ -11,6 +11,7 @@ pub mod fee_estimation;
 pub mod grovestark_prover;
 pub mod identity_discovery;
 pub mod identity_key_protection;
+pub mod identity_name;
 pub mod key_input;
 pub mod legacy_recovery;
 /// Stateless masternode/evonode input parsing and validation (ProTxHash,

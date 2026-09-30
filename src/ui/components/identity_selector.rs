@@ -74,6 +74,7 @@ pub struct IdentitySelector<'a> {
     /// When set, seed the (empty) buffer from the app-scoped selected identity.
     /// Opt-in — owner/operate-as pickers only; never recipient/target pickers.
     app_default: Option<&'a Arc<AppContext>>,
+    profile_context: Option<&'a AppContext>,
     /// When set, write the chosen identity back to the app-scoped selection on
     /// a user change. Opt-in — owner/operate-as pickers only.
     sync_target: Option<Arc<AppContext>>,
@@ -102,8 +103,22 @@ impl<'a> IdentitySelector<'a> {
             label: None,
             other_option: true, // Default to showing "Other" option
             app_default: None,
+            profile_context: None,
             sync_target: None,
         }
+    }
+
+    /// Read profile display names from this network's cached context.
+    pub fn with_context(mut self, app_context: &'a AppContext) -> Self {
+        self.profile_context = Some(app_context);
+        self
+    }
+
+    fn identity_label(&self, identity: &QualifiedIdentity) -> String {
+        self.profile_context.map_or_else(
+            || identity.display_string(),
+            |ctx| ctx.identity_display_label(identity),
+        )
     }
 
     /// Seed the initial selection from the app-scoped identity when the buffer
@@ -257,7 +272,7 @@ impl<'a> Widget for IdentitySelector<'a> {
             let has_matching_identity = current_identity.is_some();
 
             let current_identity_combo_label = current_identity
-                .map(|q| q.display_string())
+                .map(|q| self.identity_label(q))
                 .unwrap_or_else(|| {
                     if self.other_option {
                         "Other".to_string()
@@ -283,7 +298,7 @@ impl<'a> Widget for IdentitySelector<'a> {
                         let checked = current_identity.is_some_and(|x| qualified_identity.eq(&x));
 
                         if ui
-                            .selectable_label(checked, qualified_identity.display_string())
+                            .selectable_label(checked, self.identity_label(qualified_identity))
                             .clicked()
                         {
                             combo_changed = true;

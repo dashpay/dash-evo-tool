@@ -245,7 +245,7 @@ impl SendPaymentScreen {
                     );
                     let dark_mode = ui.style().visuals.dark_mode;
                     ui.label(
-                        RichText::new(self.from_identity.to_string())
+                        RichText::new(self.app_context.identity_display_label(&self.from_identity))
                             .color(DashColors::text_primary(dark_mode)),
                     );
                 });
@@ -604,6 +604,7 @@ impl PaymentHistory {
                             &mut self.selected_identity_string,
                             &identities,
                         )
+                        .with_context(&self.app_context)
                         .selected_identity(&mut self.selected_identity)
                         .unwrap()
                         .width(300.0)

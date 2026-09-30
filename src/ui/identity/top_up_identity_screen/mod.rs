@@ -853,12 +853,7 @@ impl ScreenLike for TopUpIdentityScreen {
                 ui.horizontal(|ui| {
                     ui.label("Identity:");
 
-                    // Show alias if available, otherwise show ID
-                    if let Some(alias) = &self.identity.alias {
-                        ui.label(alias);
-                    } else {
-                        ui.label(self.identity.identity.id().to_string(Encoding::Base58));
-                    }
+                    ui.label(self.app_context.identity_display_label(&self.identity));
                 });
 
                 // Show current balance

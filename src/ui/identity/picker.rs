@@ -100,7 +100,8 @@ pub fn render(
                     for cell in row {
                         match cell {
                             PickerCell::Identity(identity) => {
-                                let mut card = build_card(identity).with_width(card_width);
+                                let mut card =
+                                    build_card(app_context, identity).with_width(card_width);
                                 if let Some(Some(profile)) = profiles.get_or_request(identity) {
                                     card = card.with_avatar_url(&profile.avatar_url);
                                 }
@@ -159,15 +160,8 @@ enum PickerCell<'a> {
     Add,
 }
 
-/// Build a [`IdentityPickerCard`] from a [`QualifiedIdentity`].
-///
-/// Display-name is not yet a first-class field on `QualifiedIdentity` (it
-/// comes from the DashPay social profile, loaded asynchronously). Until that
-/// integration lands we use the local nickname (`alias`) as a stand-in for
-/// display-name so users who have labelled their identities still see a
-/// familiar heading. When a real social-profile display name becomes
-/// available upstream, wiring it into this function is a one-line change.
-fn build_card(identity: &QualifiedIdentity) -> IdentityPickerCard {
+/// Build a picker card using the same profile name as navigation.
+fn build_card(app_context: &AppContext, identity: &QualifiedIdentity) -> IdentityPickerCard {
     let id_base58 = identity.identity.id().to_string(Encoding::Base58);
 
     // Balance formatting: design-spec §B.14 uses `{amount} DASH` with tabular
@@ -190,9 +184,8 @@ fn build_card(identity: &QualifiedIdentity) -> IdentityPickerCard {
              breadcrumb.",
             );
 
-    // Heading priority: local alias → DPNS → shortened id.
-    if let Some(alias) = identity.alias.as_deref().filter(|s| !s.trim().is_empty()) {
-        card = card.with_display_name(alias);
+    if let Some(name) = app_context.identity_display_name(identity.identity.id()) {
+        card = card.with_display_name(name);
     }
     if let Some(dpns) = identity.dpns_names.first().map(|n| n.name.as_str())
         && !dpns.is_empty()

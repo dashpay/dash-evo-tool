@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- User identities use their DashPay Display name on cards, navigation, and selectors, falling back to a username or shortened identity ID. Local identity names are removed from profile, create, and load screens; existing records remain readable. Masternode names and contact nicknames are unaffected. The identity-list tool reports cached profile display names instead of local aliases.
+
 ### Security
 
 - Identity imports with a password now encrypt private keys before their first

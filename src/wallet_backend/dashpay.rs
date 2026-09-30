@@ -576,6 +576,28 @@ impl<'a> DashpayView<'a> {
         .unwrap_or_default()
     }
 
+    /// Read the cached profile name without blocking on a wallet-state lock.
+    pub fn cached_display_name(&self, owner: &Identifier) -> Option<String> {
+        let wallets = self.backend.inner.wallets.try_read().ok()?;
+        for wallet in wallets.values() {
+            let Some(state) = wallet.try_state() else {
+                continue;
+            };
+            if let Some(identity) = state.identity_manager.managed_identity(owner) {
+                return identity
+                    .dashpay()
+                    .profile
+                    .as_ref()?
+                    .display_name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_owned);
+            }
+        }
+        None
+    }
+
     /// DashPay profile for `owner`, or `None` when upstream has none
     /// (either `owner` is unknown, or its identity bucket has no
     /// `DashPayProfile` yet).

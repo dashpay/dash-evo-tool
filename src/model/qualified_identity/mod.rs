@@ -257,6 +257,7 @@ pub struct QualifiedIdentity {
     pub associated_operator_identity: Option<(Identity, IdentityPublicKey)>,
     pub associated_owner_key_id: Option<KeyID>,
     pub identity_type: IdentityType,
+    /// Administrative node name; the encoded slot is retained for identity storage compatibility.
     pub alias: Option<String>,
     pub private_keys: KeyStorage,
     pub dpns_names: Vec<DPNSNameInfo>,
@@ -343,13 +344,7 @@ impl<C> Decode<C> for QualifiedIdentity {
 
 impl Display for QualifiedIdentity {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        if let Some(alias) = &self.alias {
-            write!(f, "{}", alias)
-        } else if !self.dpns_names.is_empty() {
-            write!(f, "{}", self.dpns_names[0].name)
-        } else {
-            write!(f, "{}", self.identity.id())
-        }
+        write!(f, "{}", self.display_string())
     }
 }
 
@@ -955,9 +950,21 @@ impl QualifiedIdentity {
     }
 
     pub fn display_string(&self) -> String {
-        self.alias
-            .clone()
-            .unwrap_or(self.identity.id().to_string(Encoding::Base58))
+        self.display_name_label(None)
+    }
+
+    /// Resolve the profile name with username and identifier fallbacks.
+    pub fn display_name_label(&self, display_name: Option<&str>) -> String {
+        let preferred = if self.identity_type == IdentityType::User {
+            display_name
+        } else {
+            self.alias.as_deref().or(display_name)
+        };
+        crate::model::identity_name::display_label(
+            preferred,
+            self.dpns_names.first().map(|name| name.name.as_str()),
+            &self.identity.id().to_string(Encoding::Base58),
+        )
     }
 
     pub fn masternode_payout_address(&self, network: Network) -> Option<Address> {
@@ -2627,5 +2634,81 @@ mod decode_limit_tests {
             bincode::decode_from_slice(&encoded, identity_blob_decode_config())
                 .expect("decode under the limit");
         assert_eq!(decoded, payload);
+    }
+}
+
+#[cfg(test)]
+mod identity_display_name_tests {
+    use super::*;
+    use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::platform::Identifier;
+
+    fn identity() -> QualifiedIdentity {
+        QualifiedIdentity {
+            identity: Identity::new_with_id_and_keys(
+                Identifier::from([42; 32]),
+                BTreeMap::new(),
+                PlatformVersion::latest(),
+            )
+            .expect("synthetic identity"),
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: Some("Legacy local name".into()),
+            private_keys: KeyStorage::default(),
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: Network::Testnet,
+        }
+    }
+
+    #[test]
+    fn user_labels_ignore_legacy_local_name_and_use_username() {
+        let mut identity = identity();
+        identity.dpns_names.push(DPNSNameInfo {
+            name: "alex.dash".into(),
+            acquired_at: 0,
+        });
+        assert_eq!(identity.display_string(), "alex.dash");
+        assert_eq!(identity.to_string(), "alex.dash");
+    }
+
+    #[test]
+    fn user_labels_ignore_legacy_local_name_without_username() {
+        let identity = identity();
+        let id = identity.identity.id().to_string(Encoding::Base58);
+        let expected = format!("{}…{}", &id[..5], &id[id.len() - 3..]);
+        assert_eq!(identity.display_string(), expected);
+        assert_eq!(identity.to_string(), expected);
+    }
+
+    #[test]
+    fn node_administrative_name_is_preserved() {
+        let mut identity = identity();
+        identity.identity_type = IdentityType::Masternode;
+        assert_eq!(identity.display_string(), "Legacy local name");
+        assert_eq!(identity.to_string(), "Legacy local name");
+    }
+
+    #[test]
+    fn legacy_local_name_round_trips_without_changing_identity_label() {
+        let identity = identity();
+        let bytes = bincode::encode_to_vec(&identity, bincode::config::standard()).unwrap();
+        let (restored, consumed): (QualifiedIdentity, usize) =
+            bincode::decode_from_slice(&bytes, bincode::config::standard()).unwrap();
+        assert_eq!(consumed, bytes.len());
+        assert_eq!(restored.alias, identity.alias);
+        assert_eq!(restored.identity, identity.identity);
+        assert_eq!(restored.private_keys, identity.private_keys);
+        assert_ne!(restored.display_string(), "Legacy local name");
+        assert_eq!(
+            bincode::encode_to_vec(restored, bincode::config::standard()).unwrap(),
+            bytes
+        );
     }
 }

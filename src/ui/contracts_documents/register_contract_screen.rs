@@ -450,7 +450,7 @@ impl ScreenLike for RegisterDataContractScreen {
                         "register_contract_identity_selector",
                         &mut self.selected_identity_string,
                         &self.qualified_identities,
-                    )
+                    ).with_context(&self.app_context)
                     .selected_identity(&mut self.selected_qualified_identity)
                     .unwrap()
                     .width(300.0)

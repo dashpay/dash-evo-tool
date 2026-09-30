@@ -2404,7 +2404,7 @@ impl WalletSendScreen {
 
         // Add identities for autocomplete (searchable by alias/DPNS name).
         if !loaded_identities.is_empty() {
-            builder = builder.with_identities(&loaded_identities);
+            builder = builder.with_identities(Some(&self.app_context), &loaded_identities);
         }
 
         builder

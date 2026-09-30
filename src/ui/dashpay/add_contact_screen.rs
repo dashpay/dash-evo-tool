@@ -293,6 +293,7 @@ impl ScreenLike for AddContactScreen {
                         &mut self.selected_identity_string,
                         &identities,
                     )
+                    .with_context(&self.app_context)
                     .selected_identity(&mut self.selected_identity)
                     .unwrap()
                     .width(300.0)
@@ -489,9 +490,11 @@ impl ScreenLike for AddContactScreen {
                                         .color(DashColors::text_secondary(dark_mode)),
                                 );
                                 ui.label(
-                                    RichText::new(identity.to_string())
-                                        .strong()
-                                        .color(DashColors::text_primary(dark_mode)),
+                                    RichText::new(
+                                        self.app_context.identity_display_label(identity),
+                                    )
+                                    .strong()
+                                    .color(DashColors::text_primary(dark_mode)),
                                 );
                             });
 

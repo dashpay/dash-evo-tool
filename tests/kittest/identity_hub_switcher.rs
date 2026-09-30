@@ -58,7 +58,10 @@ fn seed_identity_typed(
         identity_type,
         alias: Some(alias.to_string()),
         private_keys: KeyStorage::default(),
-        dpns_names: vec![],
+        dpns_names: vec![dash_evo_tool::model::qualified_identity::DPNSNameInfo {
+            name: alias.to_string(),
+            acquired_at: 0,
+        }],
         associated_wallets: BTreeMap::new(),
         secret_access: None,
         wallet_index: None,

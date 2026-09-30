@@ -69,6 +69,7 @@ impl TokenAction for UnfreezeAction {
                     &mut self.unfreeze_identity_id,
                     &self.frozen_identities,
                 )
+                .with_context(&self.app_context)
                 .label("Unfreeze Identity ID:")
                 .width(300.0),
             );

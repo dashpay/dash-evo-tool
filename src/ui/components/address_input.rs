@@ -418,8 +418,12 @@ impl AddressInput {
     }
 
     /// Provide identity references for Identity-type autocomplete.
-    pub fn with_identities(mut self, identities: &[QualifiedIdentity]) -> Self {
-        self.extract_identity_entries(identities);
+    pub fn with_identities(
+        mut self,
+        app_context: Option<&crate::context::AppContext>,
+        identities: &[QualifiedIdentity],
+    ) -> Self {
+        self.extract_identity_entries(app_context, identities);
         self
     }
 
@@ -518,10 +522,14 @@ impl AddressInput {
     }
 
     /// Update identity data after initialization.
-    pub fn set_identities(&mut self, identities: &[QualifiedIdentity]) {
+    pub fn set_identities(
+        &mut self,
+        app_context: Option<&crate::context::AppContext>,
+        identities: &[QualifiedIdentity],
+    ) {
         self.all_entries
             .retain(|e| e.address_kind != AddressKind::Identity);
-        self.extract_identity_entries(identities);
+        self.extract_identity_entries(app_context, identities);
     }
 
     /// Update shielded balance data after initialization.
@@ -600,12 +608,19 @@ impl AddressInput {
         }
     }
 
-    fn extract_identity_entries(&mut self, identities: &[QualifiedIdentity]) {
+    fn extract_identity_entries(
+        &mut self,
+        app_context: Option<&crate::context::AppContext>,
+        identities: &[QualifiedIdentity],
+    ) {
         for qi in identities {
             let id = qi.identity.id();
             let id_str = id.to_string(Encoding::Base58);
             let dpns_name = qi.dpns_names.first().map(|n| n.name.clone());
-            let name_label = dpns_name.clone().or_else(|| qi.alias.clone());
+            let name_label = Some(
+                app_context
+                    .map_or_else(|| qi.display_string(), |ctx| ctx.identity_display_label(qi)),
+            );
             self.all_entries.push(AddressEntry {
                 address_string: id_str,
                 address_kind: AddressKind::Identity,
@@ -2244,7 +2259,7 @@ mod tests {
             status: IdentityStatus::PendingCreation,
             network: Network::Testnet,
         };
-        AddressInput::new(Network::Testnet).with_identities(&[qi])
+        AddressInput::new(Network::Testnet).with_identities(None, &[qi])
     }
 
     #[test]

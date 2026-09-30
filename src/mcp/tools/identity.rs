@@ -28,7 +28,8 @@ pub struct ListIdentitiesTool;
 pub struct IdentityEntry {
     /// Base58-encoded identity ID.
     id: String,
-    alias: Option<String>,
+    /// Cached DashPay profile display name, if available.
+    display_name: Option<String>,
     /// `User`, `Masternode` or `Evonode`.
     identity_type: String,
     /// Last known Platform status, e.g. `Active` or `Unknown`.
@@ -97,7 +98,7 @@ impl AsyncTool<DashMcpService> for ListIdentitiesTool {
                     identity_type: qi.identity_type.to_string(),
                     status: qi.status.to_string(),
                     balance_credits: qi.identity.balance(),
-                    alias: qi.alias,
+                    display_name: ctx.identity_display_name(qi.identity.id()),
                     dpns_names: qi.dpns_names.into_iter().map(|name| name.name).collect(),
                     wallet_index: link.map(|(_, index)| index),
                     wallet_seed_hashes: link

@@ -891,6 +891,7 @@ impl DPNSScreen {
                 .column(Column::auto().resizable(true)) // DPNS Name
                 .column(Column::auto().resizable(true)) // Owner ID
                 .column(Column::auto().resizable(true)) // Acquired At
+                .column(Column::auto()) // Node naming
                 .header(30.0, |mut header| {
                     header.col(|ui| {
                         if ui.button("Name").clicked() {
@@ -906,6 +907,9 @@ impl DPNSScreen {
                         if ui.button("Acquired At").clicked() {
                             self.toggle_sort(SortColumn::EndingTime);
                         }
+                    });
+                    header.col(|ui| {
+                        ui.label("Actions");
                     });
                 })
                 .body(|mut body| {
@@ -943,6 +947,32 @@ impl DPNSScreen {
                                 ui.label(
                                     RichText::new(dt).color(DashColors::text_primary(dark_mode)),
                                 );
+                            });
+                            row.col(|ui| {
+                                let is_node = self.voting_identities.iter()
+                                    .any(|node| node.identity.id() == identifier);
+                                if is_node
+                                    && ui.small_button("Set node name").clicked()
+                                {
+                                    match self.app_context
+                                        .set_identity_alias(&identifier, Some(&display_name))
+                                    {
+                                        Ok(()) => {
+                                            MessageBanner::set_global(
+                                                ui.ctx(),
+                                                "The node name was saved on this device.",
+                                                MessageType::Success,
+                                            );
+                                        }
+                                        Err(error) => {
+                                            MessageBanner::set_global(
+                                                ui.ctx(),
+                                                "The node name could not be saved. Check available disk space and try again.",
+                                                MessageType::Error,
+                                            ).with_details(error);
+                                        }
+                                    }
+                                }
                             });
                         });
                     }
@@ -2167,6 +2197,85 @@ mod tests {
         )
         .expect("offline regtest AppContext::new");
         (ctx, temp_dir)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn owned_names_keep_node_alias_action_without_user_aliases() {
+        use crate::model::qualified_identity::{IdentityStatus, IdentityType};
+        use dash_sdk::dpp::{identity::Identity, version::PlatformVersion};
+        use egui_kittest::{Harness, kittest::Queryable};
+        let (ctx, _dir) = offline_ctx();
+        let (sender, _receiver) = tokio::sync::mpsc::channel(32);
+        ctx.ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+            sender,
+            ctx.egui_ctx().clone(),
+        ))
+        .await
+        .unwrap();
+        for (byte, identity_type) in [
+            (1, IdentityType::User),
+            (2, IdentityType::Masternode),
+            (3, IdentityType::Evonode),
+        ] {
+            let identity = QualifiedIdentity {
+                identity: Identity::create_basic_identity(
+                    Identifier::from([byte; 32]),
+                    PlatformVersion::latest(),
+                )
+                .unwrap(),
+                associated_voter_identity: None,
+                associated_operator_identity: None,
+                associated_owner_key_id: None,
+                identity_type,
+                alias: Some("Original".into()),
+                private_keys: Default::default(),
+                dpns_names: vec![DPNSNameInfo {
+                    name: format!("name{byte}"),
+                    acquired_at: 0,
+                }],
+                associated_wallets: Default::default(),
+                secret_access: None,
+                wallet_index: None,
+                top_ups: Default::default(),
+                status: IdentityStatus::Active,
+                network: Network::Regtest,
+            };
+            ctx.insert_local_qualified_identity(&identity, &None)
+                .unwrap();
+        }
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1000.0, 500.0))
+            .build_ui_state(
+                |ui, screen: &mut DPNSScreen| screen.render_table_local_dpns_names(ui),
+                DPNSScreen::new(&ctx, DPNSSubscreen::Owned),
+            );
+        harness.run();
+        assert_eq!(
+            harness.query_all_by_label("Set node name").count(),
+            2,
+            "only Masternode and Evonode rows offer local naming"
+        );
+        for index in 0..2 {
+            harness
+                .query_all_by_label("Set node name")
+                .nth(index)
+                .unwrap()
+                .click();
+            harness.run();
+        }
+        for byte in [2, 3] {
+            assert_eq!(
+                ctx.get_identity_alias(&Identifier::from([byte; 32]))
+                    .unwrap(),
+                Some(format!("name{byte}.dash"))
+            );
+        }
+        assert_eq!(
+            ctx.get_identity_alias(&Identifier::from([1; 32]))
+                .unwrap()
+                .as_deref(),
+            Some("Original")
+        );
     }
 
     #[test]

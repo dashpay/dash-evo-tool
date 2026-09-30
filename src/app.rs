@@ -1291,7 +1291,8 @@ pub enum AppAction {
     PopScreen,
     PopScreenAndRefresh,
     GoToMainScreen,
-    /// Open all User identities and dismiss pushed screens.
+    /// Dismiss pushed screens and open all User identities, clearing the wallet filter.
+    /// Shared forms opened from Masternodes instead return to its current detail.
     OpenIdentityPicker,
     SwitchNetwork(Network),
     SetMainScreen(RootScreenType),

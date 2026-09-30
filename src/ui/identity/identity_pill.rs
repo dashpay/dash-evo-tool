@@ -1,7 +1,8 @@
 //! Identity pill — the third segment of the breadcrumb switcher.
 //!
 //! Label priority: **DashPay display name → DPNS username →
-//! shortened Identity ID** (design-spec §G6). [`display_label`] is the one
+//! shortened Identity ID** (see `docs/ai-design/2026-09-30-user-identity-names/decision.md`).
+//! [`display_label`] is the one
 //! resolver for that rule; every surface that names an identity goes through
 //! it, so the same identity never renders two different ways.
 //!

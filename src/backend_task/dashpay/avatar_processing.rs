@@ -233,13 +233,17 @@ pub async fn fetch_image_bytes(url: &str) -> Result<Vec<u8>, AvatarProcessingErr
     }
 
     // Create HTTP client with timeout
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()?;
+    let client = avatar_client_builder().build()?;
 
     // Send GET request
     let response = client.get(url).send().await?.error_for_status()?;
     validate_image_response(response).await
+}
+
+fn avatar_client_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
+        .https_only(true)
+        .timeout(std::time::Duration::from_secs(30))
 }
 
 async fn validate_image_response(
@@ -299,6 +303,22 @@ pub async fn process_avatar(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn avatar_client_rejects_http_before_connecting() {
+        let error = avatar_client_builder()
+            .no_proxy()
+            .build()
+            .unwrap()
+            .get("http://127.0.0.1:1/avatar.png")
+            .send()
+            .await
+            .unwrap_err();
+        assert!(
+            error.is_builder(),
+            "insecure URLs must be rejected before connecting: {error:?}"
+        );
+    }
 
     async fn chunked_image_response(
         bytes: Vec<u8>,

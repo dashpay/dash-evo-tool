@@ -712,7 +712,7 @@ As a user, I want my wallet's identities to be found and loaded automatically on
 
 - After the network is ready, every unlocked wallet is searched automatically once per session.
 - The search uses a rolling five-index lookahead, going deeper each time an identity is found, so identities at non-contiguous indices are discovered.
-- Already-loaded identities are refreshed (new keys, new DPNS names) while any alias the user assigned is preserved.
+- Already-loaded identities are refreshed with new keys and DPNS names.
 - Locked, password-protected wallets are skipped without prompting; they are searched after the user unlocks them.
 
 ### IDN-016: Identities and their keys preserved across an app upgrade [Implemented]
@@ -1615,15 +1615,6 @@ As a user, I want to handle my contacts entirely from the Identities hub — ans
 - Established contacts are listed with a search box that filters them by nickname, display name, username, or identity ID.
 - Each contact row offers Pay, which opens the existing send-payment flow for that contact.
 - Contacts the user has hidden do not appear in the list.
-
-### IDH-008: Name an identity on this device [Implemented]
-**Persona:** Alex, Priya
-
-As a user with more than one identity, I want to give an identity a name only I see so that I can tell my identities apart without registering a username.
-
-- Settings tab hosts the name field; the copy states that the name stays on the device and is never published.
-- Saving is only offered when the name actually changed, and clearing the field removes the name.
-- The saved name is what the breadcrumb and identity pills show, in preference to the username or the raw identity ID.
 
 ## Masternodes (MN)
 

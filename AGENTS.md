@@ -55,7 +55,7 @@ On every **non-draft** PR that touches Rust code, and on pushes to `v*-dev`, Git
 | `tests.yml` | `cargo test --all-features --workspace` (includes doc tests) |
 | `clippy.yml` | `cargo fmt --all -- --check` and `cargo clippy --all-features --all-targets -- -D warnings` |
 
-The workflows are path-filtered independently, each on `**/*.rs` (which includes `build.rs`), `**/Cargo.toml`, `Cargo.lock`, `.cargo/config.toml`, and its own workflow file. `tests.yml` additionally watches `tests/backend-e2e/**`, so a documentation-only change under that directory (e.g. `tests/backend-e2e/README.md`) still triggers the test workflow; other documentation-only changes run neither workflow.
+The workflows are path-filtered independently, each on `**/*.rs` (which includes `build.rs`), `**/Cargo.toml`, `Cargo.lock`, `.cargo/config.toml`, and its own workflow file. `tests.yml` additionally watches `tests/backend-e2e/**`, so a documentation-only change under that directory (e.g. `tests/backend-e2e/README.md`) still triggers the test workflow. It also watches the migration-fixture files its tests embed at compile time (`tests/migration-fixtures/manifest.json` and the `v0.9.3-public-identities` `data.sql` / `expected.json`); other documentation-only changes run neither workflow.
 
 Because CI always runs the full sweep, locally you should:
 

@@ -3,6 +3,7 @@ use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::{IdentityInputToLoad, IdentityLoadMode};
 use crate::backend_task::{NETWORK_REQUEST_TIMEOUT, await_network_request_with_timeout};
 use crate::context::AppContext;
+use crate::model::derived_identity_key::recovery_scan_bound;
 use crate::model::identity_key_protection::validate_protection_password;
 use crate::model::key_input::verify_key_input;
 use crate::model::masternode_input::decode_identity_id;
@@ -703,7 +704,7 @@ impl AppContext {
         wallet_filter: Option<WalletSeedHash>,
     ) -> Result<WalletMatchResult, TaskError> {
         let highest_identity_key_id = identity.public_keys().keys().copied().max().unwrap_or(0);
-        let top_bound = highest_identity_key_id.saturating_add(6).max(1);
+        let top_bound = identity_key_scan_bound(highest_identity_key_id);
 
         for (&wallet_seed_hash, wallet_arc) in wallets.iter() {
             if wallet_filter.is_some_and(|filter| filter != wallet_seed_hash) {
@@ -907,6 +908,13 @@ impl AppContext {
             })
             .collect()
     }
+}
+
+/// Exclusive key-index bound of the wallet-match scan for an identity whose
+/// highest key id is `highest_identity_key_id`. Built on the shared
+/// seed-recovery window so a wallet-derived key stays rediscoverable.
+pub(super) fn identity_key_scan_bound(highest_identity_key_id: u32) -> u32 {
+    recovery_scan_bound(highest_identity_key_id).max(1)
 }
 
 #[cfg(test)]

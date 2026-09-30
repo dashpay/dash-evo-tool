@@ -1,11 +1,4 @@
-//! Best-effort, async-populated DashPay profile cache for the Identities hub.
-//!
-//! The local SQLite DashPay-profile cache was removed in the platform-wallet
-//! migration; profiles now live in the upstream `DashpayView` and are only
-//! reachable through the async [`DashPayTask::LoadProfile`] task. Hub tabs
-//! render synchronously, so they read this cache (empty until the first load
-//! completes) and queue a load on a miss. The hub dispatches the queued load
-//! after rendering and feeds the result back in via [`ProfileCache::record_result`].
+//! Cached profile fields with correlated background refreshes for the Identities hub.
 
 use crate::app::AppAction;
 use crate::backend_task::dashpay::DashPayTask;
@@ -47,6 +40,28 @@ pub struct ProfileCache {
 }
 
 impl ProfileCache {
+    /// Seed a missing entry from wallet memory while queuing an authoritative refresh.
+    pub(crate) fn seed_cached(
+        &mut self,
+        app_context: &crate::context::AppContext,
+        identity: &QualifiedIdentity,
+    ) {
+        let id = identity.identity.id();
+        if !self.loaded.contains_key(&id)
+            && let Some(profile) = app_context.cached_identity_profile(id)
+        {
+            self.get_or_request(identity);
+            self.loaded.insert(
+                id,
+                Some(ProfileFields {
+                    display_name: profile.display_name.unwrap_or_default(),
+                    bio: profile.bio.unwrap_or_default(),
+                    avatar_url: profile.avatar_url.unwrap_or_default(),
+                }),
+            );
+        }
+    }
+
     /// Loaded profile state for `identity`, queuing a load on a miss.
     ///
     /// `Some(Some(_))` = profile present, `Some(None)` = loaded with none

@@ -576,23 +576,36 @@ impl<'a> DashpayView<'a> {
         .unwrap_or_default()
     }
 
+    /// Read cached profile fields without blocking on wallet state or reading storage.
+    pub fn cached_profile(&self, owner: &Identifier) -> Option<StoredProfile> {
+        self.with_cached_profile(owner, |profile| profile_to_det(owner, profile, 0, 0))
+    }
+
     /// Read the cached profile name without blocking on a wallet-state lock.
     pub fn cached_display_name(&self, owner: &Identifier) -> Option<String> {
+        self.with_cached_profile(owner, |profile| {
+            profile
+                .display_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned)
+        })
+        .flatten()
+    }
+
+    fn with_cached_profile<T>(
+        &self,
+        owner: &Identifier,
+        read: impl FnOnce(&DashPayProfile) -> T,
+    ) -> Option<T> {
         let wallets = self.backend.inner.wallets.try_read().ok()?;
         for wallet in wallets.values() {
             let Some(state) = wallet.try_state() else {
                 continue;
             };
             if let Some(identity) = state.identity_manager.managed_identity(owner) {
-                return identity
-                    .dashpay()
-                    .profile
-                    .as_ref()?
-                    .display_name
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|name| !name.is_empty())
-                    .map(str::to_owned);
+                return identity.dashpay().profile.as_ref().map(read);
             }
         }
         None

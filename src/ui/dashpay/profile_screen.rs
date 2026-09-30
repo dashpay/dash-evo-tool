@@ -1,6 +1,6 @@
 use crate::app::AppAction;
 use crate::backend_task::dashpay::DashPayTask;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
+use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::dashpay::{MAX_AVATAR_URL_CHARS, ProfileFieldError};
 use crate::model::fee_estimation::format_credits_as_dash;
@@ -59,6 +59,8 @@ pub struct ProfileScreen {
     loading: bool,
     saving: bool, // Track if we're saving vs loading
     profile_load_attempted: bool,
+    pending_load: Option<(dash_sdk::platform::Identifier, BackendTaskContext)>,
+    pending_save: Option<(dash_sdk::platform::Identifier, BackendTaskContext)>,
     validation_errors: Vec<ProfileFieldError>,
     has_unsaved_changes: bool,
     original_display_name: String,
@@ -92,6 +94,8 @@ impl ProfileScreen {
             loading: false,
             saving: false,
             profile_load_attempted: false,
+            pending_load: None,
+            pending_save: None,
             validation_errors: Vec::new(),
             has_unsaved_changes: false,
             original_display_name: String::new(),
@@ -171,15 +175,20 @@ impl ProfileScreen {
         if let Some(identity) = self.selected_identity.clone() {
             self.loading = true;
             self.profile_load_attempted = true;
-            AppAction::BackendTask(BackendTask::DashPayTask(Box::new(
-                DashPayTask::LoadProfile { identity },
-            )))
+            let owner = identity.identity.id();
+            let task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadProfile { identity }));
+            let context = BackendTaskContext::for_dispatch(&task);
+            self.pending_load = Some((owner, context.clone()));
+            AppAction::BackendTaskWithContext { task, context }
         } else {
             AppAction::None
         }
     }
 
     pub fn refresh(&mut self) {
+        if self.pending_load.take().is_some() {
+            self.profile_load_attempted = false;
+        }
         // Don't set loading here - it will be set when actually triggering a backend task
         // This prevents stuck loading states
         self.loading = false;
@@ -261,27 +270,30 @@ impl ProfileScreen {
             let bio = self.edit_bio.trim();
             let avatar_url = self.edit_avatar_url.trim();
 
-            // Trigger the actual DashPay profile update task
-            AppAction::BackendTask(BackendTask::DashPayTask(Box::new(
-                DashPayTask::UpdateProfile {
-                    identity,
-                    display_name: if display_name.is_empty() {
-                        None
-                    } else {
-                        Some(display_name.to_string())
-                    },
-                    bio: if bio.is_empty() {
-                        None
-                    } else {
-                        Some(bio.to_string())
-                    },
-                    avatar_url: if avatar_url.is_empty() {
-                        None
-                    } else {
-                        Some(avatar_url.to_string())
-                    },
+            let owner = identity.identity.id();
+            let task = BackendTask::DashPayTask(Box::new(DashPayTask::UpdateProfile {
+                identity,
+                display_name: if display_name.is_empty() {
+                    None
+                } else {
+                    Some(display_name.to_string())
                 },
-            )))
+                bio: if bio.is_empty() {
+                    None
+                } else {
+                    Some(bio.to_string())
+                },
+                avatar_url: if avatar_url.is_empty() {
+                    None
+                } else {
+                    Some(avatar_url.to_string())
+                },
+            }));
+            let context = BackendTaskContext::for_dispatch(&task);
+            self.pending_save = Some((owner, context.clone()));
+            self.pending_load = None;
+            self.loading = false;
+            AppAction::BackendTaskWithContext { task, context }
         } else {
             MessageBanner::set_global(
                 self.app_context.egui_ctx(),
@@ -380,6 +392,9 @@ impl ProfileScreen {
                     );
 
                     if response.changed() {
+                        self.pending_load = None;
+                        self.pending_save = None;
+                        self.saving = false;
                         // Reset state when identity changes
                         self.profile = None;
                         self.profile_load_attempted = false;
@@ -1041,26 +1056,69 @@ impl ProfileScreen {
         action
     }
 
-    pub fn display_message(&mut self, _message: &str, message_type: MessageType) {
-        // Banner display is handled globally by AppState; this is only for side-effects.
-        if matches!(message_type, MessageType::Error | MessageType::Warning) {
+    fn owns_request(
+        &self,
+        pending: &Option<(dash_sdk::platform::Identifier, BackendTaskContext)>,
+        context: &BackendTaskContext,
+    ) -> bool {
+        pending.as_ref().is_some_and(|(owner, expected)| {
+            expected == context
+                && self
+                    .selected_identity
+                    .as_ref()
+                    .is_some_and(|identity| identity.identity.id() == *owner)
+        })
+    }
+
+    /// Apply only this screen's current profile request; avatars remain keyed by URL.
+    pub fn display_backend_task_result(
+        &mut self,
+        context: &BackendTaskContext,
+        result: BackendTaskSuccessResult,
+    ) {
+        match &result {
+            BackendTaskSuccessResult::DashPayAvatar { .. } => {}
+            BackendTaskSuccessResult::DashPayProfile(_)
+                if self.owns_request(&self.pending_load, context) =>
+            {
+                self.pending_load = None;
+                self.loading = false;
+                self.profile_load_attempted = true;
+            }
+            BackendTaskSuccessResult::DashPayProfileUpdated(owner)
+                if self.owns_request(&self.pending_save, context)
+                    && self
+                        .selected_identity
+                        .as_ref()
+                        .is_some_and(|identity| identity.identity.id() == *owner) =>
+            {
+                self.pending_save = None;
+                self.pending_load = None;
+                self.loading = false;
+                self.saving = false;
+            }
+            _ => return,
+        }
+        self.apply_profile_result(result);
+    }
+
+    /// Release only the matching pending operation after a backend failure.
+    pub fn display_backend_task_error(&mut self, context: &BackendTaskContext) {
+        if self.owns_request(&self.pending_load, context) {
+            self.pending_load = None;
             self.loading = false;
+        }
+        if self.owns_request(&self.pending_save, context) {
+            self.pending_save = None;
             self.saving = false;
         }
     }
 
-    pub fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
-        // Avatar results arrive independently of profile load/save; route them
-        // without disturbing those loading states.
+    fn apply_profile_result(&mut self, result: BackendTaskSuccessResult) {
         if let BackendTaskSuccessResult::DashPayAvatar { url, bytes } = result {
             self.avatar_cache.store(url, bytes);
             return;
         }
-
-        // Always clear loading and saving states first
-        self.loading = false;
-        self.saving = false;
-        self.profile_load_attempted = true;
 
         match result {
             BackendTaskSuccessResult::DashPayProfile(profile_data) => {

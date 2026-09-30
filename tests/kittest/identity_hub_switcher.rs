@@ -469,6 +469,11 @@ fn ui_polish_detail_breadcrumb_opens_picker_repeatedly() {
 fn ui_polish_username_registration_breadcrumb_opens_all_identities() {
     with_identity_hub(|mut harness, app_context| {
         let alpha = seed_identity(&app_context, 1, "Username Alpha");
+        let mut unnamed = app_context.load_local_user_identities().unwrap().remove(0);
+        unnamed.dpns_names.clear();
+        app_context
+            .insert_local_qualified_identity(&unnamed, &None)
+            .unwrap();
         seed_identity(&app_context, 2, "Username Beta");
         app_context.set_selected_identity(Some(alpha));
         harness.run_steps(5);

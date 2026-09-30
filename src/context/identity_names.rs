@@ -21,6 +21,17 @@ impl ProfileName {
 }
 
 impl AppContext {
+    /// Read persisted profile fields already held in wallet memory without blocking.
+    pub(crate) fn cached_identity_profile(
+        &self,
+        id: Identifier,
+    ) -> Option<crate::model::dashpay::StoredProfile> {
+        self.wallet_backend()
+            .ok()?
+            .dashpay_view()
+            .cached_profile(&id)
+    }
+
     /// Read a profile name without network requests, disk reads, or waiting on wallet state.
     pub fn identity_display_name(&self, id: Identifier) -> Option<String> {
         self.identity_display_name_or(id, None)

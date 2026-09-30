@@ -2356,20 +2356,8 @@ impl WalletSendScreen {
         &self,
         allowed_kinds: &[AddressKind],
         wallets: &[WalletWithSnapshot],
+        loaded_identities: &[QualifiedIdentity],
     ) -> AddressInput {
-        // Filter out the source identity (if any) to prevent self-sends.
-        let source_identity_id = if let Some(SourceSelection::Identity(qi)) = &self.selected_source
-        {
-            Some(qi.identity.id())
-        } else {
-            None
-        };
-        let loaded_identities: Vec<_> = self
-            .get_loaded_identities()
-            .into_iter()
-            .filter(|qi| Some(qi.identity.id()) != source_identity_id)
-            .collect();
-
         let mut builder = AddressInput::new(self.app_context.network)
             .with_label("Send to")
             .with_address_kinds(allowed_kinds)
@@ -2379,12 +2367,26 @@ impl WalletSendScreen {
             builder = builder.with_wallets(wallets);
         }
 
-        // Add identities for autocomplete (searchable by alias/DPNS name).
+        // Add identities for autocomplete by profile name or username.
         if !loaded_identities.is_empty() {
-            builder = builder.with_identities(Some(&self.app_context), &loaded_identities);
+            builder = builder.with_identities(Some(&self.app_context), loaded_identities);
         }
 
         builder
+    }
+
+    fn recipient_identities(&self) -> Vec<QualifiedIdentity> {
+        // Filter out the source identity (if any) to prevent self-sends.
+        let source_identity_id = if let Some(SourceSelection::Identity(qi)) = &self.selected_source
+        {
+            Some(qi.identity.id())
+        } else {
+            None
+        };
+        self.get_loaded_identities()
+            .into_iter()
+            .filter(|qi| Some(qi.identity.id()) != source_identity_id)
+            .collect()
     }
 
     fn address_input_wallets(&self) -> Vec<WalletWithSnapshot> {
@@ -2434,15 +2436,32 @@ impl WalletSendScreen {
     /// the widget and refreshes its entries when snapshot-backed sources change.
     fn render_destination_input_with_kinds(&mut self, ui: &mut Ui, allowed_kinds: &[AddressKind]) {
         let wallets = self.address_input_wallets();
-        let signature = Self::address_input_snapshot_signature(&wallets);
+        let identities = self.recipient_identities();
+        let mut signature = DefaultHasher::new();
+        Self::address_input_snapshot_signature(&wallets).hash(&mut signature);
+        for identity in &identities {
+            identity.identity.id().hash(&mut signature);
+            identity.identity.balance().hash(&mut signature);
+            self.app_context
+                .identity_display_label(identity)
+                .hash(&mut signature);
+            identity
+                .dpns_names
+                .first()
+                .map(|name| &name.name)
+                .hash(&mut signature);
+        }
+        let signature = signature.finish();
         if self.address_input_snapshot_signature != Some(signature) {
             if let Some(address_input) = &mut self.address_input {
                 address_input.set_wallets(&wallets);
+                address_input.set_identities(Some(&self.app_context), &identities);
             }
             self.address_input_snapshot_signature = Some(signature);
         }
         if self.address_input.is_none() {
-            self.address_input = Some(self.build_address_input(allowed_kinds, &wallets));
+            self.address_input =
+                Some(self.build_address_input(allowed_kinds, &wallets, &identities));
         }
         let resp = self
             .address_input
@@ -5343,6 +5362,120 @@ mod tests {
 
         let on_top = FeePreview::on_top(u64::MAX, 5);
         assert_eq!(on_top.total_debit_credits, u64::MAX);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn recipient_names_refresh_without_replacing_typed_search() {
+        use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
+        use crate::model::qualified_identity::{DPNSNameInfo, IdentityStatus, IdentityType};
+        use dash_sdk::dpp::{identity::Identity, version::PlatformVersion};
+        let (mut screen, _dir) = send_screen();
+        let (sender, _receiver) = tokio::sync::mpsc::channel(32);
+        screen
+            .app_context
+            .ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+                sender,
+                screen.app_context.egui_ctx().clone(),
+            ))
+            .await
+            .unwrap();
+        let wallet = Wallet::new_from_seed([1; 64], Network::Testnet, None, None).unwrap();
+        let (hash, wallet) = screen
+            .app_context
+            .register_wallet(
+                wallet,
+                &[1; 64],
+                crate::model::wallet::birth_height::WalletOrigin::Fresh,
+            )
+            .unwrap();
+        screen.selected_wallet = Some(wallet);
+        let id = dash_sdk::platform::Identifier::from([42; 32]);
+        let identity = QualifiedIdentity {
+            identity: Identity::create_basic_identity(id, PlatformVersion::latest()).unwrap(),
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: Some("Ignored device name".into()),
+            private_keys: KeyStorage::default(),
+            dpns_names: vec![DPNSNameInfo {
+                name: "recipient.dash".into(),
+                acquired_at: 0,
+            }],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: Network::Testnet,
+        };
+        screen
+            .app_context
+            .insert_local_qualified_identity(&identity, &Some((hash, 0)))
+            .unwrap();
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, screen: &mut WalletSendScreen| screen.render_destination_input(ui),
+            screen,
+        );
+        harness.run();
+        let input = harness.state_mut().address_input.take().unwrap();
+        harness.state_mut().address_input = Some(input.with_initial_value("Later"));
+        harness.run();
+        assert!(
+            harness
+                .state()
+                .address_input
+                .as_ref()
+                .unwrap()
+                .rendered_rows()
+                .is_empty()
+        );
+        harness
+            .state()
+            .app_context
+            .save_identity_profile_name(id, Some("Later profile"));
+        harness.run();
+        let rows = harness
+            .state()
+            .address_input
+            .as_ref()
+            .unwrap()
+            .rendered_rows();
+        assert_eq!(
+            rows.len(),
+            1,
+            "late profile name must match the existing typed query"
+        );
+        assert_eq!(rows[0].name.as_deref(), Some("Later profile"));
+        harness
+            .state()
+            .app_context
+            .save_identity_profile_name(id, None);
+        harness.run();
+        assert!(
+            harness
+                .state()
+                .address_input
+                .as_ref()
+                .unwrap()
+                .rendered_rows()
+                .is_empty(),
+            "clearing the profile must keep the typed query and remove its old match"
+        );
+        let input = harness.state_mut().address_input.take().unwrap();
+        harness.state_mut().address_input = Some(input.with_initial_value("recipient"));
+        harness.run();
+        assert_eq!(
+            harness
+                .state()
+                .address_input
+                .as_ref()
+                .unwrap()
+                .rendered_rows()[0]
+                .name
+                .as_deref(),
+            Some("recipient.dash")
+        );
     }
 
     #[test]

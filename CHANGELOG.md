@@ -147,6 +147,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Refresh identity recipient names without clearing typed searches, show cached profile avatars while refreshing, and keep delayed profile results tied to their owning screen request.
+
 - Identity cards fit the window, display available profile avatars, and scroll
   to every identity and the add/load actions. Clickable identity controls show a
   link cursor. The Identities breadcrumb opens all User identities; choosing a

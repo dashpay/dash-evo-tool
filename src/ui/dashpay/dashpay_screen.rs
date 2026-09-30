@@ -1,6 +1,6 @@
 use crate::app::{AppAction, BackendTasksExecutionMode, DesiredAppAction};
-use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
+use crate::backend_task::{BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
 use crate::ui::components::left_panel::add_left_panel;
@@ -173,7 +173,7 @@ impl ScreenLike for DashPayScreen {
                     .contact_requests
                     .display_message(message, message_type);
             }
-            DashPaySubscreen::Profile => self.profile_screen.display_message(message, message_type),
+            DashPaySubscreen::Profile => {}
             DashPaySubscreen::Payments => {
                 self.payment_history.display_message(message, message_type)
             }
@@ -185,7 +185,9 @@ impl ScreenLike for DashPayScreen {
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         match self.dashpay_subscreen {
-            DashPaySubscreen::Profile => self.profile_screen.display_task_result(result.clone()),
+            DashPaySubscreen::Profile => self
+                .profile_screen
+                .display_backend_task_result(&BackendTaskContext::Unknown, result),
             DashPaySubscreen::Contacts => {
                 // Forward to both contacts list and embedded contact requests
                 self.contacts_list.display_task_result(result.clone());
@@ -197,6 +199,25 @@ impl ScreenLike for DashPayScreen {
             DashPaySubscreen::ProfileSearch => {
                 // ProfileSearch is a separate screen, not embedded here
             }
+        }
+    }
+
+    fn display_backend_task_result(
+        &mut self,
+        context: &BackendTaskContext,
+        result: BackendTaskSuccessResult,
+    ) {
+        if self.dashpay_subscreen == DashPaySubscreen::Profile {
+            self.profile_screen
+                .display_backend_task_result(context, result);
+        } else {
+            self.display_task_result(result);
+        }
+    }
+
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+        if self.dashpay_subscreen == DashPaySubscreen::Profile {
+            self.profile_screen.display_backend_task_error(context);
         }
     }
 

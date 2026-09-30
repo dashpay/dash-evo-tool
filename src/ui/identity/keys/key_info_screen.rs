@@ -947,12 +947,12 @@ impl KeyInfoScreen {
     fn breadcrumb(&self) -> Vec<(&'static str, AppAction)> {
         match self.parent {
             Some(parent) => vec![
-                ("Identities", AppAction::GoToMainScreen),
+                ("Identities", AppAction::OpenIdentityPicker),
                 (parent, AppAction::PopScreenAndRefresh),
                 ("Key Info", AppAction::None),
             ],
             None => vec![
-                ("Identities", AppAction::GoToMainScreen),
+                ("Identities", AppAction::OpenIdentityPicker),
                 ("Key Info", AppAction::None),
             ],
         }

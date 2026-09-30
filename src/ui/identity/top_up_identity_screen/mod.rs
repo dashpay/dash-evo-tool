@@ -824,7 +824,7 @@ impl ScreenLike for TopUpIdentityScreen {
             ui,
             &self.app_context,
             vec![
-                ("Identities", AppAction::GoToMainScreen),
+                ("Identities", AppAction::OpenIdentityPicker),
                 ("Add Funds", AppAction::None),
             ],
             vec![],

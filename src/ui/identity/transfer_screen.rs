@@ -573,7 +573,7 @@ impl ScreenLike for TransferScreen {
             ui,
             &self.app_context,
             vec![
-                ("Identities", AppAction::GoToMainScreen),
+                ("Identities", AppAction::OpenIdentityPicker),
                 ("Transfer", AppAction::None),
             ],
             vec![],

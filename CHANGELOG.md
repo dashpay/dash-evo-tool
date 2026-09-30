@@ -147,6 +147,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Identity cards fit the window, display available profile avatars, and scroll
+  to every identity and the add/load actions. Clickable identity controls show a
+  link cursor. The Identities breadcrumb consistently opens the picker, filtered
+  to the selected wallet, with an All wallets option to clear the filter.
+
 - **Identity keys added by hand no longer disappear**: unlocking a wallet,
   starting the app or loading an identity from a wallet refreshed the identity
   with only the keys the wallet can recreate, so keys you had pasted or

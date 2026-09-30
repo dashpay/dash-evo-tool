@@ -1291,6 +1291,8 @@ pub enum AppAction {
     PopScreen,
     PopScreenAndRefresh,
     GoToMainScreen,
+    /// Open the wallet-scoped identity picker and dismiss pushed screens.
+    OpenIdentityPicker,
     SwitchNetwork(Network),
     SetMainScreen(RootScreenType),
     SetMainScreenThenPopScreen(RootScreenType),
@@ -2514,7 +2516,11 @@ impl AppState {
         }
     }
 
-    fn route_contact_request_result_to_hidden_hub(&mut self, result: &BackendTaskSuccessResult) {
+    fn route_identity_result_to_hidden_hub(
+        &mut self,
+        context: &BackendTaskContext,
+        result: &BackendTaskSuccessResult,
+    ) {
         if identity_hub_is_visible(self.selected_main_screen, self.screen_stack.is_empty()) {
             return;
         }
@@ -2522,11 +2528,23 @@ impl AppState {
             .main_screens
             .get_mut(&RootScreenType::RootScreenIdentityHub)
         {
-            hub.handle_contact_request_result(result);
+            if matches!(
+                result,
+                BackendTaskSuccessResult::DashPayProfile(_)
+                    | BackendTaskSuccessResult::DashPayAvatar { .. }
+            ) {
+                hub.display_backend_task_result(context, result.clone());
+            } else {
+                hub.handle_contact_request_result(result);
+            }
         }
     }
 
-    fn route_contact_request_error_to_hidden_hub(&mut self, error: &TaskError) {
+    fn route_identity_error_to_hidden_hub(
+        &mut self,
+        context: &BackendTaskContext,
+        error: &TaskError,
+    ) {
         if identity_hub_is_visible(self.selected_main_screen, self.screen_stack.is_empty()) {
             return;
         }
@@ -2534,6 +2552,7 @@ impl AppState {
             .main_screens
             .get_mut(&RootScreenType::RootScreenIdentityHub)
         {
+            hub.display_backend_task_error(context, error);
             hub.handle_contact_request_error(error);
         }
     }
@@ -2923,7 +2942,7 @@ impl App for AppState {
                 } => {
                     let unboxed_message = *message;
                     clear_profile_saving_banner_after_success(ctx, &context, &unboxed_message);
-                    self.route_contact_request_result_to_hidden_hub(&unboxed_message);
+                    self.route_identity_result_to_hidden_hub(&context, &unboxed_message);
                     match unboxed_message {
                         BackendTaskSuccessResult::RemovedIdentities { .. } => {
                             deliver_identity_removal_result(
@@ -3183,7 +3202,7 @@ impl App for AppState {
                         &context,
                         &err,
                     );
-                    self.route_contact_request_error_to_hidden_hub(&err);
+                    self.route_identity_error_to_hidden_hub(&context, &err);
                     let is_database_clear = context == BackendTaskContext::ClearNetworkDatabase;
                     let suppress_stale_error = !is_database_clear
                         && !recovery_delivered
@@ -3474,6 +3493,13 @@ impl App for AppState {
                         screen.refresh();
                     } else {
                         self.active_root_screen_mut().refresh_on_arrival();
+                    }
+                }
+                AppAction::OpenIdentityPicker => {
+                    self.screen_stack.clear();
+                    self.set_main_screen(RootScreenType::RootScreenIdentityHub);
+                    if let Screen::IdentityHubScreen(hub) = self.active_root_screen_mut() {
+                        hub.open_picker();
                     }
                 }
                 AppAction::GoToMainScreen => {

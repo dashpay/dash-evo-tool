@@ -387,7 +387,7 @@ impl ScreenLike for WithdrawalScreen {
             ui,
             &self.app_context,
             vec![
-                ("Identities", AppAction::GoToMainScreen),
+                ("Identities", AppAction::OpenIdentityPicker),
                 ("Withdraw", AppAction::None),
             ],
             vec![],

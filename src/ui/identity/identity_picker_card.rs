@@ -3,8 +3,7 @@
 //! Design reference: `docs/ai-design/2026-04-22-identity-dashpay-redesign/design-spec.md`
 //! §B.14 (Identity picker, Frame 2). The card displays:
 //!
-//! * A 72×72 circular avatar or monogram glyph (rendered via a colored circle
-//!   with an initial letter — avatar assets land in a follow-up task).
+//! * A 72×72 circular profile avatar, with an initial-letter fallback.
 //! * An identity-type badge pill anchored near the top.
 //! * A heading line using the priority:
 //!   `display_name → DPNS handle → shortened Identity ID`.
@@ -25,15 +24,18 @@
 //! `show()` returns a typed response implementing [`ComponentResponse`].
 
 use super::identity_pill::shorten_id;
+use crate::backend_task::BackendTask;
 use crate::model::qualified_identity::IdentityType;
+use crate::ui::components::avatar::Avatar;
 use crate::ui::components::component_trait::ComponentResponse;
+use crate::ui::state::AvatarCache;
 use crate::ui::theme::DashColors;
 use eframe::egui::{
     self, Color32, CornerRadius, FontId, Frame, Margin, Response, RichText, Sense, Stroke, Ui,
     Vec2, WidgetInfo, WidgetType,
 };
 
-/// Fixed card width used by the grid layout. Matches the design-spec
+/// Minimum outer card width used by the grid layout. Matches the design-spec
 /// `minmax(260px, 1fr)` rule for the picker grid.
 pub const CARD_MIN_WIDTH: f32 = 260.0;
 
@@ -120,6 +122,8 @@ pub struct IdentityPickerCardResponse {
     pub clicked: bool,
     /// The identity id associated with the card (echoed from construction).
     pub identity_id: String,
+    /// Avatar fetch to dispatch through the backend task system.
+    pub avatar_fetch: Option<BackendTask>,
     changed_value: Option<String>,
 }
 
@@ -133,6 +137,7 @@ impl IdentityPickerCardResponse {
         Self {
             clicked,
             identity_id,
+            avatar_fetch: None,
             changed_value,
         }
     }
@@ -170,6 +175,8 @@ pub struct IdentityPickerCard {
     balance_label: String,
     /// Optional fiat conversion line (e.g. `≈ 45.25 USD`). Empty = not shown.
     fiat_label: String,
+    width: Option<f32>,
+    avatar_url: Option<String>,
     tooltip: String,
 }
 
@@ -190,6 +197,8 @@ impl IdentityPickerCard {
             identity_type,
             balance_label: balance_label.into(),
             fiat_label: String::new(),
+            width: None,
+            avatar_url: None,
             tooltip: String::new(),
         }
     }
@@ -246,8 +255,21 @@ impl IdentityPickerCard {
         }
     }
 
+    /// Set the card's outer width, including its frame.
+    pub fn with_width(mut self, width: f32) -> Self {
+        self.width = Some(width);
+        self
+    }
+
+    /// Use the identity's published avatar when available.
+    pub fn with_avatar_url(mut self, url: &str) -> Self {
+        self.avatar_url = Some(url.to_owned());
+        self
+    }
+
     /// Render and return the response.
-    pub fn show(&self, ui: &mut Ui) -> IdentityPickerCardResponse {
+    pub fn show(&self, ui: &mut Ui, avatars: &mut AvatarCache) -> IdentityPickerCardResponse {
+        let mut avatar_fetch = None;
         let dark_mode = ui.ctx().global_style().visuals.dark_mode;
 
         let border = Stroke::new(1.0, DashColors::border(dark_mode));
@@ -264,20 +286,33 @@ impl IdentityPickerCard {
             .corner_radius(CornerRadius::same(16))
             .inner_margin(Margin::symmetric(16, 16));
 
-        // Pre-allocate a fixed-size region so every card in the grid has a
-        // predictable footprint. The frame stretches to fill.
-        let desired_size = Vec2::new(CARD_MIN_WIDTH, CARD_HEIGHT);
-
         // `Frame::show` senses only hover on the outer allocation; to pick up
         // clicks we read the response from an interact() call on the frame's
         // rect after the content renders.
+        let outer_width = self
+            .width
+            .unwrap_or(CARD_MIN_WIDTH)
+            .min(ui.available_width());
+        let desired_size = Vec2::new(
+            (outer_width - frame.total_margin().sum().x).max(0.0),
+            CARD_HEIGHT,
+        );
         let inner = frame.show(ui, |ui| {
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
             ui.set_min_size(desired_size);
             ui.set_max_width(desired_size.x);
             ui.vertical(|ui| {
                 // Top row: avatar (left) + badge (right).
                 ui.horizontal(|ui| {
-                    draw_monogram(ui, &heading, self.display_name.is_some(), dark_mode);
+                    if let Some(url) = self
+                        .avatar_url
+                        .as_deref()
+                        .filter(|url| !url.is_empty() && !avatars.is_failed(url))
+                    {
+                        avatar_fetch = Avatar::new(Some(url), AVATAR_SIZE).show(ui, avatars).fetch;
+                    } else {
+                        draw_monogram(ui, &heading, self.display_name.is_some(), dark_mode);
+                    }
                     ui.add_space(8.0);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
                         draw_type_badge(ui, badge_label, dark_mode);
@@ -334,7 +369,9 @@ impl IdentityPickerCard {
         let id = ui
             .id()
             .with(("identity-picker-card", &self.identity_id_base58));
-        let response: Response = ui.interact(rect, id, Sense::click());
+        let response: Response = ui
+            .interact(rect, id, Sense::click())
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
         let response = if !self.tooltip.is_empty() {
             response.on_hover_text(&self.tooltip)
         } else {
@@ -354,12 +391,14 @@ impl IdentityPickerCard {
             WidgetInfo::labeled(WidgetType::Button, true, format!("Open {heading_for_a11y}"))
         });
 
-        IdentityPickerCardResponse::new(self.identity_id_base58.clone(), response.clicked())
+        let mut result =
+            IdentityPickerCardResponse::new(self.identity_id_base58.clone(), response.clicked());
+        result.avatar_fetch = avatar_fetch;
+        result
     }
 }
 
-/// Paint a simple circular monogram as a lightweight avatar stand-in. Real
-/// avatar assets land in a follow-up task (see design-spec §B.14).
+/// Paint the circular initial used when a profile avatar is unavailable.
 ///
 /// Shared with the Masternodes card grid (`ui/masternodes/card.rs`), which
 /// reuses the picker's visual language.

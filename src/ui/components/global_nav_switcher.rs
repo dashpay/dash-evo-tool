@@ -49,6 +49,8 @@ pub enum GlobalNavEffect {
     NavigateToRoot(RootScreenType),
     /// Switch the operating wallet.
     SwitchWallet(WalletSeedHash),
+    /// Show identities across all wallets.
+    ClearWallet,
     /// Select the app-global User identity.
     SelectIdentity(Identifier),
     /// Select a page-scoped object (the masternode/evonode in view). **Never**
@@ -221,7 +223,6 @@ fn derive_app_global_context(
         app_context
             .selected_wallet_hash()
             .filter(|h| wallets.iter().any(|(wh, _)| wh == h))
-            .or_else(|| wallets.first().map(|(h, _)| *h))
     };
     let active_wallet_name = active_wallet
         .and_then(|h| wallets.iter().find(|(wh, _)| *wh == h))
@@ -280,10 +281,12 @@ pub fn render(
 
     ui.horizontal(|ui| {
         // --- Segment 1: page-aware link --------------------------------------
-        let link = ui.add(
-            egui::Label::new(RichText::new(spec.segment1_label()).color(DashColors::DASH_BLUE))
-                .sense(Sense::click()),
-        );
+        let link = ui
+            .add(
+                egui::Label::new(RichText::new(spec.segment1_label()).color(DashColors::DASH_BLUE))
+                    .sense(Sense::click()),
+            )
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
         if link.clicked() {
             effect = GlobalNavEffect::NavigateToRoot(spec.segment1_target());
         }
@@ -405,7 +408,9 @@ fn render_wallet_pill(
     }
 
     // Consumed: the original count-based rendering.
-    let wallet_mode = if active_is_wallet_less {
+    let wallet_mode = if ctx_data.is_some() && wallet_count > 0 {
+        BreadcrumbPillMode::Interactive
+    } else if active_is_wallet_less {
         BreadcrumbPillMode::Placeholder
     } else {
         wallet_pill_mode(wallet_count)
@@ -427,7 +432,12 @@ fn render_wallet_pill(
                 .show(ui);
         }
         BreadcrumbPillMode::Interactive => {
-            let resp = BreadcrumbPill::new(active_wallet_name.clone())
+            let label = if active_wallet.is_none() {
+                "All wallets"
+            } else {
+                &active_wallet_name
+            };
+            let resp = BreadcrumbPill::new(label)
                 .with_icon("💼")
                 .with_tooltip(tt_wallet_interactive())
                 .show(ui);
@@ -439,6 +449,16 @@ fn render_wallet_pill(
                     .frame(egui::Frame::popup(ui.style()).fill(DashColors::popup_fill(dark_mode)))
                     .show(|ui| {
                         ui.set_min_width(220.0);
+                        if ctx_data.is_some() {
+                            if ui
+                                .selectable_label(active_wallet.is_none(), "All wallets")
+                                .clicked()
+                            {
+                                *effect = GlobalNavEffect::ClearWallet;
+                                ui.close();
+                            }
+                            ui.separator();
+                        }
                         for (h, name) in wallets {
                             let is_active = active_wallet == Some(*h);
                             if ui
@@ -539,62 +559,67 @@ fn render_app_global_identity_pill(
             .show(|ui| {
                 ui.set_min_width(240.0);
 
-                // Inline search once the scoped list is long (§A.3).
-                let filter = if data.scoped.len() >= SEARCH_THRESHOLD {
-                    ui.add(
-                        egui::TextEdit::singleline(selection.identity_search_mut())
-                            .hint_text("Search identities"),
-                    );
-                    selection.identity_search().trim().to_lowercase()
-                } else {
-                    String::new()
-                };
+                egui::ScrollArea::vertical()
+                    .id_salt(("identity_switcher_list", data.active_wallet))
+                    .max_height(ui.available_height().min(400.0))
+                    .show(ui, |ui| {
+                        // Inline search once the scoped list is long (§A.3).
+                        let filter = if data.scoped.len() >= SEARCH_THRESHOLD {
+                            ui.add(
+                                egui::TextEdit::singleline(selection.identity_search_mut())
+                                    .hint_text("Search identities"),
+                            );
+                            selection.identity_search().trim().to_lowercase()
+                        } else {
+                            String::new()
+                        };
 
-                for qi in &data.scoped {
-                    let row = identity_label(qi);
-                    if !filter.is_empty() && !row.to_lowercase().contains(&filter) {
-                        continue;
-                    }
-                    let id = qi.identity.id();
-                    let is_active = data.active_id == Some(id);
-                    if ui.selectable_label(is_active, row).clicked() {
-                        *effect = GlobalNavEffect::SelectIdentity(id);
-                        ui.close();
-                    }
-                }
+                        for qi in &data.scoped {
+                            let row = identity_label(qi);
+                            if !filter.is_empty() && !row.to_lowercase().contains(&filter) {
+                                continue;
+                            }
+                            let id = qi.identity.id();
+                            let is_active = data.active_id == Some(id);
+                            if ui.selectable_label(is_active, row).clicked() {
+                                *effect = GlobalNavEffect::SelectIdentity(id);
+                                ui.close();
+                            }
+                        }
 
-                if !data.no_wallet.is_empty() {
-                    ui.separator();
-                    ui.label(
-                        RichText::new("Identities without a wallet on this device")
-                            .small()
-                            .color(DashColors::text_secondary(dark_mode)),
-                    );
-                    for qi in &data.no_wallet {
-                        let id = qi.identity.id();
-                        let is_active = data.active_id == Some(id);
-                        if ui.selectable_label(is_active, identity_label(qi)).clicked() {
-                            *effect = GlobalNavEffect::SelectIdentity(id);
+                        if !data.no_wallet.is_empty() {
+                            ui.separator();
+                            ui.label(
+                                RichText::new("Identities without a wallet on this device")
+                                    .small()
+                                    .color(DashColors::text_secondary(dark_mode)),
+                            );
+                            for qi in &data.no_wallet {
+                                let id = qi.identity.id();
+                                let is_active = data.active_id == Some(id);
+                                if ui.selectable_label(is_active, identity_label(qi)).clicked() {
+                                    *effect = GlobalNavEffect::SelectIdentity(id);
+                                    ui.close();
+                                }
+                            }
+                        }
+
+                        ui.separator();
+                        if ui.button("Create a new identity").clicked() {
+                            *effect = GlobalNavEffect::AddIdentityCreate;
                             ui.close();
                         }
-                    }
-                }
-
-                ui.separator();
-                if ui.button("Create a new identity").clicked() {
-                    *effect = GlobalNavEffect::AddIdentityCreate;
-                    ui.close();
-                }
-                if ui.button("Load an existing identity").clicked() {
-                    *effect = GlobalNavEffect::AddIdentityLoad;
-                    ui.close();
-                }
-                if app_context.user_role().at_least(UserRole::Power)
-                    && ui.button("Create multiple test identities").clicked()
-                {
-                    *effect = GlobalNavEffect::CreateTestIdentities;
-                    ui.close();
-                }
+                        if ui.button("Load an existing identity").clicked() {
+                            *effect = GlobalNavEffect::AddIdentityLoad;
+                            ui.close();
+                        }
+                        if app_context.user_role().at_least(UserRole::Power)
+                            && ui.button("Create multiple test identities").clicked()
+                        {
+                            *effect = GlobalNavEffect::CreateTestIdentities;
+                            ui.close();
+                        }
+                    });
             });
     }
 }

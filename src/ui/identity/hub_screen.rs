@@ -89,6 +89,8 @@ pub struct IdentityHubScreen {
     /// removed in the platform-wallet migration). Read by the Home, Contacts,
     /// and Settings tabs; loads are dispatched after rendering each frame.
     profile_cache: super::profile_cache::ProfileCache,
+    avatar_cache: crate::ui::state::AvatarCache,
+    pending_avatars: Vec<BackendTask>,
     /// Breadcrumb-switcher view state (picker override + dropdown search
     /// buffers). The active identity itself is app-scoped on `AppContext`.
     selection: HubSelection,
@@ -121,6 +123,8 @@ impl IdentityHubScreen {
             pending_unloads: BTreeSet::new(),
             contacts_state: super::contacts::ContactsState::default(),
             profile_cache: super::profile_cache::ProfileCache::default(),
+            avatar_cache: crate::ui::state::AvatarCache::default(),
+            pending_avatars: Vec::new(),
             selection: HubSelection::default(),
             contact_info_overwrite_dialog: None,
             pending_contact_info_tasks: HashMap::new(),
@@ -210,6 +214,8 @@ impl IdentityHubScreen {
         self.profile_cache.reset();
         self.selection.clear_picker_override();
         self.selection.clear_searches();
+        self.avatar_cache.invalidate();
+        self.pending_avatars.clear();
         self.load_error_banner.take_and_clear();
     }
 
@@ -328,6 +334,11 @@ impl IdentityHubScreen {
         true
     }
 
+    /// Show the picker while retaining the selected wallet scope.
+    pub(crate) fn open_picker(&mut self) {
+        self.selection.open_picker();
+    }
+
     /// Apply a breadcrumb-switcher effect: wallet / identity switches mutate the
     /// app-scoped selection and reset identity-scoped caches; add-flows route to
     /// the existing screens.
@@ -338,9 +349,16 @@ impl IdentityHubScreen {
                 self.selection.open_picker();
                 AppAction::None
             }
+            BreadcrumbEffect::ClearWallet => {
+                self.app_context.set_selected_hd_wallet(None);
+                self.selection.open_picker();
+                self.reset_contacts_for_identity_change();
+                self.profile_cache.reset();
+                AppAction::None
+            }
             BreadcrumbEffect::SwitchWallet(hash) => {
                 self.app_context.set_selected_hd_wallet(Some(hash));
-                self.selection.clear_picker_override();
+                self.selection.open_picker();
                 self.reset_contacts_for_identity_change();
                 self.profile_cache.reset();
                 AppAction::None
@@ -358,7 +376,12 @@ impl IdentityHubScreen {
             // The bulk-create flow is not wired yet; route to the single-create
             // screen so the dev entry is functional in the interim.
             BreadcrumbEffect::AddIdentityCreate | BreadcrumbEffect::CreateTestIdentities => {
-                AppAction::AddScreen(ScreenType::AddNewIdentity.create_screen(&self.app_context))
+                AppAction::AddScreen(crate::ui::Screen::AddNewIdentityScreen(
+                    super::add_new_identity_screen::AddNewIdentityScreen::new_with_wallet(
+                        &self.app_context,
+                        self.app_context.selected_wallet_hash(),
+                    ),
+                ))
             }
             BreadcrumbEffect::AddIdentityLoad => AppAction::AddScreen(
                 ScreenType::AddExistingIdentity.create_screen(&self.app_context),
@@ -376,6 +399,8 @@ impl ScreenLike for IdentityHubScreen {
         self.contacts_state.reset();
         self.profile_cache.reset();
         self.selection.clear_searches();
+        self.avatar_cache.invalidate();
+        self.pending_avatars.clear();
     }
 
     fn refresh_on_arrival(&mut self) {
@@ -417,11 +442,28 @@ impl ScreenLike for IdentityHubScreen {
             Vec::new()
         } else {
             // FR-6: User identities only — the picker grid never lists MN/Evonode.
-            self.app_context
-                .load_local_user_identities()
-                .unwrap_or_default()
+            match self.app_context.selected_wallet_hash() {
+                Some(hash) => self
+                    .app_context
+                    .load_local_qualified_identities_for_wallet(&hash)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|identity| {
+                        identity.identity_type
+                            == crate::model::qualified_identity::IdentityType::User
+                    })
+                    .collect(),
+                None => self
+                    .app_context
+                    .load_local_user_identities()
+                    .unwrap_or_default(),
+            }
         };
-        let view = if matches!(landing, HubLanding::Onboarding) {
+        let view = if self.selection.picker_override()
+            || self.app_context.selected_wallet_hash().is_some() && frame_identities.is_empty()
+        {
+            HubView::Picker
+        } else if matches!(landing, HubLanding::Onboarding) {
             HubView::Onboarding
         } else {
             let active = self.app_context.selected_identity_id();
@@ -445,6 +487,9 @@ impl ScreenLike for IdentityHubScreen {
                     ui,
                     &self.app_context,
                     &frame_identities,
+                    &mut self.profile_cache,
+                    &mut self.avatar_cache,
+                    &mut self.pending_avatars,
                     Some(&mut picked_identity),
                 ),
                 HubView::Home => {
@@ -516,11 +561,6 @@ impl ScreenLike for IdentityHubScreen {
 
         action |= self.apply_breadcrumb_effect(breadcrumb_effect);
 
-        // Dispatch any profile load a tab requested this frame (single load
-        // in flight; the local profile cache was removed in the platform-wallet
-        // migration, so profiles resolve asynchronously via the backend).
-        action |= self.profile_cache.dispatch_pending();
-
         self.prepare_contact_info_dialog();
         if let Some((dialog, key)) = &mut self.contact_info_overwrite_dialog {
             let key = *key;
@@ -549,7 +589,23 @@ impl ScreenLike for IdentityHubScreen {
             }
         }
 
+        if matches!(action, AppAction::None) {
+            action = if let Some(task) = self.pending_avatars.pop() {
+                AppAction::BackendTask(task)
+            } else {
+                self.profile_cache.dispatch_pending()
+            };
+        }
         action
+    }
+
+    fn display_backend_task_result(
+        &mut self,
+        context: &BackendTaskContext,
+        result: BackendTaskSuccessResult,
+    ) {
+        self.profile_cache.record_result(context, &result);
+        self.display_task_result(result);
     }
 
     fn display_message(&mut self, _message: &str, _message_type: MessageType) {
@@ -558,8 +614,10 @@ impl ScreenLike for IdentityHubScreen {
     }
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
-        // Feed an async DashPay profile load back into the cache the tabs read.
-        self.profile_cache.record_result(&result);
+        if let BackendTaskSuccessResult::DashPayAvatar { url, bytes } = result {
+            self.avatar_cache.store(url, bytes);
+            return;
+        }
 
         if self.handle_contact_request_result(&result) {
             return;
@@ -663,6 +721,7 @@ impl ScreenLike for IdentityHubScreen {
     }
 
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+        self.profile_cache.record_error(context);
         if let Some(identity_id) = context.dashpay_profile_update_identity() {
             self.settings_tab
                 .clear_pending_save_for_identity(&identity_id);

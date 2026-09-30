@@ -9,7 +9,7 @@
 
 use crate::app::AppAction;
 use crate::backend_task::dashpay::DashPayTask;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
+use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
@@ -40,9 +40,8 @@ pub struct ProfileCache {
     loaded: HashMap<Identifier, Option<ProfileFields>>,
     /// Identities a load has already been dispatched for (debounce).
     requested: HashSet<Identifier>,
-    /// Identity of the in-flight load. The result variant carries no owner id,
-    /// so it is associated with this id on arrival.
-    in_flight: Option<Identifier>,
+    /// The owner and exact dispatch whose completion this cache accepts.
+    in_flight: Option<(Identifier, BackendTaskContext)>,
     /// Identities a tab asked for this frame that still need a load dispatched.
     wanted: Vec<QualifiedIdentity>,
 }
@@ -77,21 +76,30 @@ impl ProfileCache {
         };
         let id = identity.identity.id();
         self.requested.insert(id);
-        self.in_flight = Some(id);
-        AppAction::BackendTask(BackendTask::DashPayTask(Box::new(
-            DashPayTask::LoadProfile { identity },
-        )))
+        let task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadProfile { identity }));
+        let context = BackendTaskContext::for_dispatch(&task);
+        self.in_flight = Some((id, context.clone()));
+        AppAction::BackendTaskWithContext { task, context }
     }
 
     /// Record a `LoadProfile` result against the in-flight identity. Returns
     /// `true` when the result was consumed (a load was in flight).
-    pub fn record_result(&mut self, result: &BackendTaskSuccessResult) -> bool {
+    pub fn record_result(
+        &mut self,
+        context: &BackendTaskContext,
+        result: &BackendTaskSuccessResult,
+    ) -> bool {
         let BackendTaskSuccessResult::DashPayProfile(data) = result else {
             return false;
         };
-        let Some(id) = self.in_flight.take() else {
+        let Some((id, expected)) = self.in_flight.as_ref() else {
             return false;
         };
+        if expected != context {
+            return false;
+        }
+        let id = *id;
+        self.in_flight = None;
         let fields = data
             .clone()
             .map(|(display_name, bio, avatar_url)| ProfileFields {
@@ -101,6 +109,17 @@ impl ProfileCache {
             });
         self.loaded.insert(id, fields);
         true
+    }
+
+    /// Release a failed load so other identities can load; retry it on refresh.
+    pub fn record_error(&mut self, context: &BackendTaskContext) {
+        if self
+            .in_flight
+            .as_ref()
+            .is_some_and(|(_, expected)| expected == context)
+        {
+            self.in_flight = None;
+        }
     }
 
     /// Optimistically record a just-saved profile so every tab reflects it
@@ -114,7 +133,11 @@ impl ProfileCache {
     pub fn record_saved(&mut self, id: Identifier, fields: ProfileFields) {
         self.loaded.insert(id, Some(fields));
         self.requested.remove(&id);
-        if self.in_flight == Some(id) {
+        if self
+            .in_flight
+            .as_ref()
+            .is_some_and(|(loading, _)| *loading == id)
+        {
             self.in_flight = None;
         }
         self.wanted.retain(|q| q.identity.id() != id);

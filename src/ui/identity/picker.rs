@@ -48,6 +48,9 @@ pub fn render(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
     identities: &[QualifiedIdentity],
+    profiles: &mut super::profile_cache::ProfileCache,
+    avatars: &mut crate::ui::state::AvatarCache,
+    pending_avatars: &mut Vec<crate::backend_task::BackendTask>,
     selected_id_out: Option<&mut Option<String>>,
 ) -> AppAction {
     let dark_mode = ui.ctx().global_style().visuals.dark_mode;
@@ -74,52 +77,61 @@ pub fn render(
         ui.add_space(20.0);
     });
 
-    // Grid layout: horizontal flow with manual wrapping.
-    //
-    // We do not use `egui::Grid` because it requires a fixed column count;
-    // the design-spec `repeat(auto-fill, minmax(260px, 1fr))` rule needs the
-    // column count to depend on the available width.
-    let available_width = ui.available_width();
-    let columns = compute_column_count(available_width);
+    egui::ScrollArea::vertical()
+        .id_salt(("identity_picker", app_context.selected_wallet_hash()))
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            let available_width = ui.available_width();
+            let columns = compute_column_count(available_width);
+            let card_width = (available_width - GRID_GAP * (columns - 1) as f32) / columns as f32;
+            if identities.is_empty() && app_context.selected_wallet_hash().is_some() {
+                ui.label("This wallet has no identities yet. Add an identity to get started.");
+                ui.add_space(GRID_GAP);
+            }
+            let cells: Vec<PickerCell<'_>> = identities
+                .iter()
+                .map(PickerCell::Identity)
+                .chain(std::iter::once(PickerCell::Add))
+                .collect();
 
-    ui.vertical(|ui| {
-        let cells: Vec<PickerCell<'_>> = identities
-            .iter()
-            .map(PickerCell::Identity)
-            .chain(std::iter::once(PickerCell::Add))
-            .collect();
-
-        for row in cells.chunks(columns.max(1)) {
-            ui.horizontal(|ui| {
-                for (i, cell) in row.iter().enumerate() {
-                    if i > 0 {
-                        ui.add_space(GRID_GAP);
-                    }
-                    match cell {
-                        PickerCell::Identity(identity) => {
-                            let card = build_card(identity);
-                            let response = card.show(ui);
-                            if response.clicked {
-                                captured_selection = Some(response.identity_id.clone());
+            for row in cells.chunks(columns.max(1)) {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = GRID_GAP;
+                    for cell in row {
+                        match cell {
+                            PickerCell::Identity(identity) => {
+                                let mut card = build_card(identity).with_width(card_width);
+                                if let Some(Some(profile)) = profiles.get_or_request(identity) {
+                                    card = card.with_avatar_url(&profile.avatar_url);
+                                }
+                                let response = card.show(ui, avatars);
+                                if let Some(fetch) = response.avatar_fetch {
+                                    pending_avatars.push(fetch);
+                                }
+                                if response.clicked {
+                                    captured_selection = Some(response.identity_id.clone());
+                                }
+                            }
+                            PickerCell::Add => {
+                                let card = IdentityPickerAddCard::new().with_width(card_width);
+                                let response = card.show(ui);
+                                if response.add_requested {
+                                    // Navigate to the existing AddNewIdentityScreen —
+                                    // no duplicated screen, no new backend task.
+                                    action = AppAction::AddScreen(Screen::AddNewIdentityScreen(
+                                        AddNewIdentityScreen::new_with_wallet(
+                                            app_context,
+                                            app_context.selected_wallet_hash(),
+                                        ),
+                                    ));
+                                }
                             }
                         }
-                        PickerCell::Add => {
-                            let card = IdentityPickerAddCard::new();
-                            let response = card.show(ui);
-                            if response.add_requested {
-                                // Navigate to the existing AddNewIdentityScreen —
-                                // no duplicated screen, no new backend task.
-                                action = AppAction::AddScreen(Screen::AddNewIdentityScreen(
-                                    AddNewIdentityScreen::new(app_context),
-                                ));
-                            }
-                        }
                     }
-                }
-            });
-            ui.add_space(GRID_GAP);
-        }
-    });
+                });
+                ui.add_space(GRID_GAP);
+            }
+        });
 
     // Propagate captured selection to the caller, if they supplied a slot.
     // Only update when an identity was actually clicked — never overwrite with
@@ -138,7 +150,7 @@ pub fn render(
 /// stretching to fill the remaining space when extra room exists.
 pub fn compute_column_count(available_width: f32) -> usize {
     let min_width = CARD_MIN_WIDTH + GRID_GAP;
-    let columns = (available_width / min_width).floor() as usize;
+    let columns = ((available_width + GRID_GAP) / min_width).floor() as usize;
     columns.max(1)
 }
 

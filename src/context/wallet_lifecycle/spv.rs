@@ -36,6 +36,7 @@ impl AppContext {
         // asynchronously off the main thread.
         let ClearAllOutcome {
             upstream_ids,
+            hd_seed_hashes,
             mut failures,
         } = backend.forget_all_wallets_local();
         for wallet_id in upstream_ids {
@@ -114,6 +115,9 @@ impl AppContext {
         }
 
         self.wallet_context().clear();
+        // The per-wallet deletes above ran while the wallets were still loaded,
+        // so a warm in flight could write an entry back; none can from here on.
+        failures.extend(backend.forget_auth_pubkey_caches(&hd_seed_hashes));
 
         self.has_wallet.store(false, Ordering::Relaxed);
 

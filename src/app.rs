@@ -2342,6 +2342,12 @@ impl AppState {
         for screen in self.main_screens.values_mut() {
             screen.change_context(app_context.clone())
         }
+        // Stacked detail screens hold state loaded on the previous network
+        // (identities, wallet slots, amounts) while their submissions would run
+        // through the new context. Drop them rather than re-context them. The
+        // network chooser is a root screen, so no stacked screen can start the
+        // switch that removes it.
+        self.screen_stack.clear();
 
         self.connection_status.reset();
 

@@ -350,6 +350,18 @@ pub enum BackendTaskContext {
     LegacyRecoveryCheck(Identifier),
     /// The restore of one identity's approved legacy-recovery items.
     LegacyRecoveryRestore(Identifier),
+    /// Warming the identity-auth public-key cache for one wallet identity
+    /// index, so a screen can tell its own failed warm from other errors.
+    IdentityAuthPubkeyWarm {
+        seed_hash: WalletSeedHash,
+        identity_index: u32,
+    },
+    /// A network refresh of one identity.
+    IdentityRefresh(Identifier),
+    /// Adding a key (entered or wallet-derived) to one identity. The Add Key
+    /// screen wraps it in a dispatch, since another screen's add of the same
+    /// identity yields the same operation.
+    IdentityKeyAdd(Identifier),
     /// Recovery outcomes stay bound to their dispatch network during navigation.
     LegacyRecoveryOnNetwork {
         network: Network,
@@ -475,6 +487,27 @@ impl BackendTaskContext {
         }
     }
 
+    /// The `(wallet, identity index)` whose auth public keys this operation
+    /// warms, or `None` for anything else.
+    pub(crate) fn identity_auth_pubkey_warm(&self) -> Option<(WalletSeedHash, u32)> {
+        match self.operation() {
+            Self::IdentityAuthPubkeyWarm {
+                seed_hash,
+                identity_index,
+            } => Some((*seed_hash, *identity_index)),
+            _ => None,
+        }
+    }
+
+    /// The identity this operation refreshes from the network, or `None` for
+    /// anything else.
+    pub(crate) fn refreshed_identity(&self) -> Option<Identifier> {
+        match self.operation() {
+            Self::IdentityRefresh(identity_id) => Some(*identity_id),
+            _ => None,
+        }
+    }
+
     /// The dispatch network for a recovery task, including explicitly wrapped dispatches.
     pub(crate) fn legacy_recovery_network(&self) -> Option<Network> {
         match self {
@@ -525,6 +558,21 @@ impl From<&BackendTask> for BackendTaskContext {
                 identity_id,
                 ..
             }) => Self::LegacyRecoveryRestore(*identity_id),
+            BackendTask::IdentityTask(IdentityTask::RefreshIdentity(identity)) => {
+                Self::IdentityRefresh(identity.identity.id())
+            }
+            BackendTask::IdentityTask(
+                IdentityTask::AddKeyToIdentity(identity, ..)
+                | IdentityTask::AddDerivedKeyToIdentity { identity, .. },
+            ) => Self::IdentityKeyAdd(identity.identity.id()),
+            BackendTask::WalletTask(WalletTask::WarmIdentityAuthPubkeys {
+                seed_hash,
+                identity_index,
+                ..
+            }) => Self::IdentityAuthPubkeyWarm {
+                seed_hash: *seed_hash,
+                identity_index: *identity_index,
+            },
             BackendTask::SystemTask(SystemTask::ClearNetworkDatabase) => Self::ClearNetworkDatabase,
             BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { seed_hash }) => {
                 Self::GenerateReceiveAddress {

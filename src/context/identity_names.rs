@@ -140,8 +140,9 @@ mod tests {
             context.identity_display_name(Identifier::from([7; 32])),
             None
         );
+        let other_dir = tempfile::tempdir().unwrap();
         let other_network = crate::context::test_support::test_app_context_for_network(
-            dir.path(),
+            other_dir.path(),
             dash_sdk::dpp::dashcore::Network::Mainnet,
         );
         assert_eq!(other_network.identity_display_name(id), None);

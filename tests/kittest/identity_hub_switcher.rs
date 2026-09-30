@@ -340,13 +340,49 @@ fn qa_002_no_wallet_group_filter_on_real_data() {
     });
 }
 
-#[test]
-fn ui_polish_picker_cards_stay_inside_window() {
+fn with_identity_hub(
+    test: impl FnOnce(egui_kittest::Harness<'static, dash_evo_tool::app::AppState>, Arc<AppContext>),
+) {
     with_isolated_data_dir(|| {
         let rt = tokio::runtime::Runtime::new().expect("runtime");
         let _guard = rt.enter();
-        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
+        let harness = mount_app(RootScreenType::RootScreenIdentityHub);
         let app_context = harness.state().current_app_context().clone();
+        test(harness, app_context);
+    });
+}
+
+fn assert_pointer<State>(harness: &mut egui_kittest::Harness<'_, State>) {
+    harness.run_steps(3);
+    assert_eq!(
+        harness.output().platform_output.cursor_icon,
+        egui::CursorIcon::PointingHand
+    );
+}
+
+fn open_picker<State>(harness: &mut egui_kittest::Harness<'_, State>) {
+    harness
+        .get_all_by_label("Identities")
+        .min_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
+        .expect("top breadcrumb")
+        .click();
+    harness.run_steps(5);
+}
+
+fn scroll_to_bottom<State>(harness: &mut egui_kittest::Harness<'_, State>) {
+    harness.run_steps(2);
+    harness.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        phase: egui::TouchPhase::Move,
+        delta: egui::vec2(0.0, -10000.0),
+        modifiers: egui::Modifiers::NONE,
+    });
+    harness.run_steps(10);
+}
+
+#[test]
+fn ui_polish_picker_cards_stay_inside_window() {
+    with_identity_hub(|mut harness, app_context| {
         let aliases: Vec<String> = (1..=8)
             .map(|i| {
                 format!(
@@ -371,58 +407,28 @@ fn ui_polish_picker_cards_stay_inside_window() {
 
 #[test]
 fn ui_polish_picker_actions_show_pointer() {
-    with_isolated_data_dir(|| {
-        let rt = tokio::runtime::Runtime::new().expect("runtime");
-        let _guard = rt.enter();
-        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
-        let app_context = harness.state().current_app_context().clone();
+    with_identity_hub(|mut harness, app_context| {
         seed_identity(&app_context, 1, "Cursor Alpha");
         seed_identity(&app_context, 2, "Cursor Beta");
         harness.run_steps(5);
-        harness
-            .get_all_by_label("Identities")
-            .min_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
-            .expect("top breadcrumb")
-            .hover();
-        harness.run_steps(3);
-        assert_eq!(
-            harness.output().platform_output.cursor_icon,
-            egui::CursorIcon::PointingHand
-        );
-        harness.get_by_label("Open Cursor Alpha").hover();
-        harness.run_steps(3);
-        assert_eq!(
-            harness.output().platform_output.cursor_icon,
-            egui::CursorIcon::PointingHand
-        );
-        harness
-            .get_all_by_label("Opens Identity Home →")
-            .next()
-            .expect("home hint")
-            .hover();
-        harness.run_steps(3);
-        assert_eq!(
-            harness.output().platform_output.cursor_icon,
-            egui::CursorIcon::PointingHand
-        );
+        for label in ["Identities", "Open Cursor Alpha", "Opens Identity Home →"] {
+            harness
+                .get_all_by_label(label)
+                .min_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
+                .expect("hover target")
+                .hover();
+            assert_pointer(&mut harness);
+        }
         harness
             .get_by_role_and_label(egui::accesskit::Role::Button, "Add a new identity")
             .hover();
-        harness.run_steps(3);
-        assert_eq!(
-            harness.output().platform_output.cursor_icon,
-            egui::CursorIcon::PointingHand
-        );
+        assert_pointer(&mut harness);
     });
 }
 
 #[test]
 fn ui_polish_detail_breadcrumb_opens_picker_repeatedly() {
-    with_isolated_data_dir(|| {
-        let rt = tokio::runtime::Runtime::new().expect("runtime");
-        let _guard = rt.enter();
-        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
-        let app_context = harness.state().current_app_context().clone();
+    with_identity_hub(|mut harness, app_context| {
         let identity = seed_identity(&app_context, 1, "Detail Alpha");
         app_context.set_selected_identity(Some(identity));
         harness.run_steps(5);
@@ -438,12 +444,7 @@ fn ui_polish_detail_breadcrumb_opens_picker_repeatedly() {
                     ),
                 ));
             harness.run_steps(5);
-            harness
-                .get_all_by_label("Identities")
-                .min_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
-                .expect("top breadcrumb")
-                .click();
-            harness.run_steps(5);
+            open_picker(&mut harness);
             assert!(harness.state().screen_stack.is_empty());
             assert!(
                 harness.query_by_label(PICKER_HEADING).is_some(),
@@ -458,11 +459,7 @@ fn ui_polish_detail_breadcrumb_opens_picker_repeatedly() {
 
 #[test]
 fn ui_polish_picker_scopes_to_selected_wallet_and_handles_empty_wallet() {
-    with_isolated_data_dir(|| {
-        let rt = tokio::runtime::Runtime::new().expect("runtime");
-        let _guard = rt.enter();
-        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
-        let app_context = harness.state().current_app_context().clone();
+    with_identity_hub(|mut harness, app_context| {
         for (byte, alias, wallet) in [
             (1, "Wallet Alpha", Some([0x11; 32])),
             (2, "Wallet Beta", Some([0x22; 32])),
@@ -489,12 +486,7 @@ fn ui_polish_picker_scopes_to_selected_wallet_and_handles_empty_wallet() {
         ] {
             app_context.set_selected_hd_wallet(wallet);
             harness.run_steps(5);
-            harness
-                .get_all_by_label("Identities")
-                .min_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
-                .expect("top breadcrumb")
-                .click();
-            harness.run_steps(5);
+            open_picker(&mut harness);
             assert!(harness.query_by_label(PICKER_HEADING).is_some());
             for alias in ["Wallet Alpha", "Wallet Beta", "Imported Gamma"] {
                 assert_eq!(
@@ -514,24 +506,13 @@ fn ui_polish_picker_scopes_to_selected_wallet_and_handles_empty_wallet() {
 
 #[test]
 fn ui_polish_many_identities_picker_scroll_reaches_add_card() {
-    with_isolated_data_dir(|| {
-        let rt = tokio::runtime::Runtime::new().expect("runtime");
-        let _guard = rt.enter();
-        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
-        let app_context = harness.state().current_app_context().clone();
+    with_identity_hub(|mut harness, app_context| {
         for byte in 1..=30 {
             seed_identity(&app_context, byte, &format!("Scroll identity {byte:02}"));
         }
         harness.run_steps(5);
         harness.get_by_label("Open Scroll identity 01").hover();
-        harness.run_steps(2);
-        harness.event(egui::Event::MouseWheel {
-            unit: egui::MouseWheelUnit::Point,
-            phase: egui::TouchPhase::Move,
-            delta: egui::vec2(0.0, -10000.0),
-            modifiers: egui::Modifiers::NONE,
-        });
-        harness.run_steps(10);
+        scroll_to_bottom(&mut harness);
         let add =
             harness.get_by_role_and_label(egui::accesskit::Role::Button, "Add a new identity");
         assert!(
@@ -550,11 +531,7 @@ fn ui_polish_many_identities_picker_scroll_reaches_add_card() {
 
 #[test]
 fn ui_polish_many_walletless_identities_popup_scroll_reaches_load() {
-    with_isolated_data_dir(|| {
-        let rt = tokio::runtime::Runtime::new().expect("runtime");
-        let _guard = rt.enter();
-        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
-        let app_context = harness.state().current_app_context().clone();
+    with_identity_hub(|mut harness, app_context| {
         for byte in 1..=40 {
             seed_identity(&app_context, byte, &format!("Popup identity {byte:02}"));
         }
@@ -567,14 +544,7 @@ fn ui_polish_many_walletless_identities_popup_scroll_reaches_load() {
         harness
             .get_by_label("Identities without a wallet on this device")
             .hover();
-        harness.run_steps(2);
-        harness.event(egui::Event::MouseWheel {
-            unit: egui::MouseWheelUnit::Point,
-            phase: egui::TouchPhase::Move,
-            delta: egui::vec2(0.0, -10000.0),
-            modifiers: egui::Modifiers::NONE,
-        });
-        harness.run_steps(10);
+        scroll_to_bottom(&mut harness);
         let load = harness.get_by_label("Load an existing identity");
         assert!(
             load.rect().bottom() <= 800.0,
@@ -592,15 +562,11 @@ fn ui_polish_many_walletless_identities_popup_scroll_reaches_load() {
 
 #[test]
 fn ui_polish_wallet_dropdown_opens_scoped_picker() {
-    with_isolated_data_dir(|| {
+    with_identity_hub(|mut harness, app_context| {
         use dash_evo_tool::model::wallet::Wallet;
         use std::sync::RwLock;
         use zeroize::Zeroize;
 
-        let rt = tokio::runtime::Runtime::new().expect("runtime");
-        let _guard = rt.enter();
-        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
-        let app_context = harness.state().current_app_context().clone();
         let mut hashes = Vec::new();
         for (byte, wallet_alias, identity_alias) in [
             (1, "First wallet", "First owned identity"),
@@ -655,12 +621,7 @@ fn ui_polish_wallet_dropdown_opens_scoped_picker() {
             Some(hashes[1]),
             "opening a wallet-owned identity must preserve its stored wallet scope"
         );
-        harness
-            .get_all_by_label("Identities")
-            .min_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
-            .expect("top breadcrumb")
-            .click();
-        harness.run_steps(5);
+        open_picker(&mut harness);
         assert!(
             harness
                 .query_by_label("Open Second owned identity")
@@ -741,12 +702,7 @@ fn ui_polish_picker_uses_profile_avatar_and_keeps_missing_avatar_fallback() {
                 url: url.into(),
                 bytes: Some(bytes.into_inner()),
             });
-        harness
-            .get_all_by_label("Identities")
-            .min_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
-            .expect("top breadcrumb")
-            .click();
-        harness.run_steps(5);
+        open_picker(&mut harness);
         let card = harness.get_by_label("Open Avatar identity").rect();
         assert_eq!(
             harness

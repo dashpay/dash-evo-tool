@@ -311,6 +311,9 @@ fn atomic_replace_env_file(
                 "config file path has no parent directory",
             ),
         })?;
+    // Not routed through `delete_file`: on failure the temp file removes only
+    // the uniquely named file it created itself, and success is an atomic
+    // rename over `.env`, not a deletion.
     let mut env_file =
         NamedTempFile::new_in(parent_dir).map_err(|source| ConfigError::SaveError { source })?;
     write_contents(&mut env_file)?;

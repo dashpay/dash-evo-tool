@@ -507,7 +507,7 @@ fn rotate_log_file() {
 
 /// Rotates `{stem}.log` in `dir` to a timestamped name and removes rotated
 /// copies of the same stem older than [`LOG_RETENTION_DAYS`].
-fn rotate_log_in_dir(dir: &Path, stem: &str) {
+pub(crate) fn rotate_log_in_dir(dir: &Path, stem: &str) {
     let log_path = dir.join(format!("{stem}.log"));
     if log_path.exists() {
         let ts = fs::metadata(&log_path)
@@ -516,6 +516,8 @@ fn rotate_log_in_dir(dir: &Path, stem: &str) {
             .unwrap_or_else(|_| Local::now())
             .timestamp();
         let rotated = dir.join(rotated_name(stem, ts));
+        // Not a deletion, so not routed through `delete_file`: it moves the
+        // current log aside under a fresh timestamped name.
         let _ = fs::rename(&log_path, rotated);
     }
 
@@ -531,7 +533,10 @@ fn rotate_log_in_dir(dir: &Path, stem: &str) {
         if let Some(ts) = parse_rotated_ts(name, stem)
             && ts < cutoff
         {
-            let _ = fs::remove_file(path);
+            let _ = crate::utils::file_deletion::delete_file(
+                &path,
+                crate::utils::file_deletion::DeletionIntent::Log { dir, stem },
+            );
         }
     }
 }

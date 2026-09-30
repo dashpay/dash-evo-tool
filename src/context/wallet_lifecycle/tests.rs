@@ -3445,7 +3445,7 @@ fn clear_spv_chain_storage_removes_chain_cache_but_keeps_wallet_sidecars() {
     std::fs::write(&wallet_sqlite, b"wallet").expect("write wallet sqlite");
     std::fs::write(&shielded_tree, b"tree").expect("write shielded tree");
 
-    clear_spv_chain_storage(&spv_dir).expect("clear must succeed");
+    clear_spv_chain_storage(tmp.path(), Network::Testnet).expect("clear must succeed");
 
     for entry in SPV_CHAIN_STORAGE_ENTRIES {
         assert!(
@@ -3477,7 +3477,8 @@ fn clear_spv_chain_storage_is_ok_when_directory_absent() {
         !spv_dir.exists(),
         "precondition: no spv dir on a fresh install"
     );
-    clear_spv_chain_storage(&spv_dir).expect("clearing an absent cache must succeed");
+    clear_spv_chain_storage(tmp.path(), Network::Testnet)
+        .expect("clearing an absent cache must succeed");
 }
 
 /// Seed a legacy password-protected `single_key_wallet` row into the
@@ -7407,3 +7408,5 @@ async fn update_backup_retention_prunes_only_after_wallet_backend_opens() {
     assert!(!backup.exists());
     ctx.wallet_backend().unwrap().shutdown().await;
 }
+
+mod deletion_sentinel;

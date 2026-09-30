@@ -380,7 +380,10 @@ fn validate_backup_file(backup: &Path, database: &Path) -> std::io::Result<()> {
 
 fn remove_backup(backup: &Path, database: &Path) -> std::io::Result<()> {
     validate_backup_file(backup, database)?;
-    std::fs::remove_file(backup)
+    crate::utils::file_deletion::delete_file(
+        backup,
+        crate::utils::file_deletion::DeletionIntent::Backup { database },
+    )
 }
 
 pub(super) struct BackupGuard {
@@ -681,6 +684,9 @@ fn backup_with_hook_locked(
     let path = &guard.path;
     let parent = path.parent().ok_or(UpgradeError::Unrecognized)?;
     let prefix = backup_prefix(path).ok_or(UpgradeError::Unrecognized)?;
+    // Not routed through `delete_file`: on failure the temp file removes only
+    // the uniquely named `.pending` file it created itself, which keeps the
+    // cleanup tied to drop on every error path.
     let file = tempfile::Builder::new()
         .prefix(&prefix)
         .suffix(".pending")

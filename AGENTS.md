@@ -114,6 +114,7 @@ Code lives by responsibility, not convenience:
 - **`ui/components/`** — reusable **Component-pattern widgets ONLY**: a `show()` plus a `ComponentResponse`, a display-only render widget, or component infrastructure. If it does not render egui, it is not a component.
 - **`ui/state/`** — non-widget UI state: per-screen view-models and async fetch-state caches (e.g. `TrackedAssetLockCache`). Owned by screens, may return `BackendTask`, render nothing.
 - **`src/mcp/tools/`** — MCP tool logic, one file per domain (e.g. `wallet.rs`, `shielded.rs`, `identity.rs`) with multiple tool structs per file; never in `src/bin/det_cli/`.
+- **`src/utils/file_deletion.rs`** — the single file-deletion chokepoint. Every production on-disk deletion goes through `delete_file` (or `delete_tree`) with a `DeletionIntent` stating its purpose; the chokepoint hard-refuses live databases, their sidecars, the vault and `.env`. Any deliberate exception gets a code comment with the reason at its call site.
 - **`src/localization.rs`** — localization logic. **`src/ui/theme.rs`** — theme/alignment helpers.
 
 Discriminator for `ui/components/` vs `ui/state/`: *does it render egui (`show`/`ui`/a render fn)?* Yes → component. No → state.

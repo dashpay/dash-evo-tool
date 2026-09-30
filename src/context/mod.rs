@@ -668,7 +668,7 @@ impl AppContext {
     }
 
     /// Absolute path of the shared seed vault: `<data_dir>/secrets/det-secrets.pwsvault`.
-    fn secret_store_path(data_dir: &std::path::Path) -> std::path::PathBuf {
+    pub(crate) fn secret_store_path(data_dir: &std::path::Path) -> std::path::PathBuf {
         let mut path = data_dir.to_path_buf();
         path.push("secrets");
         path.push("det-secrets.pwsvault");

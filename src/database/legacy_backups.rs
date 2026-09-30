@@ -8,6 +8,8 @@ use std::time::{Duration, SystemTime};
 
 /// Directory, next to the database, that holds the legacy backups.
 pub(crate) const BACKUP_DIR: &str = "backups";
+/// The legacy database these backups copy.
+const LEGACY_DATABASE: &str = "data.db";
 const PREFIX: &str = "data_backup_";
 const SUFFIX: &str = ".db";
 /// UTC timestamp format embedded in the backup name.
@@ -27,6 +29,8 @@ fn named_timestamp(name: &str) -> Option<SystemTime> {
 
 /// Delete legacy backups in `<data_dir>/backups` older than `max_age`.
 ///
+/// Deletion goes through the [`delete_file`](crate::utils::file_deletion::delete_file)
+/// chokepoint, which refuses live databases, aliases and hard links.
 /// Only regular files with the exact legacy name are candidates; anything else,
 /// including symlinks and subdirectories, is left alone. Age is measured from the
 /// later of the name timestamp and the modification time, so a reset or skewed signal
@@ -52,6 +56,7 @@ pub(crate) fn prune_expired(
         Err(error) => return Err(error),
     }
     let entries = std::fs::read_dir(&directory)?;
+    let legacy_database = data_dir.join(LEGACY_DATABASE);
     let mut removed = 0;
     let mut first_error = None;
     for entry in entries {
@@ -67,7 +72,13 @@ pub(crate) fn prune_expired(
             if !crate::model::backup_retention::backup_expired(created, now, max_age) {
                 return Ok(false);
             }
-            std::fs::remove_file(entry.path()).map(|()| true)
+            crate::utils::file_deletion::delete_file(
+                &entry.path(),
+                crate::utils::file_deletion::DeletionIntent::Backup {
+                    database: &legacy_database,
+                },
+            )
+            .map(|()| true)
         });
         match outcome {
             Ok(true) => removed += 1,

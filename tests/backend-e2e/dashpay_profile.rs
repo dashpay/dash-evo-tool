@@ -32,7 +32,7 @@ async fn profile_create_and_replace(key_type: KeyType, unavailable_hash160: bool
     let ctx = harness::ctx().await;
     let (seed_hash, wallet) = ctx.create_funded_test_wallet(30_000_000).await;
     let mut registration =
-        identity_helpers::build_identity_registration(&ctx.app_context, &wallet, seed_hash).await;
+        identity_helpers::build_identity_registration(&ctx.app_context, &wallet).await;
     run_task(
         &ctx.app_context,
         BackendTask::WalletTask(WalletTask::WarmIdentityAuthPubkeys {

@@ -979,7 +979,7 @@ async fn tc_043_reject_contact_request() {
     tracing::info!("TC-043: creating third DashPay identity (C)...");
     let (seed_hash_c, wallet_c) = ctx.create_funded_test_wallet(30_000_000).await;
     let qi_c =
-        dashpay_helpers::create_dashpay_identity(&ctx.app_context, &wallet_c, seed_hash_c).await;
+        dashpay_helpers::create_dashpay_identity(&ctx.app_context, &wallet_c).await;
 
     // Register a DPNS name for C so A can send a contact request
     // >= 20 chars to avoid DPNS contest voting period

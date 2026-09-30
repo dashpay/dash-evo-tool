@@ -71,10 +71,10 @@ async fn cross_wallet_topup_e2e() {
 
     // --- Setup: two independent wallets, an identity owned by one of them ---
     tracing::info!("=== Setup: funded owner + payer wallets ===");
-    let (owner_hash, owner_wallet) = ctx.create_funded_test_wallet(32_000_000).await;
+    let (_, owner_wallet) = ctx.create_funded_test_wallet(32_000_000).await;
     let (payer_hash, payer_wallet) = ctx.create_funded_test_wallet(3_000_000).await;
 
-    let reg_info = build_identity_registration(&ctx.app_context, &owner_wallet, owner_hash).await;
+    let reg_info = build_identity_registration(&ctx.app_context, &owner_wallet).await;
     let reg_result = run_task(
         &ctx.app_context,
         BackendTask::IdentityTask(IdentityTask::RegisterIdentity(reg_info)),

@@ -150,7 +150,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Identity cards fit the window, display available profile avatars, and scroll
   to every identity and the add/load actions. Clickable identity controls show a
   link cursor. The Identities breadcrumb opens all User identities; choosing a
-  wallet in Identities filters the picker to that wallet.
+  wallet in Identities filters the picker to that wallet. The All wallets
+  identity dropdown includes both wallet-backed and imported User identities.
+- Avatar downloads stop once they exceed 5 MiB, including responses without a
+  declared size, instead of buffering the entire response first.
 
 - **Identity keys added by hand no longer disappear**: unlocking a wallet,
   starting the app or loading an identity from a wallet refreshed the identity

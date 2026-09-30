@@ -466,6 +466,37 @@ fn ui_polish_detail_breadcrumb_opens_picker_repeatedly() {
 }
 
 #[test]
+fn ui_polish_username_registration_breadcrumb_opens_all_identities() {
+    with_identity_hub(|mut harness, app_context| {
+        let alpha = seed_identity(&app_context, 1, "Username Alpha");
+        seed_identity(&app_context, 2, "Username Beta");
+        app_context.set_selected_identity(Some(alpha));
+        harness.run_steps(5);
+        harness
+            .get_all_by_label("Pick a username")
+            .next()
+            .expect("username link")
+            .click();
+        harness.run_steps(5);
+        assert!(matches!(
+            harness.state().screen_stack.last(),
+            Some(dash_evo_tool::ui::Screen::RegisterDpnsNameScreen(_))
+        ));
+        app_context.set_selected_hd_wallet(Some([0x11; 32]));
+        open_picker(&mut harness);
+        assert!(
+            harness.state().screen_stack.is_empty(),
+            "breadcrumb must dismiss Register Name"
+        );
+        assert_eq!(app_context.selected_wallet_hash(), None);
+        assert!(harness.query_by_label(PICKER_HEADING).is_some());
+        for name in ["Username Alpha", "Username Beta"] {
+            assert!(harness.query_by_label(&format!("Open {name}")).is_some());
+        }
+    });
+}
+
+#[test]
 fn ui_polish_picker_scopes_to_selected_wallet_and_handles_empty_wallet() {
     with_identity_hub(|mut harness, app_context| {
         for (byte, alias, wallet) in [
@@ -535,6 +566,48 @@ fn ui_polish_many_identities_picker_scroll_reaches_add_card() {
             !harness.state().screen_stack.is_empty(),
             "Add card must be clickable after scrolling"
         );
+    });
+}
+
+#[test]
+fn ui_polish_all_wallets_dropdown_includes_owned_and_walletless_users_once() {
+    with_identity_hub(|mut harness, app_context| {
+        for (byte, name) in [(1, "Dropdown Owned Alpha"), (2, "Dropdown Owned Beta")] {
+            let id = seed_identity(&app_context, byte, name);
+            let identity = app_context
+                .load_local_user_identities()
+                .unwrap()
+                .into_iter()
+                .find(|identity| identity.identity.id() == id)
+                .unwrap();
+            app_context
+                .insert_local_qualified_identity(&identity, &Some(([byte; 32], 0)))
+                .unwrap();
+        }
+        seed_identity(&app_context, 3, "Dropdown Imported");
+        seed_identity_typed(&app_context, 4, "Dropdown Node", IdentityType::Masternode);
+        harness.run_steps(5);
+        harness.get_by_label("Open Dropdown Imported").click();
+        harness.run_steps(5);
+        assert_eq!(app_context.selected_wallet_hash(), None);
+        harness
+            .get_by_role_and_label(egui::accesskit::Role::Link, "Dropdown Imported")
+            .click();
+        harness.run_steps(5);
+        for name in [
+            "Dropdown Owned Alpha",
+            "Dropdown Owned Beta",
+            "Dropdown Imported",
+        ] {
+            assert_eq!(
+                harness
+                    .query_all_by_role_and_label(egui::accesskit::Role::Button, name)
+                    .count(),
+                1,
+                "All wallets must list {name} exactly once"
+            );
+        }
+        assert!(harness.query_by_label("Dropdown Node").is_none());
     });
 }
 

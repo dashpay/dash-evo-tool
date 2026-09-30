@@ -583,8 +583,11 @@ fn build_hero(
     // Best-effort DashPay display name. The local profile cache was removed in
     // the platform-wallet migration; the hub loads profiles asynchronously, so
     // this is empty until the first load completes and the hero re-renders.
-    let _ = profiles.get_or_request(qi);
-    let display_name = app_context.identity_display_name(qi.identity.id());
+    let profile_name = profiles
+        .get_or_request(qi)
+        .and_then(Option::as_ref)
+        .and_then(|profile| profile.display_name_opt());
+    let display_name = app_context.identity_display_name_or(qi.identity.id(), profile_name);
 
     let mut card = IdentityHeroCard::new(kind, balance_dash);
     match handle {

@@ -249,7 +249,10 @@ fn qa_001_wallet_less_selection_clears_derived_wallet() {
             "an identity IS selected; the breadcrumb must not claim none"
         );
         assert!(
-            harness.query_by_label_contains("Lonely Identity").is_some(),
+            harness
+                .query_all_by_label_contains("Lonely Identity")
+                .next()
+                .is_some(),
             "the breadcrumb must display the selected wallet-less identity"
         );
     });

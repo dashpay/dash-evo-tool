@@ -52,7 +52,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 /// Build a wallet-less `QualifiedIdentity` in-memory. No DB insertion, no
-/// private keys — only `id()` + `display_string()` (= alias) are exercised.
+/// private keys — only `id()` + `display_string()` (username) are exercised.
 fn make_qi(byte: u8, alias: &str) -> QualifiedIdentity {
     let pv = PlatformVersion::latest();
     let identity =
@@ -65,7 +65,10 @@ fn make_qi(byte: u8, alias: &str) -> QualifiedIdentity {
         identity_type: IdentityType::User,
         alias: Some(alias.to_string()),
         private_keys: KeyStorage::default(),
-        dpns_names: vec![],
+        dpns_names: vec![dash_evo_tool::model::qualified_identity::DPNSNameInfo {
+            name: alias.to_string(),
+            acquired_at: 0,
+        }],
         associated_wallets: BTreeMap::new(),
         secret_access: None,
         wallet_index: None,

@@ -103,6 +103,12 @@ pub fn render(
                                 let mut card =
                                     build_card(app_context, identity).with_width(card_width);
                                 if let Some(Some(profile)) = profiles.get_or_request(identity) {
+                                    if let Some(name) = app_context.identity_display_name_or(
+                                        identity.identity.id(),
+                                        profile.display_name_opt(),
+                                    ) {
+                                        card = card.with_display_name(name);
+                                    }
                                     card = card.with_avatar_url(&profile.avatar_url);
                                 }
                                 let response = card.show(ui, avatars);

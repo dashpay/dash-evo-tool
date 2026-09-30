@@ -6,6 +6,15 @@ use dash_sdk::platform::Identifier;
 impl AppContext {
     /// Read a profile name without network requests, disk reads, or waiting on wallet state.
     pub fn identity_display_name(&self, id: Identifier) -> Option<String> {
+        self.identity_display_name_or(id, None)
+    }
+
+    /// Include an already-loaded screen profile before falling back to an unnamed identity.
+    pub(crate) fn identity_display_name_or(
+        &self,
+        id: Identifier,
+        profile_name: Option<&str>,
+    ) -> Option<String> {
         let accepted = self
             .identity_profile_names
             .lock()
@@ -15,6 +24,12 @@ impl AppContext {
             self.wallet_backend()
                 .ok()
                 .and_then(|backend| backend.dashpay_view().cached_display_name(&id))
+                .or_else(|| {
+                    profile_name
+                        .map(str::trim)
+                        .filter(|name| !name.is_empty())
+                        .map(str::to_owned)
+                })
         })
     }
 
@@ -99,6 +114,10 @@ mod tests {
         );
         assert_eq!(pill.resolved_label(), "Alex Profile");
         context.save_identity_profile_name(id, None);
+        assert_eq!(
+            context.identity_display_name_or(id, Some("Old profile")),
+            None
+        );
         assert_eq!(context.identity_display_label(&identity), "alex.dash");
     }
 }

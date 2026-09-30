@@ -142,7 +142,7 @@ mod tests {
         );
         let other_network = crate::context::test_support::test_app_context_for_network(
             dir.path(),
-            dash_sdk::dpp::dashcore::Network::Dash,
+            dash_sdk::dpp::dashcore::Network::Mainnet,
         );
         assert_eq!(other_network.identity_display_name(id), None);
     }

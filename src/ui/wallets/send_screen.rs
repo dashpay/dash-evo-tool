@@ -2217,17 +2217,7 @@ impl WalletSendScreen {
                             .selected_identity
                             .as_ref()
                             .map(|qi| {
-                                let name = qi
-                                    .dpns_names
-                                    .first()
-                                    .map(|n| n.name.clone())
-                                    .or_else(|| qi.alias.clone())
-                                    .unwrap_or_else(|| {
-                                        let id_str = qi.identity.id().to_string(
-                                            dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
-                                        );
-                                        format!("{}...", &id_str[..8.min(id_str.len())])
-                                    });
+                                let name = self.app_context.identity_display_label(qi);
                                 format!(
                                     "{} ({})",
                                     name,
@@ -2242,36 +2232,23 @@ impl WalletSendScreen {
                             .show_ui(ui, |ui| {
                                 for identity in &identities {
                                     let label = {
-                                        let name = identity
-                                            .dpns_names
-                                            .first()
-                                            .map(|n| n.name.clone())
-                                            .or_else(|| identity.alias.clone())
-                                            .unwrap_or_else(|| {
-                                                let id_str = identity.identity.id().to_string(
-                                                    dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
-                                                );
-                                                format!(
-                                                    "{}...",
-                                                    &id_str[..8.min(id_str.len())]
-                                                )
-                                            });
+                                        let name =
+                                            self.app_context.identity_display_label(identity);
                                         format!(
                                             "{} ({})",
                                             name,
                                             format_credits_as_dash(identity.identity.balance())
                                         )
                                     };
-                                    let is_selected = self
-                                        .selected_identity
-                                        .as_ref()
-                                        .is_some_and(|sel| {
+                                    let is_selected =
+                                        self.selected_identity.as_ref().is_some_and(|sel| {
                                             sel.identity.id() == identity.identity.id()
                                         });
                                     if ui.selectable_label(is_selected, &label).clicked() {
                                         self.selected_identity = Some(identity.clone());
-                                        self.selected_source =
-                                            Some(SourceSelection::Identity(Box::new(identity.clone())));
+                                        self.selected_source = Some(SourceSelection::Identity(
+                                            Box::new(identity.clone()),
+                                        ));
                                         self.address_input = None;
                                         self.validated_destination = None;
                                     }

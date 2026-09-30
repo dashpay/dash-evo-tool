@@ -35,7 +35,7 @@ impl AppContext {
 
         let backend = self.wallet_backend()?;
         let view = backend.auth_pubkey_cache();
-        let mut cache = view.get(network, &seed_hash);
+        let cache = view.get(network, &seed_hash);
 
         let missing: Vec<u32> = (0..key_count)
             .filter(|&key_index| cache.get(network, identity_index, key_index).is_none())
@@ -49,26 +49,32 @@ impl AppContext {
             .secret_access()
             .with_secret(&SecretScope::HdSeed { seed_hash }, |plaintext| {
                 let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
-                let guard = wallet.read()?;
-                let mut changed = false;
-                for &key_index in &missing {
-                    let public_key = guard
-                        .identity_authentication_ecdsa_public_key_from_seed(
-                            seed,
-                            network,
-                            identity_index,
-                            key_index,
-                        )
-                        .map_err(|detail| {
-                            tracing::warn!(error = %detail, "Identity-auth pubkey warm derivation failed");
-                            TaskError::WalletKeyLookupFailed
-                        })?;
-                    changed |= cache.insert(network, identity_index, key_index, &public_key);
-                }
-                if changed {
-                    view.put(network, &seed_hash, &cache)?;
-                }
-                Ok(())
+                let derived = {
+                    let guard = wallet.read()?;
+                    missing
+                        .iter()
+                        .map(|&key_index| {
+                            guard
+                                .identity_authentication_ecdsa_public_key_from_seed(
+                                    seed,
+                                    network,
+                                    identity_index,
+                                    key_index,
+                                )
+                                .map(|public_key| (key_index, public_key))
+                                .map_err(|detail| {
+                                    tracing::warn!(error = %detail, "Identity-auth pubkey warm derivation failed");
+                                    TaskError::WalletKeyLookupFailed
+                                })
+                        })
+                        .collect::<Result<Vec<_>, _>>()?
+                };
+                // Merge into the freshest blob: the snapshot above may be stale.
+                view.update(network, &seed_hash, |cache| {
+                    for (key_index, public_key) in &derived {
+                        cache.insert(network, identity_index, *key_index, public_key);
+                    }
+                })
             })
             .await?;
 

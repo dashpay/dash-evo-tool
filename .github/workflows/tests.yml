@@ -14,6 +14,13 @@ on:
       - ".cargo/config.toml"
       - "rust-toolchain.toml"
       - "tests/backend-e2e/**"
+      # Compile-time inputs (include_str!) of migration-matrix tests that only
+      # this workflow runs: the bundled public-identity migration and the
+      # manifest-parsing helper tests. Migration Matrix runs only
+      # `migration_matrix --exact`, so these need a trigger here.
+      - "tests/migration-fixtures/manifest.json"
+      - "tests/migration-fixtures/v0.9.3-public-identities/data.sql"
+      - "tests/migration-fixtures/v0.9.3-public-identities/expected.json"
       - ".github/workflows/tests.yml"
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]

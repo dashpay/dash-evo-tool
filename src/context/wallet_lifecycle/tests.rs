@@ -2262,6 +2262,64 @@ async fn clear_network_database_wipes_wallet_meta_and_seed_envelope() {
         .await;
 }
 
+/// A warm that writes a wallet's auth-pubkey cache after the clear deleted it,
+/// while the wallet is still loaded, must not leave the entry behind: the clear
+/// deletes the caches again once the wallets are unloaded.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clear_network_database_removes_an_auth_pubkey_cache_rewritten_mid_clear() {
+    use crate::backend_task::system_task::SystemTask;
+    use dash_sdk::dpp::dashcore::PublicKey;
+    use dash_sdk::dpp::dashcore::secp256k1::{Secp256k1, SecretKey};
+
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender.clone())
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let seed = [0xB3u8; 64];
+    let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+        .expect("build wallet");
+    let seed_hash = wallet.seed_hash();
+    ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
+        .expect("register wallet");
+
+    let backend = ctx.wallet_backend().expect("backend wired");
+    let late_writer = Arc::clone(&backend);
+    backend.set_after_forget_all_test_hook(move || {
+        let secp = Secp256k1::new();
+        let key = PublicKey::new(
+            SecretKey::from_slice(&[0x42; 32])
+                .expect("valid secret key")
+                .public_key(&secp),
+        );
+        late_writer
+            .auth_pubkey_cache()
+            .update(Network::Testnet, &seed_hash, |cache| {
+                cache.insert(Network::Testnet, 0, 0, &key)
+            })
+            .expect("late warm write");
+        assert!(
+            !late_writer
+                .auth_pubkey_cache()
+                .get(Network::Testnet, &seed_hash)
+                .is_empty(),
+            "precondition: the late write lands while the wallet is loaded"
+        );
+    });
+
+    ctx.run_system_task(SystemTask::ClearNetworkDatabase, sender)
+        .await
+        .expect("clear_network_database should succeed");
+
+    assert!(
+        backend
+            .auth_pubkey_cache()
+            .get(Network::Testnet, &seed_hash)
+            .is_empty(),
+        "no auth-pubkey cache entry may survive the clear"
+    );
+    backend.shutdown().await;
+}
+
 /// "Delete all local data" must also wipe every local identity's private keys.
 /// Identity keys are Tier-1 keyless (plaintext-recoverable) and include
 /// masternode voting/owner/payout keys, so a clear that skipped them would

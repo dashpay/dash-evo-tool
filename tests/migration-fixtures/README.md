@@ -20,10 +20,17 @@ or private keys. It was prepared programmatically, not captured through the GUI.
 `public_identity_fixture_migrates` restores this SQL and boots the real CLI twice.
 It checks aliases, types, status, balances, revisions, DPNS names and timestamps,
 and every public key including contract bounds against independent expected
-metadata, then verifies `identity-list`. It runs in the matrix CI job and with
+metadata, then verifies `identity-list`. It runs in the main `Tests` CI job with
 `--all-features`; a testing-only build needs `DET_CLI_BIN`. No live explorer
 access or fixture password is required. This covers public metadata preservation,
 not signing, voter/operator associations, or fetching proofs with the old SDK.
+
+The main `Tests` workflow also runs the migration harness's helper tests.
+`Migration Matrix` selects only `migration_matrix` with `--exact` to replay
+downloaded archived profiles; it also runs the separate real-data platform
+compatibility check. It requires evidence that at least one archive was
+exercised and exactly one test passed. Clippy checks all test targets without
+executing them.
 
 ## Why this exists
 
@@ -107,11 +114,51 @@ Consequences that any workflow consuming this directory must handle:
   base64-encoded in the `archive_b64` input. A larger one travels through a
   temporary **draft** release: attach the archive to a draft, dispatch with
   `release_tag` instead, and delete the draft once the run has succeeded (the
-  workflow header has the commands). Re-dispatching the same bytes before
-  `expires_at` is the refresh path.
+  workflow header has the commands). Re-dispatching the same bytes is also
+  the manual recovery path when scheduled renewal cannot download an archive.
 - **Artifact name convention:** `migration-fixture-<git_tag>-<profile>` — e.g.
   `migration-fixture-v0.9.3-wallet-identity-dpns`. The template also lives in
   the manifest as `artifact_name_template` so tooling does not re-derive it.
+
+## Automatic archive renewal
+
+`Migration Fixture Renewal` (`.github/workflows/migration-fixture-renewal.yml`)
+checks the `v1.0-dev` manifest each Monday. It selects archives expiring within
+30 days, downloads the exact recorded artifacts, checks SHA-256 and byte size,
+and uploads the unchanged archives with a requested 90-day retention. It never
+extracts archives, captures wallets, or needs the fixture wallet password.
+Actual upload expiry is read back from GitHub. The workflow opens a draft PR
+changing only artifact run pointers and retention metadata in the manifest.
+It refuses to overwrite source pointers that changed during the run.
+
+Review and merge the renewal PR before the original expiry. An existing open
+renewal PR suppresses duplicate uploads/PRs; close it to request a replacement.
+Missing, expired or mismatched archives fail visibly and require restoring the
+same bytes through the bootstrap workflow. Uploaded replacements alone do not
+renew the manifest: the PR must be merged. Run the migration matrix on that PR
+before merging; GitHub may require approval for checks on bot-created PRs.
+
+Scheduled runs require the workflow file on the repository's **default branch**,
+even though it checks out `v1.0-dev`. Before that, dispatch it explicitly.
+The repository Actions setting **Allow GitHub Actions to create and approve
+pull requests** must permit PR creation. The workflow grants write permissions
+only to the final PR job and never merges its own PR.
+
+Safe trial against a branch containing the fixture manifest:
+
+```bash
+gh workflow run migration-fixture-renewal.yml --repo dashpay/dash-evo-tool \
+  --ref ci/migration-fixture-renewal \
+  -f base_branch=feat/migration-test-matrix -F dry_run=true -F force=true
+```
+
+`--ref` selects the workflow implementation; use a merged branch after the
+feature branch is removed. `base_branch` selects the manifest and target of the
+generated PR. `dry_run=true` verifies downloads without publishing anything
+(the manual default); `force=true` includes archives outside the 30-day window.
+To publish a renewal PR, dispatch with `dry_run=false`. Scheduled runs publish
+only when needed. Offline tests: `python3 -m unittest discover -s
+scripts/migration-fixtures -p test_renewal.py -v`.
 
 ## What goes into an archive
 
@@ -189,6 +236,47 @@ headless.
   carries `-wal` sidecars. That is the state a real profile is in: do not
   checkpoint or `VACUUM` a capture to shrink it.
 
+### `release-chain` — advance an existing fixture
+
+Use `scripts/migration-fixtures/chain.py` to resume from an archived profile
+instead of importing another wallet for every weekly. Download and verify the
+source artifact with `download-fixtures.sh`, and download each intervening
+release's own Linux binary. Supply the source tag and digest from the manifest:
+
+```bash
+python3 scripts/migration-fixtures/chain.py \
+  --archive /path/to/v1.0.0-weekly.20260908-wallet-only.tar.zst \
+  --sha256 c7e21762a762c6a5892dcdff952c54583c7df8bd649fbd3c960696057ca17624 \
+  --source-tag v1.0.0-weekly.20260908 \
+  --release v1.0.0-weekly.20260908=/path/to/20260908/det-cli \
+  --release v1.0.0-weekly.20260915=/path/to/20260915/det-cli \
+  --work-dir /private/staging \
+  --output-dir /path/to/new-output-directory
+```
+
+Requires Python 3.12+, jq, tar and zstd. Staging ancestors must not be writable
+by other users, as required by the wallet vault. The first binary checks the
+source profile; subsequent versions must be strictly increasing and match their
+embedded version strings. The script never alters the source archive. Each
+hop boots on testnet, hydrates wallets twice in standalone mode, and checks that
+wallet identities and aliases survive. It removes RPC/MCP credential settings
+only in the staged `.env`. Each successful hop produces an archive, checksum,
+and receipt linking the source archive and the binary's SHA-256. A failed hop
+produces no fixture; earlier successful snapshots remain available.
+
+These checks do not prove preservation of every address, transaction, identity,
+or password. The resulting fixture inherits the source profile's limitations;
+do not claim a new capture profile or newly exercised features. Record
+`capture_method: "release-chain"` and the receipt's provenance in the manifest,
+then upload through `migration-fixture-bootstrap.yml` as for a hand capture.
+Every archived version remains an independent input to the migration matrix
+against the current build, so skipped-release upgrades are still exercised.
+
+The v0.9.3 baseline remains a direct-upgrade test. It predates `det-cli`, so its
+first hop requires that newer release's GUI when the legacy wallet password
+cannot be supplied headlessly. Archive that completed hop, then resume the CLI
+chain from it. Never use today's binary to manufacture an older release's data.
+
 ## Adding a fixture for a new version
 
 1. **Pick the profile.** See [`profiles/`](profiles/). `wallet-only` is the
@@ -201,8 +289,8 @@ headless.
    for v0.9.3 that means registering the identity and its DPNS name, since that
    binary has no SPV and can only see funds through a local Dash Core node.
 4. **Capture with the released binary**, in a fully reset, isolated data
-   directory. Never capture two fixtures into the same directory, and never
-   capture on top of a directory a previous run touched.
+   directory, or advance a copy of an existing fixture using `release-chain`
+   above. Keep original archives immutable and record the chain's provenance.
 5. **Confirm the profile checklist item by item before quitting the app.**
    Discovery that has not finished yet is the most common way to capture a
    fixture that silently proves nothing.

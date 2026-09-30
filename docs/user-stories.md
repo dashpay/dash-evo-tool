@@ -100,6 +100,7 @@ As a user, I want to remove a wallet I no longer need so that it does not clutte
 
 - Confirmation prompt before removal.
 - Current wallet data is deleted from local storage. If an older recovery database exists, it remains untouched.
+- Upgrade backups are not deleted with the wallet, since they also hold other wallets' data; they expire through backup retention (WAL-034).
 
 ### WAL-008: View wallet balances [Implemented]
 **Persona:** Alex, Priya, Jordan
@@ -335,6 +336,18 @@ As a user updating from any earlier version I still have installed, I want every
 - The update completes on its own. A migration that cannot finish safely is a defect in the migration, not a situation the user is asked to repair by hand.
 - Starting the updated app a second time changes nothing further, and a user whose data was already current keeps an untouched database rather than a needlessly rewritten one.
 - Currently a gap: each migration mechanism is unit-tested on synthetic data, but no automated check upgrades a data directory a *released* build actually wrote and confirms the result. The design for closing it is `docs/ai-design/2026-09-10-migration-matrix/design.md`; related implemented behaviour is covered by WAL-032, IDN-016 and IDN-020.
+
+### WAL-034: Control how long upgrade backups are kept [Implemented]
+**Persona:** Alex, Priya, Jordan
+
+As a user whose wallet data was copied before a storage upgrade, I want old upgrade backups to be deleted after a while so that copies of my wallet data do not stay on this device forever.
+
+- Upgrade backups older than 90 days are deleted automatically by default, covering app, wallet, upstream pre-migration and legacy `data.db` backups.
+- Settings → Upgrade Backups lets the user change the period (1 to 3650 days) or keep backups forever. Turning automatic deletion on lets the user choose the period before applying it, and any stricter setting asks for confirmation first, because it deletes backups immediately. A period outside the range is shown with an error and never saved.
+- The setting is one policy for every backup in the data directory, whichever network is open; a saved change applies to every network's backups as soon as the wallet data has opened.
+- The newest complete backup of each database is always kept, whatever its age, so the last recovery copy is never deleted automatically. A backup dated in the future because the system clock ran ahead is not treated as the newest until that date arrives. An empty or cut-off copy never counts as that backup; if no complete copy exists, the newest copy is kept anyway. A copy that cannot be read is never deleted automatically.
+- With "keep forever", no published backup is deleted automatically. Opening the data removes only unfinished copies left by a crash and exact duplicates of a newer backup.
+- Removing a wallet or an identity does not delete upgrade backups. Clearing a network's data deletes that network's wallet backups; backups of the shared app data stay under the retention setting.
 
 ---
 
@@ -617,7 +630,12 @@ As an everyday user, I want to open a Receive view for my identity so that anoth
 As a power user, I want to add a new key to my identity so that I can authorize additional operations or devices.
 
 - Select key type and purpose.
-- Key is added via state transition.
+- “Create from wallet” is selected by default when the identity was loaded from a wallet on this device; choose a wallet key slot instead of entering a private key.
+- The slot matching the new key's number is selected automatically, so other wallet apps can restore the key; the lowest unused slot is used only when that one is taken. Used slots, including disabled keys and HASH160 equivalents, cannot be selected and say why.
+- Keys created from the wallet (secp256k1 and HASH160) retain their wallet path for signing and recovery-phrase restore. Slots stay within the recovery search range.
+- Identities without a wallet path on this device open on manual entry, with an explanation. Turn off “Create from wallet” to enter or randomly generate a private key; other key types use this manual option.
+- For a password-protected identity, the screen states that a key created from the wallet is protected by the wallet, not by the identity's password.
+- Key is added via state transition. The key is checked against the wallet's recovery phrase, and stale or reused slots are rejected, before submission; after a rejection the identity is updated from the network and another free slot is selected.
 
 ### IDN-008: View identity keys and details [Implemented]
 **Persona:** Alex, Priya, Jordan

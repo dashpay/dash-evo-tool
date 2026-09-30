@@ -334,6 +334,8 @@ pub enum BackendTaskContext {
     TokenRewardEstimate(IdentityTokenIdentifier),
     /// The destructive per-network database clear.
     ClearNetworkDatabase,
+    /// Saving the upgrade-backup retention policy.
+    UpdateBackupRetention,
     /// A scheduled-vote sweep for one network.
     ScheduledVoteSweep { network: Network },
     /// Receive-address derivation for one wallet's deposit flow.
@@ -354,6 +356,23 @@ pub enum BackendTaskContext {
     LegacyRecoveryCheck(Identifier),
     /// The restore of one identity's approved legacy-recovery items.
     LegacyRecoveryRestore(Identifier),
+    /// Warming the identity-auth public-key cache for one wallet identity
+    /// index, so a screen can tell its own failed warm from other errors.
+    IdentityAuthPubkeyWarm {
+        seed_hash: WalletSeedHash,
+        identity_index: u32,
+    },
+    /// A network refresh of one identity.
+    IdentityRefresh(Identifier),
+    /// Adding a key (entered or wallet-derived) to one identity. The Add Key
+    /// screen wraps it in a dispatch, since another screen's add of the same
+    /// identity yields the same operation.
+    IdentityKeyAdd(Identifier),
+    /// Recovery outcomes stay bound to their dispatch network during navigation.
+    LegacyRecoveryOnNetwork {
+        network: Network,
+        operation: Box<BackendTaskContext>,
+    },
     /// A known backend task that needs no finer UI correlation.
     Other,
     /// An error emitted without an originating backend task.
@@ -361,14 +380,17 @@ pub enum BackendTaskContext {
 }
 
 impl BackendTaskContext {
-    /// The context for `task` about to run on `network`. Identical to
-    /// `From<&BackendTask>` except that a wallet payment broadcast records the
-    /// network: the task alone cannot name it — a [`Wallet`](crate::model::wallet::Wallet)
-    /// carries none, and its extended public key cannot tell Devnet or Regtest
-    /// from Testnet — and a late "outcome unknown" error must not be adopted by
-    /// whichever network happens to be selected when it lands.
+    /// Bind payment and recovery outcomes to their dispatch network, so a late
+    /// result cannot affect a screen after the user switches networks.
     pub(crate) fn for_task_on(task: &BackendTask, network: Network) -> Self {
         match task {
+            BackendTask::IdentityTask(
+                IdentityTask::CheckLegacyRecovery { .. }
+                | IdentityTask::RecoverLegacyIdentityData { .. },
+            ) => Self::LegacyRecoveryOnNetwork {
+                network,
+                operation: Box::new(Self::from(task)),
+            },
             BackendTask::CoreTask(CoreTask::SendWalletPayment { .. }) => {
                 Self::WalletPaymentBroadcast { network }
             }
@@ -401,7 +423,8 @@ impl BackendTaskContext {
 
     fn operation(&self) -> &Self {
         match self {
-            Self::Dispatched { operation, .. } => operation,
+            Self::Dispatched { operation, .. }
+            | Self::LegacyRecoveryOnNetwork { operation, .. } => operation.operation(),
             operation => operation,
         }
     }
@@ -469,6 +492,36 @@ impl BackendTaskContext {
             _ => None,
         }
     }
+
+    /// The `(wallet, identity index)` whose auth public keys this operation
+    /// warms, or `None` for anything else.
+    pub(crate) fn identity_auth_pubkey_warm(&self) -> Option<(WalletSeedHash, u32)> {
+        match self.operation() {
+            Self::IdentityAuthPubkeyWarm {
+                seed_hash,
+                identity_index,
+            } => Some((*seed_hash, *identity_index)),
+            _ => None,
+        }
+    }
+
+    /// The identity this operation refreshes from the network, or `None` for
+    /// anything else.
+    pub(crate) fn refreshed_identity(&self) -> Option<Identifier> {
+        match self.operation() {
+            Self::IdentityRefresh(identity_id) => Some(*identity_id),
+            _ => None,
+        }
+    }
+
+    /// The dispatch network for a recovery task, including explicitly wrapped dispatches.
+    pub(crate) fn legacy_recovery_network(&self) -> Option<Network> {
+        match self {
+            Self::LegacyRecoveryOnNetwork { network, .. } => Some(*network),
+            Self::Dispatched { operation, .. } => operation.legacy_recovery_network(),
+            _ => None,
+        }
+    }
 }
 
 impl From<&BackendTask> for BackendTaskContext {
@@ -511,7 +564,25 @@ impl From<&BackendTask> for BackendTaskContext {
                 identity_id,
                 ..
             }) => Self::LegacyRecoveryRestore(*identity_id),
+            BackendTask::IdentityTask(IdentityTask::RefreshIdentity(identity)) => {
+                Self::IdentityRefresh(identity.identity.id())
+            }
+            BackendTask::IdentityTask(
+                IdentityTask::AddKeyToIdentity(identity, ..)
+                | IdentityTask::AddDerivedKeyToIdentity { identity, .. },
+            ) => Self::IdentityKeyAdd(identity.identity.id()),
+            BackendTask::WalletTask(WalletTask::WarmIdentityAuthPubkeys {
+                seed_hash,
+                identity_index,
+                ..
+            }) => Self::IdentityAuthPubkeyWarm {
+                seed_hash: *seed_hash,
+                identity_index: *identity_index,
+            },
             BackendTask::SystemTask(SystemTask::ClearNetworkDatabase) => Self::ClearNetworkDatabase,
+            BackendTask::SystemTask(SystemTask::UpdateBackupRetention(_)) => {
+                Self::UpdateBackupRetention
+            }
             BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { seed_hash }) => {
                 Self::GenerateReceiveAddress {
                     seed_hash: *seed_hash,
@@ -534,6 +605,11 @@ impl From<&BackendTask> for BackendTaskContext {
         }
     }
 }
+
+/// How one contest in a DPNS vote cast turned out: the normalized contested
+/// name, the choice sent for it, and whether Platform took it. A cast is
+/// per-contest, so one contest failing says nothing about the rest.
+pub type DPNSVoteOutcome = (String, ResourceVoteChoice, Result<(), Arc<TaskError>>);
 
 #[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
@@ -572,7 +648,7 @@ pub enum BackendTaskSuccessResult {
     CoreItem(CoreItem),
     RegisteredIdentity(QualifiedIdentity, FeeResult),
     ToppedUpIdentity(QualifiedIdentity, FeeResult),
-    DPNSVoteResults(Vec<(String, ResourceVoteChoice, Result<(), Arc<TaskError>>)>),
+    DPNSVoteResults(Vec<DPNSVoteOutcome>),
     CastScheduledVote(ScheduledDPNSVote),
     /// A scheduled-vote sweep finished without a query, identity or Platform
     /// failure. The app uses this acknowledgement to retire a preserved
@@ -606,6 +682,16 @@ pub enum BackendTaskSuccessResult {
         prices: Option<TokenPricingSchedule>,
     },
     UpdatedThemePreference(crate::ui::theme::ThemeMode),
+    /// The upgrade-backup retention policy was saved and applied.
+    UpdatedBackupRetention {
+        /// The policy now in effect.
+        retention: crate::model::backup_retention::BackupRetention,
+        /// Expired backups deleted under the new policy.
+        deleted: usize,
+        /// Why some expired backups could not be deleted; they are retried the next
+        /// time wallet data opens.
+        cleanup_failure: Option<Arc<TaskError>>,
+    },
     PlatformInfo(PlatformInfoTaskResult),
 
     // DashPay related results

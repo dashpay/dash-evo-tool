@@ -519,8 +519,8 @@ impl AppContext {
     ) {
         let network = self.network;
         let view = backend.auth_pubkey_cache();
-        let mut cache = view.get(network, &seed_hash);
-        let mut changed = false;
+        let cache = view.get(network, &seed_hash);
+        let mut derived = Vec::new();
 
         for &identity_index in wallet.identities.keys() {
             for key_index in 0..AUTH_PUBKEY_WARM_KEY_COUNT {
@@ -533,9 +533,7 @@ impl AppContext {
                     identity_index,
                     key_index,
                 ) {
-                    Ok(public_key) => {
-                        changed |= cache.insert(network, identity_index, key_index, &public_key);
-                    }
+                    Ok(public_key) => derived.push((identity_index, key_index, public_key)),
                     Err(error) => {
                         tracing::debug!(
                             wallet = %hex::encode(seed_hash),
@@ -549,7 +547,16 @@ impl AppContext {
             }
         }
 
-        if changed && let Err(e) = view.put(network, &seed_hash, &cache) {
+        if derived.is_empty() {
+            return;
+        }
+        // Merge into the freshest blob: the snapshot above may be stale.
+        let merged = view.update(network, &seed_hash, |cache| {
+            for (identity_index, key_index, public_key) in &derived {
+                cache.insert(network, *identity_index, *key_index, public_key);
+            }
+        });
+        if let Err(e) = merged {
             tracing::debug!(
                 wallet = %hex::encode(seed_hash),
                 error = %e,

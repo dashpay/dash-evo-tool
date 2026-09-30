@@ -149,10 +149,10 @@ mod tests {
             .any(|key_id| view.get(&MAIN, *key_id).unwrap().is_some())
     }
 
-    /// Upgrade backups copy the network database with every identity in it, so a
-    /// removed identity must not survive in them.
+    /// Upgrade backups are governed by time-based retention alone; removing an
+    /// identity must leave every recovery snapshot in place.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn removing_an_identity_deletes_upgrade_backups() {
+    async fn removing_an_identity_keeps_upgrade_backups() {
         let staged = stage_identity_with_vaulted_keys(HIGH, MEDIUM).await;
         let database = crate::wallet_backend::wallet_database_path(
             staged.ctx.data_dir(),
@@ -170,8 +170,8 @@ mod tests {
             .expect("the identity must be removed");
 
         assert!(
-            !backup.exists(),
-            "the upgrade backup must be deleted together with the identity"
+            backup.exists(),
+            "identity removal must not delete upgrade backups"
         );
     }
 

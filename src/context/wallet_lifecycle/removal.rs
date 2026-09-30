@@ -75,31 +75,21 @@ impl AppContext {
             }
         }
 
-        if let Err(error) = self.remove_upgrade_backups() {
-            tracing::warn!(?error, "Failed to delete wallet upgrade backups on removal");
-            show_wallet_data_removal_warning(self.egui_ctx(), error);
-        }
-
         Ok(())
     }
 
-    /// Delete the retained compatibility-upgrade backups of the app and this network's
-    /// wallet databases, which copy wallet and identity history a deletion must not leave behind.
+    /// Delete the retained compatibility-upgrade backups of this network's wallet
+    /// database, which copy the wallet and identity history a network clear wipes.
     ///
-    /// Filesystem cleanup is available even when the wallet backend could not be opened.
+    /// The shared app database's backups also hold other networks' data, so they are
+    /// left to time-based retention. Filesystem cleanup is available even when the
+    /// wallet backend could not be opened. Removing a single wallet or identity never
+    /// calls this: those backups also hold other wallets' data.
     pub(crate) fn remove_upgrade_backups(&self) -> Result<(), TaskError> {
-        let mut first_error = None;
-        for database in [
-            self.data_dir().join("det-app.sqlite"),
-            crate::wallet_backend::wallet_database_path(self.data_dir(), self.network),
-        ] {
-            if let Err(source) =
-                crate::wallet_backend::platform_compatibility::remove_backups(&database)
-            {
-                first_error.get_or_insert(TaskError::FileSystem { source });
-            }
-        }
-        first_error.map_or(Ok(()), Err)
+        crate::wallet_backend::platform_compatibility::remove_backups(
+            &crate::wallet_backend::wallet_database_path(self.data_dir(), self.network),
+        )
+        .map_err(|source| TaskError::FileSystem { source })
     }
 }
 

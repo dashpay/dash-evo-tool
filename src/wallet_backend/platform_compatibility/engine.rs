@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior};
 
+use super::storage_failure::StorageFailure;
+
 const OLD_SCHEMA: &str = include_str!("fixtures/67d4ef3.sql");
 const TARGET_SCHEMA: &str = include_str!("fixtures/e3cd7cf.sql");
 const HISTORY: &str = "refinery_schema_history";
@@ -12,9 +14,7 @@ const IDENTITY_INDEX_KEY: &str = "det:identity_index:v1";
 #[derive(Debug, thiserror::Error)]
 pub enum UpgradeError {
     /// Another process holds the database (`SQLITE_BUSY` / `SQLITE_LOCKED`).
-    #[error(
-        "Your wallet data is open in another Dash Evo Tool window or command-line session. Close it and try again."
-    )]
+    #[error("{}", crate::backend_task::error::WALLET_DATA_IN_USE)]
     InUse(#[source] Box<dyn std::error::Error + Send + Sync>),
     #[error(
         "Could not upgrade wallet data because the disk is full. Free up disk space and try again."
@@ -75,37 +75,36 @@ impl UpgradeError {
     }
 }
 
+impl UpgradeError {
+    /// The variant for an environmental storage failure, keeping `error` as the source.
+    pub(super) fn from_failure(
+        failure: StorageFailure,
+        error: Box<dyn std::error::Error + Send + Sync>,
+    ) -> Self {
+        match failure {
+            StorageFailure::InUse => Self::InUse(error),
+            StorageFailure::Full => Self::StorageFull(error),
+            StorageFailure::Unavailable => Self::StorageUnavailable(error),
+            StorageFailure::OutOfMemory => Self::OutOfMemory(error),
+            StorageFailure::AccessDenied => Self::AccessDenied(error),
+        }
+    }
+}
+
 impl From<rusqlite::Error> for UpgradeError {
     fn from(error: rusqlite::Error) -> Self {
-        match error.sqlite_error_code() {
-            Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked) => {
-                Self::InUse(Box::new(error))
-            }
-            Some(rusqlite::ErrorCode::DiskFull) => Self::StorageFull(Box::new(error)),
-            Some(rusqlite::ErrorCode::SystemIoFailure) => Self::StorageUnavailable(Box::new(error)),
-            Some(rusqlite::ErrorCode::OutOfMemory) => Self::OutOfMemory(Box::new(error)),
-            Some(rusqlite::ErrorCode::PermissionDenied | rusqlite::ErrorCode::ReadOnly) => {
-                Self::AccessDenied(Box::new(error))
-            }
-            _ => Self::Sqlite(error),
+        match StorageFailure::of_sqlite(&error) {
+            Some(failure) => Self::from_failure(failure, Box::new(error)),
+            None => Self::Sqlite(error),
         }
     }
 }
 
 impl From<std::io::Error> for UpgradeError {
     fn from(error: std::io::Error) -> Self {
-        use std::io::ErrorKind;
-        match error.kind() {
-            ErrorKind::StorageFull => Self::StorageFull(Box::new(error)),
-            ErrorKind::OutOfMemory => Self::OutOfMemory(Box::new(error)),
-            ErrorKind::Interrupted
-            | ErrorKind::WouldBlock
-            | ErrorKind::TimedOut
-            | ErrorKind::ResourceBusy => Self::StorageUnavailable(Box::new(error)),
-            ErrorKind::PermissionDenied | ErrorKind::ReadOnlyFilesystem => {
-                Self::AccessDenied(Box::new(error))
-            }
-            _ => Self::Io(error),
+        match StorageFailure::of_io(&error) {
+            Some(failure) => Self::from_failure(failure, Box::new(error)),
+            None => Self::Io(error),
         }
     }
 }
@@ -247,7 +246,74 @@ fn backup_prefix(path: &Path) -> Option<String> {
     ))
 }
 
+/// Upstream snapshot names: `pre-migration-<stem>-<from>-to-<to>-<timestamp>.db`.
+const UPSTREAM_PREFIX: &str = "pre-migration-";
+const UPSTREAM_SUFFIX: &str = ".db";
+/// UTC timestamp format in an upstream snapshot name.
+const UPSTREAM_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%SZ";
+
+/// Whether `name` is a bridge snapshot of `database` (published `.sqlite` or
+/// unpublished `.pending`), which lives next to the database.
+pub(crate) fn is_bridge_backup_name(database: &Path, name: &str) -> bool {
+    let Some(prefix) = backup_prefix(database) else {
+        return false;
+    };
+    name.strip_prefix(&prefix)
+        .and_then(|suffix| {
+            suffix
+                .strip_suffix(".sqlite")
+                .or_else(|| suffix.strip_suffix(".pending"))
+        })
+        .is_some_and(|suffix| {
+            !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_alphanumeric())
+        })
+}
+
+/// The migration an upstream snapshot of `database` precedes, and when it was taken.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UpstreamSnapshot {
+    from: u32,
+    to: u32,
+    taken: std::time::SystemTime,
+}
+
+fn parse_upstream_name(database: &Path, name: &str) -> Option<UpstreamSnapshot> {
+    let stem = database.file_stem()?.to_str()?;
+    // DET database names are already valid upstream stems; reject lossy/ambiguous names.
+    if stem.is_empty()
+        || stem.len() > 32
+        || !stem
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return None;
+    }
+    let suffix = name
+        .strip_prefix(UPSTREAM_PREFIX)?
+        .strip_prefix(stem)?
+        .strip_prefix('-')?
+        .strip_suffix(UPSTREAM_SUFFIX)?;
+    let (versions, timestamp) = suffix.rsplit_once('-')?;
+    let (from, to) = versions.split_once("-to-")?;
+    let taken = chrono::NaiveDateTime::parse_from_str(timestamp, UPSTREAM_TIMESTAMP_FORMAT).ok()?;
+    Some(UpstreamSnapshot {
+        from: from.parse().ok()?,
+        to: to.parse().ok()?,
+        taken: taken.and_utc().into(),
+    })
+}
+
+/// When the upstream snapshot `name` of `database` was taken, or `None` when
+/// `name` is not one.
+pub(crate) fn upstream_backup_timestamp(
+    database: &Path,
+    name: &str,
+) -> Option<std::time::SystemTime> {
+    parse_upstream_name(database, name).map(|snapshot| snapshot.taken)
+}
+
 /// Retained upgrade backups of the database at `path`.
+#[cfg(test)]
 fn backups(path: &Path) -> std::io::Result<Vec<PathBuf>> {
     backups_in(path, Some(&default_auto_dir(path)))
 }
@@ -256,31 +322,31 @@ fn default_auto_dir(path: &Path) -> PathBuf {
     platform_wallet_storage::default_auto_backup_dir(path)
 }
 
-/// Backup candidates that passed validation, plus the first rejected one.
+/// Backup candidates that passed validation, plus every rejected one with its reason.
 ///
 /// Directory-level failures still abort the scan; a single rejected
 /// candidate does not, so deletion can remove every valid snapshot before
 /// reporting the rejection.
 struct BackupScan {
     found: Vec<PathBuf>,
-    first_rejection: Option<std::io::Error>,
+    rejected: Vec<(PathBuf, std::io::Error)>,
 }
 
 /// Strict scan: any rejected candidate fails the whole scan. Retention and
 /// publication rely on this to never proceed past an unexpected file.
 fn backups_in(path: &Path, auto_dir: Option<&Path>) -> std::io::Result<Vec<PathBuf>> {
     let scan = scan_backups_in(path, auto_dir)?;
-    scan.first_rejection.map_or(Ok(scan.found), Err)
+    match scan.rejected.into_iter().next() {
+        Some((_, error)) => Err(error),
+        None => Ok(scan.found),
+    }
 }
 
 fn scan_backups_in(path: &Path, auto_dir: Option<&Path>) -> std::io::Result<BackupScan> {
     let mut found = Vec::new();
-    let mut first_rejection = None;
-    let (Some(parent), Some(prefix)) = (path.parent(), backup_prefix(path)) else {
-        return Ok(BackupScan {
-            found,
-            first_rejection,
-        });
+    let mut rejected = Vec::new();
+    let Some(parent) = path.parent() else {
+        return Ok(BackupScan { found, rejected });
     };
     for directory in [Some(parent), auto_dir].into_iter().flatten() {
         let metadata = match std::fs::symlink_metadata(directory) {
@@ -297,95 +363,65 @@ fn scan_backups_in(path: &Path, auto_dir: Option<&Path>) -> std::io::Result<Back
             let entry = entry?;
             let name = entry.file_name();
             let Some(name) = name.to_str() else { continue };
-            let bridge = directory == parent
-                && name
-                    .strip_prefix(&prefix)
-                    .and_then(|suffix| {
-                        suffix
-                            .strip_suffix(".sqlite")
-                            .or_else(|| suffix.strip_suffix(".pending"))
-                    })
-                    .is_some_and(|suffix| {
-                        !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_alphanumeric())
-                    });
-            let upstream = Some(directory) == auto_dir && upstream_backup_name(path, name);
+            let bridge = directory == parent && is_bridge_backup_name(path, name);
+            let upstream = Some(directory) == auto_dir && parse_upstream_name(path, name).is_some();
             if bridge || upstream {
                 match validate_backup_file(&entry.path(), path) {
                     Ok(()) => found.push(entry.path()),
-                    Err(error) => {
-                        first_rejection.get_or_insert(error);
-                    }
+                    Err(error) => rejected.push((entry.path(), error)),
                 }
             }
         }
     }
     found.sort();
     found.dedup();
-    Ok(BackupScan {
-        found,
-        first_rejection,
-    })
+    Ok(BackupScan { found, rejected })
 }
 
-fn upstream_backup_name(path: &Path, name: &str) -> bool {
-    let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
-        return false;
-    };
-    // DET database names are already valid upstream stems; reject lossy/ambiguous names.
-    if stem.is_empty()
-        || stem.len() > 32
-        || !stem
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-    {
-        return false;
-    }
-    let Some(suffix) = name
-        .strip_prefix(&format!("pre-migration-{stem}-"))
-        .and_then(|suffix| suffix.strip_suffix(".db"))
-    else {
-        return false;
-    };
-    let Some((versions, timestamp)) = suffix.rsplit_once('-') else {
-        return false;
-    };
-    let Some((from, to)) = versions.split_once("-to-") else {
-        return false;
-    };
-    from.parse::<u32>().is_ok()
-        && to.parse::<u32>().is_ok()
-        && chrono::NaiveDateTime::parse_from_str(timestamp, "%Y%m%dT%H%M%SZ").is_ok()
+/// Why a file with a backup (or lifecycle-lock) name is not treated as one. Wrapped
+/// in an [`std::io::Error`]; only logs and error details show it.
+#[derive(Debug, thiserror::Error)]
+enum UnexpectedBackupFile {
+    #[error("A file named like an upgrade backup is not a regular file.")]
+    NotRegularFile,
+    #[error("A file named like an upgrade backup is the live database.")]
+    LiveDatabase,
+    #[error("A file named like an upgrade backup has more than one hard link.")]
+    HardLinked,
 }
 
+/// Scan-time classification of a candidate (also used to vet the lifecycle lock
+/// file); the deletion itself is policed by the
+/// [`delete_file`](crate::utils::file_deletion::delete_file) chokepoint.
 fn validate_backup_file(backup: &Path, database: &Path) -> std::io::Result<()> {
+    let unexpected = |kind| Err(std::io::Error::other(kind));
     let metadata = std::fs::symlink_metadata(backup)?;
-    if !metadata.is_file() || backup == database {
-        return Err(std::io::Error::other(
-            "Refusing to remove a non-regular backup file",
-        ));
+    if !metadata.is_file() {
+        return unexpected(UnexpectedBackupFile::NotRegularFile);
+    }
+    if backup == database {
+        return unexpected(UnexpectedBackupFile::LiveDatabase);
     }
     if let Ok(live_path) = database.canonicalize()
         && backup.canonicalize()? == live_path
     {
-        return Err(std::io::Error::other(
-            "Refusing to remove the live database",
-        ));
+        return unexpected(UnexpectedBackupFile::LiveDatabase);
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
         if metadata.nlink() != 1 {
-            return Err(std::io::Error::other(
-                "Refusing to remove a hard-linked backup file",
-            ));
+            return unexpected(UnexpectedBackupFile::HardLinked);
         }
     }
     Ok(())
 }
 
 fn remove_backup(backup: &Path, database: &Path) -> std::io::Result<()> {
-    validate_backup_file(backup, database)?;
-    std::fs::remove_file(backup)
+    crate::utils::file_deletion::delete_file(
+        backup,
+        crate::utils::file_deletion::DeletionIntent::Backup { database },
+    )
 }
 
 pub(super) struct BackupGuard {
@@ -393,13 +429,42 @@ pub(super) struct BackupGuard {
     _file: Option<std::fs::File>,
 }
 
+/// How long a contended lifecycle lock is retried before reporting `WouldBlock`.
+///
+/// `flock` belongs to the open file description, and a child that any thread of this
+/// process forks shares it until the child execs. A lock just released by its guard
+/// can therefore still look held for that brief window.
+const LOCK_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
+const LOCK_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(5);
+
+fn lock_with_grace(file: &std::fs::File) -> std::io::Result<()> {
+    let deadline = std::time::Instant::now() + LOCK_GRACE;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(()),
+            Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(LOCK_RETRY_INTERVAL);
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+/// Suffix appended to a database's file name to form its lifecycle lock file.
+pub(crate) const LOCK_SUFFIX: &str = ".platform-upgrade.lock";
+
+/// The lifecycle lock file of the database at `database`; `None` when the path has
+/// no file name.
+pub(crate) fn backup_lock_path(database: &Path) -> Option<PathBuf> {
+    let mut name = database.file_name()?.to_os_string();
+    name.push(LOCK_SUFFIX);
+    Some(database.with_file_name(name))
+}
+
 pub(super) fn backup_lock(path: &Path) -> std::io::Result<BackupGuard> {
-    let Some(name) = path.file_name() else {
+    let Some(lock_path) = backup_lock_path(path) else {
         return Err(std::io::ErrorKind::InvalidInput.into());
     };
-    let mut lock_name = name.to_os_string();
-    lock_name.push(".platform-upgrade.lock");
-    let lock_path = path.with_file_name(lock_name);
     let mut options = std::fs::File::options();
     options.read(true).write(true).create_new(true);
     #[cfg(unix)]
@@ -426,7 +491,7 @@ pub(super) fn backup_lock(path: &Path) -> std::io::Result<BackupGuard> {
         Err(error) => return Err(error),
     };
     validate_backup_file(&lock_path, path)?;
-    file.try_lock().map_err(std::io::Error::from)?;
+    lock_with_grace(&file)?;
     // Keep the pathname stable: unlinking it could let contenders lock different files.
     Ok(BackupGuard {
         path: path.to_owned(),
@@ -434,86 +499,221 @@ pub(super) fn backup_lock(path: &Path) -> std::io::Result<BackupGuard> {
     })
 }
 
-/// Retain the newest snapshot across both upgrade-backup formats.
+/// [`tidy_backups_locked`] under a freshly taken lifecycle lock.
 #[cfg(test)]
-pub(super) fn retain_one_backup(path: &Path, auto_dir: Option<&Path>) -> std::io::Result<()> {
+pub(super) fn tidy_backups(path: &Path, auto_dir: Option<&Path>) -> std::io::Result<()> {
     let guard = backup_lock(path)?;
-    retain_one_backup_locked(&guard, auto_dir)
+    tidy_backups_locked(&guard, auto_dir)
 }
 
-pub(super) fn retain_one_backup_locked(
+/// Housekeeping that loses no recovery data: delete unpublished `.pending` copies left
+/// by a crash, and published snapshots that are byte-identical to a newer retained
+/// snapshot of the same migration (each failed open writes another copy of the
+/// unchanged database). Every other snapshot is left to time-based retention.
+///
+/// The scan is strict, so an unexpected candidate fails the call before anything is
+/// deleted.
+pub(super) fn tidy_backups_locked(
     guard: &BackupGuard,
     auto_dir: Option<&Path>,
 ) -> std::io::Result<()> {
     let path = &guard.path;
-    let mut snapshots = Vec::new();
+    // Group published snapshots by the migration they precede; newest first.
+    let mut groups: std::collections::BTreeMap<Option<(u32, u32)>, Vec<_>> =
+        std::collections::BTreeMap::new();
     for backup in backups_in(path, auto_dir)? {
-        // Unpublished copies may be incomplete and must never supersede a recovery snapshot.
+        let name = backup
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
         if backup
             .extension()
             .is_some_and(|extension| extension == "pending")
         {
             remove_backup(&backup, path)?;
-        } else {
-            snapshots.push((std::fs::metadata(&backup)?.modified()?, backup));
+            continue;
+        }
+        // Bridge snapshots all precede the same pinned-profile upgrade.
+        let migration =
+            parse_upstream_name(path, name).map(|snapshot| (snapshot.from, snapshot.to));
+        let created = backup_created(path, &backup)?;
+        groups.entry(migration).or_default().push((created, backup));
+    }
+    for mut group in groups.into_values() {
+        group.sort_by(|a, b| b.cmp(a));
+        let mut kept: Vec<PathBuf> = Vec::with_capacity(group.len());
+        for (_, backup) in group {
+            let mut duplicate = false;
+            for newer in &kept {
+                if same_contents(newer, &backup)? {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if duplicate {
+                remove_backup(&backup, path)?;
+            } else {
+                kept.push(backup);
+            }
         }
     }
-    snapshots.sort();
-    snapshots.pop();
-    for (_, backup) in snapshots {
-        remove_backup(&backup, path)?;
-    }
     Ok(())
+}
+
+/// Whether two files hold the same bytes. Sizes are compared first, then the
+/// contents are streamed in fixed-size chunks, stopping at the first difference.
+fn same_contents(a: &Path, b: &Path) -> std::io::Result<bool> {
+    use std::io::Read;
+    const CHUNK: usize = 64 * 1024;
+    if std::fs::symlink_metadata(a)?.len() != std::fs::symlink_metadata(b)?.len() {
+        return Ok(false);
+    }
+    let (mut a, mut b) = (std::fs::File::open(a)?, std::fs::File::open(b)?);
+    let (mut left, mut right) = (vec![0u8; CHUNK], vec![0u8; CHUNK]);
+    loop {
+        let read = a.read(&mut left)?;
+        if read == 0 {
+            // Equal lengths: `b` must be exhausted too, unless it grew meanwhile.
+            return Ok(b.read(&mut right[..1])? == 0);
+        }
+        b.read_exact(&mut right[..read])?;
+        if left[..read] != right[..read] {
+            return Ok(false);
+        }
+    }
 }
 
 /// Delete every retained upgrade backup of the database at `path`.
 ///
 /// Backups never contain vault secrets. Attempts every file and returns the first failure.
-/// `Ok` means the deletions are durable: every directory an entry was removed
-/// from is synced, so callers may retire their retry state afterwards.
+/// `Ok` means the deletions are durable: every existing backup directory is
+/// synced on every call (including a retry that finds nothing left to delete),
+/// so callers may retire their retry state afterwards.
 pub(crate) fn remove_backups(path: &Path) -> std::io::Result<()> {
-    remove_backups_with_sync(path, sync_directory)
+    remove_backups_with_sync(path, |_| true, crate::utils::backup_prune::sync_directory)
+}
+
+/// Delete the upgrade backups of the database at `path` that are older than `max_age`.
+///
+/// Covers both the bridge snapshots next to the database and upstream `pre-migration-*`
+/// snapshots, and always keeps the newest usable one (see
+/// [`prune_expired`](crate::utils::backup_prune::prune_expired)), so it is safe
+/// whether or not the database currently opens. A database with no backups is
+/// skipped without taking its lock, and
+/// one whose lock is held (another context is opening or upgrading it) is skipped too;
+/// the next pass covers it.
+///
+/// Attempts every candidate and returns the first failure; a candidate that fails
+/// validation is reported but never blocks removing the others. `Ok` carries the number
+/// of backups deleted, and their directories are synced.
+pub(crate) fn prune_expired_backups(
+    path: &Path,
+    max_age: std::time::Duration,
+    now: std::time::SystemTime,
+) -> std::io::Result<usize> {
+    let auto_dir = default_auto_dir(path);
+    let unlocked = scan_backups_in(path, Some(&auto_dir))?;
+    if unlocked.found.is_empty() && unlocked.rejected.is_empty() {
+        return Ok(0);
+    }
+    let _guard = match backup_lock(path) {
+        Ok(guard) => guard,
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+            tracing::debug!(database = %path.display(), "Upgrade backup retention skipped a database in use");
+            return Ok(0);
+        }
+        Err(error) => return Err(error),
+    };
+    let scan = scan_backups_in(path, Some(&auto_dir))?;
+    let rejected = scan.rejected.into_iter().next().map(|(_, error)| error);
+    let candidates = scan
+        .found
+        .into_iter()
+        .filter(|backup| {
+            backup
+                .extension()
+                .is_none_or(|extension| extension != "pending")
+        })
+        .map(|backup| {
+            let created = backup_created(path, &backup);
+            // A later migration is a later snapshot, whatever the clock said.
+            let sequence = backup
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| parse_upstream_name(path, name))
+                .map(|snapshot| (snapshot.to, snapshot.from));
+            crate::utils::backup_prune::Candidate {
+                path: backup,
+                created,
+                sequence,
+            }
+        })
+        .collect();
+    let pruned = crate::utils::backup_prune::prune_expired(
+        candidates,
+        now,
+        max_age,
+        crate::utils::file_deletion::DeletionIntent::Backup { database: path },
+    );
+    match (pruned, rejected) {
+        (Err(error), _) | (Ok(_), Some(error)) => Err(error),
+        (Ok(removed), None) => Ok(removed),
+    }
+}
+
+/// When `backup` of `database` was created: the later of its modification time and
+/// the timestamp in its name, if any. Taking the later one means a reset or skewed
+/// signal only delays deletion, never hastens it.
+fn backup_created(database: &Path, backup: &Path) -> std::io::Result<std::time::SystemTime> {
+    let modified = std::fs::symlink_metadata(backup)?.modified()?;
+    let named = backup
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| upstream_backup_timestamp(database, name));
+    Ok(named.map_or(modified, |named| named.max(modified)))
 }
 
 fn remove_backups_with_sync(
     path: &Path,
+    selected: impl Fn(&Path) -> bool,
     mut sync_dir: impl FnMut(&Path) -> std::io::Result<()>,
 ) -> std::io::Result<()> {
     let _guard = backup_lock(path)?;
-    let scan = scan_backups_in(path, Some(&default_auto_dir(path)))?;
-    let mut first_error = scan.first_rejection;
-    let mut touched = std::collections::BTreeSet::new();
-    for backup in scan.found {
-        match remove_backup(&backup, path) {
-            Ok(()) => {
-                if let Some(parent) = backup.parent() {
-                    touched.insert(parent.to_owned());
-                }
-            }
-            Err(error) => {
-                first_error.get_or_insert(error);
-            }
+    let auto_dir = default_auto_dir(path);
+    let scan = scan_backups_in(path, Some(&auto_dir))?;
+    let mut first_error = scan
+        .rejected
+        .into_iter()
+        .find(|(backup, _)| selected(backup))
+        .map(|(_, error)| error);
+    for backup in scan.found.into_iter().filter(|backup| selected(backup)) {
+        if let Err(error) = remove_backup(&backup, path) {
+            first_error.get_or_insert(error);
         }
     }
-    // One sync per directory after all unlinks, still under the guard.
-    for directory in touched {
-        if let Err(error) = sync_dir(&directory) {
+    // Sync every candidate directory, not just those unlinked from in this call: an
+    // earlier call may have unlinked successfully and then failed its sync, and a
+    // retry that finds nothing left to delete must still make that deletion durable.
+    for directory in [path.parent(), Some(auto_dir.as_path())]
+        .into_iter()
+        .flatten()
+    {
+        match std::fs::symlink_metadata(directory) {
+            // No directory means no entry was ever removed from it.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                first_error.get_or_insert(error);
+                continue;
+            }
+            // The scan already rejected a non-directory; never open it here.
+            Ok(metadata) if !metadata.is_dir() => continue,
+            Ok(_) => {}
+        }
+        if let Err(error) = sync_dir(directory) {
             first_error.get_or_insert(error);
         }
     }
     first_error.map_or(Ok(()), Err)
-}
-
-/// Persist directory-entry changes (unlinks) in `directory`.
-///
-/// Windows cannot open a directory as a `File` without extra flags and NTFS
-/// journals metadata changes, so this is a no-op there.
-fn sync_directory(directory: &Path) -> std::io::Result<()> {
-    #[cfg(unix)]
-    std::fs::File::open(directory)?.sync_all()?;
-    #[cfg(not(unix))]
-    let _ = directory;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -537,6 +737,9 @@ fn backup_with_hook_locked(
     let path = &guard.path;
     let parent = path.parent().ok_or(UpgradeError::Unrecognized)?;
     let prefix = backup_prefix(path).ok_or(UpgradeError::Unrecognized)?;
+    // Not routed through `delete_file`: on failure the temp file removes only
+    // the uniquely named `.pending` file it created itself, which keeps the
+    // cleanup tied to drop on every error path.
     let file = tempfile::Builder::new()
         .prefix(&prefix)
         .suffix(".pending")
@@ -556,16 +759,10 @@ fn backup_with_hook_locked(
     verify(&dest)?;
     drop(dest);
     file.as_file().sync_all()?;
-    // A verified snapshot supersedes old backups only while the original is still untouched.
-    for old in backups(path)? {
-        if old != file.path() {
-            remove_backup(&old, path)?;
-        }
-    }
+    // Earlier snapshots stay: only time-based retention and open-time tidying remove them.
     let kept = file.path().with_extension("sqlite");
     file.persist_noclobber(&kept).map_err(|e| e.error)?;
-    #[cfg(unix)]
-    std::fs::File::open(parent)?.sync_all()?;
+    crate::utils::backup_prune::sync_directory(parent)?;
     Ok(kept)
 }
 

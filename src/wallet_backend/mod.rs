@@ -395,6 +395,10 @@ struct Inner {
     clear_shielded_test_failure: std::sync::atomic::AtomicBool,
     #[cfg(test)]
     forget_wallet_local_state_test_failure: std::sync::atomic::AtomicBool,
+    /// Runs once at the end of [`WalletBackend::forget_all_wallets_local`],
+    /// standing in for a writer that lands while the wallets are still loaded.
+    #[cfg(test)]
+    after_forget_all_test_hook: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
     /// Injected persister faults for the identity-funding account
     /// registration write. Inert until a test arms it.
     #[cfg(test)]
@@ -458,6 +462,12 @@ struct Inner {
     /// dispatch is user-initiated and rare relative to lock acquisition
     /// cost.
     dashpay_address_index_lock: std::sync::Mutex<()>,
+    /// Serialises read-modify-writes of this network's identity-auth
+    /// public-key cache blobs (see [`AuthPubkeyCacheView::update`]). This
+    /// backend's views are the only writers of its network's entries, so a
+    /// per-backend lock covers every writer. Held only for a synchronous
+    /// KV read/write — never across an `.await`.
+    auth_pubkey_cache_lock: std::sync::Mutex<()>,
     /// Encrypted secret vault. Holds imported single-key WIFs
     /// (`single_key_priv.*` labels, see [`single_key`]) and HD-wallet
     /// BIP-39 seeds (`seed.raw.v1`, with `envelope.v1` only during migration,
@@ -505,6 +515,9 @@ pub struct WalletBackend {
 /// partial wipe instead of a false success.
 pub(crate) struct ClearAllOutcome {
     pub(crate) upstream_ids: Vec<WalletId>,
+    /// Every HD wallet the sweep reached; their auth-pubkey caches need a
+    /// final [`WalletBackend::forget_auth_pubkey_caches`] once they are unloaded.
+    pub(crate) hd_seed_hashes: Vec<WalletSeedHash>,
     pub(crate) failures: Vec<TaskError>,
 }
 
@@ -516,6 +529,28 @@ impl std::fmt::Debug for WalletBackend {
     }
 }
 
+/// File name of the cross-network app database in the data directory.
+pub(crate) const APP_DATABASE_FILE: &str = "det-app.sqlite";
+
+/// The cross-network app k/v database: `<data_dir>/det-app.sqlite`.
+pub(crate) fn app_database_path(data_dir: &Path) -> std::path::PathBuf {
+    data_dir.join(APP_DATABASE_FILE)
+}
+
+/// Every network, via an exhaustive match: a new [`Network`] variant fails to
+/// compile here until each caller (e.g. the deletion deny-list) is reviewed.
+pub(crate) fn all_networks() -> [Network; 4] {
+    let _exhaustive = |network: Network| match network {
+        Network::Mainnet | Network::Testnet | Network::Devnet | Network::Regtest => (),
+    };
+    [
+        Network::Mainnet,
+        Network::Testnet,
+        Network::Devnet,
+        Network::Regtest,
+    ]
+}
+
 /// The durable per-network wallet database: `<data_dir>/det-<network>.sqlite`.
 ///
 /// A sibling of `det-app.sqlite`, deliberately outside `<data_dir>/spv/<network>/`
@@ -524,6 +559,20 @@ impl std::fmt::Debug for WalletBackend {
 /// created and locked down at boot, so no directory work happens here.
 pub(crate) fn wallet_database_path(data_dir: &Path, network: Network) -> std::path::PathBuf {
     data_dir.join(format!("det-{}.sqlite", network_prefix(network)))
+}
+
+/// Parent of every network's [`spv_storage_dir`], `<data_dir>/spv/`.
+pub(crate) fn spv_root_dir(data_dir: &Path) -> std::path::PathBuf {
+    data_dir.join("spv")
+}
+
+/// The per-network chain-sync (SPV) cache directory, `<data_dir>/spv/<network>/`.
+///
+/// The single definition shared by the backend (which creates it), the network
+/// clear (which empties it) and the deletion chokepoint (which confines that clear
+/// to it).
+pub(crate) fn spv_storage_dir(data_dir: &Path, network: Network) -> std::path::PathBuf {
+    spv_root_dir(data_dir).join(network_prefix(network))
 }
 
 /// The upstream shielded coordinator's store,
@@ -635,6 +684,8 @@ impl WalletBackend {
                 #[cfg(test)]
                 forget_wallet_local_state_test_failure: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(test)]
+                after_forget_all_test_hook: std::sync::Mutex::new(None),
+                #[cfg(test)]
                 persist_faults: persist_fault_test_support::PersistFaults::default(),
                 #[cfg(test)]
                 provision_overlap: ProvisionOverlap::default(),
@@ -657,6 +708,7 @@ impl WalletBackend {
                 spv_storage_dir,
                 wallet_database_path,
                 dashpay_address_index_lock: std::sync::Mutex::new(()),
+                auth_pubkey_cache_lock: std::sync::Mutex::new(()),
                 secret_store,
                 wallet_context,
                 app_kv,
@@ -1173,6 +1225,15 @@ impl WalletBackend {
     }
 
     #[cfg(test)]
+    pub(crate) fn set_after_forget_all_test_hook(&self, hook: impl FnOnce() + Send + 'static) {
+        *self
+            .inner
+            .after_forget_all_test_hook
+            .lock()
+            .expect("test hook lock") = Some(Box::new(hook));
+    }
+
+    #[cfg(test)]
     pub(crate) fn set_forget_wallet_local_state_test_failure(&self, fail: bool) {
         self.inner
             .forget_wallet_local_state_test_failure
@@ -1549,6 +1610,21 @@ impl WalletBackend {
             first_error.get_or_insert(e);
         }
 
+        // DET auth-pubkey cache. The wallet-scope cascade removes it only with
+        // the upstream wallet row; deleting it here, under the cache's write
+        // lock, also stops a warm still in flight from writing it back.
+        if let Err(e) = self
+            .auth_pubkey_cache()
+            .delete(self.inner.network, seed_hash)
+        {
+            tracing::warn!(
+                wallet = %hex::encode(seed_hash),
+                error = ?e,
+                "Failed to delete auth-pubkey cache"
+            );
+            first_error.get_or_insert(e);
+        }
+
         // Plaintext Orchard state (notes + nullifier cursor) now lives in the
         // upstream coordinator store; `remove_upstream_wallet` detaches it.
 
@@ -1681,8 +1757,10 @@ impl WalletBackend {
         // HD wallets: enumerate from the persisted wallet-meta sidecar so a
         // never-loaded wallet is still wiped.
         let mut upstream_ids = Vec::new();
+        let mut hd_seed_hashes = Vec::new();
         let mut failures: Vec<TaskError> = Vec::new();
         for (seed_hash, _meta) in self.wallet_meta().list(network) {
+            hd_seed_hashes.push(seed_hash);
             let wallet_id = self.registered_wallet_id(&seed_hash);
             if let Some(id) = wallet_id {
                 upstream_ids.push(id);
@@ -1712,10 +1790,48 @@ impl WalletBackend {
         // (single-key forget does not clear the session cache).
         self.forget_all_secrets();
 
+        #[cfg(test)]
+        if let Some(hook) = self
+            .inner
+            .after_forget_all_test_hook
+            .lock()
+            .expect("test hook lock")
+            .take()
+        {
+            hook();
+        }
+
         ClearAllOutcome {
             upstream_ids,
+            hd_seed_hashes,
             failures,
         }
+    }
+
+    /// Delete the auth-pubkey cache of every wallet in `seed_hashes`, returning
+    /// each failure. Call only once the wallets left the loaded
+    /// [`WalletContext`](wallet_context::WalletContext): from then on a warm
+    /// still in flight cannot write an entry back, so this deletion is final.
+    pub(crate) fn forget_auth_pubkey_caches(
+        &self,
+        seed_hashes: &[WalletSeedHash],
+    ) -> Vec<TaskError> {
+        let cache = self.auth_pubkey_cache();
+        seed_hashes
+            .iter()
+            .filter_map(|seed_hash| {
+                cache
+                    .delete(self.inner.network, seed_hash)
+                    .inspect_err(|error| {
+                        tracing::warn!(
+                            wallet = %hex::encode(seed_hash),
+                            ?error,
+                            "Failed to delete auth-pubkey cache after unloading wallets"
+                        );
+                    })
+                    .err()
+            })
+            .collect()
     }
 
     /// Start chain sync and the periodic upstream coordinators.
@@ -2231,7 +2347,11 @@ impl WalletBackend {
     /// key schema. The cache memoises the hardened-path identity-auth
     /// pubkeys so the steady-state read is seed-free.
     pub fn auth_pubkey_cache(&self) -> AuthPubkeyCacheView<'_> {
-        AuthPubkeyCacheView::new(&self.inner.app_kv)
+        AuthPubkeyCacheView::new(
+            &self.inner.app_kv,
+            &self.inner.auth_pubkey_cache_lock,
+            &self.inner.wallet_context,
+        )
     }
 
     /// View over the DET-owned avatar image cache. Backed by the
@@ -2961,12 +3081,12 @@ impl WalletBackend {
         app_data_dir: &Path,
         network: Network,
     ) -> Result<std::path::PathBuf, TaskError> {
-        let mut dir = app_data_dir.join("spv");
-        crate::app_dir::ensure_data_dir_exists(&dir)
-            .map_err(|source| TaskError::FileSystem { source })?;
-        dir.push(kv::network_prefix(network));
-        crate::app_dir::ensure_data_dir_exists(&dir)
-            .map_err(|source| TaskError::FileSystem { source })?;
+        let dir = spv_storage_dir(app_data_dir, network);
+        // Create (and lock down) the shared `spv` root before the network directory.
+        for directory in [spv_root_dir(app_data_dir), dir.clone()] {
+            crate::app_dir::ensure_data_dir_exists(&directory)
+                .map_err(|source| TaskError::FileSystem { source })?;
+        }
         Ok(dir)
     }
 }

@@ -1714,10 +1714,10 @@ async fn remove_wallet_wipes_seed_envelope() {
     backend.shutdown().await;
 }
 
-/// Upgrade backups copy whole wallet databases (xpubs, history, identities), so
-/// removing a wallet must not leave them behind.
+/// Upgrade backups copy whole databases, including other wallets' data, so removing
+/// one wallet leaves them to time-based retention.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn remove_wallet_deletes_upgrade_backups() {
+async fn remove_wallet_keeps_upgrade_backups() {
     let (ctx, sender, _tmp) = offline_testnet_context();
     ctx.ensure_wallet_backend(sender)
         .await
@@ -1749,8 +1749,8 @@ async fn remove_wallet_deletes_upgrade_backups() {
 
     for backup in &backups {
         assert!(
-            !backup.exists(),
-            "{} must be deleted together with the wallet",
+            backup.exists(),
+            "{} must survive wallet removal",
             backup.display()
         );
     }
@@ -2262,6 +2262,64 @@ async fn clear_network_database_wipes_wallet_meta_and_seed_envelope() {
         .await;
 }
 
+/// A warm that writes a wallet's auth-pubkey cache after the clear deleted it,
+/// while the wallet is still loaded, must not leave the entry behind: the clear
+/// deletes the caches again once the wallets are unloaded.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clear_network_database_removes_an_auth_pubkey_cache_rewritten_mid_clear() {
+    use crate::backend_task::system_task::SystemTask;
+    use dash_sdk::dpp::dashcore::PublicKey;
+    use dash_sdk::dpp::dashcore::secp256k1::{Secp256k1, SecretKey};
+
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender.clone())
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let seed = [0xB3u8; 64];
+    let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+        .expect("build wallet");
+    let seed_hash = wallet.seed_hash();
+    ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
+        .expect("register wallet");
+
+    let backend = ctx.wallet_backend().expect("backend wired");
+    let late_writer = Arc::clone(&backend);
+    backend.set_after_forget_all_test_hook(move || {
+        let secp = Secp256k1::new();
+        let key = PublicKey::new(
+            SecretKey::from_slice(&[0x42; 32])
+                .expect("valid secret key")
+                .public_key(&secp),
+        );
+        late_writer
+            .auth_pubkey_cache()
+            .update(Network::Testnet, &seed_hash, |cache| {
+                cache.insert(Network::Testnet, 0, 0, &key)
+            })
+            .expect("late warm write");
+        assert!(
+            !late_writer
+                .auth_pubkey_cache()
+                .get(Network::Testnet, &seed_hash)
+                .is_empty(),
+            "precondition: the late write lands while the wallet is loaded"
+        );
+    });
+
+    ctx.run_system_task(SystemTask::ClearNetworkDatabase, sender)
+        .await
+        .expect("clear_network_database should succeed");
+
+    assert!(
+        backend
+            .auth_pubkey_cache()
+            .get(Network::Testnet, &seed_hash)
+            .is_empty(),
+        "no auth-pubkey cache entry may survive the clear"
+    );
+    backend.shutdown().await;
+}
+
 /// "Delete all local data" must also wipe every local identity's private keys.
 /// Identity keys are Tier-1 keyless (plaintext-recoverable) and include
 /// masternode voting/owner/payout keys, so a clear that skipped them would
@@ -2489,6 +2547,51 @@ async fn clear_network_database_reports_incomplete_when_shielded_clear_fails() {
     }
 }
 
+/// A legacy shielded-file removal failure must not skip upgrade-backup removal:
+/// the backups copy the wallet data being cleared, and the failure still makes
+/// the clear incomplete.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clear_network_database_removes_backups_when_legacy_shielded_cleanup_fails() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+    // A directory at a legacy file path makes its unlink fail.
+    let blocker = backend.spv_storage_dir().join("det-shielded.sqlite");
+    std::fs::create_dir_all(blocker.join("occupied")).unwrap();
+    let backup = ctx
+        .data_dir()
+        .join("det-testnet.sqlite.platform-67d4ef3-backup-fixture.sqlite");
+    std::fs::write(&backup, b"old wallet history").unwrap();
+    let shared = ctx
+        .data_dir()
+        .join("det-app.sqlite.platform-67d4ef3-backup-fixture.sqlite");
+    std::fs::write(&shared, b"all networks' app data").unwrap();
+
+    let result = ctx.clear_network_database().await;
+
+    backend.shutdown().await;
+    assert!(!backup.exists(), "upgrade backups must still be removed");
+    assert!(
+        shared.exists(),
+        "the shared app database's backups are left to retention"
+    );
+    match result {
+        Err(TaskError::WalletDataClearIncomplete {
+            failed,
+            first_error,
+        }) => {
+            assert_eq!(failed, 1, "the legacy cleanup should be the only failure");
+            assert!(
+                matches!(*first_error, TaskError::FileSystem { .. }),
+                "the aggregate must preserve the legacy cleanup error: {first_error:?}"
+            );
+        }
+        other => panic!("legacy cleanup failure must make clear incomplete: {other:?}"),
+    }
+}
+
 /// Clear-all must fail before changing any state when the wallet backend is
 /// unavailable, because persisted secrets from an earlier run may still exist.
 #[tokio::test]
@@ -2582,6 +2685,10 @@ async fn lock_wipes_session_cached_seed() {
 /// with a directory: the store's atomic `persist` rename onto a directory
 /// path fails deterministically (root cannot bypass this).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "test fixture setup/teardown outside any production deletion path"
+)]
 async fn register_wallet_fails_closed_when_seed_envelope_write_fails() {
     let temp_dir = tempfile::tempdir().expect("tempdir");
     let (ctx, _sender) = offline_testnet_context_at(temp_dir.path());
@@ -2802,8 +2909,11 @@ async fn register_wallet_reimport_reports_already_imported() {
     let result = ctx.register_wallet(wallet, &seed, WalletOrigin::Imported);
 
     assert!(
-        matches!(result, Err(TaskError::WalletAlreadyImported)),
-        "a re-import must be reported as such"
+        matches!(
+            &result,
+            Err(TaskError::WalletAlreadyImported { alias }) if alias.as_deref() == Some("Savings")
+        ),
+        "a re-import must be reported as such and name the existing wallet"
     );
 }
 
@@ -3347,7 +3457,7 @@ fn clear_spv_chain_storage_removes_chain_cache_but_keeps_wallet_sidecars() {
     std::fs::write(&wallet_sqlite, b"wallet").expect("write wallet sqlite");
     std::fs::write(&shielded_tree, b"tree").expect("write shielded tree");
 
-    clear_spv_chain_storage(&spv_dir).expect("clear must succeed");
+    clear_spv_chain_storage(tmp.path(), Network::Testnet).expect("clear must succeed");
 
     for entry in SPV_CHAIN_STORAGE_ENTRIES {
         assert!(
@@ -3379,7 +3489,34 @@ fn clear_spv_chain_storage_is_ok_when_directory_absent() {
         !spv_dir.exists(),
         "precondition: no spv dir on a fresh install"
     );
-    clear_spv_chain_storage(&spv_dir).expect("clearing an absent cache must succeed");
+    clear_spv_chain_storage(tmp.path(), Network::Testnet)
+        .expect("clearing an absent cache must succeed");
+}
+
+/// Chain storage moved to another disk and symlinked back is cleared by
+/// unlinking the links; the data they point at is never followed or touched.
+#[cfg(unix)]
+#[test]
+fn clear_spv_chain_storage_unlinks_symlinked_entries() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let other_disk = tempfile::tempdir().expect("tempdir");
+    std::fs::write(other_disk.path().join("segment.dat"), b"elsewhere").unwrap();
+    let spv_dir = spv_storage_dir(tmp.path(), Network::Testnet);
+    std::fs::create_dir_all(&spv_dir).unwrap();
+    std::os::unix::fs::symlink(other_disk.path(), spv_dir.join("block_headers")).unwrap();
+    std::os::unix::fs::symlink(
+        other_disk.path().join("segment.dat"),
+        spv_dir.join("peers.dat"),
+    )
+    .unwrap();
+
+    clear_spv_chain_storage(tmp.path(), Network::Testnet)
+        .expect("symlinked chain storage must not block the clear");
+
+    for entry in ["block_headers", "peers.dat"] {
+        assert!(spv_dir.join(entry).symlink_metadata().is_err(), "{entry}");
+    }
+    assert!(other_disk.path().join("segment.dat").exists());
 }
 
 /// Seed a legacy password-protected `single_key_wallet` row into the
@@ -7180,7 +7317,7 @@ async fn reconcile_managed_identities_skips_identities_linked_to_another_wallet(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn remove_wallet_deletes_upgrade_backups_without_backend() {
+async fn remove_wallet_keeps_upgrade_backups_without_backend() {
     let (ctx, _sender, _tmp) = offline_testnet_context();
     assert!(ctx.wallet_backend().is_err());
     let wallet =
@@ -7201,28 +7338,138 @@ async fn remove_wallet_deletes_upgrade_backups_without_backend() {
     }
     ctx.remove_wallet(&seed_hash).unwrap();
     for backup in &backups {
-        assert!(!backup.exists(), "{}", backup.display());
+        assert!(backup.exists(), "{}", backup.display());
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn remove_wallet_warns_when_backup_cleanup_fails_without_backend() {
-    let (ctx, _sender, _tmp) = offline_testnet_context();
-    assert!(ctx.wallet_backend().is_err());
-    let wallet =
-        crate::model::wallet::Wallet::new_from_seed([0xA7; 64], Network::Testnet, None, None)
-            .expect("build wallet");
-    let seed_hash = wallet.seed_hash();
-    ctx.wallet_context()
-        .insert_test_wallet(seed_hash, Arc::new(RwLock::new(wallet)));
-    let backup = ctx
-        .data_dir()
-        .join("det-app.sqlite.platform-67d4ef3-backup-blocked.pending");
-    std::fs::create_dir(&backup).unwrap();
-    crate::ui::components::MessageBanner::clear_all_global(ctx.egui_ctx());
-    ctx.remove_wallet(&seed_hash).unwrap();
-    assert!(backup.is_dir());
-    assert!(crate::ui::components::MessageBanner::has_global(
-        ctx.egui_ctx()
-    ));
+/// An upgrade-backup fixture next to `database`, last modified `days` ago.
+fn aged_upgrade_backup(database: &std::path::Path, days: u64) -> std::path::PathBuf {
+    named_aged_upgrade_backup(database, "aged", days)
 }
+
+/// A newer backup of `database`: retention always keeps the newest one, so it lets
+/// the aged backup expire.
+fn recent_upgrade_backup(database: &std::path::Path) -> std::path::PathBuf {
+    named_aged_upgrade_backup(database, "recent", 1)
+}
+
+fn named_aged_upgrade_backup(
+    database: &std::path::Path,
+    suffix: &str,
+    days: u64,
+) -> std::path::PathBuf {
+    let backup = database.with_file_name(format!(
+        "{}.platform-67d4ef3-backup-{suffix}.sqlite",
+        database.file_name().unwrap().to_string_lossy()
+    ));
+    std::fs::write(&backup, b"old wallet history").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&backup)
+        .unwrap()
+        .set_modified(
+            std::time::SystemTime::now() - std::time::Duration::from_secs(days * 24 * 60 * 60),
+        )
+        .unwrap();
+    backup
+}
+
+/// Wiring: once the wallet backend opens, expired upgrade backups of both databases go.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ensure_wallet_backend_prunes_expired_upgrade_backups() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    let databases = [
+        ctx.data_dir().join("det-app.sqlite"),
+        crate::wallet_backend::wallet_database_path(ctx.data_dir(), Network::Testnet),
+    ];
+    let expired = databases
+        .each_ref()
+        .map(|database| aged_upgrade_backup(database, 120));
+    let newest = databases
+        .each_ref()
+        .map(|database| recent_upgrade_backup(database));
+
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+
+    for backup in &expired {
+        assert!(!backup.exists(), "{} must expire", backup.display());
+    }
+    for backup in &newest {
+        assert!(
+            backup.exists(),
+            "{} is the newest and stays",
+            backup.display()
+        );
+    }
+    ctx.wallet_backend().unwrap().shutdown().await;
+}
+
+/// A wallet database that fails to open may still need its snapshot, so nothing is pruned.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_wallet_open_keeps_expired_upgrade_backups() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    let wallet_db = crate::wallet_backend::wallet_database_path(ctx.data_dir(), Network::Testnet);
+    std::fs::create_dir_all(wallet_db.parent().unwrap()).unwrap();
+    std::fs::write(&wallet_db, b"not a sqlite database").unwrap();
+    let expired = [
+        aged_upgrade_backup(&ctx.data_dir().join("det-app.sqlite"), 120),
+        aged_upgrade_backup(&wallet_db, 120),
+    ];
+
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect_err("a corrupt wallet database must not open");
+
+    for backup in &expired {
+        assert!(backup.exists(), "{} must be kept", backup.display());
+    }
+}
+
+/// Saving a policy always persists it, but prunes only once the wallet backend has
+/// opened this network's databases; the result reports what was deleted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn update_backup_retention_prunes_only_after_wallet_backend_opens() {
+    use crate::backend_task::BackendTaskSuccessResult;
+    use crate::model::backup_retention::BackupRetention;
+
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    let backup = aged_upgrade_backup(&ctx.data_dir().join("det-app.sqlite"), 60);
+    recent_upgrade_backup(&ctx.data_dir().join("det-app.sqlite"));
+    let saved = |result| match result {
+        Ok(BackendTaskSuccessResult::UpdatedBackupRetention {
+            retention,
+            deleted,
+            cleanup_failure,
+        }) => (retention, deleted, cleanup_failure.is_some()),
+        other => panic!("unexpected result: {other:?}"),
+    };
+
+    let strict = BackupRetention::DeleteAfterDays(30);
+    assert_eq!(
+        saved(ctx.handle_update_backup_retention(strict)),
+        (strict, 0, false)
+    );
+    assert_eq!(ctx.backup_retention().unwrap(), strict);
+    assert!(
+        backup.exists(),
+        "no pruning before the wallet backend opens"
+    );
+
+    ctx.handle_update_backup_retention(BackupRetention::KeepForever)
+        .unwrap();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    assert!(backup.exists(), "keep-forever deletes nothing at startup");
+
+    assert_eq!(
+        saved(ctx.handle_update_backup_retention(strict)),
+        (strict, 1, false)
+    );
+    assert!(!backup.exists());
+    ctx.wallet_backend().unwrap().shutdown().await;
+}
+
+mod deletion_sentinel;

@@ -1,10 +1,12 @@
 pub mod address;
 pub mod amount;
 pub mod asset_lock;
+pub mod backup_retention;
 pub mod contested_name;
 pub mod dashpay;
 pub mod dashpay_derivation;
 pub(crate) mod data_migration;
+pub mod derived_identity_key;
 pub mod dpns;
 pub mod fee_estimation;
 pub mod grovestark_prover;

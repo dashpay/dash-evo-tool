@@ -58,21 +58,17 @@ pub struct KeysScreen {
 }
 
 impl ScreenLike for KeysScreen {
-    /// Re-read the record *and* re-arm detection.
-    ///
-    /// Both, or the offer goes stale: a restore run from the Key Info screen
-    /// pushed on top of this one writes the record behind this screen's back, so
-    /// returning to it with only `reload_identity` shows the restored keys as
-    /// held while still offering to restore them — and pressing Restore then
-    /// reports there was nothing left to do. Re-arming is cheap and self-guards
-    /// on an install with nothing to read.
-    ///
-    /// This is the only arrival hook that runs: the framework dispatches
-    /// `refresh_on_arrival` for root screens, and `refresh` for the screen a
-    /// `PopScreenAndRefresh` reveals — which is what this screen is.
+    fn accepts_legacy_recovery_result(
+        &self,
+        context: &BackendTaskContext,
+        completed: bool,
+    ) -> bool {
+        self.recovery.accepts_result(context, completed)
+    }
+    /// Reload stored keys and settled offers while preserving running recovery operations.
     fn refresh(&mut self) {
         self.reload_identity();
-        self.recovery.completed();
+        self.recovery.refresh_on_arrival();
     }
 
     /// Re-read the list when this identity's own restore lands. The offer
@@ -134,13 +130,13 @@ impl ScreenLike for KeysScreen {
         // The passive check goes out once per opened screen, a restore only
         // after the user pressed Restore, so the two never contend for
         // `action`, which keeps only its most recent value.
-        if let Some(task) = self.recovery.ensure_checked() {
-            action |= AppAction::BackendTask(task);
+        if let Some((task, context)) = self.recovery.ensure_checked() {
+            action |= AppAction::BackendTaskWithContext { task, context };
         }
         if let Some(approved) = self.pending_recovery_restore.take()
-            && let Some(task) = self.recovery.restore(approved)
+            && let Some((task, context)) = self.recovery.restore(approved)
         {
-            action |= AppAction::BackendTask(task);
+            action |= AppAction::BackendTaskWithContext { task, context };
         }
 
         action

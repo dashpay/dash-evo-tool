@@ -332,6 +332,8 @@ pub enum BackendTaskContext {
     TokenRewardEstimate(IdentityTokenIdentifier),
     /// The destructive per-network database clear.
     ClearNetworkDatabase,
+    /// Saving the upgrade-backup retention policy.
+    UpdateBackupRetention,
     /// A scheduled-vote sweep for one network.
     ScheduledVoteSweep { network: Network },
     /// Receive-address derivation for one wallet's deposit flow.
@@ -576,6 +578,9 @@ impl From<&BackendTask> for BackendTaskContext {
                 identity_index: *identity_index,
             },
             BackendTask::SystemTask(SystemTask::ClearNetworkDatabase) => Self::ClearNetworkDatabase,
+            BackendTask::SystemTask(SystemTask::UpdateBackupRetention(_)) => {
+                Self::UpdateBackupRetention
+            }
             BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { seed_hash }) => {
                 Self::GenerateReceiveAddress {
                     seed_hash: *seed_hash,
@@ -675,8 +680,15 @@ pub enum BackendTaskSuccessResult {
         prices: Option<TokenPricingSchedule>,
     },
     UpdatedThemePreference(crate::ui::theme::ThemeMode),
-    /// The upgrade-backup retention policy was saved.
-    UpdatedBackupRetention(crate::model::backup_retention::BackupRetention),
+    /// The upgrade-backup retention policy was saved and applied.
+    UpdatedBackupRetention {
+        /// The policy now in effect.
+        retention: crate::model::backup_retention::BackupRetention,
+        /// Expired backups deleted under the new policy.
+        deleted: usize,
+        /// Whether some expired backups could not be deleted (retried at next start).
+        cleanup_incomplete: bool,
+    },
     PlatformInfo(PlatformInfoTaskResult),
 
     // DashPay related results

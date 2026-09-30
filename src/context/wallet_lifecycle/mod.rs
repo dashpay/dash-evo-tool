@@ -110,6 +110,7 @@ pub use prepare::PrepareGateGuard;
 mod registration;
 mod removal;
 mod retention;
+pub use retention::BackupPruneReport;
 mod spv;
 mod unlock;
 

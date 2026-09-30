@@ -1,7 +1,7 @@
 use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
-use crate::context::AppContext;
+use crate::context::{AppContext, BackupPruneReport};
 use crate::model::backup_retention::BackupRetention;
 use crate::ui::theme::ThemeMode;
 use std::sync::Arc;
@@ -77,9 +77,15 @@ impl AppContext {
             .map_err(|source| TaskError::AppSettingsWrite { source })?;
         // Only the databases this process has already opened successfully are safe
         // to prune; before the wallet backend is up, the next start applies it.
-        if self.wallet_backend().is_ok() {
-            self.prune_expired_upgrade_backups_best_effort();
-        }
-        Ok(BackendTaskSuccessResult::UpdatedBackupRetention(retention))
+        let report = if self.wallet_backend().is_ok() {
+            self.prune_expired_upgrade_backups_best_effort()
+        } else {
+            BackupPruneReport::default()
+        };
+        Ok(BackendTaskSuccessResult::UpdatedBackupRetention {
+            retention,
+            deleted: report.deleted,
+            cleanup_incomplete: report.failure.is_some(),
+        })
     }
 }

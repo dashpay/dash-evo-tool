@@ -7302,3 +7302,108 @@ async fn remove_wallet_keeps_upgrade_backups_without_backend() {
         assert!(backup.exists(), "{}", backup.display());
     }
 }
+
+/// An upgrade-backup fixture next to `database`, last modified `days` ago.
+fn aged_upgrade_backup(database: &std::path::Path, days: u64) -> std::path::PathBuf {
+    let backup = database.with_file_name(format!(
+        "{}.platform-67d4ef3-backup-aged.sqlite",
+        database.file_name().unwrap().to_string_lossy()
+    ));
+    std::fs::write(&backup, b"old wallet history").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&backup)
+        .unwrap()
+        .set_modified(
+            std::time::SystemTime::now() - std::time::Duration::from_secs(days * 24 * 60 * 60),
+        )
+        .unwrap();
+    backup
+}
+
+/// Wiring: once the wallet backend opens, expired upgrade backups of both databases go.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ensure_wallet_backend_prunes_expired_upgrade_backups() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    let expired = [
+        aged_upgrade_backup(&ctx.data_dir().join("det-app.sqlite"), 120),
+        aged_upgrade_backup(
+            &crate::wallet_backend::wallet_database_path(ctx.data_dir(), Network::Testnet),
+            120,
+        ),
+    ];
+
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+
+    for backup in &expired {
+        assert!(!backup.exists(), "{} must expire", backup.display());
+    }
+    ctx.wallet_backend().unwrap().shutdown().await;
+}
+
+/// A wallet database that fails to open may still need its snapshot, so nothing is pruned.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_wallet_open_keeps_expired_upgrade_backups() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    let wallet_db = crate::wallet_backend::wallet_database_path(ctx.data_dir(), Network::Testnet);
+    std::fs::create_dir_all(wallet_db.parent().unwrap()).unwrap();
+    std::fs::write(&wallet_db, b"not a sqlite database").unwrap();
+    let expired = [
+        aged_upgrade_backup(&ctx.data_dir().join("det-app.sqlite"), 120),
+        aged_upgrade_backup(&wallet_db, 120),
+    ];
+
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect_err("a corrupt wallet database must not open");
+
+    for backup in &expired {
+        assert!(backup.exists(), "{} must be kept", backup.display());
+    }
+}
+
+/// Saving a policy always persists it, but prunes only once the wallet backend has
+/// opened this network's databases; the result reports what was deleted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn update_backup_retention_prunes_only_after_wallet_backend_opens() {
+    use crate::backend_task::BackendTaskSuccessResult;
+    use crate::model::backup_retention::BackupRetention;
+
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    let backup = aged_upgrade_backup(&ctx.data_dir().join("det-app.sqlite"), 60);
+    let saved = |result| match result {
+        Ok(BackendTaskSuccessResult::UpdatedBackupRetention {
+            retention,
+            deleted,
+            cleanup_incomplete,
+        }) => (retention, deleted, cleanup_incomplete),
+        other => panic!("unexpected result: {other:?}"),
+    };
+
+    let strict = BackupRetention::DeleteAfterDays(30);
+    assert_eq!(
+        saved(ctx.handle_update_backup_retention(strict)),
+        (strict, 0, false)
+    );
+    assert_eq!(ctx.backup_retention().unwrap(), strict);
+    assert!(
+        backup.exists(),
+        "no pruning before the wallet backend opens"
+    );
+
+    ctx.handle_update_backup_retention(BackupRetention::KeepForever)
+        .unwrap();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    assert!(backup.exists(), "keep-forever deletes nothing at startup");
+
+    assert_eq!(
+        saved(ctx.handle_update_backup_retention(strict)),
+        (strict, 1, false)
+    );
+    assert!(!backup.exists());
+    ctx.wallet_backend().unwrap().shutdown().await;
+}

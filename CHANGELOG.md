@@ -61,7 +61,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   database keeps at most one upgrade backup, and it is deleted when you clear
   a network's data. Upgrade backups older than 90 days are
   deleted automatically once the app has opened your data successfully; change
-  the period or keep backups forever under Settings → Upgrade Backups. The same
+  the period or keep backups forever under Settings → Upgrade Backups (a shorter
+  period asks for confirmation, since it deletes backups at once). The same
   retention covers upstream pre-migration snapshots and legacy `data.db`
   migration backups. Removing a wallet or an identity does not touch upgrade
   backups, since they also hold other wallets' data.

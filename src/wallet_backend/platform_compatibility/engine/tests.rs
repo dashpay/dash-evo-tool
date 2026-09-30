@@ -1060,3 +1060,46 @@ fn platform_compatibility_prune_backs_off_while_lock_is_held() {
     assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
     assert!(expired.exists());
 }
+
+/// Only a well-formed UTC timestamp counts as a creation time. A malformed name is
+/// not an upstream snapshot at all, so pruning never touches it however old it is.
+#[test]
+fn platform_compatibility_prune_rejects_malformed_upstream_timestamps() {
+    assert_eq!(
+        upstream_backup_timestamp("pre-migration-det-testnet-1-to-2-20200101T000000Z.db"),
+        Some(
+            chrono::NaiveDate::from_ymd_opt(2020, 1, 1)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap()
+                .and_utc()
+                .into()
+        )
+    );
+    let malformed = [
+        "pre-migration-det-testnet-1-to-2-20201301T000000Z.db",
+        "pre-migration-det-testnet-1-to-2-20200101T000000.db",
+        "pre-migration-det-testnet-1-to-2-2020-01-01.db",
+        "pre-migration-det-testnet-1-to-2-.db",
+    ];
+    for name in malformed {
+        assert_eq!(upstream_backup_timestamp(name), None, "{name}");
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("det-testnet.sqlite");
+    let auto = dir.path().join("backups/auto");
+    std::fs::create_dir_all(&auto).unwrap();
+    for name in malformed {
+        let file = auto.join(name);
+        std::fs::write(&file, b"backup").unwrap();
+        set_mtime(&file, -400 * 24 * 60 * 60);
+    }
+    assert_eq!(
+        prune_expired_backups(&path, RETENTION_DAY, std::time::SystemTime::now()).unwrap(),
+        0
+    );
+    for name in malformed {
+        assert!(auto.join(name).exists(), "{name}");
+    }
+}

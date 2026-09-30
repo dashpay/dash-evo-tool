@@ -3,6 +3,15 @@
 use super::*;
 use std::time::SystemTime;
 
+/// What one retention pass did.
+#[derive(Debug, Default)]
+pub struct BackupPruneReport {
+    /// Expired backups deleted. Undercounts when a location fails part-way.
+    pub deleted: usize,
+    /// The first failure; the remaining expired backups are retried at the next start.
+    pub failure: Option<TaskError>,
+}
+
 impl AppContext {
     /// Delete upgrade and legacy migration backups older than the configured retention period.
     ///
@@ -11,18 +20,21 @@ impl AppContext {
     /// databases opened successfully: an expired snapshot may be the last one, which is
     /// expendable only once the database it protects is known to work.
     ///
-    /// Attempts every location and returns the first failure; `Ok` carries the number of
-    /// backups deleted. Nothing is deleted when the policy cannot be read.
-    pub(crate) fn prune_expired_upgrade_backups(&self) -> Result<usize, TaskError> {
-        let retention = self
-            .backup_retention()
-            .map_err(|source| TaskError::BackupRetentionRead { source })?;
+    /// Attempts every location and reports the first failure. Nothing is deleted when the
+    /// policy cannot be read.
+    pub(crate) fn prune_expired_upgrade_backups(&self) -> BackupPruneReport {
+        let mut report = BackupPruneReport::default();
+        let retention = match self.backup_retention() {
+            Ok(retention) => retention,
+            Err(source) => {
+                report.failure = Some(TaskError::BackupRetentionRead { source });
+                return report;
+            }
+        };
         let Some(max_age) = retention.max_age() else {
-            return Ok(0);
+            return report;
         };
         let now = SystemTime::now();
-        let mut removed = 0;
-        let mut first_error = None;
         let outcomes = self
             .upgrade_backup_databases()
             .into_iter()
@@ -36,27 +48,35 @@ impl AppContext {
             ));
         for outcome in outcomes {
             match outcome {
-                Ok(count) => removed += count,
+                Ok(count) => report.deleted += count,
                 Err(source) => {
-                    first_error.get_or_insert(TaskError::UpgradeBackupCleanup { source });
+                    report
+                        .failure
+                        .get_or_insert(TaskError::UpgradeBackupCleanup { source });
                 }
             }
         }
-        if removed > 0 {
-            tracing::info!(removed, ?retention, "Deleted expired upgrade backups");
+        if report.deleted > 0 {
+            tracing::info!(
+                deleted = report.deleted,
+                ?retention,
+                "Deleted expired upgrade backups"
+            );
         }
-        first_error.map_or(Ok(removed), Err)
+        report
     }
 
-    /// Best-effort [`Self::prune_expired_upgrade_backups`]: failures are logged and
-    /// retried on the next start, never surfaced as a failed operation.
-    pub(crate) fn prune_expired_upgrade_backups_best_effort(&self) {
-        if let Err(error) = self.prune_expired_upgrade_backups() {
+    /// [`Self::prune_expired_upgrade_backups`] with any failure logged; it is retried on
+    /// the next start and never fails the surrounding operation.
+    pub(crate) fn prune_expired_upgrade_backups_best_effort(&self) -> BackupPruneReport {
+        let report = self.prune_expired_upgrade_backups();
+        if let Some(error) = &report.failure {
             tracing::warn!(
                 ?error,
                 "Expired upgrade backups remain; retrying on next start"
             );
         }
+        report
     }
 }
 
@@ -68,6 +88,12 @@ mod tests {
     use std::time::{Duration, SystemTime};
 
     const DAY: Duration = Duration::from_secs(24 * 60 * 60);
+
+    fn pruned(ctx: &crate::context::AppContext) -> usize {
+        let report = ctx.prune_expired_upgrade_backups();
+        assert!(report.failure.is_none(), "{:?}", report.failure);
+        report.deleted
+    }
 
     fn write_aged(path: &Path, age: Duration) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -115,7 +141,7 @@ mod tests {
         let ctx = test_app_context(tmp.path());
         let fixture = backups(&ctx);
 
-        assert_eq!(ctx.prune_expired_upgrade_backups().unwrap(), 3);
+        assert_eq!(pruned(&ctx), 3);
 
         assert!(fixture.expired.iter().all(|path| !path.exists()));
         assert!(fixture.fresh.iter().all(|path| path.exists()));
@@ -129,7 +155,7 @@ mod tests {
             .unwrap();
         let fixture = backups(&ctx);
 
-        assert_eq!(ctx.prune_expired_upgrade_backups().unwrap(), 0);
+        assert_eq!(pruned(&ctx), 0);
 
         assert!(fixture.expired.iter().all(|path| path.exists()));
     }
@@ -141,11 +167,11 @@ mod tests {
         ctx.set_backup_retention(BackupRetention::DeleteAfterDays(200))
             .unwrap();
         let fixture = backups(&ctx);
-        assert_eq!(ctx.prune_expired_upgrade_backups().unwrap(), 0);
+        assert_eq!(pruned(&ctx), 0);
 
         ctx.set_backup_retention(BackupRetention::DeleteAfterDays(30))
             .unwrap();
-        assert_eq!(ctx.prune_expired_upgrade_backups().unwrap(), 3);
+        assert_eq!(pruned(&ctx), 3);
         assert!(fixture.fresh.iter().all(|path| path.exists()));
     }
 }

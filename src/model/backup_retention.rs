@@ -46,6 +46,15 @@ impl BackupRetention {
         }
     }
 
+    /// Whether switching from `current` to this policy can delete backups `current` keeps.
+    pub fn is_stricter_than(self, current: Self) -> bool {
+        match (self.max_age(), current.max_age()) {
+            (Some(new), Some(old)) => new < old,
+            (Some(_), None) => true,
+            (None, _) => false,
+        }
+    }
+
     /// The policy itself when valid, otherwise the default.
     ///
     /// Guards against a persisted value outside the accepted range, which
@@ -111,6 +120,17 @@ mod tests {
         );
         assert_eq!(BackupRetention::default().max_age(), Some(DAY * 90));
         assert_eq!(BackupRetention::KeepForever.max_age(), None);
+    }
+
+    #[test]
+    fn stricter_retention_is_any_change_that_deletes_sooner() {
+        use BackupRetention::{DeleteAfterDays, KeepForever};
+        assert!(DeleteAfterDays(30).is_stricter_than(DeleteAfterDays(90)));
+        assert!(DeleteAfterDays(3650).is_stricter_than(KeepForever));
+        assert!(!DeleteAfterDays(90).is_stricter_than(DeleteAfterDays(90)));
+        assert!(!DeleteAfterDays(120).is_stricter_than(DeleteAfterDays(90)));
+        assert!(!KeepForever.is_stricter_than(DeleteAfterDays(1)));
+        assert!(!KeepForever.is_stricter_than(KeepForever));
     }
 
     #[test]

@@ -332,7 +332,8 @@ As a user opening an older wallet installation, I want the app to update its sto
 As a user whose wallet data was copied before a storage upgrade, I want old upgrade backups to be deleted after a while so that copies of my wallet data do not stay on this device forever.
 
 - Upgrade backups older than 90 days are deleted automatically by default, covering app, wallet, upstream pre-migration and legacy `data.db` backups.
-- Settings → Upgrade Backups lets the user change the period (1 to 3650 days) or keep backups forever; a change applies right away.
+- Settings → Upgrade Backups lets the user change the period (1 to 3650 days) or keep backups forever. A shorter period asks for confirmation first, because it deletes backups immediately.
+- A saved change applies right away to the shared app backups, the legacy backups, and the current network's wallet backups; other networks' wallet backups follow the next time that network is opened.
 - Old backups are deleted only after the app has opened the data they protect, so a backup is never removed while it may still be needed for recovery.
 - Removing a wallet or an identity does not delete upgrade backups; retention alone decides when they go. Clearing a network's data still deletes them.
 

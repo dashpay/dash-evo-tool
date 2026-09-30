@@ -454,6 +454,9 @@ impl ScreenLike for IdentityHubScreen {
                     .unwrap_or_default(),
             }
         };
+        for identity in &frame_identities {
+            self.profile_cache.seed_cached(&self.app_context, identity);
+        }
         let view = if self.selection.picker_override()
             || self.app_context.selected_wallet_hash().is_some() && frame_identities.is_empty()
         {
@@ -1070,6 +1073,99 @@ mod tests {
             .insert_local_qualified_identity(&qualified_identity, &None)
             .expect("seed identity");
         identity_id
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cached_profile_primes_avatar_without_overwriting_saved_or_absent_profile() {
+        let (_dir, context) = wired_test_context().await;
+        let id = seed_user_identity(&context, 42);
+        let identity = context.load_local_user_identities().unwrap().remove(0);
+        let backend = context.wallet_backend().unwrap();
+        let wallet =
+            crate::model::wallet::Wallet::new_from_seed([42; 64], Network::Testnet, None, None)
+                .unwrap();
+        let (hash, _) = context
+            .register_wallet(
+                wallet,
+                &[42; 64],
+                crate::model::wallet::birth_height::WalletOrigin::Fresh,
+            )
+            .unwrap();
+        backend
+            .register_wallet_from_seed(&hash, &[42; 64], None)
+            .await
+            .unwrap();
+        backend
+            .ensure_identity_managed(&hash, &identity.identity, 0)
+            .await
+            .unwrap();
+        backend
+            .dashpay_set_profile(
+                &id,
+                Some(
+                    platform_wallet::wallet::identity::types::dashpay::profile::DashPayProfile {
+                        display_name: Some("Cached profile".into()),
+                        avatar_url: Some("https://example.com/cached.png".into()),
+                        bio: None,
+                        public_message: None,
+                        avatar_hash: None,
+                        avatar_fingerprint: None,
+                    },
+                ),
+            )
+            .await
+            .unwrap();
+        let mut harness = egui_kittest::Harness::builder().build_ui_state(
+            |ui, screen: &mut IdentityHubScreen| {
+                screen.ui(ui);
+            },
+            IdentityHubScreen::new(&context),
+        );
+        harness.run();
+        let fields = harness
+            .state_mut()
+            .profile_cache
+            .get_or_request(&identity)
+            .and_then(Option::as_ref)
+            .expect("persisted profile is immediately available offline");
+        assert_eq!(fields.avatar_url, "https://example.com/cached.png");
+        harness.state_mut().profile_cache.record_saved(
+            id,
+            super::super::profile_cache::ProfileFields {
+                display_name: "Saved".into(),
+                ..Default::default()
+            },
+        );
+        harness.run();
+        assert_eq!(
+            harness
+                .state_mut()
+                .profile_cache
+                .get_or_request(&identity)
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .display_name,
+            "Saved"
+        );
+        let cache = &mut harness.state_mut().profile_cache;
+        cache.reset();
+        cache.get_or_request(&identity);
+        let AppAction::BackendTaskWithContext { context: load, .. } = cache.dispatch_pending()
+        else {
+            panic!("profile load")
+        };
+        assert!(cache.record_result(&load, &BackendTaskSuccessResult::DashPayProfile(None)));
+        harness.run();
+        assert!(
+            harness
+                .state_mut()
+                .profile_cache
+                .get_or_request(&identity)
+                .unwrap()
+                .is_none(),
+            "authoritative absence must not be replaced by old persisted fields"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

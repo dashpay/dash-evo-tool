@@ -50,6 +50,7 @@ impl MintAction {
                 &mut self.recipient_identity_id,
                 &self.known_identities,
             )
+            .with_context(ctx.app_context)
             .width(300.0)
             .label("Recipient:")
             .exclude(&[ctx.info.identity.identity.id()]),

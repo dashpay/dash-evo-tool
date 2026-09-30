@@ -450,7 +450,9 @@ impl AppContext {
         })?;
 
         // Determine alias: use user input, or fall back to first DPNS name if available
-        let alias = if !alias_input.is_empty() {
+        let alias = if identity_type == IdentityType::User {
+            None
+        } else if !alias_input.is_empty() {
             Some(alias_input)
         } else if !maybe_owned_dpns_names.is_empty() {
             Some(format!("{}.dash", maybe_owned_dpns_names[0].name))

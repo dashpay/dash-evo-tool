@@ -58,7 +58,10 @@ fn seed_identity_typed(
         identity_type,
         alias: Some(alias.to_string()),
         private_keys: KeyStorage::default(),
-        dpns_names: vec![],
+        dpns_names: vec![dash_evo_tool::model::qualified_identity::DPNSNameInfo {
+            name: alias.to_string(),
+            acquired_at: 0,
+        }],
         associated_wallets: BTreeMap::new(),
         secret_access: None,
         wallet_index: None,
@@ -246,7 +249,10 @@ fn qa_001_wallet_less_selection_clears_derived_wallet() {
             "an identity IS selected; the breadcrumb must not claim none"
         );
         assert!(
-            harness.query_by_label_contains("Lonely Identity").is_some(),
+            harness
+                .query_all_by_label_contains("Lonely Identity")
+                .next()
+                .is_some(),
             "the breadcrumb must display the selected wallet-less identity"
         );
     });
@@ -463,6 +469,11 @@ fn ui_polish_detail_breadcrumb_opens_picker_repeatedly() {
 fn ui_polish_username_registration_breadcrumb_opens_all_identities() {
     with_identity_hub(|mut harness, app_context| {
         let alpha = seed_identity(&app_context, 1, "Username Alpha");
+        let mut unnamed = app_context.load_local_user_identities().unwrap().remove(0);
+        unnamed.dpns_names.clear();
+        app_context
+            .insert_local_qualified_identity(&unnamed, &None)
+            .unwrap();
         seed_identity(&app_context, 2, "Username Beta");
         app_context.set_selected_identity(Some(alpha));
         harness.run_steps(5);
@@ -484,7 +495,7 @@ fn ui_polish_username_registration_breadcrumb_opens_all_identities() {
         );
         assert_eq!(app_context.selected_wallet_hash(), None);
         assert!(harness.query_by_label(PICKER_HEADING).is_some());
-        for name in ["Username Alpha", "Username Beta"] {
+        for name in [unnamed.display_string(), "Username Beta".to_string()] {
             assert!(harness.query_by_label(&format!("Open {name}")).is_some());
         }
     });
@@ -814,7 +825,8 @@ fn ui_polish_picker_uses_profile_avatar_and_keeps_missing_avatar_fallback() {
                 bytes: Some(bytes.into_inner()),
             });
         open_picker(&mut harness);
-        let card = harness.get_by_label("Open Avatar identity").rect();
+        let card = harness.get_by_label("Open Profile name").rect();
+        assert!(harness.query_by_label("Open Avatar identity").is_none());
         assert_eq!(
             harness
                 .query_all_by_role(egui::accesskit::Role::Image)

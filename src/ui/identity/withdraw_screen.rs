@@ -545,11 +545,8 @@ impl ScreenLike for WithdrawalScreen {
 
                 // Show identity info
                 let identity_id_string = self.identity.identity.id().to_string(Encoding::Base58);
-                let identity_label = if let Some(alias) = &self.identity.alias {
-                    format!("From: {alias} ({identity_id_string})")
-                } else {
-                    format!("From: {identity_id_string}")
-                };
+                let name = self.app_context.identity_display_label(&self.identity);
+                let identity_label = format!("From: {name} ({identity_id_string})");
                 ui.label(identity_label);
 
                 // Display available balance

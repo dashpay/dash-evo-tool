@@ -714,7 +714,8 @@ impl Screen {
                 screen.app_context = app_context.clone();
                 screen.contacts_list.app_context = app_context.clone();
                 screen.contacts_list.contact_requests.app_context = app_context.clone();
-                screen.profile_screen.app_context = app_context.clone();
+                screen.profile_screen =
+                    crate::ui::dashpay::profile_screen::ProfileScreen::new(app_context.clone());
                 screen.payment_history.app_context = app_context;
                 return;
             }

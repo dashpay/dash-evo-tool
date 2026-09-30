@@ -338,7 +338,7 @@ impl TokensScreen {
                     token_alias: known_token_balance.token_alias.clone(),
                     token_config: known_token_balance.token_config.clone(),
                     identity_id: *identity_id,
-                    identity_alias: identity.alias.clone(),
+                    identity_name: Some(self.app_context.identity_display_label(identity)),
                     balance: Some(known_token_balance.balance),
                     estimated_unclaimed_rewards: known_token_balance.estimated_unclaimed_rewards,
                     data_contract_id: known_token_balance.data_contract_id,
@@ -351,7 +351,7 @@ impl TokensScreen {
                     token_alias: token_info.token_name.clone(),
                     token_config: token_info.token_configuration.clone(),
                     identity_id: *identity_id,
-                    identity_alias: identity.alias.clone(),
+                    identity_name: Some(self.app_context.identity_display_label(identity)),
                     balance: None,
                     estimated_unclaimed_rewards: None,
                     data_contract_id: token_info.data_contract.id(),
@@ -391,7 +391,7 @@ impl TokensScreen {
                             .striped(false)
                             .resizable(true)
                             .cell_layout(egui::Layout::left_to_right(Align::Center))
-                            .column(Column::initial(60.0).resizable(true)) // Identity Alias
+                            .column(Column::initial(60.0).resizable(true)) // Identity name
                             .column(Column::initial(200.0).resizable(true)) // Identity ID
                             .column(Column::initial(60.0).resizable(true)); // Balance
 
@@ -403,8 +403,8 @@ impl TokensScreen {
                         table = table.column(Column::initial(200.0).resizable(true));// Actions
                         table.header(30.0, |mut header| {
                             header.col(|ui| {
-                                if ui.button("Identity Alias").clicked() {
-                                    self.toggle_sort(SortColumn::OwnerIdentityAlias);
+                                if ui.button("Identity name").clicked() {
+                                    self.toggle_sort(SortColumn::OwnerIdentityName);
                                 }
                             });
                             header.col(|ui| {
@@ -430,16 +430,7 @@ impl TokensScreen {
                                 for itb in &detail_list {
                                     body.row(30.0, |mut row| {
                                         row.col(|ui| {
-                                            // Show identity alias or ID
-                                            if let Some(alias) = self
-                                                .app_context
-                                                .get_identity_alias(&itb.identity_id)
-                                                .expect("Expected to get alias")
-                                            {
-                                                ui.label(alias);
-                                            } else {
-                                                ui.label("-");
-                                            }
+                                            ui.label(itb.identity_name.as_deref().unwrap_or("Unknown identity"));
                                         });
                                         row.col(|ui| {
                                             if itb.identity_id == token_info.data_contract.owner_id() {

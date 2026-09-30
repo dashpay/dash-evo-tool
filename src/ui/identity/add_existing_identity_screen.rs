@@ -76,7 +76,6 @@ pub enum AddIdentityStatus {
 pub struct AddExistingIdentityScreen {
     identity_id_input: String,
     pub identity_type: IdentityType,
-    alias_input: String,
     voting_private_key_input: PasswordInput,
     owner_private_key_input: PasswordInput,
     payout_address_private_key_input: PasswordInput,
@@ -104,7 +103,6 @@ impl AddExistingIdentityScreen {
         Self {
             identity_id_input: String::new(),
             identity_type: IdentityType::User,
-            alias_input: String::new(),
             voting_private_key_input: PasswordInput::new()
                 .with_hint_text("Private key (WIF or hex)")
                 .with_monospace(),
@@ -321,23 +319,6 @@ impl AddExistingIdentityScreen {
                     });
                     ui.end_row();
                 }
-
-                // Alias input - always shown
-                ui.horizontal(|ui| {
-                    ui.label("Alias (optional):");
-                    let response = crate::ui::helpers::info_icon_button(
-                        ui,
-                        "Alias is optional. It is only used to help identify the identity in Dash Evo Tool. It isn't saved to Dash Platform.",
-                    );
-                    if response.clicked() {
-                        self.show_pop_up_info = Some(
-                            "Alias is optional. It is only used to help identify the identity in Dash Evo Tool. It isn't saved to Dash Platform."
-                                .to_string(),
-                        );
-                    }
-                });
-                ui.text_edit_singleline(&mut self.alias_input);
-                ui.end_row();
 
                 // Advanced: Masternode/Evonode key inputs
                 if self.show_advanced_options {
@@ -858,7 +839,7 @@ impl AddExistingIdentityScreen {
         let identity_input = IdentityInputToLoad {
             identity_id_input: self.identity_id_input.trim().to_string(),
             identity_type: self.identity_type,
-            alias_input: self.alias_input.clone(),
+            alias_input: String::new(),
             voting_private_key_input: self.voting_private_key_input.take_secret(),
             owner_private_key_input: self.owner_private_key_input.take_secret(),
             payout_address_private_key_input: self.payout_address_private_key_input.take_secret(),
@@ -911,7 +892,6 @@ impl AddExistingIdentityScreen {
             && s == "load_another"
         {
             self.identity_id_input.clear();
-            self.alias_input.clear();
             self.voting_private_key_input.clear();
             self.owner_private_key_input.clear();
             self.payout_address_private_key_input.clear();

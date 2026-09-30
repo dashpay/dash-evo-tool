@@ -147,6 +147,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Refresh identity recipient names without clearing typed searches, show cached profile avatars while refreshing, and keep delayed profile results tied to their owning screen request.
+
 - Identity cards fit the window, display available profile avatars, and scroll
   to every identity and the add/load actions. Clickable identity controls show a
   link cursor. The Identities breadcrumb opens all User identities; choosing a
@@ -570,6 +572,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   says plainly that the rate shown is fixed rather than read from the network.
 
 ### Changed
+
+- User identities use their DashPay Display name on cards, navigation, and selectors, falling back to a username or shortened identity ID. Local identity names are removed from profile, create, and load screens; existing records remain readable. Masternode names and contact nicknames are unaffected. The identity-list tool reports cached profile display names for User identities and preserves administrative node names.
 
 - Wallet registries and live names now share one WalletContext across the UI,
   MCP tools and password prompts. Metadata writes are serialized while wallet

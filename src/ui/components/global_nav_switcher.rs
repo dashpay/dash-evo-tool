@@ -22,7 +22,7 @@ use crate::model::wallet_association::{NOT_IN_WALLET_LABEL, WalletAssociation};
 use crate::ui::RootScreenType;
 use crate::ui::components::breadcrumb_pill::{BreadcrumbPill, BreadcrumbPillMode};
 use crate::ui::identity::identity_hero_card::HeroIdentityKind;
-use crate::ui::identity::identity_pill::{IdentityPill, display_label};
+use crate::ui::identity::identity_pill::IdentityPill;
 use crate::ui::state::global_nav::{
     IdentityPillScope, PageNavSpec, PageObjectItem, PillConsumption,
 };
@@ -120,18 +120,6 @@ fn gather_wallets(app_context: &Arc<AppContext>) -> Vec<(WalletSeedHash, String)
             (*hash, name)
         })
         .collect()
-}
-
-/// Identity display label (Local nickname → DPNS → short id). The switcher
-/// reads no social profile, so the display-name tier is empty.
-fn identity_label(qi: &QualifiedIdentity) -> String {
-    let dpns = qi.dpns_names.first().map(|n| n.name.as_str());
-    display_label(
-        qi.alias.as_deref(),
-        None,
-        dpns,
-        &qi.identity.id().to_string(Encoding::Base58),
-    )
 }
 
 /// First uppercase alphanumeric of the label, for the avatar monogram.
@@ -537,14 +525,14 @@ fn render_app_global_identity_pill(
         return;
     };
 
-    let label = identity_label(active_qi);
+    let label = app_context.identity_display_label(active_qi);
     let kind: HeroIdentityKind = active_qi.identity_type.into();
     let dpns = active_qi.dpns_names.first().map(|n| n.name.clone());
     let id_b58 = active_qi.identity.id().to_string(Encoding::Base58);
 
     if let PillConsumption::Unwired { tooltip } = consumption {
         // Subdued, non-interactive: the value shows dimmed with no caret.
-        IdentityPill::new(active_qi.alias.as_deref(), dpns.as_deref(), &id_b58)
+        IdentityPill::new(Some(&label), dpns.as_deref(), &id_b58)
             .with_avatar(kind, monogram_initial(&label))
             .with_mode(BreadcrumbPillMode::Subdued)
             .with_tooltip(tooltip.clone())
@@ -552,7 +540,7 @@ fn render_app_global_identity_pill(
         return;
     }
 
-    let resp = IdentityPill::new(active_qi.alias.as_deref(), dpns.as_deref(), &id_b58)
+    let resp = IdentityPill::new(Some(&label), dpns.as_deref(), &id_b58)
         .with_avatar(kind, monogram_initial(&label))
         .with_tooltip(tt_identity(&data.active_wallet_name))
         .show(ui);
@@ -582,7 +570,7 @@ fn render_app_global_identity_pill(
                         };
 
                         for qi in &data.scoped {
-                            let row = identity_label(qi);
+                            let row = app_context.identity_display_label(qi);
                             if !filter.is_empty() && !row.to_lowercase().contains(&filter) {
                                 continue;
                             }
@@ -604,7 +592,13 @@ fn render_app_global_identity_pill(
                             for qi in &data.no_wallet {
                                 let id = qi.identity.id();
                                 let is_active = data.active_id == Some(id);
-                                if ui.selectable_label(is_active, identity_label(qi)).clicked() {
+                                if ui
+                                    .selectable_label(
+                                        is_active,
+                                        app_context.identity_display_label(qi),
+                                    )
+                                    .clicked()
+                                {
                                     *effect = GlobalNavEffect::SelectIdentity(id);
                                     ui.close();
                                 }

@@ -1135,3 +1135,36 @@ fn platform_compatibility_prune_rejects_malformed_upstream_timestamps() {
         assert!(auto.join(name).exists(), "{name}");
     }
 }
+
+/// A child forked by another thread briefly shares the lock file's open description,
+/// so a lock this thread just released can still look held; the grace period must
+/// absorb that instead of reporting the database as busy.
+#[test]
+fn platform_compatibility_lock_survives_concurrent_process_spawns() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("wallet.sqlite");
+    let stop = AtomicBool::new(false);
+    let spawned = AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for _ in 0..2 {
+            scope.spawn(|| {
+                while !stop.load(Ordering::Relaxed) {
+                    let _ = std::process::Command::new(std::env::current_exe().unwrap())
+                        .arg("--help")
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .status();
+                    spawned.fetch_add(1, Ordering::Relaxed);
+                }
+            });
+        }
+        // Keep re-acquiring while at least 40 processes are spawned alongside.
+        let mut outcome = Ok(());
+        while outcome.is_ok() && spawned.load(Ordering::Relaxed) < 40 {
+            outcome = backup_lock(&path).map(drop);
+        }
+        stop.store(true, Ordering::Relaxed);
+        outcome.expect("a released lock must be re-acquirable while processes spawn");
+    });
+}

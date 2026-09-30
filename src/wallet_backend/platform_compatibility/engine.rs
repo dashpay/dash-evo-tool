@@ -418,6 +418,27 @@ pub(super) struct BackupGuard {
     _file: Option<std::fs::File>,
 }
 
+/// How long a contended lifecycle lock is retried before reporting `WouldBlock`.
+///
+/// `flock` belongs to the open file description, and a child that any thread of this
+/// process forks shares it until the child execs. A lock just released by its guard
+/// can therefore still look held for that brief window.
+const LOCK_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
+const LOCK_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(5);
+
+fn lock_with_grace(file: &std::fs::File) -> std::io::Result<()> {
+    let deadline = std::time::Instant::now() + LOCK_GRACE;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(()),
+            Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(LOCK_RETRY_INTERVAL);
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
 pub(super) fn backup_lock(path: &Path) -> std::io::Result<BackupGuard> {
     let Some(name) = path.file_name() else {
         return Err(std::io::ErrorKind::InvalidInput.into());
@@ -451,7 +472,7 @@ pub(super) fn backup_lock(path: &Path) -> std::io::Result<BackupGuard> {
         Err(error) => return Err(error),
     };
     validate_backup_file(&lock_path, path)?;
-    file.try_lock().map_err(std::io::Error::from)?;
+    lock_with_grace(&file)?;
     // Keep the pathname stable: unlinking it could let contenders lock different files.
     Ok(BackupGuard {
         path: path.to_owned(),

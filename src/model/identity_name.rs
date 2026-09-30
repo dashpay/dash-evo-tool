@@ -1,7 +1,4 @@
-//! Identity labels and ordered, session-local profile-name updates.
-
-use dash_sdk::platform::Identifier;
-use std::collections::HashMap;
+//! Shared identity label resolution.
 
 /// Resolve a profile name, username, or shortened identity identifier.
 pub fn display_label(display_name: Option<&str>, username: Option<&str>, id: &str) -> String {
@@ -31,54 +28,6 @@ pub fn shorten_id(id: &str) -> String {
     format!("{head}…{tail}")
 }
 
-/// Profile names accepted during this network session.
-#[derive(Debug, Default)]
-pub(crate) struct ProfileNames {
-    entries: HashMap<Identifier, ProfileName>,
-}
-
-#[derive(Debug, Default)]
-struct ProfileName {
-    revision: u64,
-    accepted: Option<Option<String>>,
-}
-
-impl ProfileNames {
-    pub(crate) fn get(&self, id: Identifier) -> Option<Option<String>> {
-        self.entries
-            .get(&id)
-            .and_then(|entry| entry.accepted.clone())
-    }
-
-    pub(crate) fn begin_load(&mut self, id: Identifier) -> u64 {
-        let entry = self.entries.entry(id).or_default();
-        entry.revision += 1;
-        entry.revision
-    }
-
-    pub(crate) fn loaded(&mut self, id: Identifier, revision: u64, name: Option<&str>) -> bool {
-        let Some(entry) = self.entries.get_mut(&id) else {
-            return false;
-        };
-        if entry.revision != revision {
-            return false;
-        }
-        entry.accepted = Some(clean_name(name));
-        true
-    }
-
-    pub(crate) fn saved(&mut self, id: Identifier, name: Option<&str>) {
-        let revision = self.begin_load(id);
-        self.loaded(id, revision, name);
-    }
-}
-
-fn clean_name(name: Option<&str>) -> Option<String> {
-    name.map(str::trim)
-        .filter(|name| !name.is_empty())
-        .map(str::to_owned)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,32 +43,5 @@ mod tests {
             "alex.dash"
         );
         assert_eq!(display_label(None, None, "abcdefghijk"), "abcde…ijk");
-    }
-
-    #[test]
-    fn late_load_cannot_replace_saved_or_cleared_profile_name() {
-        let id = Identifier::from([1; 32]);
-        let mut names = ProfileNames::default();
-        let load = names.begin_load(id);
-        names.saved(id, Some("New name"));
-        assert!(!names.loaded(id, load, Some("Old name")));
-        assert_eq!(names.get(id), Some(Some("New name".into())));
-        let load = names.begin_load(id);
-        names.saved(id, None);
-        assert!(!names.loaded(id, load, Some("Old name")));
-        assert_eq!(names.get(id), Some(None));
-    }
-
-    #[test]
-    fn latest_load_wins_and_identity_names_are_isolated() {
-        let id = Identifier::from([1; 32]);
-        let other = Identifier::from([2; 32]);
-        let mut names = ProfileNames::default();
-        let old = names.begin_load(id);
-        let new = names.begin_load(id);
-        assert!(!names.loaded(id, old, Some("Old")));
-        assert!(names.loaded(id, new, Some("New")));
-        assert_eq!(names.get(other), None);
-        assert_eq!(ProfileNames::default().get(id), None);
     }
 }

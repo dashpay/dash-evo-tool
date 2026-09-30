@@ -2674,6 +2674,10 @@ mod identity_display_name_tests {
             name: "alex.dash".into(),
             acquired_at: 0,
         });
+        assert_eq!(
+            identity.display_name_label(Some("Alex Profile")),
+            "Alex Profile"
+        );
         assert_eq!(identity.display_string(), "alex.dash");
         assert_eq!(identity.to_string(), "alex.dash");
     }

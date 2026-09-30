@@ -100,15 +100,15 @@ pub fn render(
                     for cell in row {
                         match cell {
                             PickerCell::Identity(identity) => {
+                                let profile =
+                                    profiles.get_or_request(identity).and_then(Option::as_ref);
+                                let name = app_context.identity_display_name_or(
+                                    identity.identity.id(),
+                                    profile.and_then(|p| p.display_name_opt()),
+                                );
                                 let mut card =
-                                    build_card(app_context, identity).with_width(card_width);
-                                if let Some(Some(profile)) = profiles.get_or_request(identity) {
-                                    if let Some(name) = app_context.identity_display_name_or(
-                                        identity.identity.id(),
-                                        profile.display_name_opt(),
-                                    ) {
-                                        card = card.with_display_name(name);
-                                    }
+                                    build_card(identity, name.as_deref()).with_width(card_width);
+                                if let Some(profile) = profile {
                                     card = card.with_avatar_url(&profile.avatar_url);
                                 }
                                 let response = card.show(ui, avatars);
@@ -167,7 +167,7 @@ enum PickerCell<'a> {
 }
 
 /// Build a picker card using the same profile name as navigation.
-fn build_card(app_context: &AppContext, identity: &QualifiedIdentity) -> IdentityPickerCard {
+fn build_card(identity: &QualifiedIdentity, display_name: Option<&str>) -> IdentityPickerCard {
     let id_base58 = identity.identity.id().to_string(Encoding::Base58);
 
     // Balance formatting: design-spec §B.14 uses `{amount} DASH` with tabular
@@ -190,7 +190,7 @@ fn build_card(app_context: &AppContext, identity: &QualifiedIdentity) -> Identit
              breadcrumb.",
             );
 
-    if let Some(name) = app_context.identity_display_name(identity.identity.id()) {
+    if let Some(name) = display_name {
         card = card.with_display_name(name);
     }
     if let Some(dpns) = identity.dpns_names.first().map(|n| n.name.as_str())

@@ -196,7 +196,7 @@ impl QRScannerScreen {
                             "qr_scanner_identity_selector",
                             &mut self.selected_identity_string,
                             &identities,
-                        ).with_context(&self.app_context)
+                        )
                         .selected_identity(&mut self.selected_identity)
                         .unwrap()
                         .width(300.0)

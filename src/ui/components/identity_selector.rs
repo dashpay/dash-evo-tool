@@ -115,10 +115,13 @@ impl<'a> IdentitySelector<'a> {
     }
 
     fn identity_label(&self, identity: &QualifiedIdentity) -> String {
-        self.profile_context.map_or_else(
-            || identity.display_string(),
-            |ctx| ctx.identity_display_label(identity),
-        )
+        self.profile_context
+            .or(self.app_default.map(Arc::as_ref))
+            .or(self.sync_target.as_deref())
+            .map_or_else(
+                || identity.display_string(),
+                |ctx| ctx.identity_display_label(identity),
+            )
     }
 
     /// Seed the initial selection from the app-scoped identity when the buffer
@@ -515,6 +518,7 @@ mod tests {
             let first = make_qi(0xAA);
             let second = make_qi(0xBB);
             let ids = vec![first.clone(), second.clone()];
+            ctx.save_identity_profile_name(second.identity.id(), Some("Second profile"));
 
             // Global starts pointing at first.
             ctx.set_selected_identity(Some(first.identity.id()));
@@ -524,6 +528,8 @@ mod tests {
             let mut buf = second.identity.id().to_string(Encoding::Base58);
             let sel = IdentitySelector::new("write_back_test", &mut buf, &ids)
                 .syncing_global(ctx.clone());
+
+            assert_eq!(sel.identity_label(&second), "Second profile");
 
             // Fire the write-back directly (bypasses egui rendering).
             sel.sync_to_global();
@@ -557,10 +563,12 @@ mod tests {
 
             // Candidate list contains ONLY other_qi — global_qi is absent.
             let candidate_list = vec![other_qi.clone()];
+            ctx.save_identity_profile_name(other_qi.identity.id(), Some("Other profile"));
             let mut buf = String::new(); // empty → with_app_default may attempt a seed
             let sel = IdentitySelector::new("inert_test", &mut buf, &candidate_list)
                 .with_app_default(&ctx);
 
+            assert_eq!(sel.identity_label(&other_qi), "Other profile");
             assert_eq!(
                 sel.app_default_seed(),
                 None,

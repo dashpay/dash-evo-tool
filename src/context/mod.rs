@@ -126,7 +126,7 @@ pub struct AppContext {
     /// Per-identity guards covering every whole-record mutation of one stored
     /// identity. See [`AppContext::identity_record_lock`].
     identity_record_locks: Mutex<HashMap<Identifier, Arc<Mutex<()>>>>,
-    identity_profile_names: Mutex<crate::model::identity_name::ProfileNames>,
+    identity_profile_names: Mutex<HashMap<Identifier, identity_names::ProfileName>>,
     /// Hard override that keeps this context's UI still whatever the role — set by
     /// automated tests through [`AppState::with_animations`](crate::app::AppState::with_animations).
     ///

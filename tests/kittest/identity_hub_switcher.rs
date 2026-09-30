@@ -495,7 +495,7 @@ fn ui_polish_username_registration_breadcrumb_opens_all_identities() {
         );
         assert_eq!(app_context.selected_wallet_hash(), None);
         assert!(harness.query_by_label(PICKER_HEADING).is_some());
-        for name in ["Username Alpha", "Username Beta"] {
+        for name in [unnamed.display_string(), "Username Beta".to_string()] {
             assert!(harness.query_by_label(&format!("Open {name}")).is_some());
         }
     });

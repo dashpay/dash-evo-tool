@@ -238,7 +238,7 @@ fn profile_screen_rejects_late_picker_profile_for_other_identity() {
                 },
             ))
             .unwrap();
-        harness.run();
+        harness.run_steps(5);
         assert!(
             harness
                 .query_by_label("Alice late picker profile")
@@ -287,7 +287,7 @@ fn profile_screen_rejects_late_picker_profile_for_other_identity() {
                 .block_on(harness.state().task_result_sender.send(result))
                 .unwrap();
         }
-        harness.run();
+        harness.run_steps(5);
         assert!(
             harness.query_by_label("Loading profile...").is_some(),
             "stale results and unrelated failures cannot end the current load"
@@ -305,7 +305,7 @@ fn profile_screen_rejects_late_picker_profile_for_other_identity() {
                 },
             ))
             .unwrap();
-        harness.run();
+        harness.run_steps(5);
         assert!(harness.query_by_label("Bob current profile").is_some());
         assert!(harness.query_by_label("Loading profile...").is_none());
     });

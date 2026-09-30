@@ -14,6 +14,8 @@ const PREFIX: &str = "data_backup_";
 const SUFFIX: &str = ".db";
 /// UTC timestamp format embedded in the backup name.
 const TIMESTAMP_FORMAT: &str = "%Y%m%d_%H%M%S";
+/// How many consecutive one-second names [`write_backup`] tries before giving up.
+const MAX_NAME_ATTEMPTS: usize = 60;
 /// Suffix of the unpublished copy [`write_backup`] writes before renaming it.
 const PENDING_SUFFIX: &str = ".pending";
 /// How old an unpublished copy must be before it counts as left behind by a crash
@@ -28,9 +30,11 @@ pub(crate) fn backup_file_name(timestamp: chrono::DateTime<chrono::Utc>) -> Stri
 /// Copy `database` to `<its directory>/backups/` under the legacy name for `taken`.
 ///
 /// The copy goes to a unique `.pending` file first, is synced, and only then is
-/// renamed to its final name (never replacing an existing backup), after which the
-/// directory is synced. A crash or power loss therefore never leaves a torn copy
-/// under a backup name, where it could pass as a complete backup.
+/// renamed to its final name, after which the directory is synced. A crash or power
+/// loss therefore never leaves a torn copy under a backup name, where it could pass
+/// as a complete backup. An existing backup is never replaced: when the name for
+/// `taken` is already used (names have one-second resolution), the next free second
+/// is used instead, so a collision never fails the copy.
 pub(crate) fn write_backup(
     database: &Path,
     taken: chrono::DateTime<chrono::Utc>,
@@ -43,18 +47,28 @@ pub(crate) fn write_backup(
     let name = backup_file_name(taken);
     // Not routed through `delete_file`: on failure the temp file removes only the
     // uniquely named `.pending` file it created itself.
-    let pending = tempfile::Builder::new()
+    let mut pending = tempfile::Builder::new()
         .prefix(&format!("{name}."))
         .suffix(PENDING_SUFFIX)
         .tempfile_in(&directory)?;
     std::fs::copy(database, pending.path())?;
     pending.as_file().sync_all()?;
-    let published = directory.join(name);
-    pending
-        .persist_noclobber(&published)
-        .map_err(|error| error.error)?;
-    crate::utils::backup_prune::sync_directory(&directory)?;
-    Ok(published)
+    let mut stamp = taken;
+    for _ in 0..MAX_NAME_ATTEMPTS {
+        let published = directory.join(backup_file_name(stamp));
+        match pending.persist_noclobber(&published) {
+            Ok(_) => {
+                crate::utils::backup_prune::sync_directory(&directory)?;
+                return Ok(published);
+            }
+            Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+                pending = error.file;
+                stamp += chrono::TimeDelta::seconds(1);
+            }
+            Err(error) => return Err(error.error),
+        }
+    }
+    Err(std::io::ErrorKind::AlreadyExists.into())
 }
 
 /// The UTC creation time embedded in a legacy backup name, or `None` for any other
@@ -211,8 +225,9 @@ mod tests {
             .unwrap();
     }
 
-    /// The published copy is complete, no temporary file is left, and an existing
-    /// backup of the same second is never overwritten.
+    /// The published copy is complete and no temporary file is left. A backup of the
+    /// same second is never overwritten, and never blocks the new copy: it is
+    /// published under the next free second, still a legacy backup name.
     #[test]
     fn legacy_backup_is_published_complete_and_never_overwrites() {
         let dir = tempfile::tempdir().unwrap();
@@ -222,25 +237,80 @@ mod tests {
             .execute_batch("CREATE TABLE settings (v INTEGER); INSERT INTO settings VALUES (1);")
             .unwrap();
         let taken = chrono::Utc::now();
+        let backups = dir.path().join(BACKUP_DIR);
 
-        let published = write_backup(&database, taken).unwrap();
+        let first = write_backup(&database, taken).unwrap();
 
+        assert_eq!(first, backups.join(backup_file_name(taken)));
         assert_eq!(
-            published,
-            dir.path().join(BACKUP_DIR).join(backup_file_name(taken))
-        );
-        assert_eq!(
-            std::fs::read(&published).unwrap(),
+            std::fs::read(&first).unwrap(),
             std::fs::read(&database).unwrap()
         );
-        assert!(crate::utils::backup_prune::usable_snapshot(&published));
-        let error = write_backup(&database, taken).unwrap_err();
-        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
-        let entries: Vec<_> = std::fs::read_dir(dir.path().join(BACKUP_DIR))
+        assert!(crate::utils::backup_prune::usable_snapshot(&first));
+
+        // Same second twice more: an unrelated file already holds the next name.
+        std::fs::write(&first, b"earlier backup").unwrap();
+        let taken_next = backups.join(backup_file_name(taken + chrono::TimeDelta::seconds(1)));
+        std::fs::write(&taken_next, b"another earlier backup").unwrap();
+        let second = write_backup(&database, taken).unwrap();
+
+        assert_eq!(
+            second,
+            backups.join(backup_file_name(taken + chrono::TimeDelta::seconds(2)))
+        );
+        assert!(backup_timestamp(&second.file_name().unwrap().to_string_lossy()).is_some());
+        assert_eq!(
+            std::fs::read(&second).unwrap(),
+            std::fs::read(&database).unwrap()
+        );
+        assert_eq!(std::fs::read(&first).unwrap(), b"earlier backup");
+        assert_eq!(
+            std::fs::read(&taken_next).unwrap(),
+            b"another earlier backup"
+        );
+        let mut entries: Vec<_> = std::fs::read_dir(&backups)
             .unwrap()
-            .map(|entry| entry.unwrap().file_name())
+            .map(|entry| entry.unwrap().path())
             .collect();
-        assert_eq!(entries, [published.file_name().unwrap().to_owned()]);
+        entries.sort();
+        let mut expected = vec![first, taken_next, second];
+        expected.sort();
+        assert_eq!(entries, expected, "no temporary copy is left");
+    }
+
+    /// If every name in the retry window is taken, the copy fails cleanly: nothing is
+    /// overwritten and no temporary copy is left.
+    #[test]
+    fn legacy_backup_gives_up_after_the_retry_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join(LEGACY_DATABASE);
+        std::fs::write(&database, b"database").unwrap();
+        let backups = dir.path().join(BACKUP_DIR);
+        std::fs::create_dir_all(&backups).unwrap();
+        let taken = chrono::Utc::now();
+        let seconds = i64::try_from(MAX_NAME_ATTEMPTS).unwrap();
+        for offset in 0..seconds {
+            let name = backup_file_name(taken + chrono::TimeDelta::seconds(offset));
+            std::fs::write(backups.join(name), b"existing").unwrap();
+        }
+
+        let error = write_backup(&database, taken).unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        let entries: Vec<_> = std::fs::read_dir(&backups)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(
+            entries.len(),
+            MAX_NAME_ATTEMPTS,
+            "no temporary copy is left"
+        );
+        assert!(
+            entries
+                .iter()
+                .all(|path| std::fs::read(path).unwrap() == b"existing")
+        );
     }
 
     #[test]

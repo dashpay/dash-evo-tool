@@ -706,7 +706,7 @@ impl NetworkChooserScreen {
                 ui.separator();
                 ui.add_space(12.0);
 
-                app_action |= self.backup_retention.show(ui, dark_mode);
+                self.backup_retention.show(ui, dark_mode);
 
                 ui.add_space(12.0);
                 ui.separator();
@@ -1418,6 +1418,9 @@ struct BackupRetentionForm {
     saved: Option<BackupRetention>,
     /// Inputs of the last settled state; only edits away from it are saved.
     baseline: (bool, u32),
+    /// A save ready to send, emitted by [`Self::take_task`] on a frame whose screen
+    /// action is otherwise empty, so no other action can overwrite it.
+    outbox: Option<BackupRetention>,
     /// A save sent to the backend and not yet answered.
     pending: Option<BackupRetention>,
     /// A stricter policy awaiting the user's confirmation.
@@ -1433,6 +1436,7 @@ impl BackupRetentionForm {
             days: inputs.1,
             saved,
             baseline: inputs,
+            outbox: None,
             pending: None,
             confirmation: None,
         }
@@ -1456,22 +1460,29 @@ impl BackupRetentionForm {
     }
 
     fn busy(&self) -> bool {
-        self.pending.is_some() || self.confirmation.is_some()
+        self.outbox.is_some() || self.pending.is_some() || self.confirmation.is_some()
     }
 
-    /// Handle a finished edit: save it, ask to confirm a stricter policy, or do nothing.
-    /// `force` saves even an unchanged form, to repair an unreadable setting.
-    fn settle(&mut self, force: bool) -> AppAction {
+    /// Whether the user is turning automatic deletion on. That waits for an explicit
+    /// apply, so the period can be chosen before any backup is deleted.
+    fn enabling(&self) -> bool {
+        self.enabled && !self.baseline.0
+    }
+
+    /// Handle a finished edit: queue it, ask to confirm a stricter policy, or do nothing.
+    /// `apply` is an explicit user request to save: it is required to turn deletion
+    /// on, and saves even an unchanged form to repair an unreadable setting.
+    fn settle(&mut self, apply: bool) {
         let inputs = (self.enabled, self.days);
-        if self.busy() || (inputs == self.baseline && !force) {
-            return AppAction::None;
+        if self.busy() || (!apply && (inputs == self.baseline || self.enabling())) {
+            return;
         }
         let Some(desired) = self.desired() else {
-            return AppAction::None;
+            return;
         };
         if self.saved == Some(desired) {
             self.baseline = inputs;
-            return AppAction::None;
+            return;
         }
         let stricter = match self.saved {
             Some(saved) => desired.is_stricter_than(saved),
@@ -1489,13 +1500,16 @@ impl BackupRetentionForm {
                 .cancel_text(Some("Keep Backups"))
                 .danger_mode(true);
                 self.confirmation = Some((desired, dialog));
-                AppAction::None
             }
-            _ => self.send(desired),
+            _ => self.outbox = Some(desired),
         }
     }
 
-    fn send(&mut self, policy: BackupRetention) -> AppAction {
+    /// The queued save task, if any; the save counts as in flight from here on.
+    fn take_task(&mut self) -> AppAction {
+        let Some(policy) = self.outbox.take() else {
+            return AppAction::None;
+        };
         self.pending = Some(policy);
         AppAction::BackendTask(BackendTask::SystemTask(SystemTask::UpdateBackupRetention(
             policy,
@@ -1508,16 +1522,13 @@ impl BackupRetentionForm {
     }
 
     /// Resolve a user's answer to the confirmation dialog.
-    fn resolve_confirmation(&mut self, status: ConfirmationStatus) -> AppAction {
+    fn resolve_confirmation(&mut self, status: ConfirmationStatus) {
         let Some((policy, _)) = self.confirmation.take() else {
-            return AppAction::None;
+            return;
         };
         match status {
-            ConfirmationStatus::Confirmed => self.send(policy),
-            ConfirmationStatus::Canceled => {
-                self.revert();
-                AppAction::None
-            }
+            ConfirmationStatus::Confirmed => self.outbox = Some(policy),
+            ConfirmationStatus::Canceled => self.revert(),
         }
     }
 
@@ -1537,7 +1548,8 @@ impl BackupRetentionForm {
         self.revert();
     }
 
-    fn show(&mut self, ui: &mut Ui, dark_mode: bool) -> AppAction {
+    /// Render the section. The save task it may queue is emitted by [`Self::take_task`].
+    fn show(&mut self, ui: &mut Ui, dark_mode: bool) {
         ui.label(
             egui::RichText::new("Upgrade Backups")
                 .strong()
@@ -1557,7 +1569,7 @@ impl BackupRetentionForm {
         }
 
         let mut editing = false;
-        let mut force = false;
+        let mut apply = false;
         ui.add_enabled_ui(!self.busy(), |ui| {
             StyledCheckbox::new(
                 &mut self.enabled,
@@ -1585,23 +1597,30 @@ impl BackupRetentionForm {
                         .color(DashColors::text_secondary(dark_mode)),
                 );
             }
-            if self.saved.is_none() {
+            if self.enabling() {
                 ui.add_space(6.0);
-                force = ui.button("Save Setting").clicked();
+                ui.label(
+                    egui::RichText::new(
+                        "Choose how many days to keep upgrade backups, then turn on automatic deletion.",
+                    )
+                    .color(DashColors::text_secondary(dark_mode)),
+                );
+                ui.add_space(6.0);
+                apply = ui.button("Turn On Automatic Deletion").clicked();
+            } else if self.saved.is_none() {
+                ui.add_space(6.0);
+                apply = ui.button("Save Setting").clicked();
             }
         });
 
-        let mut action = if editing {
-            AppAction::None
-        } else {
-            self.settle(force)
-        };
+        if !editing {
+            self.settle(apply);
+        }
         if let Some((_, dialog)) = self.confirmation.as_mut()
             && let Some(status) = dialog.show(ui).inner.dialog_response
         {
-            action |= self.resolve_confirmation(status);
+            self.resolve_confirmation(status);
         }
-        action
     }
 }
 
@@ -1657,6 +1676,12 @@ impl ScreenLike for NetworkChooserScreen {
         if self.pending_reinit_after_discovery {
             self.pending_reinit_after_discovery = false;
             action |= AppAction::BackendTask(BackendTask::ReinitCoreClientAndSdk);
+        }
+
+        // Only on an otherwise idle frame, so no other action can overwrite the save;
+        // a busy frame leaves it queued for the next one.
+        if action == AppAction::None {
+            action = self.backup_retention.take_task();
         }
 
         // Recheck both network status every 3 seconds
@@ -1778,37 +1803,44 @@ mod tests {
         }
     }
 
+    /// Settle a finished edit and return the save task it emits, if any.
+    fn step(form: &mut BackupRetentionForm, apply: bool) -> Option<BackupRetention> {
+        form.settle(apply);
+        saved_retention(form.take_task())
+    }
+
+    fn answer(
+        form: &mut BackupRetentionForm,
+        status: ConfirmationStatus,
+    ) -> Option<BackupRetention> {
+        form.resolve_confirmation(status);
+        saved_retention(form.take_task())
+    }
+
     #[test]
     fn backup_retention_form_saves_looser_policies_without_confirmation() {
         let mut form = BackupRetentionForm::new(Some(BackupRetention::default()));
         assert!(form.enabled);
         assert_eq!(form.days, 90);
-        assert_eq!(saved_retention(form.settle(false)), None, "unchanged");
+        assert_eq!(step(&mut form, false), None, "unchanged");
 
         form.days = 120;
         assert_eq!(
-            saved_retention(form.settle(false)),
+            step(&mut form, false),
             Some(BackupRetention::DeleteAfterDays(120))
         );
         assert!(form.confirmation.is_none());
-        assert_eq!(
-            saved_retention(form.settle(false)),
-            None,
-            "a save is in flight"
-        );
+        assert_eq!(step(&mut form, false), None, "a save is in flight");
         form.save_succeeded(BackupRetention::DeleteAfterDays(120));
 
         form.enabled = false;
-        assert_eq!(
-            saved_retention(form.settle(false)),
-            Some(BackupRetention::KeepForever)
-        );
+        assert_eq!(step(&mut form, false), Some(BackupRetention::KeepForever));
         form.save_succeeded(BackupRetention::KeepForever);
-        assert_eq!(saved_retention(form.settle(false)), None, "settled");
+        assert_eq!(step(&mut form, false), None, "settled");
 
         form.enabled = true;
         form.days = 0;
-        assert_eq!(saved_retention(form.settle(false)), None, "invalid period");
+        assert_eq!(step(&mut form, true), None, "invalid period");
     }
 
     /// Shortening the period deletes backups at once, so it needs confirmation;
@@ -1817,34 +1849,80 @@ mod tests {
     fn stricter_backup_retention_requires_confirmation() {
         let mut form = BackupRetentionForm::new(Some(BackupRetention::default()));
         form.days = 1;
-        assert_eq!(saved_retention(form.settle(false)), None);
+        assert_eq!(step(&mut form, false), None);
         assert!(form.confirmation.is_some());
-        assert_eq!(
-            saved_retention(form.settle(false)),
-            None,
-            "awaiting the user"
-        );
+        assert_eq!(step(&mut form, false), None, "awaiting the user");
 
-        form.resolve_confirmation(ConfirmationStatus::Canceled);
+        assert_eq!(answer(&mut form, ConfirmationStatus::Canceled), None);
         assert!(form.confirmation.is_none());
         assert_eq!((form.enabled, form.days), (true, 90));
 
         form.days = 30;
-        form.settle(false);
+        assert_eq!(step(&mut form, false), None);
         assert_eq!(
-            saved_retention(form.resolve_confirmation(ConfirmationStatus::Confirmed)),
+            answer(&mut form, ConfirmationStatus::Confirmed),
             Some(BackupRetention::DeleteAfterDays(30))
         );
+    }
 
+    /// Turning deletion on waits for an explicit apply, so the user can choose the
+    /// period first; the confirmation then names the period actually chosen.
+    #[test]
+    fn enabling_backup_retention_waits_for_the_chosen_period() {
         let mut form = BackupRetentionForm::new(Some(BackupRetention::KeepForever));
         assert!(!form.enabled);
         assert_eq!(form.days, u32::from(BackupRetention::DEFAULT_DAYS));
+
         form.enabled = true;
-        assert_eq!(saved_retention(form.settle(false)), None);
+        assert_eq!(step(&mut form, false), None);
         assert!(
-            form.confirmation.is_some(),
-            "enabling deletion is stricter than keeping forever"
+            form.confirmation.is_none(),
+            "ticking the box alone neither saves nor asks to delete"
         );
+        form.days = 365;
+        assert_eq!(
+            step(&mut form, false),
+            None,
+            "editing the period still waits"
+        );
+
+        assert_eq!(step(&mut form, true), None);
+        assert!(form.confirmation.is_some(), "enabling deletion is stricter");
+        assert_eq!(
+            answer(&mut form, ConfirmationStatus::Confirmed),
+            Some(BackupRetention::DeleteAfterDays(365))
+        );
+        form.save_succeeded(BackupRetention::DeleteAfterDays(365));
+        assert!(!form.enabling());
+        assert_eq!((form.enabled, form.days), (true, 365));
+
+        // Unticking before applying simply returns to keeping backups forever.
+        let mut form = BackupRetentionForm::new(Some(BackupRetention::KeepForever));
+        form.enabled = true;
+        form.days = 10;
+        form.settle(false);
+        form.enabled = false;
+        assert_eq!(step(&mut form, false), None);
+        assert!(form.confirmation.is_none());
+    }
+
+    /// The save task leaves the form only when the screen can emit it, so a busy
+    /// frame never drops it and the form never waits on a task that was not sent.
+    #[test]
+    fn queued_backup_retention_save_survives_a_busy_frame() {
+        let mut form = BackupRetentionForm::new(Some(BackupRetention::default()));
+        form.days = 200;
+        form.settle(false);
+        assert!(form.pending.is_none(), "not in flight until emitted");
+        assert!(form.busy(), "further edits wait for the queued save");
+        // A frame whose action is already taken does not call take_task; the
+        // save stays queued and the next idle frame emits it.
+        assert_eq!(
+            saved_retention(form.take_task()),
+            Some(BackupRetention::DeleteAfterDays(200))
+        );
+        assert_eq!(form.pending, Some(BackupRetention::DeleteAfterDays(200)));
+        assert_eq!(saved_retention(form.take_task()), None, "emitted once");
     }
 
     /// The saved policy changes only when the backend confirms it; a failed save
@@ -1853,17 +1931,17 @@ mod tests {
     fn failed_backup_retention_save_keeps_the_saved_policy() {
         let mut form = BackupRetentionForm::new(Some(BackupRetention::default()));
         form.days = 200;
-        assert!(saved_retention(form.settle(false)).is_some());
+        assert!(step(&mut form, false).is_some());
         assert_eq!(form.saved, Some(BackupRetention::default()));
 
         form.save_failed();
         assert_eq!(form.saved, Some(BackupRetention::default()));
         assert_eq!((form.enabled, form.days), (true, 90));
-        assert_eq!(saved_retention(form.settle(false)), None, "no resend loop");
+        assert_eq!(step(&mut form, false), None, "no resend loop");
 
         form.days = 200;
         assert_eq!(
-            saved_retention(form.settle(false)),
+            step(&mut form, false),
             Some(BackupRetention::DeleteAfterDays(200)),
             "the user can retry"
         );
@@ -1875,19 +1953,13 @@ mod tests {
     fn unreadable_backup_retention_can_be_repaired() {
         let mut form = BackupRetentionForm::new(None);
         assert!(!form.enabled);
-        assert_eq!(
-            saved_retention(form.settle(false)),
-            None,
-            "never saved unasked"
-        );
-        assert_eq!(
-            saved_retention(form.settle(true)),
-            Some(BackupRetention::KeepForever)
-        );
+        assert_eq!(step(&mut form, false), None, "never saved unasked");
+        assert_eq!(step(&mut form, true), Some(BackupRetention::KeepForever));
 
         let mut form = BackupRetentionForm::new(None);
         form.enabled = true;
-        form.settle(false);
+        assert_eq!(step(&mut form, false), None);
+        assert_eq!(step(&mut form, true), None);
         assert!(
             form.confirmation.is_some(),
             "enabling deletion from an unknown policy needs confirmation"

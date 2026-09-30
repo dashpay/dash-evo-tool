@@ -31,7 +31,8 @@ jobs:
       # Post the review as claudbot[bot] (GitHub App, no contents write).
       # The private key only reaches create-github-app-token; the review
       # action gets a 1h token scoped to this repo. Never put the key in
-      # job-level env: the review agent's step would see it. Without the
+      # job-level env: the review agent's step would see it. Keep this the
+      # first step: the token must outlive timeout-minutes (60). Without the
       # CLAUDBOT_CLIENT_ID variable the review falls back to GITHUB_TOKEN.
       - name: Create claudbot token
         id: app-token

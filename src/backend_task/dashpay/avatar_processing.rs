@@ -239,7 +239,12 @@ pub async fn fetch_image_bytes(url: &str) -> Result<Vec<u8>, AvatarProcessingErr
 
     // Send GET request
     let response = client.get(url).send().await?.error_for_status()?;
+    validate_image_response(response).await
+}
 
+async fn validate_image_response(
+    mut response: reqwest::Response,
+) -> Result<Vec<u8>, AvatarProcessingError> {
     // Check content type
     if let Some(content_type) = response.headers().get("content-type") {
         let content_type_str = content_type.to_str()?;
@@ -260,18 +265,19 @@ pub async fn fetch_image_bytes(url: &str) -> Result<Vec<u8>, AvatarProcessingErr
         }
     }
 
-    // Download the image bytes
-    let bytes = response.bytes().await?;
-
-    // Verify actual size
-    if bytes.len() > MAX_IMAGE_SIZE {
-        return Err(AvatarProcessingError::ImageTooLarge);
+    // Enforce the limit while reading, including responses without Content-Length.
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if chunk.len() > MAX_IMAGE_SIZE - bytes.len() {
+            return Err(AvatarProcessingError::ImageTooLarge);
+        }
+        bytes.extend_from_slice(&chunk);
     }
 
     // Try to validate it's actually an image by attempting to load it
     image::load_from_memory(&bytes)?;
 
-    Ok(bytes.to_vec())
+    Ok(bytes)
 }
 
 /// Process an avatar image: fetch, validate, and calculate hashes
@@ -293,6 +299,72 @@ pub async fn process_avatar(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn chunked_image_response(
+        bytes: Vec<u8>,
+        finish: bool,
+    ) -> (reqwest::Response, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                request.push(socket.read_u8().await.unwrap());
+            }
+            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nTransfer-Encoding: chunked\r\n\r\n").await.unwrap();
+            socket
+                .write_all(format!("{:x}\r\n", bytes.len()).as_bytes())
+                .await
+                .unwrap();
+            socket.write_all(&bytes).await.unwrap();
+            socket.write_all(b"\r\n").await.unwrap();
+            if finish {
+                socket.write_all(b"0\r\n\r\n").await.unwrap();
+            } else {
+                std::future::pending::<()>().await;
+            }
+        });
+        let response = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap()
+            .get(format!("http://{address}/avatar.png"))
+            .send()
+            .await
+            .unwrap();
+        assert!(response.content_length().is_none());
+        (response, server)
+    }
+
+    #[tokio::test]
+    async fn avatar_chunked_response_rejects_oversize_before_eof() {
+        let (response, server) = chunked_image_response(vec![0; MAX_IMAGE_SIZE + 1], false).await;
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            validate_image_response(response),
+        )
+        .await;
+        server.abort();
+        assert!(
+            matches!(result, Ok(Err(AvatarProcessingError::ImageTooLarge))),
+            "oversized avatar must be rejected before the server finishes: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn avatar_chunked_response_accepts_valid_png() {
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([0, 128, 255, 255]))
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
+        let bytes = encoded.into_inner();
+        let (response, server) = chunked_image_response(bytes.clone(), true).await;
+        let actual = validate_image_response(response).await.unwrap();
+        server.await.unwrap();
+        assert_eq!(actual, bytes);
+    }
 
     #[test]
     fn test_avatar_hash() {

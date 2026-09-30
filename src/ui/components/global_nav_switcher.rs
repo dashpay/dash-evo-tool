@@ -196,8 +196,7 @@ fn derive_app_global_context(
     // FR-6: the app-global identity pill and its dropdown (including the
     // wallet-less "no wallet on this device" group) list User identities only —
     // masternode/evonode identities never appear on everyday-user surfaces
-    // (TC-NAV-17). The wallet-scoped list below is wallet-owned, so it is
-    // User-only by construction (masternodes are wallet-less).
+    // (TC-NAV-17), even when a node has a stored wallet association.
     let all_identities = app_context.load_local_user_identities().unwrap_or_default();
     let all_ids: Vec<Identifier> = all_identities.iter().map(|qi| qi.identity.id()).collect();
     let active_id = app_context.selected_identity_id();
@@ -229,14 +228,22 @@ fn derive_app_global_context(
         .map(|(_, n)| n.clone())
         .unwrap_or_default();
 
-    // Identities owned by the active wallet (stored `wallet_hash` filter — R1).
-    let scoped: Vec<QualifiedIdentity> = active_wallet
-        .and_then(|h| {
-            app_context
-                .load_local_qualified_identities_for_wallet(&h)
-                .ok()
-        })
-        .unwrap_or_default();
+    // Keep walletless identities in their separate group, without duplicates.
+    let scoped = match active_wallet {
+        Some(hash) => app_context
+            .load_local_qualified_identities_for_wallet(&hash)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|identity| {
+                identity.identity_type == crate::model::qualified_identity::IdentityType::User
+            })
+            .collect(),
+        None => all_identities
+            .iter()
+            .filter(|identity| identity.wallet_index.is_some())
+            .cloned()
+            .collect(),
+    };
     // Identities with no wallet on this device (imported by id).
     let no_wallet: Vec<QualifiedIdentity> = all_identities
         .iter()

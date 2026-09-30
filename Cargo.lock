@@ -2150,7 +2150,6 @@ dependencies = [
  "tz-rs",
  "unicode-general-category",
  "unicode-segmentation",
- "url",
  "urlencoding",
  "which 8.0.6",
  "winres",

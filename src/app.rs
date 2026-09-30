@@ -1455,7 +1455,8 @@ impl AppState {
     pub(crate) fn boot_inputs()
     -> Result<(PathBuf, Arc<Database>), Box<dyn std::error::Error + Send + Sync>> {
         let data_dir = crate::boot::prepare_environment()?;
-        let db_file_path = data_file_path(&data_dir, "data.db")?;
+        let db_file_path =
+            data_file_path(&data_dir, crate::database::legacy_backups::LEGACY_DATABASE)?;
         let db = if db_file_path.exists() {
             Arc::new(Database::open_legacy_read_only(&db_file_path)?)
         } else {

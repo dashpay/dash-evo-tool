@@ -46,42 +46,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Allowing 3.x needs an upstream change in `dashpay/rust-dashcore` first. A TODO
   in `Cargo.toml` marks the re-check.
 
-- **Safer guidance for wallet data this version cannot open**: the message no
-  longer tells you to remove your local wallet data, which could have deleted
-  the `secrets` folder along with keys no recovery phrase can restore. It now
-  asks you to write down your recovery phrases and imported keys in the version
-  you used before, close every running instance, then set aside the `.sqlite`
-  files together with their matching `-wal` and `-shm` files and keep the
-  `secrets` folder. Imported private keys are listed separately from recovery phrases.
-  A database temporarily held by another session now asks you to close that
-  session and try again instead of reporting incompatible data.
-
-- **Upgrade backups no longer pile up, and old ones expire automatically**: a
-  failed database upgrade no longer leaves a new backup on every attempt. Each
-  database keeps at most one upgrade backup, and it is deleted when you clear
-  a network's data. Upgrade backups older than 90 days are
-  deleted automatically once the app has opened your data successfully; change
-  the period or keep backups forever under Settings → Upgrade Backups (a shorter
-  period asks for confirmation, since it deletes backups at once). The same
-  retention covers upstream pre-migration snapshots and legacy `data.db`
-  migration backups. Removing a wallet or an identity does not touch upgrade
-  backups, since they also hold other wallets' data.
-  An upgrade that can never succeed now shows its message instead of being
-  retried silently. Cleanup rejects links and non-files, reports pruning
-  failures, and removes unfinished snapshots left by a crash. Temporary storage and memory
-  failures remain retryable; permission and invalid-input failures surface directly.
-  Concurrent sessions now protect active snapshots from cleanup, and staged
-  validation preserves retry options and guidance for temporary resource failures.
-  One lock now covers the complete open, upgrade, backup, and retention cycle.
-  A backup cleanup problem no longer stops up-to-date wallet data from opening;
-  it blocks only an upgrade that would create a new backup. A new upgrade backup
-  replaces the previous one only after it is saved. The retained backup
-  is always one that opens and passes an integrity check, so an unfinished copy
-  never replaces a complete one. Clearing a network's data still removes upgrade
-  backups when an old shielded file cannot be deleted, and reports the clear as
-  incomplete.
-
 ### Added
+
+- **Upgrade backup retention setting**: Settings → Upgrade Backups controls how
+  long the backup copies taken before a storage upgrade are kept. By default,
+  backups older than 90 days are now deleted automatically; choose another
+  period (1 to 3650 days) or keep them forever. The newest backup of each
+  database is always kept, and a shorter period asks for confirmation because
+  it deletes backups at once.
 
 - **Add wallet-created identity keys**: for identities loaded from a wallet on
   this device, the Add Key screen defaults to "Create from wallet", which
@@ -181,6 +153,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   follow-up.
 
 ### Fixed
+
+- **Safer guidance for wallet data this version cannot open**: the message no
+  longer tells you to remove your local wallet data, which could have deleted
+  the `secrets` folder along with keys no recovery phrase can restore. It asks
+  you to write down your recovery phrases and imported keys in the version you
+  used before, close every running instance, and set aside the `.sqlite` files
+  while keeping the `secrets` folder. A database held by another session asks
+  you to close that session and try again.
+
+- **Upgrade backups no longer pile up**: repeated failed upgrades no longer
+  leave an identical backup on every attempt, and a failed upgrade that can
+  never succeed shows its message instead of retrying silently. Clearing a
+  network's data removes that network's upgrade backups; backups of the shared
+  app data are left to the retention setting. Removing a wallet or an identity
+  keeps upgrade backups.
+
+- **Clearing a network's data works with moved chain data**: chain-sync data
+  that was moved to another disk and linked back no longer stops the clear.
+
+- **Clearer identity funding errors**: when the wallet cannot save the data a
+  payment needs, the message now distinguishes a busy or full store from other
+  failures and says how to retry.
 
 - **Identity keys added by hand no longer disappear**: unlocking a wallet,
   starting the app or loading an identity from a wallet refreshed the identity

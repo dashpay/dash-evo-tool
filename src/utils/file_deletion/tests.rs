@@ -1,3 +1,8 @@
+#![expect(
+    clippy::disallowed_methods,
+    reason = "test fixture setup/teardown outside any production deletion path"
+)]
+
 use super::*;
 
 /// Every protected base name in a data directory, as the app lays them out.
@@ -9,7 +14,7 @@ fn protected_files(data_dir: &Path) -> Vec<PathBuf> {
         data_dir.join("secrets/det-secrets.pwsvault"),
         data_dir.join("data.db.premigration"),
     ];
-    for network in all_networks() {
+    for network in crate::wallet_backend::all_networks() {
         files.push(crate::wallet_backend::wallet_database_path(
             data_dir, network,
         ));
@@ -252,6 +257,38 @@ fn delete_file_refuses_targets_outside_the_intent_scope() {
             },
         ),
         (
+            dir.path().join("app.ron"),
+            DeletionIntent::Backup {
+                database: &database,
+            },
+        ),
+        (
+            dir.path().join("det-app.sqlite.platform-upgrade.lock"),
+            DeletionIntent::Backup {
+                database: &database,
+            },
+        ),
+        (
+            dir.path()
+                .join("det-mainnet.sqlite.platform-67d4ef3-backup-a.sqlite"),
+            DeletionIntent::Backup {
+                database: &database,
+            },
+        ),
+        (
+            dir.path().join("backups/data_backup_20000101_000000.db"),
+            DeletionIntent::Backup {
+                database: &database,
+            },
+        ),
+        (
+            dir.path()
+                .join("backups/auto/pre-migration-det-mainnet-1-to-2-20000101T000000Z.db"),
+            DeletionIntent::Backup {
+                database: &database,
+            },
+        ),
+        (
             dir.path().join("det.log"),
             DeletionIntent::Log {
                 dir: dir.path(),
@@ -289,6 +326,7 @@ fn delete_file_refuses_targets_outside_the_intent_scope() {
 fn delete_file_deletes_targets_in_scope() {
     let dir = tempfile::tempdir().unwrap();
     let database = dir.path().join("det-testnet.sqlite");
+    let legacy = dir.path().join("data.db");
     let cases = [
         (
             dir.path()
@@ -298,10 +336,15 @@ fn delete_file_deletes_targets_in_scope() {
             },
         ),
         (
-            dir.path().join("backups/data_backup_20000101_000000.db"),
+            dir.path()
+                .join("det-testnet.sqlite.platform-67d4ef3-backup-b.pending"),
             DeletionIntent::Backup {
                 database: &database,
             },
+        ),
+        (
+            dir.path().join("backups/data_backup_20000101_000000.db"),
+            DeletionIntent::Backup { database: &legacy },
         ),
         (
             dir.path()
@@ -395,6 +438,128 @@ fn delete_tree_removes_a_cache_tree_but_stops_at_a_protected_file() {
     assert!(planted.exists());
 }
 
+/// A network clear unlinks a symlinked cache entry itself (e.g. chain data moved to
+/// another disk) without following it; other intents still refuse symlinks.
+#[cfg(unix)]
+#[test]
+fn network_clear_unlinks_symlinks_without_following_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("keep.dat"), b"keep").unwrap();
+    let spv = dir.path().join("spv/testnet");
+    std::fs::create_dir_all(&spv).unwrap();
+    let intent = DeletionIntent::NetworkClear {
+        data_dir: dir.path(),
+        network: Network::Testnet,
+    };
+    let dir_link = spv.join("block_headers");
+    std::os::unix::fs::symlink(outside.path(), &dir_link).unwrap();
+    let file_link = spv.join("peers.dat");
+    std::os::unix::fs::symlink(outside.path().join("keep.dat"), &file_link).unwrap();
+    for link in [&dir_link, &file_link] {
+        delete_file(link, intent).unwrap_or_else(|e| panic!("{link:?}: {e:?}"));
+        assert!(
+            link.symlink_metadata().is_err(),
+            "{link:?} must be unlinked"
+        );
+    }
+    assert!(outside.path().join("keep.dat").exists());
+
+    let backup_link = dir
+        .path()
+        .join("det-app.sqlite.platform-67d4ef3-backup-a.sqlite");
+    std::os::unix::fs::symlink(outside.path().join("keep.dat"), &backup_link).unwrap();
+    let database = dir.path().join("det-app.sqlite");
+    let error = delete_file(
+        &backup_link,
+        DeletionIntent::Backup {
+            database: &database,
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(
+        refusal(&error),
+        DeletionRefused::NotRegularFile { .. }
+    ));
+}
+
+#[test]
+fn delete_tree_refuses_directories_outside_its_scope() {
+    let dir = tempfile::tempdir().unwrap();
+    let database = dir.path().join("det-app.sqlite");
+    let clear = DeletionIntent::NetworkClear {
+        data_dir: dir.path(),
+        network: Network::Testnet,
+    };
+    let cases = [
+        (dir.path().join("spv/testnet"), clear),
+        (dir.path().join("spv/mainnet/blocks"), clear),
+        (
+            dir.path().join("backups/auto"),
+            DeletionIntent::Backup {
+                database: &database,
+            },
+        ),
+        (
+            dir.path().join("logs"),
+            DeletionIntent::Log {
+                dir: dir.path(),
+                stem: "det",
+            },
+        ),
+    ];
+    for (target, intent) in cases {
+        std::fs::create_dir_all(&target).unwrap();
+        let error = delete_tree(&target, intent).unwrap_err();
+        assert!(
+            matches!(refusal(&error), DeletionRefused::OutsideScope { .. }),
+            "{target:?}: {error:?}"
+        );
+        assert!(target.is_dir(), "{target:?}");
+    }
+}
+
+#[test]
+fn delete_tree_handles_deep_trees_without_recursion() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("spv/testnet/filters");
+    // Short components keep the full path within OS limits.
+    let mut deepest = root.clone();
+    for _ in 0..1000 {
+        deepest.push("d");
+    }
+    std::fs::create_dir_all(&deepest).unwrap();
+    std::fs::write(deepest.join("x.dat"), b"x").unwrap();
+    delete_tree(
+        &root,
+        DeletionIntent::NetworkClear {
+            data_dir: dir.path(),
+            network: Network::Testnet,
+        },
+    )
+    .unwrap();
+    assert!(!root.exists());
+}
+
+#[test]
+fn windows_alias_names_are_recognised() {
+    for name in [
+        "DET-AP~1.SQL",
+        "det-app.sqlite::$DATA",
+        "det-app.sqlite.",
+        "det-app.sqlite ",
+    ] {
+        assert!(is_windows_alias_name(name), "{name}");
+    }
+    for name in [
+        "det-app.sqlite.platform-67d4ef3-backup-a1.sqlite",
+        "pre-migration-det-app-1-to-2-20000101T000000Z.db",
+        "det.0000000001.log",
+    ] {
+        assert!(!is_windows_alias_name(name), "{name}");
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn delete_tree_never_follows_a_symlinked_directory() {
@@ -409,31 +574,31 @@ fn delete_tree_never_follows_a_symlinked_directory() {
         data_dir: dir.path(),
         network: Network::Testnet,
     };
-    let error = delete_tree(&cache, intent).unwrap_err();
-    assert!(matches!(
-        refusal(&error),
-        DeletionRefused::NotRegularFile { .. }
-    ));
-    assert!(outside.join("keep.dat").exists());
     let error = delete_tree(&cache.join("link"), intent).unwrap_err();
     assert!(matches!(
         refusal(&error),
         DeletionRefused::NotRegularFile { .. }
     ));
+    // Inside the tree the link itself is unlinked; its target is never entered.
+    delete_tree(&cache, intent).unwrap();
+    assert!(!cache.exists());
+    assert!(outside.join("keep.dat").exists());
 }
 
 #[test]
 fn rotated_log_names_are_exact() {
-    assert!(is_rotated_log_name("det.0000000001.log", "det"));
+    let rotated = |name: &str, stem: &str| crate::logging::parse_rotated_ts(name, stem).is_some();
+    assert!(rotated("det.0000000001.log", "det"));
     for name in [
         "det.log",
         "det..log",
         "det.12a.log",
+        "det.-5.log",
         "det.1.log.bak",
         "detx.1.log",
         "other.1.log",
     ] {
-        assert!(!is_rotated_log_name(name, "det"), "{name}");
+        assert!(!rotated(name, "det"), "{name}");
     }
-    assert!(!is_rotated_log_name(".1.log", ""));
+    assert!(!rotated(".1.log", ""));
 }

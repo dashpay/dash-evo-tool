@@ -1,8 +1,12 @@
 //! Preserve databases created by the pinned Platform PR when opening the development release.
 
 mod engine;
+mod storage_failure;
 pub use engine::UpgradeError;
-pub(crate) use engine::{prune_expired_backups, remove_backups};
+pub(crate) use engine::{
+    is_bridge_backup_name, prune_expired_backups, remove_backups, upstream_backup_timestamp,
+};
+pub(crate) use storage_failure::StorageFailure;
 
 use platform_wallet::changeset::PlatformWalletPersistence;
 use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig, WalletStorageError};
@@ -10,34 +14,36 @@ use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig, WalletStor
 use crate::backend_task::error::TaskError;
 
 pub(crate) fn open(config: SqlitePersisterConfig) -> Result<SqlitePersister, TaskError> {
-    open_with_retention(config, engine::retain_one_backup_locked)
+    open_with_housekeeping(config, engine::tidy_backups_locked)
 }
 
-fn open_with_retention(
+fn open_with_housekeeping(
     config: SqlitePersisterConfig,
-    mut retain: impl FnMut(&engine::BackupGuard, Option<&std::path::Path>) -> std::io::Result<()>,
+    mut tidy: impl FnMut(&engine::BackupGuard, Option<&std::path::Path>) -> std::io::Result<()>,
 ) -> Result<SqlitePersister, TaskError> {
     let guard = engine::backup_lock(&config.path).map_err(lock_error)?;
     let auto_dir = config.auto_backup_dir.as_deref();
-    // Check retention before another attempt can create a snapshot, including after a restart.
-    // Retention stays strict only when a snapshot could follow: a database that is already
-    // current still opens, since failed housekeeping does not endanger it.
-    if let Err(retention) = retain(&guard, auto_dir) {
+    // Tidy (strict scan, crash leftovers, identical copies) before another attempt can create
+    // a snapshot, including after a restart. It stays strict only when a snapshot could
+    // follow: a database that is already current still opens, since failed housekeeping
+    // does not endanger it.
+    if let Err(housekeeping) = tidy(&guard, auto_dir) {
         return open_current_only(&config).map_err(|probe| {
             tracing::debug!(
                 error = ?probe,
-                "Wallet database is not openable without a snapshot; backup retention failure stands"
+                "Wallet database is not openable without a snapshot; backup housekeeping failure stands"
             );
-            lock_error(retention)
+            lock_error(housekeeping)
         });
     }
     let result = open_inner(&config, &guard);
-    // Post-open retention is best-effort housekeeping: it must neither discard a successful
-    // open nor mask the open's own error. The next open retries it before any new snapshot.
-    if let Err(error) = retain(&guard, auto_dir) {
+    // Post-open tidying is best-effort: it must neither discard a successful open nor mask
+    // the open's own error. It also drops a copy a failed open just duplicated. The next
+    // open retries it before any new snapshot.
+    if let Err(error) = tidy(&guard, auto_dir) {
         tracing::warn!(
             ?error,
-            "Upgrade backup retention failed after opening the wallet database"
+            "Upgrade backup housekeeping failed after opening the wallet database"
         );
     }
     result
@@ -58,7 +64,7 @@ fn open_current_only(config: &SqlitePersisterConfig) -> Result<SqlitePersister, 
     let persister =
         SqlitePersister::open(config.clone()).map_err(TaskError::from_wallet_storage_open_error)?;
     tracing::warn!(
-        "Upgrade backup retention failed; opened the current wallet database and will retry retention on the next open"
+        "Upgrade backup housekeeping failed; opened the current wallet database and will retry it on the next open"
     );
     Ok(persister)
 }
@@ -120,52 +126,17 @@ fn lock_error(source: std::io::Error) -> TaskError {
 
 fn validation_error(error: impl std::error::Error + Send + Sync + 'static) -> UpgradeError {
     use platform_wallet::changeset::PersistenceError;
-    use rusqlite::ErrorCode;
-    use std::io::ErrorKind;
 
-    type WrapError = fn(Box<dyn std::error::Error + Send + Sync>) -> UpgradeError;
-
-    let mut cause: &dyn std::error::Error = &error;
+    if let Some(failure) = StorageFailure::in_chain(&error) {
+        return UpgradeError::from_failure(failure, Box::new(error));
+    }
     let mut transient = false;
-    loop {
-        let category: Option<WrapError> =
-            if let Some(sqlite) = cause.downcast_ref::<rusqlite::Error>() {
-                match sqlite.sqlite_error_code() {
-                    Some(ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked) => {
-                        Some(UpgradeError::InUse)
-                    }
-                    Some(ErrorCode::DiskFull) => Some(UpgradeError::StorageFull),
-                    Some(ErrorCode::SystemIoFailure) => Some(UpgradeError::StorageUnavailable),
-                    Some(ErrorCode::OutOfMemory) => Some(UpgradeError::OutOfMemory),
-                    Some(ErrorCode::PermissionDenied | ErrorCode::ReadOnly) => {
-                        Some(UpgradeError::AccessDenied)
-                    }
-                    _ => None,
-                }
-            } else if let Some(io) = cause.downcast_ref::<std::io::Error>() {
-                match io.kind() {
-                    ErrorKind::StorageFull => Some(UpgradeError::StorageFull),
-                    ErrorKind::OutOfMemory => Some(UpgradeError::OutOfMemory),
-                    ErrorKind::Interrupted
-                    | ErrorKind::WouldBlock
-                    | ErrorKind::TimedOut
-                    | ErrorKind::ResourceBusy => Some(UpgradeError::StorageUnavailable),
-                    ErrorKind::PermissionDenied | ErrorKind::ReadOnlyFilesystem => {
-                        Some(UpgradeError::AccessDenied)
-                    }
-                    _ => None,
-                }
-            } else {
-                None
-            };
-        if let Some(wrap) = category {
-            return wrap(Box::new(error));
-        }
-        if let Some(persistence) = cause.downcast_ref::<PersistenceError>() {
-            transient |= persistence.is_transient();
-        }
-        let Some(source) = cause.source() else { break };
-        cause = source;
+    let mut cause: Option<&(dyn std::error::Error + 'static)> = Some(&error);
+    while let Some(current) = cause {
+        transient |= current
+            .downcast_ref::<PersistenceError>()
+            .is_some_and(PersistenceError::is_transient);
+        cause = current.source();
     }
     if transient {
         UpgradeError::StorageUnavailable(Box::new(error))
@@ -182,6 +153,8 @@ mod tests {
     use super::*;
     use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 
+    /// Repeated failed opens can leave identical copies of the unchanged database;
+    /// the open's own tidying collapses them to the newest, even when the open fails.
     #[test]
     fn platform_compatibility_bounds_upstream_backups_after_failed_opens() {
         let dir = tempfile::tempdir().unwrap();
@@ -196,26 +169,46 @@ mod tests {
             .unwrap();
         let auto = platform_wallet_storage::default_auto_backup_dir(&path);
         std::fs::create_dir_all(&auto).unwrap();
+        let copy = std::fs::read(&path).unwrap();
         for attempt in 1..=3 {
-            let old = auto.join(format!(
+            let snapshot = auto.join(format!(
                 "pre-migration-wallet-1-to-2-20260915T12000{attempt}Z.db"
             ));
-            // A complete snapshot: retention only prunes in favour of a proven-usable copy.
-            rusqlite::Connection::open(&old)
-                .unwrap()
-                .execute_batch(include_str!("fixtures/67d4ef3.sql"))
-                .unwrap();
+            std::fs::write(&snapshot, &copy).unwrap();
             assert!(open(SqlitePersisterConfig::new(&path)).is_err());
-            assert_eq!(std::fs::read_dir(&auto).unwrap().count(), 1);
-            let retained = std::fs::read_dir(&auto)
+            let retained: Vec<_> = std::fs::read_dir(&auto)
                 .unwrap()
-                .next()
-                .unwrap()
-                .unwrap()
-                .path();
-            if retained != old {
-                std::fs::rename(retained, old).unwrap();
-            }
+                .map(|entry| entry.unwrap().path())
+                .collect();
+            assert_eq!(retained, vec![snapshot], "attempt {attempt}");
+        }
+    }
+
+    /// Opening never deletes a published snapshot that differs from the others: only
+    /// the retention setting removes those, so "Keep forever" keeps every one.
+    #[test]
+    fn platform_compatibility_repeated_opens_keep_every_distinct_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::app_dir::ensure_data_dir_exists(dir.path()).unwrap();
+        let path = dir.path().join("wallet.sqlite");
+        drop(open(SqlitePersisterConfig::new(&path)).unwrap());
+        let auto = platform_wallet_storage::default_auto_backup_dir(&path);
+        std::fs::create_dir_all(&auto).unwrap();
+        let snapshots = [
+            dir.path()
+                .join("wallet.sqlite.platform-67d4ef3-backup-first.sqlite"),
+            auto.join("pre-migration-wallet-1-to-2-20200101T000000Z.db"),
+            auto.join("pre-migration-wallet-2-to-3-20210101T000000Z.db"),
+            auto.join("pre-migration-wallet-2-to-3-20220101T000000Z.db"),
+        ];
+        for (index, snapshot) in snapshots.iter().enumerate() {
+            std::fs::write(snapshot, format!("snapshot {index}")).unwrap();
+        }
+        for _ in 0..3 {
+            drop(open(SqlitePersisterConfig::new(&path)).unwrap());
+        }
+        for snapshot in &snapshots {
+            assert!(snapshot.exists(), "{} must be kept", snapshot.display());
         }
     }
 
@@ -225,7 +218,7 @@ mod tests {
         crate::app_dir::ensure_data_dir_exists(dir.path()).unwrap();
         let path = dir.path().join("wallet.sqlite");
         let mut calls = 0;
-        let persister = open_with_retention(SqlitePersisterConfig::new(&path), |_, _| {
+        let persister = open_with_housekeeping(SqlitePersisterConfig::new(&path), |_, _| {
             calls += 1;
             if calls == 1 {
                 Ok(())
@@ -240,7 +233,7 @@ mod tests {
         let bad = dir.path().join("corrupt.sqlite");
         std::fs::write(&bad, b"not a sqlite database, just candy wrappers").unwrap();
         let mut calls = 0;
-        let error = match open_with_retention(SqlitePersisterConfig::new(&bad), |_, _| {
+        let error = match open_with_housekeeping(SqlitePersisterConfig::new(&bad), |_, _| {
             calls += 1;
             if calls == 1 {
                 Ok(())
@@ -286,7 +279,7 @@ mod tests {
         // First a brand-new database, then the same database once it is current.
         for _ in 0..2 {
             let mut calls = 0;
-            let persister = open_with_retention(
+            let persister = open_with_housekeeping(
                 SqlitePersisterConfig::new(&path),
                 failing_retention(&mut calls),
             )
@@ -339,7 +332,7 @@ mod tests {
         let before = schema();
         let entries_before = dir_entries(dir.path());
         let mut calls = 0;
-        let error = match open_with_retention(
+        let error = match open_with_housekeeping(
             SqlitePersisterConfig::new(&path),
             failing_retention(&mut calls),
         ) {
@@ -437,9 +430,21 @@ mod tests {
             1
         );
         drop(persister);
-        open(SqlitePersisterConfig::new(&path)).unwrap();
         let upstream = platform_wallet_storage::default_auto_backup_dir(&path);
-        assert_eq!(std::fs::read_dir(upstream).unwrap().count(), 0);
+        let upstream_snapshots = || std::fs::read_dir(&upstream).unwrap().count();
+        let before_reopen = upstream_snapshots();
+        drop(open(SqlitePersisterConfig::new(&path)).unwrap());
+        // Both recovery points stay: the bridge copy of the pinned profile and any
+        // upstream copy taken before its own migration. A current database adds none.
+        assert_eq!(upstream_snapshots(), before_reopen);
+        assert!(
+            std::fs::read_dir(dir.path()).unwrap().any(|entry| entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains(".platform-67d4ef3-backup-")),
+            "the bridge snapshot is kept"
+        );
     }
 }
 

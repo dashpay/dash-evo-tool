@@ -142,8 +142,8 @@ impl Config {
     /// Preserves lines not modeled by `Config` and replaces the modeled fields.
     /// Uses a temporary file and atomic rename to prevent partial writes.
     pub fn save(&self, data_dir: &Path) -> Result<(), ConfigError> {
-        let env_file_path =
-            data_file_path(data_dir, ".env").map_err(|e| ConfigError::SaveError { source: e })?;
+        let env_file_path = data_file_path(data_dir, crate::app_dir::ENV_FILE)
+            .map_err(|e| ConfigError::SaveError { source: e })?;
         let existing_contents = read_env_contents(&env_file_path)?;
         validate_env_contents(&existing_contents)?;
         let modeled_entries = self.modeled_entries();
@@ -185,8 +185,8 @@ impl Config {
         network: Network,
         addresses: &str,
     ) -> Result<(), ConfigError> {
-        let env_file_path =
-            data_file_path(data_dir, ".env").map_err(|source| ConfigError::SaveError { source })?;
+        let env_file_path = data_file_path(data_dir, crate::app_dir::ENV_FILE)
+            .map_err(|source| ConfigError::SaveError { source })?;
         let existing_contents = read_env_contents(&env_file_path)?;
         let key = format!("{}dapi_addresses", dotenv_network_prefix(network));
         atomic_replace_env_file(&env_file_path, |env_file| {
@@ -203,15 +203,16 @@ impl Config {
     /// Loads the configuration for all networks from environment variables and `.env` file
     /// located in the default app data directory.
     pub fn load() -> Result<Self, ConfigError> {
-        let env_file_path = app_user_data_file_path(".env").expect("should create .env file path");
+        let env_file_path = app_user_data_file_path(crate::app_dir::ENV_FILE)
+            .expect("should create .env file path");
         Self::load_from_env_path(env_file_path)
     }
 
     /// Loads the configuration for all networks from environment variables and `.env` file
     /// located in the given data directory.
     pub fn load_from(data_dir: &Path) -> Result<Self, ConfigError> {
-        let env_file_path =
-            data_file_path(data_dir, ".env").map_err(|source| ConfigError::LoadError { source })?;
+        let env_file_path = data_file_path(data_dir, crate::app_dir::ENV_FILE)
+            .map_err(|source| ConfigError::LoadError { source })?;
         Self::load_from_env_path(env_file_path)
     }
 

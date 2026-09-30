@@ -686,8 +686,8 @@ pub enum BackendTaskSuccessResult {
         retention: crate::model::backup_retention::BackupRetention,
         /// Expired backups deleted under the new policy.
         deleted: usize,
-        /// Whether some expired backups could not be deleted (retried at next start).
-        cleanup_incomplete: bool,
+        /// Why some expired backups could not be deleted; they are retried at the next start.
+        cleanup_failure: Option<Arc<TaskError>>,
     },
     PlatformInfo(PlatformInfoTaskResult),
 

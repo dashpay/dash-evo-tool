@@ -4,6 +4,7 @@
 //! `Debug` → variant name + fields (logged and shown in collapsible details).
 
 use crate::model::fee_estimation::format_credits_as_dash;
+use crate::wallet_backend::platform_compatibility::StorageFailure;
 use dash_sdk::Error as SdkError;
 use dash_sdk::dapi_client::DapiClientError;
 use dash_sdk::dapi_client::transport::TransportError;
@@ -107,6 +108,9 @@ impl std::error::Error for BackendTaskJoinError {}
 
 /// Dash Core RPC error code: wallet file not specified (multi-wallet node).
 const RPC_WALLET_NOT_SPECIFIED: i32 = -19;
+
+/// Shown whenever another window or session holds the wallet database.
+pub(crate) const WALLET_DATA_IN_USE: &str = "Your wallet data is open in another Dash Evo Tool window or command-line session. Close it and try again.";
 
 /// App-level error envelope for backend tasks.
 #[derive(Debug, Error)]
@@ -436,9 +440,7 @@ pub enum TaskError {
     },
 
     /// Another process currently owns the wallet database write lock.
-    #[error(
-        "Your wallet data is open in another Dash Evo Tool window or command-line session. Close it and try again."
-    )]
+    #[error("{}", WALLET_DATA_IN_USE)]
     WalletStorageInUse {
         #[source]
         source: platform_wallet_storage::WalletStorageError,
@@ -1188,7 +1190,7 @@ pub enum TaskError {
     /// The upgrade-backup retention setting could not be read, so no backup was
     /// deleted.
     #[error(
-        "Could not read your backup retention setting, so no old backups were deleted. Restart the application to try again."
+        "Your backup retention setting could not be read, so no old upgrade backups were deleted. Open Settings, choose a backup retention setting and save it."
     )]
     BackupRetentionRead {
         #[source]
@@ -3067,50 +3069,17 @@ impl TaskError {
     fn wallet_storage_error_is_in_use(
         source: &platform_wallet_storage::WalletStorageError,
     ) -> bool {
-        Self::wallet_storage_sqlite_cause(source, |code| {
-            matches!(
-                code,
-                rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
-            )
-        })
+        StorageFailure::in_chain(source) == Some(StorageFailure::InUse)
     }
 
     /// A migration that ran out of disk space, hit an OS I/O failure or ran
     /// out of memory is recoverable by freeing the resource and retrying, so
-    /// it must not get the terminal incompatible-data guidance. Access
-    /// failures (`PermissionDenied`, `ReadOnly`) are deliberately excluded:
-    /// retrying never fixes them.
+    /// it must not get the terminal incompatible-data guidance.
     fn wallet_storage_error_is_resource_exhausted(
         source: &platform_wallet_storage::WalletStorageError,
     ) -> bool {
-        Self::wallet_storage_sqlite_cause(source, |code| {
-            matches!(
-                code,
-                rusqlite::ErrorCode::DiskFull
-                    | rusqlite::ErrorCode::SystemIoFailure
-                    | rusqlite::ErrorCode::OutOfMemory
-            )
-        })
-    }
-
-    /// Whether any `rusqlite::Error` in the typed source chain carries a
-    /// SQLite code accepted by `is_match`.
-    fn wallet_storage_sqlite_cause(
-        source: &platform_wallet_storage::WalletStorageError,
-        is_match: impl Fn(rusqlite::ErrorCode) -> bool,
-    ) -> bool {
-        let mut cause: Option<&(dyn std::error::Error + 'static)> = Some(source);
-        while let Some(error) = cause {
-            if error
-                .downcast_ref::<rusqlite::Error>()
-                .and_then(rusqlite::Error::sqlite_error_code)
-                .is_some_and(&is_match)
-            {
-                return true;
-            }
-            cause = error.source();
-        }
-        false
+        StorageFailure::in_chain(source)
+            .is_some_and(|failure| failure.is_retryable() && failure != StorageFailure::InUse)
     }
 
     /// Returns `true` when this is a [`Self::SecretStore`] open failure caused

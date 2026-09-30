@@ -529,6 +529,28 @@ impl std::fmt::Debug for WalletBackend {
     }
 }
 
+/// File name of the cross-network app database in the data directory.
+pub(crate) const APP_DATABASE_FILE: &str = "det-app.sqlite";
+
+/// The cross-network app k/v database: `<data_dir>/det-app.sqlite`.
+pub(crate) fn app_database_path(data_dir: &Path) -> std::path::PathBuf {
+    data_dir.join(APP_DATABASE_FILE)
+}
+
+/// Every network, via an exhaustive match: a new [`Network`] variant fails to
+/// compile here until each caller (e.g. the deletion deny-list) is reviewed.
+pub(crate) fn all_networks() -> [Network; 4] {
+    let _exhaustive = |network: Network| match network {
+        Network::Mainnet | Network::Testnet | Network::Devnet | Network::Regtest => (),
+    };
+    [
+        Network::Mainnet,
+        Network::Testnet,
+        Network::Devnet,
+        Network::Regtest,
+    ]
+}
+
 /// The durable per-network wallet database: `<data_dir>/det-<network>.sqlite`.
 ///
 /// A sibling of `det-app.sqlite`, deliberately outside `<data_dir>/spv/<network>/`

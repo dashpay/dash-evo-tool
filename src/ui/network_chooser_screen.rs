@@ -1380,7 +1380,7 @@ impl NetworkChooserScreen {
 }
 
 /// Shown when the retention setting cannot be read; the backend then deletes nothing.
-const BACKUP_RETENTION_UNREADABLE: &str = "Your backup retention setting could not be loaded, so no upgrade backups are deleted automatically. Choose a setting and save it to fix this.";
+const BACKUP_RETENTION_UNREADABLE: &str = "Your backup retention setting could not be read, so no old upgrade backups are deleted. Choose a backup retention setting and save it.";
 
 /// Shown when the new policy was saved but some expired backups could not be deleted.
 const BACKUP_RETENTION_CLEANUP_INCOMPLETE: &str = "Your backup retention setting was saved, but some old upgrade backups could not be deleted. The app will try again the next time it starts.";
@@ -1390,6 +1390,7 @@ fn backup_retention_saved_banner(
     deleted: usize,
     cleanup_incomplete: bool,
 ) -> (String, MessageType) {
+    // The wording matches `TaskError::UpgradeBackupCleanup`, prefixed by the save outcome.
     if cleanup_incomplete {
         return (
             BACKUP_RETENTION_CLEANUP_INCOMPLETE.to_owned(),
@@ -1402,6 +1403,17 @@ fn backup_retention_saved_banner(
         count => format!("{count} old upgrade backups were deleted."),
     };
     (message, MessageType::Success)
+}
+
+/// Confirmation text for switching to a stricter retention of `days` days.
+fn stricter_retention_confirmation(days: u16) -> String {
+    if days == 1 {
+        "Upgrade backups older than one day will be deleted now, and from then on automatically. Deleted backups cannot be restored. Continue?".to_owned()
+    } else {
+        format!(
+            "Upgrade backups older than {days} days will be deleted now, and from then on automatically. Deleted backups cannot be restored. Continue?"
+        )
+    }
 }
 
 /// Settings-screen state for the upgrade-backup retention policy.
@@ -1492,9 +1504,7 @@ impl BackupRetentionForm {
             BackupRetention::DeleteAfterDays(days) if stricter => {
                 let dialog = ConfirmationDialog::new(
                     "Delete old upgrade backups?",
-                    format!(
-                        "Upgrade backups older than {days} days will be deleted now, and from then on automatically. Deleted backups cannot be restored. Continue?"
-                    ),
+                    stricter_retention_confirmation(days),
                 )
                 .confirm_text(Some("Delete Old Backups"))
                 .cancel_text(Some("Keep Backups"))
@@ -1548,6 +1558,17 @@ impl BackupRetentionForm {
         self.revert();
     }
 
+    /// Re-sync with the persisted policy when the screen is shown again.
+    ///
+    /// A save whose answer never arrived no longer blocks the form: its result, if it
+    /// still comes, is applied as usual. A queued save or an open confirmation is kept.
+    fn reload(&mut self, saved: Option<BackupRetention>) {
+        self.pending = None;
+        if !self.busy() {
+            *self = Self::new(saved);
+        }
+    }
+
     /// Render the section. The save task it may queue is emitted by [`Self::take_task`].
     fn show(&mut self, ui: &mut Ui, dark_mode: bool) {
         ui.label(
@@ -1580,11 +1601,9 @@ impl BackupRetentionForm {
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     ui.label("Keep upgrade backups for this many days:");
-                    let response = ui.add(
-                        egui::DragValue::new(&mut self.days)
-                            .range(BackupRetention::MIN_DAYS..=BackupRetention::MAX_DAYS)
-                            .speed(1),
-                    );
+                    // Not clamped: an out-of-range entry stays visible with the error
+                    // below and is never saved, instead of silently becoming the limit.
+                    let response = ui.add(egui::DragValue::new(&mut self.days).speed(1));
                     // Save only a finished edit, not every intermediate drag or keystroke.
                     editing = response.dragged() || response.has_focus();
                 });
@@ -1649,6 +1668,8 @@ impl ScreenLike for NetworkChooserScreen {
         // changed on another surface (e.g. the onboarding row) since this cached
         // root screen was constructed.
         self.selected_role = self.current_app_context().user_role();
+        self.backup_retention
+            .reload(self.current_app_context().backup_retention().ok());
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
@@ -1718,13 +1739,20 @@ impl ScreenLike for NetworkChooserScreen {
         if let BackendTaskSuccessResult::UpdatedBackupRetention {
             retention,
             deleted,
-            cleanup_incomplete,
+            cleanup_failure,
         } = backend_task_success_result
         {
             self.backup_retention.save_succeeded(retention);
             let (message, message_type) =
-                backup_retention_saved_banner(deleted, cleanup_incomplete);
-            MessageBanner::set_global(self.current_app_context().egui_ctx(), message, message_type);
+                backup_retention_saved_banner(deleted, cleanup_failure.is_some());
+            let banner = MessageBanner::set_global(
+                self.current_app_context().egui_ctx(),
+                message,
+                message_type,
+            );
+            if let Some(failure) = cleanup_failure {
+                banner.with_details(failure);
+            }
         } else if let BackendTaskSuccessResult::NetworkDatabaseCleared { .. } =
             &backend_task_success_result
         {
@@ -1815,6 +1843,48 @@ mod tests {
     ) -> Option<BackupRetention> {
         form.resolve_confirmation(status);
         saved_retention(form.take_task())
+    }
+
+    #[test]
+    fn out_of_range_retention_days_are_never_saved() {
+        let mut form = BackupRetentionForm::new(Some(BackupRetention::default()));
+        for days in [0, 3651, 4000] {
+            form.days = days;
+            assert_eq!(step(&mut form, false), None, "{days} must not be saved");
+            assert_eq!(step(&mut form, true), None, "{days} must not be saved");
+            assert_eq!(form.days, days, "the entry stays visible, not clamped");
+        }
+    }
+
+    #[test]
+    fn stricter_retention_confirmation_reads_naturally() {
+        assert!(stricter_retention_confirmation(1).contains("older than one day will"));
+        assert!(stricter_retention_confirmation(30).contains("older than 30 days will"));
+    }
+
+    #[test]
+    fn lost_backup_retention_result_does_not_wedge_the_form() {
+        let mut form = BackupRetentionForm::new(Some(BackupRetention::default()));
+        form.days = 200;
+        assert!(step(&mut form, false).is_some());
+        assert!(form.busy());
+
+        form.reload(Some(BackupRetention::default()));
+        assert!(!form.busy(), "arriving again unblocks the form");
+        assert_eq!((form.enabled, form.days), (true, 90));
+
+        // A late answer is still applied.
+        form.save_succeeded(BackupRetention::DeleteAfterDays(200));
+        assert_eq!(form.saved, Some(BackupRetention::DeleteAfterDays(200)));
+        assert_eq!(form.days, 200);
+    }
+
+    #[test]
+    fn reload_picks_up_a_setting_that_became_readable() {
+        let mut form = BackupRetentionForm::new(None);
+        form.reload(Some(BackupRetention::KeepForever));
+        assert_eq!(form.saved, Some(BackupRetention::KeepForever));
+        assert!(!form.enabled);
     }
 
     #[test]

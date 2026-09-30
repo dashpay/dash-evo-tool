@@ -5,7 +5,9 @@
 //! states its purpose as a [`DeletionIntent`], and the chokepoint enforces, in
 //! this order, before anything is unlinked:
 //!
-//! 1. the target is a regular file — never a symlink or directory;
+//! 1. the target is a regular file — never a directory, and a symlink only under
+//!    [`DeletionIntent::NetworkClear`], where the link itself is unlinked and its
+//!    target is never followed;
 //! 2. a hard deny-list of live application files by **name** — `det-app.sqlite`,
 //!    `data.db`, every network's wallet and shielded database, `*.pwsvault`,
 //!    `.env`, `*.premigration`, each with its `-wal`/`-shm`/`-journal` sidecar.
@@ -15,7 +17,12 @@
 //!    the device/inode, of every protected file in the intent's data directory,
 //!    which catches `..`, symlinked-directory and case aliases;
 //! 4. on Unix, a single hard link, so no alias of another file is removed;
-//! 5. the intent's scope — the directories that purpose may delete from.
+//! 5. the intent's scope — the directories that purpose may delete from and,
+//!    for backups and logs, the exact file-name grammar of that purpose.
+//!
+//! Per platform: Unix gets every layer. Windows has no device/inode or hard-link
+//! check, so it instead refuses names that can alias another file there (8.3
+//! short names with `~`, `:` stream suffixes, a trailing `.` or space).
 //!
 //! The chokepoint needs no `AppContext`: each intent carries the paths it is
 //! confined to, so it also serves pre-context callers such as log rotation.
@@ -32,14 +39,16 @@ const SQLITE_SIDECAR_SUFFIXES: [&str; 3] = ["-wal", "-shm", "-journal"];
 /// Why a deletion needs to happen, and therefore where it may reach.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum DeletionIntent<'a> {
-    /// A retained backup of `database`, inside the database's directory, its
-    /// `backups/` directory, or the upstream auto-backup directory.
+    /// A retained backup of `database`: a bridge snapshot of it next to it, an
+    /// upstream `pre-migration-*` snapshot of it in the auto-backup directory, or,
+    /// for the legacy `data.db`, a `backups/data_backup_*.db` copy.
     Backup {
         /// The live database the backup was taken from.
         database: &'a Path,
     },
     /// Resyncable per-network data removed by a network clear: anything under
-    /// `<data_dir>/spv/<network>/`, plus the `<data_dir>/spv/<network>.lock`
+    /// `<data_dir>/spv/<network>/` (including emptied directories and symlinks,
+    /// which are unlinked, never followed), plus the `<data_dir>/spv/<network>.lock`
     /// storage lock.
     NetworkClear {
         /// The application data directory.
@@ -66,7 +75,8 @@ pub(crate) enum DeletionRefused {
         /// The refused target.
         path: PathBuf,
     },
-    /// The target is a symlink, directory, or other non-regular file.
+    /// The target is a directory, a symlink outside a network clear, or another
+    /// non-regular file.
     #[error("Only regular files can be deleted.")]
     NotRegularFile {
         /// The refused target.
@@ -100,20 +110,24 @@ impl From<DeletionRefused> for std::io::Error {
 /// missing target is [`std::io::ErrorKind::NotFound`], so callers that tolerate
 /// an already-gone file keep doing so. Other I/O failures pass through.
 pub(crate) fn delete_file(path: &Path, intent: DeletionIntent<'_>) -> std::io::Result<()> {
-    check(path, intent)?;
-    std::fs::remove_file(path)
+    let metadata = check(path, intent)?;
+    unlink(path, &metadata)
 }
 
-/// Delete the directory tree at `dir`, unlinking every file through
-/// [`delete_file`] and then removing the emptied directories.
+/// Delete the directory tree at `dir`, unlinking every file through the same
+/// checks as [`delete_file`] and then removing the emptied directories.
 ///
-/// Symlinks are never followed; one inside the tree is refused like any other
-/// non-regular file. Stops at the first failure.
+/// Only [`DeletionIntent::NetworkClear`] may remove directories, and only strictly
+/// inside its network's SPV directory; each directory is scope-checked before it is
+/// read and again before it is removed. Symlinks are unlinked, never followed. The
+/// walk uses an explicit stack, so depth cannot overflow the call stack. Stops at
+/// the first failure.
 ///
 /// # Errors
 ///
-/// As [`delete_file`]; a missing `dir` is [`std::io::ErrorKind::NotFound`], and
-/// a `dir` that is not a real directory is refused as [`DeletionRefused::NotRegularFile`].
+/// As [`delete_file`]; a missing `dir` is [`std::io::ErrorKind::NotFound`], a `dir`
+/// that is not a real directory is refused as [`DeletionRefused::NotRegularFile`],
+/// and one outside the intent's scope as [`DeletionRefused::OutsideScope`].
 pub(crate) fn delete_tree(dir: &Path, intent: DeletionIntent<'_>) -> std::io::Result<()> {
     if !std::fs::symlink_metadata(dir)?.is_dir() {
         return Err(DeletionRefused::NotRegularFile {
@@ -121,30 +135,99 @@ pub(crate) fn delete_tree(dir: &Path, intent: DeletionIntent<'_>) -> std::io::Re
         }
         .into());
     }
-    for entry in std::fs::read_dir(dir)? {
-        let path = entry?.path();
-        if std::fs::symlink_metadata(&path)?.is_dir() {
-            delete_tree(&path, intent)?;
-        } else {
-            delete_file(&path, intent)?;
+    check_dir_scope(dir, intent)?;
+    // Post-order walk: a directory is removed once all its entries are gone.
+    let mut stack = vec![(dir.to_owned(), false)];
+    while let Some((directory, emptied)) = stack.pop() {
+        if emptied {
+            check_dir_scope(&directory, intent)?;
+            remove_empty_dir(&directory)?;
+            continue;
+        }
+        stack.push((directory.clone(), true));
+        for entry in std::fs::read_dir(&directory)? {
+            let path = entry?.path();
+            if std::fs::symlink_metadata(&path)?.is_dir() {
+                check_dir_scope(&path, intent)?;
+                stack.push((path, false));
+            } else {
+                delete_file(&path, intent)?;
+            }
         }
     }
-    // Only an empty directory can be removed here; every file went through the checks.
+    Ok(())
+}
+
+/// Refuse a directory outside what `intent` may remove.
+fn check_dir_scope(dir: &Path, intent: DeletionIntent<'_>) -> std::io::Result<()> {
+    let located = canonical_location(dir)?;
+    let allowed = match intent {
+        DeletionIntent::NetworkClear { data_dir, network } => {
+            let root = canonical_dir(&network_spv_dir(data_dir, network));
+            located.starts_with(&root) && located != root
+        }
+        DeletionIntent::Backup { .. } | DeletionIntent::Log { .. } => false,
+    };
+    if allowed {
+        Ok(())
+    } else {
+        Err(DeletionRefused::OutsideScope {
+            path: dir.to_owned(),
+        }
+        .into())
+    }
+}
+
+/// The only raw directory removal; its caller has emptied and scope-checked `dir`.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the deletion chokepoint itself; `dir` is empty and scope-checked"
+)]
+fn remove_empty_dir(dir: &Path) -> std::io::Result<()> {
     std::fs::remove_dir(dir)
 }
 
-fn check(path: &Path, intent: DeletionIntent<'_>) -> std::io::Result<()> {
+/// The only raw file unlink; its caller has passed every chokepoint check.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the deletion chokepoint itself; every check has passed"
+)]
+fn unlink(path: &Path, metadata: &std::fs::Metadata) -> std::io::Result<()> {
+    // Windows removes a symlink to a directory as a directory; the link is still
+    // unlinked without following it.
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileTypeExt;
+        if metadata.file_type().is_symlink_dir() {
+            return std::fs::remove_dir(path);
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = metadata;
+    std::fs::remove_file(path)
+}
+
+fn network_spv_dir(data_dir: &Path, network: Network) -> PathBuf {
+    data_dir
+        .join("spv")
+        .join(crate::wallet_backend::network_prefix(network))
+}
+
+/// Every check before an unlink; returns the target's own (unfollowed) metadata.
+fn check(path: &Path, intent: DeletionIntent<'_>) -> std::io::Result<std::fs::Metadata> {
     let refused =
         |make: fn(PathBuf) -> DeletionRefused| -> std::io::Error { make(path.to_owned()).into() };
     let metadata = std::fs::symlink_metadata(path)?;
-    if !metadata.is_file() {
+    let unlinkable_link =
+        metadata.is_symlink() && matches!(intent, DeletionIntent::NetworkClear { .. });
+    if !metadata.is_file() && !unlinkable_link {
         return Err(refused(|path| DeletionRefused::NotRegularFile { path }));
     }
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| refused(|path| DeletionRefused::OutsideScope { path }))?;
-    if is_protected_name(name) {
+    if is_protected_name(name) || (cfg!(windows) && is_windows_alias_name(name)) {
         return Err(refused(|path| DeletionRefused::ProtectedFile { path }));
     }
     let located = canonical_location(path)?;
@@ -168,21 +251,7 @@ fn check(path: &Path, intent: DeletionIntent<'_>) -> std::io::Result<()> {
     if !in_scope(&located, name, intent) {
         return Err(refused(|path| DeletionRefused::OutsideScope { path }));
     }
-    Ok(())
-}
-
-/// Every network, via an exhaustive match: a new [`Network`] variant fails to
-/// compile here until its databases are added to the deny-list.
-fn all_networks() -> [Network; 4] {
-    let _exhaustive = |network: Network| match network {
-        Network::Mainnet | Network::Testnet | Network::Devnet | Network::Regtest => (),
-    };
-    [
-        Network::Mainnet,
-        Network::Testnet,
-        Network::Devnet,
-        Network::Regtest,
-    ]
+    Ok(metadata)
 }
 
 /// Whether `name` is a live application file, regardless of its directory.
@@ -192,16 +261,24 @@ fn is_protected_name(name: &str) -> bool {
         .iter()
         .find_map(|suffix| name.strip_suffix(suffix))
         .unwrap_or(&name);
-    if matches!(base, "det-app.sqlite" | "data.db" | ".env")
+    if [
+        crate::wallet_backend::APP_DATABASE_FILE,
+        crate::database::legacy_backups::LEGACY_DATABASE,
+        crate::app_dir::ENV_FILE,
+    ]
+    .contains(&base)
         || base.ends_with(".pwsvault")
         || base.ends_with(".premigration")
     {
         return true;
     }
-    all_networks().into_iter().any(|network| {
-        let prefix = crate::wallet_backend::network_prefix(network);
-        base == format!("det-{prefix}.sqlite") || base == format!("det-{prefix}-shielded.sqlite")
-    })
+    crate::wallet_backend::all_networks()
+        .into_iter()
+        .any(|network| {
+            let prefix = crate::wallet_backend::network_prefix(network);
+            base == format!("det-{prefix}.sqlite")
+                || base == format!("det-{prefix}-shielded.sqlite")
+        })
 }
 
 /// The live files in the intent's data directory, with their SQLite sidecars.
@@ -212,12 +289,12 @@ fn protected_paths(intent: DeletionIntent<'_>) -> Vec<PathBuf> {
         DeletionIntent::Log { dir, .. } => (dir, None),
     };
     let mut roots = vec![
-        data_dir.join("det-app.sqlite"),
-        data_dir.join("data.db"),
-        data_dir.join(".env"),
+        crate::wallet_backend::app_database_path(data_dir),
+        data_dir.join(crate::database::legacy_backups::LEGACY_DATABASE),
+        data_dir.join(crate::app_dir::ENV_FILE),
         crate::context::AppContext::secret_store_path(data_dir),
     ];
-    for network in all_networks() {
+    for network in crate::wallet_backend::all_networks() {
         roots.push(crate::wallet_backend::wallet_database_path(
             data_dir, network,
         ));
@@ -280,42 +357,46 @@ fn same_inode(_target: &std::fs::Metadata, _protected: &Path) -> bool {
     false
 }
 
+/// Whether `name` could alias another file on Windows: an 8.3 short name (`~`), an
+/// alternate data stream (`:`), or a trailing `.` or space that Win32 strips.
+fn is_windows_alias_name(name: &str) -> bool {
+    name.contains(['~', ':']) || name.ends_with(['.', ' '])
+}
+
 fn in_scope(located: &Path, name: &str, intent: DeletionIntent<'_>) -> bool {
     let Some(parent) = located.parent() else {
         return false;
     };
+    let is = |dir: &Path| canonical_dir(dir) == parent;
     match intent {
         DeletionIntent::Backup { database } => {
             let directory = parent_of(database);
-            [
-                directory.to_owned(),
-                directory.join(crate::database::legacy_backups::BACKUP_DIR),
-                platform_wallet_storage::default_auto_backup_dir(database),
-            ]
-            .iter()
-            .any(|allowed| canonical_dir(allowed) == parent)
+            let legacy = database.file_name().is_some_and(|file| {
+                file.eq_ignore_ascii_case(crate::database::legacy_backups::LEGACY_DATABASE)
+            });
+            (is(directory)
+                && crate::wallet_backend::platform_compatibility::is_bridge_backup_name(
+                    database, name,
+                ))
+                || (is(&platform_wallet_storage::default_auto_backup_dir(database))
+                    && crate::wallet_backend::platform_compatibility::upstream_backup_timestamp(
+                        database, name,
+                    )
+                    .is_some())
+                || (legacy
+                    && is(&directory.join(crate::database::legacy_backups::BACKUP_DIR))
+                    && crate::database::legacy_backups::backup_timestamp(name).is_some())
         }
         DeletionIntent::NetworkClear { data_dir, network } => {
             let spv = data_dir.join("spv");
-            let prefix = crate::wallet_backend::network_prefix(network);
-            let lock = format!("{prefix}.lock");
-            parent.starts_with(canonical_dir(&spv.join(prefix)))
-                || (parent == canonical_dir(&spv) && name == lock)
+            let lock = format!("{}.lock", crate::wallet_backend::network_prefix(network));
+            parent.starts_with(canonical_dir(&network_spv_dir(data_dir, network)))
+                || (is(&spv) && name == lock)
         }
         DeletionIntent::Log { dir, stem } => {
-            parent == canonical_dir(dir) && is_rotated_log_name(name, stem)
+            is(dir) && crate::logging::parse_rotated_ts(name, stem).is_some()
         }
     }
-}
-
-/// Whether `name` is `<stem>.<digits>.log`.
-fn is_rotated_log_name(name: &str, stem: &str) -> bool {
-    !stem.is_empty()
-        && name
-            .strip_prefix(stem)
-            .and_then(|rest| rest.strip_prefix('.'))
-            .and_then(|rest| rest.strip_suffix(".log"))
-            .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
 }
 
 #[cfg(test)]

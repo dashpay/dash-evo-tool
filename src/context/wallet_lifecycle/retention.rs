@@ -12,17 +12,36 @@ pub struct BackupPruneReport {
     pub failure: Option<TaskError>,
 }
 
+/// Every database in `data_dir` whose upgrade backups the global retention covers:
+/// the shared app database and each network's wallet database.
+pub(crate) fn retained_backup_databases(data_dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    std::iter::once(crate::wallet_backend::app_database_path(data_dir))
+        .chain(
+            crate::wallet_backend::all_networks()
+                .into_iter()
+                .map(|network| crate::wallet_backend::wallet_database_path(data_dir, network)),
+        )
+        .collect()
+}
+
 impl AppContext {
     /// Delete upgrade and legacy migration backups older than the configured retention period.
     ///
-    /// Covers the app database and this network's wallet database (bridge and upstream
-    /// `pre-migration-*` snapshots), plus legacy `data.db` backups. Call only after those
-    /// databases opened successfully: an expired snapshot may be the last one, which is
-    /// expendable only once the database it protects is known to work.
+    /// The policy is global: it covers every database in the data directory (the app
+    /// database and every network's wallet database, bridge and upstream
+    /// `pre-migration-*` snapshots), plus legacy `data.db` backups, whichever network
+    /// this context serves. The newest backup of each database is always kept, so the
+    /// pass is safe for databases this process has not opened. A database another
+    /// context is opening or upgrading is skipped until the next pass.
     ///
     /// Attempts every location and reports the first failure. Nothing is deleted when the
     /// policy cannot be read.
     pub(crate) fn prune_expired_upgrade_backups(&self) -> BackupPruneReport {
+        self.prune_expired_upgrade_backups_at(SystemTime::now())
+    }
+
+    /// [`Self::prune_expired_upgrade_backups`] as if the clock read `now`.
+    pub(crate) fn prune_expired_upgrade_backups_at(&self, now: SystemTime) -> BackupPruneReport {
         let mut report = BackupPruneReport::default();
         let retention = match self.backup_retention() {
             Ok(retention) => retention,
@@ -34,9 +53,7 @@ impl AppContext {
         let Some(max_age) = retention.max_age() else {
             return report;
         };
-        let now = SystemTime::now();
-        let outcomes = self
-            .upgrade_backup_databases()
+        let outcomes = retained_backup_databases(self.data_dir())
             .into_iter()
             .map(|database| {
                 crate::wallet_backend::platform_compatibility::prune_expired_backups(
@@ -66,15 +83,20 @@ impl AppContext {
         report
     }
 
-    /// [`Self::prune_expired_upgrade_backups`] with any failure logged; it is retried on
-    /// the next start and never fails the surrounding operation.
+    /// [`Self::prune_expired_upgrade_backups`] with any failure logged; it never fails
+    /// the surrounding operation.
     pub(crate) fn prune_expired_upgrade_backups_best_effort(&self) -> BackupPruneReport {
         let report = self.prune_expired_upgrade_backups();
-        if let Some(error) = &report.failure {
-            tracing::warn!(
+        match &report.failure {
+            Some(error @ TaskError::BackupRetentionRead { .. }) => tracing::warn!(
                 ?error,
-                "Expired upgrade backups remain; retrying on next start"
-            );
+                "Backup retention setting unreadable; no upgrade backups are deleted until the setting is saved again"
+            ),
+            Some(error) => tracing::warn!(
+                ?error,
+                "Expired upgrade backups remain; retrying when wallet data next opens"
+            ),
+            None => {}
         }
         report
     }
@@ -113,7 +135,10 @@ mod tests {
 
     fn backups(ctx: &crate::context::AppContext) -> Fixture {
         let dir = ctx.data_dir();
-        let [app, wallet] = ctx.upgrade_backup_databases();
+        let [app, wallet] = [
+            crate::wallet_backend::app_database_path(dir),
+            crate::wallet_backend::wallet_database_path(dir, ctx.network),
+        ];
         let bridge = |database: &Path, suffix: &str| {
             database.with_file_name(format!(
                 "{}.platform-67d4ef3-backup-{suffix}.sqlite",
@@ -125,7 +150,14 @@ mod tests {
             bridge(&wallet, "old"),
             dir.join("backups/data_backup_20000101_000000.db"),
         ];
-        let fresh = vec![bridge(&app, "new"), bridge(&wallet, "new")];
+        let fresh = vec![
+            bridge(&app, "new"),
+            bridge(&wallet, "new"),
+            dir.join("backups")
+                .join(crate::database::legacy_backups::backup_file_name(
+                    chrono::Utc::now(),
+                )),
+        ];
         for path in &expired {
             write_aged(path, DAY * 120);
         }
@@ -173,5 +205,77 @@ mod tests {
             .unwrap();
         assert_eq!(pruned(&ctx), 3);
         assert!(fixture.fresh.iter().all(|path| path.exists()));
+    }
+
+    #[test]
+    fn retention_is_global_across_networks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = test_app_context(tmp.path());
+        let other = dash_sdk::dpp::dashcore::Network::Mainnet;
+        assert_ne!(ctx.network, other);
+        let database = crate::wallet_backend::wallet_database_path(ctx.data_dir(), other);
+        let auto = platform_wallet_storage::default_auto_backup_dir(&database);
+        let expired = auto.join("pre-migration-det-mainnet-1-to-2-20000101T000000Z.db");
+        let newest = auto.join("pre-migration-det-mainnet-2-to-3-20000102T000000Z.db");
+        write_aged(&expired, DAY * 400);
+        write_aged(&newest, DAY * 300);
+
+        assert_eq!(pruned(&ctx), 1);
+        assert!(
+            !expired.exists(),
+            "another network's expired backup is pruned"
+        );
+        assert!(
+            newest.exists(),
+            "the newest backup of each database is kept"
+        );
+        assert!(
+            !crate::wallet_backend::wallet_database_path(
+                ctx.data_dir(),
+                dash_sdk::dpp::dashcore::Network::Devnet
+            )
+            .with_extension("sqlite.platform-upgrade.lock")
+            .exists(),
+            "a database without backups is not locked or touched"
+        );
+    }
+
+    #[test]
+    fn newest_backup_of_each_database_survives_a_far_future_clock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = test_app_context(tmp.path());
+        let fixture = backups(&ctx);
+        let far_future = SystemTime::now() + DAY * 365 * 100;
+
+        let report = ctx.prune_expired_upgrade_backups_at(far_future);
+        assert!(report.failure.is_none(), "{:?}", report.failure);
+        assert_eq!(report.deleted, 3);
+        assert!(fixture.fresh.iter().all(|path| path.exists()));
+        assert!(fixture.expired.iter().all(|path| !path.exists()));
+        let again = ctx.prune_expired_upgrade_backups_at(far_future);
+        assert_eq!(again.deleted, 0, "the last backups are never deleted");
+        assert!(fixture.fresh.iter().all(|path| path.exists()));
+    }
+
+    #[test]
+    fn database_in_use_is_skipped_not_failed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = test_app_context(tmp.path());
+        let fixture = backups(&ctx);
+        let wallet = crate::wallet_backend::wallet_database_path(ctx.data_dir(), ctx.network);
+        let lock = wallet.with_file_name(format!(
+            "{}.platform-upgrade.lock",
+            wallet.file_name().unwrap().to_string_lossy()
+        ));
+        let held = std::fs::File::create(&lock).unwrap();
+        held.try_lock().unwrap();
+
+        let report = ctx.prune_expired_upgrade_backups();
+        assert!(report.failure.is_none(), "{:?}", report.failure);
+        assert_eq!(
+            report.deleted, 2,
+            "app and legacy backups; the locked wallet is skipped"
+        );
+        assert!(fixture.expired[1].exists());
     }
 }

@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime};
 /// Directory, next to the database, that holds the legacy backups.
 pub(crate) const BACKUP_DIR: &str = "backups";
 /// The legacy database these backups copy.
-const LEGACY_DATABASE: &str = "data.db";
+pub(crate) const LEGACY_DATABASE: &str = "data.db";
 const PREFIX: &str = "data_backup_";
 const SUFFIX: &str = ".db";
 /// UTC timestamp format embedded in the backup name.
@@ -20,14 +20,16 @@ pub(crate) fn backup_file_name(timestamp: chrono::DateTime<chrono::Utc>) -> Stri
     format!("{PREFIX}{}{SUFFIX}", timestamp.format(TIMESTAMP_FORMAT))
 }
 
-/// The UTC creation time embedded in a legacy backup name, or `None` for any other file.
-fn named_timestamp(name: &str) -> Option<SystemTime> {
+/// The UTC creation time embedded in a legacy backup name, or `None` for any other
+/// file. Also the deletion chokepoint's definition of a legacy backup name.
+pub(crate) fn backup_timestamp(name: &str) -> Option<SystemTime> {
     let timestamp = name.strip_prefix(PREFIX)?.strip_suffix(SUFFIX)?;
     let parsed = chrono::NaiveDateTime::parse_from_str(timestamp, TIMESTAMP_FORMAT).ok()?;
     Some(parsed.and_utc().into())
 }
 
-/// Delete legacy backups in `<data_dir>/backups` older than `max_age`.
+/// Delete legacy backups in `<data_dir>/backups` older than `max_age`, always
+/// keeping the newest one.
 ///
 /// Deletion goes through the [`delete_file`](crate::utils::file_deletion::delete_file)
 /// chokepoint, which refuses live databases, aliases and hard links.
@@ -35,10 +37,8 @@ fn named_timestamp(name: &str) -> Option<SystemTime> {
 /// including symlinks and subdirectories, is left alone. Age is measured from the
 /// later of the name timestamp and the modification time, so a reset or skewed signal
 /// only delays deletion. A `backups` path that is a symlink or not a directory is
-/// refused. A candidate that vanishes mid-pass (e.g. a concurrent prune from another
-/// network's context) counts as already handled, not as a failure. Attempts every
-/// candidate and returns the first failure; `Ok` carries the number of backups this
-/// call deleted.
+/// refused. Expiry itself is [`prune_expired`](crate::utils::backup_prune::prune_expired);
+/// `Ok` carries the number of backups this call deleted.
 pub(crate) fn prune_expired(
     data_dir: &Path,
     max_age: Duration,
@@ -55,41 +55,27 @@ pub(crate) fn prune_expired(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
         Err(error) => return Err(error),
     }
-    let entries = std::fs::read_dir(&directory)?;
-    let legacy_database = data_dir.join(LEGACY_DATABASE);
-    let mut removed = 0;
-    let mut first_error = None;
-    for entry in entries {
-        let outcome = entry.and_then(|entry| {
-            let Some(named) = entry.file_name().to_str().and_then(named_timestamp) else {
-                return Ok(false);
-            };
-            let metadata = std::fs::symlink_metadata(entry.path())?;
-            if !metadata.is_file() {
-                return Ok(false);
-            }
-            let created = named.max(metadata.modified()?);
-            if !crate::model::backup_retention::backup_expired(created, now, max_age) {
-                return Ok(false);
-            }
-            crate::utils::file_deletion::delete_file(
-                &entry.path(),
-                crate::utils::file_deletion::DeletionIntent::Backup {
-                    database: &legacy_database,
-                },
-            )
-            .map(|()| true)
-        });
-        match outcome {
-            Ok(true) => removed += 1,
-            Ok(false) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                first_error.get_or_insert(error);
-            }
-        }
+    let mut candidates = Vec::new();
+    for entry in std::fs::read_dir(&directory)? {
+        let entry = entry?;
+        let Some(named) = entry.file_name().to_str().and_then(backup_timestamp) else {
+            continue;
+        };
+        let metadata = match std::fs::symlink_metadata(entry.path()) {
+            Ok(metadata) if !metadata.is_file() => continue,
+            other => other,
+        };
+        let created = metadata.and_then(|metadata| Ok(named.max(metadata.modified()?)));
+        candidates.push((entry.path(), created));
     }
-    first_error.map_or(Ok(removed), Err)
+    crate::utils::backup_prune::prune_expired(
+        candidates,
+        now,
+        max_age,
+        crate::utils::file_deletion::DeletionIntent::Backup {
+            database: &data_dir.join(LEGACY_DATABASE),
+        },
+    )
 }
 
 #[cfg(test)]
@@ -114,13 +100,13 @@ mod tests {
             .to_utc();
         let name = backup_file_name(taken);
         assert_eq!(name, "data_backup_20240305_060708.db");
-        assert_eq!(named_timestamp(&name), Some(taken.into()));
+        assert_eq!(backup_timestamp(&name), Some(taken.into()));
         for other in [
             "data_backup_20240305_060708.db-journal",
             "data_backup_latest.db",
             "data.db",
         ] {
-            assert_eq!(named_timestamp(other), None, "{other}");
+            assert_eq!(backup_timestamp(other), None, "{other}");
         }
     }
 
@@ -220,8 +206,32 @@ mod tests {
             .into_iter()
             .map(|result| result.expect("a concurrently deleted backup is not a failure"))
             .sum();
-        assert_eq!(deleted, 200, "each backup is counted once");
-        assert_eq!(std::fs::read_dir(&backups).unwrap().count(), 0);
+        assert_eq!(
+            deleted, 199,
+            "each backup is counted once; the newest stays"
+        );
+        assert_eq!(std::fs::read_dir(&backups).unwrap().count(), 1);
+    }
+
+    /// A clock far in the future must never delete the last legacy backup.
+    #[test]
+    fn newest_legacy_backup_survives_a_far_future_clock() {
+        let dir = tempfile::tempdir().unwrap();
+        let backups = dir.path().join(BACKUP_DIR);
+        std::fs::create_dir_all(&backups).unwrap();
+        let older = backups.join("data_backup_20200101_000000.db");
+        let newest = backups.join("data_backup_20210101_000000.db");
+        for (path, age) in [(&older, DAY * 30), (&newest, DAY * 2)] {
+            std::fs::write(path, b"backup").unwrap();
+            set_mtime(path, SystemTime::now() - age);
+        }
+        let far_future = SystemTime::now() + DAY * 365 * 100;
+
+        assert_eq!(prune_expired(dir.path(), DAY, far_future).unwrap(), 1);
+        assert!(!older.exists());
+        assert!(newest.exists(), "the newest backup is the floor");
+        assert_eq!(prune_expired(dir.path(), DAY, far_future).unwrap(), 0);
+        assert!(newest.exists());
     }
 
     #[cfg(unix)]

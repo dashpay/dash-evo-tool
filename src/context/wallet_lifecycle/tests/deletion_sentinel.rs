@@ -88,16 +88,14 @@ async fn deletion_paths_leave_every_untargeted_file_intact() {
             }
         }
     }
-    // Other networks' SPV data and backups, config, a pre-migration copy,
-    // current logs and a foreign-stem log.
+    // Other networks' SPV data, config, a pre-migration copy, current logs and
+    // a foreign-stem log.
     sentinels.extend(
         [
             "spv/mainnet/blocks/segment.dat",
             "spv/mainnet/peers.dat",
             "spv/mainnet/det-shielded.sqlite",
             "spv/mainnet.lock",
-            "det-mainnet.sqlite.platform-67d4ef3-backup-old.sqlite",
-            "backups/auto/pre-migration-det-mainnet-1-to-2-20000101T000000Z.db",
             "data.db.premigration",
             "det.log",
             "det-stderr.0000000001.log",
@@ -108,18 +106,31 @@ async fn deletion_paths_leave_every_untargeted_file_intact() {
     for path in &sentinels {
         plant(path, old);
     }
+    // The newest backup of each database is kept by retention whatever its age, and
+    // the network clear keeps the shared app database's backups for retention too.
+    let newest: Vec<PathBuf> = [
+        "backups/auto/pre-migration-det-mainnet-1-to-2-20000101T000000Z.db",
+        "det-app.sqlite.platform-67d4ef3-backup-new.sqlite",
+        "backups/data_backup_20000102_000000.db",
+    ]
+    .map(|relative| dir.join(relative))
+    .into();
+    for path in &newest {
+        plant(path, fresh);
+    }
+    sentinels.extend(newest);
     // The current log is rotated to a name from its mtime; keep it recent so the
     // rotated copy is retained rather than expiring in the same pass.
     plant(&dir.join("det.log"), fresh);
 
     let targeted: BTreeSet<PathBuf> = [
-        // Retention prune: expired backups of the app and testnet databases.
+        // Retention prune (global): expired backups of every network's database.
         "det-app.sqlite.platform-67d4ef3-backup-old.sqlite",
+        "det-mainnet.sqlite.platform-67d4ef3-backup-old.sqlite",
         "det-testnet.sqlite.platform-67d4ef3-backup-old.sqlite",
         "backups/auto/pre-migration-det-testnet-1-to-2-20000101T000000Z.db",
         "backups/data_backup_20000101_000000.db",
-        // Network clear: every remaining app/testnet upgrade backup.
-        "det-app.sqlite.platform-67d4ef3-backup-new.sqlite",
+        // Network clear: every remaining testnet upgrade backup.
         "det-testnet.sqlite.platform-67d4ef3-backup-new.sqlite",
         // Network clear (SPV cache + retired shielded files): testnet only.
         "spv/testnet/blocks/segment.dat",
@@ -158,7 +169,7 @@ async fn deletion_paths_leave_every_untargeted_file_intact() {
 
     let report = ctx.prune_expired_upgrade_backups();
     assert!(report.failure.is_none(), "{:?}", report.failure);
-    assert_eq!(report.deleted, 4, "retention prune");
+    assert_eq!(report.deleted, 5, "retention prune");
     ctx.remove_wallet(&seed_hash).expect("remove wallet");
     ctx.delete_local_qualified_identity(&identity.identity.id())
         .expect("remove identity");
@@ -197,4 +208,47 @@ async fn deletion_paths_leave_every_untargeted_file_intact() {
             assert!(path.exists(), "sentinel {path:?} missing");
         }
     }
+}
+
+/// "Keep forever" keeps every published snapshot through the databases' opens and
+/// repeated retention passes; only crash-left partials go.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn keep_forever_keeps_every_published_snapshot() {
+    let (ctx, sender, tmp) = offline_testnet_context();
+    let dir = tmp.path();
+    ctx.set_backup_retention(crate::model::backup_retention::BackupRetention::KeepForever)
+        .unwrap();
+    let published: Vec<PathBuf> = [
+        "det-app.sqlite.platform-67d4ef3-backup-a1.sqlite",
+        "det-testnet.sqlite.platform-67d4ef3-backup-a1.sqlite",
+        "backups/auto/pre-migration-det-testnet-1-to-2-20000101T000000Z.db",
+        "backups/auto/pre-migration-det-testnet-2-to-3-20010101T000000Z.db",
+        "backups/auto/pre-migration-det-mainnet-1-to-2-20000101T000000Z.db",
+        "backups/data_backup_20000101_000000.db",
+    ]
+    .map(|relative| dir.join(relative))
+    .into();
+    for path in &published {
+        plant(path, DAY * 4000);
+    }
+    let partial = dir.join("det-testnet.sqlite.platform-67d4ef3-backup-crash.pending");
+    plant(&partial, DAY * 4000);
+
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    for _ in 0..3 {
+        let report = ctx.prune_expired_upgrade_backups();
+        assert!(report.failure.is_none(), "{:?}", report.failure);
+        assert_eq!(report.deleted, 0);
+    }
+    ctx.wallet_backend()
+        .expect("backend wired")
+        .shutdown()
+        .await;
+
+    for path in &published {
+        assert!(path.exists(), "{path:?} must be kept forever");
+    }
+    assert!(!partial.exists(), "a crash-left partial is cleaned up");
 }

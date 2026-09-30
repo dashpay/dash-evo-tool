@@ -85,7 +85,7 @@ impl AppContext {
         Ok(BackendTaskSuccessResult::UpdatedBackupRetention {
             retention,
             deleted: report.deleted,
-            cleanup_incomplete: report.failure.is_some(),
+            cleanup_failure: report.failure.map(Arc::new),
         })
     }
 }

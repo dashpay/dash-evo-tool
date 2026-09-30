@@ -326,17 +326,6 @@ As a user opening an older wallet installation, I want the app to update its sto
 - Standalone command-line and MCP use never wait for a window that is not present. Without a password they ask the user to open the desktop app once, then try again.
 - An operator without the desktop app can supply the wallet password non-interactively (`app_storage_update`; det-cli `--password-stdin` or `--password-file`, never as a command-line argument or environment variable). The update then finishes for every wallet sharing that password, or fails at once without skipping any wallet.
 
-### WAL-034: Control how long upgrade backups are kept [Implemented]
-**Persona:** Alex, Priya, Jordan
-
-As a user whose wallet data was copied before a storage upgrade, I want old upgrade backups to be deleted after a while so that copies of my wallet data do not stay on this device forever.
-
-- Upgrade backups older than 90 days are deleted automatically by default, covering app, wallet, upstream pre-migration and legacy `data.db` backups.
-- Settings → Upgrade Backups lets the user change the period (1 to 3650 days) or keep backups forever. Turning automatic deletion on lets the user choose the period before applying it, and any stricter setting asks for confirmation first, because it deletes backups immediately.
-- A saved change applies right away to the shared app backups, the legacy backups, and the current network's wallet backups; other networks' wallet backups follow the next time that network is opened.
-- Old backups are deleted only after the app has opened the data they protect, so a backup is never removed while it may still be needed for recovery.
-- Removing a wallet or an identity does not delete upgrade backups; retention alone decides when they go. Clearing a network's data still deletes them.
-
 ### WAL-033: Wallets, addresses and identities survive an app upgrade [Gap]
 **Persona:** Alex, Priya, Jordan
 
@@ -347,6 +336,18 @@ As a user updating from any earlier version I still have installed, I want every
 - The update completes on its own. A migration that cannot finish safely is a defect in the migration, not a situation the user is asked to repair by hand.
 - Starting the updated app a second time changes nothing further, and a user whose data was already current keeps an untouched database rather than a needlessly rewritten one.
 - Currently a gap: each migration mechanism is unit-tested on synthetic data, but no automated check upgrades a data directory a *released* build actually wrote and confirms the result. The design for closing it is `docs/ai-design/2026-09-10-migration-matrix/design.md`; related implemented behaviour is covered by WAL-032, IDN-016 and IDN-020.
+
+### WAL-034: Control how long upgrade backups are kept [Implemented]
+**Persona:** Alex, Priya, Jordan
+
+As a user whose wallet data was copied before a storage upgrade, I want old upgrade backups to be deleted after a while so that copies of my wallet data do not stay on this device forever.
+
+- Upgrade backups older than 90 days are deleted automatically by default, covering app, wallet, upstream pre-migration and legacy `data.db` backups.
+- Settings → Upgrade Backups lets the user change the period (1 to 3650 days) or keep backups forever. Turning automatic deletion on lets the user choose the period before applying it, and any stricter setting asks for confirmation first, because it deletes backups immediately. A period outside the range is shown with an error and never saved.
+- The setting is one policy for every backup in the data directory, whichever network is open; a saved change applies to every network's backups as soon as the wallet data has opened.
+- The newest backup of each database is always kept, whatever its age or the system clock, so the last recovery copy is never deleted automatically.
+- With "keep forever", no published backup is deleted automatically. Opening the data removes only unfinished copies left by a crash and exact duplicates of a newer backup.
+- Removing a wallet or an identity does not delete upgrade backups. Clearing a network's data deletes that network's wallet backups; backups of the shared app data stay under the retention setting.
 
 ---
 

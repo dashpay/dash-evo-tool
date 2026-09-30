@@ -2562,13 +2562,21 @@ async fn clear_network_database_removes_backups_when_legacy_shielded_cleanup_fai
     std::fs::create_dir_all(blocker.join("occupied")).unwrap();
     let backup = ctx
         .data_dir()
-        .join("det-app.sqlite.platform-67d4ef3-backup-fixture.sqlite");
+        .join("det-testnet.sqlite.platform-67d4ef3-backup-fixture.sqlite");
     std::fs::write(&backup, b"old wallet history").unwrap();
+    let shared = ctx
+        .data_dir()
+        .join("det-app.sqlite.platform-67d4ef3-backup-fixture.sqlite");
+    std::fs::write(&shared, b"all networks' app data").unwrap();
 
     let result = ctx.clear_network_database().await;
 
     backend.shutdown().await;
     assert!(!backup.exists(), "upgrade backups must still be removed");
+    assert!(
+        shared.exists(),
+        "the shared app database's backups are left to retention"
+    );
     match result {
         Err(TaskError::WalletDataClearIncomplete {
             failed,
@@ -2677,6 +2685,10 @@ async fn lock_wipes_session_cached_seed() {
 /// with a directory: the store's atomic `persist` rename onto a directory
 /// path fails deterministically (root cannot bypass this).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "test fixture setup/teardown outside any production deletion path"
+)]
 async fn register_wallet_fails_closed_when_seed_envelope_write_fails() {
     let temp_dir = tempfile::tempdir().expect("tempdir");
     let (ctx, _sender) = offline_testnet_context_at(temp_dir.path());
@@ -3479,6 +3491,32 @@ fn clear_spv_chain_storage_is_ok_when_directory_absent() {
     );
     clear_spv_chain_storage(tmp.path(), Network::Testnet)
         .expect("clearing an absent cache must succeed");
+}
+
+/// Chain storage moved to another disk and symlinked back is cleared by
+/// unlinking the links; the data they point at is never followed or touched.
+#[cfg(unix)]
+#[test]
+fn clear_spv_chain_storage_unlinks_symlinked_entries() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let other_disk = tempfile::tempdir().expect("tempdir");
+    std::fs::write(other_disk.path().join("segment.dat"), b"elsewhere").unwrap();
+    let spv_dir = spv_storage_dir(tmp.path(), Network::Testnet);
+    std::fs::create_dir_all(&spv_dir).unwrap();
+    std::os::unix::fs::symlink(other_disk.path(), spv_dir.join("block_headers")).unwrap();
+    std::os::unix::fs::symlink(
+        other_disk.path().join("segment.dat"),
+        spv_dir.join("peers.dat"),
+    )
+    .unwrap();
+
+    clear_spv_chain_storage(tmp.path(), Network::Testnet)
+        .expect("symlinked chain storage must not block the clear");
+
+    for entry in ["block_headers", "peers.dat"] {
+        assert!(spv_dir.join(entry).symlink_metadata().is_err(), "{entry}");
+    }
+    assert!(other_disk.path().join("segment.dat").exists());
 }
 
 /// Seed a legacy password-protected `single_key_wallet` row into the
@@ -7306,8 +7344,22 @@ async fn remove_wallet_keeps_upgrade_backups_without_backend() {
 
 /// An upgrade-backup fixture next to `database`, last modified `days` ago.
 fn aged_upgrade_backup(database: &std::path::Path, days: u64) -> std::path::PathBuf {
+    named_aged_upgrade_backup(database, "aged", days)
+}
+
+/// A newer backup of `database`: retention always keeps the newest one, so it lets
+/// the aged backup expire.
+fn recent_upgrade_backup(database: &std::path::Path) -> std::path::PathBuf {
+    named_aged_upgrade_backup(database, "recent", 1)
+}
+
+fn named_aged_upgrade_backup(
+    database: &std::path::Path,
+    suffix: &str,
+    days: u64,
+) -> std::path::PathBuf {
     let backup = database.with_file_name(format!(
-        "{}.platform-67d4ef3-backup-aged.sqlite",
+        "{}.platform-67d4ef3-backup-{suffix}.sqlite",
         database.file_name().unwrap().to_string_lossy()
     ));
     std::fs::write(&backup, b"old wallet history").unwrap();
@@ -7326,13 +7378,16 @@ fn aged_upgrade_backup(database: &std::path::Path, days: u64) -> std::path::Path
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ensure_wallet_backend_prunes_expired_upgrade_backups() {
     let (ctx, sender, _tmp) = offline_testnet_context();
-    let expired = [
-        aged_upgrade_backup(&ctx.data_dir().join("det-app.sqlite"), 120),
-        aged_upgrade_backup(
-            &crate::wallet_backend::wallet_database_path(ctx.data_dir(), Network::Testnet),
-            120,
-        ),
+    let databases = [
+        ctx.data_dir().join("det-app.sqlite"),
+        crate::wallet_backend::wallet_database_path(ctx.data_dir(), Network::Testnet),
     ];
+    let expired = databases
+        .each_ref()
+        .map(|database| aged_upgrade_backup(database, 120));
+    let newest = databases
+        .each_ref()
+        .map(|database| recent_upgrade_backup(database));
 
     ctx.ensure_wallet_backend(sender)
         .await
@@ -7340,6 +7395,13 @@ async fn ensure_wallet_backend_prunes_expired_upgrade_backups() {
 
     for backup in &expired {
         assert!(!backup.exists(), "{} must expire", backup.display());
+    }
+    for backup in &newest {
+        assert!(
+            backup.exists(),
+            "{} is the newest and stays",
+            backup.display()
+        );
     }
     ctx.wallet_backend().unwrap().shutdown().await;
 }
@@ -7374,12 +7436,13 @@ async fn update_backup_retention_prunes_only_after_wallet_backend_opens() {
 
     let (ctx, sender, _tmp) = offline_testnet_context();
     let backup = aged_upgrade_backup(&ctx.data_dir().join("det-app.sqlite"), 60);
+    recent_upgrade_backup(&ctx.data_dir().join("det-app.sqlite"));
     let saved = |result| match result {
         Ok(BackendTaskSuccessResult::UpdatedBackupRetention {
             retention,
             deleted,
-            cleanup_incomplete,
-        }) => (retention, deleted, cleanup_incomplete),
+            cleanup_failure,
+        }) => (retention, deleted, cleanup_failure.is_some()),
         other => panic!("unexpected result: {other:?}"),
     };
 

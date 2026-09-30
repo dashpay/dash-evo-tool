@@ -561,8 +561,10 @@ pub(crate) fn wallet_database_path(data_dir: &Path, network: Network) -> std::pa
     data_dir.join(format!("det-{}.sqlite", network_prefix(network)))
 }
 
-/// Parent of every network's [`spv_storage_dir`].
-const SPV_ROOT_DIR: &str = "spv";
+/// Parent of every network's [`spv_storage_dir`], `<data_dir>/spv/`.
+pub(crate) fn spv_root_dir(data_dir: &Path) -> std::path::PathBuf {
+    data_dir.join("spv")
+}
 
 /// The per-network chain-sync (SPV) cache directory, `<data_dir>/spv/<network>/`.
 ///
@@ -570,7 +572,7 @@ const SPV_ROOT_DIR: &str = "spv";
 /// clear (which empties it) and the deletion chokepoint (which confines that clear
 /// to it).
 pub(crate) fn spv_storage_dir(data_dir: &Path, network: Network) -> std::path::PathBuf {
-    data_dir.join(SPV_ROOT_DIR).join(network_prefix(network))
+    spv_root_dir(data_dir).join(network_prefix(network))
 }
 
 /// The upstream shielded coordinator's store,
@@ -3081,7 +3083,7 @@ impl WalletBackend {
     ) -> Result<std::path::PathBuf, TaskError> {
         let dir = spv_storage_dir(app_data_dir, network);
         // Create (and lock down) the shared `spv` root before the network directory.
-        for directory in [app_data_dir.join(SPV_ROOT_DIR), dir.clone()] {
+        for directory in [spv_root_dir(app_data_dir), dir.clone()] {
             crate::app_dir::ensure_data_dir_exists(&directory)
                 .map_err(|source| TaskError::FileSystem { source })?;
         }

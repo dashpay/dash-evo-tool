@@ -382,7 +382,7 @@ fn in_scope(located: &Path, name: &str, intent: DeletionIntent<'_>) -> bool {
                     && crate::database::legacy_backups::backup_timestamp(name).is_some())
         }
         DeletionIntent::NetworkClear { data_dir, network } => {
-            let spv = data_dir.join("spv");
+            let spv = crate::wallet_backend::spv_root_dir(data_dir);
             let lock = format!("{}.lock", crate::wallet_backend::network_prefix(network));
             parent.starts_with(canonical_dir(&crate::wallet_backend::spv_storage_dir(
                 data_dir, network,

@@ -3,7 +3,7 @@
 //! The legacy migration ladder copies `data.db` before upgrading it. These copies are
 //! subject to the same time-based retention as the storage-upgrade backups.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 /// Directory, next to the database, that holds the legacy backups.
@@ -18,6 +18,38 @@ const TIMESTAMP_FORMAT: &str = "%Y%m%d_%H%M%S";
 /// File name of a legacy backup taken at `timestamp` (UTC).
 pub(crate) fn backup_file_name(timestamp: chrono::DateTime<chrono::Utc>) -> String {
     format!("{PREFIX}{}{SUFFIX}", timestamp.format(TIMESTAMP_FORMAT))
+}
+
+/// Copy `database` to `<its directory>/backups/` under the legacy name for `taken`.
+///
+/// The copy goes to a unique `.pending` file first, is synced, and only then is
+/// renamed to its final name (never replacing an existing backup), after which the
+/// directory is synced. A crash or power loss therefore never leaves a torn copy
+/// under a backup name, where it could pass as a complete backup.
+pub(crate) fn write_backup(
+    database: &Path,
+    taken: chrono::DateTime<chrono::Utc>,
+) -> std::io::Result<PathBuf> {
+    let directory = database
+        .parent()
+        .ok_or(std::io::ErrorKind::InvalidInput)?
+        .join(BACKUP_DIR);
+    std::fs::create_dir_all(&directory)?;
+    let name = backup_file_name(taken);
+    // Not routed through `delete_file`: on failure the temp file removes only the
+    // uniquely named `.pending` file it created itself.
+    let pending = tempfile::Builder::new()
+        .prefix(&format!("{name}."))
+        .suffix(".pending")
+        .tempfile_in(&directory)?;
+    std::fs::copy(database, pending.path())?;
+    pending.as_file().sync_all()?;
+    let published = directory.join(name);
+    pending
+        .persist_noclobber(&published)
+        .map_err(|error| error.error)?;
+    crate::utils::backup_prune::sync_directory(&directory)?;
+    Ok(published)
 }
 
 /// The UTC creation time embedded in a legacy backup name, or `None` for any other
@@ -95,6 +127,38 @@ mod tests {
             .unwrap()
             .set_modified(time)
             .unwrap();
+    }
+
+    /// The published copy is complete, no temporary file is left, and an existing
+    /// backup of the same second is never overwritten.
+    #[test]
+    fn legacy_backup_is_published_complete_and_never_overwrites() {
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join(LEGACY_DATABASE);
+        rusqlite::Connection::open(&database)
+            .unwrap()
+            .execute_batch("CREATE TABLE settings (v INTEGER); INSERT INTO settings VALUES (1);")
+            .unwrap();
+        let taken = chrono::Utc::now();
+
+        let published = write_backup(&database, taken).unwrap();
+
+        assert_eq!(
+            published,
+            dir.path().join(BACKUP_DIR).join(backup_file_name(taken))
+        );
+        assert_eq!(
+            std::fs::read(&published).unwrap(),
+            std::fs::read(&database).unwrap()
+        );
+        assert!(crate::utils::backup_prune::usable_snapshot(&published));
+        let error = write_backup(&database, taken).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        let entries: Vec<_> = std::fs::read_dir(dir.path().join(BACKUP_DIR))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(entries, [published.file_name().unwrap().to_owned()]);
     }
 
     #[test]

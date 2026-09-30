@@ -1,7 +1,6 @@
 use crate::database::Database;
 use chrono::Utc;
 use rusqlite::{Connection, params};
-use std::fs;
 use std::path::Path;
 
 /// Error during database migration with structured context.
@@ -709,23 +708,7 @@ impl Database {
     /// Backs up the existing database with a unique timestamped filename in backups directory.
     fn backup_db(&self, db_file_path: &Path) -> rusqlite::Result<()> {
         if db_file_path.exists() {
-            // Create a "backups" folder in the same directory as `data.db` if not exists
-            let backups_dir = db_file_path
-                .parent()
-                .expect("Expected parent directory in creating db backup folder")
-                .join(super::legacy_backups::BACKUP_DIR);
-            fs::create_dir_all(&backups_dir).map_err(|e| {
-                rusqlite::Error::ToSqlConversionFailure(
-                    format!("Failed to create db backups directory: {}", e).into(),
-                )
-            })?;
-
-            // Generate a unique filename with a timestamp for the backup
-            let backup_filename = super::legacy_backups::backup_file_name(Utc::now());
-            let backup_path = backups_dir.join(backup_filename);
-
-            // Copy `data.db` to the unique backup file
-            fs::copy(db_file_path, &backup_path)
+            let backup_path = super::legacy_backups::write_backup(db_file_path, Utc::now())
                 .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
             tracing::info!("Old database backed up to {:?}", backup_path);
         }

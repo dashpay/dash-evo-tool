@@ -1083,6 +1083,58 @@ fn platform_compatibility_prune_floor_skips_interrupted_newest_copy() {
     }
 }
 
+/// A newest snapshot whose usability cannot be proven (unreadable, or with a
+/// leftover rollback journal beside it) is never deleted, and never hands the floor
+/// to an older copy that would then be the only one left. An unreadable one is
+/// reported so the pass is retried.
+#[test]
+fn platform_compatibility_prune_keeps_snapshots_it_cannot_judge() {
+    const DAY_SECONDS: i64 = 24 * 60 * 60;
+    for case in ["unreadable", "leftover journal"] {
+        let (_dir, path, _target) = fixture();
+        let older = backup(&path).unwrap();
+        let newest = backup(&path).unwrap();
+        set_mtime(&older, -200 * DAY_SECONDS);
+        set_mtime(&newest, -100 * DAY_SECONDS);
+        let journal = PathBuf::from(format!("{}-journal", newest.display()));
+        match case {
+            "unreadable" => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(&newest, std::fs::Permissions::from_mode(0o000))
+                        .unwrap();
+                    if std::fs::File::open(&newest).is_ok() {
+                        // Running as root: permissions cannot make it unreadable.
+                        std::fs::set_permissions(&newest, std::fs::Permissions::from_mode(0o600))
+                            .unwrap();
+                        continue;
+                    }
+                }
+                #[cfg(not(unix))]
+                continue;
+            }
+            _ => std::fs::write(&journal, b"pages of an unfinished write").unwrap(),
+        }
+
+        let result = prune_expired_backups(&path, RETENTION_DAY * 90, std::time::SystemTime::now());
+
+        assert!(newest.exists(), "{case}: an unjudged snapshot is kept");
+        assert!(older.exists(), "{case}: the newest proven snapshot is kept");
+        match case {
+            "unreadable" => {
+                result.unwrap_err();
+            }
+            _ => assert_eq!(result.unwrap(), 0, "{case}"),
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&newest, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+    }
+}
+
 /// A snapshot written while the clock ran ahead is dated in the future; it must not
 /// displace the genuinely newer snapshot taken after the clock was corrected.
 #[test]

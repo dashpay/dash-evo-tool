@@ -109,7 +109,6 @@ impl std::error::Error for BackendTaskJoinError {}
 /// Dash Core RPC error code: wallet file not specified (multi-wallet node).
 const RPC_WALLET_NOT_SPECIFIED: i32 = -19;
 
-/// Shown whenever another window or session holds the wallet database.
 /// Some expired upgrade backups remain. Retention runs again whenever wallet data
 /// is opened (start, network switch) and whenever the setting is saved.
 pub(crate) const UPGRADE_BACKUP_CLEANUP_INCOMPLETE: &str = "Some old upgrade backups could not be deleted. The app tries again the next time it opens your wallet data.";
@@ -117,6 +116,7 @@ pub(crate) const UPGRADE_BACKUP_CLEANUP_INCOMPLETE: &str = "Some old upgrade bac
 /// [`UPGRADE_BACKUP_CLEANUP_INCOMPLETE`] after a retention setting save.
 pub(crate) const BACKUP_RETENTION_SAVED_CLEANUP_INCOMPLETE: &str = "Your backup retention setting was saved, but some old upgrade backups could not be deleted. The app tries again the next time it opens your wallet data.";
 
+/// Shown whenever another window or session holds the wallet database.
 pub(crate) const WALLET_DATA_IN_USE: &str = "Your wallet data is open in another Dash Evo Tool window or command-line session. Close it and try again.";
 
 /// App-level error envelope for backend tasks.
@@ -3772,6 +3772,18 @@ fn wallet_already_imported_message(alias: Option<&str>) -> String {
 mod tests {
     use super::*;
     use dash_sdk::dapi_client::DapiClientError;
+    use dash_sdk::dapi_client::transport::TransportError;
+    use dash_sdk::dpp::consensus::basic::data_contract::{
+        DecimalsOverLimitError, InvalidTokenBaseSupplyError, InvalidTokenLanguageCodeError,
+        InvalidTokenNameCharacterError, InvalidTokenNameLengthError,
+    };
+    use dash_sdk::dpp::consensus::basic::identity::InvalidInstantAssetLockProofSignatureError;
+    use dash_sdk::dpp::consensus::state::identity::duplicated_identity_public_key_id_state_error::DuplicatedIdentityPublicKeyIdStateError;
+    use dash_sdk::dpp::consensus::state::identity::duplicated_identity_public_key_state_error::DuplicatedIdentityPublicKeyStateError;
+    use dash_sdk::dpp::consensus::state::identity::IdentityInsufficientBalanceError;
+    use dash_sdk::dpp::consensus::state::identity::identity_public_key_already_exists_for_unique_contract_bounds_error::IdentityPublicKeyAlreadyExistsForUniqueContractBoundsError;
+    use dash_sdk::dpp::identity::Purpose;
+    use dash_sdk::platform::Identifier;
 
     /// Both cleanup messages promise the same, truthful retry.
     #[test]
@@ -3789,18 +3801,6 @@ mod tests {
         );
         assert!(BACKUP_RETENTION_SAVED_CLEANUP_INCOMPLETE.ends_with(retry));
     }
-    use dash_sdk::dapi_client::transport::TransportError;
-    use dash_sdk::dpp::consensus::basic::data_contract::{
-        DecimalsOverLimitError, InvalidTokenBaseSupplyError, InvalidTokenLanguageCodeError,
-        InvalidTokenNameCharacterError, InvalidTokenNameLengthError,
-    };
-    use dash_sdk::dpp::consensus::basic::identity::InvalidInstantAssetLockProofSignatureError;
-    use dash_sdk::dpp::consensus::state::identity::duplicated_identity_public_key_id_state_error::DuplicatedIdentityPublicKeyIdStateError;
-    use dash_sdk::dpp::consensus::state::identity::duplicated_identity_public_key_state_error::DuplicatedIdentityPublicKeyStateError;
-    use dash_sdk::dpp::consensus::state::identity::IdentityInsufficientBalanceError;
-    use dash_sdk::dpp::consensus::state::identity::identity_public_key_already_exists_for_unique_contract_bounds_error::IdentityPublicKeyAlreadyExistsForUniqueContractBoundsError;
-    use dash_sdk::dpp::identity::Purpose;
-    use dash_sdk::platform::Identifier;
 
     const DAPI_EXHAUSTED_MESSAGE: &str =
         "All Dash network servers are temporarily unreachable. Please wait a minute and retry.";

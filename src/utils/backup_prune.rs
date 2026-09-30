@@ -2,20 +2,30 @@
 //!
 //! One algorithm for the bridge, upstream `pre-migration-*` and legacy `data.db`
 //! backups: delete those older than the retention period, except the newest usable
-//! backup of the database, which is kept whatever its age. Neither a wrong clock nor
-//! an interrupted copy can therefore delete the last recovery copy.
+//! backup of the database, which is kept whatever its age. An interrupted copy can
+//! therefore never delete the last recovery copy.
 //!
 //! "Newest" is judged by every ordering signal a backup carries, and the newest by
 //! each signal is kept:
-//! - its creation time, preferring backups not dated in the future, so a copy taken
-//!   while the clock ran ahead cannot displace a genuinely newer one;
+//! - its creation time, preferring backups not dated in the future. A copy taken
+//!   while the clock ran ahead does not displace a genuinely newer one, but only
+//!   while its date is still in the future: once real time catches up, it counts as
+//!   the newest again and the newer copy expires normally. No clock-based order can
+//!   do better without remembering past passes;
 //! - its position in the database's upgrade history (upstream snapshots name the
 //!   migration they precede), which no clock can skew.
 //!
-//! "Usable" is a cheap structural check ([`usable_snapshot`]). Empty, truncated,
-//! header-only and torn files fail it. When no backup of a database passes, the
-//! newest files are kept anyway, so a false negative of the check can never delete
-//! every backup.
+//! Usability is a cheap structural check ([`check_snapshot`]) with three outcomes:
+//! - usable: only these can be the newest backup that is kept;
+//! - unusable (empty, truncated, header-only or not SQLite): expires like any other;
+//! - undetermined (the file cannot be read, or a non-empty rollback journal lies
+//!   beside it, so it may hold a torn write): never deleted automatically, and never
+//!   the reason an older usable copy stops being kept. A read error is also reported,
+//!   so the pass is retried; a leftover journal keeps the copy until the user removes
+//!   the journal.
+//!
+//! When no backup of a database is usable, the newest files are kept anyway, so a
+//! false negative of the check can never delete every backup.
 
 use super::file_deletion::{DeletionIntent, delete_file};
 use std::collections::BTreeSet;
@@ -43,16 +53,29 @@ struct Dated {
     created: SystemTime,
     path: PathBuf,
     sequence: Option<(u32, u32)>,
-    usable: bool,
+    usability: Usability,
+}
+
+/// Whether a backup can be restored, as far as a cheap structural check can tell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Usability {
+    /// A complete SQLite database.
+    Usable,
+    /// Empty, truncated, header-only or not SQLite at all.
+    Unusable,
+    /// Not judged: the file could not be read, or it looks complete but has a
+    /// non-empty rollback journal beside it (a torn write or a harmless leftover).
+    Undetermined,
 }
 
 /// Delete every candidate older than `max_age` at `now`, except the newest usable one
-/// by each ordering signal (see the module docs).
+/// by each ordering signal and any whose usability is undetermined (see the module
+/// docs).
 ///
 /// All candidates must be backups of the database named by `intent`. A candidate
-/// whose creation time cannot be read is kept and reported. A candidate that is
-/// already gone (e.g. pruned concurrently from another network's context) counts
-/// as handled. Attempts every candidate, syncs the directories it deleted from,
+/// whose creation time or contents cannot be read is kept and reported. A candidate
+/// that is already gone (e.g. pruned concurrently from another network's context)
+/// counts as handled. Attempts every candidate, syncs the directories it deleted from,
 /// and returns the first failure; `Ok` carries the number of backups deleted.
 pub(crate) fn prune_expired(
     candidates: Vec<Candidate>,
@@ -63,24 +86,37 @@ pub(crate) fn prune_expired(
     let mut first_error = None;
     let mut dated = Vec::with_capacity(candidates.len());
     for candidate in candidates {
-        match candidate.created {
-            Ok(created) => dated.push(Dated {
-                created,
-                usable: usable_snapshot(&candidate.path),
-                path: candidate.path,
-                sequence: candidate.sequence,
-            }),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        let checked = candidate
+            .created
+            .map(|created| (created, check_snapshot(&candidate.path)));
+        let (created, usability) = match checked {
+            Ok((created, Ok(usability))) => (created, usability),
+            Ok((created, Err(error))) if error.kind() != std::io::ErrorKind::NotFound => {
+                // Unreadable is not proof of unusable: keep the file and retry later.
+                first_error.get_or_insert(error);
+                (created, Usability::Undetermined)
+            }
+            // Already gone, e.g. pruned concurrently from another network's context.
+            Ok((_, Err(_))) => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
             Err(error) => {
                 first_error.get_or_insert(error);
+                continue;
             }
-        }
+        };
+        dated.push(Dated {
+            created,
+            path: candidate.path,
+            sequence: candidate.sequence,
+            usability,
+        });
     }
     let floors = floors(&dated, now);
     let mut removed = 0;
     let mut touched = BTreeSet::new();
     for (index, backup) in dated.iter().enumerate() {
         if floors.contains(&index)
+            || backup.usability == Usability::Undetermined
             || !crate::model::backup_retention::backup_expired(backup.created, now, max_age)
         {
             continue;
@@ -112,12 +148,13 @@ pub(crate) fn prune_expired(
 /// concurrent context picks the same files. With no usable backup at all, the same
 /// choice is made among every backup instead.
 fn floors(dated: &[Dated], now: SystemTime) -> BTreeSet<usize> {
-    let any_usable = dated.iter().any(|backup| backup.usable);
+    let usable = |backup: &Dated| backup.usability == Usability::Usable;
+    let any_usable = dated.iter().any(usable);
     let eligible = || {
         dated
             .iter()
             .enumerate()
-            .filter(move |(_, backup)| backup.usable || !any_usable)
+            .filter(move |(_, backup)| usable(backup) || !any_usable)
     };
     let latest_trusted = now.checked_add(FUTURE_TOLERANCE);
     let by_time = eligible()
@@ -138,35 +175,31 @@ const SQLITE_HEADER_LEN: usize = 100;
 /// Magic string every SQLite 3 database file starts with.
 const SQLITE_MAGIC: &[u8] = b"SQLite format 3\0";
 
-/// Whether `backup` looks like a complete SQLite database that can be restored.
+/// Whether `backup` is proven to be a complete SQLite database.
+#[cfg(test)]
+pub(crate) fn usable_snapshot(backup: &Path) -> bool {
+    matches!(check_snapshot(backup), Ok(Usability::Usable))
+}
+
+/// How restorable `backup` looks.
 ///
 /// A structural check that reads only the 100-byte header and never opens the file
 /// through SQLite, which could create `-wal`/`-shm` sidecars or roll back a journal.
-/// It requires the magic string, a valid page size and file-format version, a file
-/// size covering every page the header claims, and no non-empty `-journal` beside
-/// the file: a hot rollback journal means the file holds a torn, uncommitted write.
-/// Any read error counts as unusable.
-pub(crate) fn usable_snapshot(backup: &Path) -> bool {
-    match check_snapshot(backup) {
-        Ok(usable) => usable,
-        Err(error) => {
-            tracing::debug!(backup = %backup.display(), ?error, "Upgrade backup could not be checked");
-            false
-        }
-    }
-}
-
-fn check_snapshot(backup: &Path) -> std::io::Result<bool> {
+/// Usable requires the magic string, a valid page size and file-format version, and
+/// a file size covering every page the header claims. A complete-looking file with a
+/// non-empty `-journal` beside it is [`Usability::Undetermined`]. A file that cannot
+/// be read is an error, never a verdict.
+fn check_snapshot(backup: &Path) -> std::io::Result<Usability> {
     use std::io::Read;
     let mut file = std::fs::File::open(backup)?;
     let length = file.metadata()?.len();
     if length < SQLITE_HEADER_LEN as u64 {
-        return Ok(false);
+        return Ok(Usability::Unusable);
     }
     let mut header = [0u8; SQLITE_HEADER_LEN];
     file.read_exact(&mut header)?;
     if !header.starts_with(SQLITE_MAGIC) {
-        return Ok(false);
+        return Ok(Usability::Unusable);
     }
     let be_u32 = |offset: usize| {
         u32::from_be_bytes([
@@ -179,11 +212,11 @@ fn check_snapshot(backup: &Path) -> std::io::Result<bool> {
     let page_size = match u16::from_be_bytes([header[16], header[17]]) {
         1 => 65_536,
         size if (512..=32_768).contains(&size) && size.is_power_of_two() => u64::from(size),
-        _ => return Ok(false),
+        _ => return Ok(Usability::Unusable),
     };
     // File-format write/read versions: 1 = rollback journal, 2 = WAL.
     if !matches!(header[18], 1 | 2) || !matches!(header[19], 1 | 2) {
-        return Ok(false);
+        return Ok(Usability::Unusable);
     }
     // The in-header page count is valid only when "version-valid-for" matches the
     // change counter, as every SQLite since 3.7.0 writes it; otherwise require
@@ -195,13 +228,17 @@ fn check_snapshot(backup: &Path) -> std::io::Result<bool> {
         length >= page_size && length % page_size == 0
     };
     if !complete {
-        return Ok(false);
+        return Ok(Usability::Unusable);
     }
     let mut journal = backup.as_os_str().to_owned();
     journal.push("-journal");
     match std::fs::symlink_metadata(journal) {
-        Ok(metadata) => Ok(metadata.len() == 0),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Ok(metadata) if metadata.len() > 0 => {
+            tracing::debug!(backup = %backup.display(), "Upgrade backup has a rollback journal beside it; kept");
+            Ok(Usability::Undetermined)
+        }
+        Ok(_) => Ok(Usability::Usable),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Usability::Usable),
         Err(error) => Err(error),
     }
 }
@@ -237,7 +274,7 @@ mod tests {
             created,
             path: path.to_owned(),
             sequence,
-            usable: usable_snapshot(path),
+            usability: check_snapshot(path).unwrap_or(Usability::Undetermined),
         }
     }
 
@@ -275,21 +312,29 @@ mod tests {
         for (case, content) in cases {
             let path = dir.path().join(format!("{case}.db"));
             std::fs::write(&path, content).unwrap();
-            assert!(!usable_snapshot(&path), "{case}");
+            assert_eq!(
+                check_snapshot(&path).unwrap(),
+                Usability::Unusable,
+                "{case}"
+            );
         }
         assert!(!usable_snapshot(&dir.path().join("missing.db")), "missing");
     }
 
     #[test]
-    fn hot_journal_makes_a_copy_unusable() {
+    fn hot_journal_leaves_a_copy_undetermined() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("torn.db");
         write_database(&path);
         let journal = dir.path().join("torn.db-journal");
         std::fs::write(&journal, b"").unwrap();
-        assert!(usable_snapshot(&path), "an empty journal is not hot");
+        assert_eq!(
+            check_snapshot(&path).unwrap(),
+            Usability::Usable,
+            "an empty journal is not hot"
+        );
         std::fs::write(&journal, b"uncommitted pages").unwrap();
-        assert!(!usable_snapshot(&path));
+        assert_eq!(check_snapshot(&path).unwrap(), Usability::Undetermined);
     }
 
     /// A newer unusable file never becomes the floor; the newest usable one does.
@@ -305,6 +350,23 @@ mod tests {
             dated(&valid, now - DAY * 200, None),
             dated(&killed, now, Some((9, 8))),
         ];
+        assert_eq!(floors(&backups, now), BTreeSet::from([0]));
+    }
+
+    /// A newer copy of undetermined usability does not displace the newest usable one.
+    #[test]
+    fn floor_ignores_undetermined_newer_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = SystemTime::now();
+        let [valid, journaled] = ["valid.db", "journaled.db"].map(|name| dir.path().join(name));
+        write_database(&valid);
+        write_database(&journaled);
+        std::fs::write(dir.path().join("journaled.db-journal"), b"pages").unwrap();
+        let backups = [
+            dated(&valid, now - DAY * 200, None),
+            dated(&journaled, now - DAY * 100, Some((2, 1))),
+        ];
+        assert_eq!(backups[1].usability, Usability::Undetermined);
         assert_eq!(floors(&backups, now), BTreeSet::from([0]));
     }
 
@@ -346,6 +408,15 @@ mod tests {
             dated(&paths[1], now - DAY, None),
         ];
         assert_eq!(floors(&backups, now), BTreeSet::from([0]));
+        // Once real time catches up with a skewed date, that backup is trusted
+        // again and, being dated later, is the time floor once more. A limit of
+        // any clock-based order; only the migration order is immune.
+        let skewed = now + DAY * 30;
+        let backups = [
+            dated(&paths[0], skewed, None),
+            dated(&paths[1], now - DAY * 100, None),
+        ];
+        assert_eq!(floors(&backups, skewed), BTreeSet::from([0]));
         // Only future-dated backups: the newest of them.
         let backups = [
             dated(&paths[0], now + DAY * 30, None),

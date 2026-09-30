@@ -439,6 +439,7 @@ fn ui_polish_detail_breadcrumb_opens_picker_repeatedly() {
         app_context.set_selected_identity(Some(identity));
         harness.run_steps(5);
         for _ in 0..2 {
+            app_context.set_selected_hd_wallet(Some([0x11; 32]));
             let qi = app_context.load_local_user_identities().unwrap().remove(0);
             harness
                 .state_mut()
@@ -452,6 +453,7 @@ fn ui_polish_detail_breadcrumb_opens_picker_repeatedly() {
             harness.run_steps(5);
             open_picker(&mut harness);
             assert!(harness.state().screen_stack.is_empty());
+            assert_eq!(app_context.selected_wallet_hash(), None);
             assert!(
                 harness.query_by_label(PICKER_HEADING).is_some(),
                 "breadcrumb must open picker even for one identity"
@@ -484,6 +486,8 @@ fn ui_polish_picker_scopes_to_selected_wallet_and_handles_empty_wallet() {
                     .unwrap();
             }
         }
+        harness.run_steps(5);
+        open_picker(&mut harness);
         for (wallet, visible) in [
             (Some([0x11; 32]), vec!["Wallet Alpha"]),
             (Some([0x22; 32]), vec!["Wallet Beta"]),
@@ -492,7 +496,6 @@ fn ui_polish_picker_scopes_to_selected_wallet_and_handles_empty_wallet() {
         ] {
             app_context.set_selected_hd_wallet(wallet);
             harness.run_steps(5);
-            open_picker(&mut harness);
             assert!(harness.query_by_label(PICKER_HEADING).is_some());
             for alias in ["Wallet Alpha", "Wallet Beta", "Imported Gamma"] {
                 assert_eq!(
@@ -628,15 +631,33 @@ fn ui_polish_wallet_dropdown_opens_scoped_picker() {
             "opening a wallet-owned identity must preserve its stored wallet scope"
         );
         open_picker(&mut harness);
+        assert_eq!(app_context.selected_wallet_hash(), None);
+        assert!(
+            harness
+                .query_by_label("Open First owned identity")
+                .is_some()
+        );
         assert!(
             harness
                 .query_by_label("Open Second owned identity")
                 .is_some()
         );
+        harness
+            .get_by_role_and_label(egui::accesskit::Role::Link, "All wallets")
+            .click();
+        harness.run_steps(3);
+        harness.get_by_label("💼 Second wallet").click();
+        harness.run_steps(5);
+        assert_eq!(app_context.selected_wallet_hash(), Some(hashes[1]));
         assert!(
             harness
                 .query_by_label("Open First owned identity")
                 .is_none()
+        );
+        assert!(
+            harness
+                .query_by_label("Open Second owned identity")
+                .is_some()
         );
         harness
             .get_by_role_and_label(egui::accesskit::Role::Link, "Second wallet")
@@ -660,6 +681,23 @@ fn ui_polish_wallet_dropdown_opens_scoped_picker() {
                 .query_by_label("Open Second owned identity")
                 .is_some()
         );
+        app_context.set_selected_hd_wallet(Some(hashes[0]));
+        harness
+            .get_by_role_and_label(egui::accesskit::Role::Button, "Wallets")
+            .click();
+        harness.run_steps(5);
+        harness
+            .get_by_role_and_label(egui::accesskit::Role::Link, "First wallet")
+            .click();
+        harness.run_steps(3);
+        harness.get_by_label("💼 Second wallet").click();
+        harness.run_steps(5);
+        assert_eq!(app_context.selected_wallet_hash(), Some(hashes[1]));
+        assert_eq!(
+            harness.state().selected_main_screen,
+            RootScreenType::RootScreenWalletsBalances
+        );
+        assert!(harness.query_by_label(PICKER_HEADING).is_none());
     });
 }
 

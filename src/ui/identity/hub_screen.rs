@@ -334,8 +334,10 @@ impl IdentityHubScreen {
         true
     }
 
-    /// Show the picker while retaining the selected wallet scope.
+    /// Show all User identities, clearing the selected wallet filter.
     pub(crate) fn open_picker(&mut self) {
+        self.app_context.set_selected_hd_wallet(None);
+        self.reset_contacts_for_identity_change();
         self.selection.open_picker();
     }
 
@@ -346,7 +348,7 @@ impl IdentityHubScreen {
         match effect {
             BreadcrumbEffect::None => AppAction::None,
             BreadcrumbEffect::OpenPicker => {
-                self.selection.open_picker();
+                self.open_picker();
                 AppAction::None
             }
             BreadcrumbEffect::SwitchWallet(hash) => {

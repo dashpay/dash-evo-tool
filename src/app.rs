@@ -1291,7 +1291,7 @@ pub enum AppAction {
     PopScreen,
     PopScreenAndRefresh,
     GoToMainScreen,
-    /// Open the wallet-scoped identity picker and dismiss pushed screens.
+    /// Open all User identities and dismiss pushed screens.
     OpenIdentityPicker,
     SwitchNetwork(Network),
     SetMainScreen(RootScreenType),

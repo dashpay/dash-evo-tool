@@ -14,7 +14,7 @@ impl AppContext {
         accepted.unwrap_or_else(|| {
             self.wallet_backend()
                 .ok()
-                .and_then(|backend| backend.dashpay().cached_display_name(&id))
+                .and_then(|backend| backend.dashpay_view().cached_display_name(&id))
         })
     }
 
@@ -50,5 +50,55 @@ impl AppContext {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .saved(id, name);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::test_support::test_app_context;
+    use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
+    use crate::model::qualified_identity::{DPNSNameInfo, IdentityStatus, IdentityType};
+    use dash_sdk::dpp::identity::Identity;
+    use dash_sdk::dpp::version::PlatformVersion;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn identity_display_name_updates_reject_stale_loads_and_legacy_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = test_app_context(dir.path());
+        let id = Identifier::from([42; 32]);
+        let identity = QualifiedIdentity {
+            identity: Identity::create_basic_identity(id, PlatformVersion::latest()).unwrap(),
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: Some("Private nickname".into()),
+            private_keys: KeyStorage::default(),
+            dpns_names: vec![DPNSNameInfo {
+                name: "alex.dash".into(),
+                acquired_at: 0,
+            }],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: context.network(),
+        };
+        assert_eq!(context.identity_display_label(&identity), "alex.dash");
+        let stale = context.begin_identity_profile_load(id);
+        context.save_identity_profile_name(id, Some("Alex Profile"));
+        assert!(!context.record_identity_profile_name(id, stale, Some("Old Profile")));
+        assert_eq!(context.identity_display_label(&identity), "Alex Profile");
+        let pill = crate::ui::identity::identity_pill::IdentityPill::new(
+            context.identity_display_name(id).as_deref(),
+            Some("alex.dash"),
+            "abcdefghijk",
+        );
+        assert_eq!(pill.resolved_label(), "Alex Profile");
+        context.save_identity_profile_name(id, None);
+        assert_eq!(context.identity_display_label(&identity), "alex.dash");
     }
 }

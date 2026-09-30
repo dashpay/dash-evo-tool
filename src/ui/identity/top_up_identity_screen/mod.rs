@@ -41,7 +41,6 @@ use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::{CREDITS_PER_DUFF, Credits, Duffs};
 use dash_sdk::dpp::dashcore::OutPoint;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use egui::{ComboBox, ScrollArea, Ui};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};

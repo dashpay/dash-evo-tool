@@ -69,7 +69,7 @@ impl TokenAction for FreezeAction {
                     &mut self.freeze_identity_id,
                     &self.known_identities,
                 )
-                .with_context(&self.app_context)
+                .with_context(ctx.app_context)
                 .label("Freeze Identity ID:")
                 .width(300.0),
             );

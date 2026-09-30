@@ -73,7 +73,7 @@ impl TokenAction for DestroyFrozenFundsAction {
                     &mut self.frozen_identity_id,
                     &self.frozen_identities,
                 )
-                .with_context(&self.app_context)
+                .with_context(ctx.app_context)
                 .label("Frozen Identity ID:")
                 .width(300.0),
             );

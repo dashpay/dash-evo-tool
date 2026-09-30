@@ -34,28 +34,36 @@ pub fn shorten_id(id: &str) -> String {
 /// Profile names accepted during this network session.
 #[derive(Debug, Default)]
 pub(crate) struct ProfileNames {
-    entries: HashMap<Identifier, (u64, Option<Option<String>>)>,
+    entries: HashMap<Identifier, ProfileName>,
+}
+
+#[derive(Debug, Default)]
+struct ProfileName {
+    revision: u64,
+    accepted: Option<Option<String>>,
 }
 
 impl ProfileNames {
     pub(crate) fn get(&self, id: Identifier) -> Option<Option<String>> {
-        self.entries.get(&id).and_then(|(_, name)| name.clone())
+        self.entries
+            .get(&id)
+            .and_then(|entry| entry.accepted.clone())
     }
 
     pub(crate) fn begin_load(&mut self, id: Identifier) -> u64 {
         let entry = self.entries.entry(id).or_default();
-        entry.0 += 1;
-        entry.0
+        entry.revision += 1;
+        entry.revision
     }
 
     pub(crate) fn loaded(&mut self, id: Identifier, revision: u64, name: Option<&str>) -> bool {
         let Some(entry) = self.entries.get_mut(&id) else {
             return false;
         };
-        if entry.0 != revision {
+        if entry.revision != revision {
             return false;
         }
-        entry.1 = Some(clean_name(name));
+        entry.accepted = Some(clean_name(name));
         true
     }
 

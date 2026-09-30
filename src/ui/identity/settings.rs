@@ -1148,6 +1148,27 @@ mod tests {
     }
 
     #[test]
+    fn identity_profile_shows_display_name_without_device_name_controls() {
+        use egui_kittest::Harness;
+        use egui_kittest::kittest::Queryable;
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let mut identity = qualified_identity();
+        identity.alias = Some("Legacy private name".into());
+        let mut tab = SettingsTab::new();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(900.0, 900.0))
+            .build_ui(|ui| {
+                tab.render_social_profile(ui, &context, &identity);
+                tab.render_username_and_aliases(ui, &context, &identity);
+            });
+        harness.run();
+        assert!(harness.query_by_label("Display name").is_some());
+        assert!(harness.query_by_label("Name on this device").is_none());
+        assert!(harness.query_by_label("Legacy private name").is_none());
+    }
+
+    #[test]
     fn has_changes_tracks_baseline() {
         let mut tab = SettingsTab::new();
         tab.edit_display_name = "alex".into();

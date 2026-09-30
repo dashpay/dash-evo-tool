@@ -98,7 +98,7 @@ async fn identity_list_reports_only_the_persisted_wallet_binding() {
             associated_operator_identity: None,
             associated_owner_key_id: None,
             identity_type: IdentityType::User,
-            alias: None,
+            alias: Some("Legacy private name".into()),
             private_keys: Default::default(),
             dpns_names: Vec::new(),
             associated_wallets: Default::default(),
@@ -111,6 +111,7 @@ async fn identity_list_reports_only_the_persisted_wallet_binding() {
         ctx.insert_local_qualified_identity(&identity, &link)
             .unwrap();
     }
+    ctx.save_identity_profile_name(Identifier::from([1; 32]), Some("Profile name"));
     let loaded = ctx.load_local_qualified_identities().unwrap();
     assert!(loaded.iter().all(|qi| qi.associated_wallets.len() == 2));
     let service = DashMcpService::new_shared(Arc::new(arc_swap::ArcSwap::new(Arc::clone(&ctx))));
@@ -118,6 +119,14 @@ async fn identity_list_reports_only_the_persisted_wallet_binding() {
         .await
         .unwrap();
     let json = serde_json::to_value(output).unwrap();
+    assert_eq!(json["identities"][0]["display_name"], "Profile name");
+    assert!(
+        json["identities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|identity| identity.get("alias").is_none())
+    );
     ctx.wallet_backend().unwrap().shutdown().await;
     assert_eq!(
         json["identities"][0]["wallet_seed_hashes"],

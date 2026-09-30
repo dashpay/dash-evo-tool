@@ -297,7 +297,6 @@ pub async fn fetch_contact_profile(
     _identity: QualifiedIdentity, // May be needed for future privacy features
     contact_id: Identifier,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
-    let name_revision = app_context.begin_identity_profile_load(identity_id);
     let dashpay_contract = app_context.dashpay_contract.clone();
 
     // Query for the contact's profile document
@@ -333,7 +332,6 @@ pub async fn search_profiles(
     search_query: String,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     let dpns_contract = app_context.dpns_contract.clone();
-    let name_revision = app_context.begin_identity_profile_load(identity_id);
     let dashpay_contract = app_context.dashpay_contract.clone();
     let mut results: Vec<(Identifier, Option<Document>, String)> = Vec::new();
 

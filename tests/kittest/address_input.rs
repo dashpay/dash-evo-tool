@@ -180,7 +180,7 @@ fn hint_trims_wallets_above_five() {
 fn wallet_pill_only_on_wallet_scoped_rows() {
     let input = AddressInput::new(Network::Testnet)
         .with_wallets(&[wallet(1, "main")])
-        .with_identities(&[identity("alice")])
+        .with_identities(None, &[identity("alice")])
         .with_shielded_balance("tdash1zexampleshieldedaddress".to_string(), 0);
 
     with_rendered(input, |input| {
@@ -222,7 +222,7 @@ fn wallet_pill_only_on_wallet_scoped_rows() {
 fn tag_query_narrows_rows() {
     let input = AddressInput::new(Network::Testnet)
         .with_wallets(&[wallet(1, "alpha"), wallet(2, "beta")])
-        .with_identities(&[identity("carol")])
+        .with_identities(None, &[identity("carol")])
         .with_initial_value("type:core wallet:alpha");
 
     with_rendered(input, |input| {

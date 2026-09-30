@@ -30,6 +30,9 @@ pub struct IdentityEntry {
     id: String,
     /// Cached DashPay profile display name, if available.
     display_name: Option<String>,
+    /// Administrative node name; omitted for User identities.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    alias: Option<String>,
     /// `User`, `Masternode` or `Evonode`.
     identity_type: String,
     /// Last known Platform status, e.g. `Active` or `Unknown`.
@@ -99,6 +102,10 @@ impl AsyncTool<DashMcpService> for ListIdentitiesTool {
                     status: qi.status.to_string(),
                     balance_credits: qi.identity.balance(),
                     display_name: ctx.identity_display_name(qi.identity.id()),
+                    alias: (qi.identity_type
+                        != crate::model::qualified_identity::IdentityType::User)
+                        .then(|| qi.alias.clone())
+                        .flatten(),
                     dpns_names: qi.dpns_names.into_iter().map(|name| name.name).collect(),
                     wallet_index: link.map(|(_, index)| index),
                     wallet_seed_hashes: link

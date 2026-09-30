@@ -23,7 +23,6 @@
 //! (`docs/COMPONENT_DESIGN_PATTERN.md`): private fields, builder methods,
 //! `show()` returns a typed response implementing [`ComponentResponse`].
 
-use super::identity_pill::shorten_id;
 use crate::backend_task::BackendTask;
 use crate::model::qualified_identity::IdentityType;
 use crate::ui::components::avatar::Avatar;
@@ -51,28 +50,12 @@ const AVATAR_SIZE: f32 = 72.0;
 /// Priority:
 /// 1. `display_name` (social-profile display name)
 /// 2. `dpns_handle` (primary DPNS username)
-/// 3. shortened Identity ID (`Fx1Kj…9Tt` style, see [`shorten_id`]).
+/// 3. shortened Identity ID (`Fx1Kj…9Tt` style, see [`crate::model::identity_name::shorten_id`]).
 ///
 /// When every source is missing or empty the heading falls back to the string
 /// `"Unknown identity"` — a safe, i18n-ready sentence fragment so the card is
 /// never blank.
-pub fn card_heading(
-    display_name: Option<&str>,
-    dpns_handle: Option<&str>,
-    identity_id_base58: &str,
-) -> String {
-    if let Some(name) = display_name.map(str::trim).filter(|s| !s.is_empty()) {
-        return name.to_string();
-    }
-    if let Some(handle) = dpns_handle.map(str::trim).filter(|s| !s.is_empty()) {
-        return handle.to_string();
-    }
-    let trimmed = identity_id_base58.trim();
-    if trimmed.is_empty() {
-        return "Unknown identity".to_string();
-    }
-    shorten_id(trimmed)
-}
+pub use crate::model::identity_name::display_label as card_heading;
 
 /// Resolve the sub-line shown beneath the heading.
 ///

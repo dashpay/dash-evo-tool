@@ -58,16 +58,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **Upgrade backups no longer pile up, and old ones expire automatically**: a
   failed database upgrade no longer leaves a new backup on every attempt. Each
-  database keeps at most one upgrade backup, and it is deleted when you remove
-  a wallet or clear a network's data. Upgrade backups older than 90 days are
+  database keeps at most one upgrade backup, and it is deleted when you clear
+  a network's data. Upgrade backups older than 90 days are
   deleted automatically once the app has opened your data successfully; change
   the period or keep backups forever under Settings → Upgrade Backups. The same
   retention covers upstream pre-migration snapshots and legacy `data.db`
-  migration backups. Removing an identity no longer touches upgrade backups.
+  migration backups. Removing a wallet or an identity does not touch upgrade
+  backups, since they also hold other wallets' data.
   An upgrade that can never succeed now shows its message instead of being
   retried silently. Cleanup rejects links and non-files, reports pruning
-  failures, removes unfinished snapshots left by a crash, and runs when
-  removing a wallet without an available backend. Temporary storage and memory
+  failures, and removes unfinished snapshots left by a crash. Temporary storage and memory
   failures remain retryable; permission and invalid-input failures surface directly.
   Concurrent sessions now protect active snapshots from cleanup, and staged
   validation preserves retry options and guidance for temporary resource failures.

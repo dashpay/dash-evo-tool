@@ -75,18 +75,15 @@ impl AppContext {
             }
         }
 
-        if let Err(error) = self.remove_upgrade_backups() {
-            tracing::warn!(?error, "Failed to delete wallet upgrade backups on removal");
-            show_wallet_data_removal_warning(self.egui_ctx(), error);
-        }
-
         Ok(())
     }
 
     /// Delete the retained compatibility-upgrade backups of the app and this network's
-    /// wallet databases, which copy wallet and identity history a deletion must not leave behind.
+    /// wallet databases, which copy the wallet and identity history a network clear wipes.
     ///
     /// Filesystem cleanup is available even when the wallet backend could not be opened.
+    /// Removing a single wallet or identity never calls this: those backups also hold
+    /// other wallets' data and expire through time-based retention instead.
     pub(crate) fn remove_upgrade_backups(&self) -> Result<(), TaskError> {
         let mut first_error = None;
         for database in self.upgrade_backup_databases() {

@@ -65,10 +65,12 @@ the rebuild, and keeps at most one backup per database. Retention includes upstr
 `backups/auto/pre-migration-<database>-*.db` snapshots and runs before and after
 storage opens, including failed opens. Pruning errors stop the operation; backup
 candidates must have the exact database-specific name format and be regular files,
-not symbolic links (or hard links on Unix). Identity cleanup retains its pending
-manifest until backup deletion succeeds, so startup retries incomplete cleanup.
-Deleting a wallet or an identity, or clearing a network's data, also deletes these backups, because they
-copy wallet and identity history. Downgrading does not automatically reverse the
+not symbolic links (or hard links on Unix). Clearing a network's data also
+deletes these backups, because they copy wallet and identity history. Removing a
+single wallet or identity does not: the backups also hold other wallets' data.
+Instead, backups older than a user-configurable retention period (default 90 days,
+or never) are deleted once the databases they protect have opened successfully,
+covering bridge, upstream pre-migration, and legacy `data.db` backups. Downgrading does not automatically reverse the
 database conversion; recovery requires the corresponding backup and the prior
 application version. Validation uses synthetic upstream fixtures, not a user's
 real profile.

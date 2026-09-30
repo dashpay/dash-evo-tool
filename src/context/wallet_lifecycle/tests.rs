@@ -1714,10 +1714,10 @@ async fn remove_wallet_wipes_seed_envelope() {
     backend.shutdown().await;
 }
 
-/// Upgrade backups copy whole wallet databases (xpubs, history, identities), so
-/// removing a wallet must not leave them behind.
+/// Upgrade backups copy whole databases, including other wallets' data, so removing
+/// one wallet leaves them to time-based retention.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn remove_wallet_deletes_upgrade_backups() {
+async fn remove_wallet_keeps_upgrade_backups() {
     let (ctx, sender, _tmp) = offline_testnet_context();
     ctx.ensure_wallet_backend(sender)
         .await
@@ -1749,8 +1749,8 @@ async fn remove_wallet_deletes_upgrade_backups() {
 
     for backup in &backups {
         assert!(
-            !backup.exists(),
-            "{} must be deleted together with the wallet",
+            backup.exists(),
+            "{} must survive wallet removal",
             backup.display()
         );
     }
@@ -7278,7 +7278,7 @@ async fn reconcile_managed_identities_skips_identities_linked_to_another_wallet(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn remove_wallet_deletes_upgrade_backups_without_backend() {
+async fn remove_wallet_keeps_upgrade_backups_without_backend() {
     let (ctx, _sender, _tmp) = offline_testnet_context();
     assert!(ctx.wallet_backend().is_err());
     let wallet =
@@ -7299,28 +7299,6 @@ async fn remove_wallet_deletes_upgrade_backups_without_backend() {
     }
     ctx.remove_wallet(&seed_hash).unwrap();
     for backup in &backups {
-        assert!(!backup.exists(), "{}", backup.display());
+        assert!(backup.exists(), "{}", backup.display());
     }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn remove_wallet_warns_when_backup_cleanup_fails_without_backend() {
-    let (ctx, _sender, _tmp) = offline_testnet_context();
-    assert!(ctx.wallet_backend().is_err());
-    let wallet =
-        crate::model::wallet::Wallet::new_from_seed([0xA7; 64], Network::Testnet, None, None)
-            .expect("build wallet");
-    let seed_hash = wallet.seed_hash();
-    ctx.wallet_context()
-        .insert_test_wallet(seed_hash, Arc::new(RwLock::new(wallet)));
-    let backup = ctx
-        .data_dir()
-        .join("det-app.sqlite.platform-67d4ef3-backup-blocked.pending");
-    std::fs::create_dir(&backup).unwrap();
-    crate::ui::components::MessageBanner::clear_all_global(ctx.egui_ctx());
-    ctx.remove_wallet(&seed_hash).unwrap();
-    assert!(backup.is_dir());
-    assert!(crate::ui::components::MessageBanner::has_global(
-        ctx.egui_ctx()
-    ));
 }

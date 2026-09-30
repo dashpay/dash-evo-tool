@@ -100,6 +100,7 @@ As a user, I want to remove a wallet I no longer need so that it does not clutte
 
 - Confirmation prompt before removal.
 - Current wallet data is deleted from local storage. If an older recovery database exists, it remains untouched.
+- Upgrade backups are not deleted with the wallet, since they also hold other wallets' data; they expire through backup retention (WAL-034).
 
 ### WAL-008: View wallet balances [Implemented]
 **Persona:** Alex, Priya, Jordan
@@ -333,7 +334,7 @@ As a user whose wallet data was copied before a storage upgrade, I want old upgr
 - Upgrade backups older than 90 days are deleted automatically by default, covering app, wallet, upstream pre-migration and legacy `data.db` backups.
 - Settings → Upgrade Backups lets the user change the period (1 to 3650 days) or keep backups forever; a change applies right away.
 - Old backups are deleted only after the app has opened the data they protect, so a backup is never removed while it may still be needed for recovery.
-- Removing an identity does not delete upgrade backups; retention alone decides when they go.
+- Removing a wallet or an identity does not delete upgrade backups; retention alone decides when they go. Clearing a network's data still deletes them.
 
 ### WAL-033: Wallets, addresses and identities survive an app upgrade [Gap]
 **Persona:** Alex, Priya, Jordan

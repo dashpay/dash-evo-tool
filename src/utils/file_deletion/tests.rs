@@ -283,6 +283,13 @@ fn delete_file_refuses_targets_outside_the_intent_scope() {
         ),
         (
             dir.path()
+                .join("backups/data_backup_20000101_000000.db.a1B2c3.pending"),
+            DeletionIntent::Backup {
+                database: &database,
+            },
+        ),
+        (
+            dir.path()
                 .join("backups/auto/pre-migration-det-mainnet-1-to-2-20000101T000000Z.db"),
             DeletionIntent::Backup {
                 database: &database,
@@ -344,6 +351,11 @@ fn delete_file_deletes_targets_in_scope() {
         ),
         (
             dir.path().join("backups/data_backup_20000101_000000.db"),
+            DeletionIntent::Backup { database: &legacy },
+        ),
+        (
+            dir.path()
+                .join("backups/data_backup_20000101_000000.db.a1B2c3.pending"),
             DeletionIntent::Backup { database: &legacy },
         ),
         (

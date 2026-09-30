@@ -31,9 +31,14 @@ impl AppContext {
     /// The policy is global: it covers every database in the data directory (the app
     /// database and every network's wallet database, bridge and upstream
     /// `pre-migration-*` snapshots), plus legacy `data.db` backups, whichever network
-    /// this context serves. The newest backup of each database is always kept, so the
-    /// pass is safe for databases this process has not opened. A database another
-    /// context is opening or upgrading is skipped until the next pass.
+    /// this context serves. The newest usable backup of each database is always kept,
+    /// so the pass is safe for databases this process has not opened. A database
+    /// another context is opening or upgrading is skipped until the next pass.
+    ///
+    /// Every policy, including keeping backups forever, also removes legacy copies a
+    /// crash left unpublished (see
+    /// [`sweep_pending`](crate::database::legacy_backups::sweep_pending)); those are not
+    /// counted as deleted backups.
     ///
     /// Attempts every location and reports the first failure. Nothing is deleted when the
     /// policy cannot be read.
@@ -51,6 +56,17 @@ impl AppContext {
                 return report;
             }
         };
+        // Crash-left legacy copies were never published backups, so every policy
+        // removes them.
+        match crate::database::legacy_backups::sweep_pending(self.data_dir(), now) {
+            Ok(0) => {}
+            Ok(swept) => tracing::info!(swept, "Removed unfinished legacy backup copies"),
+            Err(source) => {
+                report
+                    .failure
+                    .get_or_insert(TaskError::UpgradeBackupCleanup { source });
+            }
+        }
         let Some(max_age) = retention.max_age() else {
             return report;
         };
@@ -178,6 +194,31 @@ mod tests {
 
         assert!(fixture.expired.iter().all(|path| !path.exists()));
         assert!(fixture.fresh.iter().all(|path| path.exists()));
+    }
+
+    /// A legacy copy left unpublished by a crash is removed by every retention pass,
+    /// whatever the policy, once it is clearly not a copy still being written. It
+    /// is not a backup, so it is not counted as a deleted one.
+    #[test]
+    fn crash_left_legacy_copies_are_swept_under_any_policy() {
+        for policy in [BackupRetention::KeepForever, BackupRetention::default()] {
+            let tmp = tempfile::tempdir().unwrap();
+            let ctx = test_app_context(tmp.path());
+            ctx.set_backup_retention(policy).unwrap();
+            let backups = ctx.data_dir().join("backups");
+            let crashed = backups.join("data_backup_20200101_000000.db.a1B2c3.pending");
+            let in_progress = backups.join("data_backup_20200102_000000.db.Z9y8X7.pending");
+            write_aged(&crashed, DAY * 2);
+            write_aged(&in_progress, Duration::from_secs(5));
+
+            assert_eq!(pruned(&ctx), 0, "{policy:?}");
+
+            assert!(!crashed.exists(), "{policy:?}: a crash-left copy is swept");
+            assert!(
+                in_progress.exists(),
+                "{policy:?}: a recent copy may still be written"
+            );
+        }
     }
 
     #[test]

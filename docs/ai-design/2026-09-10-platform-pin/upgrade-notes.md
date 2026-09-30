@@ -78,8 +78,9 @@ kept as well. If no backup is usable, the newest file is kept anyway. A backup
 dated in the future does not displace one dated in the past, but only until real
 time reaches that date; the migration order is the only clock-proof signal. A copy
 that cannot be read, or has a non-empty rollback journal beside it, is never
-deleted automatically. Legacy `data.db` copies are written to a temporary file,
-synced and renamed, so a crash cannot leave a torn copy under a backup name.
+deleted automatically. This version never writes new legacy `data.db` copies: it
+opens an existing `data.db` read-only, so only copies earlier versions left behind
+are expired.
 Clearing a network's data deletes that network's wallet database backups, because
 they copy its wallet and identity history; backups of the shared `det-app.sqlite`
 also hold other networks' data and stay under retention. Removing a single wallet

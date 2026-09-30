@@ -1,5 +1,4 @@
 use crate::database::Database;
-use chrono::Utc;
 use rusqlite::{Connection, params};
 use std::path::Path;
 
@@ -211,7 +210,9 @@ impl Database {
 
             let current_version = self.db_schema_version()?;
             if current_version != DEFAULT_DB_VERSION {
-                self.backup_db(db_file_path)?;
+                // No backup is taken: production boot paths open an existing
+                // `data.db` read-only and call `initialize` only for a fresh file,
+                // so this ladder runs on test fixtures, never on user data.
                 // Migrations may need to read `.env` from the data directory
                 // (see v34 for one such arm). The DB file typically lives at
                 // `<data_dir>/<db_file>`, so its parent is the data dir.
@@ -703,17 +704,6 @@ impl Database {
     fn db_schema_version(&self) -> rusqlite::Result<u16> {
         let version = self.stored_data_version()?.unwrap_or(0);
         u16::try_from(version).map_err(|_| rusqlite::Error::IntegralValueOutOfRange(0, version))
-    }
-
-    /// Backs up the existing database with a unique timestamped filename in backups directory.
-    fn backup_db(&self, db_file_path: &Path) -> rusqlite::Result<()> {
-        if db_file_path.exists() {
-            let backup_path = super::legacy_backups::write_backup(db_file_path, Utc::now())
-                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
-            tracing::info!("Old database backed up to {:?}", backup_path);
-        }
-
-        Ok(())
     }
 
     /// Creates all required tables with indexes if they don't already exist.

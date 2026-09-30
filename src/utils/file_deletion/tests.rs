@@ -227,6 +227,7 @@ fn delete_file_refuses_any_hard_linked_file() {
 fn delete_file_refuses_targets_outside_the_intent_scope() {
     let dir = tempfile::tempdir().unwrap();
     let database = dir.path().join("det-app.sqlite");
+    let legacy = dir.path().join("data.db");
     let cases = [
         (
             dir.path()
@@ -284,9 +285,7 @@ fn delete_file_refuses_targets_outside_the_intent_scope() {
         (
             dir.path()
                 .join("backups/data_backup_20000101_000000.db.a1B2c3.pending"),
-            DeletionIntent::Backup {
-                database: &database,
-            },
+            DeletionIntent::Backup { database: &legacy },
         ),
         (
             dir.path()
@@ -351,11 +350,6 @@ fn delete_file_deletes_targets_in_scope() {
         ),
         (
             dir.path().join("backups/data_backup_20000101_000000.db"),
-            DeletionIntent::Backup { database: &legacy },
-        ),
-        (
-            dir.path()
-                .join("backups/data_backup_20000101_000000.db.a1B2c3.pending"),
             DeletionIntent::Backup { database: &legacy },
         ),
         (

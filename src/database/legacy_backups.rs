@@ -1,7 +1,8 @@
 //! Legacy `data.db` migration backups (`backups/data_backup_<timestamp>.db`).
 //!
-//! The legacy migration ladder copies `data.db` before upgrading it. These copies are
-//! subject to the same time-based retention as the storage-upgrade backups.
+//! Earlier app versions copied `data.db` here before upgrading it; this version opens an
+//! existing `data.db` read-only and never writes new copies. The copies already on disk
+//! are subject to the same time-based retention as the storage-upgrade backups.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -14,61 +15,12 @@ const PREFIX: &str = "data_backup_";
 const SUFFIX: &str = ".db";
 /// UTC timestamp format embedded in the backup name.
 const TIMESTAMP_FORMAT: &str = "%Y%m%d_%H%M%S";
-/// How many consecutive one-second names [`write_backup`] tries before giving up.
-const MAX_NAME_ATTEMPTS: usize = 60;
-/// Suffix of the unpublished copy [`write_backup`] writes before renaming it.
-const PENDING_SUFFIX: &str = ".pending";
-/// How old an unpublished copy must be before it counts as left behind by a crash
-/// rather than still being written. Copying `data.db` takes seconds.
-const PENDING_GRACE: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// File name of a legacy backup taken at `timestamp` (UTC).
+/// File name of a legacy backup taken at `timestamp` (UTC). Tests only: this version
+/// never writes legacy backups, it only recognises and expires existing ones.
+#[cfg(test)]
 pub(crate) fn backup_file_name(timestamp: chrono::DateTime<chrono::Utc>) -> String {
     format!("{PREFIX}{}{SUFFIX}", timestamp.format(TIMESTAMP_FORMAT))
-}
-
-/// Copy `database` to `<its directory>/backups/` under the legacy name for `taken`.
-///
-/// The copy goes to a unique `.pending` file first, is synced, and only then is
-/// renamed to its final name, after which the directory is synced. A crash or power
-/// loss therefore never leaves a torn copy under a backup name, where it could pass
-/// as a complete backup. An existing backup is never replaced: when the name for
-/// `taken` is already used (names have one-second resolution), the next free second
-/// is used instead, so a collision never fails the copy.
-pub(crate) fn write_backup(
-    database: &Path,
-    taken: chrono::DateTime<chrono::Utc>,
-) -> std::io::Result<PathBuf> {
-    let directory = database
-        .parent()
-        .ok_or(std::io::ErrorKind::InvalidInput)?
-        .join(BACKUP_DIR);
-    std::fs::create_dir_all(&directory)?;
-    let name = backup_file_name(taken);
-    // Not routed through `delete_file`: on failure the temp file removes only the
-    // uniquely named `.pending` file it created itself.
-    let mut pending = tempfile::Builder::new()
-        .prefix(&format!("{name}."))
-        .suffix(PENDING_SUFFIX)
-        .tempfile_in(&directory)?;
-    std::fs::copy(database, pending.path())?;
-    pending.as_file().sync_all()?;
-    let mut stamp = taken;
-    for _ in 0..MAX_NAME_ATTEMPTS {
-        let published = directory.join(backup_file_name(stamp));
-        match pending.persist_noclobber(&published) {
-            Ok(_) => {
-                crate::utils::backup_prune::sync_directory(&directory)?;
-                return Ok(published);
-            }
-            Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
-                pending = error.file;
-                stamp += chrono::TimeDelta::seconds(1);
-            }
-            Err(error) => return Err(error.error),
-        }
-    }
-    Err(std::io::ErrorKind::AlreadyExists.into())
 }
 
 /// The UTC creation time embedded in a legacy backup name, or `None` for any other
@@ -77,19 +29,6 @@ pub(crate) fn backup_timestamp(name: &str) -> Option<SystemTime> {
     let timestamp = name.strip_prefix(PREFIX)?.strip_suffix(SUFFIX)?;
     let parsed = chrono::NaiveDateTime::parse_from_str(timestamp, TIMESTAMP_FORMAT).ok()?;
     Some(parsed.and_utc().into())
-}
-
-/// Whether `name` is an unpublished copy written by [`write_backup`]:
-/// `<legacy backup name>.<random letters and digits>.pending`. Also the deletion
-/// chokepoint's definition of such a copy.
-pub(crate) fn is_pending_backup_name(name: &str) -> bool {
-    name.strip_suffix(PENDING_SUFFIX)
-        .and_then(|rest| rest.rsplit_once('.'))
-        .is_some_and(|(published, random)| {
-            !random.is_empty()
-                && random.bytes().all(|b| b.is_ascii_alphanumeric())
-                && backup_timestamp(published).is_some()
-        })
 }
 
 /// `<data_dir>/backups` if it exists; an error if it is a symlink or not a directory.
@@ -103,65 +42,6 @@ fn backup_directory(data_dir: &Path) -> std::io::Result<Option<PathBuf>> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
     }
-}
-
-/// Delete unpublished copies [`write_backup`] left behind when the app stopped
-/// mid-copy.
-///
-/// Only regular files matching [`is_pending_backup_name`] whose modification time is
-/// more than a day before `now` are removed, so a copy another process is still
-/// writing is left alone; one dated in the future is kept. They never held a
-/// published backup, so every retention policy removes them. Deletion goes through
-/// the chokepoint. Attempts every file and returns the first failure; `Ok` carries
-/// the number removed.
-pub(crate) fn sweep_pending(data_dir: &Path, now: SystemTime) -> std::io::Result<usize> {
-    let Some(directory) = backup_directory(data_dir)? else {
-        return Ok(0);
-    };
-    let database = data_dir.join(LEGACY_DATABASE);
-    let mut first_error = None;
-    let mut removed = 0;
-    for entry in std::fs::read_dir(&directory)? {
-        let entry = entry?;
-        if !entry
-            .file_name()
-            .to_str()
-            .is_some_and(is_pending_backup_name)
-        {
-            continue;
-        }
-        let outcome = match abandoned(&entry.path(), now) {
-            Ok(true) => crate::utils::file_deletion::delete_file(
-                &entry.path(),
-                crate::utils::file_deletion::DeletionIntent::Backup {
-                    database: &database,
-                },
-            ),
-            Ok(false) => continue,
-            Err(error) => Err(error),
-        };
-        match outcome {
-            Ok(()) => removed += 1,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                first_error.get_or_insert(error);
-            }
-        }
-    }
-    if removed > 0
-        && let Err(error) = crate::utils::backup_prune::sync_directory(&directory)
-    {
-        first_error.get_or_insert(error);
-    }
-    first_error.map_or(Ok(removed), Err)
-}
-
-/// Whether the unpublished copy at `path` is a regular file last written more than
-/// [`PENDING_GRACE`] before `now`.
-fn abandoned(path: &Path, now: SystemTime) -> std::io::Result<bool> {
-    let metadata = std::fs::symlink_metadata(path)?;
-    Ok(metadata.is_file()
-        && crate::model::backup_retention::backup_expired(metadata.modified()?, now, PENDING_GRACE))
 }
 
 /// Delete legacy backups in `<data_dir>/backups` older than `max_age`, always
@@ -223,149 +103,6 @@ mod tests {
             .unwrap()
             .set_modified(time)
             .unwrap();
-    }
-
-    /// The published copy is complete and no temporary file is left. A backup of the
-    /// same second is never overwritten, and never blocks the new copy: it is
-    /// published under the next free second, still a legacy backup name.
-    #[test]
-    fn legacy_backup_is_published_complete_and_never_overwrites() {
-        let dir = tempfile::tempdir().unwrap();
-        let database = dir.path().join(LEGACY_DATABASE);
-        rusqlite::Connection::open(&database)
-            .unwrap()
-            .execute_batch("CREATE TABLE settings (v INTEGER); INSERT INTO settings VALUES (1);")
-            .unwrap();
-        let taken = chrono::Utc::now();
-        let backups = dir.path().join(BACKUP_DIR);
-
-        let first = write_backup(&database, taken).unwrap();
-
-        assert_eq!(first, backups.join(backup_file_name(taken)));
-        assert_eq!(
-            std::fs::read(&first).unwrap(),
-            std::fs::read(&database).unwrap()
-        );
-        assert!(crate::utils::backup_prune::usable_snapshot(&first));
-
-        // Same second twice more: an unrelated file already holds the next name.
-        std::fs::write(&first, b"earlier backup").unwrap();
-        let taken_next = backups.join(backup_file_name(taken + chrono::TimeDelta::seconds(1)));
-        std::fs::write(&taken_next, b"another earlier backup").unwrap();
-        let second = write_backup(&database, taken).unwrap();
-
-        assert_eq!(
-            second,
-            backups.join(backup_file_name(taken + chrono::TimeDelta::seconds(2)))
-        );
-        assert!(backup_timestamp(&second.file_name().unwrap().to_string_lossy()).is_some());
-        assert_eq!(
-            std::fs::read(&second).unwrap(),
-            std::fs::read(&database).unwrap()
-        );
-        assert_eq!(std::fs::read(&first).unwrap(), b"earlier backup");
-        assert_eq!(
-            std::fs::read(&taken_next).unwrap(),
-            b"another earlier backup"
-        );
-        let mut entries: Vec<_> = std::fs::read_dir(&backups)
-            .unwrap()
-            .map(|entry| entry.unwrap().path())
-            .collect();
-        entries.sort();
-        let mut expected = vec![first, taken_next, second];
-        expected.sort();
-        assert_eq!(entries, expected, "no temporary copy is left");
-    }
-
-    /// If every name in the retry window is taken, the copy fails cleanly: nothing is
-    /// overwritten and no temporary copy is left.
-    #[test]
-    fn legacy_backup_gives_up_after_the_retry_window() {
-        let dir = tempfile::tempdir().unwrap();
-        let database = dir.path().join(LEGACY_DATABASE);
-        std::fs::write(&database, b"database").unwrap();
-        let backups = dir.path().join(BACKUP_DIR);
-        std::fs::create_dir_all(&backups).unwrap();
-        let taken = chrono::Utc::now();
-        let seconds = i64::try_from(MAX_NAME_ATTEMPTS).unwrap();
-        for offset in 0..seconds {
-            let name = backup_file_name(taken + chrono::TimeDelta::seconds(offset));
-            std::fs::write(backups.join(name), b"existing").unwrap();
-        }
-
-        let error = write_backup(&database, taken).unwrap_err();
-
-        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
-        let entries: Vec<_> = std::fs::read_dir(&backups)
-            .unwrap()
-            .map(|entry| entry.unwrap().path())
-            .collect();
-        assert_eq!(
-            entries.len(),
-            MAX_NAME_ATTEMPTS,
-            "no temporary copy is left"
-        );
-        assert!(
-            entries
-                .iter()
-                .all(|path| std::fs::read(path).unwrap() == b"existing")
-        );
-    }
-
-    #[test]
-    fn pending_copy_names_follow_write_backup_exactly() {
-        assert!(is_pending_backup_name(
-            "data_backup_20200101_000000.db.a1B2c3.pending"
-        ));
-        for other in [
-            "data_backup_20200101_000000.db.pending",
-            "data_backup_20200101_000000.db..pending",
-            "data_backup_20200101_000000.db.a-1.pending",
-            "data_backup_20200101_000000.db.abc.pending-journal",
-            "data_backup_latest.db.abc123.pending",
-            "notes.db.abc123.pending",
-            "data.db.abc123.pending",
-            "data_backup_20200101_000000.db",
-        ] {
-            assert!(!is_pending_backup_name(other), "{other}");
-        }
-    }
-
-    /// Only old regular files with the exact temporary name are swept, through the
-    /// chokepoint; lookalikes, directories, symlinks and published backups stay.
-    #[test]
-    fn sweep_removes_only_abandoned_pending_copies() {
-        let dir = tempfile::tempdir().unwrap();
-        let backups = dir.path().join(BACKUP_DIR);
-        std::fs::create_dir_all(&backups).unwrap();
-        let now = SystemTime::now();
-        let write = |name: &str, age: Duration| {
-            let path = backups.join(name);
-            std::fs::write(&path, b"partial").unwrap();
-            set_mtime(&path, now - age);
-            path
-        };
-        let abandoned = write("data_backup_20200101_000000.db.a1B2c3.pending", DAY * 2);
-        let fresh = write("data_backup_20200102_000000.db.Z9y8X7.pending", DAY / 24);
-        let published = write("data_backup_20200101_000000.db", DAY * 400);
-        let lookalike = write("data_backup_20200101_000000.db.pending", DAY * 400);
-        let unrelated = write("notes.db.abc123.pending", DAY * 400);
-        let directory = backups.join("data_backup_20200103_000000.db.dir123.pending");
-        std::fs::create_dir(&directory).unwrap();
-
-        assert_eq!(sweep_pending(dir.path(), now).unwrap(), 1);
-
-        assert!(!abandoned.exists());
-        for kept in [&fresh, &published, &lookalike, &unrelated, &directory] {
-            assert!(kept.exists(), "{}", kept.display());
-        }
-        assert_eq!(sweep_pending(dir.path(), now).unwrap(), 0);
-        assert_eq!(
-            sweep_pending(tempfile::tempdir().unwrap().path(), now).unwrap(),
-            0,
-            "no backups directory"
-        );
     }
 
     #[test]

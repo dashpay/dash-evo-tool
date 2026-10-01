@@ -4,7 +4,7 @@ use dash_evo_tool::backend_task::identity::{
     IdentityRegistrationInfo, build_identity_registration as build_identity_registration_inner,
 };
 use dash_evo_tool::context::AppContext;
-use dash_evo_tool::model::wallet::{Wallet, WalletSeedHash};
+use dash_evo_tool::model::wallet::Wallet;
 use std::sync::{Arc, RwLock};
 
 /// Asset lock amount in duffs for the e2e registration fixture. Platform
@@ -26,19 +26,11 @@ const E2E_FUNDING_DUFFS: u64 = 25_000_000;
 pub async fn build_identity_registration(
     app_context: &Arc<AppContext>,
     wallet_arc: &Arc<RwLock<Wallet>>,
-    wallet_seed_hash: WalletSeedHash,
 ) -> IdentityRegistrationInfo {
     let identity_index: u32 = 0;
-    let mut reg_info = build_identity_registration_inner(
-        app_context,
-        wallet_arc,
-        identity_index,
-        E2E_FUNDING_DUFFS,
-    )
-    .await
-    .expect("Failed to build identity registration");
-    reg_info.alias_input = format!("e2e-test-{}", hex::encode(&wallet_seed_hash[..4]));
-    reg_info
+    build_identity_registration_inner(app_context, wallet_arc, identity_index, E2E_FUNDING_DUFFS)
+        .await
+        .expect("Failed to build identity registration")
 }
 
 /// Get a receive address string from a wallet, via the SPV-watched upstream

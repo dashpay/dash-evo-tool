@@ -117,6 +117,7 @@ pub struct KeyInfoScreen {
     pending_recovery_restore: Option<Vec<RecoveryItem>>,
     /// The screen this key was opened from, for the breadcrumb back to it.
     parent: Option<&'static str>,
+    masternode_origin: bool,
 }
 
 /// At-rest protection posture of an identity's vault-stored keys.
@@ -279,7 +280,11 @@ impl ScreenLike for KeyInfoScreen {
         action |= add_left_panel(
             ui,
             &self.app_context,
-            crate::ui::RootScreenType::RootScreenIdentityHub,
+            if self.masternode_origin {
+                crate::ui::RootScreenType::RootScreenMasternodes
+            } else {
+                crate::ui::RootScreenType::RootScreenIdentityHub
+            },
         );
 
         action |= island_central_panel(ui, |ui| {
@@ -911,6 +916,7 @@ impl KeyInfoScreen {
             recovery,
             pending_recovery_restore: None,
             parent: None,
+            masternode_origin: false,
         }
     }
 
@@ -941,21 +947,25 @@ impl KeyInfoScreen {
         self
     }
 
-    /// The breadcrumb trail, with the parent screen in it when the caller named
-    /// one. The parent crumb pops back rather than clearing the stack, so the
-    /// screen underneath is the one the user actually came from.
+    /// Return to the open node detail when this key was opened from Masternodes.
+    pub fn with_masternode_origin(mut self) -> Self {
+        self.masternode_origin = true;
+        self
+    }
+
+    /// The root follows the caller's section; a named parent pops just one screen.
     fn breadcrumb(&self) -> Vec<(&'static str, AppAction)> {
-        match self.parent {
-            Some(parent) => vec![
-                ("Identities", AppAction::GoToMainScreen),
-                (parent, AppAction::PopScreenAndRefresh),
-                ("Key Info", AppAction::None),
-            ],
-            None => vec![
-                ("Identities", AppAction::GoToMainScreen),
-                ("Key Info", AppAction::None),
-            ],
+        let root = if self.masternode_origin {
+            ("Masternodes", AppAction::GoToMainScreen)
+        } else {
+            ("Identities", AppAction::OpenIdentityPicker)
+        };
+        let mut crumbs = vec![root];
+        if let Some(parent) = self.parent {
+            crumbs.push((parent, AppAction::PopScreenAndRefresh));
         }
+        crumbs.push(("Key Info", AppAction::None));
+        crumbs
     }
 
     /// The key store this screen's key is filed under.

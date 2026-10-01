@@ -186,6 +186,7 @@ impl TransferScreen {
                 &mut self.receiver_identity_id,
                 &self.known_identities,
             )
+            .with_context(&self.app_context)
             .width(300.0)
             .label("Receiver Identity ID:")
             .exclude(&[self.identity.identity.id()]),
@@ -573,7 +574,7 @@ impl ScreenLike for TransferScreen {
             ui,
             &self.app_context,
             vec![
-                ("Identities", AppAction::GoToMainScreen),
+                ("Identities", AppAction::OpenIdentityPicker),
                 ("Transfer", AppAction::None),
             ],
             vec![],
@@ -695,11 +696,8 @@ impl ScreenLike for TransferScreen {
 
                 // Show identity info
                 let identity_id_string = self.identity.identity.id().to_string(Encoding::Base58);
-                let identity_label = if let Some(alias) = &self.identity.alias {
-                    format!("From: {alias} ({identity_id_string})")
-                } else {
-                    format!("From: {identity_id_string}")
-                };
+                let name = self.app_context.identity_display_label(&self.identity);
+                let identity_label = format!("From: {name} ({identity_id_string})");
                 ui.label(identity_label);
                 ui.add_space(5.0);
 

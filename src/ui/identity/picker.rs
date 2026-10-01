@@ -48,6 +48,9 @@ pub fn render(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
     identities: &[QualifiedIdentity],
+    profiles: &mut super::profile_cache::ProfileCache,
+    avatars: &mut crate::ui::state::AvatarCache,
+    pending_avatars: &mut Vec<crate::backend_task::BackendTask>,
     selected_id_out: Option<&mut Option<String>>,
 ) -> AppAction {
     let dark_mode = ui.ctx().global_style().visuals.dark_mode;
@@ -74,52 +77,68 @@ pub fn render(
         ui.add_space(20.0);
     });
 
-    // Grid layout: horizontal flow with manual wrapping.
-    //
-    // We do not use `egui::Grid` because it requires a fixed column count;
-    // the design-spec `repeat(auto-fill, minmax(260px, 1fr))` rule needs the
-    // column count to depend on the available width.
-    let available_width = ui.available_width();
-    let columns = compute_column_count(available_width);
+    egui::ScrollArea::vertical()
+        .id_salt(("identity_picker", app_context.selected_wallet_hash()))
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            let available_width = ui.available_width();
+            let columns = compute_column_count(available_width);
+            let card_width = (available_width - GRID_GAP * (columns - 1) as f32) / columns as f32;
+            if identities.is_empty() && app_context.selected_wallet_hash().is_some() {
+                ui.label("This wallet has no identities yet. Add an identity to get started.");
+                ui.add_space(GRID_GAP);
+            }
+            let cells: Vec<PickerCell<'_>> = identities
+                .iter()
+                .map(PickerCell::Identity)
+                .chain(std::iter::once(PickerCell::Add))
+                .collect();
 
-    ui.vertical(|ui| {
-        let cells: Vec<PickerCell<'_>> = identities
-            .iter()
-            .map(PickerCell::Identity)
-            .chain(std::iter::once(PickerCell::Add))
-            .collect();
-
-        for row in cells.chunks(columns.max(1)) {
-            ui.horizontal(|ui| {
-                for (i, cell) in row.iter().enumerate() {
-                    if i > 0 {
-                        ui.add_space(GRID_GAP);
-                    }
-                    match cell {
-                        PickerCell::Identity(identity) => {
-                            let card = build_card(identity);
-                            let response = card.show(ui);
-                            if response.clicked {
-                                captured_selection = Some(response.identity_id.clone());
+            for row in cells.chunks(columns.max(1)) {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = GRID_GAP;
+                    for cell in row {
+                        match cell {
+                            PickerCell::Identity(identity) => {
+                                let profile =
+                                    profiles.get_or_request(identity).and_then(Option::as_ref);
+                                let name = app_context.identity_display_name_or(
+                                    identity.identity.id(),
+                                    profile.and_then(|p| p.display_name_opt()),
+                                );
+                                let mut card =
+                                    build_card(identity, name.as_deref()).with_width(card_width);
+                                if let Some(profile) = profile {
+                                    card = card.with_avatar_url(&profile.avatar_url);
+                                }
+                                let response = card.show(ui, avatars);
+                                if let Some(fetch) = response.avatar_fetch {
+                                    pending_avatars.push(fetch);
+                                }
+                                if response.clicked {
+                                    captured_selection = Some(response.identity_id.clone());
+                                }
+                            }
+                            PickerCell::Add => {
+                                let card = IdentityPickerAddCard::new().with_width(card_width);
+                                let response = card.show(ui);
+                                if response.add_requested {
+                                    // Navigate to the existing AddNewIdentityScreen —
+                                    // no duplicated screen, no new backend task.
+                                    action = AppAction::AddScreen(Screen::AddNewIdentityScreen(
+                                        AddNewIdentityScreen::new_with_wallet(
+                                            app_context,
+                                            app_context.selected_wallet_hash(),
+                                        ),
+                                    ));
+                                }
                             }
                         }
-                        PickerCell::Add => {
-                            let card = IdentityPickerAddCard::new();
-                            let response = card.show(ui);
-                            if response.add_requested {
-                                // Navigate to the existing AddNewIdentityScreen —
-                                // no duplicated screen, no new backend task.
-                                action = AppAction::AddScreen(Screen::AddNewIdentityScreen(
-                                    AddNewIdentityScreen::new(app_context),
-                                ));
-                            }
-                        }
                     }
-                }
-            });
-            ui.add_space(GRID_GAP);
-        }
-    });
+                });
+                ui.add_space(GRID_GAP);
+            }
+        });
 
     // Propagate captured selection to the caller, if they supplied a slot.
     // Only update when an identity was actually clicked — never overwrite with
@@ -138,7 +157,7 @@ pub fn render(
 /// stretching to fill the remaining space when extra room exists.
 pub fn compute_column_count(available_width: f32) -> usize {
     let min_width = CARD_MIN_WIDTH + GRID_GAP;
-    let columns = (available_width / min_width).floor() as usize;
+    let columns = ((available_width + GRID_GAP) / min_width).floor() as usize;
     columns.max(1)
 }
 
@@ -147,15 +166,8 @@ enum PickerCell<'a> {
     Add,
 }
 
-/// Build a [`IdentityPickerCard`] from a [`QualifiedIdentity`].
-///
-/// Display-name is not yet a first-class field on `QualifiedIdentity` (it
-/// comes from the DashPay social profile, loaded asynchronously). Until that
-/// integration lands we use the local nickname (`alias`) as a stand-in for
-/// display-name so users who have labelled their identities still see a
-/// familiar heading. When a real social-profile display name becomes
-/// available upstream, wiring it into this function is a one-line change.
-fn build_card(identity: &QualifiedIdentity) -> IdentityPickerCard {
+/// Build a picker card using the same profile name as navigation.
+fn build_card(identity: &QualifiedIdentity, display_name: Option<&str>) -> IdentityPickerCard {
     let id_base58 = identity.identity.id().to_string(Encoding::Base58);
 
     // Balance formatting: design-spec §B.14 uses `{amount} DASH` with tabular
@@ -178,9 +190,8 @@ fn build_card(identity: &QualifiedIdentity) -> IdentityPickerCard {
              breadcrumb.",
             );
 
-    // Heading priority: local alias → DPNS → shortened id.
-    if let Some(alias) = identity.alias.as_deref().filter(|s| !s.trim().is_empty()) {
-        card = card.with_display_name(alias);
+    if let Some(name) = display_name {
+        card = card.with_display_name(name);
     }
     if let Some(dpns) = identity.dpns_names.first().map(|n| n.name.as_str())
         && !dpns.is_empty()

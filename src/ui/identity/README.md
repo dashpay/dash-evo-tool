@@ -40,7 +40,7 @@ Pushed onto the screen stack from the hub (or the left nav), not tabs.
 | `identity_hub_tab_bar.rs` | `hub_screen` | Horizontal tab strip (Home · Contacts · Activity · Settings) |
 | `identity_hero_card.rs` | `home` | Gradient hero card (Dash-Blue → Platform-Purple) |
 | `onboarding_checklist.rs` | `home` | Pick username · set display name · add first contact |
-| `identity_pill.rs` | `identity_picker_card` | Thin wrapper over `components::breadcrumb_pill::BreadcrumbPill` with the identity label priority rule (nickname → DPNS → shortened ID) |
+| `identity_pill.rs` | `identity_picker_card` | Thin wrapper over `components::breadcrumb_pill::BreadcrumbPill` with the identity label priority rule (Display name → DPNS → shortened ID) |
 | `identity_picker_card.rs` | `picker` | Per-identity card in the picker grid |
 | `identity_picker_add_card.rs` | `picker` | Trailing "Add a new identity" CTA in the picker grid |
 | `social_profile_gate_card.rs` | `contacts` | Gate shown when the active identity has no DashPay profile |

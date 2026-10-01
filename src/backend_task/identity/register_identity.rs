@@ -29,7 +29,6 @@ impl AppContext {
         input: IdentityRegistrationInfo,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let IdentityRegistrationInfo {
-            alias_input,
             keys,
             wallet,
             wallet_identity_index,
@@ -67,7 +66,6 @@ impl AppContext {
                     keys,
                     wallet,
                     wallet_seed_hash,
-                    alias_input,
                     estimated_fee,
                 )
                 .await
@@ -92,7 +90,6 @@ impl AppContext {
                     keys,
                     wallet,
                     wallet_seed_hash,
-                    alias_input,
                     estimated_fee,
                 )
                 .await
@@ -131,7 +128,6 @@ impl AppContext {
                     .collect::<BTreeMap<PlatformAddress, (AddressNonce, Credits)>>();
 
                 self.register_identity_from_platform_addresses(
-                    alias_input,
                     keys,
                     wallet,
                     wallet_identity_index,
@@ -160,7 +156,6 @@ impl AppContext {
         keys: super::IdentityKeySpecs,
         wallet: std::sync::Arc<std::sync::RwLock<super::Wallet>>,
         wallet_seed_hash: super::WalletSeedHash,
-        alias_input: String,
         estimated_fee: u64,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let backend = self.wallet_backend()?;
@@ -184,11 +179,7 @@ impl AppContext {
             associated_operator_identity: None,
             associated_owner_key_id: None,
             identity_type: IdentityType::User,
-            alias: if alias_input.is_empty() {
-                None
-            } else {
-                Some(alias_input)
-            },
+            alias: None,
             private_keys: keys.to_key_storage(wallet_seed_hash),
             dpns_names: vec![],
             associated_wallets: BTreeMap::from([(wallet_seed_hash, wallet.clone())]),
@@ -260,7 +251,6 @@ impl AppContext {
     /// from the current nonce of the address.
     async fn register_identity_from_platform_addresses(
         &self,
-        alias_input: String,
         keys: super::IdentityKeySpecs,
         wallet: std::sync::Arc<std::sync::RwLock<super::Wallet>>,
         wallet_identity_index: u32,
@@ -316,10 +306,6 @@ impl AppContext {
             status: IdentityStatus::PendingCreation,
             network: self.network,
         };
-
-        if !alias_input.is_empty() {
-            qualified_identity.alias = Some(alias_input);
-        }
 
         // Sign each funding input through a JIT platform signer that borrows the
         // HD seed only for the duration of the SDK call. The pure path index is

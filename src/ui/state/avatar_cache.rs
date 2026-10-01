@@ -67,6 +67,11 @@ impl AvatarCache {
         )))
     }
 
+    /// Whether a dispatched URL is still awaiting its completion.
+    pub fn is_loading(&self, url: &str) -> bool {
+        matches!(self.states.get(url), Some(FetchState::Loading))
+    }
+
     /// Seed the cache with already-known bytes (e.g. a profile's locally-stored
     /// avatar), moving `url` straight to `Fetched` so no network fetch is
     /// dispatched. No-op if the URL is already tracked.

@@ -41,7 +41,6 @@ use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::{CREDITS_PER_DUFF, Credits, Duffs};
 use dash_sdk::dpp::dashcore::OutPoint;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use egui::{ComboBox, ScrollArea, Ui};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
@@ -824,7 +823,7 @@ impl ScreenLike for TopUpIdentityScreen {
             ui,
             &self.app_context,
             vec![
-                ("Identities", AppAction::GoToMainScreen),
+                ("Identities", AppAction::OpenIdentityPicker),
                 ("Add Funds", AppAction::None),
             ],
             vec![],
@@ -853,12 +852,7 @@ impl ScreenLike for TopUpIdentityScreen {
                 ui.horizontal(|ui| {
                     ui.label("Identity:");
 
-                    // Show alias if available, otherwise show ID
-                    if let Some(alias) = &self.identity.alias {
-                        ui.label(alias);
-                    } else {
-                        ui.label(self.identity.identity.id().to_string(Encoding::Base58));
-                    }
+                    ui.label(self.app_context.identity_display_label(&self.identity));
                 });
 
                 // Show current balance

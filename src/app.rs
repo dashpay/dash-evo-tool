@@ -295,10 +295,10 @@ fn clear_profile_saving_banner_after_success(
     context: &BackendTaskContext,
     result: &BackendTaskSuccessResult,
 ) {
-    if let BackendTaskSuccessResult::DashPayProfileUpdated(saved_id) = result
-        && context.dashpay_profile_update_identity() == Some(*saved_id)
+    if let BackendTaskSuccessResult::DashPayProfileUpdated(snapshot) = result
+        && context.dashpay_profile_update_identity() == Some(snapshot.owner)
     {
-        crate::ui::identity::settings::clear_profile_saving_banner(ctx, saved_id);
+        crate::ui::identity::settings::clear_profile_saving_banner(ctx, &snapshot.owner);
     }
 }
 
@@ -458,7 +458,14 @@ mod backend_task_join_tests {
         clear_profile_saving_banner_after_success(
             &ctx,
             &profile_update_context(1, 1),
-            &BackendTaskSuccessResult::DashPayProfileUpdated(identity_id),
+            &BackendTaskSuccessResult::DashPayProfileUpdated(
+                crate::model::dashpay::ProfileSnapshot {
+                    network: Network::Testnet,
+                    owner: identity_id,
+                    revision: 0,
+                    profile: None,
+                },
+            ),
         );
 
         assert!(
@@ -525,7 +532,14 @@ mod backend_task_join_tests {
         clear_profile_saving_banner_after_success(
             &ctx,
             &identity_a,
-            &BackendTaskSuccessResult::DashPayProfileUpdated(Identifier::from([1; 32])),
+            &BackendTaskSuccessResult::DashPayProfileUpdated(
+                crate::model::dashpay::ProfileSnapshot {
+                    network: Network::Testnet,
+                    owner: Identifier::from([1; 32]),
+                    revision: 0,
+                    profile: None,
+                },
+            ),
         );
 
         assert!(
@@ -536,7 +550,14 @@ mod backend_task_join_tests {
         clear_profile_saving_banner_after_success(
             &ctx,
             &identity_b,
-            &BackendTaskSuccessResult::DashPayProfileUpdated(Identifier::from([2; 32])),
+            &BackendTaskSuccessResult::DashPayProfileUpdated(
+                crate::model::dashpay::ProfileSnapshot {
+                    network: Network::Testnet,
+                    owner: Identifier::from([2; 32]),
+                    revision: 0,
+                    profile: None,
+                },
+            ),
         );
         assert!(
             saving.elapsed().is_none(),
@@ -1291,6 +1312,9 @@ pub enum AppAction {
     PopScreen,
     PopScreenAndRefresh,
     GoToMainScreen,
+    /// Dismiss pushed screens and open all User identities, clearing the wallet filter.
+    /// Shared forms opened from Masternodes instead return to its current detail.
+    OpenIdentityPicker,
     SwitchNetwork(Network),
     SetMainScreen(RootScreenType),
     SetMainScreenThenPopScreen(RootScreenType),
@@ -2526,7 +2550,11 @@ impl AppState {
         }
     }
 
-    fn route_contact_request_result_to_hidden_hub(&mut self, result: &BackendTaskSuccessResult) {
+    fn route_identity_result_to_hidden_hub(
+        &mut self,
+        context: &BackendTaskContext,
+        result: &BackendTaskSuccessResult,
+    ) {
         if identity_hub_is_visible(self.selected_main_screen, self.screen_stack.is_empty()) {
             return;
         }
@@ -2534,11 +2562,27 @@ impl AppState {
             .main_screens
             .get_mut(&RootScreenType::RootScreenIdentityHub)
         {
-            hub.handle_contact_request_result(result);
+            let needs_completion = match result {
+                BackendTaskSuccessResult::DashPayProfile(_)
+                | BackendTaskSuccessResult::DashPayProfileUpdated(_) => true,
+                BackendTaskSuccessResult::DashPayAvatar { url, .. } => {
+                    hub.is_waiting_for_avatar(url)
+                }
+                _ => false,
+            };
+            if needs_completion {
+                hub.display_backend_task_result(context, result.clone());
+            } else {
+                hub.handle_contact_request_result(result);
+            }
         }
     }
 
-    fn route_contact_request_error_to_hidden_hub(&mut self, error: &TaskError) {
+    fn route_identity_error_to_hidden_hub(
+        &mut self,
+        context: &BackendTaskContext,
+        error: &TaskError,
+    ) {
         if identity_hub_is_visible(self.selected_main_screen, self.screen_stack.is_empty()) {
             return;
         }
@@ -2546,6 +2590,7 @@ impl AppState {
             .main_screens
             .get_mut(&RootScreenType::RootScreenIdentityHub)
         {
+            hub.display_backend_task_error(context, error);
             hub.handle_contact_request_error(error);
         }
     }
@@ -2935,7 +2980,7 @@ impl App for AppState {
                 } => {
                     let unboxed_message = *message;
                     clear_profile_saving_banner_after_success(ctx, &context, &unboxed_message);
-                    self.route_contact_request_result_to_hidden_hub(&unboxed_message);
+                    self.route_identity_result_to_hidden_hub(&context, &unboxed_message);
                     match unboxed_message {
                         BackendTaskSuccessResult::RemovedIdentities { .. } => {
                             deliver_identity_removal_result(
@@ -3222,7 +3267,7 @@ impl App for AppState {
                         &context,
                         &err,
                     );
-                    self.route_contact_request_error_to_hidden_hub(&err);
+                    self.route_identity_error_to_hidden_hub(&context, &err);
                     let chooser_owned = network_chooser_owns_task(&context);
                     let suppress_stale_error = !chooser_owned
                         && !recovery_delivered
@@ -3513,6 +3558,18 @@ impl App for AppState {
                         screen.refresh();
                     } else {
                         self.active_root_screen_mut().refresh_on_arrival();
+                    }
+                }
+                AppAction::OpenIdentityPicker => {
+                    self.screen_stack.clear();
+                    // Shared identity forms also return to an open masternode detail.
+                    if self.selected_main_screen == RootScreenType::RootScreenMasternodes {
+                        self.active_root_screen_mut().refresh_on_arrival();
+                    } else {
+                        self.set_main_screen(RootScreenType::RootScreenIdentityHub);
+                    }
+                    if let Screen::IdentityHubScreen(hub) = self.active_root_screen_mut() {
+                        hub.open_picker();
                     }
                 }
                 AppAction::GoToMainScreen => {

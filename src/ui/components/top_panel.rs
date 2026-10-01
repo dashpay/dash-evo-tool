@@ -377,6 +377,9 @@ pub fn apply_global_nav_effect(
 ) -> AppAction {
     match effect {
         GlobalNavEffect::None => AppAction::None,
+        GlobalNavEffect::NavigateToRoot(RootScreenType::RootScreenIdentityHub) => {
+            AppAction::OpenIdentityPicker
+        }
         GlobalNavEffect::NavigateToRoot(target) => AppAction::SetMainScreen(target),
         // Silent app-scoped write, NO forced navigation (FR-GLOBAL-NAV-2 rule
         // 1). `set_selected_hd_wallet` also reconciles the app-global *identity*
@@ -385,6 +388,10 @@ pub fn apply_global_nav_effect(
         // intentional; combined with the resolution-layer MN/Evonode filter it
         // must never reconcile onto a masternode/evonode identity — the FR-6
         // boundary is enforced there, not re-checked here.
+        GlobalNavEffect::ClearWallet => {
+            app_context.set_selected_hd_wallet(None);
+            AppAction::None
+        }
         GlobalNavEffect::SwitchWallet(hash) => {
             app_context.set_selected_hd_wallet(Some(hash));
             AppAction::None

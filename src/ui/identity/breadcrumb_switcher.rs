@@ -29,8 +29,8 @@ pub enum BreadcrumbEffect {
     None,
     /// The `Identities` crumb was clicked — open the picker.
     OpenPicker,
-    /// Switch the operating wallet.
-    SwitchWallet(WalletSeedHash),
+    /// Select a wallet, or show all identities with `None`.
+    SwitchWallet(Option<WalletSeedHash>),
     /// Select an identity.
     SelectIdentity(Identifier),
     /// "Set up another wallet" — route to the Wallets screen.
@@ -61,7 +61,8 @@ fn map_effect(effect: GlobalNavEffect) -> BreadcrumbEffect {
         }
         // The hub's segment-1 only ever targets the hub itself.
         GlobalNavEffect::NavigateToRoot(_) => BreadcrumbEffect::None,
-        GlobalNavEffect::SwitchWallet(hash) => BreadcrumbEffect::SwitchWallet(hash),
+        GlobalNavEffect::SwitchWallet(hash) => BreadcrumbEffect::SwitchWallet(Some(hash)),
+        GlobalNavEffect::ClearWallet => BreadcrumbEffect::SwitchWallet(None),
         GlobalNavEffect::SelectIdentity(id) => BreadcrumbEffect::SelectIdentity(id),
         // The hub never composes a page-scoped object pill.
         GlobalNavEffect::SelectPageObject(_) => BreadcrumbEffect::None,
@@ -117,7 +118,7 @@ mod tests {
     fn common_effects_pass_through() {
         assert_eq!(
             map_effect(GlobalNavEffect::SwitchWallet([1; 32])),
-            BreadcrumbEffect::SwitchWallet([1; 32])
+            BreadcrumbEffect::SwitchWallet(Some([1; 32]))
         );
         let id = Identifier::new([2; 32]);
         assert_eq!(

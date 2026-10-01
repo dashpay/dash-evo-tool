@@ -1638,6 +1638,7 @@ impl AppContext {
         self.mark_identity_unloaded(&kv, &id)?;
         index_remove_identity(&kv, &id)?;
         purge_identity_scope(&kv, &id)?;
+        self.save_identity_profile_name(*identifier, None);
         let sidecar_cleanup = self.finish_identity_removal_cleanup(&kv, &id, vault_keys)?;
         // Mirror removal into the upstream unowned scope; wallet-owned identities are unaffected.
         if let Ok(backend) = self.wallet_backend()

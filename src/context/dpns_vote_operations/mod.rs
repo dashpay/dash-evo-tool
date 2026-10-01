@@ -241,8 +241,17 @@ fn persist_operation(
             .as_ref()
             .is_none_or(|previous| !previous.is_complete());
     let mut locks = load_or_rebuild_lock_index(kv, network)?;
-    let previous_locks = locks.clone();
-    locks.retain(|_, owner| *owner != operation.id);
+    // Only this operation's own entries are removed and reinserted, so the
+    // index changes exactly when the set of keys it owns changes.
+    let mut previously_owned = BTreeSet::new();
+    locks.retain(|key, owner| {
+        let owned = *owner == operation.id;
+        if owned {
+            previously_owned.insert(key.clone());
+        }
+        !owned
+    });
+    let mut now_owned = BTreeSet::new();
     for outcome in operation
         .targets
         .iter()
@@ -255,6 +264,7 @@ fn persist_operation(
             return Err(TaskError::DpnsVoteTargetBusy);
         }
         locks.insert(outcome.target.key.clone(), operation.id);
+        now_owned.insert(outcome.target.key.clone());
     }
 
     for key in counts::newly_spent_targets(previous.as_ref(), operation) {
@@ -263,7 +273,7 @@ fn persist_operation(
 
     let mut ids = load_operation_ids(kv, network)?;
     let new_operation = !ids.contains(&operation.id.to_bytes());
-    let locks_changed = locks != previous_locks;
+    let locks_changed = previously_owned != now_owned;
     if new_operation || locks_changed {
         kv.put(
             DetScope::Global,

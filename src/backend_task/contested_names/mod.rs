@@ -40,14 +40,19 @@ use crate::model::dpns_voting::SCHEDULED_VOTE_MAX_LATENESS_MS;
 #[derive(Debug, Clone, PartialEq)]
 pub enum ContestedResourceTask {
     QueryDPNSContests,
+    /// Persist a voting preference chosen in the UI.
+    SaveDpnsVotingPreference(DpnsVotingPreference),
     /// The same contest + vote-state refresh, run by the background timer:
     /// partial failures are logged instead of reported to the user.
     RefreshContestsInBackground,
+    /// The last field records the relative preset of "before the end"
+    /// targets for display (VOTE-FR-081).
     SubmitDpnsVoteOperation(
         DpnsVoteOperation,
         Vec<QualifiedIdentity>,
         Option<DpnsVoteTargetKey>,
         Network,
+        Option<RelativeScheduleLabels>,
     ),
     ReconcileDpnsVoteOperation(DpnsVoteOperationId, Network),
     CastScheduledVote(ScheduledDPNSVote, Box<QualifiedIdentity>),
@@ -111,6 +116,42 @@ fn classify_vote_attempt(
 ///
 /// Terminal for scheduled targets too: a closed poll can never accept the
 /// vote, so retrying it would only fail again.
+/// A voting preference the UI asks the backend to persist.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DpnsVotingPreference {
+    /// Save as the default node set on this network.
+    NodeSet(crate::model::dpns_voting::operator::NodeSet),
+    /// The last-used Masternodes segment on this network.
+    MasternodesSegment(crate::model::dpns_voting::operator::MasternodesSegment),
+}
+
+/// "Before the end" targets of a submitted batch and the preset they used.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RelativeScheduleLabels {
+    pub preset: std::time::Duration,
+    pub targets: std::collections::BTreeSet<DpnsVoteTargetKey>,
+}
+
+impl AppContext {
+    /// Record the relative preset of each listed scheduled target. Display
+    /// only, so failures are logged and never block the vote.
+    fn save_relative_schedule_labels(
+        &self,
+        operation: &DpnsVoteOperation,
+        labels: &RelativeScheduleLabels,
+    ) {
+        for outcome in &operation.targets {
+            if let VoteTiming::Scheduled(at) = outcome.target.timing
+                && labels.targets.contains(&outcome.target.key)
+                && let Err(error) =
+                    self.save_dpns_relative_schedule_label(&outcome.target.key, at, labels.preset)
+            {
+                tracing::debug!(?error, "Could not save a relative schedule label");
+            }
+        }
+    }
+}
+
 fn voting_ended_outcome(
     contest: Option<&ContestedName>,
     now_ms: u64,
@@ -236,12 +277,28 @@ impl AppContext {
                 .query_dpns_contested_resources(sdk, sender, true)
                 .await
                 .map(|_| BackendTaskSuccessResult::None),
+            ContestedResourceTask::SaveDpnsVotingPreference(preference) => {
+                match preference {
+                    DpnsVotingPreference::NodeSet(node_set) => {
+                        self.save_dpns_node_set(&node_set)?;
+                        self.recompute_dpns_vote_attention();
+                    }
+                    DpnsVotingPreference::MasternodesSegment(segment) => {
+                        self.set_masternodes_last_segment(segment)?;
+                    }
+                }
+                Ok(BackendTaskSuccessResult::None)
+            }
             ContestedResourceTask::SubmitDpnsVoteOperation(
                 operation,
                 voters,
                 replacing_scheduled_key,
                 _,
+                labels,
             ) => {
+                if let Some(labels) = labels {
+                    self.save_relative_schedule_labels(&operation, &labels);
+                }
                 self.execute_dpns_vote_operation_with_recovery(
                     operation,
                     voters,
@@ -1552,6 +1609,35 @@ mod tests {
                 "failed reconciliation must retain entry and newly due admissions"
             );
         }
+    }
+
+    /// VOTE-FR-081: the backend records the relative preset only for the
+    /// listed targets that were actually scheduled.
+    #[test]
+    fn relative_labels_are_saved_for_listed_scheduled_targets() {
+        let (_temp, context) = vote_context();
+        let scheduled = scheduled_operation_for(&context, "alice", 9_000);
+        let mut immediate = scheduled_operation_for(&context, "bob", 9_000);
+        immediate.targets[0].target.timing = VoteTiming::Now;
+        let mut operation = scheduled.clone();
+        operation.targets.push(immediate.targets[0].clone());
+        let preset = std::time::Duration::from_secs(600);
+        let labels = RelativeScheduleLabels {
+            preset,
+            targets: operation
+                .targets
+                .iter()
+                .map(|outcome| outcome.target.key.clone())
+                .collect(),
+        };
+        context.save_relative_schedule_labels(&operation, &labels);
+        let alice = &operation.targets[0].target.key;
+        let bob = &operation.targets[1].target.key;
+        assert_eq!(
+            context.dpns_relative_schedule_label(alice, 9_000),
+            Some(preset)
+        );
+        assert_eq!(context.dpns_relative_schedule_label(bob, 9_000), None);
     }
 
     #[tokio::test]

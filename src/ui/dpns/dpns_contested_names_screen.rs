@@ -16,6 +16,7 @@ use egui_extras::{Column, TableBuilder};
 
 use crate::app::{AppAction, scheduled_vote_sweep_is_quiet};
 use crate::backend_task::contested_names::ContestedResourceTask;
+use crate::backend_task::contested_names::{DpnsVotingPreference, RelativeScheduleLabels};
 use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskContext};
 use crate::context::AppContext;
@@ -464,6 +465,8 @@ pub struct DPNSScreen {
     pub selected_votes: Vec<SelectedVote>,
     pub app_context: Arc<AppContext>,
     pending_backend_task: Option<BackendTask>,
+    /// A preference to persist through the backend once no user action is out.
+    pending_preference: Option<DpnsVotingPreference>,
     vote_operations: DpnsVoteOperationSnapshot,
     vote_state: DpnsVoteStateSnapshot,
     pending_vote_operation: Option<DpnsVoteOperationId>,
@@ -583,6 +586,7 @@ impl DPNSScreen {
             active_filter_term: String::new(),
             past_filter_term: String::new(),
             pending_backend_task: None,
+            pending_preference: None,
             vote_operations,
             vote_state,
             pending_vote_operation: None,
@@ -651,6 +655,7 @@ impl DPNSScreen {
         self.confirm_timing = ConfirmTiming::Now;
         self.relative_preset = relative_schedule_preset(self.app_context.network());
         self.pending_backend_task = None;
+        self.pending_preference = None;
         self.pending_vote_operation = None;
         self.pending_scheduled_actions.clear();
         self.release_pending_on_error = false;
@@ -1024,15 +1029,7 @@ impl DPNSScreen {
         let picked =
             node_set_picker::show(ui, &self.node_set, &self.resolved_nodes, &self.voting_nodes);
         if picked.save_default {
-            match self.app_context.save_dpns_node_set(&self.node_set) {
-                Ok(()) => {
-                    self.app_context.recompute_dpns_vote_attention();
-                }
-                Err(error) => {
-                    MessageBanner::set_global(ui.ctx(), error.to_string(), MessageType::Error)
-                        .with_details(&error);
-                }
-            }
+            self.pending_preference = Some(DpnsVotingPreference::NodeSet(self.node_set.clone()));
         }
         if let Some(node_set) = picked.changed {
             self.apply_node_set(node_set);
@@ -2429,23 +2426,17 @@ impl DPNSScreen {
             return AppAction::None;
         }
         let operation = DpnsVoteOperation::new(plan.aggregate.targets);
-        if self.confirm_timing == ConfirmTiming::BeforeEnd {
-            for outcome in &operation.targets {
-                if let VoteTiming::Scheduled(at) = outcome.target.timing
-                    && !self
-                        .node_overrides
-                        .contains_key(&outcome.target.key.voter_id)
-                    && let Err(error) = self.app_context.save_dpns_relative_schedule_label(
-                        &outcome.target.key,
-                        at,
-                        self.relative_preset,
-                    )
-                {
-                    // Display only: the row falls back to the absolute time.
-                    tracing::debug!(?error, "Could not save a relative schedule label");
-                }
-            }
-        }
+        let labels =
+            (self.confirm_timing == ConfirmTiming::BeforeEnd).then(|| RelativeScheduleLabels {
+                preset: self.relative_preset,
+                targets: operation
+                    .targets
+                    .iter()
+                    .map(|outcome| &outcome.target.key)
+                    .filter(|key| !self.node_overrides.contains_key(&key.voter_id))
+                    .cloned()
+                    .collect(),
+            });
         self.submission_error_banner.take_and_clear();
         self.bulk_vote_handling_status = if has_immediate {
             VoteHandlingStatus::CastingVotes
@@ -2460,6 +2451,7 @@ impl DPNSScreen {
                 plan.voters,
                 None,
                 self.app_context.network(),
+                labels,
             ),
         ))
     }
@@ -2849,6 +2841,13 @@ impl ScreenLike for DPNSScreen {
             && let Some(task) = self.pending_backend_task.take()
         {
             action = AppAction::BackendTask(task);
+        }
+        if action == AppAction::None
+            && let Some(preference) = self.pending_preference.take()
+        {
+            action = AppAction::BackendTask(BackendTask::ContestedResourceTask(
+                ContestedResourceTask::SaveDpnsVotingPreference(preference),
+            ));
         }
         action
     }

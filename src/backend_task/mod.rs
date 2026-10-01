@@ -631,6 +631,7 @@ impl From<&BackendTask> for BackendTaskContext {
                 _,
                 _,
                 network,
+                _,
             )) => Self::DpnsVoteOperation {
                 network: *network,
                 operation_id: operation.id,

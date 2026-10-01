@@ -592,18 +592,13 @@ pub enum TaskError {
 
     /// Signing with an identity key failed because its private half could not
     /// be resolved (missing wallet seed, missing vault key, locked wallet, or a
-    /// declined password prompt). Carries which identity and key were involved
-    /// for the details panel; the banner shows the underlying cause's message.
-    #[error("{source}")]
-    IdentitySigningKeyUnavailable {
-        /// Base58 identity ID.
-        identity_id: String,
-        key_id: dash_sdk::dpp::identity::KeyID,
-        purpose: dash_sdk::dpp::identity::Purpose,
-        /// Hex seed hashes of the wallets the key derives from, if any.
-        wallet_seed_hashes: Vec<String>,
+    /// declined password prompt). The DET signer tags its `ProtocolError` with
+    /// [`SIGNING_KEY_UNAVAILABLE_PREFIX`]; the banner shows the text after it,
+    /// which names the cause, the remedy, and the identity and key involved.
+    #[error("{}", signing_key_unavailable_message(source_error))]
+    IdentitySigningFailed {
         #[source]
-        source: Box<TaskError>,
+        source_error: Box<SdkError>,
     },
 
     /// An identity private key could not be stored in or read from the secret
@@ -3365,14 +3360,42 @@ impl From<dashcore_rpc::Error> for TaskError {
     }
 }
 
+/// Marker the DET identity signer puts in front of the `ProtocolError::Generic`
+/// text it returns when a signing key cannot be resolved.
+///
+/// Deliberate, documented exception to the "never parse error strings" rule:
+/// the upstream `Signer` trait can only return `ProtocolError`, which has no
+/// variant carrying a typed source, so this DET-owned marker is the only way to
+/// recognise DET's own signing failure once the SDK hands it back.
+// TODO(upstream): replace with a typed ProtocolError source variant in dashpay/platform
+pub const SIGNING_KEY_UNAVAILABLE_PREFIX: &str = "[det:signing-key-unavailable] ";
+
+/// The user-facing text a prefixed signer failure carries, or `None` when
+/// `error` is not one.
+fn signing_key_unavailable_text(error: &SdkError) -> Option<&str> {
+    match error {
+        SdkError::Protocol(ProtocolError::Generic(text)) => {
+            text.strip_prefix(SIGNING_KEY_UNAVAILABLE_PREFIX)
+        }
+        _ => None,
+    }
+}
+
+fn signing_key_unavailable_message(error: &SdkError) -> &str {
+    signing_key_unavailable_text(error).unwrap_or(
+        "This identity's signing key is not available on this device. Import the wallet or key again and retry.",
+    )
+}
+
 impl From<SdkError> for TaskError {
     fn from(error: SdkError) -> Self {
-        // A DET signer flattens its typed failure into `ProtocolError::Generic`
-        // (the upstream `Signer` contract); recover the typed cause it recorded.
-        if matches!(error, SdkError::Protocol(ProtocolError::Generic(_)))
-            && let Some(signing_failure) = super::signing_failure::take()
-        {
-            return signing_failure;
+        // DET's own signer failure, tagged by `QualifiedIdentity::sign`; see
+        // `SIGNING_KEY_UNAVAILABLE_PREFIX` for why this matches on text.
+        // TODO(upstream): replace with a typed ProtocolError source variant in dashpay/platform
+        if signing_key_unavailable_text(&error).is_some() {
+            return TaskError::IdentitySigningFailed {
+                source_error: Box::new(error),
+            };
         }
 
         if sdk_error_is_masternode_list_not_ready(&error) {
@@ -3759,15 +3782,28 @@ mod tests {
         assert!(!message.to_lowercase().contains("support"), "{message}");
     }
 
-    /// A generic protocol error with no recorded signing failure keeps mapping
-    /// to the generic SDK variant, even inside a task scope.
-    #[tokio::test]
-    async fn generic_protocol_error_without_a_recorded_signing_failure_is_unchanged() {
-        let error = super::super::signing_failure::scope(async {
-            TaskError::from(SdkError::Protocol(ProtocolError::Generic("x".into())))
-        })
-        .await;
+    /// An unrelated generic protocol error stays the generic SDK variant.
+    #[test]
+    fn unrelated_generic_protocol_error_stays_an_sdk_error() {
+        let error = TaskError::from(SdkError::Protocol(ProtocolError::Generic(
+            "Key 3 not found in identity".into(),
+        )));
         assert!(matches!(error, TaskError::SdkError { .. }), "{error:?}");
+    }
+
+    /// A prefixed signer failure maps to the dedicated variant, and the banner
+    /// shows exactly the text after the prefix.
+    #[test]
+    fn prefixed_signer_failure_maps_to_identity_signing_failed() {
+        let text = TaskError::SecretSeamMissing.to_string();
+        let error = TaskError::from(SdkError::Protocol(ProtocolError::Generic(format!(
+            "{SIGNING_KEY_UNAVAILABLE_PREFIX}{text}"
+        ))));
+        assert!(
+            matches!(error, TaskError::IdentitySigningFailed { .. }),
+            "{error:?}"
+        );
+        assert_eq!(error.to_string(), text);
     }
 
     fn dapi_connection_refused_error() -> TaskError {

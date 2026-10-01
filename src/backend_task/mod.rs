@@ -60,7 +60,6 @@ pub mod migration;
 pub mod platform_info;
 pub mod register_contract;
 pub mod shielded;
-pub(crate) mod signing_failure;
 pub mod system_task;
 pub mod tokens;
 pub mod update_data_contract;
@@ -1143,9 +1142,9 @@ impl AppContext {
             BackendTask::WalletTask(_) | BackendTask::ShieldedTask(_)
         );
         let task_sdk = self.sdk.load_full();
-        let result =
-            signing_failure::scope(self.run_backend_task_inner(task, sender, task_sdk.as_ref()))
-                .await;
+        let result = self
+            .run_backend_task_inner(task, sender, task_sdk.as_ref())
+            .await;
 
         if uses_wallet_backend_sdk {
             result

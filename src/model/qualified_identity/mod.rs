@@ -7,7 +7,7 @@ pub mod qualified_identity_public_key;
 // contract, whose closures must return `Result<_, TaskError>`. Removing it
 // requires making that secret-seam chokepoint generic over the closure error
 // type — a wallet_backend change out of scope here.
-use crate::backend_task::error::TaskError;
+use crate::backend_task::error::{SIGNING_KEY_UNAVAILABLE_PREFIX, TaskError};
 use crate::model::qualified_identity::encrypted_key_storage::{
     KeyStorage, ResolvedPrivateKey, same_key,
 };
@@ -376,15 +376,7 @@ impl Signer<IdentityPublicKey> for QualifiedIdentity {
         let resolved = self
             .resolve_private_key_bytes(identity_public_key)
             .await
-            .map_err(|e| {
-                let message = e.to_string();
-                // `ProtocolError` cannot carry the typed cause; park it for the
-                // `From<SdkError>` conversion (see `backend_task::signing_failure`).
-                crate::backend_task::signing_failure::record(
-                    self.signing_key_unavailable(identity_public_key, e),
-                );
-                ProtocolError::Generic(message)
-            })?;
+            .map_err(|e| self.signing_key_unavailable(identity_public_key, &e))?;
 
         let (_, private_key) = resolved.ok_or_else(|| {
             tracing::error!(
@@ -767,23 +759,39 @@ impl QualifiedIdentity {
         }
     }
 
-    /// Wrap a key-resolution failure with which identity, key and wallet(s) it
-    /// concerned, for the details panel and logs.
-    fn signing_key_unavailable(&self, key: &IdentityPublicKey, source: TaskError) -> TaskError {
-        let mut wallet_seed_hashes: Vec<String> = self
+    /// The `ProtocolError` returned when `key` cannot be resolved for signing.
+    ///
+    /// `ProtocolError` cannot carry a typed source, so the text is tagged with
+    /// [`SIGNING_KEY_UNAVAILABLE_PREFIX`] for `From<SdkError>` to recognise; the
+    /// rest is the cause's user-facing message plus the identity, key and
+    /// wallet involved. The typed error is logged here in full.
+    // TODO(upstream): replace with a typed ProtocolError source variant in dashpay/platform
+    fn signing_key_unavailable(&self, key: &IdentityPublicKey, cause: &TaskError) -> ProtocolError {
+        let identity_id = self.identity.id().to_string(Encoding::Base58);
+        let mut wallets: Vec<String> = self
             .private_keys
             .candidates(key)
             .filter_map(|placement| self.private_keys.wallet_seed_hash_for(&placement))
             .map(hex::encode)
             .collect();
-        wallet_seed_hashes.dedup();
-        TaskError::IdentitySigningKeyUnavailable {
-            identity_id: self.identity.id().to_string(Encoding::Base58),
-            key_id: key.id(),
-            purpose: key.purpose(),
-            wallet_seed_hashes,
-            source: Box::new(source),
+        wallets.dedup();
+        tracing::warn!(
+            identity_id = %identity_id,
+            key_id = key.id(),
+            purpose = ?key.purpose(),
+            wallets = ?wallets,
+            error = ?cause,
+            "Signing key could not be resolved"
+        );
+        let mut text = format!(
+            "{SIGNING_KEY_UNAVAILABLE_PREFIX}{cause} Identity: {identity_id}. Key: {key_id} ({purpose:?}).",
+            key_id = key.id(),
+            purpose = key.purpose(),
+        );
+        if !wallets.is_empty() {
+            text.push_str(&format!(" Wallet: {}.", wallets.join(", ")));
         }
+        ProtocolError::Generic(text)
     }
 
     /// Resolve the private key filed at exactly `(target, key_id)`.
@@ -2118,8 +2126,9 @@ mod key_resolution_tests {
     }
 
     /// Signing with a key whose wallet seed is missing must reach the caller as
-    /// the dedicated typed error — carrying the identity, key and wallet — not
-    /// as a generic SDK error wrapping a stringified message.
+    /// the dedicated error carrying the instructions and the identity, key and
+    /// wallet — not as a generic SDK error. No task scope is involved, so this
+    /// holds for any caller, spawned subtasks included.
     #[tokio::test]
     async fn signing_with_a_missing_wallet_seed_surfaces_the_typed_error() {
         let key = voting_key(4);
@@ -2127,53 +2136,31 @@ mod key_resolution_tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let identity = identity_with_orphaned_wallet_key(&key, seed_hash, dir.path());
 
-        let error = crate::backend_task::signing_failure::scope(async {
-            let protocol_error = identity
-                .sign(&key, b"payload")
-                .await
-                .expect_err("no seed, no signature");
-            TaskError::from(dash_sdk::Error::Protocol(protocol_error))
-        })
-        .await;
-
-        let TaskError::IdentitySigningKeyUnavailable {
-            identity_id,
-            key_id,
-            purpose,
-            wallet_seed_hashes,
-            source,
-        } = &error
-        else {
-            panic!("expected IdentitySigningKeyUnavailable, got {error:?}");
-        };
-        assert_eq!(
-            identity_id,
-            &Identifier::from([1u8; 32]).to_string(Encoding::Base58)
-        );
-        assert_eq!(*key_id, 4);
-        assert_eq!(*purpose, Purpose::VOTING);
-        assert_eq!(wallet_seed_hashes, &vec![hex::encode(seed_hash)]);
-        assert!(
-            matches!(**source, TaskError::SecretSeamMissing),
-            "cause preserved, got {source:?}"
-        );
-        assert_eq!(
-            error.to_string(),
-            TaskError::SecretSeamMissing.to_string(),
-            "the banner shows the missing-wallet message"
-        );
-    }
-
-    /// Outside a backend-task scope the conversion keeps its previous shape.
-    #[tokio::test]
-    async fn signing_failure_outside_a_task_scope_stays_an_sdk_error() {
-        let key = voting_key(4);
-        let dir = tempfile::tempdir().expect("tempdir");
-        let identity = identity_with_orphaned_wallet_key(&key, [0x7D; 32], dir.path());
-
-        let protocol_error = identity.sign(&key, b"payload").await.expect_err("no seed");
+        let protocol_error = identity
+            .sign(&key, b"payload")
+            .await
+            .expect_err("no seed, no signature");
         let error = TaskError::from(dash_sdk::Error::Protocol(protocol_error));
-        assert!(matches!(error, TaskError::SdkError { .. }), "got {error:?}");
+
+        assert!(
+            matches!(error, TaskError::IdentitySigningFailed { .. }),
+            "expected IdentitySigningFailed, got {error:?}"
+        );
+        let message = error.to_string();
+        assert!(
+            message.starts_with(&TaskError::SecretSeamMissing.to_string()),
+            "the banner leads with the missing-wallet instructions: {message}"
+        );
+        assert!(
+            !message.contains(SIGNING_KEY_UNAVAILABLE_PREFIX),
+            "{message}"
+        );
+        assert!(
+            message.contains(&Identifier::from([1u8; 32]).to_string(Encoding::Base58)),
+            "{message}"
+        );
+        assert!(message.contains("Key: 4 (VOTING)"), "{message}");
+        assert!(message.contains(&hex::encode(seed_hash)), "{message}");
     }
 }
 

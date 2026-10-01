@@ -181,6 +181,9 @@ impl MasternodesScreen {
     pub fn select_segment(&mut self, segment: MasternodesSegment) {
         self.votes_arrival_refresh |=
             segment == MasternodesSegment::Votes && self.segment != segment;
+        if segment != self.segment {
+            self.votes.release_list_focus();
+        }
         self.segment = segment;
         self.pending_segment_save = Some(segment);
     }

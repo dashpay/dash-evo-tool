@@ -1005,6 +1005,11 @@ impl DPNSScreen {
         self.list_focused = true;
     }
 
+    /// Give up list keyboard focus, e.g. when the Votes segment is left.
+    pub(crate) fn release_list_focus(&mut self) {
+        self.list_focused = false;
+    }
+
     /// Vote with one node for this session (VOTE-FR-076): To decide opens with
     /// that node as the node set and no staged decisions carried over.
     pub fn vote_with_node(&mut self, node: Identifier) {
@@ -3398,6 +3403,50 @@ mod tests {
         let screen = DPNSScreen::new(&ctx, VotesView::ToDecide);
 
         assert_eq!(screen.voting_identities.len(), 1);
+    }
+
+    /// VOTE-FR-080: with Cancel focused, Enter activates Cancel only and
+    /// casts nothing (any focused widget turns the window's Enter shortcut
+    /// off); with nothing focused, Enter casts.
+    #[test]
+    fn enter_in_the_confirm_never_casts_while_cancel_has_focus() {
+        use egui_kittest::kittest::Queryable;
+        let render = |screen: &Arc<Mutex<DPNSScreen>>| {
+            let rendering = screen.clone();
+            egui_kittest::Harness::builder()
+                .with_size(egui::vec2(1000.0, 800.0))
+                .build_ui(move |ui| {
+                    rendering.lock_recover().show_review_and_cast_window(ui);
+                })
+        };
+        let (mut screen, _dir) = voting_ui_review_fixture();
+        screen.show_bulk_schedule_popup = true;
+        let screen = Arc::new(Mutex::new(screen));
+
+        let mut harness = render(&screen);
+        harness.run();
+        harness.get_by_label("Cancel").focus();
+        harness.run();
+        harness.key_press(egui::Key::Enter);
+        harness.run();
+        {
+            let screen = screen.lock_recover();
+            assert!(
+                screen.pending_vote_operation.is_none(),
+                "Enter on Cancel must not cast"
+            );
+            assert!(!screen.show_bulk_schedule_popup, "Enter on Cancel cancels");
+        }
+
+        screen.lock_recover().show_bulk_schedule_popup = true;
+        let mut harness = render(&screen);
+        harness.run();
+        harness.key_press(egui::Key::Enter);
+        harness.run_steps(2); // casting shows a spinner, which keeps repainting
+        assert!(
+            screen.lock_recover().pending_vote_operation.is_some(),
+            "Enter with nothing focused casts"
+        );
     }
 
     fn voting_ui_review_fixture() -> (DPNSScreen, tempfile::TempDir) {

@@ -111,11 +111,6 @@ fn classify_vote_attempt(
     }
 }
 
-/// The outcome of a target whose contest closed before it was sent
-/// (VOTE-FR-087), or `None` while the contest may still accept votes.
-///
-/// Terminal for scheduled targets too: a closed poll can never accept the
-/// vote, so retrying it would only fail again.
 /// A voting preference the UI asks the backend to persist.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DpnsVotingPreference {
@@ -152,6 +147,11 @@ impl AppContext {
     }
 }
 
+/// The outcome of a target whose contest closed before it was sent
+/// (VOTE-FR-087), or `None` while the contest may still accept votes.
+///
+/// Terminal for scheduled targets too: a closed poll can never accept the
+/// vote, so retrying it would only fail again.
 fn voting_ended_outcome(
     contest: Option<&ContestedName>,
     now_ms: u64,
@@ -811,14 +811,11 @@ impl AppContext {
                             )
                             .await;
                         let (status, failure) = classify_vote_attempt(&attempt, target.timing);
-                        let confirmed = matches!(
-                            &attempt,
-                            Ok(vote_on_dpns_name::DpnsVoteAttempt::Confirmed)
-                        );
+                        let confirmed = status == DpnsVoteTargetStatus::Confirmed;
                         let mut retryable_scheduled_error = None;
                         match attempt {
-                            Ok(vote_on_dpns_name::DpnsVoteAttempt::Confirmed) => {
-                            }
+                            // Nothing to log or record for a confirmed vote.
+                            Ok(vote_on_dpns_name::DpnsVoteAttempt::Confirmed) => {}
                             Ok(vote_on_dpns_name::DpnsVoteAttempt::Unconfirmed(error)) => {
                                 tracing::warn!(
                                     ?error,

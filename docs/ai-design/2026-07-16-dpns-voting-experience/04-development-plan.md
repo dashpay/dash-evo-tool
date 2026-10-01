@@ -1,5 +1,11 @@
 # DPNS Voting Experience — Development Plan
 
+Revised 2026-10-01. Sections up to "Message handling" describe what #901 built:
+the safety model, which is **unchanged**. "2026-10-01 revision: Stream V work"
+lists what changes. Identity usernames are Stream U
+(`../2026-10-01-usernames-redesign/`). File ownership across streams:
+"Shared backend and file ownership".
+
 ## Architecture
 
 ```text
@@ -8,7 +14,7 @@ Platform proved queries
         ▼
 DPNS vote-state store ────────┐
                               │
-Draft / shared composer ──> Vote operation coordinator
+Draft / node set / composer ──> Vote operation coordinator
                               │
                               ├─ durable operation journal
                               ├─ target lock registry
@@ -24,277 +30,219 @@ Draft / shared composer ──> Vote operation coordinator
                               reconciliation service
                                       │
                                       ▼
-                         shared operation/result views
+            shared operation/result views (Votes, drawer, chip, node detail)
 ```
 
 Screens never own the authoritative in-progress flag. They render coordinator
 state and submit typed drafts.
 
-## Domain model
+## Domain model (built in #901)
 
-Add `src/model/dpns_voting.rs` with pure, serializable types:
+`src/model/dpns_voting.rs` holds the pure, serializable types:
 
-```rust
-struct DpnsVoteTargetKey {
-    network: Network,
-    voter_id: Identifier,
-    vote_poll_id: Identifier,
-}
+- `DpnsVoteTargetKey { network, voter_id, vote_poll_id }`
+- `DpnsVoteTarget { key, contested_name, requested_choice, current_choice, timing }`
+- `DpnsVoteOperationId([u8; 16])`, generated with the existing RNG dependency
+- `VoteTiming { Now, Scheduled(TimestampMillis) }`
+- `DpnsVoteTargetStatus`: Scheduled, Queued, Submitting, Confirming, Confirmed,
+  Unconfirmed, Rejected, FailedBeforeSubmission, NotApplied, Cancelled
+- `DpnsVoteOutcome { operation_id, target, status, transition_hash, failure }`
+- `DpnsVoteFailure`: a pure domain enum, mapped structurally from backend
+  errors. It never serializes `TaskError` or secrets.
 
-struct DpnsVoteTarget {
-    key: DpnsVoteTargetKey,
-    contested_name: String,
-    requested_choice: ResourceVoteChoice,
-    current_choice: Option<ResourceVoteChoice>,
-    timing: VoteTiming,
-}
+2026-10-01 additions (pure, same module):
 
-struct DpnsVoteOperationId([u8; 16]);
+- `NodeSet { All, EvonodesOnly, MasternodesOnly, Custom(BTreeSet<Identifier>) }`
+  plus resolution against the loaded nodes, producing excluded nodes with typed
+  reasons (`NoVotingKey`, `NoChangesLeft`, `NotInMasternodeList`,
+  `VoteStateUnavailable`).
+- `ChangesLeft { Known(u8), Unknown }`, computed from journal counts and proved
+  state (VOTE-FR-078).
+- `node_weight(node_type) -> u32` (1 or 4) and `influence(tally, node_set_weight)
+  -> Option<Influence>` (VOTE-FR-077).
+- `relative_schedule(end_time, preset) -> Result<TimestampMillis, …>`
+  (VOTE-FR-081).
+- `FailureReason::VotingEnded` for VOTE-FR-087.
 
-enum VoteTiming {
-    Now,
-    Scheduled(TimestampMillis),
-}
+## Data ownership (built in #901)
 
-enum DpnsVoteTargetStatus {
-    Scheduled,
-    Queued,
-    Submitting,
-    Confirming,
-    Confirmed,
-    Unconfirmed,
-    Rejected,
-    FailedBeforeSubmission,
-    NotApplied,
-    // The user cancelled a scheduled target before it was submitted.
-    Cancelled,
-}
+- `src/context/dpns_vote_state.rs`: proved votes per node via
+  `ResourceVote::fetch_many` keyed by proTxHash (not the SDK stub). Indexed by
+  node + poll and persisted per node scope.
+- `src/context/dpns_vote_operations.rs`: journal and target locks. Persists
+  before the first broadcast, restores on startup, and releases a lock only on a
+  terminal state or on cancelling an unsubmitted schedule. Unconfirmed targets
+  stay locked.
 
-struct DpnsVoteOutcome {
-    operation_id: DpnsVoteOperationId,
-    target: DpnsVoteTarget,
-    status: DpnsVoteTargetStatus,
-    transition_hash: Option<[u8; 32]>,
-    failure: Option<DpnsVoteFailure>,
-}
-```
+## Backend tasks (built in #901)
 
-Generate `DpnsVoteOperationId` with the project's existing random-number
-dependency; no new UUID dependency is required.
+`ContestedResourceTask::SubmitDpnsVoteOperation`,
+`ReconcileDpnsVoteOperation`, `CastDueScheduledVotes { … }`;
+`BackendTaskSuccessResult::DpnsVoteOperationUpdated(id)`. The due-schedule sweep
+runs on a timer of about 60 s in `AppState::update()`.
 
-`DpnsVoteFailure` is a pure domain enum, not a wrapper around `TaskError`.
-Backend errors are mapped into it structurally. The stored form uses
-serde-friendly representations and never serializes `TaskError` or secrets.
-Full errors remain in task diagnostics and logs.
+## Execution algorithm (unchanged)
 
-## Data ownership
+1. Validate against proved state.
+2. Remove no-ops.
+3. Persist the operation and take locks atomically.
+4. Group by node.
+5. Bound concurrency across nodes, and run each node sequentially: nonce →
+   build → persist hash → broadcast → wait → classify.
+6. A cause-less wait failure becomes Unconfirmed and is reconciled, never
+   rebroadcast.
+7. Refresh vote state after each terminal outcome.
 
-### Authoritative current votes
+2026-10-01: before dispatching a queued target, re-check the contest end time.
+If voting has ended, mark it `FailedBeforeSubmission(VotingEnded)`.
 
-Add `src/context/dpns_vote_state.rs`.
+## Reconciliation (unchanged)
 
-- Query `ResourceVote::fetch_many` once per loaded node using its ProTxHash.
-- Index results by node + vote-poll ID.
-- Persist the latest proved snapshot in the node's identity scope.
-- Join vote state with global contest data when building UI view models.
-- Stop using `ContestedName::my_votes` as an implied persistent source. Remove
-  it or populate it only in an explicitly transient joined view.
+Resume by transition hash when dashpay/platform#4137 lands. Meanwhile use the
+proved per-identity range query starting at the exact poll ID (#4138
+workaround). Confirm only on an exact match, and stay Unconfirmed otherwise.
 
-This fixes the current false `Not voted` state and supports deliberate changes.
+## Scheduling (built in #901)
 
-### Operation journal and locks
+Scheduled targets are journal operations with `VoteTiming::Scheduled`. Edit and
+cancel are atomic under the lock. The dispatcher uses the shared executor. A
+target counts as executed only when Confirmed. A schedule more than 120 s past
+due and never admitted is marked missed.
 
-Add `src/context/dpns_vote_operations.rs`.
+## Message handling (unchanged)
 
-- Persist an operation before the first broadcast.
-- Maintain target locks keyed by network + node + poll.
-- Restore unresolved operations and locks on startup.
-- Expose read-only snapshots to every UI surface.
-- Release a lock only on Confirmed, Rejected, FailedBeforeSubmission,
-  NotApplied, or explicit cancellation of a not-yet-submitting schedule.
-- Keep Unconfirmed targets locked.
+One formatter over typed outcomes produces the summary, per-target copy,
+details, and the recovery action. Never parse strings.
 
-Use per-object KV records and a network-scoped index, following current DET KV
-patterns.
+---
 
-## Backend tasks
+## 2026-10-01 revision: Stream V work
 
-Replace tuple-heavy vote tasks/results with structured variants:
+### Navigation and routing
+- Masternodes root screen: add the `Votes | Nodes` segmented header and default
+  segment logic (VOTE-FR-070). Votes renders the existing DPNS voting screen
+  body: move `ui/dpns/` content under the Masternodes root, or embed
+  `DPNSScreen` as the Votes segment. Either way there is one screen instance
+  and one contest cache.
+- Remove the DPNS item from the Tools chooser (`tools_subscreen_chooser_panel.rs`).
+  Replace `dpns_subscreen_chooser_panel.rs` with the in-page sub-view chips
+  `To decide · Voted · Scheduled · History`.
+- Remove the `Owned` sub-screen and its table and "Set Alias" code from
+  `ui/dpns/`.
+- Routing in `ui/mod.rs`: `RootScreenDPNS{Active,Past,Scheduled}` map to the
+  Masternodes root with the matching sub-view. `RootScreenDPNSOwnedNames` maps
+  to `RootScreenIdentityHub`. Keep the enum values for persisted settings.
+- `left_panel.rs`: Masternodes badge count from the attention summary.
 
-```rust
-ContestedResourceTask::SubmitDpnsVoteOperation(DpnsVoteOperation)
-ContestedResourceTask::ReconcileDpnsVoteOperation(DpnsVoteOperationId)
-ContestedResourceTask::CastDueScheduledVotes { preserve_eligibility_since_ms: Option<u64> }
+### Attention signal
+- New `src/context/dpns_vote_attention.rs`: an `AttentionSummary { needs_decision,
+  soonest_end, unresolved }` derived from the contest cache, vote state, node
+  set and journal. It is recomputed on refresh and on coordinator updates, never
+  per frame.
+- Background refresh (VOTE-FR-074): a timer in `AppState::update()` beside the
+  due-schedule sweep. It dispatches the existing contest query plus the vote
+  state refresh while ≥ 1 voting node is loaded. Cadence comes from network.
+- `ui/components/top_panel.rs`: render the attention chip(s) next to the network
+  chip (VOTE-FR-072), gated by `FeatureGate::Masternodes` and voting-node
+  presence.
 
-BackendTaskContext::DpnsVoteOperation(DpnsVoteOperationId)
-BackendTaskSuccessResult::DpnsVoteOperationUpdated(DpnsVoteOperationId)
-```
+### Votes screen
+- Cards: two-column layout with weighted tally (read-only), influence line,
+  node line, checkbox, and choice pills with key hints. Sorted by time left.
+  Groups per VOTE-FR-071.
+- Node-set chip and popover (VOTE-FR-075). The preference persists per network
+  in local KV (new key in the vote-state context or settings).
+- Keyboard handling scoped to list focus, plus the bulk bar (VOTE-FR-082).
+- Tray copy (VOTE-FR-086).
+- Needs-attention row (VOTE-FR-084).
 
-The backend persists each target update in the shared coordinator. Task results
-carry only the operation ID needed for AppState to request repaint and show a
-summary. AppState never delivers raw vote outcomes to whichever screen happens
-to be visible.
+### Confirm and drawer
+- Replace the review sheet with the aggregate confirm popover (VOTE-FR-080). The
+  existing per-node matrix becomes the `Adjust nodes` table. The timing control
+  gains `When voting is about to end`.
+- Replace the full-window progress overlay for vote submissions with the
+  progress drawer (VOTE-FR-083), driven by coordinator snapshots. It persists
+  across screens and is rendered at AppState level like other global overlays.
+- Final banner per VOTE-FR-061.
 
-As built, due-schedule dispatch is its own sweep rather than a side effect of
-contest querying: `AppState::update()` in `app.rs` dispatches
-`CastDueScheduledVotes` on a ~60s timer (tightened to a recovery backoff after
-a deferred sweep), and `cast_due_scheduled_votes()` in
-`src/backend_task/contested_names/mod.rs` loads due targets, casts them, and
-persists results off the UI thread.
+### Changes left and node status
+- Journal query: count confirmed votes per (proTxHash, poll). Combine it with
+  proved state to get `ChangesLeft` (VOTE-FR-078). Exclude nodes with
+  `Known(0)` during draft expansion.
+- Masternode-list membership per node (VOTE-FR-079): read from the masternode
+  list already available via SPV/DAPI if present. Otherwise add a lightweight
+  `in_list` refresh on the existing masternode refresh path (MN-011). **Needs
+  investigation**; flag as a backend gap if no source exists.
 
-## Execution algorithm
+### Node detail
+- Replace the `DPNS Voting` button with `Vote with this node`, which sets
+  NodeSet::Custom({node}) for the session, not as a saved default.
+- Add the `This node's votes` table from the vote-state store and the journal
+  (VOTE-FR-076).
 
-1. Validate the draft against current proved state.
-2. Remove exact no-ops.
-3. Persist the operation and acquire target locks atomically.
-4. Group immediate targets by voter/node.
-5. Run different voter groups with a small semaphore.
-6. Within each voter group, execute targets sequentially:
-   - read the current nonce;
-   - construct and validate the transition;
-   - persist transition hash when the SDK exposes it;
-   - broadcast;
-   - wait for result;
-   - classify the typed outcome.
-7. On cause-less post-broadcast wait failure, mark Unconfirmed and enqueue
-   reconciliation. Do not rebroadcast.
-8. Refresh authoritative vote state after each terminal outcome.
+### Scheduled and History
+- Scheduled view: group by (poll, choice, scheduled time) with an expandable node
+  list (VOTE-FR-088). Show the relative label when the schedule was created
+  relative (store a `relative_preset: Option<Duration>` alongside the absolute
+  time for display only).
+- History: aggregate `Your nodes voted` with weight.
 
-This replaces the current `join_all` by contest, which can race the same voter
-nonce.
+### Durations
+Consume `model/dpns.rs` contest-duration and urgency helpers (owned by Stream U,
+see below) for countdowns, presets and the chip.
 
-## Reconciliation
+## Shared backend and file ownership
 
-Preferred path:
+| File / op | Owner | Consumer | Note |
+|---|---|---|---|
+| `model/dpns.rs`: contested-name rule (delegating to the contract's `field_matches`), contest/join durations per network, urgency window | **U** | V | Lands first. Replaces both `is_contested_name` copies. |
+| `model/fee_estimation.rs`: contest fee from `sdk.version()` / `prefunded_voting_balance_for_document` | **U** | — | Repo rule: fee math only here |
+| `model/dpns_voting.rs` (+ NodeSet, ChangesLeft, influence, relative schedule) | **V** | — | |
+| `context/contested_names_db.rs`: pending usernames → `Vec`, outcomes | **U** | — | V doesn't edit it; V reads contests via the existing API |
+| `context/dpns_vote_state.rs`, `dpns_vote_operations.rs`, new `dpns_vote_attention.rs` | **V** | — | |
+| `backend_task/contested_names/*` | **V** | U reads `get_contested_dpns_vote_state` via its own new op | U adds no code here |
+| New `backend_task/identity/dpns_usernames.rs` (`CheckUsernameAvailability`, `RefreshMyUsernameRequests`) | **U** | — | |
+| `backend_task/mod.rs` (`BackendTaskSuccessResult` variants) | both | — | Each stream adds its variants in its own contiguous block (V first, U after). Rebase conflict expected and trivial. |
+| `app.rs` timers | **V** only | — | U triggers its refresh from the hub screen, not app.rs |
+| `ui/mod.rs` routing, `left_panel.rs`, `top_panel.rs`, `tools_subscreen_chooser_panel.rs`, `ui/dpns/*`, `ui/masternodes/*` | **V** | — | |
+| `ui/identity/*` (register screen, settings/profile, home, hero card, checklist, request card) | **U** | — | U removes the "View all usernames" link; V removes the Owned sub-screen |
+| `docs/user-stories.md` | both | — | Disjoint stories (V: DPN-003…007, 011, MN-003/011; U: DPN-001/002/008/010, new DPN-012+) |
 
-1. Resume `waitForStateTransitionResult` by persisted transition hash after
-   [dashpay/platform#4137](https://github.com/dashpay/platform/issues/4137)
-   exposes a phase-specific retryable wait error.
-2. Independently fetch the proved vote using `VoteQuery` or the per-node votes
-   query.
-3. Confirm when the proved choice matches the request.
-4. Keep the target Unconfirmed while neither path is definitive.
-5. Permit resubmission only after the Platform contract defines a definitive
-   negative result. Do not infer safety from a transient query failure.
+## Implementation workstreams (one PR, #901)
 
-The existing generic `PlatformResultUnconfirmed` classification remains useful,
-but vote operations convert it into target-level coordinator state instead of a
-screen-local banner.
+The A–D workstreams from #901 are done. New:
 
-At the SDK revision used by DET, exact `Vote::fetch(VoteQuery)` is affected by
-[dashpay/platform#4138](https://github.com/dashpay/platform/issues/4138).
-Reconciliation therefore uses the proved per-identity range query starting at
-the exact poll ID and accepts only an exact-key match. Retaining a signed
-transition for wait-only recovery remains dependent on
-[dashpay/platform#4137](https://github.com/dashpay/platform/issues/4137).
+### Workstream E — Stream V convenience (this revision)
+- E1 Navigation, routing, Tools removal, owned-names exit. Tests VOTE-TC-080…084.
+- E2 Attention summary, background refresh, chip, badge. Tests VOTE-TC-085…087,
+  104.
+- E3 Cards, sorting, groups, node set, influence, changes left, list
+  exclusion. Tests VOTE-TC-002, 007, 088…097.
+- E4 Aggregate confirm, relative scheduling, Adjust nodes. Tests VOTE-TC-006,
+  010–025, 067–069.
+- E5 Progress drawer, needs-attention row, voting-ended failure. Tests
+  VOTE-TC-041, 056, 100–103.
+- E6 Keyboard and bulk bar. Tests VOTE-TC-098, 099.
+- E7 Node detail table and `Vote with this node`. Tests VOTE-TC-091, 094.
 
-## Scheduling
-
-Migrate `ScheduledDPNSVote` into the shared target model:
-
-- scheduled targets are persisted operations with `VoteTiming::Scheduled`;
-- edit and cancel mutate the scheduled target atomically while it still holds
-  its target lock;
-- the due dispatcher moves them to Queued and uses the same executor;
-- executed state means Confirmed, not merely outer task success;
-- rejected, failed, and unconfirmed outcomes remain inspectable;
-- the migration is idempotent and preserves legacy records.
-
-Do not run immediate casting and schedule persistence as unrelated concurrent
-backend tasks. One operation owns both kinds of targets.
-
-## UI state and components
-
-### Non-rendering state
-
-Cache proved current-vote state once when Active contests is built or explicitly
-refreshed. Rendering and draft changes read only this in-memory snapshot; they
-never perform synchronous KV reads in the egui frame loop.
-
-### Shared rendering
-
-Active contests owns card grouping, draft choices, the sticky review tray, and
-the in-screen `Review and cast` sheet. The sheet expands the draft into typed
-node × contest targets and submits one `DpnsVoteOperation`.
-
-### Masternodes views
-
-Keep the Masternodes root limited to the node list and node detail. Detail has a
-single `DPNS Voting` button that opens DPNS Active contests without prefiltering.
-
-### DPNS integration
-
-Replace the legacy table and top-bar trigger with grouped contest cards, a
-sticky `Votes ready to cast` tray, and the in-screen review sheet. Keep Active,
-Past, My usernames, and Scheduled votes in DPNS.
-
-## Message handling
-
-Create one vote-specific formatter over typed target outcomes. It produces:
-
-- banner summary;
-- per-target plain-language status;
-- technical details attachment;
-- recovery action (`Check again`, `Review again`, or none).
-
-Never parse error strings. Unconfirmed outcomes never offer an immediate retry.
-
-## One-PR implementation workstreams
-
-This experience ships as one pull request. The workstreams below are logical
-commit and review boundaries inside that PR, not independently managed PRs.
-They land together so no release can expose two submit paths or a coordinator
-without every voting entry point using it.
-
-### Workstream A — Authoritative state and typed models
-
-- Add domain types and vote-state store.
-- Query proved votes per node.
-- Fix active-contest view models to show current vote and allow changes.
-- Update user stories: current vote visibility and vote changes.
-- Covers VOTE-TC-001 through VOTE-TC-008.
-
-### Workstream B — Coordinator and safe executor
-
-- Add operation journal, locks, structured task context/results.
-- Serialize targets per node; bound concurrency across nodes.
-- Add post-broadcast unconfirmed classification and reconciliation seam.
-- Fix scheduled false-success behavior at the executor boundary.
-- Covers VOTE-TC-030 through VOTE-TC-056.
-
-### Workstream C — Active-contests voting
-
-- Add grouped contest cards and the review sheet.
-- Replace node-detail voting with plain DPNS navigation.
-- Add operation progress and recovery to Active contests.
-- Remove the Masternodes operator sub-navigation and wizard.
-- Covers VOTE-TC-010 through VOTE-TC-025 and VOTE-TC-070 through VOTE-TC-076.
-
-### Workstream D — Scheduled consolidation and migration
-
-- Migrate existing schedules into operation targets.
-- Replace legacy scheduled execution/status UI.
-- Remove obsolete popup/state code after migration coverage passes.
-- Covers VOTE-TC-060 through VOTE-TC-065.
-
-Each workstream remains independently testable, but the branch is published and
-reviewed as one atomic UX change.
+Stream U runs in parallel (plan: `../2026-10-01-usernames-redesign/01-requirements.md`
+§Implementation plan). It must merge `model/dpns.rs` before E2/E4 consume the
+duration helpers. Until then, V may stub them behind the same function
+signatures.
 
 ## Verification
-
-- Unit tests for draft expansion, no-op removal, status transitions, locks, and
-  storage migration.
-- Backend tests with fake SDK seams for nonce ordering and all result classes.
-- Kittest coverage for quick, bulk, navigation, disabled-state, and result UX.
-- Backend E2E on Testnet for one-node multi-contest and two-node same-contest
-  batches.
-- Restart test with a persisted Unconfirmed operation.
-- Formatter and clippy per repository policy.
+- Unit: NodeSet resolution, ChangesLeft, influence, relative schedule, attention
+  summary, draft expansion with exclusions.
+- Backend (fake SDK): voting-ended failure, out-of-changes skip, per-node query
+  count.
+- Kittest: segments and routing, chip, keyboard, bulk, confirm, drawer
+  non-blocking, node detail.
+- Testnet backend E2E (manual, `#[ignore]`): 2 nodes × 2 contests with a relative
+  schedule in a 90-minute contest.
+- `cargo fmt --all`; clippy scoped per AGENTS.md.
 
 ## Documentation updates
-
-- Revise DPN-005, DPN-006, DPN-007, and MN-003 acceptance criteria.
-- Correct the protocol note to five votes total: initial vote plus four changes.
-- Add a user story for operation recovery across navigation/restart.
-- Document DPNS Active contests as the single voting home and keep Scheduled
-  votes discoverable in the DPNS sub-navigation.
+- `docs/user-stories.md`: revise DPN-003…007, DPN-011, MN-003, MN-011; add
+  DPN-013 (attention chip), DPN-014 (node set + weight + changes left), DPN-015
+  (non-blocking progress).
+- Remove references to "DPNS ▸ Active contests" in docs and in-app copy.

@@ -1,0 +1,817 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Usernames and Name Votes — Wireframes (2026-10-01)</title>
+<style>
+:root{
+  --bg:#eceae4;--app:#f6f5f1;--surface:#fff;--border:#d6d3cb;--border-strong:#b9b5ab;
+  --text:#1d1f22;--text-2:#5b6068;--accent:#0a6cb8;--accent-h:#07528c;--accent-soft:#e7f1fa;--accent-soft-b:#b9d4ec;
+  --avatar-bg:#dfe7ef;--avatar-t:#0a4f86;--success:#1f7a4d;--success-soft:#e5f3ec;
+  --warn-bg:#fff4d6;--warn-b:#e0b44a;--warn-t:#6b4e00;--danger:#b3261e;--muted:#e4e1da;--scrim:rgba(20,22,25,.45);
+  --mono:'IBM Plex Mono',ui-monospace,Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:'IBM Plex Sans','Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);padding:32px 28px 80px;font-size:14px;line-height:1.45}
+a{color:var(--accent)}a:hover{color:var(--accent-h)}
+h1.doc{font-size:24px;margin:0 0 6px}
+.lead{color:var(--text-2);max-width:980px;margin:0 0 20px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 18px;max-width:1100px;margin-bottom:28px;font-size:13px;columns:2}
+.toc a{display:block;padding:2px 0;text-decoration:none}
+section{margin:44px 0 0;max-width:1100px}
+.sec-h{display:flex;align-items:baseline;gap:12px;margin-bottom:8px}
+.sec-h .id{font-family:var(--mono);font-size:12px;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:2px 8px;color:var(--text-2)}
+.sec-h h2{font-size:17px;margin:0}
+.persona{font-size:12px;border-radius:10px;padding:2px 9px;font-weight:600}
+.p-alex{background:var(--accent-soft);color:var(--avatar-t)}
+.p-priya{background:#efe7f8;color:#5a3290}
+.notes{font-size:12.5px;color:var(--text-2);margin:0 0 12px;padding-left:18px;max-width:1100px}
+.notes li{margin:2px 0}
+.notes b{color:var(--text)}
+
+/* App shell */
+.app{background:var(--app);border:1px solid var(--border-strong);border-radius:14px;overflow:hidden;box-shadow:0 8px 24px rgba(30,30,25,.10);position:relative}
+.top{height:56px;display:flex;align-items:center;justify-content:space-between;padding:0 20px;border-bottom:1px solid var(--border)}
+.crumb{font-size:13px;color:var(--text-2);display:flex;gap:8px;align-items:center}
+.crumb b{color:var(--text);font-weight:500}
+.chip-net{display:flex;align-items:center;gap:8px;font-size:12.5px;background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:5px 12px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--success);display:inline-block}
+.row{display:flex}
+.nav{width:148px;flex:none;border-right:1px solid var(--border);padding:14px 8px;display:flex;flex-direction:column;gap:2px;min-height:560px}
+.nav a{display:flex;align-items:center;gap:9px;padding:9px 11px;border-radius:8px;color:var(--text-2);font-size:13px;text-decoration:none}
+.nav a:hover{background:var(--muted);color:var(--text)}
+.nav a.on{background:var(--accent-soft);color:var(--avatar-t);font-weight:600}
+.nav .badge{margin-left:auto;background:var(--accent);color:#fff;font-size:10.5px;border-radius:9px;padding:0 6px;font-weight:600}
+.nav svg{flex:none}
+.island{flex:1;margin:16px;background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden;min-width:0}
+.idh{height:76px;display:flex;align-items:center;justify-content:space-between;padding:0 22px;border-bottom:1px solid var(--border)}
+.idh .who{display:flex;gap:12px;align-items:center}
+.av{width:48px;height:48px;border-radius:50%;background:var(--avatar-bg);color:var(--avatar-t);display:flex;align-items:center;justify-content:center;font-weight:600}
+.av.sm{width:32px;height:32px;font-size:12px}
+.t1{font-size:18px;font-weight:600}
+.t2{font-size:12.5px;color:var(--text-2)}
+.bal{text-align:right}
+.bal .l{font-size:11.5px;color:var(--text-2)}
+.bal .v{font-family:var(--mono);font-weight:600}
+.tabs{height:42px;display:flex;gap:22px;padding:0 22px;border-bottom:1px solid var(--border)}
+.tabs a{display:flex;align-items:center;font-size:13.5px;color:var(--text-2);text-decoration:none;border-bottom:2px solid transparent}
+.tabs a.on{color:var(--text);font-weight:600;border-color:var(--accent)}
+.tabs a:hover{color:var(--text)}
+.content{padding:22px}
+.cols{display:flex;gap:22px}
+.muted{color:var(--text-2)}
+.small{font-size:12.5px}
+.mono{font-family:var(--mono)}
+h3{font-size:16px;margin:0 0 4px}
+h4{font-size:13.5px;margin:0 0 10px}
+
+/* controls */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:38px;padding:0 16px;border-radius:8px;font:600 13px inherit;font-family:inherit;cursor:pointer;border:1px solid var(--border-strong);background:var(--surface);color:var(--text)}
+.btn:hover{background:#f1efea}
+.btn:focus-visible,.pill:focus-visible,input:focus-visible,.seg button:focus-visible,.choice:focus-visible,.linkbtn:focus-visible{outline:3px solid var(--accent-soft-b);outline-offset:2px}
+.btn.pri{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.pri:hover{background:var(--accent-h)}
+.btn.sm{height:32px;padding:0 12px;font-size:12.5px}
+.btn.danger{color:var(--danger);border-color:#e3b3ae}
+.btn[disabled]{background:var(--muted);border-color:var(--muted);color:#8a877f;cursor:not-allowed}
+.linkbtn{background:none;border:none;color:var(--accent);font:600 12.5px inherit;font-family:inherit;cursor:pointer;padding:0}
+.linkbtn:hover{text-decoration:underline}
+.card{border:1px solid var(--border);border-radius:10px;padding:16px;background:var(--surface)}
+.badge-s{font-size:11px;font-weight:600;border-radius:10px;padding:2px 8px;white-space:nowrap}
+.b-main{background:var(--accent-soft);color:var(--avatar-t)}
+.b-wait{background:var(--warn-bg);color:var(--warn-t);border:1px solid var(--warn-b)}
+.b-ok{background:var(--success-soft);color:var(--success)}
+.b-lost{background:#f3f1ec;color:var(--text-2);border:1px solid var(--border)}
+.b-vote{background:var(--warn-bg);color:var(--warn-t)}
+.urow{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;padding:11px 8px;border-radius:8px}
+.urow:hover{background:#f7f6f2}
+.urow + .urow{border-top:1px solid #eeece6}
+.uname{font-family:var(--mono);font-size:14px}
+.kebab{width:30px;height:30px;border:1px solid var(--border);border-radius:7px;background:var(--surface);color:var(--text-2);cursor:pointer}
+.kebab:hover{background:#f1efea}
+.menu{position:absolute;right:8px;top:36px;background:var(--surface);border:1px solid var(--border);border-radius:9px;box-shadow:0 8px 20px rgba(0,0,0,.12);padding:4px;width:180px;z-index:3}
+.menu button{display:block;width:100%;text-align:left;background:none;border:none;padding:8px 10px;border-radius:6px;font:13px inherit;font-family:inherit;cursor:pointer;color:var(--text)}
+.menu button:hover,.menu button:focus-visible{background:var(--accent-soft)}
+.field{display:flex;align-items:center;height:46px;border:1.5px solid var(--border-strong);border-radius:9px;padding:0 12px;width:480px;background:var(--surface)}
+.field:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.field input{border:none;outline:none;font:16px var(--mono);flex:1;background:transparent;color:var(--text)}
+.field .pre,.field .suf{color:var(--text-2);font-family:var(--mono)}
+.check{display:flex;gap:8px;align-items:flex-start;font-size:13px;margin:5px 0}
+.ic{width:18px;flex:none;text-align:center;font-weight:700}
+.ok{color:var(--success)} .warn{color:#9a6a00} .bad{color:var(--danger)}
+.sugg{display:flex;gap:8px;align-items:center;margin-top:10px;font-size:12.5px;color:var(--text-2)}
+.pill{border:1px solid var(--accent-soft-b);background:var(--accent-soft);color:var(--avatar-t);border-radius:16px;padding:5px 12px;font:600 12.5px var(--mono);cursor:pointer}
+.pill:hover{background:#d6e8f7}
+.stepper{display:flex;gap:10px;align-items:center;font-size:12.5px;color:var(--text-2);margin-bottom:16px}
+.stepper .n{width:22px;height:22px;border-radius:50%;border:1px solid var(--border-strong);display:inline-flex;align-items:center;justify-content:center;font-size:11.5px;margin-right:4px}
+.stepper .cur{color:var(--text);font-weight:600}
+.stepper .cur .n{background:var(--accent);border-color:var(--accent);color:#fff}
+.stepper .done .n{background:var(--success);border-color:var(--success);color:#fff}
+.sumrow{display:flex;justify-content:space-between;padding:8px 0;font-size:13.5px}
+.sumrow + .sumrow{border-top:1px solid #eeece6}
+.sumrow .mono{font-weight:500}
+.total{font-weight:700;font-size:15px}
+.banner{display:flex;gap:10px;align-items:flex-start;border-radius:9px;padding:10px 14px;font-size:13px}
+.banner.info{background:var(--accent-soft);border:1px solid var(--accent-soft-b)}
+.banner.warnb{background:var(--warn-bg);border:1px solid var(--warn-b);color:var(--warn-t)}
+.banner.okb{background:var(--success-soft);border:1px solid #a8d5bd}
+.banner .grow{flex:1}
+.timeline{display:flex;flex-direction:column;gap:0;margin:6px 0 4px}
+.tl{display:flex;gap:12px;position:relative;padding-bottom:16px}
+.tl:not(:last-child)::before{content:"";position:absolute;left:10px;top:22px;bottom:0;width:2px;background:var(--border)}
+.tl .m{width:22px;height:22px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;border:2px solid var(--border-strong);background:var(--surface)}
+.tl.done .m{background:var(--success);border-color:var(--success);color:#fff}
+.tl.now .m{border-color:var(--accent);color:var(--accent)}
+.tl .tt{font-weight:600;font-size:13.5px}
+/* tally (single-series meter, text carries value) */
+.tally{display:flex;flex-direction:column;gap:9px}
+.tr{display:grid;grid-template-columns:170px 1fr 48px;gap:10px;align-items:center;font-size:12.5px}
+.tr .lab{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.track{height:8px;background:#efede8;border-radius:4px;overflow:hidden}
+.fill{height:8px;background:var(--accent);border-radius:0 4px 4px 0}
+.fill.n{background:#8f9aa6}
+.tr .num{text-align:right;font-family:var(--mono)}
+.lead-w{font-size:11px;font-weight:700;color:var(--success);margin-left:6px}
+/* modal */
+.scrim{position:absolute;inset:0;background:var(--scrim);display:flex;align-items:center;justify-content:center;z-index:5}
+.modal{background:var(--surface);border-radius:14px;width:560px;box-shadow:0 18px 44px rgba(0,0,0,.3);overflow:hidden}
+.modal .mh{padding:18px 22px 6px;font-size:17px;font-weight:600}
+.modal .mb{padding:6px 22px 16px;font-size:13.5px}
+.modal .mf{display:flex;justify-content:space-between;padding:14px 22px;border-top:1px solid var(--border)}
+.modal ul{padding-left:18px;margin:8px 0}
+.modal li{margin:6px 0}
+/* masternodes */
+.seg{display:inline-flex;border:1px solid var(--border-strong);border-radius:9px;overflow:hidden;background:var(--surface)}
+.seg button{border:none;background:none;padding:0 16px;height:34px;font:600 13px inherit;font-family:inherit;color:var(--text-2);cursor:pointer;display:flex;align-items:center;gap:6px}
+.seg button + button{border-left:1px solid var(--border-strong)}
+.seg button:hover{background:#f1efea;color:var(--text)}
+.seg button.on{background:var(--accent);color:#fff}
+.cnt{background:var(--accent);color:#fff;border-radius:9px;font-size:10.5px;padding:0 6px}
+.seg button.on .cnt{background:#fff;color:var(--accent)}
+.mnhead{display:flex;justify-content:space-between;align-items:center;padding:14px 22px;border-bottom:1px solid var(--border)}
+.chips{display:flex;gap:8px}
+.chipf{border:1px solid var(--border);background:var(--surface);border-radius:16px;padding:5px 13px;font:500 12.5px inherit;font-family:inherit;cursor:pointer;color:var(--text-2)}
+.chipf:hover{border-color:var(--border-strong);color:var(--text)}
+.chipf.on{background:var(--text);color:#fff;border-color:var(--text)}
+.grp{display:flex;align-items:center;gap:8px;font-weight:700;font-size:13.5px;margin:16px 0 8px;cursor:pointer;background:none;border:none;font-family:inherit;color:var(--text);padding:0}
+.grp.dim{color:var(--text-2);font-weight:600}
+.ccard{border:1px solid var(--border);border-radius:12px;padding:14px 16px;display:grid;grid-template-columns:1.05fr 1fr;gap:22px;margin-bottom:10px;background:var(--surface)}
+.ccard:hover{border-color:var(--border-strong)}
+.cname{font-family:var(--mono);font-size:15px;font-weight:600}
+.cname span{color:var(--text-2);font-weight:400}
+.choice{border:1px solid var(--border-strong);background:var(--surface);border-radius:18px;padding:6px 13px;font:500 12.5px inherit;font-family:inherit;cursor:pointer;color:var(--text);display:inline-flex;align-items:center;gap:6px}
+.choice:hover{background:var(--accent-soft);border-color:var(--accent-soft-b)}
+.choice[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+.choice[aria-pressed="true"]::before{content:"\2713"}
+.choice[disabled]{opacity:.5;cursor:not-allowed}
+.choices{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 10px}
+.tray{display:flex;justify-content:space-between;align-items:center;padding:12px 22px;border-top:2px solid var(--border);background:#fbfaf7}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th{text-align:left;color:var(--text-2);font-weight:600;font-size:12px;padding:8px 10px;border-bottom:1px solid var(--border)}
+td{padding:10px;border-bottom:1px solid #eeece6;vertical-align:top}
+tr:hover td{background:#f9f8f5}
+.st{font-size:12px;font-weight:600}
+.empty{max-width:460px;margin:20px auto;text-align:center}
+.empty p{margin:6px 0 14px}
+.mini{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+.ia{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.ia pre{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px;font:12px/1.55 var(--mono);margin:0;overflow:auto;white-space:pre}
+.ia h4{margin:0 0 6px}
+.del{color:var(--danger);text-decoration:line-through}
+/* rev 2: operator convenience */
+.attn{display:inline-flex;align-items:center;gap:8px;height:32px;padding:0 12px;border-radius:16px;border:1px solid var(--warn-b);background:var(--warn-bg);color:var(--warn-t);font:600 12.5px inherit;font-family:inherit;cursor:pointer}
+.attn:hover{background:#ffeab0}
+.attn.calm{border-color:var(--accent-soft-b);background:var(--accent-soft);color:var(--avatar-t)}
+.topr{display:flex;gap:10px;align-items:center}
+kbd{font:11px var(--mono);border:1px solid var(--border-strong);border-bottom-width:2px;border-radius:4px;padding:0 5px;background:#faf9f6;color:var(--text-2)}
+.choice kbd{border-color:currentColor;opacity:.75;background:transparent;color:inherit}
+.nodeset{display:inline-flex;align-items:center;gap:8px;height:36px;padding:0 12px;border:1px solid var(--border-strong);border-radius:9px;background:var(--surface);font:600 13px inherit;font-family:inherit;cursor:pointer;color:var(--text)}
+.nodeset:hover{background:#f1efea}
+.nodeset .muted{font-weight:400}
+.ccard.focus{outline:3px solid var(--accent-soft-b);outline-offset:1px;border-color:var(--accent)}
+.ccard .sel{display:flex;gap:10px;align-items:flex-start}
+.ccard input[type=checkbox]{width:16px;height:16px;margin-top:3px;accent-color:var(--accent)}
+.infl{font-size:12px;color:var(--avatar-t);background:var(--accent-soft);border-radius:6px;padding:4px 8px;display:inline-block;margin-top:8px}
+.bulkbar{display:flex;align-items:center;gap:10px;background:var(--text);color:#fff;border-radius:10px;padding:8px 12px;margin-bottom:10px;font-size:13px}
+.bulkbar .btn{height:30px;background:transparent;color:#fff;border-color:#6b6f75}
+.bulkbar .btn:hover{background:#33363b}
+.drawer{position:absolute;right:18px;bottom:18px;width:430px;background:var(--surface);border:1px solid var(--border-strong);border-radius:12px;box-shadow:0 14px 34px rgba(0,0,0,.2);overflow:hidden;z-index:4}
+.drawer .dh{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border-bottom:1px solid var(--border);font-size:13px}
+.prog{height:6px;background:#efede8;border-radius:3px;overflow:hidden;display:flex;gap:2px;margin:0 14px 10px}
+.prog i{display:block;height:6px}
+.drow{display:grid;grid-template-columns:1fr auto;gap:8px;padding:7px 14px;font-size:12.5px;border-top:1px solid #f0eee9}
+.radio{display:flex;gap:10px;align-items:flex-start;padding:8px 10px;border-radius:8px;cursor:pointer}
+.radio:hover{background:#f7f6f2}
+.radio input{accent-color:var(--accent);margin-top:3px}
+.ndl{display:grid;grid-template-columns:20px 1fr 70px 110px 120px;gap:8px;align-items:center;font-size:12.5px;padding:6px 10px;border-top:1px solid #f0eee9}
+.new{color:var(--success);font-weight:600}
+</style>
+</head>
+<body>
+
+<h1 class="doc">Usernames and Name Votes — redesign wireframes</h1>
+<p class="lead">Dash Evo Tool, 2026-10-01. Companion to <code>ux-spec.md</code>. Light theme, mid-fi, same visual system as the 2026-09-22 identities canvas. Identity-side frames (blue tag) live in <b>Identities</b>; voting frames (purple tag) live in <b>Masternodes &rsaquo; Votes</b>. Rev 2: voting redesigned for operator convenience (node set, weighted impact, changes left, keyboard, non-blocking fan-out); #901 safety semantics kept, every #901 change listed in spec &sect;4. Platform rules per <code>platform-facts.md</code>. Hover, focus (Tab) and selected states are live.</p>
+
+<nav class="toc" aria-label="Frames">
+  <a href="#ia">0 IA: before and after</a>
+  <a href="#u1">U1 Profile &rsaquo; Usernames (all row states)</a>
+  <a href="#u1b">U1b Usernames card: empty, view-only</a>
+  <a href="#u2">U2 Home: pending card + result banners</a>
+  <a href="#u3">U3 Request status</a>
+  <a href="#u4">U4 Get another username: choose name</a>
+  <a href="#u4b">U4b Availability row: every state</a>
+  <a href="#u5">U5 Community vote consent</a>
+  <a href="#u6">U6 Confirm and pay (identity balance)</a>
+  <a href="#u7">U7 Result: request submitted</a>
+  <a href="#v0">V0 Top-bar attention chip (any screen)</a>
+  <a href="#v1">V1 Masternodes &rsaquo; Votes &rsaquo; To decide</a>
+  <a href="#v1b">V1b Node set popover</a>
+  <a href="#v2">V2 Confirm popover (aggregate)</a>
+  <a href="#v2b">V2b Progress drawer (non-blocking fan-out)</a>
+  <a href="#v3">V3 Scheduled votes</a>
+  <a href="#v4">V4 History</a>
+  <a href="#v5">V5 Empty and gate states</a>
+  <a href="#v6">V6 Node detail: this node's votes</a>
+</nav>
+
+<!-- ================= IA ================= -->
+<section id="ia">
+  <div class="sec-h"><span class="id">0</span><h2>Information architecture: before and after</h2></div>
+  <ul class="notes">
+    <li>Today one DPNS tool under <b>Tools</b> mixes "My usernames" with voting. After: names live with the identity; voting lives with the nodes.</li>
+    <li>Decided (Q1): Masternodes opens on <b>Votes</b> when anything needs a decision; a top-bar chip carries the signal to every screen. Changes #901 VOTE-FR-001 (spec &sect;4).</li>
+  </ul>
+  <div class="ia">
+    <div><h4>Before</h4><pre>Identities ▸ hub ▸ Settings tab
+   └ Username · "Aliases" (3 disabled stubs)
+   └ [View all usernames] ──jumps to──┐
+Masternodes ▸ list ▸ detail ▸ DPNS Voting ─┐
+Tools ▸ DPNS                         ◄─┘◄─┘
+   ├ Active contests   (voting)
+   ├ Past contests     (voting)
+   ├ My usernames      (owner!)  ← mixed
+   ├ Scheduled votes   (voting)
+   └ [Register Name]   (owner!)  ← mixed</pre></div>
+    <div><h4>After</h4><pre>Identities ▸ hub          (everyone)
+   ├ header: @main | @alex · Waiting for vote
+   ├ Home: request card, result banner
+   └ Profile ▸ Usernames card
+        ├ rows ••• Copy · QR · Show as main
+        ├ pending ▸ <span class="new">Request status</span>
+        └ [Get another username] ▸ choose ▸ consent ▸ pay
+Top bar ▸ <span class="new">"2 names need your vote"</span> (every screen)
+Masternodes  badge 2      (Power role)
+   ├ [ <span class="new">Votes 2</span> | Nodes ]   Votes first
+   │    node set: All my nodes · 24 · 51 votes
+   │    To decide · Voted · Scheduled · History
+   │    progress drawer (non-blocking)
+   └ node detail ▸ This node's votes
+                 ▸ [Vote with this node]
+Tools ▸ <span class="del">DPNS</span></pre></div>
+  </div>
+</section>
+
+<!-- shared nav snippets are repeated literally per frame -->
+
+<!-- ================= U1 ================= -->
+<section id="u1">
+  <div class="sec-h"><span class="id">U1</span><h2>Profile &rsaquo; Usernames card, all row states</h2><span class="persona p-alex">Alex · Priya-owner</span></div>
+  <ul class="notes">
+    <li>One list per identity: main, other active, waiting for vote (any number, even with an owned name; fixes P5), open-for-requests phase, lost (30 days, dismissible).</li>
+    <li>No "Aliases", no disabled stubs. "Make primary" becomes device-only <b>Show as main</b> (needs a new local setting). "Add an alias" was just "register another name", now <b>Get another username</b>.</li>
+    <li>The menu is shown open on the second row to demo it; Tab through rows to see focus.</li>
+  </ul>
+  <div class="app">
+    <div class="top"><div class="crumb">Identities <span>&rsaquo;</span> <b>@alice</b></div><div class="chip-net"><span class="dot"></span>Mainnet &middot; Connected</div></div>
+    <div class="row">
+      <div class="nav">
+        <a href="#u1" class="on"><svg width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" fill="none" stroke-width="2"><circle cx="12" cy="8" r="4"></circle><path d="M4 20c0-4 4-6 8-6s8 2 8 6"></path></svg>Identities</a>
+        <a href="#v1"><svg width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" fill="none" stroke-width="2"><rect x="3" y="4" width="18" height="6" rx="1"></rect><rect x="3" y="14" width="18" height="6" rx="1"></rect></svg>Masternodes</a>
+        <a href="#u1"><svg width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" fill="none" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"></rect></svg>Contracts</a>
+        <a href="#u1"><svg width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" fill="none" stroke-width="2"><circle cx="12" cy="12" r="8"></circle></svg>Tokens</a>
+        <a href="#u1"><svg width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" fill="none" stroke-width="2"><rect x="3" y="7" width="18" height="12" rx="2"></rect></svg>Wallets</a>
+        <a href="#u1"><svg width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" fill="none" stroke-width="2"><path d="M14 4l6 6-9 9H5v-6z"></path></svg>Tools</a>
+        <a href="#u1"><svg width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" fill="none" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><circle cx="12" cy="12" r="8"></circle></svg>Settings</a>
+      </div>
+      <div class="island">
+        <div class="idh">
+          <div class="who"><div class="av">AN</div><div><div class="t1">Alice Novak &#9662;</div><div class="t2">@alice</div></div></div>
+          <div class="bal"><div class="l">Identity balance</div><div class="v">0.4215 DASH</div></div>
+        </div>
+        <div class="tabs"><a href="#u2">Home</a><a href="#u1">Contacts</a><a href="#u1" class="on">Profile</a></div>
+        <div class="content cols">
+          <div style="flex:0 0 400px">
+            <h3>Public profile</h3>
+            <p class="muted small" style="margin:0 0 14px">Everyone on Dash Platform can see this.</p>
+            <div style="display:flex;gap:14px;align-items:center;margin-bottom:14px"><div class="av" style="width:72px;height:72px;font-size:22px">AN</div><div class="muted small">Display name, photo and About me editor (2026-09-22 A08, unchanged).</div></div>
+            <div style="height:120px;background:var(--muted);border-radius:8px;display:flex;align-items:center;justify-content:center" class="muted small">Profile fields (A08)</div>
+          </div>
+          <div style="flex:1;min-width:0">
+            <div class="card" style="position:relative">
+              <h4 style="margin-bottom:4px">Usernames</h4>
+              <div class="urow" tabindex="0">
+                <div><span class="uname">@alice</span> <span class="badge-s b-main">Main</span><div class="muted small">Registered on Mar 12, 2026.</div></div>
+                <button class="kebab" aria-label="More actions for @alice">&bull;&bull;&bull;</button>
+              </div>
+              <div class="urow" tabindex="0" style="position:relative">
+                <div><span class="uname">@alice-design</span><div class="muted small">Registered on Jun 2, 2026.</div></div>
+                <button class="kebab" aria-label="More actions for @alice-design" aria-expanded="true">&bull;&bull;&bull;</button>
+                <div class="menu" role="menu">
+                  <button role="menuitem">Copy username</button>
+                  <button role="menuitem">Show QR code</button>
+                  <button role="menuitem">Show as main</button>
+                </div>
+              </div>
+              <div class="urow" tabindex="0">
+                <div><span class="uname">@ali</span> <span class="badge-s b-wait">&#9719; Waiting for vote</span><div class="muted small">Voting ends around Oct 9, 2026.</div></div>
+                <button class="linkbtn">View status</button>
+              </div>
+              <div class="urow" tabindex="0">
+                <div><span class="uname">@novak</span> <span class="badge-s b-wait">&#9719; Open for other requests</span><div class="muted small">Others can ask for this name until Oct 5, 2026. Voting starts after that.</div></div>
+                <button class="linkbtn">View status</button>
+              </div>
+              <div class="urow" tabindex="0">
+                <div><span class="uname" style="color:var(--text-2)">@al</span> <span class="badge-s b-lost">Went to someone else</span><div class="muted small">The community vote ended on Sep 20, 2026.</div></div>
+                <div style="display:flex;gap:12px"><button class="linkbtn">Choose another username</button><button class="linkbtn" style="color:var(--text-2)">Dismiss</button></div>
+              </div>
+              <div class="urow" tabindex="0">
+                <div><span class="uname" style="color:var(--text-2)">@aa</span> <span class="badge-s b-lost">Locked for good</span><div class="muted small">More votes went to locking this name, so no one can register it.</div></div>
+                <button class="linkbtn" style="color:var(--text-2)">Dismiss</button>
+              </div>
+              <div style="border-top:1px solid var(--border);margin:10px 0 12px"></div>
+              <button class="btn" style="width:100%">Get another username</button>
+              <p class="muted small" style="margin:8px 0 0">Each username is a separate small payment from this identity's balance.</p>
+            </div>
+            <div class="card" style="margin-top:14px"><h4 style="margin-bottom:6px">Name on this device</h4><p class="muted small" style="margin:0">Only you see this name. It's never published. (unchanged)</p></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= U1b ================= -->
+<section id="u1b">
+  <div class="sec-h"><span class="id">U1b</span><h2>Usernames card: empty and view-only</h2><span class="persona p-alex">Alex</span></div>
+  <ul class="notes"><li>Empty = one sentence of value + primary CTA. View-only identity (no keys) keeps the button visible but disabled, with the reason and a way forward (never a dead-end red line, P10).</li></ul>
+  <div class="mini" style="grid-template-columns:1fr 1fr">
+    <div class="card"><h4>Usernames</h4><p class="small" style="margin:0 0 14px">This identity has no username yet. A username lets people pay you as @name instead of a long address.</p><button class="btn pri">Get a username</button></div>
+    <div class="card"><h4>Usernames</h4><p class="small muted" style="margin:0 0 14px">This identity has no username yet.</p><button class="btn" disabled title="Add a key to this identity to register usernames.">Get a username</button><p class="small" style="margin:10px 0 0">Add a key to this identity to register usernames. <a href="#u1b">Add a key</a></p></div>
+  </div>
+</section>
+
+<!-- ================= U2 ================= -->
+<section id="u2">
+  <div class="sec-h"><span class="id">U2</span><h2>Home: pending request card and one-time result banners</h2><span class="persona p-alex">Alex</span></div>
+  <ul class="notes">
+    <li>Status refreshes on hub arrival via new <b>RefreshMyUsernameRequests</b> (own contests only), so Alex never visits a voting screen.</li>
+    <li>Result banners show once per outcome (new local "seen" flag), then the Profile row carries the state.</li>
+  </ul>
+  <div class="mini" style="grid-template-columns:1fr 1fr">
+    <div class="card">
+      <h4 style="display:flex;gap:8px;align-items:center"><span class="badge-s b-wait">&#9719; Waiting for vote</span></h4>
+      <p class="small" style="margin:0 0 4px"><span class="mono">@ali</span> is waiting for a community vote. The vote ends around Oct 9, 2026.</p>
+      <p class="small muted" style="margin:0 0 12px">You're leading right now. Votes can change until the vote ends.</p>
+      <button class="btn sm">View status</button>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <div class="banner okb"><span class="ic ok">&#10003;</span><div class="grow">You're <b class="mono">@ali</b>. People can now find and pay you by this name.</div><button class="linkbtn" aria-label="Dismiss message">Dismiss</button></div>
+      <div class="banner info"><span class="ic">i</span><div class="grow"><b class="mono">@al</b> went to someone else. You can choose a different username. <button class="linkbtn">Choose another username</button></div><button class="linkbtn" aria-label="Dismiss message">Dismiss</button></div>
+      <div class="banner info"><span class="ic">i</span><div class="grow">No one got <b class="mono">@al</b>. The community vote locked this name. You can choose a different username.</div><button class="linkbtn" aria-label="Dismiss message">Dismiss</button></div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= U3 ================= -->
+<section id="u3">
+  <div class="sec-h"><span class="id">U3</span><h2>Request status (pushed page)</h2><span class="persona p-alex">Alex · Priya-owner</span></div>
+  <ul class="notes">
+    <li>Answers the three questions Alex has: where is it, am I winning, what happens next. Tally is read-only, numbers in text, leader marked with a word.</li>
+    <li>Power role with eligible nodes sees one plain link to Masternodes &rsaquo; Votes, filtered to this name.</li>
+  </ul>
+  <div class="app">
+    <div class="top"><div class="crumb">Identities <span>&rsaquo;</span> @alice <span>&rsaquo;</span> <b>@ali</b></div><div class="chip-net"><span class="dot"></span>Mainnet &middot; Connected</div></div>
+    <div class="row">
+      <div class="nav">
+        <a href="#u3" class="on"><svg width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" fill="none" stroke-width="2"><circle cx="12" cy="8" r="4"></circle><path d="M4 20c0-4 4-6 8-6s8 2 8 6"></path></svg>Identities</a>
+        <a href="#v1"><svg width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" fill="none" stroke-width="2"><rect x="3" y="4" width="18" height="6" rx="1"></rect><rect x="3" y="14" width="18" height="6" rx="1"></rect></svg>Masternodes</a>
+        <a href="#u3">Contracts</a><a href="#u3">Tokens</a><a href="#u3">Wallets</a><a href="#u3">Tools</a><a href="#u3">Settings</a>
+      </div>
+      <div class="island">
+        <div class="content">
+          <button class="linkbtn" style="margin-bottom:12px">&lsaquo; Back to profile</button>
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px"><h3 style="margin:0;font-size:20px">Your request for <span class="mono">@ali</span></h3><span class="badge-s b-wait">&#9719; Waiting for vote</span></div>
+          <p class="muted small" style="margin:0 0 18px">Other people asked for the same name, so Dash masternodes vote on who gets it.</p>
+          <div class="cols">
+            <div style="flex:0 0 330px">
+              <div class="timeline">
+                <div class="tl done"><div class="m">&#10003;</div><div><div class="tt">Requested</div><div class="small muted">Sep 25, 2026</div></div></div>
+                <div class="tl done"><div class="m">&#10003;</div><div><div class="tt">Open for other requests</div><div class="small muted">Ended Oct 2, 2026. 1 other person asked.</div></div></div>
+                <div class="tl now"><div class="m">&#9679;</div><div><div class="tt">Community vote</div><div class="small muted">Ends around Oct 9, 2026, 14:00.</div></div></div>
+                <div class="tl"><div class="m"></div><div><div class="tt">Result</div><div class="small muted">Not decided yet.</div></div></div>
+              </div>
+            </div>
+            <div style="flex:1">
+              <div class="card">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><h4 style="margin:0">How the vote is going</h4><button class="btn sm">Refresh status</button></div>
+                <div class="tally">
+                  <div class="tr"><span class="lab"><b>You</b><span class="lead-w">Leading</span></span><div class="track"><div class="fill" style="width:62%"></div></div><span class="num">31</span></div>
+                  <div class="tr"><span class="lab">Other request (7Yk2&hellip;d1Rt)</span><div class="track"><div class="fill n" style="width:36%"></div></div><span class="num">18</span></div>
+                  <div class="tr"><span class="lab">Lock, so no one gets it</span><div class="track"><div class="fill n" style="width:16%"></div></div><span class="num">8</span></div>
+                  <div class="tr"><span class="lab">Abstain</span><div class="track"><div class="fill n" style="width:6%"></div></div><span class="num">3</span></div>
+                </div>
+                <p class="muted small" style="margin:12px 0 0">Evonodes count as 4 votes. Votes can change until the vote ends. Last updated 2 minutes ago.</p>
+              </div>
+              <details style="margin-top:14px" open><summary style="cursor:pointer;font-weight:600;font-size:13.5px">What happens next</summary>
+                <ul class="small" style="margin:8px 0;padding-left:18px">
+                  <li>If you still have the most votes when the vote ends, <span class="mono">@ali</span> becomes yours automatically.</li>
+                  <li>If requests are tied at the end, the most recent request wins.</li>
+                  <li>If more votes go to locking than to any request, no one can ever register <span class="mono">@ali</span>.</li>
+                  <li>The community vote fee isn't returned in any case.</li></ul></details>
+              <div style="display:flex;gap:14px;margin-top:14px;align-items:center"><button class="btn">Get a username without a vote</button><a href="#v1" class="small">Your nodes can vote on this name</a></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= U4 ================= -->
+<section id="u4">
+  <div class="sec-h"><span class="id">U4</span><h2>Get another username: choose name</h2><span class="persona p-alex">Alex · Priya-owner · Jordan</span></div>
+  <ul class="notes">
+    <li>Opened from a specific identity, so no identity picker (P10). Availability is checked live (new <b>CheckUsernameAvailability</b> op); format rules show only as they matter.</li>
+    <li>Shown: joinable contest. Suggestions avoid the vote using the model's contested rule. Rules are collapsed and consistent (P9).</li>
+  </ul>
+  <div class="app">
+    <div class="top"><div class="crumb">Identities <span>&rsaquo;</span> @alice <span>&rsaquo;</span> <b>Get another username</b></div><div class="chip-net"><span class="dot"></span>Mainnet &middot; Connected</div></div>
+    <div class="row">
+      <div class="nav"><a href="#u4" class="on">Identities</a><a href="#v1">Masternodes</a><a href="#u4">Contracts</a><a href="#u4">Tokens</a><a href="#u4">Wallets</a><a href="#u4">Tools</a><a href="#u4">Settings</a></div>
+      <div class="island">
+        <div class="content" style="padding:26px 34px">
+          <div class="stepper"><span class="cur"><span class="n">1</span>Choose name</span><span>&mdash;</span><span><span class="n">2</span>Confirm</span></div>
+          <h3 style="font-size:20px">Get another username</h3>
+          <p class="muted" style="margin:0 0 18px">For Alice Novak. People will use it to find and pay you. You can't change a username later.</p>
+          <label for="nm" class="small muted" style="display:block;margin-bottom:5px">Username</label>
+          <div class="field"><span class="pre">@</span><input id="nm" value="nova" aria-describedby="avail"><span class="suf">.dash</span></div>
+          <div style="margin-top:12px" id="avail">
+            <div class="check"><span class="ic ok">&#10003;</span>Between 3 and 63 characters</div>
+            <div class="check"><span class="ic ok">&#10003;</span>Only letters, numbers, and hyphens</div>
+            <div class="check"><span class="ic warn">&#9719;</span><span>1 other person already asked for <b class="mono">@nova</b>. You can join the vote until Oct 5, 2026. <button class="linkbtn">What does this mean?</button></span></div>
+          </div>
+          <div class="sugg">Try one without a vote: <button class="pill">@nova2</button><button class="pill">@nova-art</button><button class="pill">@nova2026</button></div>
+          <details style="margin-top:18px;max-width:560px"><summary style="cursor:pointer;font-size:13px;font-weight:600">Username rules</summary>
+            <ul class="small muted" style="margin:6px 0 0;padding-left:18px"><li>Between 3 and 63 characters.</li><li>Letters, numbers, and hyphens. No hyphen at the start or end.</li><li>Capital letters are treated as lowercase.</li><li>Names shorter than 20 characters that use only letters, hyphens, 0, and 1 need a community vote. Adding a digit from 2 to 9 avoids the vote.</li></ul></details>
+          <div style="display:flex;justify-content:space-between;margin-top:28px;max-width:640px"><button class="btn">Cancel</button><button class="btn pri">Continue</button></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= U4b ================= -->
+<section id="u4b">
+  <div class="sec-h"><span class="id">U4b</span><h2>Availability row: every state</h2><span class="persona p-alex">Alex</span></div>
+  <ul class="notes"><li>Exactly one row at a time, 400 ms debounce. Continue enabled only for the first three outcomes. Plurals are separate translation units.</li></ul>
+  <div class="card" style="max-width:820px">
+    <div class="check"><span class="ic muted">&#9676;</span>Checking if <b class="mono">@nova</b> is available&hellip;</div>
+    <div class="check"><span class="ic ok">&#10003;</span><b class="mono">@nova2</b>&nbsp;is available.</div>
+    <div class="check"><span class="ic warn">&#9719;</span><span><b class="mono">@nova</b> is available, but it needs a community vote. <button class="linkbtn">What does this mean?</button></span></div>
+    <div class="check"><span class="ic warn">&#9719;</span><span>{count} other people already asked for <b class="mono">@nova</b>. You can join the vote until {date}.</span></div>
+    <div class="check"><span class="ic bad">&#10007;</span><span><b class="mono">@alice</b> is already taken. Try another name.</span></div>
+    <div class="check"><span class="ic bad">&#10007;</span><span><b class="mono">@bob</b> can't be registered. A community vote locked this name for good.</span></div>
+    <div class="check"><span class="ic bad">&#10007;</span><span>Others can no longer join the vote for <b class="mono">@nova</b>. Try another name.</span><span class="muted small">&nbsp;(join window over: 7 days mainnet, 45 min testnet)</span></div>
+    <div class="check"><span class="ic warn">&#9650;</span><span>Availability can't be checked right now. Check your internet connection and try again. <button class="linkbtn">Try again</button></span></div>
+  </div>
+</section>
+
+<!-- ================= U5 ================= -->
+<section id="u5">
+  <div class="sec-h"><span class="id">U5</span><h2>Community vote consent (reuses 2026-09-22 M1)</h2><span class="persona p-alex">Alex</span></div>
+  <ul class="notes"><li>Replaces the red "This is a contested name. Cost &asymp; 0.2006 Dash" (P4). Fee read live from <code>sdk.version()</code>: 0.2 DASH before protocol 14, 0.1 DASH from 14; never refunded, never called a deposit. Durations from the network (mainnet shown; testnet: 45 / 90 minutes).</li></ul>
+  <div class="app" style="height:440px">
+    <div class="top"><div class="crumb">Identities <span>&rsaquo;</span> @alice <span>&rsaquo;</span> <b>Get another username</b></div></div>
+    <div class="scrim">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="u5t">
+        <div class="mh" id="u5t"><span class="mono">@nova</span> needs a community vote</div>
+        <div class="mb"><ul>
+          <li>Anyone can also ask for <span class="mono">@nova</span> during the first 7 days. After that, only Dash masternode votes decide.</li>
+          <li>The vote ends after 14 days, even if no one else asks. You'll see the result on your identity's page.</li>
+          <li>The community vote fee is 0.2 DASH. It isn't returned, whether you get the name or not.</li>
+          <li>If more votes go to locking the name, no one can register it, including you.</li>
+          <li>Until the vote ends, people can't find you by this name.</li></ul></div>
+        <div class="mf"><button class="btn">Choose another name</button><button class="btn pri">I understand, continue</button></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= U6 ================= -->
+<section id="u6">
+  <div class="sec-h"><span class="id">U6</span><h2>Confirm and pay from the identity balance</h2><span class="persona p-alex">Alex · Priya-owner</span></div>
+  <ul class="notes">
+    <li>One summary, one total, amount and name in the button. Signing key auto-picked; Power role can open Advanced (replaces the "Advanced Options" checkbox).</li>
+    <li>Right card shows the low-balance variant: inline reason + Top up (A09) that returns here with the name kept.</li>
+  </ul>
+  <div class="app">
+    <div class="top"><div class="crumb">Identities <span>&rsaquo;</span> @alice <span>&rsaquo;</span> <b>Get another username</b></div><div class="chip-net"><span class="dot"></span>Mainnet &middot; Connected</div></div>
+    <div class="row">
+      <div class="nav"><a href="#u6" class="on">Identities</a><a href="#v1">Masternodes</a><a href="#u6">Contracts</a><a href="#u6">Tokens</a><a href="#u6">Wallets</a><a href="#u6">Tools</a><a href="#u6">Settings</a></div>
+      <div class="island">
+        <div class="content" style="padding:26px 34px">
+          <div class="stepper"><span class="done"><span class="n">&#10003;</span>Choose name</span><span>&mdash;</span><span class="cur"><span class="n">2</span>Confirm</span></div>
+          <div class="cols">
+            <div style="flex:0 0 470px">
+              <h3 style="font-size:20px;margin-bottom:14px">Review and pay</h3>
+              <div class="card">
+                <div class="sumrow"><span>Username</span><span><span class="mono">@nova</span> <span class="badge-s b-vote">Community vote</span></span></div>
+                <div class="sumrow"><span>Registration fee</span><span class="mono">about {fee} DASH</span></div>
+                <div class="sumrow"><span>Community vote fee <span class="muted small">(not returned)</span></span><span class="mono">0.2 DASH</span></div>
+                <div class="sumrow total"><span>Total</span><span class="mono">{total} DASH</span></div>
+                <div class="sumrow"><span class="muted">Paid from</span><span>Alice Novak's balance &middot; <span class="muted">Available 0.4215 DASH</span></span></div>
+              </div>
+              <details style="margin-top:12px"><summary class="small" style="cursor:pointer;font-weight:600">Advanced</summary><p class="small muted">Signing key: Authentication key 1 (Power role only).</p></details>
+              <div style="display:flex;justify-content:space-between;margin-top:22px"><button class="btn">Back</button><button class="btn pri">Pay {total} DASH and request @nova</button></div>
+            </div>
+            <div style="flex:1">
+              <p class="small muted" style="margin:0 0 8px"><b>Variant: balance too low</b></p>
+              <div class="card">
+                <div class="sumrow total"><span>Total</span><span class="mono">{total} DASH</span></div>
+                <div class="banner warnb" style="margin-top:10px"><span class="ic">&#9650;</span><div class="grow">This identity has 0.0004 DASH. Add at least {missing} DASH to continue.</div></div>
+                <div style="display:flex;gap:10px;margin-top:12px;justify-content:flex-end"><button class="btn">Top up</button><button class="btn" disabled title="Add money to this identity's balance first.">Pay {total} DASH</button></div>
+              </div>
+              <p class="small muted" style="margin:14px 0 0">Not synced: button disabled, tooltip "Available after sync finishes." Name choosing stays available.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= U7 ================= -->
+<section id="u7">
+  <div class="sec-h"><span class="id">U7</span><h2>Result: request submitted for a vote</h2><span class="persona p-alex">Alex</span></div>
+  <ul class="notes"><li>After the UX-001 overlay ("Registering @nova. Keep Dash Evo Tool open until this finishes."). Registered and failed variants = 2026-09-22 A04 B/D. Replaces "Check the Pending label on your identity for updates" (P12).</li></ul>
+  <div class="card" style="max-width:640px;text-align:center;padding:30px">
+    <div style="font-size:34px;color:#9a6a00">&#9719;</div>
+    <h3 style="font-size:20px">Your request for <span class="mono">@nova</span> is in</h3>
+    <p class="small" style="margin:6px 0 4px">Others can still ask for this name until Oct 5, 2026. The community vote ends around Oct 12, 2026. If no one else asks and no one votes to lock it, <span class="mono">@nova</span> becomes yours then.</p>
+    <p class="small muted" style="margin:0 0 18px">We'll show the result on your identity's page. You don't need to keep this screen open.</p>
+    <div style="display:flex;gap:10px;justify-content:center"><button class="btn">View request status</button><button class="btn pri">Go to my identity</button></div>
+  </div>
+</section>
+
+<!-- ================= V0 ================= -->
+<section id="v0">
+  <div class="sec-h"><span class="id">V0</span><h2>Top-bar attention chip, on any screen</h2><span class="persona p-priya">Priya-operator</span></div>
+  <ul class="notes">
+    <li>Zero clicks to know a vote is needed (VOT-01). Shown only for the Power role with at least one node that has a voting key. Amber within the urgency window (24 h mainnet, 30 min testnet), calm blue otherwise.</li>
+    <li>A second chip appears only while votes are unconfirmed. Click on either opens Masternodes &rsaquo; Votes. Fed by a background refresh (30 min mainnet, 3 min testnet).</li>
+  </ul>
+  <div class="app">
+    <div class="top"><div class="crumb">Wallets <span>&rsaquo;</span> <b>Main wallet</b></div>
+      <div class="topr">
+        <button class="attn" title="alice.dash ends in 6 hours. cooltoken.dash ends in 4 days.">&#9650; 2 names need your vote &middot; first ends in 6 hours</button>
+        <button class="attn calm">&#9719; 1 vote is still being checked</button>
+        <div class="chip-net"><span class="dot"></span>Mainnet &middot; Connected</div>
+      </div></div>
+    <div style="padding:12px 20px" class="small muted">Calm variant (nothing urgent): <button class="attn calm">2 names need your vote</button> &nbsp; Testnet urgent: <button class="attn">&#9650; 1 name needs your vote &middot; ends in 12 minutes</button></div>
+  </div>
+</section>
+
+<!-- ================= V1 ================= -->
+<section id="v1">
+  <div class="sec-h"><span class="id">V1</span><h2>Masternodes &rsaquo; Votes &rsaquo; To decide</h2><span class="persona p-priya">Priya-operator</span></div>
+  <ul class="notes">
+    <li><b>Node set</b> chosen once and remembered: every choice applies to all 24 nodes. One click on a choice plus Cast = done (VOT-02). Cards sorted by time left.</li>
+    <li>Weighted tally (Platform tallies are weighted; evonode = 4) plus <b>your influence</b>: what your 51 votes can do (VOT-03). Node line shows who voted what and <b>changes left</b> (VOT-04).</li>
+    <li>Keyboard: J/K move (focus ring on first card), 1&ndash;9 contender, L lock, A abstain, Space select. Two cards selected &rarr; dark bulk bar. Partly voted contests stay in To decide.</li>
+    <li>#901 kept: no-op skip, unresolved locks (needs-attention row), vote-state-unavailable notes, read-only tally vs selectable choices.</li>
+  </ul>
+  <div class="app">
+    <div class="top"><div class="crumb">Masternodes <span>&rsaquo;</span> <b>Votes</b></div><div class="topr"><button class="attn">&#9650; 2 names need your vote &middot; first ends in 6 hours</button><div class="chip-net"><span class="dot"></span>Mainnet &middot; Connected</div></div></div>
+    <div class="row">
+      <div class="nav">
+        <a href="#u1"><svg width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" fill="none" stroke-width="2"><circle cx="12" cy="8" r="4"></circle><path d="M4 20c0-4 4-6 8-6s8 2 8 6"></path></svg>Identities</a>
+        <a href="#v1" class="on"><svg width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" fill="none" stroke-width="2"><rect x="3" y="4" width="18" height="6" rx="1"></rect><rect x="3" y="14" width="18" height="6" rx="1"></rect></svg>Masternodes<span class="badge" aria-label="3 items need your attention">3</span></a>
+        <a href="#v1">Contracts</a><a href="#v1">Tokens</a><a href="#v1">Wallets</a><a href="#v1">Tools</a><a href="#v1">Settings</a>
+      </div>
+      <div class="island" style="display:flex;flex-direction:column">
+        <div class="mnhead">
+          <div class="seg" role="tablist"><button role="tab" class="on" aria-selected="true">Votes <span class="cnt">2</span></button><button role="tab">Nodes</button></div>
+          <div class="topr"><button class="linkbtn">Shortcuts</button><button class="btn sm">Refresh</button></div>
+        </div>
+        <div class="content" style="flex:1">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;gap:12px">
+            <div class="chips"><button class="chipf on">To decide (2)</button><button class="chipf">Voted (4)</button><button class="chipf">Scheduled (3)</button><button class="chipf">History</button></div>
+            <div class="topr">
+              <button class="nodeset" aria-haspopup="dialog">Vote with: All my nodes <span class="muted">&middot; 24 nodes &middot; 51 votes</span> &#9662;</button>
+              <div class="field" style="width:180px;height:36px"><input aria-label="Find a name" placeholder="Find a name" style="font:13px inherit;font-family:inherit"></div>
+            </div>
+          </div>
+          <div class="banner warnb" style="margin-bottom:10px"><span class="ic">&#9650;</span><div class="grow">Needs attention: 1 vote from mn-12 on dashfan.dash is still being checked. Don't submit it again. 1 scheduled vote was missed.</div><button class="linkbtn">Show</button></div>
+          <div class="bulkbar"><span><b>2 selected</b></span><button class="btn">Lock name <kbd>L</kbd></button><button class="btn">Abstain <kbd>A</kbd></button><button class="btn">Clear</button></div>
+
+          <div class="ccard focus">
+            <div class="sel"><input type="checkbox" checked aria-label="Select alice.dash"><div style="flex:1">
+              <div style="display:flex;justify-content:space-between;align-items:baseline"><span class="cname">alice<span>.dash</span></span><span class="small" style="color:#9a6a00;font-weight:600">&#9650; Ends in 6 hours</span></div>
+              <p class="small muted" style="margin:3px 0 10px">2 requests &middot; Voting ends Oct 1, 2026, 21:00 UTC.</p>
+              <div class="tally">
+                <div class="tr" style="grid-template-columns:130px 1fr 40px"><span class="lab">Alice (3MN5&hellip;s8Qp)</span><div class="track"><div class="fill" style="width:58%"></div></div><span class="num">80</span></div>
+                <div class="tr" style="grid-template-columns:130px 1fr 40px"><span class="lab">Alyce (7Yk2&hellip;d1Rt)</span><div class="track"><div class="fill n" style="width:54%"></div></div><span class="num">74</span></div>
+                <div class="tr" style="grid-template-columns:130px 1fr 40px"><span class="lab">Lock name</span><div class="track"><div class="fill n" style="width:34%"></div></div><span class="num">46</span></div>
+                <div class="tr" style="grid-template-columns:130px 1fr 40px"><span class="lab">Abstain</span><div class="track"><div class="fill n" style="width:9%"></div></div><span class="num">12</span></div>
+              </div>
+              <span class="infl">Alice leads by 6 votes. Your 51 votes can change who leads.</span>
+            </div></div>
+            <div>
+              <div class="small muted">Your decision</div>
+              <div class="choices"><button class="choice" aria-pressed="true">Vote for Alice <kbd>1</kbd></button><button class="choice" aria-pressed="false">Vote for Alyce <kbd>2</kbd></button><button class="choice" aria-pressed="false">Lock name <kbd>L</kbd></button><button class="choice" aria-pressed="false">Abstain <kbd>A</kbd></button></div>
+              <p class="small" style="margin:0">Your nodes: <b>19</b> not voted &middot; <b>4</b> voted Abstain &middot; <span class="warn">mn-07 has no changes left</span></p>
+              <p class="small muted" style="margin:4px 0 0">Changing 4 earlier votes uses 1 of each node's 4 changes.</p>
+            </div>
+          </div>
+          <div class="ccard">
+            <div class="sel"><input type="checkbox" checked aria-label="Select cooltoken.dash"><div style="flex:1">
+              <div style="display:flex;justify-content:space-between;align-items:baseline"><span class="cname">cooltoken<span>.dash</span></span><span class="small muted">Ends in 4 days</span></div>
+              <p class="small muted" style="margin:3px 0 10px">3 requests &middot; Others can join until Oct 2, 2026, 12:00 UTC.</p>
+              <div class="tally">
+                <div class="tr" style="grid-template-columns:130px 1fr 40px"><span class="lab">Dana (9Hq1&hellip;)</span><div class="track"><div class="fill" style="width:30%"></div></div><span class="num">20</span></div>
+                <div class="tr" style="grid-template-columns:130px 1fr 40px"><span class="lab">Erin (2Ba7&hellip;)</span><div class="track"><div class="fill n" style="width:30%"></div></div><span class="num">20</span></div>
+                <div class="tr" style="grid-template-columns:130px 1fr 40px"><span class="lab">Lock name</span><div class="track"><div class="fill n" style="width:12%"></div></div><span class="num">8</span></div>
+              </div>
+              <span class="infl">Dana and Erin are tied. If still tied at the end, the most recent request wins.</span>
+            </div></div>
+            <div>
+              <div class="small muted">Your decision</div>
+              <div class="choices"><button class="choice" aria-pressed="false">Vote for Dana <kbd>1</kbd></button><button class="choice" aria-pressed="false">Vote for Erin <kbd>2</kbd></button><button class="choice" aria-pressed="false">Vote for Finn <kbd>3</kbd></button><button class="choice" aria-pressed="true">Lock name <kbd>L</kbd></button><button class="choice" aria-pressed="false">Abstain <kbd>A</kbd></button></div>
+              <p class="small" style="margin:0">Your nodes: <b>21</b> not voted &middot; <span class="muted">vote state unavailable for 3 nodes; they're left out.</span> <button class="linkbtn">Refresh voting</button></p>
+            </div>
+          </div>
+          <button class="grp dim" aria-expanded="false">&#9656; Can't vote with your nodes (37)</button>
+        </div>
+        <div class="tray"><span><b>2 decisions ready</b> <span class="muted">&middot; 44 transactions, one per node and name</span></span><div style="display:flex;gap:10px"><button class="btn">Clear</button><button class="btn pri">Cast <kbd style="color:#fff;border-color:#fff;background:transparent">Enter</kbd></button></div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= V1b ================= -->
+<section id="v1b">
+  <div class="sec-h"><span class="id">V1b</span><h2>Node set popover</h2><span class="persona p-priya">Priya-operator</span></div>
+  <ul class="notes">
+    <li>Saved per network as the default (new local setting). Shared voting key needs no extra step: each node still gets its own transaction (PF &sect;4).</li>
+    <li>Nodes that can't vote are listed with the reason and left out automatically, never silently.</li>
+  </ul>
+  <div class="card" style="max-width:640px;padding:10px">
+    <div style="padding:6px 10px 10px;font-weight:600">Vote with</div>
+    <label class="radio"><input type="radio" name="ns"><span><b>All my nodes</b><br><span class="small muted">24 nodes &middot; 51 votes (9 evonodes &times; 4 + 15 masternodes)</span></span></label>
+    <label class="radio"><input type="radio" name="ns"><span><b>Evonodes only</b><br><span class="small muted">9 nodes &middot; 36 votes</span></span></label>
+    <label class="radio"><input type="radio" name="ns"><span><b>Masternodes only</b><br><span class="small muted">15 nodes &middot; 15 votes</span></span></label>
+    <label class="radio"><input type="radio" name="ns" checked><span><b>Custom</b> <span class="small muted">&middot; 22 of 24 nodes &middot; 47 votes</span></span></label>
+    <div style="margin:4px 10px 8px;border:1px solid var(--border);border-radius:8px">
+      <div class="ndl" style="border-top:none;color:var(--text-2);font-weight:600"><span></span><span>Node</span><span>Votes</span><span>Voting key</span><span>Note</span></div>
+      <div class="ndl"><input type="checkbox" checked aria-label="Use evo-01"><span>evo-01</span><span>4</span><span class="ok">&#10003; Ready</span><span class="muted">&nbsp;</span></div>
+      <div class="ndl"><input type="checkbox" checked aria-label="Use mn-02"><span>mn-02</span><span>1</span><span class="ok">&#10003; Ready</span><span class="muted">&nbsp;</span></div>
+      <div class="ndl"><input type="checkbox" disabled aria-label="mn-09 can't vote"><span class="muted">mn-09</span><span class="muted">1</span><span class="bad">&#10007; No key</span><button class="linkbtn">Add voting key</button></div>
+      <div class="ndl"><input type="checkbox" disabled aria-label="mn-14 can't vote"><span class="muted">mn-14</span><span class="muted">1</span><span class="muted">&#10003; Ready</span><span class="warn small">Not in the masternode list</span></div>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:4px 10px 6px"><label class="small"><input type="checkbox" checked style="accent-color:var(--accent)"> Save as my default</label><button class="btn pri sm">Done</button></div>
+  </div>
+</section>
+
+<!-- ================= V2 ================= -->
+<section id="v2">
+  <div class="sec-h"><span class="id">V2</span><h2>Confirm popover: aggregate, not a per-target table</h2><span class="persona p-priya">Priya-operator</span></div>
+  <ul class="notes">
+    <li>Changes #901 VOTE-FR-024: totals first (decisions &times; nodes = transactions), the change warning <b>once</b>, skips with reasons. The per-node table is one click away under "Adjust nodes".</li>
+    <li>Scheduling relative to the deadline ("When voting is about to end", 6 h before on mainnet, 10 min on testnet); absolute UTC still stored. Enter confirms, Esc cancels.</li>
+  </ul>
+  <div class="app" style="height:640px">
+    <div class="top"><div class="crumb">Masternodes <span>&rsaquo;</span> <b>Votes</b></div></div>
+    <div class="scrim">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="v2t" style="width:600px">
+        <div class="mh" id="v2t">Cast 2 decisions with 24 nodes</div>
+        <div class="mb">
+          <table style="margin-bottom:10px">
+            <tr><td class="mono">alice.dash</td><td><b>Vote for Alice</b></td><td class="muted small">23 nodes &middot; ends in 6 hours</td></tr>
+            <tr><td class="mono">cooltoken.dash</td><td><b>Lock name</b></td><td class="muted small">21 nodes &middot; ends in 4 days</td></tr>
+          </table>
+          <p class="small" style="margin:0 0 4px">44 transactions, one per node and name. Voting is free for your nodes.</p>
+          <div class="banner warnb" style="margin:8px 0"><span class="ic">&#9650;</span><div class="grow">4 of these change an earlier vote. Each node can change its vote 4 times per name.</div></div>
+          <details><summary class="small" style="cursor:pointer;font-weight:600">Skipped: 4 votes</summary>
+            <ul class="small" style="margin:6px 0;padding-left:18px"><li>mn-07 on alice.dash: no changes left (5 of 5 votes used).</li><li>3 nodes on cooltoken.dash: vote state unavailable. Refresh voting to include them.</li></ul></details>
+          <div style="margin:12px 0 6px" class="small muted">When</div>
+          <div class="seg"><button class="on">Now</button><button>When voting is about to end</button><button>At a specific time</button></div>
+          <p class="small muted" style="margin:6px 0 0">"When voting is about to end" casts each vote 6 hours before its name's deadline. Keep Dash Evo Tool open and connected until then.</p>
+          <details style="margin-top:12px"><summary class="small" style="cursor:pointer;font-weight:600">Adjust nodes</summary>
+            <table style="margin-top:6px">
+              <tr><th>Node</th><th>Name</th><th>Current &rarr; new</th><th>Changes left</th><th>Timing</th></tr>
+              <tr><td>evo-01</td><td class="mono">alice.dash</td><td>Abstain &rarr; Vote for Alice</td><td>3 of 4</td><td><select aria-label="Timing for evo-01"><option>Now</option><option>Before the end</option><option>Don't use this node</option></select></td></tr>
+              <tr><td>mn-02</td><td class="mono">alice.dash</td><td>Not voted &rarr; Vote for Alice</td><td>4 of 4</td><td><select aria-label="Timing for mn-02"><option>Now</option></select></td></tr>
+              <tr><td>mn-31</td><td class="mono">alice.dash</td><td>Not voted &rarr; Vote for Alice</td><td class="muted small">Unknown. Voted outside Dash Evo Tool.</td><td><select aria-label="Timing for mn-31"><option>Now</option></select></td></tr>
+            </table></details>
+        </div>
+        <div class="mf"><button class="btn">Cancel</button><button class="btn pri">Cast 44 votes</button></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= V2b ================= -->
+<section id="v2b">
+  <div class="sec-h"><span class="id">V2b</span><h2>Progress drawer: non-blocking fan-out</h2><span class="persona p-priya">Priya-operator</span></div>
+  <ul class="notes">
+    <li>Changes #901's full-window overlay: the screen stays usable, and only the targets being sent are locked (VOTE-FR-034). The drawer persists across screens and collapses to a chip.</li>
+    <li>Per node&times;name typed statuses from #901. Unconfirmed: "Check again", never "Submit again". The final banner summarizes the counts.</li>
+  </ul>
+  <div class="app" style="height:430px">
+    <div class="top"><div class="crumb">Masternodes <span>&rsaquo;</span> <b>Votes</b></div><div class="chip-net"><span class="dot"></span>Mainnet &middot; Connected</div></div>
+    <div style="padding:20px" class="small muted">Votes list stays interactive behind the drawer (cards already sent show "Sending with 23 nodes&hellip;" and their choices are locked).</div>
+    <div class="drawer" role="region" aria-label="Voting progress">
+      <div class="dh"><b>Casting 44 votes</b><span class="topr"><span class="muted small">33 done &middot; 9 sending &middot; 2 being checked</span><button class="linkbtn" aria-label="Collapse voting progress">Hide</button></span></div>
+      <div class="prog" style="margin-top:10px" aria-hidden="true"><i style="width:75%;background:var(--success)"></i><i style="width:20%;background:var(--accent)"></i><i style="width:5%;background:var(--warn-b)"></i></div>
+      <div class="drow"><span>evo-01 &middot; <span class="mono">alice.dash</span> &middot; Vote for Alice</span><span class="st ok">&#10003; Done</span></div>
+      <div class="drow"><span>mn-02 &middot; <span class="mono">alice.dash</span> &middot; Vote for Alice</span><span class="st" style="color:var(--accent)">&#9676; Sending</span></div>
+      <div class="drow"><span>mn-12 &middot; <span class="mono">cooltoken.dash</span> &middot; Lock name<br><span class="small muted">This vote may already have been submitted. Don't submit it again.</span></span><span><span class="st warn">&#9719; Being checked</span><br><button class="linkbtn">Check again</button></span></div>
+      <div class="drow"><span>mn-20 &middot; <span class="mono">cooltoken.dash</span> &middot; Lock name<br><span class="small muted">Not applied. Platform shows a different vote.</span></span><span><span class="st bad">&#10007; Not applied</span><br><button class="linkbtn">Review again</button></span></div>
+      <div class="drow" style="justify-content:center"><button class="linkbtn">Show all 44</button></div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= V3 ================= -->
+<section id="v3">
+  <div class="sec-h"><span class="id">V3</span><h2>Scheduled votes</h2><span class="persona p-priya">Priya-operator</span></div>
+  <ul class="notes"><li>Grouped by decision (one row = one name &times; node set; expand for nodes), relative timing shown with the absolute UTC time it resolves to. #901 kept: typed status, edit/remove until sending starts, missed after 120 s with Cast now, failure reasons survive restart.</li></ul>
+  <div class="app">
+    <div class="top"><div class="crumb">Masternodes <span>&rsaquo;</span> <b>Votes</b></div><div class="topr"><button class="attn">&#9650; 2 names need your vote</button><div class="chip-net"><span class="dot"></span>Mainnet &middot; Connected</div></div></div>
+    <div class="row">
+      <div class="nav"><a href="#u1">Identities</a><a href="#v1" class="on">Masternodes<span class="badge">3</span></a><a href="#v3">Contracts</a><a href="#v3">Tokens</a><a href="#v3">Wallets</a><a href="#v3">Tools</a><a href="#v3">Settings</a></div>
+      <div class="island">
+        <div class="mnhead"><div class="seg"><button class="on">Votes <span class="cnt">2</span></button><button>Nodes</button></div><button class="btn sm danger">Remove finished votes</button></div>
+        <div class="content">
+          <div class="chips" style="margin-bottom:12px"><button class="chipf">To decide (2)</button><button class="chipf">Voted (4)</button><button class="chipf on">Scheduled (3)</button><button class="chipf">History</button></div>
+          <p class="small muted" style="margin:0 0 10px">Keep Dash Evo Tool open and connected so scheduled votes are cast on time.</p>
+          <table>
+            <tr><th>Name</th><th>Nodes</th><th>Vote</th><th>When</th><th>Status</th><th></th></tr>
+            <tr><td class="mono">cooltoken.dash</td><td><button class="linkbtn">24 nodes &#9662;</button></td><td>Vote for Dana</td><td>6 hours before the end<div class="small muted">Oct 5, 2026, 06:00 UTC &middot; in 4 days</div></td><td><span class="st">&#9719; Scheduled</span></td><td style="white-space:nowrap"><button class="linkbtn">Edit</button> &nbsp; <button class="linkbtn" style="color:var(--danger)">Remove</button></td></tr>
+            <tr><td class="mono">dashfan.dash</td><td><button class="linkbtn">9 evonodes &#9662;</button></td><td>Lock name</td><td>Sep 30, 2026, 08:00 UTC<div class="small muted">yesterday</div></td><td><span class="st warn">&#9650; Missed</span><div class="small muted">Dash Evo Tool wasn't running at that time. Voting is still open for 20 hours.</div></td><td style="white-space:nowrap"><button class="btn sm pri">Cast now</button> <button class="linkbtn">Edit</button> <button class="linkbtn" style="color:var(--danger)">Remove</button></td></tr>
+            <tr><td class="mono">quantum.dash</td><td>mn-09</td><td>Abstain</td><td>Sep 29, 2026, 18:00 UTC</td><td><span class="st bad">&#10007; Not cast</span><div class="small muted">This node had no voting key on this device.</div></td><td><button class="linkbtn">Add voting key</button></td></tr>
+            <tr><td class="mono">oldname.dash</td><td>24 nodes</td><td>Vote for Zed</td><td>Sep 20, 2026, 10:00 UTC</td><td><span class="st ok">&#10003; Cast with 24 nodes</span></td><td></td></tr>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= V4 ================= -->
+<section id="v4">
+  <div class="sec-h"><span class="id">V4</span><h2>History</h2><span class="persona p-priya">Priya-operator</span></div>
+  <ul class="notes"><li>Outcome in words, winner ID labelled and copyable, plus what your nodes did and how much weight that was.</li></ul>
+  <div class="card">
+    <div class="chips" style="margin-bottom:12px"><button class="chipf">To decide (2)</button><button class="chipf">Voted (4)</button><button class="chipf">Scheduled (3)</button><button class="chipf on">History</button></div>
+    <table>
+      <tr><th>Name</th><th>Ended</th><th>Outcome</th><th>Your nodes voted</th></tr>
+      <tr><td class="mono">oldname.dash</td><td>Sep 21, 2026</td><td>Went to Zed <span class="mono small muted">(4c8e&hellip;1b70)</span> <button class="linkbtn">Copy ID</button></td><td>Vote for Zed (24 nodes, 51 votes)</td></tr>
+      <tr><td class="mono">takenname.dash</td><td>Sep 18, 2026</td><td>Locked for good, no one can register it</td><td>Lock name (9 evonodes, 36 votes)</td></tr>
+      <tr><td class="mono">calm.dash</td><td>Sep 10, 2026</td><td>Went to Kai <span class="mono small muted">(8Pq2&hellip;aa10)</span> <button class="linkbtn">Copy ID</button></td><td class="muted">Your nodes didn't vote.</td></tr>
+    </table>
+  </div>
+</section>
+
+<!-- ================= V5 ================= -->
+<section id="v5">
+  <div class="sec-h"><span class="id">V5</span><h2>Empty and gate states</h2><span class="persona p-priya">Priya-operator · Power without nodes</span></div>
+  <ul class="notes"><li>Never a raw error. No nodes: contests stay browsable read-only (choices disabled) under the banner. Journal unreadable keeps #901 FR-046 behaviour.</li></ul>
+  <div class="mini">
+    <div class="card"><div class="banner info" style="margin-bottom:12px"><span class="ic">i</span><div class="grow">Load a masternode with its voting key to vote on name contests.</div></div><button class="btn pri">Load a masternode</button><p class="small muted" style="margin:10px 0 0">Below: contest cards, read-only. Choice tooltip: "Load a masternode with a voting key to vote."</p></div>
+    <div class="card"><p class="small" style="margin:0 0 12px">None of your nodes has a voting key on this device. Add a voting key to vote. One key can serve several nodes.</p><button class="btn pri">Add a voting key</button></div>
+    <div class="card"><p class="small" style="margin:0 0 12px">There are no open name contests right now. New contests appear here automatically.</p><button class="btn">Refresh</button></div>
+    <div class="card" style="grid-column:span 3"><div class="banner warnb"><span class="ic">&#9650;</span><div class="grow">Saved voting progress couldn't be read, so this history may be incomplete. Votes that are still being checked stay protected from resubmission.</div><button class="btn sm">Retry loading</button></div></div>
+  </div>
+</section>
+
+<!-- ================= V6 ================= -->
+<section id="v6">
+  <div class="sec-h"><span class="id">V6</span><h2>Node detail: this node's votes</h2><span class="persona p-priya">Priya-operator</span></div>
+  <ul class="notes"><li>Changes #901 decision 2: <b>Vote with this node</b> opens Votes with the node set = this node, shown visibly on the node-set chip. Lists this node's votes with changes left and its masternode-list status (votes of removed nodes don't count, PF &sect;4).</li></ul>
+  <div class="card" style="max-width:760px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><div><div style="font-weight:600">evo-01 <span class="badge-s b-ok">&#10003; Voting ready</span> <span class="badge-s b-main">Evonode &middot; 4 votes</span></div><div class="small muted">In the masternode list &middot; ProTx 1a2b&hellip;9f0e</div></div><button class="btn pri">Vote with this node</button></div>
+    <h4>This node's votes</h4>
+    <table>
+      <tr><th>Name</th><th>Vote</th><th>Changes left</th><th>Voting ends</th></tr>
+      <tr><td class="mono">alice.dash</td><td>Abstain</td><td>3 of 4</td><td>in 6 hours</td></tr>
+      <tr><td class="mono">cooltoken.dash</td><td class="muted">Not voted</td><td>4 of 4</td><td>in 4 days</td></tr>
+      <tr><td class="mono">dashfan.dash</td><td>Lock name</td><td class="muted small">Unknown. Voted outside Dash Evo Tool.</td><td>in 20 hours</td></tr>
+    </table>
+    <p class="small muted" style="margin:10px 0 0">Changes left are counted on this device.</p>
+  </div>
+</section>
+
+</body>
+</html>

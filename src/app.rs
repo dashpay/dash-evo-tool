@@ -28,7 +28,6 @@ use crate::ui::components::secret_prompt_host::{ActivePrompt, EguiSecretPromptHo
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ProgressOverlay};
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
 use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen, ProfileSearchScreen};
-use crate::ui::dpns::dpns_contested_names_screen::{DPNSScreen, DPNSSubscreen};
 use crate::ui::identity::identity_pill::shorten_id;
 use crate::ui::network_chooser_screen::{NetworkChooserScreen, chooser_network_label};
 use crate::ui::theme::ThemeMode;
@@ -551,8 +550,11 @@ fn identity_hub_is_visible(selected: RootScreenType, screen_stack_is_empty: bool
     selected == RootScreenType::RootScreenIdentityHub && screen_stack_is_empty
 }
 
-/// Every result `DPNSScreen::display_task_result` acts on, so that a DPNS root
-/// screen receives it even while hidden. Dropping a variant here without
+/// The root screen hosting the voting workspace (Masternodes ▸ Votes).
+const VOTING_ROOT_SCREEN: RootScreenType = RootScreenType::RootScreenMasternodes;
+
+/// Every result `DPNSScreen::display_task_result` acts on, so that the voting
+/// panel receives it even while its root screen is hidden. Dropping a variant here without
 /// dropping its handler arm strands the screen in the state that result would
 /// have cleared. `dpns_result_routing_tests` reads the handler's source and
 /// fails if the two sets drift apart.
@@ -561,7 +563,6 @@ fn is_dpns_vote_result(result: &BackendTaskSuccessResult) -> bool {
         result,
         BackendTaskSuccessResult::DpnsVoteOperationUpdated { .. }
             | BackendTaskSuccessResult::RefreshedDpnsContests
-            | BackendTaskSuccessResult::RefreshedOwnedDpnsNames
             | BackendTaskSuccessResult::ScheduledVoteSweepCompleted { .. }
             | BackendTaskSuccessResult::ScheduledVotesCleared(_)
             | BackendTaskSuccessResult::ScheduledVotesInProgress(_)
@@ -2052,11 +2053,6 @@ impl AppState {
     /// before the gate: an install that cannot determine its network has to
     /// render it to get one.
     fn build_main_screens(active_context: &Arc<AppContext>) -> BTreeMap<RootScreenType, Screen> {
-        let dpns_active_contests_screen = DPNSScreen::new(active_context, DPNSSubscreen::Active);
-        let dpns_past_contests_screen = DPNSScreen::new(active_context, DPNSSubscreen::Past);
-        let dpns_my_usernames_screen = DPNSScreen::new(active_context, DPNSSubscreen::Owned);
-        let dpns_scheduled_votes_screen =
-            DPNSScreen::new(active_context, DPNSSubscreen::ScheduledVotes);
         let transition_visualizer_screen = TransitionVisualizerScreen::new(active_context);
         let proof_visualizer_screen = ProofVisualizerScreen::new(active_context);
         let document_visualizer_screen = DocumentVisualizerScreen::new(active_context);
@@ -2080,22 +2076,6 @@ impl AppState {
         let wallets_balances_screen = WalletsBalancesScreen::new(active_context);
 
         [
-            (
-                RootScreenType::RootScreenDPNSActiveContests,
-                Screen::DPNSScreen(dpns_active_contests_screen),
-            ),
-            (
-                RootScreenType::RootScreenDPNSPastContests,
-                Screen::DPNSScreen(dpns_past_contests_screen),
-            ),
-            (
-                RootScreenType::RootScreenDPNSOwnedNames,
-                Screen::DPNSScreen(dpns_my_usernames_screen),
-            ),
-            (
-                RootScreenType::RootScreenDPNSScheduledVotes,
-                Screen::DPNSScreen(dpns_scheduled_votes_screen),
-            ),
             (
                 RootScreenType::RootScreenWalletsBalances,
                 Screen::WalletsBalancesScreen(wallets_balances_screen),
@@ -2283,12 +2263,19 @@ impl AppState {
             }
 
             // Now that the map exists, an unregistered persisted route can finally
-            // be detected and replaced.
+            // be detected and replaced. Retired DPNS routes resolve to Votes first.
+            let (persisted, votes_view) = crate::ui::resolve_root_screen(self.selected_main_screen);
             self.selected_main_screen = initial_root_screen(
-                self.selected_main_screen,
-                self.main_screens.contains_key(&self.selected_main_screen),
+                persisted,
+                self.main_screens.contains_key(&persisted),
                 self.network_selection_required,
             );
+            if let Some(view) = votes_view
+                && self.selected_main_screen == RootScreenType::RootScreenMasternodes
+                && let Some(masternodes) = self.masternodes_screen_mut()
+            {
+                masternodes.open_votes(view);
+            }
 
             // Every root screen refreshes, not just the visible one, so screens the
             // user has not opened yet (e.g. DashPay Profile) already hold their data.
@@ -2762,26 +2749,24 @@ impl AppState {
         }
     }
 
+    /// Deliver a vote result to the voting panel while Masternodes is hidden.
+    /// While it is visible, the Masternodes screen forwards it itself.
     fn route_dpns_vote_result_to_hidden_screens(
         &mut self,
         context: &BackendTaskContext,
         result: &BackendTaskSuccessResult,
     ) {
-        for root in [
-            RootScreenType::RootScreenDPNSActiveContests,
-            RootScreenType::RootScreenDPNSScheduledVotes,
-        ] {
-            if dpns_result_needs_hidden_route(
-                root,
-                self.selected_main_screen,
-                self.screen_stack.is_empty(),
-                result,
-            ) && let Some(screen) = self.main_screens.get_mut(&root)
-            {
-                screen.display_backend_task_result(context, result.clone());
-                if matches!(result, BackendTaskSuccessResult::RefreshedDpnsContests) {
-                    screen.refresh();
-                }
+        if dpns_result_needs_hidden_route(
+            VOTING_ROOT_SCREEN,
+            self.selected_main_screen,
+            self.screen_stack.is_empty(),
+            result,
+        ) && let Some(masternodes) = self.masternodes_screen_mut()
+        {
+            let votes = masternodes.votes_mut();
+            votes.display_backend_task_result(context, result.clone());
+            if matches!(result, BackendTaskSuccessResult::RefreshedDpnsContests) {
+                votes.refresh();
             }
         }
     }
@@ -2794,19 +2779,15 @@ impl AppState {
         if !context.is_dpns_vote_task() {
             return;
         }
-        for root in [
-            RootScreenType::RootScreenDPNSActiveContests,
-            RootScreenType::RootScreenDPNSScheduledVotes,
-        ] {
-            if dpns_screen_is_hidden(
-                root,
-                self.selected_main_screen,
-                self.screen_stack.is_empty(),
-            ) && let Some(screen) = self.main_screens.get_mut(&root)
-            {
-                screen.display_backend_task_error(context, error);
-                screen.display_task_error(error);
-            }
+        if dpns_screen_is_hidden(
+            VOTING_ROOT_SCREEN,
+            self.selected_main_screen,
+            self.screen_stack.is_empty(),
+        ) && let Some(masternodes) = self.masternodes_screen_mut()
+        {
+            let votes = masternodes.votes_mut();
+            votes.display_backend_task_error(context, error);
+            votes.display_task_error(error);
         }
     }
 
@@ -2833,6 +2814,7 @@ impl AppState {
     }
 
     fn set_main_screen(&mut self, root_screen_type: RootScreenType) {
+        let (root_screen_type, votes_view) = crate::ui::resolve_root_screen(root_screen_type);
         if !network_selection_allows_root(self.network_selection_required, root_screen_type) {
             return;
         }
@@ -2840,9 +2822,25 @@ impl AppState {
         let active_screen = self.active_root_screen_mut();
         active_screen.reset_to_root_view();
         active_screen.refresh_on_arrival();
+        if let Some(view) = votes_view
+            && let Some(masternodes) = self.masternodes_screen_mut()
+        {
+            masternodes.open_votes(view);
+        }
         self.current_app_context()
             .update_settings(root_screen_type)
             .ok();
+    }
+
+    /// The Masternodes root screen, which hosts the voting workspace.
+    fn masternodes_screen_mut(&mut self) -> Option<&mut crate::ui::masternodes::MasternodesScreen> {
+        match self
+            .main_screens
+            .get_mut(&RootScreenType::RootScreenMasternodes)?
+        {
+            Screen::MasternodesScreen(screen) => Some(screen),
+            _ => None,
+        }
     }
 
     /// Auto-start chain sync for the active context when the user opted in.
@@ -4477,63 +4475,60 @@ mod dpns_result_routing_tests {
     };
 
     #[test]
-    fn voting_ui_results_route_to_each_hidden_dpns_screen_only_once() {
+    fn voting_ui_results_route_to_the_hidden_voting_panel_only_once() {
         let result = BackendTaskSuccessResult::ScheduledVoteSweepCompleted {
             network: Network::Testnet,
             preserve_eligibility_since_ms: None,
         };
-        for root in [
-            RootScreenType::RootScreenDPNSActiveContests,
-            RootScreenType::RootScreenDPNSScheduledVotes,
-        ] {
-            assert!(!dpns_result_needs_hidden_route(root, root, true, &result));
-            assert!(dpns_result_needs_hidden_route(root, root, false, &result));
-            assert!(dpns_result_needs_hidden_route(
-                root,
-                RootScreenType::RootScreenIdentityHub,
-                true,
-                &result
-            ));
-            assert!(!dpns_result_needs_hidden_route(
-                root,
-                RootScreenType::RootScreenIdentityHub,
-                true,
-                &BackendTaskSuccessResult::None
-            ));
-        }
+        let root = VOTING_ROOT_SCREEN;
+        assert_eq!(root, RootScreenType::RootScreenMasternodes);
+        assert!(!dpns_result_needs_hidden_route(root, root, true, &result));
+        assert!(dpns_result_needs_hidden_route(root, root, false, &result));
+        assert!(dpns_result_needs_hidden_route(
+            root,
+            RootScreenType::RootScreenIdentityHub,
+            true,
+            &result
+        ));
+        assert!(!dpns_result_needs_hidden_route(
+            root,
+            RootScreenType::RootScreenIdentityHub,
+            true,
+            &BackendTaskSuccessResult::None
+        ));
     }
 
     #[test]
-    fn correlated_vote_result_routes_when_active_contests_is_hidden() {
+    fn correlated_vote_result_routes_when_masternodes_is_hidden() {
         let result = BackendTaskSuccessResult::DpnsVoteOperationUpdated {
             network: Network::Testnet,
             operation_id: DpnsVoteOperationId::from_bytes([7; 16]),
         };
 
         assert!(dpns_result_needs_hidden_route(
-            RootScreenType::RootScreenDPNSActiveContests,
+            VOTING_ROOT_SCREEN,
             RootScreenType::RootScreenWalletsBalances,
             true,
             &result,
         ));
         assert!(dpns_result_needs_hidden_route(
-            RootScreenType::RootScreenDPNSActiveContests,
-            RootScreenType::RootScreenDPNSActiveContests,
+            VOTING_ROOT_SCREEN,
+            VOTING_ROOT_SCREEN,
             false,
             &result,
         ));
         assert!(!dpns_result_needs_hidden_route(
-            RootScreenType::RootScreenDPNSActiveContests,
-            RootScreenType::RootScreenDPNSActiveContests,
+            VOTING_ROOT_SCREEN,
+            VOTING_ROOT_SCREEN,
             true,
             &result,
         ));
     }
 
     #[test]
-    fn refreshed_contests_route_when_active_contests_is_hidden() {
+    fn refreshed_contests_route_when_masternodes_is_hidden() {
         assert!(dpns_result_needs_hidden_route(
-            RootScreenType::RootScreenDPNSActiveContests,
+            VOTING_ROOT_SCREEN,
             RootScreenType::RootScreenWalletsBalances,
             true,
             &BackendTaskSuccessResult::RefreshedDpnsContests,
@@ -4541,37 +4536,37 @@ mod dpns_result_routing_tests {
     }
 
     #[test]
-    fn scheduled_vote_sweep_completion_routes_when_active_contests_is_hidden() {
+    fn scheduled_vote_sweep_completion_routes_when_masternodes_is_hidden() {
         let result = BackendTaskSuccessResult::ScheduledVoteSweepCompleted {
             network: Network::Testnet,
             preserve_eligibility_since_ms: None,
         };
 
         assert!(dpns_result_needs_hidden_route(
-            RootScreenType::RootScreenDPNSActiveContests,
+            VOTING_ROOT_SCREEN,
             RootScreenType::RootScreenWalletsBalances,
             true,
             &result,
         ));
         assert!(dpns_result_needs_hidden_route(
-            RootScreenType::RootScreenDPNSActiveContests,
-            RootScreenType::RootScreenDPNSActiveContests,
+            VOTING_ROOT_SCREEN,
+            VOTING_ROOT_SCREEN,
             false,
             &result,
         ));
         assert!(!dpns_result_needs_hidden_route(
-            RootScreenType::RootScreenDPNSActiveContests,
-            RootScreenType::RootScreenDPNSActiveContests,
+            VOTING_ROOT_SCREEN,
+            VOTING_ROOT_SCREEN,
             true,
             &result,
         ));
     }
 
     #[test]
-    fn cleared_scheduled_votes_route_when_active_contests_is_hidden() {
+    fn cleared_scheduled_votes_route_when_masternodes_is_hidden() {
         assert!(dpns_result_needs_hidden_route(
-            RootScreenType::RootScreenDPNSActiveContests,
-            RootScreenType::RootScreenDPNSScheduledVotes,
+            VOTING_ROOT_SCREEN,
+            RootScreenType::RootScreenIdentityHub,
             true,
             &BackendTaskSuccessResult::ScheduledVotesCleared(Vec::new()),
         ));
@@ -4627,7 +4622,6 @@ mod dpns_result_routing_tests {
             }
             "ScheduledVotesCleared" => BackendTaskSuccessResult::ScheduledVotesCleared(Vec::new()),
             "RefreshedDpnsContests" => BackendTaskSuccessResult::RefreshedDpnsContests,
-            "RefreshedOwnedDpnsNames" => BackendTaskSuccessResult::RefreshedOwnedDpnsNames,
             unknown => panic!(
                 "DPNSScreen::display_task_result now handles {unknown}; add a sample here and route it in is_dpns_vote_result"
             ),
@@ -4646,23 +4640,10 @@ mod dpns_result_routing_tests {
         }
     }
 
-    /// Refresh on My usernames, navigate away, come back: without routing, the
-    /// screen never clears `RefreshingStatus::Refreshing` and its Refresh
-    /// button stays inert.
     #[test]
-    fn refreshed_owned_names_route_when_the_dpns_screen_is_hidden() {
+    fn scheduled_votes_in_progress_route_when_masternodes_is_hidden() {
         assert!(dpns_result_needs_hidden_route(
-            RootScreenType::RootScreenDPNSActiveContests,
-            RootScreenType::RootScreenWalletsBalances,
-            true,
-            &BackendTaskSuccessResult::RefreshedOwnedDpnsNames,
-        ));
-    }
-
-    #[test]
-    fn scheduled_votes_in_progress_route_when_the_dpns_screen_is_hidden() {
-        assert!(dpns_result_needs_hidden_route(
-            RootScreenType::RootScreenDPNSScheduledVotes,
+            VOTING_ROOT_SCREEN,
             RootScreenType::RootScreenWalletsBalances,
             true,
             &BackendTaskSuccessResult::ScheduledVotesInProgress(Vec::new()),
@@ -4672,8 +4653,8 @@ mod dpns_result_routing_tests {
     /// The visibility rule both `route_dpns_vote_result_to_hidden_screens` and
     /// `route_dpns_vote_error_to_hidden_screens` route on.
     #[test]
-    fn a_dpns_screen_is_hidden_behind_another_root_screen_or_a_modal() {
-        let target = RootScreenType::RootScreenDPNSActiveContests;
+    fn the_voting_panel_is_hidden_behind_another_root_screen_or_a_modal() {
+        let target = VOTING_ROOT_SCREEN;
 
         assert!(!dpns_screen_is_hidden(target, target, true));
         assert!(dpns_screen_is_hidden(target, target, false));

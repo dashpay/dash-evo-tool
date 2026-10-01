@@ -189,15 +189,6 @@ pub fn add_left_panel(
                                                             | RootScreenType::RootScreenToolsGroveSTARKScreen
                                                             | RootScreenType::RootScreenToolsAddressBalanceScreen
                                                     ),
-                                                    // Contracts: check if any Contracts/DPNS subscreen is selected
-                                                    RootScreenType::RootScreenDocumentQuery => matches!(
-                                                        selected_screen,
-                                                        RootScreenType::RootScreenDocumentQuery
-                                                            | RootScreenType::RootScreenDPNSActiveContests
-                                                            | RootScreenType::RootScreenDPNSPastContests
-                                                            | RootScreenType::RootScreenDPNSOwnedNames
-                                                            | RootScreenType::RootScreenDPNSScheduledVotes
-                                                    ),
                                                     // All other screens: exact match
                                                     _ => selected_screen == *screen_type,
                                                 };

@@ -862,6 +862,17 @@ pub enum TaskError {
         source: Box<crate::wallet_backend::KvAdapterError>,
     },
 
+    /// A masternode-voting preference (saved node set, last Masternodes
+    /// segment) could not be read or written in the app k/v store. Only the
+    /// convenience preference is lost; voting itself is unaffected.
+    #[error(
+        "Could not save your voting preferences. Check available disk space and try again."
+    )]
+    VotingPreferenceStorage {
+        #[source]
+        source: Box<crate::wallet_backend::KvAdapterError>,
+    },
+
     /// The DET avatar image cache could not be read or written.
     /// Lives in the same cross-network `det-app.sqlite` k/v file as
     /// [`Self::KvSidecarStorage`]; a failure here only costs the offline

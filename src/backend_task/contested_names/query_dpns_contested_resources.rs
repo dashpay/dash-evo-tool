@@ -227,6 +227,9 @@ impl AppContext {
         if let Err(error) = self.refresh_dpns_vote_states(sdk).await {
             tracing::warn!(?error, "Could not refresh DPNS current votes with contests");
         }
+        self.refresh_masternode_list_membership().await;
+        self.forget_closed_dpns_vote_counts();
+        self.recompute_dpns_vote_attention();
         self.refresh_pending_dpns_usernames()?;
 
         sender

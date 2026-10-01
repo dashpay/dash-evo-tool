@@ -5,6 +5,7 @@ use crate::support::{mount_app, with_isolated_data_dir};
 use dash_evo_tool::app::TaskResult;
 use dash_evo_tool::backend_task::{BackendTaskContext, BackendTaskSuccessResult};
 use dash_evo_tool::context::AppContext;
+use dash_evo_tool::model::dpns_voting::operator::MasternodesSegment;
 use dash_evo_tool::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
 use dash_evo_tool::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use dash_evo_tool::model::qualified_identity::{
@@ -337,10 +338,10 @@ fn empty_state_renders_canonical_copy() {
     });
 }
 
-/// The Masternodes root contains only its list and detail flow. DPNS owns all
-/// voting and scheduled-vote navigation.
+/// VOTE-TC-081 — Masternodes carries the `Votes | Nodes` header with Votes
+/// listed first; with nothing needing a vote and no history, Nodes opens.
 #[test]
-fn masternodes_has_no_operator_voting_subnavigation() {
+fn masternodes_opens_on_nodes_when_nothing_needs_a_vote() {
     with_isolated_data_dir(|| {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
@@ -349,38 +350,92 @@ fn masternodes_has_no_operator_voting_subnavigation() {
         let app_context = harness.state().current_app_context().clone();
         activate_masternodes_tab(&mut harness, &app_context);
 
-        assert!(harness.query_by_label("Nodes").is_none());
-        assert!(harness.query_by_label("Voting").is_none());
-        assert!(harness.query_by_label("Scheduled").is_none());
+        let votes = harness.get_by_label("Votes");
+        let nodes = harness.get_by_label("Nodes");
+        assert!(
+            votes.rect().left() < nodes.rect().left(),
+            "Votes must be listed before Nodes"
+        );
         assert!(harness.query_by_label("No masternodes loaded").is_some());
+        assert_eq!(masternodes_segment(&mut harness), MasternodesSegment::Nodes);
     });
 }
 
-/// Scheduled votes remain reachable from the persistent DPNS subscreen bar.
+/// The Votes segment keeps its sub-views reachable: Scheduled opens in place.
 #[test]
-fn dpns_scheduled_votes_tab_is_clickable() {
+fn votes_scheduled_view_is_clickable() {
     with_isolated_data_dir(|| {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
 
-        let mut harness = mount_app(RootScreenType::RootScreenDPNSActiveContests);
-        harness.run_steps(5);
+        let mut harness = mount_app(RootScreenType::RootScreenMasternodes);
+        harness.run_steps(3);
+        harness.get_by_label("Votes").click();
+        harness.run_steps(3);
 
-        harness.get_by_label("Scheduled votes").click();
+        harness.get_by_label("Scheduled").click();
         harness.run_steps(3);
 
         assert_eq!(
             harness.state().selected_main_screen,
-            RootScreenType::RootScreenDPNSScheduledVotes
+            RootScreenType::RootScreenMasternodes
         );
         assert!(harness.query_by_label("No scheduled votes.").is_some());
     });
 }
 
-/// VOTE-TC-013 — Active contests must expose the actionable no-voter-key state
-/// directly; the user cannot open Review and cast without a usable voter.
+/// VOTE-TC-082 — a persisted retired DPNS route opens the matching Votes view.
 #[test]
-fn active_contests_without_a_voting_key_shows_the_load_action() {
+fn persisted_scheduled_votes_route_opens_votes_scheduled() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenDPNSScheduledVotes);
+        harness.run_steps(3);
+
+        assert_eq!(
+            harness.state().selected_main_screen,
+            RootScreenType::RootScreenMasternodes
+        );
+        assert_eq!(masternodes_segment(&mut harness), MasternodesSegment::Votes);
+        assert!(harness.query_by_label("No scheduled votes.").is_some());
+    });
+}
+
+/// VOTE-TC-083 — the retired "My usernames" route opens the Identities hub.
+#[test]
+fn persisted_owned_names_route_opens_the_identity_hub() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let harness = mount_app(RootScreenType::RootScreenDPNSOwnedNames);
+        assert_eq!(
+            harness.state().selected_main_screen,
+            RootScreenType::RootScreenIdentityHub
+        );
+    });
+}
+
+fn masternodes_segment(
+    harness: &mut egui_kittest::Harness<'static, dash_evo_tool::app::AppState>,
+) -> MasternodesSegment {
+    let Screen::MasternodesScreen(screen) = harness
+        .state_mut()
+        .main_screens
+        .get_mut(&RootScreenType::RootScreenMasternodes)
+        .expect("masternodes screen")
+    else {
+        panic!("the Masternodes root must contain the Masternodes screen");
+    };
+    screen.segment()
+}
+
+/// VOTE-TC-013 — To decide exposes the actionable no-voter-key state; its
+/// `Load a masternode` action opens the Nodes load form.
+#[test]
+fn to_decide_without_a_voting_key_shows_the_load_action() {
     with_isolated_data_dir(|| {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
@@ -390,28 +445,33 @@ fn active_contests_without_a_voting_key_shows_the_load_action() {
         app_context
             .insert_name_contests_as_normalized_names(vec!["alice".to_owned()])
             .expect("seed active contest");
-        let active_screen = harness
+        let Screen::MasternodesScreen(masternodes) = harness
             .state_mut()
             .main_screens
-            .get_mut(&RootScreenType::RootScreenDPNSActiveContests)
-            .expect("active contests screen");
-        let Screen::DPNSScreen(active_screen) = active_screen else {
-            panic!("active contests root must contain a DPNS screen");
+            .get_mut(&RootScreenType::RootScreenMasternodes)
+            .expect("masternodes screen")
+        else {
+            panic!("the Masternodes root must contain the Masternodes screen");
         };
-        active_screen.refresh();
+        masternodes.votes_mut().refresh();
         harness.run_steps(5);
 
         assert!(
             harness
                 .query_by_label("None of your loaded nodes has a voting key.")
                 .is_some(),
-            "the no-voter-key explanation must render on Active contests"
+            "the no-voter-key explanation must render in To decide"
         );
         harness.get_by_label("Load a masternode").click();
         harness.run_steps(3);
         assert_eq!(
             harness.state().selected_main_screen,
             RootScreenType::RootScreenMasternodes
+        );
+        assert_eq!(masternodes_segment(&mut harness), MasternodesSegment::Nodes);
+        assert!(
+            harness.query_by_label("ProTxHash").is_some(),
+            "the load form must open"
         );
     });
 }
@@ -681,9 +741,9 @@ fn detail_dpns_voting_button_opens_active_contests() {
         harness.run_steps(3);
         assert_eq!(
             harness.state().selected_main_screen,
-            RootScreenType::RootScreenDPNSActiveContests
+            RootScreenType::RootScreenMasternodes
         );
-        assert!(harness.query_by_label("Active contests").is_some());
+        assert!(harness.query_by_label("To decide").is_some());
     });
 }
 

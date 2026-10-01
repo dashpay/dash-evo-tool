@@ -18,10 +18,6 @@ pub fn add_tools_subscreen_chooser_panel(ui: &mut Ui, app_context: &AppContext) 
         RootScreenType::RootScreenToolsDocumentVisualizerScreen => ToolsSubscreen::DocumentViewer,
         RootScreenType::RootScreenToolsContractVisualizerScreen => ToolsSubscreen::ContractViewer,
         RootScreenType::RootScreenToolsGroveSTARKScreen => ToolsSubscreen::GroveSTARK,
-        RootScreenType::RootScreenDPNSActiveContests
-        | RootScreenType::RootScreenDPNSPastContests
-        | RootScreenType::RootScreenDPNSOwnedNames
-        | RootScreenType::RootScreenDPNSScheduledVotes => ToolsSubscreen::DPNS,
         _ => ToolsSubscreen::PlatformInfo,
     };
 
@@ -70,10 +66,6 @@ fn visible_tools_nav_items() -> Vec<(ToolsSubscreen, RootScreenType)> {
             ToolsSubscreen::ContractViewer,
             RootScreenType::RootScreenToolsContractVisualizerScreen,
         ),
-        (
-            ToolsSubscreen::DPNS,
-            RootScreenType::RootScreenDPNSActiveContests,
-        ),
     ]
 }
 
@@ -94,6 +86,21 @@ mod tests {
         );
     }
 
+    /// VOTE-TC-084: voting moved to Masternodes ▸ Votes, so Tools has no DPNS entry.
+    #[test]
+    fn tools_menu_has_no_dpns_entry() {
+        assert!(visible_tools_nav_items().iter().all(
+            |(subscreen, target)| subscreen.display_name() != "DPNS"
+                && !matches!(
+                    target,
+                    RootScreenType::RootScreenDPNSActiveContests
+                        | RootScreenType::RootScreenDPNSPastContests
+                        | RootScreenType::RootScreenDPNSOwnedNames
+                        | RootScreenType::RootScreenDPNSScheduledVotes
+                )
+        ));
+    }
+
     #[test]
     fn other_tools_still_listed() {
         let names: Vec<&str> = visible_tools_nav_items()
@@ -108,7 +115,6 @@ mod tests {
             ToolsSubscreen::TransactionViewer,
             ToolsSubscreen::DocumentViewer,
             ToolsSubscreen::ContractViewer,
-            ToolsSubscreen::DPNS,
         ] {
             assert!(
                 names.contains(&expected.display_name()),

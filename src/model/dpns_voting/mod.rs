@@ -13,6 +13,8 @@ use dash_sdk::platform::Identifier;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+pub mod operator;
+
 /// Grace period for admitting a scheduled vote to automatic execution.
 pub const SCHEDULED_VOTE_MAX_LATENESS_MS: u64 = 120_000;
 
@@ -236,6 +238,9 @@ pub enum DpnsVoteFailure {
     SubmissionFailed,
     CurrentVoteUnavailable,
     ResultUnconfirmed,
+    /// The contest closed before the target was submitted. Appended last:
+    /// journal records are positionally encoded.
+    VotingEnded,
 }
 
 /// Lifecycle of one target.

@@ -109,11 +109,7 @@ impl std::error::Error for BackendTaskJoinError {}
 /// Dash Core RPC error code: wallet file not specified (multi-wallet node).
 const RPC_WALLET_NOT_SPECIFIED: i32 = -19;
 
-/// Some expired upgrade backups remain. Retention runs again whenever wallet data
-/// is opened (start, network switch) and whenever the setting is saved.
-pub(crate) const UPGRADE_BACKUP_CLEANUP_INCOMPLETE: &str = "Some old upgrade backups could not be deleted. The app tries again the next time it opens your wallet data.";
-
-/// [`UPGRADE_BACKUP_CLEANUP_INCOMPLETE`] after a retention setting save.
+/// Some expired upgrade backups remain after a retention setting save.
 pub(crate) const BACKUP_RETENTION_SAVED_CLEANUP_INCOMPLETE: &str = "Your backup retention setting was saved, but some old upgrade backups could not be deleted. The app tries again the next time it opens your wallet data.";
 
 /// Shown whenever another window or session holds the wallet database.
@@ -1216,7 +1212,9 @@ pub enum TaskError {
     },
 
     /// Expired upgrade backups could not all be deleted.
-    #[error("{}", UPGRADE_BACKUP_CLEANUP_INCOMPLETE)]
+    #[error(
+        "Some old upgrade backups could not be deleted. The app tries again the next time it opens your wallet data."
+    )]
     UpgradeBackupCleanup {
         #[source]
         source: std::io::Error,
@@ -3814,23 +3812,6 @@ mod tests {
     use dash_sdk::dpp::identity::Purpose;
     use dash_sdk::platform::Identifier;
 
-    /// Both cleanup messages promise the same, truthful retry.
-    #[test]
-    fn upgrade_backup_cleanup_messages_share_the_retry_promise() {
-        let error = TaskError::UpgradeBackupCleanup {
-            source: std::io::Error::other("permission denied"),
-        };
-        assert_eq!(error.to_string(), UPGRADE_BACKUP_CLEANUP_INCOMPLETE);
-        let (_, retry) = UPGRADE_BACKUP_CLEANUP_INCOMPLETE
-            .split_once(". ")
-            .expect("two sentences");
-        assert_eq!(
-            retry,
-            "The app tries again the next time it opens your wallet data."
-        );
-        assert!(BACKUP_RETENTION_SAVED_CLEANUP_INCOMPLETE.ends_with(retry));
-    }
-
     const DAPI_EXHAUSTED_MESSAGE: &str =
         "All Dash network servers are temporarily unreachable. Please wait a minute and retry.";
 
@@ -6183,10 +6164,8 @@ mod tests {
         assert!(std::error::Error::source(&err).is_some());
     }
 
-    /// Wraps a SQLite failure with `code` in a refinery migration error the
-    /// same way refinery's rusqlite driver does, so the source chain matches
-    /// what `SqlitePersister::open` returns for a migration that ran out of a
-    /// resource.
+    /// Wraps the supplied SQLite failure code as refinery does during migration,
+    /// preserving the source chain returned by `SqlitePersister::open`.
     fn sqlite_migration_error(code: std::ffi::c_int) -> refinery::Error {
         use refinery::error::WrapMigrationError;
 

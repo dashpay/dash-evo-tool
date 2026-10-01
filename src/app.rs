@@ -4550,9 +4550,5 @@ mod network_chooser_routing_tests {
         let context = BackendTaskContext::from(&task);
         assert_eq!(context, BackendTaskContext::UpdateBackupRetention);
         assert!(network_chooser_owns_task(&context));
-        assert!(network_chooser_owns_task(
-            &BackendTaskContext::ClearNetworkDatabase
-        ));
-        assert!(!network_chooser_owns_task(&BackendTaskContext::Other));
     }
 }

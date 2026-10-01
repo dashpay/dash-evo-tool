@@ -246,6 +246,13 @@ fn backup_prefix(path: &Path) -> Option<String> {
     ))
 }
 
+/// The published bridge snapshot of `database` named with `suffix`; a test fixture.
+#[cfg(test)]
+pub(crate) fn bridge_backup_path(database: &Path, suffix: &str) -> PathBuf {
+    let prefix = backup_prefix(database).expect("database path has a file name");
+    database.with_file_name(format!("{prefix}{suffix}.sqlite"))
+}
+
 /// Upstream snapshot names: `pre-migration-<stem>-<from>-to-<to>-<timestamp>.db`.
 const UPSTREAM_PREFIX: &str = "pre-migration-";
 const UPSTREAM_SUFFIX: &str = ".db";
@@ -312,41 +319,16 @@ pub(crate) fn upstream_backup_timestamp(
     parse_upstream_name(database, name).map(|snapshot| snapshot.taken)
 }
 
-/// Retained upgrade backups of the database at `path`.
-#[cfg(test)]
-fn backups(path: &Path) -> std::io::Result<Vec<PathBuf>> {
-    backups_in(path, Some(&default_auto_dir(path)))
-}
-
 fn default_auto_dir(path: &Path) -> PathBuf {
     platform_wallet_storage::default_auto_backup_dir(path)
 }
 
-/// Backup candidates that passed validation, plus every rejected one with its reason.
-///
-/// Directory-level failures still abort the scan; a single rejected
-/// candidate does not, so deletion can remove every valid snapshot before
-/// reporting the rejection.
-struct BackupScan {
-    found: Vec<PathBuf>,
-    rejected: Vec<(PathBuf, std::io::Error)>,
-}
-
-/// Strict scan: any rejected candidate fails the whole scan. Retention and
-/// publication rely on this to never proceed past an unexpected file.
+/// Single-link regular files named like a backup of the database at `path`, next to it
+/// or in `auto_dir`. Anything else is skipped; [`remove_backup`] refuses what must never go.
 fn backups_in(path: &Path, auto_dir: Option<&Path>) -> std::io::Result<Vec<PathBuf>> {
-    let scan = scan_backups_in(path, auto_dir)?;
-    match scan.rejected.into_iter().next() {
-        Some((_, error)) => Err(error),
-        None => Ok(scan.found),
-    }
-}
-
-fn scan_backups_in(path: &Path, auto_dir: Option<&Path>) -> std::io::Result<BackupScan> {
     let mut found = Vec::new();
-    let mut rejected = Vec::new();
     let Some(parent) = path.parent() else {
-        return Ok(BackupScan { found, rejected });
+        return Ok(found);
     };
     for directory in [Some(parent), auto_dir].into_iter().flatten() {
         let metadata = match std::fs::symlink_metadata(directory) {
@@ -365,56 +347,18 @@ fn scan_backups_in(path: &Path, auto_dir: Option<&Path>) -> std::io::Result<Back
             let Some(name) = name.to_str() else { continue };
             let bridge = directory == parent && is_bridge_backup_name(path, name);
             let upstream = Some(directory) == auto_dir && parse_upstream_name(path, name).is_some();
-            if bridge || upstream {
-                match validate_backup_file(&entry.path(), path) {
-                    Ok(()) => found.push(entry.path()),
-                    Err(error) => rejected.push((entry.path(), error)),
-                }
+            // Symlinks, directories and hard links (which may alias a live database)
+            // are skipped; an entry whose metadata cannot be read surfaces on use.
+            let other_type = std::fs::symlink_metadata(entry.path())
+                .is_ok_and(|metadata| !is_single_link_file(&metadata));
+            if (bridge || upstream) && !other_type {
+                found.push(entry.path());
             }
         }
     }
     found.sort();
     found.dedup();
-    Ok(BackupScan { found, rejected })
-}
-
-/// Why a file with a backup (or lifecycle-lock) name is not treated as one. Wrapped
-/// in an [`std::io::Error`]; only logs and error details show it.
-#[derive(Debug, thiserror::Error)]
-enum UnexpectedBackupFile {
-    #[error("A file named like an upgrade backup is not a regular file.")]
-    NotRegularFile,
-    #[error("A file named like an upgrade backup is the live database.")]
-    LiveDatabase,
-    #[error("A file named like an upgrade backup has more than one hard link.")]
-    HardLinked,
-}
-
-/// Scan-time classification of a candidate (also used to vet the lifecycle lock
-/// file); the deletion itself is policed by the
-/// [`delete_file`](crate::utils::file_deletion::delete_file) chokepoint.
-fn validate_backup_file(backup: &Path, database: &Path) -> std::io::Result<()> {
-    let unexpected = |kind| Err(std::io::Error::other(kind));
-    let metadata = std::fs::symlink_metadata(backup)?;
-    if !metadata.is_file() {
-        return unexpected(UnexpectedBackupFile::NotRegularFile);
-    }
-    if backup == database {
-        return unexpected(UnexpectedBackupFile::LiveDatabase);
-    }
-    if let Ok(live_path) = database.canonicalize()
-        && backup.canonicalize()? == live_path
-    {
-        return unexpected(UnexpectedBackupFile::LiveDatabase);
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if metadata.nlink() != 1 {
-            return unexpected(UnexpectedBackupFile::HardLinked);
-        }
-    }
-    Ok(())
+    Ok(found)
 }
 
 fn remove_backup(backup: &Path, database: &Path) -> std::io::Result<()> {
@@ -461,6 +405,26 @@ pub(crate) fn backup_lock_path(database: &Path) -> Option<PathBuf> {
     Some(database.with_file_name(name))
 }
 
+/// Whether `metadata` (not followed) is a regular file with no other hard link.
+fn is_single_link_file(metadata: &std::fs::Metadata) -> bool {
+    #[cfg(unix)]
+    let single_link = std::os::unix::fs::MetadataExt::nlink(metadata) == 1;
+    #[cfg(not(unix))]
+    let single_link = true;
+    metadata.is_file() && single_link
+}
+
+/// Refuse an existing lock path that is a symlink, not a regular file, or hard-linked.
+fn check_lock_file(lock: &Path) -> std::io::Result<()> {
+    if is_single_link_file(&std::fs::symlink_metadata(lock)?) {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(
+            "Upgrade lock path is not a single-link regular file",
+        ))
+    }
+}
+
 pub(super) fn backup_lock(path: &Path) -> std::io::Result<BackupGuard> {
     let Some(lock_path) = backup_lock_path(path) else {
         return Err(std::io::ErrorKind::InvalidInput.into());
@@ -475,7 +439,7 @@ pub(super) fn backup_lock(path: &Path) -> std::io::Result<BackupGuard> {
     let file = match options.open(&lock_path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            validate_backup_file(&lock_path, path)?;
+            check_lock_file(&lock_path)?;
             std::fs::File::options()
                 .read(true)
                 .write(true)
@@ -490,7 +454,6 @@ pub(super) fn backup_lock(path: &Path) -> std::io::Result<BackupGuard> {
         }
         Err(error) => return Err(error),
     };
-    validate_backup_file(&lock_path, path)?;
     lock_with_grace(&file)?;
     // Keep the pathname stable: unlinking it could let contenders lock different files.
     Ok(BackupGuard {
@@ -506,13 +469,8 @@ pub(super) fn tidy_backups(path: &Path, auto_dir: Option<&Path>) -> std::io::Res
     tidy_backups_locked(&guard, auto_dir)
 }
 
-/// Housekeeping that loses no recovery data: delete unpublished `.pending` copies left
-/// by a crash, and published snapshots that are byte-identical to a newer retained
-/// snapshot of the same migration (each failed open writes another copy of the
-/// unchanged database). Every other snapshot is left to time-based retention.
-///
-/// The scan is strict, so an unexpected candidate fails the call before anything is
-/// deleted.
+/// Delete crash-left `.pending` copies and published snapshots byte-identical to a newer
+/// one of the same migration (each failed open writes another); the rest is left to retention.
 pub(super) fn tidy_backups_locked(
     guard: &BackupGuard,
     auto_dir: Option<&Path>,
@@ -583,37 +541,38 @@ fn same_contents(a: &Path, b: &Path) -> std::io::Result<bool> {
     }
 }
 
-/// Delete every retained upgrade backup of the database at `path`.
-///
-/// Backups never contain vault secrets. Attempts every file and returns the first failure.
-/// `Ok` means the deletions are durable: every existing backup directory is
-/// synced on every call (including a retry that finds nothing left to delete),
-/// so callers may retire their retry state afterwards.
+/// Delete every upgrade backup of the database at `path` and sync the directories
+/// deleted from; attempts all and returns the first failure.
 pub(crate) fn remove_backups(path: &Path) -> std::io::Result<()> {
-    remove_backups_with_sync(path, |_| true, crate::utils::backup_prune::sync_directory)
+    let _guard = backup_lock(path)?;
+    let mut first_error = None;
+    let mut touched = BTreeSet::new();
+    for backup in backups_in(path, Some(&default_auto_dir(path)))? {
+        match remove_backup(&backup, path) {
+            Ok(()) => touched.extend(backup.parent().map(Path::to_owned)),
+            Err(error) => {
+                first_error.get_or_insert(error);
+            }
+        }
+    }
+    for directory in touched {
+        if let Err(error) = crate::utils::backup_prune::sync_directory(&directory) {
+            first_error.get_or_insert(error);
+        }
+    }
+    first_error.map_or(Ok(()), Err)
 }
 
-/// Delete the upgrade backups of the database at `path` that are older than `max_age`.
-///
-/// Covers both the bridge snapshots next to the database and upstream `pre-migration-*`
-/// snapshots, and always keeps the newest usable one (see
-/// [`prune_expired`](crate::utils::backup_prune::prune_expired)), so it is safe
-/// whether or not the database currently opens. A database with no backups is
-/// skipped without taking its lock, and
-/// one whose lock is held (another context is opening or upgrading it) is skipped too;
-/// the next pass covers it.
-///
-/// Attempts every candidate and returns the first failure; a candidate that fails
-/// validation is reported but never blocks removing the others. `Ok` carries the number
-/// of backups deleted, and their directories are synced.
+/// [`prune_expired`](crate::utils::backup_prune::prune_expired) over the bridge and
+/// upstream backups of the database at `path`. Skips a database without backups or
+/// whose lifecycle lock is held (the next pass covers it); returns the number deleted.
 pub(crate) fn prune_expired_backups(
     path: &Path,
     max_age: std::time::Duration,
     now: std::time::SystemTime,
 ) -> std::io::Result<usize> {
     let auto_dir = default_auto_dir(path);
-    let unlocked = scan_backups_in(path, Some(&auto_dir))?;
-    if unlocked.found.is_empty() && unlocked.rejected.is_empty() {
+    if backups_in(path, Some(&auto_dir))?.is_empty() {
         return Ok(0);
     }
     let _guard = match backup_lock(path) {
@@ -624,10 +583,7 @@ pub(crate) fn prune_expired_backups(
         }
         Err(error) => return Err(error),
     };
-    let scan = scan_backups_in(path, Some(&auto_dir))?;
-    let rejected = scan.rejected.into_iter().next().map(|(_, error)| error);
-    let candidates = scan
-        .found
+    let candidates = backups_in(path, Some(&auto_dir))?
         .into_iter()
         .filter(|backup| {
             backup
@@ -649,71 +605,20 @@ pub(crate) fn prune_expired_backups(
             }
         })
         .collect();
-    let pruned = crate::utils::backup_prune::prune_expired(
+    crate::utils::backup_prune::prune_expired(
         candidates,
         now,
         max_age,
         crate::utils::file_deletion::DeletionIntent::Backup { database: path },
-    );
-    match (pruned, rejected) {
-        (Err(error), _) | (Ok(_), Some(error)) => Err(error),
-        (Ok(removed), None) => Ok(removed),
-    }
+    )
 }
 
-/// When `backup` of `database` was created: the later of its modification time and
-/// the timestamp in its name, if any. Taking the later one means a reset or skewed
-/// signal only delays deletion, never hastens it.
 fn backup_created(database: &Path, backup: &Path) -> std::io::Result<std::time::SystemTime> {
-    let modified = std::fs::symlink_metadata(backup)?.modified()?;
     let named = backup
         .file_name()
         .and_then(|name| name.to_str())
         .and_then(|name| upstream_backup_timestamp(database, name));
-    Ok(named.map_or(modified, |named| named.max(modified)))
-}
-
-fn remove_backups_with_sync(
-    path: &Path,
-    selected: impl Fn(&Path) -> bool,
-    mut sync_dir: impl FnMut(&Path) -> std::io::Result<()>,
-) -> std::io::Result<()> {
-    let _guard = backup_lock(path)?;
-    let auto_dir = default_auto_dir(path);
-    let scan = scan_backups_in(path, Some(&auto_dir))?;
-    let mut first_error = scan
-        .rejected
-        .into_iter()
-        .find(|(backup, _)| selected(backup))
-        .map(|(_, error)| error);
-    for backup in scan.found.into_iter().filter(|backup| selected(backup)) {
-        if let Err(error) = remove_backup(&backup, path) {
-            first_error.get_or_insert(error);
-        }
-    }
-    // Sync every candidate directory, not just those unlinked from in this call: an
-    // earlier call may have unlinked successfully and then failed its sync, and a
-    // retry that finds nothing left to delete must still make that deletion durable.
-    for directory in [path.parent(), Some(auto_dir.as_path())]
-        .into_iter()
-        .flatten()
-    {
-        match std::fs::symlink_metadata(directory) {
-            // No directory means no entry was ever removed from it.
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => {
-                first_error.get_or_insert(error);
-                continue;
-            }
-            // The scan already rejected a non-directory; never open it here.
-            Ok(metadata) if !metadata.is_dir() => continue,
-            Ok(_) => {}
-        }
-        if let Err(error) = sync_dir(directory) {
-            first_error.get_or_insert(error);
-        }
-    }
-    first_error.map_or(Ok(()), Err)
+    crate::utils::backup_prune::created_at(backup, named)
 }
 
 #[cfg(test)]

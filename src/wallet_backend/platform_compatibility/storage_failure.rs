@@ -77,25 +77,51 @@ mod tests {
     use super::*;
 
     #[test]
-    fn storage_failure_walks_the_source_chain() {
-        let sqlite = rusqlite::Error::SqliteFailure(
-            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_FULL),
-            None,
-        );
-        let wrapped = platform_wallet_storage::WalletStorageError::Sqlite(sqlite);
-        assert_eq!(
-            StorageFailure::in_chain(&wrapped),
-            Some(StorageFailure::Full)
-        );
-        let io = std::io::Error::from(std::io::ErrorKind::ReadOnlyFilesystem);
-        assert_eq!(
-            StorageFailure::in_chain(&io),
-            Some(StorageFailure::AccessDenied)
-        );
+    fn storage_failure_classifies_every_error_source() {
+        use rusqlite::ffi;
+        use std::io::ErrorKind;
+        let sqlite = |code| rusqlite::Error::SqliteFailure(ffi::Error::new(code), None);
+        let sqlite_cases = [
+            (ffi::SQLITE_BUSY, Some(StorageFailure::InUse)),
+            (ffi::SQLITE_LOCKED, Some(StorageFailure::InUse)),
+            (ffi::SQLITE_FULL, Some(StorageFailure::Full)),
+            (ffi::SQLITE_IOERR, Some(StorageFailure::Unavailable)),
+            (ffi::SQLITE_NOMEM, Some(StorageFailure::OutOfMemory)),
+            (ffi::SQLITE_PERM, Some(StorageFailure::AccessDenied)),
+            (ffi::SQLITE_READONLY, Some(StorageFailure::AccessDenied)),
+            (ffi::SQLITE_CORRUPT, None),
+        ];
+        for (code, expected) in sqlite_cases {
+            // Wrapped, so the source chain is walked too.
+            let wrapped = platform_wallet_storage::WalletStorageError::Sqlite(sqlite(code));
+            assert_eq!(StorageFailure::in_chain(&wrapped), expected, "{code}");
+        }
+        let io_cases = [
+            (ErrorKind::StorageFull, Some(StorageFailure::Full)),
+            (ErrorKind::OutOfMemory, Some(StorageFailure::OutOfMemory)),
+            (ErrorKind::Interrupted, Some(StorageFailure::Unavailable)),
+            (ErrorKind::WouldBlock, Some(StorageFailure::Unavailable)),
+            (ErrorKind::TimedOut, Some(StorageFailure::Unavailable)),
+            (ErrorKind::ResourceBusy, Some(StorageFailure::Unavailable)),
+            (
+                ErrorKind::PermissionDenied,
+                Some(StorageFailure::AccessDenied),
+            ),
+            (
+                ErrorKind::ReadOnlyFilesystem,
+                Some(StorageFailure::AccessDenied),
+            ),
+            (ErrorKind::InvalidInput, None),
+            (ErrorKind::Other, None),
+        ];
+        for (kind, expected) in io_cases {
+            assert_eq!(
+                StorageFailure::in_chain(&std::io::Error::from(kind)),
+                expected,
+                "{kind:?}"
+            );
+        }
         assert!(!StorageFailure::AccessDenied.is_retryable());
-        assert_eq!(
-            StorageFailure::in_chain(&std::io::Error::other("plain")),
-            None
-        );
+        assert!(StorageFailure::Full.is_retryable());
     }
 }

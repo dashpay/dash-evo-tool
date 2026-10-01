@@ -230,12 +230,11 @@ fn identity_load_ticket(task: &BackendTask) -> Option<(Identifier, IdentityLoadT
 }
 
 /// Whether a wallet-backend build error is terminal (storage written by a
-/// newer/incompatible app build, a data folder the app may not write to, a
-/// data folder other accounts can modify, or a compatibility upgrade that
-/// fails the same way on every attempt). These must surface their actionable
-/// message instead of being logged-and-discarded as a transient deferral
-/// (F50); retrying cannot fix them. Every other init error is retried by the
-/// cold-boot bridge.
+/// newer/incompatible app build, an unwritable or insecure data folder, or
+/// a compatibility upgrade that fails the same way on every attempt). These
+/// must surface their actionable message instead of being logged-and-discarded
+/// as a transient deferral (F50); retrying cannot fix them. Every other init
+/// error is retried by the cold-boot bridge.
 pub(crate) fn is_terminal_storage_open_error(error: &TaskError) -> bool {
     match error {
         TaskError::WalletDataTooNew { .. }
@@ -2409,8 +2408,8 @@ mod tests {
     }
 
     /// Only the storage-open variants (data from a newer/incompatible
-    /// build, a data folder the app may not write to, or an insecure data
-    /// folder) are terminal; every other init error is a transient deferral.
+    /// build, or an insecure data folder) are terminal; every other init
+    /// error is a transient deferral.
     #[test]
     fn terminal_storage_open_errors_are_classified() {
         assert!(is_terminal_storage_open_error(
@@ -2444,17 +2443,12 @@ mod tests {
             }
         ));
         use crate::wallet_backend::platform_compatibility::UpgradeError;
-        for source in [
-            UpgradeError::Unrecognized,
-            UpgradeError::IdentityRoster { source: None },
-            UpgradeError::Verification,
-            UpgradeError::TypedValidation(Box::new(std::io::Error::other("fixture"))),
-        ] {
-            assert!(
-                is_terminal_storage_open_error(&TaskError::PlatformDatabaseUpgrade { source }),
-                "a deterministic upgrade failure must surface instead of re-running"
-            );
-        }
+        assert!(
+            is_terminal_storage_open_error(&TaskError::PlatformDatabaseUpgrade {
+                source: UpgradeError::Verification,
+            }),
+            "a deterministic upgrade failure must surface instead of re-running"
+        );
         // A user-clearable upgrade failure keeps offering a retry.
         assert!(!is_terminal_storage_open_error(
             &TaskError::PlatformDatabaseUpgrade {

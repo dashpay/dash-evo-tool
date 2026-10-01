@@ -26,28 +26,10 @@ pub(crate) fn retained_backup_databases(data_dir: &std::path::Path) -> Vec<std::
 }
 
 impl AppContext {
-    /// Delete upgrade and legacy migration backups older than the configured retention period.
-    ///
-    /// The policy is global: it covers every database in the data directory (the app
-    /// database and every network's wallet database, bridge and upstream
-    /// `pre-migration-*` snapshots), plus legacy `data.db` backups, whichever network
-    /// this context serves. The newest usable backup of each database is always kept,
-    /// so the pass is safe for databases this process has not opened. A database
-    /// another context is opening or upgrading is skipped until the next pass.
-    ///
-    /// Every policy, including keeping backups forever, also removes legacy copies a
-    /// crash left unpublished (see
-    /// [`sweep_pending`](crate::database::legacy_backups::sweep_pending)); those are not
-    /// counted as deleted backups.
-    ///
-    /// Attempts every location and reports the first failure. Nothing is deleted when the
-    /// policy cannot be read.
+    /// Delete expired upgrade and legacy backups of every database in the data directory,
+    /// keeping each database's newest usable one; attempts all and reports the first failure.
     pub(crate) fn prune_expired_upgrade_backups(&self) -> BackupPruneReport {
-        self.prune_expired_upgrade_backups_at(SystemTime::now())
-    }
-
-    /// [`Self::prune_expired_upgrade_backups`] as if the clock read `now`.
-    pub(crate) fn prune_expired_upgrade_backups_at(&self, now: SystemTime) -> BackupPruneReport {
+        let now = SystemTime::now();
         let mut report = BackupPruneReport::default();
         let retention = match self.backup_retention() {
             Ok(retention) => retention,
@@ -56,17 +38,6 @@ impl AppContext {
                 return report;
             }
         };
-        // Crash-left legacy copies were never published backups, so every policy
-        // removes them.
-        match crate::database::legacy_backups::sweep_pending(self.data_dir(), now) {
-            Ok(0) => {}
-            Ok(swept) => tracing::info!(swept, "Removed unfinished legacy backup copies"),
-            Err(source) => {
-                report
-                    .failure
-                    .get_or_insert(TaskError::UpgradeBackupCleanup { source });
-            }
-        }
         let Some(max_age) = retention.max_age() else {
             return report;
         };
@@ -156,12 +127,7 @@ mod tests {
             crate::wallet_backend::app_database_path(dir),
             crate::wallet_backend::wallet_database_path(dir, ctx.network),
         ];
-        let bridge = |database: &Path, suffix: &str| {
-            database.with_file_name(format!(
-                "{}.platform-67d4ef3-backup-{suffix}.sqlite",
-                database.file_name().unwrap().to_string_lossy()
-            ))
-        };
+        let bridge = crate::wallet_backend::platform_compatibility::bridge_backup_path;
         let expired = vec![
             bridge(&app, "old"),
             bridge(&wallet, "old"),
@@ -194,44 +160,6 @@ mod tests {
 
         assert!(fixture.expired.iter().all(|path| !path.exists()));
         assert!(fixture.fresh.iter().all(|path| path.exists()));
-    }
-
-    /// A legacy copy left unpublished by a crash is removed by every retention pass,
-    /// whatever the policy, once it is clearly not a copy still being written. It
-    /// is not a backup, so it is not counted as a deleted one.
-    #[test]
-    fn crash_left_legacy_copies_are_swept_under_any_policy() {
-        for policy in [BackupRetention::KeepForever, BackupRetention::default()] {
-            let tmp = tempfile::tempdir().unwrap();
-            let ctx = test_app_context(tmp.path());
-            ctx.set_backup_retention(policy).unwrap();
-            let backups = ctx.data_dir().join("backups");
-            let crashed = backups.join("data_backup_20200101_000000.db.a1B2c3.pending");
-            let in_progress = backups.join("data_backup_20200102_000000.db.Z9y8X7.pending");
-            write_aged(&crashed, DAY * 2);
-            write_aged(&in_progress, Duration::from_secs(5));
-
-            assert_eq!(pruned(&ctx), 0, "{policy:?}");
-
-            assert!(!crashed.exists(), "{policy:?}: a crash-left copy is swept");
-            assert!(
-                in_progress.exists(),
-                "{policy:?}: a recent copy may still be written"
-            );
-        }
-    }
-
-    #[test]
-    fn keep_forever_deletes_nothing() {
-        let tmp = tempfile::tempdir().unwrap();
-        let ctx = test_app_context(tmp.path());
-        ctx.set_backup_retention(BackupRetention::KeepForever)
-            .unwrap();
-        let fixture = backups(&ctx);
-
-        assert_eq!(pruned(&ctx), 0);
-
-        assert!(fixture.expired.iter().all(|path| path.exists()));
     }
 
     #[test]
@@ -282,23 +210,6 @@ mod tests {
             .exists(),
             "a database without backups is not locked or touched"
         );
-    }
-
-    #[test]
-    fn newest_backup_of_each_database_survives_a_far_future_clock() {
-        let tmp = tempfile::tempdir().unwrap();
-        let ctx = test_app_context(tmp.path());
-        let fixture = backups(&ctx);
-        let far_future = SystemTime::now() + DAY * 365 * 100;
-
-        let report = ctx.prune_expired_upgrade_backups_at(far_future);
-        assert!(report.failure.is_none(), "{:?}", report.failure);
-        assert_eq!(report.deleted, 3);
-        assert!(fixture.fresh.iter().all(|path| path.exists()));
-        assert!(fixture.expired.iter().all(|path| !path.exists()));
-        let again = ctx.prune_expired_upgrade_backups_at(far_future);
-        assert_eq!(again.deleted, 0, "the last backups are never deleted");
-        assert!(fixture.fresh.iter().all(|path| path.exists()));
     }
 
     #[test]

@@ -1853,12 +1853,6 @@ mod tests {
     }
 
     #[test]
-    fn stricter_retention_confirmation_reads_naturally() {
-        assert!(stricter_retention_confirmation(1).contains("older than one day will"));
-        assert!(stricter_retention_confirmation(30).contains("older than 30 days will"));
-    }
-
-    #[test]
     fn lost_backup_retention_result_does_not_wedge_the_form() {
         let mut form = BackupRetentionForm::new(Some(BackupRetention::default()));
         form.days = 200;
@@ -1873,16 +1867,16 @@ mod tests {
         form.save_succeeded(BackupRetention::DeleteAfterDays(200));
         assert_eq!(form.saved, Some(BackupRetention::DeleteAfterDays(200)));
         assert_eq!(form.days, 200);
-    }
 
-    #[test]
-    fn reload_picks_up_a_setting_that_became_readable() {
+        // A setting that became readable is picked up.
         let mut form = BackupRetentionForm::new(None);
         form.reload(Some(BackupRetention::KeepForever));
         assert_eq!(form.saved, Some(BackupRetention::KeepForever));
         assert!(!form.enabled);
     }
 
+    /// Looser policies save without confirmation. The saved policy changes only when
+    /// the backend confirms it; a failed save restores the previous inputs.
     #[test]
     fn backup_retention_form_saves_looser_policies_without_confirmation() {
         let mut form = BackupRetentionForm::new(Some(BackupRetention::default()));
@@ -1897,6 +1891,17 @@ mod tests {
         );
         assert!(form.confirmation.is_none());
         assert_eq!(step(&mut form, false), None, "a save is in flight");
+        assert_eq!(form.saved, Some(BackupRetention::default()));
+        form.save_failed();
+        assert_eq!((form.enabled, form.days), (true, 90));
+        assert_eq!(step(&mut form, false), None, "no resend loop");
+
+        form.days = 120;
+        assert_eq!(
+            step(&mut form, false),
+            Some(BackupRetention::DeleteAfterDays(120)),
+            "the user can retry"
+        );
         form.save_succeeded(BackupRetention::DeleteAfterDays(120));
 
         form.enabled = false;
@@ -1989,28 +1994,6 @@ mod tests {
         );
         assert_eq!(form.pending, Some(BackupRetention::DeleteAfterDays(200)));
         assert_eq!(saved_retention(form.take_task()), None, "emitted once");
-    }
-
-    /// The saved policy changes only when the backend confirms it; a failed save
-    /// restores the previous inputs instead of showing an unsaved policy.
-    #[test]
-    fn failed_backup_retention_save_keeps_the_saved_policy() {
-        let mut form = BackupRetentionForm::new(Some(BackupRetention::default()));
-        form.days = 200;
-        assert!(step(&mut form, false).is_some());
-        assert_eq!(form.saved, Some(BackupRetention::default()));
-
-        form.save_failed();
-        assert_eq!(form.saved, Some(BackupRetention::default()));
-        assert_eq!((form.enabled, form.days), (true, 90));
-        assert_eq!(step(&mut form, false), None, "no resend loop");
-
-        form.days = 200;
-        assert_eq!(
-            step(&mut form, false),
-            Some(BackupRetention::DeleteAfterDays(200)),
-            "the user can retry"
-        );
     }
 
     /// An unreadable setting shows as unchecked (nothing is deleted) and can be

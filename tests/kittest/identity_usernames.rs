@@ -209,7 +209,7 @@ fn confirm_step_shows_fees_low_balance_and_sync_gate() {
                 .query_by_label("Community vote fee (not returned)")
                 .is_some()
         );
-        assert!(harness.query_by_label(&format!("{contest_fee}")).is_some());
+        assert!(harness.query_by_label(&contest_fee).is_some());
         assert!(harness.query_by_label("Community vote").is_some());
         assert!(
             harness

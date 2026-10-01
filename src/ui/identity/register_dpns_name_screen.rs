@@ -458,20 +458,11 @@ impl RegisterDpnsNameScreen {
                         ui.end_row();
                         if needs_vote {
                             ui.label("Community vote fee (not returned)");
-                            ui.label(format!(
-                                "{fee}",
-                                fee = format_credits_as_dash(self.contest_fee())
-                            ));
+                            ui.label(format_credits_as_dash(self.contest_fee()));
                             ui.end_row();
                         }
                         ui.label(RichText::new("Total").strong());
-                        ui.label(
-                            RichText::new(format!(
-                                "{total}",
-                                total = format_credits_as_dash(total)
-                            ))
-                            .strong(),
-                        );
+                        ui.label(RichText::new(format_credits_as_dash(total)).strong());
                         ui.end_row();
                     });
                 ui.add_space(4.0);

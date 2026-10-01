@@ -179,6 +179,8 @@ pub fn compose(
                 contested_name: decision.contested_name.clone(),
             });
         }
+        // The batch timing must fit every decision, whichever nodes end up voting.
+        let batch_timing = resolve_timing(batch, decision, now_ms)?;
         for node in nodes {
             let skip = |reason| SkippedTarget {
                 voter_id: node.voter_id,
@@ -190,8 +192,8 @@ pub fn compose(
                     plan.skipped.push(skip(SkipReason::NotUsed));
                     continue;
                 }
-                Some(NodeTiming::Override(timing)) => timing,
-                Some(NodeTiming::Batch) | None => batch,
+                Some(NodeTiming::Override(timing)) => Some(timing),
+                Some(NodeTiming::Batch) | None => None,
             };
             let standing = standing(node.voter_id, decision.vote_poll_id);
             if standing.locked {
@@ -220,7 +222,10 @@ pub fn compose(
                 contested_name: decision.contested_name.clone(),
                 requested_choice: decision.choice,
                 current_choice: current,
-                timing: resolve_timing(timing, decision, now_ms)?,
+                timing: match timing {
+                    Some(timing) => resolve_timing(timing, decision, now_ms)?,
+                    None => batch_timing,
+                },
             });
         }
     }
@@ -425,6 +430,23 @@ mod tests {
         );
         assert_eq!(compose_at(BatchTiming::At(5 * MIN)), outlasts);
         assert!(compose_at(BatchTiming::At(4 * MIN)).is_ok());
+
+        let all_skipped = compose(
+            Network::Testnet,
+            &[decision("alice", 10, lock, 5 * MIN)],
+            &nodes(&[1]),
+            |_, _| NodeStanding {
+                state: DpnsCurrentVoteState::Unavailable,
+                ..available(None)
+            },
+            BatchTiming::At(5 * MIN),
+            &BTreeMap::new(),
+            0,
+        );
+        assert_eq!(
+            all_skipped, outlasts,
+            "the batch time is checked even when every node is skipped"
+        );
     }
 
     /// VOTE-TC-104 (compose half): a decision whose voting ended is refused.

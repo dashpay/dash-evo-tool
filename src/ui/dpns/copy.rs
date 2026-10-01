@@ -3,7 +3,8 @@
 //! Each function returns one complete translation unit with its plural pair,
 //! so no caller concatenates fragments.
 
-use crate::model::dpns_voting::operator::TimeLeft;
+use crate::model::dpns_voting::composer::SkipReason;
+use crate::model::dpns_voting::operator::{ChangesLeft, TimeLeft};
 
 /// A remaining time as a phrase, e.g. `3 hours`.
 pub fn time_left_phrase(time_left: TimeLeft) -> String {
@@ -185,6 +186,112 @@ pub fn node_set_chip_label(set_name: &str, nodes: usize, weight: u32) -> String 
     format!("Vote with: {set_name} · {nodes} · {votes}")
 }
 
+/// Confirm title (VOTE-FR-080).
+pub fn confirm_title(decisions: usize, nodes: usize) -> String {
+    match (decisions, nodes) {
+        (1, 1) => "Cast 1 decision with 1 node".to_owned(),
+        (1, nodes) => format!("Cast 1 decision with {nodes} nodes"),
+        (decisions, 1) => format!("Cast {decisions} decisions with 1 node"),
+        (decisions, nodes) => format!("Cast {decisions} decisions with {nodes} nodes"),
+    }
+}
+
+/// Confirm transaction line (VOTE-FR-080).
+pub fn confirm_transactions_line(transactions: usize) -> String {
+    match transactions {
+        1 => "1 transaction, one per node and name. Voting is free for your nodes.".to_owned(),
+        count => {
+            format!("{count} transactions, one per node and name. Voting is free for your nodes.")
+        }
+    }
+}
+
+/// Confirm change warning, shown once per batch (VOTE-FR-015/080).
+pub fn confirm_change_warning(changes: usize) -> String {
+    match changes {
+        1 => "1 of these changes an earlier vote. Each node can change its vote 4 times per name."
+            .to_owned(),
+        count => format!(
+            "{count} of these change an earlier vote. Each node can change its vote 4 times per name."
+        ),
+    }
+}
+
+/// Confirm skipped header (VOTE-FR-080).
+pub fn skipped_header(count: usize) -> String {
+    match count {
+        1 => "Skipped: 1 vote".to_owned(),
+        count => format!("Skipped: {count} votes"),
+    }
+}
+
+/// One skipped-reason line, e.g. `2 votes: no changes left (5 of 5 votes used)`.
+pub fn skipped_reason_line(count: usize, reason: SkipReason) -> String {
+    let votes = match count {
+        1 => "1 vote".to_owned(),
+        count => format!("{count} votes"),
+    };
+    let reason = match reason {
+        SkipReason::AlreadyVoted => "the node already voted this way",
+        SkipReason::NoChangesLeft => "no changes left (5 of 5 votes used)",
+        SkipReason::VoteStateUnavailable => {
+            "vote state is unavailable; refresh voting to include it"
+        }
+        SkipReason::AlreadyInProgress => "an earlier vote on this name is still being sent",
+        SkipReason::NotUsed => "you chose not to use the node",
+    };
+    format!("{votes}: {reason}")
+}
+
+/// Confirm primary button (VOTE-FR-080).
+pub fn confirm_button_label(transactions: usize, all_now: bool) -> String {
+    match (transactions, all_now) {
+        (1, true) => "Cast 1 vote".to_owned(),
+        (count, true) => format!("Cast {count} votes"),
+        (1, false) => "Schedule 1 vote".to_owned(),
+        (count, false) => format!("Schedule {count} votes"),
+    }
+}
+
+/// `6 hours before the end` for a relative preset (VOTE-FR-081).
+pub fn before_end_phrase(preset: std::time::Duration) -> String {
+    let minutes = preset.as_secs() / 60;
+    match (minutes / 60, minutes % 60) {
+        (0, 1) => "1 minute before the end".to_owned(),
+        (0, minutes) => format!("{minutes} minutes before the end"),
+        (1, 0) => "1 hour before the end".to_owned(),
+        (hours, 0) => format!("{hours} hours before the end"),
+        (hours, minutes) => format!("{hours} h {minutes} min before the end"),
+    }
+}
+
+/// A relative schedule with its absolute time: `6 hours before the end · 2026-10-03 12:00 UTC`.
+pub fn relative_schedule_label(preset: std::time::Duration, absolute_utc: &str) -> String {
+    format!(
+        "{relative} · {absolute_utc} UTC",
+        relative = before_end_phrase(preset)
+    )
+}
+
+/// One decision row in the confirm list.
+pub fn decision_row(name: &str, choice: &str, nodes: usize) -> String {
+    match nodes {
+        1 => format!("{name}.dash · {choice} · 1 node"),
+        nodes => format!("{name}.dash · {choice} · {nodes} nodes"),
+    }
+}
+
+/// Changes-left cell under `Adjust nodes` (VOTE-FR-078).
+pub fn changes_left_label(changes: ChangesLeft) -> String {
+    match changes {
+        ChangesLeft::Known(1) => "1 change left, counted on this device".to_owned(),
+        ChangesLeft::Known(left) => format!("{left} changes left, counted on this device"),
+        ChangesLeft::Unknown => {
+            "Changes left unknown. This node voted outside Dash Evo Tool.".to_owned()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,6 +348,43 @@ mod tests {
         assert_eq!(
             unavailable_line(3),
             "Vote state is unavailable for 3 nodes; they're left out."
+        );
+    }
+
+    /// VOTE-TC-090/091 (copy half): the confirm lines follow VOTE-FR-080.
+    #[test]
+    fn confirm_copy_follows_the_spec() {
+        assert_eq!(confirm_title(3, 24), "Cast 3 decisions with 24 nodes");
+        assert_eq!(
+            confirm_transactions_line(72),
+            "72 transactions, one per node and name. Voting is free for your nodes."
+        );
+        assert_eq!(
+            confirm_change_warning(4),
+            "4 of these change an earlier vote. Each node can change its vote 4 times per name."
+        );
+        assert_eq!(skipped_header(2), "Skipped: 2 votes");
+        assert_eq!(
+            skipped_reason_line(1, SkipReason::NoChangesLeft),
+            "1 vote: no changes left (5 of 5 votes used)"
+        );
+        assert_eq!(confirm_button_label(72, true), "Cast 72 votes");
+        assert_eq!(confirm_button_label(1, false), "Schedule 1 vote");
+        assert_eq!(
+            relative_schedule_label(std::time::Duration::from_secs(6 * 3600), "2026-10-03 12:00"),
+            "6 hours before the end · 2026-10-03 12:00 UTC"
+        );
+        assert_eq!(
+            before_end_phrase(std::time::Duration::from_secs(600)),
+            "10 minutes before the end"
+        );
+        assert_eq!(
+            changes_left_label(ChangesLeft::Known(3)),
+            "3 changes left, counted on this device"
+        );
+        assert_eq!(
+            changes_left_label(ChangesLeft::Unknown),
+            "Changes left unknown. This node voted outside Dash Evo Tool."
         );
     }
 

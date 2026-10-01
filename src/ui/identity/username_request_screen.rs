@@ -260,7 +260,8 @@ impl UsernameRequestScreen {
                 action = register_action_for(&self.app_context, self.identity_id);
             }
             if self.can_vote && ui.link("Your nodes can vote on this name").clicked() {
-                // TODO(stream-v): open Masternodes ▸ Votes filtered to this name once Stream V exposes the route.
+                // TODO(stream-v): after redesign/pr901-voting merges, call
+                // `app_context.request_dpns_votes_for_name(self.normalized_label.clone())` first.
                 action = AppAction::SetMainScreenThenGoToMainScreen(
                     RootScreenType::RootScreenDPNSActiveContests,
                 );

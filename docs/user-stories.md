@@ -925,7 +925,7 @@ As a user, I want suggestions that need no vote so that I can get a working user
 - When a name needs a vote, has open requests, or is taken, three suggestions that need no vote are offered (for example by adding a digit from 2 to 9).
 - The username rules are available in a collapsed section and are consistent: 3–63 characters; letters, numbers and hyphens; no hyphen at the start or end; capital letters treated as lowercase; and which names need a vote.
 
-### DPN-017: Usernames stay with the identity [Gap]
+### DPN-017: Usernames stay with the identity [Implemented]
 **Persona:** Alex, Priya
 
 As a user, I want my usernames managed on my identity, apart from masternode voting, so that I never need a governance tool to see my own name.

@@ -160,7 +160,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   you to write down your recovery phrases and imported keys in the version you
   used before, close every running instance, and set aside the `.sqlite` files
   while keeping the `secrets` folder. A database held by another session asks
-  you to close that session and try again.
+  you to close that session and try again. A wallet data upgrade blocked by
+  folder permissions or a read-only disk asks you to fix access to the data
+  folder and restart, instead of reporting incompatible data.
 
 - **Upgrade backups no longer pile up**: repeated failed upgrades no longer
   leave an identical backup on every attempt, and a failed upgrade that can

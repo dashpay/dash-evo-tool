@@ -5,21 +5,21 @@
 //! Layout: a responsive grid of [`IdentityPickerCard`]s followed by an
 //! [`IdentityPickerAddCard`]. Cards flow left-to-right, wrapping based on the
 //! available panel width. Clicking an identity card is reported to the caller
-//! so the hub can route to Identity Home. Clicking the add card routes to the
-//! **existing** `AddNewIdentityScreen` via `AppAction::AddScreen` — no new
-//! navigation surface is introduced.
+//! so the hub can route to Identity Home. Clicking the add card opens a menu
+//! with the hub's shared "Add" items (create a new identity / load an existing
+//! one); the chosen item's `AppAction::Custom` command is returned for the hub
+//! to route to the **existing** screens — no new navigation surface.
 //!
 //! This module is the UI shell only. No backend tasks are dispatched here —
 //! identity lookup is handled upstream by `IdentityHubScreen::landing()`.
 
+use super::breadcrumb_switcher::add_identity_menu_items;
 use super::identity_picker_add_card::IdentityPickerAddCard;
 use super::identity_picker_card::{CARD_MIN_WIDTH, IdentityPickerCard};
 use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::ui::Screen;
-use crate::ui::identity::add_new_identity_screen::AddNewIdentityScreen;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use eframe::egui::{RichText, Ui};
@@ -35,8 +35,9 @@ const EMPTY_BALANCE_LABEL: &str = "No balance";
 /// Rendered the picker grid. Returns the `AppAction` the caller must propagate:
 ///
 /// * `AppAction::None` on hover / no interaction.
-/// * `AppAction::AddScreen(Screen::AddNewIdentityScreen(...))` when the
-///   "Add a new identity" card is clicked.
+/// * The chosen item's `AppAction::Custom` command when an entry of the
+///   "Add a new identity" card's menu is clicked; the hub maps it with
+///   [`super::breadcrumb_switcher::add_identity_command_effect`].
 /// * For identity-card clicks the action is `AppAction::None` by default —
 ///   identity selection is deferred to a follow-up task (Home-tab routing
 ///   lands in T8); the visible banner is left to the hub screen.
@@ -122,16 +123,7 @@ pub fn render(
                             PickerCell::Add => {
                                 let card = IdentityPickerAddCard::new().with_width(card_width);
                                 let response = card.show(ui);
-                                if response.add_requested {
-                                    // Navigate to the existing AddNewIdentityScreen —
-                                    // no duplicated screen, no new backend task.
-                                    action = AppAction::AddScreen(Screen::AddNewIdentityScreen(
-                                        AddNewIdentityScreen::new_with_wallet(
-                                            app_context,
-                                            app_context.selected_wallet_hash(),
-                                        ),
-                                    ));
-                                }
+                                action |= show_add_menu(ui, app_context, &response);
                             }
                         }
                     }
@@ -149,6 +141,43 @@ pub fn render(
         *slot = Some(sel);
     }
 
+    action
+}
+
+/// Render the create/load menu anchored to the add card; a card click toggles
+/// it. Returns the clicked item's action, or `AppAction::None`.
+fn show_add_menu(
+    ui: &Ui,
+    app_context: &Arc<AppContext>,
+    card: &super::identity_picker_add_card::IdentityPickerAddCardResponse,
+) -> AppAction {
+    let mut action = AppAction::None;
+    let dark_mode = ui.visuals().dark_mode;
+    egui::Popup::new(
+        egui::Id::new("identity_picker_add_menu"),
+        ui.ctx().clone(),
+        card.rect,
+        ui.layer_id(),
+    )
+    .open_memory(card.add_requested.then_some(egui::SetOpenCommand::Toggle))
+    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+    .frame(egui::Frame::popup(ui.style()).fill(DashColors::popup_fill(dark_mode)))
+    .show(|ui| {
+        for item in add_identity_menu_items(app_context.user_role()) {
+            let clicked = ui
+                .add_enabled_ui(item.enabled, |ui| {
+                    ComponentStyles::add_button(ui, egui::Button::new(item.label))
+                })
+                .inner
+                .clickable_tooltip(item.tooltip)
+                .disabled_tooltip(item.tooltip)
+                .clicked();
+            if clicked {
+                action = item.action.create_action(app_context);
+                ui.close();
+            }
+        }
+    });
     action
 }
 
@@ -205,6 +234,68 @@ fn build_card(identity: &QualifiedIdentity, display_name: Option<&str>) -> Ident
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The "Add a new identity" card keeps its promise: clicking it offers both
+    /// create and load, and picking "Load an existing identity" returns the
+    /// load command the hub routes to `AddExistingIdentityScreen`.
+    #[test]
+    fn add_card_offers_create_and_load_in_both_themes() {
+        use super::super::breadcrumb_switcher::{BreadcrumbEffect, add_identity_command_effect};
+        use egui_kittest::{Harness, kittest::Queryable};
+        for dark in [false, true] {
+            let tmp = tempfile::tempdir().expect("temp dir");
+            let ctx = crate::context::test_support::test_app_context(tmp.path());
+            let mut profiles = super::super::profile_cache::ProfileCache::default();
+            let mut avatars = crate::ui::state::AvatarCache::new();
+            let mut pending = Vec::new();
+            let mut harness = Harness::builder()
+                .with_size(egui::vec2(1200.0, 800.0))
+                .build_ui_state(
+                    |ui, last_action| {
+                        let action = render(
+                            ui,
+                            &ctx,
+                            &[],
+                            &mut profiles,
+                            &mut avatars,
+                            &mut pending,
+                            None,
+                        );
+                        if action != AppAction::None {
+                            *last_action = action;
+                        }
+                    },
+                    AppAction::None,
+                );
+            harness.ctx.set_visuals(if dark {
+                egui::Visuals::dark()
+            } else {
+                egui::Visuals::light()
+            });
+            harness.run();
+            assert!(
+                harness
+                    .query_by_label("Load an existing identity")
+                    .is_none()
+            );
+            harness
+                .get_by_role_and_label(egui::accesskit::Role::Button, "Add a new identity")
+                .click();
+            harness.run();
+            assert!(harness.query_by_label("Create a new identity").is_some());
+            harness.get_by_label("Load an existing identity").click();
+            harness.run();
+            assert_eq!(
+                add_identity_command_effect(harness.state()),
+                Some(BreadcrumbEffect::AddIdentityLoad)
+            );
+            assert!(
+                harness
+                    .query_by_label("Load an existing identity")
+                    .is_none()
+            );
+        }
+    }
 
     #[test]
     fn column_count_narrow_panel_is_one() {

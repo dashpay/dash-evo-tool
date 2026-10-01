@@ -1126,3 +1126,49 @@ fn hidden_hub_receives_its_profile_save_and_releases_the_next_draft() {
         );
     });
 }
+
+/// With identities already loaded and none selected (the picker), the hub's
+/// top-bar "Add" menu offers both add flows: "Create a new identity" pushes
+/// `AddNewIdentityScreen` and "Load an existing identity" pushes
+/// `AddExistingIdentityScreen`.
+#[test]
+fn picker_top_bar_add_menu_creates_or_loads_an_identity() {
+    with_isolated_data_dir(|| {
+        use dash_evo_tool::ui::Screen;
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
+        let app_context = harness.state().current_app_context().clone();
+        seed_identity(&app_context, 0xC1, "Add Menu Alpha");
+        seed_identity(&app_context, 0xC2, "Add Menu Beta");
+        harness.run_steps(5);
+        assert!(harness.query_by_label(PICKER_HEADING).is_some());
+
+        harness.get_by_label("Add ▾").click();
+        harness.run_steps(3);
+        harness.get_by_label("Load an existing identity").click();
+        harness.run_steps(3);
+        assert!(
+            matches!(
+                harness.state().screen_stack.last(),
+                Some(Screen::AddExistingIdentityScreen(_))
+            ),
+            "\"Load an existing identity\" must push AddExistingIdentityScreen"
+        );
+
+        harness.state_mut().screen_stack.clear();
+        harness.run_steps(3);
+        harness.get_by_label("Add ▾").click();
+        harness.run_steps(3);
+        harness.get_by_label("Create a new identity").click();
+        harness.run_steps(3);
+        assert!(
+            matches!(
+                harness.state().screen_stack.last(),
+                Some(Screen::AddNewIdentityScreen(_))
+            ),
+            "\"Create a new identity\" must push AddNewIdentityScreen"
+        );
+    });
+}

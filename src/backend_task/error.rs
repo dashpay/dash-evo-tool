@@ -613,9 +613,30 @@ pub enum TaskError {
     /// (never a silent miss that would drop a key). The user must restore the
     /// wallet from its recovery phrase or re-import the key.
     #[error(
-        "This wallet's secret could not be found on this device. Restore the wallet from its recovery phrase to keep using it."
+        "This wallet's secret could not be found on this device. Import the wallet again from its recovery phrase, on the same network, to keep using it. If you updated from an earlier version of Dash Evo Tool, you can instead use Restore from Previous Version in Settings."
     )]
     SecretSeamMissing,
+
+    /// "Restore from Previous Version" could not open or read the earlier
+    /// version's database. Nothing was changed.
+    #[error(
+        "Data saved by the earlier version could not be read. Nothing was changed. Restart Dash Evo Tool and try again."
+    )]
+    LegacyRestoreFailed {
+        #[source]
+        source: Box<crate::backend_task::migration::MigrationError>,
+    },
+
+    /// Signing with an identity key failed because its private half could not
+    /// be resolved (missing wallet seed, missing vault key, locked wallet, or a
+    /// declined password prompt). The DET signer tags its `ProtocolError` with
+    /// [`SIGNING_KEY_UNAVAILABLE_PREFIX`]; the banner shows the text after it,
+    /// which names the cause, the remedy, and the identity and key involved.
+    #[error("{}", signing_key_unavailable_message(source_error))]
+    IdentitySigningFailed {
+        #[source]
+        source_error: Box<SdkError>,
+    },
 
     /// An identity private key could not be stored in or read from the secret
     /// vault through the seam. Distinct from [`Self::SecretSeam`] so the banner
@@ -3444,8 +3465,44 @@ impl From<dashcore_rpc::Error> for TaskError {
     }
 }
 
+/// Marker the DET identity signer puts in front of the `ProtocolError::Generic`
+/// text it returns when a signing key cannot be resolved.
+///
+/// Intentional, sanctioned exception to the no-string-parsing rule (see AGENTS.md):
+/// the upstream `Signer` trait can only return `ProtocolError`, which has no
+/// variant carrying a typed source, so this DET-owned marker is the only way to
+/// recognise DET's own signing failure once the SDK hands it back.
+// TODO(upstream): replace with a typed ProtocolError source variant in dashpay/platform
+pub const SIGNING_KEY_UNAVAILABLE_PREFIX: &str = "[det:signing-key-unavailable] ";
+
+/// The user-facing text a prefixed signer failure carries, or `None` when
+/// `error` is not one.
+fn signing_key_unavailable_text(error: &SdkError) -> Option<&str> {
+    match error {
+        SdkError::Protocol(ProtocolError::Generic(text)) => {
+            text.strip_prefix(SIGNING_KEY_UNAVAILABLE_PREFIX)
+        }
+        _ => None,
+    }
+}
+
+fn signing_key_unavailable_message(error: &SdkError) -> &str {
+    signing_key_unavailable_text(error).unwrap_or(
+        "This identity's signing key is not available on this device. Import the wallet or key again and retry.",
+    )
+}
+
 impl From<SdkError> for TaskError {
     fn from(error: SdkError) -> Self {
+        // DET's own signer failure, tagged by `QualifiedIdentity::sign`.
+        // Intentional, sanctioned exception to the no-string-parsing rule (see AGENTS.md).
+        // TODO(upstream): replace with a typed ProtocolError source variant in dashpay/platform
+        if signing_key_unavailable_text(&error).is_some() {
+            return TaskError::IdentitySigningFailed {
+                source_error: Box::new(error),
+            };
+        }
+
         if sdk_error_is_masternode_list_not_ready(&error) {
             return TaskError::MasternodeListNotReady {
                 source_error: Box::new(error),
@@ -3814,6 +3871,45 @@ mod tests {
 
     const DAPI_EXHAUSTED_MESSAGE: &str =
         "All Dash network servers are temporarily unreachable. Please wait a minute and retry.";
+
+    /// The missing-wallet message offers both self-service paths: re-import
+    /// from the recovery phrase on the same network, or the Settings restore.
+    #[test]
+    fn missing_wallet_secret_message_offers_both_recovery_paths() {
+        let message = TaskError::SecretSeamMissing.to_string();
+        assert!(message.contains("recovery phrase"), "{message}");
+        assert!(message.contains("same network"), "{message}");
+        assert!(
+            message.contains("Restore from Previous Version in Settings"),
+            "{message}"
+        );
+        assert!(!message.to_lowercase().contains("details"), "{message}");
+        assert!(!message.to_lowercase().contains("support"), "{message}");
+    }
+
+    /// An unrelated generic protocol error stays the generic SDK variant.
+    #[test]
+    fn unrelated_generic_protocol_error_stays_an_sdk_error() {
+        let error = TaskError::from(SdkError::Protocol(ProtocolError::Generic(
+            "Key 3 not found in identity".into(),
+        )));
+        assert!(matches!(error, TaskError::SdkError { .. }), "{error:?}");
+    }
+
+    /// A prefixed signer failure maps to the dedicated variant, and the banner
+    /// shows exactly the text after the prefix.
+    #[test]
+    fn prefixed_signer_failure_maps_to_identity_signing_failed() {
+        let text = TaskError::SecretSeamMissing.to_string();
+        let error = TaskError::from(SdkError::Protocol(ProtocolError::Generic(format!(
+            "{SIGNING_KEY_UNAVAILABLE_PREFIX}{text}"
+        ))));
+        assert!(
+            matches!(error, TaskError::IdentitySigningFailed { .. }),
+            "{error:?}"
+        );
+        assert_eq!(error.to_string(), text);
+    }
 
     fn dapi_connection_refused_error() -> TaskError {
         let status = dash_sdk::dapi_grpc::tonic::Status::unavailable("tcp connect error");

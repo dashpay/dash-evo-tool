@@ -206,6 +206,19 @@ impl<'a> WalletSeedView<'a> {
         SecretSeam::new(self.secret_store).scheme(&scope_for(seed_hash), SEED_RAW_LABEL)
     }
 
+    /// Whether any copy of this wallet's seed is stored — raw, protected, or
+    /// legacy envelope. No password needed and nothing is decoded.
+    pub fn contains(&self, seed_hash: &WalletSeedHash) -> Result<bool, TaskError> {
+        if self.scheme(seed_hash)? != SecretScheme::Absent {
+            return Ok(true);
+        }
+        Ok(self
+            .secret_store
+            .get(&scope_for(seed_hash), ENVELOPE_LABEL)
+            .map_err(map_err)?
+            .is_some())
+    }
+
     /// Store the 64-byte seed under `seed.raw.v1` **Tier-2 protected**, sealed
     /// with this seed's own object `password` (Argon2id + XChaCha20-Poly1305).
     /// Replaces any raw/legacy value at the same label (upsert).
@@ -308,6 +321,30 @@ mod tests {
     /// DET ever hands the vault; every other write is a fixed 32-byte
     /// identity key or 64-byte seed. A future field that inflates it fails
     /// on this assertion rather than on a user's wallet.
+    /// `contains` sees every at-rest form and reports absence otherwise.
+    #[test]
+    fn contains_sees_raw_protected_and_legacy_forms() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = fresh_store(dir.path());
+        let view = WalletSeedView::new(&store);
+        let (raw, protected, legacy, absent) = ([1u8; 32], [2u8; 32], [3u8; 32], [4u8; 32]);
+
+        view.set_raw(&raw, &[7u8; 64]).expect("raw");
+        view.set_protected(
+            &protected,
+            &[8u8; 64],
+            &SecretString::new("correct horse battery staple"),
+        )
+        .expect("protected");
+        view.set(&legacy, &sample_password_envelope())
+            .expect("legacy");
+
+        for present in [raw, protected, legacy] {
+            assert!(view.contains(&present).expect("probe"));
+        }
+        assert!(!view.contains(&absent).expect("probe"));
+    }
+
     #[test]
     fn largest_stored_secret_stays_within_the_vault_cap() {
         let encoded = encode_with_version(&sample_password_envelope()).expect("encode");

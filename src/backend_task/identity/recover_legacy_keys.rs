@@ -97,7 +97,7 @@ impl AppContext {
     /// identity's key protection changed under the flow, and the prompt's own
     /// cancel / unavailable errors. Every one of them leaves the stored record
     /// unchanged.
-    pub(super) async fn recover_legacy_identity_data(
+    pub(crate) async fn recover_legacy_identity_data(
         &self,
         identity_id: Identifier,
         approved: Vec<RecoveryItem>,
@@ -295,7 +295,7 @@ impl AppContext {
     /// `None` for every ordinary "not here" answer. A row that exists but will
     /// not decode is an error instead: reading it as empty would close the
     /// recovery offer on data that is still on disk.
-    fn legacy_identity_record(
+    pub(crate) fn legacy_identity_record(
         &self,
         identity_id: Identifier,
     ) -> Result<Option<QualifiedIdentity>, TaskError> {
@@ -1260,6 +1260,55 @@ mod tests {
                 .expect("stored")),
             stranded.secret,
         );
+
+        offline.shutdown().await;
+    }
+
+    /// The Settings "Restore from Previous Version" run restores a stranded
+    /// key through this same recovery, unprompted on a keyless identity, and a
+    /// second run finds nothing left to restore.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bulk_restore_recovers_a_stranded_identity_key_once() {
+        let offline = Offline::new(None).await;
+        let ctx = &offline.ctx;
+
+        let held = test_key(1, Purpose::AUTHENTICATION, 0x01);
+        let stranded = test_key(2, Purpose::TRANSFER, 0x02);
+        let modern = identity_with_keys(
+            0xB7,
+            IdentityType::User,
+            &[&stranded],
+            vec![(M, &held, held.clear())],
+        );
+        let identity_id = modern.identity.id();
+        ctx.insert_local_qualified_identity(&modern, &None)
+            .expect("insert modern record");
+        offline.stage_legacy(&identity_with_keys(
+            0xB7,
+            IdentityType::User,
+            &[],
+            vec![(M, &held, held.clear()), (M, &stranded, stranded.clear())],
+        ));
+
+        let first = crate::backend_task::migration::legacy_restore::run(ctx)
+            .await
+            .expect("restore");
+        assert_eq!(first.identities_updated, 1);
+        assert_eq!(first.identity_keys_restored, 1);
+        assert_eq!(first.identities_failed, 0);
+        assert_eq!(
+            offline.with_keys(identity_id, |view| *view
+                .get(&M, 2)
+                .expect("restored key")
+                .expect("stored")),
+            stranded.secret,
+        );
+
+        let second = crate::backend_task::migration::legacy_restore::run(ctx)
+            .await
+            .expect("second restore");
+        assert_eq!(second.identity_keys_restored, 0);
+        assert!(!second.restored_anything());
 
         offline.shutdown().await;
     }

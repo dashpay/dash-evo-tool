@@ -341,6 +341,19 @@ impl<C> Decode<C> for QualifiedIdentity {
     }
 }
 
+/// A plain-language name for a key purpose, for user-facing messages.
+fn purpose_label(purpose: Purpose) -> &'static str {
+    match purpose {
+        Purpose::AUTHENTICATION => "authentication",
+        Purpose::ENCRYPTION => "encryption",
+        Purpose::DECRYPTION => "decryption",
+        Purpose::TRANSFER => "transfer",
+        Purpose::SYSTEM => "system",
+        Purpose::VOTING => "voting",
+        Purpose::OWNER => "owner",
+    }
+}
+
 impl Display for QualifiedIdentity {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         if let Some(alias) = &self.alias {
@@ -770,28 +783,46 @@ impl QualifiedIdentity {
     // TODO(upstream): replace with a typed ProtocolError source variant in dashpay/platform
     fn signing_key_unavailable(&self, key: &IdentityPublicKey, cause: &TaskError) -> ProtocolError {
         let identity_id = self.identity.id().to_string(Encoding::Base58);
-        let mut wallets: Vec<String> = self
+        let mut seed_hashes: Vec<WalletSeedHash> = self
             .private_keys
             .candidates(key)
             .filter_map(|placement| self.private_keys.wallet_seed_hash_for(&placement))
-            .map(hex::encode)
             .collect();
-        wallets.dedup();
+        seed_hashes.sort_unstable();
+        seed_hashes.dedup();
         tracing::warn!(
             identity_id = %identity_id,
             key_id = key.id(),
             purpose = ?key.purpose(),
-            wallets = ?wallets,
+            wallets = ?seed_hashes.iter().map(hex::encode).collect::<Vec<_>>(),
             error = ?cause,
             "Signing key could not be resolved"
         );
+
         let mut text = format!(
-            "{SIGNING_KEY_UNAVAILABLE_PREFIX}{cause} Identity: {identity_id}. Key: {key_id} ({purpose:?}).",
+            "{SIGNING_KEY_UNAVAILABLE_PREFIX}{cause} This concerns key {key_id} ({purpose}) of identity {identity_id}.",
             key_id = key.id(),
-            purpose = key.purpose(),
+            purpose = purpose_label(key.purpose()),
         );
-        if !wallets.is_empty() {
-            text.push_str(&format!(" Wallet: {}.", wallets.join(", ")));
+        if !seed_hashes.is_empty() {
+            let mut names: Vec<String> = seed_hashes
+                .iter()
+                .filter_map(|hash| self.associated_wallets.get(hash))
+                .filter_map(|wallet| wallet.read().ok()?.initial_alias.clone())
+                .filter(|alias| !alias.is_empty())
+                .collect();
+            names.sort();
+            names.dedup();
+            let wallet_sentence = if names.is_empty() {
+                "The key comes from a wallet that is not on this device.".to_string()
+            } else {
+                format!(
+                    "The key comes from the wallet {wallet_names}.",
+                    wallet_names = names.join(", ")
+                )
+            };
+            text.push(' ');
+            text.push_str(&wallet_sentence);
         }
         ProtocolError::Generic(text)
     }
@@ -2161,8 +2192,15 @@ mod key_resolution_tests {
             message.contains(&Identifier::from([1u8; 32]).to_string(Encoding::Base58)),
             "{message}"
         );
-        assert!(message.contains("Key: 4 (VOTING)"), "{message}");
-        assert!(message.contains(&hex::encode(seed_hash)), "{message}");
+        assert!(message.contains("key 4 (voting)"), "{message}");
+        assert!(
+            message.contains("The key comes from a wallet that is not on this device."),
+            "{message}"
+        );
+        assert!(
+            !message.contains(&hex::encode(seed_hash)),
+            "the raw seed hash stays out of the banner: {message}"
+        );
     }
 }
 

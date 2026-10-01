@@ -5,7 +5,8 @@
 /// the UI shows [`Self::user_message`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LegacyRestoreSummary {
-    /// Whether the earlier version's database exists on this device.
+    /// Whether the earlier version's database holds wallets or identities for
+    /// the active network.
     pub legacy_database_found: bool,
     /// Wallet secrets copied back into this version's secure storage.
     pub wallets_restored: u32,
@@ -37,32 +38,44 @@ impl LegacyRestoreSummary {
     /// The user-facing summary, built from complete sentences only.
     pub fn user_message(&self) -> String {
         if !self.legacy_database_found {
-            return "No data from an earlier version of Dash Evo Tool was found on this device. Nothing was restored.".to_string();
+            return "No data from an earlier version of Dash Evo Tool was found for this network. Nothing was restored.".to_string();
         }
         if !self.restored_anything() && !self.has_problems() {
             return "Everything saved by the earlier version is already available. Nothing needed to be restored.".to_string();
         }
 
         let mut sentences = vec!["Restoring data from the earlier version finished.".to_string()];
-        if self.restored_anything() {
-            sentences.push(format!("Wallets restored: {}.", self.wallets_restored));
-            sentences.push(format!(
-                "Identity keys restored: {}.",
-                self.identity_keys_restored
-            ));
-        } else {
+        if !self.restored_anything() {
             sentences.push("Nothing new was restored.".to_string());
+        }
+        if self.wallets_restored > 0 {
+            sentences.push(format!(
+                "Wallets restored: {count}.",
+                count = self.wallets_restored
+            ));
+        }
+        if self.identities_updated > 0 {
+            sentences.push(format!(
+                "Identities updated: {count}.",
+                count = self.identities_updated
+            ));
+        }
+        if self.identity_keys_restored > 0 {
+            sentences.push(format!(
+                "Identity keys restored: {count}.",
+                count = self.identity_keys_restored
+            ));
         }
         if self.wallets_skipped_malformed > 0 {
             sentences.push(format!(
-                "Damaged wallet records skipped: {}.",
-                self.wallets_skipped_malformed
+                "Damaged wallet records skipped: {count}.",
+                count = self.wallets_skipped_malformed
             ));
         }
         if self.wallets_failed > 0 {
             sentences.push(format!(
-                "Wallet records that could not be restored: {}.",
-                self.wallets_failed
+                "Wallet records that could not be restored: {count}.",
+                count = self.wallets_failed
             ));
         }
         if self.wallets_skipped_malformed > 0 || self.wallets_failed > 0 {
@@ -73,8 +86,8 @@ impl LegacyRestoreSummary {
         }
         if self.identities_failed > 0 {
             sentences.push(format!(
-                "Identities that could not be restored: {}.",
-                self.identities_failed
+                "Identities that could not be restored: {count}.",
+                count = self.identities_failed
             ));
             sentences.push("Try again, or import the keys of those identities again.".to_string());
         }
@@ -132,6 +145,20 @@ mod tests {
         assert!(message.contains("Wallets restored: 2."), "{message}");
         assert!(message.contains("Identity keys restored: 3."), "{message}");
         assert!(!message.contains("recovery phrases"), "{message}");
+    }
+
+    /// Restoring only identity links reports the identities updated, never a
+    /// misleading "0 wallets, 0 keys".
+    #[test]
+    fn a_link_only_restore_reports_identities_updated() {
+        let summary = LegacyRestoreSummary {
+            identities_updated: 1,
+            ..found()
+        };
+        let message = summary.user_message();
+        assert!(message.contains("Identities updated: 1."), "{message}");
+        assert!(!message.contains("restored: 0"), "{message}");
+        assert!(!message.contains("Nothing new was restored."), "{message}");
     }
 
     #[test]

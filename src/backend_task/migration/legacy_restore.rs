@@ -40,6 +40,18 @@ pub(crate) async fn run(app_context: &Arc<AppContext>) -> Result<LegacyRestoreSu
         );
         return Ok(summary);
     };
+    // A fresh install also has a `data.db`, so the file existing says nothing;
+    // what counts is whether it holds rows for this network.
+    let conn = open_legacy_read_only(&path).map_err(restore_failed)?;
+    let has_rows = legacy_rows_present(&conn, app_context.network).map_err(restore_failed)?;
+    drop(conn);
+    if !has_rows {
+        tracing::info!(
+            target = LOG_TARGET,
+            "The earlier version's database holds no wallets or identities for this network; nothing to restore"
+        );
+        return Ok(summary);
+    }
     summary.legacy_database_found = true;
 
     restore_wallets(app_context, &path, &mut summary).await?;
@@ -99,19 +111,29 @@ async fn restore_wallets(
     // Hydration is driven by wallet metadata, so a seed without it stays
     // invisible. Write it only where missing, and only beside a stored seed.
     let mut metas_restored = 0u32;
-    let mut meta_write_failures = 0u32;
+    // Callback failures (probe or write) are counted here; the pass's own
+    // `failed` also counts undecodable rows the seed pass already counted.
+    let mut meta_callback_failures = 0u32;
     migrate_wallet_meta_rows_from_conn(
         &conn,
         |seed_hash, meta| {
-            if metas.try_get(network, &seed_hash)?.is_some() || !seeds.contains(&seed_hash)? {
-                return Ok(());
+            let restore_meta = || -> Result<bool, TaskError> {
+                if metas.try_get(network, &seed_hash)?.is_some() || !seeds.contains(&seed_hash)? {
+                    return Ok(false);
+                }
+                metas.set_migrated(network, &seed_hash, &meta)?;
+                Ok(true)
+            };
+            match restore_meta() {
+                Ok(written) => {
+                    metas_restored += u32::from(written);
+                    Ok(())
+                }
+                Err(error) => {
+                    meta_callback_failures += 1;
+                    Err(error)
+                }
             }
-            let written = metas.set_migrated(network, &seed_hash, &meta);
-            match written {
-                Ok(()) => metas_restored += 1,
-                Err(_) => meta_write_failures += 1,
-            }
-            written
         },
         network,
     )
@@ -120,7 +142,7 @@ async fn restore_wallets(
     summary.wallets_restored = restored;
     summary.wallets_already_present = seed_outcome.imported.saturating_sub(restored);
     summary.wallets_skipped_malformed = seed_outcome.skipped_malformed;
-    summary.wallets_failed = seed_outcome.failed.saturating_add(meta_write_failures);
+    summary.wallets_failed = seed_outcome.failed.saturating_add(meta_callback_failures);
 
     if restored > 0 || metas_restored > 0 {
         backend.hydrate_context_wallets(app_context)?;
@@ -200,6 +222,30 @@ fn restorable_items(
     // The decoded legacy plaintext is not needed past planning; wipe it.
     let _ = legacy.private_keys.take_plaintext_for_vault();
     Ok(plan.approved_items())
+}
+
+/// Whether the legacy database holds any wallet or identity row for `network`.
+fn legacy_rows_present(
+    conn: &rusqlite::Connection,
+    network: dash_sdk::dpp::dashcore::Network,
+) -> Result<bool, MigrationError> {
+    for table in ["wallet", "identity"] {
+        let read_error = |source| MigrationError::LegacyDbRead { table, source };
+        if !crate::database::table_exists(conn, table).map_err(read_error)? {
+            continue;
+        }
+        let present: bool = conn
+            .query_row(
+                &format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE network = ?1)"),
+                [network.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(read_error)?;
+        if present {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn restore_failed(source: MigrationError) -> TaskError {
@@ -379,10 +425,25 @@ mod tests {
         ctx.wallet_backend().expect("backend").shutdown().await;
     }
 
+    /// A fresh install's `data.db` exists but holds no earlier-version rows,
+    /// which is reported as "nothing found", not "nothing needed".
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_fresh_install_database_reports_nothing_found() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = app_context(dir.path());
+        wire_backend(&ctx).await;
+        assert!(dir.path().join("data.db").exists());
+
+        let summary = run(&ctx).await.expect("restore");
+        assert_eq!(summary, LegacyRestoreSummary::default());
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_running_storage_update_blocks_the_restore() {
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = app_context(dir.path());
+        stage_wallet(&ctx, &[0xC1; 64], "Gate");
         wire_backend(&ctx).await;
         let _gate = ctx.try_lock_prepare_gate().expect("hold the gate");
 

@@ -11,9 +11,9 @@ use crate::model::dpns_voting::operator::{
     changes_left, contest_needs_decision,
 };
 use crate::model::dpns_voting::{
-    DpnsCurrentVoteState, DpnsVoteOperation, DpnsVotePollAvailability, DpnsVoteTargetKey,
-    DpnsVoteTargetStatus, authoritative_dpns_vote_outcome, dpns_vote_lock_holders,
-    dpns_vote_poll_availability,
+    DpnsCurrentVoteState, DpnsVoteOperation, DpnsVoteOutcome, DpnsVotePollAvailability,
+    DpnsVoteTargetKey, DpnsVoteTargetStatus, authoritative_dpns_vote_outcome,
+    dpns_vote_lock_holders, dpns_vote_poll_availability,
 };
 use crate::model::qualified_identity::IdentityType;
 use crate::utils::time::now_ms;
@@ -45,6 +45,34 @@ impl AppContext {
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         )
+    }
+
+    /// Journal operations as of the last recompute, for the progress drawer
+    /// (cheap; safe to call every frame).
+    pub fn dpns_vote_progress(&self) -> Arc<[DpnsVoteOperation]> {
+        Arc::clone(
+            &self
+                .dpns_vote_progress
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
+    /// Ask the voting panel to reopen the confirm step for one failed target
+    /// (`Review again` in the progress drawer).
+    pub fn request_dpns_vote_review(&self, outcome: DpnsVoteOutcome) {
+        *self
+            .dpns_vote_review_request
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(outcome);
+    }
+
+    /// Take a pending `Review again` request, if any.
+    pub fn take_dpns_vote_review_request(&self) -> Option<DpnsVoteOutcome> {
+        self.dpns_vote_review_request
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
     }
 
     /// Record that a contest + vote-state refresh just completed.
@@ -175,7 +203,18 @@ impl AppContext {
     /// Storage failures keep the previous summary rather than signalling
     /// nothing.
     pub fn recompute_dpns_vote_attention(&self) -> Arc<AttentionSummary> {
-        match self.compute_dpns_vote_attention() {
+        let operations = match self.dpns_vote_operations() {
+            Ok(operations) => operations,
+            Err(error) => {
+                tracing::debug!(?error, "Keeping the previous voting attention and progress");
+                return self.dpns_vote_attention();
+            }
+        };
+        *self
+            .dpns_vote_progress
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::from(operations.as_slice());
+        match self.compute_dpns_vote_attention(&operations) {
             Ok(summary) => {
                 let summary = Arc::new(summary);
                 *self
@@ -191,7 +230,10 @@ impl AppContext {
         }
     }
 
-    fn compute_dpns_vote_attention(&self) -> Result<AttentionSummary, TaskError> {
+    fn compute_dpns_vote_attention(
+        &self,
+        operations: &[DpnsVoteOperation],
+    ) -> Result<AttentionSummary, TaskError> {
         let resolved = self
             .saved_dpns_node_set()
             .unwrap_or_default()
@@ -208,7 +250,6 @@ impl AppContext {
                 Some((contest.normalized_contested_name, contest.end_time, poll))
             })
             .collect();
-        let operations = self.dpns_vote_operations()?;
         let polls: Vec<Identifier> = contests.iter().map(|(_, _, poll)| *poll).collect();
         let mut states = BTreeMap::new();
         for voter in &resolved.included {
@@ -234,7 +275,7 @@ impl AppContext {
                             voter_id: *voter,
                             vote_poll_id: poll,
                         };
-                        let locked = dpns_vote_lock_holders(&operations, &key).next().is_some();
+                        let locked = dpns_vote_lock_holders(operations, &key).next().is_some();
                         (state, locked, self.dpns_changes_left(*voter, poll, state))
                     }));
                 ContestAttention {
@@ -246,7 +287,7 @@ impl AppContext {
             .collect();
         Ok(AttentionSummary::new(
             &attention,
-            unresolved_target_count(&operations),
+            unresolved_target_count(operations),
             resolved.included.len(),
         ))
     }

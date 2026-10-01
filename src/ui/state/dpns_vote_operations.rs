@@ -22,7 +22,6 @@ pub(crate) struct ScheduledDpnsVoteRow {
 #[derive(Debug, Clone, Default)]
 pub struct DpnsVoteOperationSnapshot {
     operations: Vec<DpnsVoteOperation>,
-    recent_operations: Arc<[DpnsVoteOperation]>,
     dismissed_schedules: BTreeSet<(DpnsVoteOperationId, DpnsVoteTargetKey)>,
     target_statuses: BTreeMap<DpnsVoteTargetKey, DpnsVoteTargetStatus>,
     loaded: bool,
@@ -60,10 +59,6 @@ impl DpnsVoteOperationSnapshot {
 
     pub fn operations(&self) -> &[DpnsVoteOperation] {
         &self.operations
-    }
-
-    pub(crate) fn recent_operations(&self) -> Arc<[DpnsVoteOperation]> {
-        Arc::clone(&self.recent_operations)
     }
 
     pub fn operation(&self, id: DpnsVoteOperationId) -> Option<&DpnsVoteOperation> {
@@ -165,30 +160,6 @@ impl DpnsVoteOperationSnapshot {
             .filter(|outcome| outcome.status.holds_lock())
             .map(|outcome| (outcome.target.key.clone(), outcome.status))
             .collect();
-        let mut recent = operations
-            .iter()
-            .filter(|operation| !operation.targets.is_empty())
-            .collect::<Vec<_>>();
-        recent.sort_by_key(|operation| operation.created_at);
-        // Pending operations must remain reachable even after newer batches complete.
-        let mut completed_count = 0;
-        self.recent_operations = recent
-            .into_iter()
-            .rev()
-            .filter(|operation| {
-                if operation
-                    .targets
-                    .iter()
-                    .any(|outcome| outcome.status.holds_lock())
-                {
-                    true
-                } else {
-                    completed_count += 1;
-                    completed_count <= 5
-                }
-            })
-            .cloned()
-            .collect();
         self.operations = operations;
         self.loaded = true;
     }
@@ -202,52 +173,6 @@ mod tests {
     use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
     use dash_sdk::platform::Identifier;
-
-    #[test]
-    fn voting_ui_unresolved_activity_survives_newer_completed_batches() {
-        let mut snapshot = DpnsVoteOperationSnapshot::default();
-        let mut unresolved = operation(DpnsVoteTargetStatus::Unconfirmed);
-        unresolved.created_at = 0;
-        let unresolved_id = unresolved.id;
-        let mut operations = vec![unresolved];
-        for created_at in 1..=8 {
-            let mut completed = operation(DpnsVoteTargetStatus::Confirmed);
-            completed.created_at = created_at;
-            operations.push(completed);
-        }
-        snapshot.replace(operations);
-        let visible = snapshot.recent_operations();
-        assert!(
-            visible
-                .iter()
-                .any(|operation| operation.id == unresolved_id)
-        );
-        assert_eq!(visible.len(), 6);
-    }
-
-    #[test]
-    fn voting_ui_recent_activity_is_bounded_ordered_and_shared_between_frames() {
-        let mut snapshot = DpnsVoteOperationSnapshot::default();
-        let operations = (0..20)
-            .map(|created_at| {
-                let mut operation = operation(DpnsVoteTargetStatus::Confirmed);
-                operation.created_at = created_at;
-                operation
-            })
-            .collect();
-        snapshot.replace(operations);
-        let first = snapshot.recent_operations();
-        let second = snapshot.recent_operations();
-        assert!(Arc::ptr_eq(&first, &second));
-        assert_eq!(
-            first
-                .iter()
-                .map(|operation| operation.created_at)
-                .collect::<Vec<_>>(),
-            vec![19, 18, 17, 16, 15]
-        );
-        assert_eq!(snapshot.operations().len(), 20);
-    }
 
     #[test]
     fn voting_ui_dismissed_terminal_row_suppresses_its_mirror_and_preserves_siblings() {

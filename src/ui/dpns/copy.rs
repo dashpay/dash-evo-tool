@@ -5,6 +5,8 @@
 
 use crate::model::dpns_voting::composer::SkipReason;
 use crate::model::dpns_voting::operator::{ChangesLeft, TimeLeft};
+use crate::model::dpns_voting::progress::{NeedsAttention, ProgressCounts};
+use crate::model::dpns_voting::{DpnsVoteFailure, DpnsVoteTargetStatus};
 
 /// A remaining time as a phrase, e.g. `3 hours`.
 pub fn time_left_phrase(time_left: TimeLeft) -> String {
@@ -184,6 +186,85 @@ pub fn node_set_chip_label(set_name: &str, nodes: usize, weight: u32) -> String 
         weight => format!("{weight} votes"),
     };
     format!("Vote with: {set_name} · {nodes} · {votes}")
+}
+
+/// Final batch banner (VOTE-FR-061): `{n} nodes voted on {d} names.`, with
+/// the still-checking count and VOTE-FR-064 guidance when `checking > 0`.
+pub fn batch_voted_line(nodes: usize, names: usize, checking: usize) -> String {
+    let voted = match (nodes, names) {
+        (1, 1) => "1 node voted on 1 name".to_owned(),
+        (1, names) => format!("1 node voted on {names} names"),
+        (nodes, 1) => format!("{nodes} nodes voted on 1 name"),
+        (nodes, names) => format!("{nodes} nodes voted on {names} names"),
+    };
+    match checking {
+        0 => format!("{voted}."),
+        1 => format!(
+            "{voted}; 1 is still being checked. Dash Evo Tool will keep checking. Do not submit it again."
+        ),
+        checking => format!(
+            "{voted}; {checking} are still being checked. Dash Evo Tool will keep checking. Do not submit them again."
+        ),
+    }
+}
+
+/// Drawer header (VOTE-FR-083).
+pub fn drawer_header(counts: ProgressCounts) -> String {
+    let casting = match counts.total {
+        1 => "Casting 1 vote".to_owned(),
+        total => format!("Casting {total} votes"),
+    };
+    format!(
+        "{casting} · {done} done · {sending} sending · {checking} being checked",
+        done = counts.done(),
+        sending = counts.sending,
+        checking = counts.checking,
+    )
+}
+
+/// Drawer row status (VOTE-FR-083/087).
+pub fn progress_row_status(
+    status: DpnsVoteTargetStatus,
+    failure: Option<DpnsVoteFailure>,
+) -> &'static str {
+    match (status, failure) {
+        (_, Some(DpnsVoteFailure::VotingEnded)) => "Not cast. Voting ended.",
+        (_, Some(DpnsVoteFailure::VotingKeyMissing)) => "Not cast. The voting key is not loaded.",
+        (
+            DpnsVoteTargetStatus::Queued
+            | DpnsVoteTargetStatus::Submitting
+            | DpnsVoteTargetStatus::Confirming,
+            _,
+        ) => "Sending…",
+        (DpnsVoteTargetStatus::Unconfirmed, _) => "Still being checked. Don't submit it again.",
+        (DpnsVoteTargetStatus::Confirmed, _) => "Voted",
+        (DpnsVoteTargetStatus::Rejected, _) => "Rejected by Platform",
+        (DpnsVoteTargetStatus::NotApplied, _) => "Not applied",
+        (DpnsVoteTargetStatus::FailedBeforeSubmission, _) => "Not sent",
+        (DpnsVoteTargetStatus::Scheduled, _) => "Scheduled",
+        (DpnsVoteTargetStatus::Cancelled, _) => "Cancelled",
+    }
+}
+
+/// `Needs attention` summary (VOTE-FR-084).
+pub fn needs_attention_line(attention: NeedsAttention) -> String {
+    let mut parts = Vec::new();
+    match attention.checking {
+        0 => {}
+        1 => parts.push("1 vote is still being checked".to_owned()),
+        count => parts.push(format!("{count} votes are still being checked")),
+    }
+    match attention.failed {
+        0 => {}
+        1 => parts.push("1 vote was not cast".to_owned()),
+        count => parts.push(format!("{count} votes were not cast")),
+    }
+    match attention.missed_schedules {
+        0 => {}
+        1 => parts.push("1 scheduled vote was missed".to_owned()),
+        count => parts.push(format!("{count} scheduled votes were missed")),
+    }
+    format!("Needs attention: {parts}.", parts = parts.join(" · "))
 }
 
 /// Confirm title (VOTE-FR-080).
@@ -385,6 +466,46 @@ mod tests {
         assert_eq!(
             changes_left_label(ChangesLeft::Unknown),
             "Changes left unknown. This node voted outside Dash Evo Tool."
+        );
+    }
+
+    /// VOTE-TC-101: the batch banner counts nodes and names.
+    #[test]
+    fn batch_banner_counts_nodes_and_names() {
+        assert_eq!(batch_voted_line(24, 3, 0), "24 nodes voted on 3 names.");
+        assert_eq!(
+            batch_voted_line(2, 1, 1),
+            "2 nodes voted on 1 name; 1 is still being checked. Dash Evo Tool will keep checking. Do not submit it again."
+        );
+    }
+
+    /// VOTE-TC-098/099/104 (copy half).
+    #[test]
+    fn drawer_and_attention_copy() {
+        assert_eq!(
+            drawer_header(ProgressCounts {
+                total: 72,
+                confirmed: 40,
+                failed: 2,
+                sending: 25,
+                checking: 5,
+            }),
+            "Casting 72 votes · 42 done · 25 sending · 5 being checked"
+        );
+        assert_eq!(
+            progress_row_status(
+                DpnsVoteTargetStatus::FailedBeforeSubmission,
+                Some(DpnsVoteFailure::VotingEnded)
+            ),
+            "Not cast. Voting ended."
+        );
+        assert_eq!(
+            needs_attention_line(NeedsAttention {
+                checking: 1,
+                failed: 0,
+                missed_schedules: 2,
+            }),
+            "Needs attention: 1 vote is still being checked · 2 scheduled votes were missed."
         );
     }
 

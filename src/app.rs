@@ -305,6 +305,9 @@ fn clear_profile_saving_banner_after_success(
     }
 }
 
+/// How often local state re-derives the voting attention summary.
+const DPNS_ATTENTION_RECOMPUTE_INTERVAL: Duration = Duration::from_secs(60);
+
 fn unix_time_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -385,13 +388,40 @@ fn dpns_vote_feedback(operation: &DpnsVoteOperation) -> (String, MessageType, bo
         return (message.to_owned(), MessageType::Info, false);
     }
     let target_count = operation.targets.len();
-    if counts.confirmed == target_count {
-        let message = if target_count == 1 {
-            "Vote cast successfully.".to_owned()
+    if target_count == 1 && counts.confirmed == 1 {
+        return (
+            "Vote cast successfully.".to_owned(),
+            MessageType::Success,
+            false,
+        );
+    }
+    // VOTE-FR-061: a batch that only confirmed, or confirmed with some still
+    // being checked, reads as nodes × names.
+    if counts.confirmed > 0 && counts.confirmed + counts.unconfirmed == target_count {
+        let confirmed = operation
+            .targets
+            .iter()
+            .filter(|outcome| outcome.status == DpnsVoteTargetStatus::Confirmed);
+        let nodes = confirmed
+            .clone()
+            .map(|outcome| outcome.target.key.voter_id)
+            .collect::<BTreeSet<_>>()
+            .len();
+        let names = confirmed
+            .map(|outcome| outcome.target.key.vote_poll_id)
+            .collect::<BTreeSet<_>>()
+            .len();
+        let checking = counts.unconfirmed;
+        let message_type = if checking == 0 {
+            MessageType::Success
         } else {
-            format!("{target_count} votes were cast successfully.")
+            MessageType::Warning
         };
-        return (message, MessageType::Success, false);
+        return (
+            crate::ui::dpns::copy::batch_voted_line(nodes, names, checking),
+            message_type,
+            checking > 0,
+        );
     }
     if counts.scheduled == target_count {
         return (
@@ -1416,6 +1446,11 @@ pub struct AppState {
     scheduled_vote_sweeps_in_progress: BTreeSet<Network>,
     /// Unix ms of the last background contest refresh dispatched per network.
     dpns_background_refresh_dispatched_at_ms: BTreeMap<Network, u64>,
+    /// When the voting attention summary was last recomputed per network, so
+    /// nodes loaded or keys added elsewhere reach the chip, badge and timer.
+    dpns_attention_recomputed_at: BTreeMap<Network, Instant>,
+    /// The vote progress drawer shown over every screen (VOTE-FR-083).
+    dpns_progress_drawer: crate::ui::dpns::progress_drawer::DrawerState,
     /// Last recovery-sweep attempt per network, used to throttle retries while
     /// retaining the original eligibility cutoff.
     scheduled_vote_recovery_last_attempt: BTreeMap<Network, Instant>,
@@ -1952,6 +1987,8 @@ impl AppState {
             scheduled_vote_sweep_deferred_since_ms: BTreeMap::new(),
             scheduled_vote_sweeps_in_progress: BTreeSet::new(),
             dpns_background_refresh_dispatched_at_ms: BTreeMap::new(),
+            dpns_attention_recomputed_at: BTreeMap::new(),
+            dpns_progress_drawer: crate::ui::dpns::progress_drawer::DrawerState::new(unix_time_ms()),
             scheduled_vote_recovery_last_attempt: BTreeMap::new(),
             last_repaint_request: Instant::now(),
             subtasks,
@@ -3651,6 +3688,22 @@ impl App for AppState {
             }
         }
 
+        // Prime and periodically re-derive the attention summary from local
+        // state (no network); the timer below depends on its voting-node count.
+        if self.boot.phase().renders_screens()
+            && !self.network_selection_required
+            && FeatureGate::Masternodes.is_available(&active_context)
+            && active_context.wallet_backend().is_ok()
+            && self
+                .dpns_attention_recomputed_at
+                .get(&network)
+                .is_none_or(|at| at.elapsed() >= DPNS_ATTENTION_RECOMPUTE_INTERVAL)
+        {
+            self.dpns_attention_recomputed_at
+                .insert(network, Instant::now());
+            active_context.recompute_dpns_vote_attention();
+        }
+
         // Background contest + vote-state refresh feeding the attention chip and
         // the Masternodes badge (VOTE-FR-074): only while voting nodes are loaded.
         if self.boot.phase().renders_screens()
@@ -3763,6 +3816,15 @@ impl App for AppState {
             actions.push(welcome_screen.ui(ui));
         } else {
             actions.push(self.visible_screen_mut().ui(ui));
+            if !self.network_selection_required
+                && FeatureGate::Masternodes.is_available(&active_context)
+            {
+                actions.push(crate::ui::dpns::progress_drawer::show(
+                    ctx,
+                    &active_context,
+                    &mut self.dpns_progress_drawer,
+                ));
+            }
         };
 
         // A blocking progress overlay remains active underneath a secret prompt,
@@ -4005,7 +4067,7 @@ mod migration_banner_tests {
                     DpnsVoteTargetStatus::Confirmed,
                 ],
                 0,
-                "2 votes were cast successfully.",
+                "1 node voted on 2 names.",
                 MessageType::Success,
                 false,
             ),
@@ -4015,7 +4077,7 @@ mod migration_banner_tests {
                     DpnsVoteTargetStatus::Confirmed,
                 ],
                 1,
-                "2 votes were cast successfully.",
+                "1 node voted on 2 names.",
                 MessageType::Success,
                 false,
             ),
@@ -4125,6 +4187,24 @@ mod migration_banner_tests {
 
     /// Counts drive which sentence is built, so no single template has to carry
     /// a verb that is only correct for one of them.
+    /// VOTE-TC-101: confirmed plus still-checking targets read as nodes × names
+    /// and keep the banner up with the do-not-resubmit guidance.
+    #[test]
+    fn batch_feedback_counts_nodes_names_and_checking() {
+        let operation = feedback_operation(&[
+            DpnsVoteTargetStatus::Confirmed,
+            DpnsVoteTargetStatus::Confirmed,
+            DpnsVoteTargetStatus::Unconfirmed,
+        ]);
+        let (message, message_type, keep_visible) = dpns_vote_feedback(&operation);
+        assert_eq!(message_type, MessageType::Warning);
+        assert!(keep_visible);
+        assert_eq!(
+            message,
+            "1 node voted on 2 names; 1 is still being checked. Dash Evo Tool will keep checking. Do not submit it again."
+        );
+    }
+
     #[test]
     fn mixed_vote_feedback_matches_its_verbs_to_the_counts() {
         let operation = feedback_operation(&[

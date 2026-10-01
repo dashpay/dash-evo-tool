@@ -30,6 +30,7 @@ use crate::model::dpns_voting::operator::{
     ChangesLeft, NodeSet, ResolvedNodeSet, VotingNode, VotingNodeKind, relative_schedule_preset,
     time_left,
 };
+use crate::model::dpns_voting::progress::needs_attention;
 use crate::model::dpns_voting::{
     DpnsCurrentVoteState, DpnsScheduledVoteKey, DpnsVoteFailure, DpnsVoteOperation,
     DpnsVoteOperationId, DpnsVoteTarget, DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming,
@@ -39,11 +40,11 @@ use crate::model::qualified_identity::IdentityType;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
-use crate::ui::components::progress_overlay::{OptionOverlayExt, OverlayConfig, OverlayHandle};
 use crate::ui::components::utc_schedule_input::UtcScheduleInput;
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::dpns::contest_card::node_label;
 use crate::ui::dpns::contest_card::{CardEvent, CardView};
+use crate::ui::dpns::copy::needs_attention_line;
 use crate::ui::dpns::copy::tray_label;
 use crate::ui::dpns::copy::{
     before_end_phrase, changes_left_label, confirm_button_label, confirm_change_warning,
@@ -51,6 +52,7 @@ use crate::ui::dpns::copy::{
     skipped_header, skipped_reason_line,
 };
 use crate::ui::dpns::node_set_picker;
+use crate::ui::dpns::progress_drawer;
 use crate::ui::state::dpns_contests::ActiveDpnsContestSnapshot;
 use crate::ui::state::dpns_vote_cards::{
     CantVoteReason, CardPlacement, NodeContestState, NodeContestStatus, VoteCard, sort_by_time_left,
@@ -193,6 +195,9 @@ fn scheduled_failure_guidance(
         ),
         DpnsVoteFailure::SubmissionFailed => Some(
             "The vote could not be submitted. Check your connection and voting key, then use Cast now or Edit on the Scheduled tab.",
+        ),
+        DpnsVoteFailure::VotingKeyMissing => Some(
+            "This node's voting key is not loaded. Load it on the Nodes tab, then use Cast now on the Scheduled tab.",
         ),
         DpnsVoteFailure::PlatformRejected
         | DpnsVoteFailure::ResultUnconfirmed
@@ -413,7 +418,6 @@ pub enum VoteHandlingStatus {
     NotStarted,
     CastingVotes,
     SchedulingVotes,
-    Completed,
     Failed(VoteSubmissionError),
 }
 
@@ -456,10 +460,11 @@ pub struct DPNSScreen {
     pending_backend_task: Option<BackendTask>,
     vote_operations: DpnsVoteOperationSnapshot,
     vote_state: DpnsVoteStateSnapshot,
-    vote_overlay: Option<OverlayHandle>,
     pending_vote_operation: Option<DpnsVoteOperationId>,
     pending_scheduled_actions: BTreeMap<DpnsScheduledVoteKey, BackendTaskContext>,
-    clear_vote_overlay_on_error: bool,
+    /// Set by `display_backend_task_error` when the failed task is this
+    /// panel's pending submission; `display_task_error` then releases it.
+    release_pending_on_error: bool,
     scheduled_clear_dialog: Option<(bool, ConfirmationDialog)>,
     scheduled_vote_editor: Option<ScheduledVoteEditor>,
 
@@ -505,6 +510,8 @@ pub struct DPNSScreen {
     /// "Before the end" presets of scheduled rows, by target and time; a row
     /// without one shows its absolute time only (VOTE-FR-081).
     relative_schedule_labels: BTreeMap<(DpnsVoteTargetKey, u64), std::time::Duration>,
+    /// Settled failures older than this are not raised in `Needs attention`.
+    session_started_ms: u64,
     /// Cards ticked for a bulk decision, by contest name.
     selected_cards: BTreeSet<String>,
     focused_card: Option<String>,
@@ -567,10 +574,10 @@ impl DPNSScreen {
             pending_backend_task: None,
             vote_operations,
             vote_state,
-            vote_overlay: None,
             pending_vote_operation: None,
             pending_scheduled_actions: BTreeMap::new(),
-            clear_vote_overlay_on_error: false,
+            release_pending_on_error: false,
+            session_started_ms: now_ms(),
             scheduled_clear_dialog: None,
             scheduled_vote_editor: None,
             view,
@@ -616,9 +623,6 @@ impl DPNSScreen {
             .map(|(key, _)| key.clone());
         if let Some(key) = key {
             self.pending_scheduled_actions.remove(&key);
-            if self.pending_vote_operation.is_none() {
-                self.vote_overlay.take_and_clear();
-            }
             true
         } else {
             false
@@ -636,10 +640,9 @@ impl DPNSScreen {
         self.pending_backend_task = None;
         self.pending_vote_operation = None;
         self.pending_scheduled_actions.clear();
-        self.clear_vote_overlay_on_error = false;
+        self.release_pending_on_error = false;
         self.scheduled_clear_dialog = None;
         self.scheduled_vote_editor = None;
-        self.vote_overlay.take_and_clear();
         self.refresh_banner.take_and_clear();
         self.journal_error_banner.take_and_clear();
         self.submission_error_banner.take_and_clear();
@@ -1025,7 +1028,6 @@ impl DPNSScreen {
                         }
                     });
                 }
-                self.render_voting_activity(ui);
             });
 
         for (index, event) in events {
@@ -1116,101 +1118,38 @@ impl DPNSScreen {
         self.show_bulk_schedule_popup = true;
     }
 
-    fn render_voting_activity(&mut self, ui: &mut Ui) {
-        let operations = self.vote_operations.recent_operations();
-        if operations.is_empty() {
+    /// `Needs attention` row (VOTE-FR-084): unconfirmed, failed or missed
+    /// targets, linking to the drawer or Scheduled.
+    fn render_needs_attention(&mut self, ui: &mut Ui) {
+        let attention = needs_attention(
+            self.vote_operations.operations(),
+            self.session_started_ms,
+            now_ms(),
+        );
+        if attention.is_empty() {
             return;
         }
-
-        let dark_mode = ui.style().visuals.dark_mode;
-        ui.add_space(12.0);
-        ui.heading("Voting activity");
-        for operation in operations.iter() {
-            let settled = operation
-                .targets
-                .iter()
-                .filter(|outcome| !outcome.status.holds_lock())
-                .count();
-            ui.group(|ui| {
-                ui.label(
-                    RichText::new(format!(
-                        "{settled} of {} votes settled.",
-                        operation.targets.len()
-                    ))
-                    .strong(),
-                );
-                for outcome in &operation.targets {
-                    let missed = schedule_is_missed(outcome.status, outcome.target.timing, Utc::now().timestamp_millis().max(0) as u64);
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(format!(
-                            "{node} — {name}.dash — {choice} — {status}",
-                            node = outcome.target.voter_alias.clone().unwrap_or_else(|| short_identifier(outcome.target.key.voter_id)),
-                            name = outcome.target.contested_name,
-                            choice = vote_choice_label(
-                                outcome.target.requested_choice,
-                                self.candidate_name(
-                                    &outcome.target.contested_name,
-                                    outcome.target.requested_choice,
-                                ),
-                            ),
-                            status = if missed { "Missed automatic vote" } else { target_outcome_label(outcome.status, outcome.failure) },
-                        ));
-                        if outcome.status == DpnsVoteTargetStatus::Unconfirmed
-                            && ComponentStyles::add_secondary_button(
-                                ui,
-                                "Check again",
-                                dark_mode,
-                            )
-                            .clicked()
-                        {
-                            self.pending_backend_task = Some(BackendTask::ContestedResourceTask(
-                                ContestedResourceTask::ReconcileDpnsVoteOperation(
-                                    operation.id,
-                                    self.app_context.network(),
-                                ),
-                            ));
-                            self.pending_vote_operation = Some(operation.id);
-                            self.raise_vote_overlay(
-                                ui.ctx(),
-                                "Checking the submitted votes with Platform…",
-                            );
-                        }
-                        if matches!(
-                            outcome.status,
-                            DpnsVoteTargetStatus::Rejected
-                                | DpnsVoteTargetStatus::FailedBeforeSubmission
-                                | DpnsVoteTargetStatus::NotApplied
-                        ) && ComponentStyles::add_secondary_button(
-                            ui,
-                            "Review again",
-                            dark_mode,
-                        )
-                        .clicked()
-                        {
-                            self.review_failed_target(outcome);
-                        }
-                    });
-                    if let Some(guidance) = scheduled_failure_guidance(outcome.status, outcome.failure) {
-                        ui.label(guidance);
-                    }
-                    if missed {
-                        ui.label(MISSED_SCHEDULE_GUIDANCE);
-                    }
-                    if matches!(
-                        outcome.status,
-                        DpnsVoteTargetStatus::Confirming
-                            | DpnsVoteTargetStatus::Unconfirmed
-                    ) {
-                        ui.label(
-                            RichText::new(
-                                "This vote may already have been submitted. Do not submit it again.",
-                            )
+        let dark_mode = ui.visuals().dark_mode;
+        egui::Frame::group(ui.style())
+            .stroke(egui::Stroke::new(1.0, DashColors::warning_color(dark_mode)))
+            .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        RichText::new(needs_attention_line(attention))
                             .color(DashColors::warning_color(dark_mode)),
-                        );
+                    );
+                    if attention.checking + attention.failed > 0
+                        && ui.button("Show progress").clicked()
+                    {
+                        self.show_vote_progress(ui.ctx());
                     }
-                }
+                    if attention.missed_schedules > 0 && ui.button("Open Scheduled").clicked() {
+                        self.view = VotesView::Scheduled;
+                    }
+                });
             });
-        }
+        ui.add_space(6.0);
     }
 
     fn set_selected_vote_from_outcome(
@@ -1233,9 +1172,10 @@ impl DPNSScreen {
         }
     }
 
-    fn raise_vote_overlay(&mut self, ctx: &egui::Context, message: &str) {
-        self.vote_overlay
-            .raise(ctx, message, OverlayConfig::default());
+    /// Progress shows in the non-blocking drawer, never a window overlay
+    /// (VOTE-FR-035/083).
+    fn show_vote_progress(&self, ctx: &egui::Context) {
+        progress_drawer::expand(ctx);
     }
     fn render_table_past_contests(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
@@ -1592,7 +1532,7 @@ impl DPNSScreen {
         });
 
         if show_cast_overlay {
-            self.raise_vote_overlay(ui.ctx(), "Submitting the scheduled vote to Dash Platform…");
+            self.show_vote_progress(ui.ctx());
         }
 
         action
@@ -1700,12 +1640,6 @@ impl DPNSScreen {
         let mut action = AppAction::None;
         let dark_mode = ui.style().visuals.dark_mode;
 
-        if matches!(
-            self.bulk_vote_handling_status,
-            VoteHandlingStatus::Completed
-        ) {
-            return self.show_bulk_vote_handling_complete(ui);
-        }
         if self.voting_identity_load_error.is_some() {
             self.render_voting_identity_load_error(ui);
             if ComponentStyles::add_secondary_button(ui, "Close", dark_mode).clicked() {
@@ -1881,10 +1815,10 @@ impl DPNSScreen {
                 self.bulk_vote_handling_status,
                 VoteHandlingStatus::CastingVotes | VoteHandlingStatus::SchedulingVotes
             ) {
-                self.raise_vote_overlay(
-                    ui.ctx(),
-                    "Submitting the selected votes to Dash Platform…",
-                );
+                // The confirm step closes at once; the drawer tracks progress
+                // and the staged decisions clear when the operation reports.
+                self.show_bulk_schedule_popup = false;
+                self.show_vote_progress(ui.ctx());
             }
         }
         if cancel_clicked {
@@ -2177,65 +2111,6 @@ impl DPNSScreen {
             ),
         ))
     }
-
-    /// If voting/scheduling is successful, show success message
-    fn show_bulk_vote_handling_complete(&mut self, ui: &mut Ui) -> AppAction {
-        let mut action = AppAction::None;
-
-        self.selected_votes.clear();
-
-        ui.vertical_centered(|ui| {
-            let dark_mode = ui.style().visuals.dark_mode;
-            ui.add_space(20.0);
-            match &self.bulk_vote_handling_status {
-                VoteHandlingStatus::Completed => {
-                    ui.heading(
-                        RichText::new("Your votes have been submitted or scheduled as requested.")
-                            .color(DashColors::text_primary(dark_mode)),
-                    );
-                    ui.label(
-                        "Check the recent voting activity to see which votes were confirmed, are still pending, or failed.",
-                    );
-                }
-                VoteHandlingStatus::Failed(error) => {
-                    // This means there was a DET-side error, not Platform-side
-                    let dark_mode = ui.style().visuals.dark_mode;
-                    ui.heading(
-                        RichText::new("The votes could not be submitted.")
-                            .color(DashColors::text_primary(dark_mode)),
-                    );
-                    ui.add_space(10.0);
-                    ui.label(
-                        RichText::new(error.to_string())
-                            .color(DashColors::text_primary(dark_mode)),
-                    );
-                }
-                _ => {
-                    // this should not occur
-                }
-            }
-
-            ui.add_space(20.0);
-            let dark_mode = ui.style().visuals.dark_mode;
-            if ComponentStyles::add_primary_button(ui, "Back to To decide").clicked() {
-                self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
-                self.show_bulk_schedule_popup = false;
-                action = AppAction::BackendTask(BackendTask::ContestedResourceTask(
-                    ContestedResourceTask::QueryDPNSContests,
-                ))
-            }
-            ui.add_space(5.0);
-            if ComponentStyles::add_secondary_button(ui, "Show scheduled votes", dark_mode)
-                .clicked()
-            {
-                self.show_bulk_schedule_popup = false;
-                self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
-                self.view = VotesView::Scheduled;
-            }
-        });
-
-        action
-    }
 }
 
 // ---------------------------
@@ -2311,7 +2186,7 @@ impl ScreenLike for DPNSScreen {
     }
 
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
-        self.clear_vote_overlay_on_error = match self.pending_vote_operation {
+        self.release_pending_on_error = match self.pending_vote_operation {
             Some(operation_id) => {
                 dpns_operation_id(context, self.app_context.network()) == Some(operation_id)
             }
@@ -2326,10 +2201,9 @@ impl ScreenLike for DPNSScreen {
                 "Could not refresh proved DPNS votes after a task error"
             );
         }
-        if self.clear_vote_overlay_on_error {
-            self.vote_overlay.take_and_clear();
+        if self.release_pending_on_error {
             self.pending_vote_operation = None;
-            self.clear_vote_overlay_on_error = false;
+            self.release_pending_on_error = false;
             // The review window disables both Submit and Cancel while a
             // submission is in flight, so a failed submission must leave that
             // state here. Otherwise the window stays on "Submitting votes…"
@@ -2378,13 +2252,14 @@ impl ScreenLike for DPNSScreen {
                 }
                 let owns_result = self.pending_vote_operation == Some(operation_id);
                 if owns_result {
-                    self.vote_overlay.take_and_clear();
                     self.pending_vote_operation = None;
                     if matches!(
                         self.bulk_vote_handling_status,
                         VoteHandlingStatus::CastingVotes | VoteHandlingStatus::SchedulingVotes
                     ) {
-                        self.bulk_vote_handling_status = VoteHandlingStatus::Completed;
+                        self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
+                        self.selected_votes.clear();
+                        self.selected_cards.clear();
                     }
                 }
                 if let Err(error) = self.vote_operations.refresh(&self.app_context) {
@@ -2433,6 +2308,12 @@ impl ScreenLike for DPNSScreen {
         let ctx = ui.ctx().clone();
         let ctx = &ctx;
         let mut action = AppAction::None;
+
+        // `Review again` from the progress drawer, which lives outside this panel.
+        if let Some(outcome) = self.app_context.take_dpns_vote_review_request() {
+            self.view = VotesView::ToDecide;
+            self.review_failed_target(&outcome);
+        }
 
         ui.horizontal(|ui| {
             for view in VotesView::ALL {
@@ -2552,7 +2433,6 @@ impl ScreenLike for DPNSScreen {
                     self.pending_scheduled_actions.insert(key, context.clone());
                     action = AppAction::BackendTaskWithContext { task, context };
                     self.scheduled_vote_editor = None;
-                    self.raise_vote_overlay(ui.ctx(), "Saving the scheduled vote…");
                 }
             }
         }
@@ -2574,11 +2454,9 @@ impl ScreenLike for DPNSScreen {
                 if self.voting_identities.is_empty() && self.voting_identity_load_error.is_none() {
                     action |= self.render_no_voting_nodes(ui);
                 }
+                self.render_needs_attention(ui);
                 if self.active_contests.is_empty() {
                     action |= self.render_empty_view(ui);
-                    egui::ScrollArea::vertical()
-                        .id_salt("voting_activity_without_contests")
-                        .show(ui, |ui| self.render_voting_activity(ui));
                 } else {
                     self.render_active_contests(ui);
                 }
@@ -2734,27 +2612,26 @@ mod tests {
         }
     }
 
+    /// VOTE-FR-035: no window overlay; staged decisions clear only when this
+    /// panel's own operation reports, never on another operation's update.
     #[test]
-    fn vote_submission_overlay_clears_when_the_operation_finishes() {
+    fn own_operation_result_clears_staged_decisions_without_an_overlay() {
         let (ctx, _temp_dir) = offline_ctx();
         let mut screen = DPNSScreen::new(&ctx, VotesView::ToDecide);
-
-        screen.raise_vote_overlay(
-            ctx.egui_ctx(),
-            "Submitting the selected votes to Dash Platform…",
-        );
+        screen.selected_votes = vec![SelectedVote {
+            contested_name: "alpha".to_owned(),
+            vote_choice: ResourceVoteChoice::Lock,
+            end_time: None,
+        }];
+        screen.bulk_vote_handling_status = VoteHandlingStatus::CastingVotes;
         screen.pending_vote_operation = Some(DpnsVoteOperationId::from_bytes([7; 16]));
-        assert!(
-            crate::ui::components::progress_overlay::ProgressOverlay::has_global(ctx.egui_ctx())
-        );
 
         screen.display_task_result(BackendTaskSuccessResult::DpnsVoteOperationUpdated {
             network: ctx.network(),
             operation_id: DpnsVoteOperationId::from_bytes([8; 16]),
         });
-        assert!(
-            crate::ui::components::progress_overlay::ProgressOverlay::has_global(ctx.egui_ctx())
-        );
+        assert_eq!(screen.selected_votes.len(), 1);
+        assert!(screen.pending_vote_operation.is_some());
 
         screen
             .pending_scheduled_actions
@@ -2764,10 +2641,16 @@ mod tests {
             operation_id: DpnsVoteOperationId::from_bytes([7; 16]),
         });
 
+        assert!(screen.selected_votes.is_empty());
+        assert!(screen.pending_vote_operation.is_none());
+        assert!(matches!(
+            screen.bulk_vote_handling_status,
+            VoteHandlingStatus::NotStarted
+        ));
+        assert!(!screen.pending_scheduled_actions.is_empty());
         assert!(
             !crate::ui::components::progress_overlay::ProgressOverlay::has_global(ctx.egui_ctx())
         );
-        assert!(!screen.pending_scheduled_actions.is_empty());
     }
 
     #[test]
@@ -3069,16 +2952,10 @@ mod tests {
             screen.show_bulk_schedule_popup = true;
             screen.bulk_vote_handling_status = in_progress;
             screen.pending_vote_operation = Some(operation_id);
-            screen.raise_vote_overlay(ctx.egui_ctx(), "Submitting the selected votes…");
 
             screen.display_backend_task_error(&context, &error);
             screen.display_task_error(&error);
 
-            assert!(
-                !crate::ui::components::progress_overlay::ProgressOverlay::has_global(
-                    ctx.egui_ctx()
-                )
-            );
             assert_eq!(screen.pending_vote_operation, None);
             let VoteHandlingStatus::Failed(failure) = &screen.bulk_vote_handling_status else {
                 panic!(
@@ -3201,7 +3078,13 @@ mod tests {
                 reopened.ui(ui);
             });
         harness.run();
-        assert!(harness.query_by_label("Check again").is_some());
+        // VOTE-TC-099: the Needs attention row leads to the drawer's Check again.
+        assert!(
+            harness
+                .query_by_label("Needs attention: 1 vote is still being checked.")
+                .is_some()
+        );
+        assert!(harness.query_by_label("Show progress").is_some());
     }
 
     #[test]
@@ -3308,20 +3191,16 @@ mod tests {
                 .app_context
                 .insert_dpns_vote_operation(&mut operation, None)
                 .unwrap();
-            for subscreen in [VotesView::Scheduled, VotesView::ToDecide] {
-                let scheduled = subscreen == VotesView::Scheduled;
-                let mut reopened = DPNSScreen::new(&screen.app_context, subscreen);
-                let mut harness = egui_kittest::Harness::builder()
-                    .with_size(egui::vec2(1600.0, 1200.0))
-                    .build_ui(move |ui| {
-                        reopened.ui(ui);
-                    });
-                harness.run();
-                if scheduled {
-                    assert!(harness.query_by_label("Not submitted").is_some());
-                }
-                assert!(harness.query_by_label(reason).is_some());
-            }
+            // The reason lives on the Scheduled tab, which its own copy names.
+            let mut reopened = DPNSScreen::new(&screen.app_context, VotesView::Scheduled);
+            let mut harness = egui_kittest::Harness::builder()
+                .with_size(egui::vec2(1600.0, 1200.0))
+                .build_ui(move |ui| {
+                    reopened.ui(ui);
+                });
+            harness.run();
+            assert!(harness.query_by_label("Not submitted").is_some());
+            assert!(harness.query_by_label(reason).is_some());
         }
     }
 
@@ -3509,14 +3388,12 @@ mod tests {
         screen
             .pending_scheduled_actions
             .insert(key.clone(), dispatch.clone());
-        screen.raise_vote_overlay(&screen.app_context.egui_ctx().clone(), "Submitting…");
         let updated = BackendTaskSuccessResult::DpnsVoteOperationUpdated {
             network: screen.app_context.network(),
             operation_id: DpnsVoteOperationId::from_bytes([9; 16]),
         };
         screen.display_backend_task_result(&unrelated_dispatch, updated.clone());
         assert!(screen.pending_scheduled_actions.contains_key(&key));
-        assert!(screen.vote_overlay.is_some());
         let sweep = BackendTaskContext::ScheduledVoteSweep {
             network: screen.app_context.network(),
         };
@@ -3531,10 +3408,8 @@ mod tests {
         screen.display_backend_task_error(&sweep, &error);
         screen.display_task_error(&error);
         assert!(screen.pending_scheduled_actions.contains_key(&key));
-        assert!(screen.vote_overlay.is_some());
         screen.display_backend_task_result(&dispatch, updated);
         assert!(screen.pending_scheduled_actions.is_empty());
-        assert!(screen.vote_overlay.is_none());
         screen
             .pending_scheduled_actions
             .insert(key.clone(), dispatch.clone());
@@ -3843,38 +3718,50 @@ mod tests {
         );
     }
 
+    /// VOTE-TC-098: the drawer names each node and its typed status, and
+    /// offers only the valid action.
     #[test]
-    fn voting_ui_activity_identifies_each_node() {
+    fn progress_drawer_identifies_each_node_and_status() {
         use egui_kittest::kittest::Queryable;
-        let (mut screen, _temp_dir) = voting_ui_review_fixture();
+        let (screen, _temp_dir) = voting_ui_review_fixture();
         let plan = screen.build_review_plan().unwrap();
         let mut first = plan.aggregate.targets[0].clone();
         first.voter_alias = Some("node-one".to_owned());
         let mut second = first.clone();
         second.key.voter_id = Identifier::from([2; 32]);
         second.voter_alias = Some("node-two".to_owned());
-        let mut operation = DpnsVoteOperation::new(vec![first, second]);
+        let mut third = first.clone();
+        third.key.voter_id = Identifier::from([3; 32]);
+        third.voter_alias = Some("node-three".to_owned());
+        let mut operation = DpnsVoteOperation::new(vec![first, second, third]);
         operation.targets[0].status = DpnsVoteTargetStatus::Confirmed;
         operation.targets[1].status = DpnsVoteTargetStatus::Rejected;
-        screen
-            .app_context
+        operation.targets[2].status = DpnsVoteTargetStatus::Unconfirmed;
+        let context = screen.app_context.clone();
+        context
             .insert_dpns_vote_operation(&mut operation, None)
             .unwrap();
-        screen.vote_operations.refresh(&screen.app_context).unwrap();
-        let mut harness = egui_kittest::Harness::builder().build_ui(move |ui| {
-            screen.render_voting_activity(ui);
-        });
+        context.recompute_dpns_vote_attention();
+        let mut state = progress_drawer::DrawerState::new(0);
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1000.0, 800.0))
+            .build_ui(move |ui| {
+                progress_drawer::expand(ui.ctx());
+                progress_drawer::show(ui.ctx(), &context, &mut state);
+            });
         harness.run();
-        assert!(
-            harness
-                .query_by_label("node-one — alpha.dash — Abstain — Confirmed")
-                .is_some()
-        );
-        assert!(
-            harness
-                .query_by_label("node-two — alpha.dash — Abstain — Rejected")
-                .is_some()
-        );
+        for label in [
+            "Casting 3 votes · 2 done · 0 sending · 1 being checked",
+            "node-one · alpha.dash · Abstain",
+            "Voted",
+            "node-two · alpha.dash · Abstain",
+            "Rejected by Platform",
+            "Review again",
+            "Still being checked. Don't submit it again.",
+            "Check again",
+        ] {
+            assert!(harness.query_by_label(label).is_some(), "missing {label}");
+        }
     }
 
     #[test]

@@ -284,7 +284,6 @@ pub struct DpnsVoteOutcome {
     pub operation_id: DpnsVoteOperationId,
     pub target: DpnsVoteTarget,
     pub status: DpnsVoteTargetStatus,
-    pub transition_hash: Option<[u8; 32]>,
     pub failure: Option<DpnsVoteFailure>,
 }
 
@@ -315,7 +314,6 @@ impl DpnsVoteOperation {
                     operation_id: id,
                     target,
                     status,
-                    transition_hash: None,
                     failure: None,
                 }
             })
@@ -587,12 +585,53 @@ mod tests {
     /// VOTE-TC-073: the durable operation shape contains no signing material.
     #[test]
     fn serialized_operation_contains_identifiers_and_choices_only() {
-        let operation = DpnsVoteOperation::new(vec![target(4, 5, None, ResourceVoteChoice::Lock)]);
-        let serialized = serde_json::to_string(&operation).expect("serialize operation");
+        fn collect_keys(value: &serde_json::Value, keys: &mut std::collections::BTreeSet<String>) {
+            match value {
+                serde_json::Value::Object(object) => {
+                    for (key, nested) in object {
+                        keys.insert(key.clone());
+                        collect_keys(nested, keys);
+                    }
+                }
+                serde_json::Value::Array(items) => {
+                    items.iter().for_each(|item| collect_keys(item, keys));
+                }
+                _ => {}
+            }
+        }
 
-        assert!(!serialized.contains("private"));
-        assert!(!serialized.contains("secret"));
-        assert!(!serialized.contains("wif"));
+        let operation = DpnsVoteOperation::new(vec![target(4, 5, None, ResourceVoteChoice::Lock)]);
+        let serialized = serde_json::to_value(&operation).expect("serialize operation");
+        let mut keys = std::collections::BTreeSet::new();
+        collect_keys(&serialized, &mut keys);
+
+        // Any new persisted field — signing material included — must be
+        // reviewed here, whatever its name.
+        let expected: std::collections::BTreeSet<String> = [
+            // Serde tag of the upstream `ResourceVoteChoice`.
+            "$type",
+            "contested_name",
+            "created_at",
+            "current_choice",
+            "failure",
+            "id",
+            "key",
+            "network",
+            "no_op_count",
+            "operation_id",
+            "requested_choice",
+            "status",
+            "target",
+            "targets",
+            "timing",
+            "vote_poll_id",
+            "voter_alias",
+            "voter_id",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        assert_eq!(keys, expected);
     }
 
     #[test]

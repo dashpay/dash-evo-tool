@@ -46,7 +46,7 @@ state and submit typed drafts.
 - `VoteTiming { Now, Scheduled(TimestampMillis) }`
 - `DpnsVoteTargetStatus`: Scheduled, Queued, Submitting, Confirming, Confirmed,
   Unconfirmed, Rejected, FailedBeforeSubmission, NotApplied, Cancelled
-- `DpnsVoteOutcome { operation_id, target, status, transition_hash, failure }`
+- `DpnsVoteOutcome { operation_id, target, status, failure }`
 - `DpnsVoteFailure`: a pure domain enum, mapped structurally from backend
   errors. It never serializes `TaskError` or secrets.
 

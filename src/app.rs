@@ -1357,7 +1357,9 @@ pub enum AppAction {
 fn network_chooser_owns_task(context: &BackendTaskContext) -> bool {
     matches!(
         context,
-        BackendTaskContext::ClearNetworkDatabase | BackendTaskContext::UpdateBackupRetention
+        BackendTaskContext::ClearNetworkDatabase
+            | BackendTaskContext::UpdateBackupRetention
+            | BackendTaskContext::RestoreFromPreviousVersion
     )
 }
 
@@ -3007,6 +3009,23 @@ impl App for AppState {
                                 screen.display_backend_task_result(
                                     &context,
                                     BackendTaskSuccessResult::NetworkDatabaseCleared { network },
+                                );
+                            }
+                        }
+                        BackendTaskSuccessResult::PreviousVersionRestored(summary) => {
+                            let message_type = if summary.has_problems() {
+                                MessageType::Warning
+                            } else {
+                                MessageType::Success
+                            };
+                            MessageBanner::set_global(ctx, summary.user_message(), message_type);
+                            if let Some(screen) = self
+                                .main_screens
+                                .get_mut(&RootScreenType::RootScreenNetworkChooser)
+                            {
+                                screen.display_backend_task_result(
+                                    &context,
+                                    BackendTaskSuccessResult::PreviousVersionRestored(summary),
                                 );
                             }
                         }

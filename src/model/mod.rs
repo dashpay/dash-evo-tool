@@ -16,6 +16,7 @@ pub mod identity_key_protection;
 pub mod identity_name;
 pub mod key_input;
 pub mod legacy_recovery;
+pub mod legacy_restore;
 /// Stateless masternode/evonode input parsing and validation (ProTxHash,
 /// node type). Pure logic with no mcp/cli dependency — used by both the
 /// always-compiled GUI load form and the headless MCP tools, so it must never

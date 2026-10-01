@@ -34,6 +34,9 @@ impl AppContext {
     /// Submission preflight uses this so one operation queries only its own
     /// voters; ids that are not loaded masternodes are skipped and therefore
     /// absent from the results.
+    ///
+    /// TODO(dpns-voting): concurrent preflights each bound their own fan-out;
+    /// a shared concurrency limit across callers is deferred (PR #901 review).
     pub(crate) async fn refresh_dpns_vote_states_for(
         &self,
         sdk: &Sdk,

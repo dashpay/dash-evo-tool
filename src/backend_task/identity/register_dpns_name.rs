@@ -48,6 +48,13 @@ impl AppContext {
             return Err(TaskError::InvalidDpnsName { validation });
         }
 
+        // Authoritative re-check before any fee is spent: the name may have been
+        // taken, locked, or closed to new requests since the user chose it.
+        let availability = self.username_availability(sdk, &input.name_input).await?;
+        if !availability.allows_registration() {
+            return Err(TaskError::UsernameNoLongerAvailable { availability });
+        }
+
         let mut rng = StdRng::from_entropy();
         let dpns_contract = self.dpns_contract.clone();
 
@@ -271,6 +278,19 @@ impl AppContext {
         qualified_identity.identity = refreshed_identity;
 
         self.update_local_qualified_identity(&qualified_identity)?;
+
+        if outcome == crate::model::dpns::DpnsRegistrationOutcome::PendingCommunityVote
+            && let Err(error) = self.record_submitted_username_request(
+                sdk,
+                &qualified_identity.identity.id(),
+                &input.name_input,
+            )
+        {
+            tracing::warn!(
+                ?error,
+                "Submitted username request could not be stored locally"
+            );
+        }
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
         Ok(BackendTaskSuccessResult::RegisteredDpnsName {

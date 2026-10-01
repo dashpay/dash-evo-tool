@@ -195,9 +195,8 @@ pub struct AppContext {
     /// Cached settings to avoid repeated k/v reads + bincode decoding.
     /// Use RwLock to allow multiple readers but exclusive writers for cache invalidation.
     cached_settings: RwLock<Option<AppSettings>>,
-    /// Frame-safe pending DPNS names rebuilt after the contest cache changes.
-    pending_dpns_usernames:
-        RwLock<HashMap<Identifier, crate::model::contested_name::PendingUsername>>,
+    /// Frame-safe identity username state (requests, main name, seen outcomes).
+    pending_dpns_usernames: RwLock<contested_names_db::UsernameCache>,
     /// Shared app-level k/v store at `<data_dir>/det-app.sqlite`.
     /// Cross-network, global-scoped slot used for `AppSettings` and other
     /// DET-owned application data that must outlive a single network's
@@ -565,7 +564,7 @@ impl AppContext {
             identity_record_locks: Mutex::new(HashMap::new()),
             animations_disabled: AtomicBool::new(false),
             cached_settings: RwLock::new(None),
-            pending_dpns_usernames: RwLock::new(HashMap::new()),
+            pending_dpns_usernames: RwLock::new(Default::default()),
             app_kv,
             #[cfg(test)]
             det_kv_override: Mutex::new(None),

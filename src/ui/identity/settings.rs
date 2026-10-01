@@ -496,7 +496,7 @@ impl SettingsTab {
             // "Pending" pill instead of the register CTA.
             ui.horizontal(|ui| {
                 let name = crate::model::contested_name::sanitize_pending_username_for_display(
-                    &pending.name,
+                    &pending.label,
                 );
                 ui.label(
                     RichText::new(format!("@{name}"))

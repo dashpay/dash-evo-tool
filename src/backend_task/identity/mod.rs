@@ -1,6 +1,7 @@
 mod add_key_to_identity;
 mod auth_pubkey_resolve;
 mod discover_identities;
+mod dpns_usernames;
 mod load_identity;
 mod load_identity_by_dpns_name;
 mod load_identity_from_wallet;
@@ -546,6 +547,13 @@ pub enum IdentityTask {
     },
     RefreshIdentity(QualifiedIdentity),
     RefreshLoadedIdentitiesOwnedDPNSNames,
+    /// Check whether a username label can be requested right now.
+    CheckUsernameAvailability {
+        /// The bare label, as typed.
+        label: String,
+    },
+    /// Refresh the community-vote requests of every loaded identity.
+    RefreshMyUsernameRequests,
 }
 
 /// Returns the default key specifications for a new identity.
@@ -951,6 +959,10 @@ impl AppContext {
             IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames => {
                 Ok(self.refresh_loaded_identities_dpns_names(sender).await?)
             }
+            IdentityTask::CheckUsernameAvailability { label } => {
+                self.check_username_availability(sdk, label).await
+            }
+            IdentityTask::RefreshMyUsernameRequests => self.refresh_my_username_requests(sdk).await,
             IdentityTask::ProtectIdentityKeys {
                 identity_id,
                 password,

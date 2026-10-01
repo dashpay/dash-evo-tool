@@ -7,6 +7,7 @@ pub mod dashpay_derivation;
 pub(crate) mod data_migration;
 pub mod derived_identity_key;
 pub mod dpns;
+pub mod dpns_usernames;
 pub(crate) mod dpns_vote_schedule;
 pub mod dpns_voting;
 pub mod fee_estimation;

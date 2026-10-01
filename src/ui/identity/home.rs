@@ -28,7 +28,7 @@ use super::identity_hero_card::{HeroIdentityKind, IdentityHeroCard};
 use super::onboarding_checklist::{ChecklistAction, ChecklistStep, OnboardingChecklist};
 use crate::app::AppAction;
 use crate::context::AppContext;
-use crate::model::contested_name::PendingUsername;
+use crate::model::dpns_usernames::UsernameRequest;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::ScreenType;
 use crate::ui::identity::register_dpns_name_screen::RegisterDpnsNameSource;
@@ -279,7 +279,7 @@ pub fn render(
     // the onboarding checklist so a pending request is not mistaken for "no
     // username". Only meaningful when the identity owns no name yet; the cache
     // read is best-effort, so a failure simply omits the indicator.
-    let pending_username: Option<PendingUsername> =
+    let pending_username: Option<UsernameRequest> =
         app_context.pending_dpns_username_for_identity(&identity);
 
     // A tiny local closure that dispatches via the pure
@@ -393,7 +393,7 @@ pub fn render(
         } else if let Some(pending) = &pending_username {
             // Requested but not yet awarded — reflect the pending state instead
             // of nagging the user to pick a name they already chose.
-            checklist = checklist.with_pending_username(pending.name.clone());
+            checklist = checklist.with_pending_username(pending.label.clone());
         }
         if hero_has_social_profile {
             checklist = checklist.mark_complete(ChecklistStep::SetDisplayName);
@@ -570,7 +570,7 @@ fn build_hero(
     app_context: &Arc<AppContext>,
     qi: &QualifiedIdentity,
     profiles: &mut super::profile_cache::ProfileCache,
-    pending_username: Option<PendingUsername>,
+    pending_username: Option<UsernameRequest>,
 ) -> IdentityHeroCard {
     let kind: HeroIdentityKind = qi.identity_type.into();
     let balance_dash = format_credits_short(qi.identity.balance());

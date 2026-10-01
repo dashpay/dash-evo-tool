@@ -7,8 +7,8 @@
 use super::AppContext;
 use crate::backend_task::error::TaskError;
 use crate::model::dpns_voting::operator::{
-    AttentionSummary, ChangesLeft, ContestAttention, ListMembership, VotingNode, VotingNodeKind,
-    changes_left, contest_needs_decision,
+    AttentionSummary, ChangesLeft, ContestAttention, ListMembership, NodeVoteRow, VotingNode,
+    VotingNodeKind, changes_left, contest_needs_decision,
 };
 use crate::model::dpns_voting::{
     DpnsCurrentVoteState, DpnsVoteOperation, DpnsVoteOutcome, DpnsVotePollAvailability,
@@ -18,6 +18,7 @@ use crate::model::dpns_voting::{
 use crate::model::qualified_identity::IdentityType;
 use crate::utils::time::now_ms;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::platform::Identifier;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -175,6 +176,58 @@ impl AppContext {
             .collect())
     }
 
+    /// Every open contest with this node's proved choice and changes left,
+    /// soonest deadline first (VOTE-FR-076).
+    pub fn dpns_node_votes(&self, node_id: Identifier) -> Result<Vec<NodeVoteRow>, TaskError> {
+        let now = now_ms();
+        let contests: Vec<(crate::model::contested_name::ContestedName, Identifier)> = self
+            .ongoing_contested_names()?
+            .into_iter()
+            .filter(|contest| contest.end_time.is_none_or(|end| end > now))
+            .filter_map(|contest| {
+                let poll = self
+                    .dpns_vote_poll_id(&contest.normalized_contested_name)
+                    .ok()?;
+                Some((contest, poll))
+            })
+            .collect();
+        let states = self
+            .dpns_current_vote_states(node_id, contests.iter().map(|(_, poll)| *poll))
+            .unwrap_or_default();
+        let mut rows: Vec<NodeVoteRow> = contests
+            .into_iter()
+            .map(|(contest, poll)| {
+                let state = states
+                    .get(&poll)
+                    .copied()
+                    .unwrap_or(DpnsCurrentVoteState::Unavailable);
+                let choice = match state {
+                    DpnsCurrentVoteState::Available(choice) => choice,
+                    _ => None,
+                };
+                let contender_name = match choice {
+                    Some(ResourceVoteChoice::TowardsIdentity(id)) => contest
+                        .contestants
+                        .iter()
+                        .flatten()
+                        .find(|contender| contender.id == id)
+                        .map(|contender| contender.name.clone()),
+                    _ => None,
+                };
+                NodeVoteRow {
+                    contested_name: contest.normalized_contested_name,
+                    choice,
+                    contender_name,
+                    state_known: matches!(state, DpnsCurrentVoteState::Available(_)),
+                    changes: self.dpns_changes_left(node_id, poll, state),
+                    end_time: contest.end_time,
+                }
+            })
+            .collect();
+        rows.sort_by_key(|row| (row.end_time.unwrap_or(u64::MAX), row.contested_name.clone()));
+        Ok(rows)
+    }
+
     /// Changes left for one node × poll given its proved state.
     pub fn dpns_changes_left(
         &self,
@@ -330,6 +383,46 @@ mod tests {
         ];
         assert_eq!(unresolved_target_count(&operations), 2);
         assert_eq!(unresolved_target_count(&[]), 0);
+    }
+
+    /// VOTE-TC-094 (node detail half): the node's votes list every open
+    /// contest with its proved choice, contender and changes left.
+    #[test]
+    fn node_votes_list_open_contests_with_choice_and_changes() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let kv = crate::wallet_backend::DetKv::from_store(Arc::new(
+            crate::wallet_backend::kv_test_support::InMemoryKv::default(),
+        ));
+        let context = crate::context::test_support::test_app_context_with_kv(
+            temp_dir.path(),
+            Arc::new(kv.clone()),
+        );
+        context.set_det_kv_override_for_test(kv);
+        context.seed_dpns_contest_for_test("beta", Some(now_ms() + 600_000), false);
+        context.seed_dpns_contest_for_test("alpha", Some(now_ms() + 60_000), false);
+        let node = Identifier::from([1; 32]);
+        let alpha = context.dpns_vote_poll_id("alpha").unwrap();
+        let contender = ResourceVoteChoice::TowardsIdentity(Identifier::from([3; 32]));
+        context
+            .cache_confirmed_dpns_vote(node, alpha, contender)
+            .unwrap();
+
+        let rows = context.dpns_node_votes(node).unwrap();
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.contested_name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha", "beta"],
+            "soonest deadline first"
+        );
+        assert_eq!(rows[0].choice, Some(contender));
+        assert_eq!(rows[0].contender_name.as_deref(), Some("alpha"));
+        assert!(rows[0].state_known);
+        assert_eq!(
+            rows[0].changes,
+            ChangesLeft::Unknown,
+            "a proved vote this device never counted"
+        );
     }
 
     #[test]

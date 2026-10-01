@@ -152,6 +152,21 @@ pub fn node_exclusion(node: &VotingNode) -> Option<NodeExclusion> {
     }
 }
 
+/// One open contest as a node's detail page lists it (VOTE-FR-076).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeVoteRow {
+    pub contested_name: String,
+    /// `None` = not voted yet; `Some` = the proved current choice.
+    pub choice:
+        Option<dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice>,
+    /// Display name of the contender the choice goes to, when cached.
+    pub contender_name: Option<String>,
+    /// Whether the proved state could be read at all.
+    pub state_known: bool,
+    pub changes: ChangesLeft,
+    pub end_time: Option<u64>,
+}
+
 /// Vote changes a node has left on one contest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChangesLeft {

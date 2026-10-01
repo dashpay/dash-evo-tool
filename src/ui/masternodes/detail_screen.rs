@@ -22,6 +22,7 @@ use crate::backend_task::identity::{IdentityInputToLoad, IdentityLoadMode, Ident
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::context::identity_load_registry::{IdentityLoadPhase, IdentityLoadToken};
+use crate::model::dpns_voting::operator::{ListMembership, NodeVoteRow, time_left};
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::legacy_recovery::RecoveryItem;
 use crate::model::qualified_identity::{IdentityType, MasternodeKeyPresence, QualifiedIdentity};
@@ -31,6 +32,7 @@ use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::legacy_recovery_section::host_offer;
 use crate::ui::components::password_input::PasswordInput;
+use crate::ui::dpns::copy::{changes_left_label, ends_in_label};
 use crate::ui::identity::identity_picker_card::draw_type_badge;
 use crate::ui::identity::identity_pill::shorten_id;
 use crate::ui::identity::keys::key_info_screen::KeyInfoScreen;
@@ -43,6 +45,7 @@ use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::tokens::claim_tokens_screen::ClaimTokensScreen;
 use crate::ui::tokens::tokens_screen::IdentityTokenBasicInfo;
 use crate::ui::{MessageType, Screen, ScreenType};
+use crate::utils::time::now_ms;
 use crate::wallet_backend::IdentityKeyView;
 use crate::wallet_backend::secret_seam::SecretScheme;
 
@@ -94,6 +97,8 @@ pub enum DetailOutcome {
     Back,
     /// Push a reused screen / navigate. Boxed because `AppAction` is large.
     Forward(Box<AppAction>),
+    /// Open Votes with this node as the session's node set (VOTE-FR-076).
+    VoteWithNode(Identifier),
 }
 
 enum KeyInfoOpenMode {
@@ -123,6 +128,9 @@ pub struct MasternodeDetailView {
     /// The offer to restore keys this node left behind in the previous
     /// version's saved data (issue #889).
     recovery: LegacyRecoveryState,
+    /// Open contests with this node's choice, read when the view is built;
+    /// `None` when they could not be read.
+    node_votes: Option<Vec<NodeVoteRow>>,
 }
 
 #[cfg(test)]
@@ -181,6 +189,24 @@ impl MasternodeDetailView {
     }
 }
 
+/// The choice cell of a node vote row.
+fn node_vote_choice_label(row: &NodeVoteRow) -> String {
+    use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
+    match (row.state_known, row.choice) {
+        (false, _) => "Vote state unavailable".to_owned(),
+        (true, None) => "Not voted yet".to_owned(),
+        (true, Some(ResourceVoteChoice::Lock)) => "Lock".to_owned(),
+        (true, Some(ResourceVoteChoice::Abstain)) => "Abstain".to_owned(),
+        (true, Some(ResourceVoteChoice::TowardsIdentity(id))) => match &row.contender_name {
+            Some(name) => format!("Vote for {name}"),
+            None => format!(
+                "Vote for {id}",
+                id = shorten_id(&id.to_string(Encoding::Base58))
+            ),
+        },
+    }
+}
+
 impl MasternodeDetailView {
     pub(crate) fn accepts_recovery_result(
         &self,
@@ -194,6 +220,7 @@ impl MasternodeDetailView {
         let node_id_hex_full = identity.identity.id().to_string(Encoding::Hex);
         let node_id_short = shorten_id(&node_id_hex_full);
         let key_presence = identity.masternode_key_presence();
+        let identity_id = identity.identity.id();
         let recovery = LegacyRecoveryState::new(app_context, identity.identity.id());
         Self {
             app_context: app_context.clone(),
@@ -205,6 +232,12 @@ impl MasternodeDetailView {
             voter_key_prompt: None,
             pending_voter_key_load: None,
             recovery,
+            node_votes: app_context
+                .dpns_node_votes(identity_id)
+                .inspect_err(|error| {
+                    tracing::debug!(?error, "Could not list this node's votes");
+                })
+                .ok(),
         }
     }
 
@@ -367,8 +400,8 @@ impl MasternodeDetailView {
                 outcome = DetailOutcome::Forward(Box::new(action));
             }
             ui.add_space(12.0);
-            if let Some(action) = self.render_dpns_section(ui, dark_mode) {
-                outcome = DetailOutcome::Forward(Box::new(action));
+            if let Some(node) = self.render_dpns_section(ui, dark_mode) {
+                outcome = DetailOutcome::VoteWithNode(node);
             }
             ui.add_space(12.0);
             if let Some(action) = self.render_remove_section(ui, dark_mode) {
@@ -810,12 +843,56 @@ impl MasternodeDetailView {
         AppAction::AddScreen(Screen::KeyInfoScreen(screen))
     }
 
-    fn render_dpns_section(&mut self, ui: &mut Ui, _dark_mode: bool) -> Option<AppAction> {
-        ComponentStyles::add_secondary_button(ui, "DPNS Voting", ui.visuals().dark_mode)
-            .clicked()
-            .then(|| {
-                AppAction::SetMainScreen(crate::ui::RootScreenType::RootScreenDPNSActiveContests)
-            })
+    /// `This node's votes`, its masternode-list status and `Vote with this
+    /// node` (VOTE-FR-076). Returns the node to vote with when clicked.
+    fn render_dpns_section(&mut self, ui: &mut Ui, dark_mode: bool) -> Option<Identifier> {
+        let node = self.identity.identity.id();
+        ui.label(RichText::new("This node's votes").strong());
+        let membership = match self.app_context.masternode_list_membership(node) {
+            ListMembership::Listed => "In the masternode list.",
+            ListMembership::NotListed => "Not in the masternode list. Its votes don't count.",
+            ListMembership::Unknown => "Masternode list membership unknown.",
+        };
+        ui.label(RichText::new(membership).color(DashColors::text_secondary(dark_mode)));
+        match &self.node_votes {
+            None => {
+                ui.label("This node's votes could not be read. Refresh to try again.");
+            }
+            Some(rows) if rows.is_empty() => {
+                ui.label("There are no open name contests right now.");
+            }
+            Some(rows) => {
+                let now = now_ms();
+                egui::Grid::new(("node_votes", node))
+                    .num_columns(4)
+                    .striped(true)
+                    .show(ui, |ui| {
+                        for row in rows {
+                            ui.label(format!("{name}.dash", name = row.contested_name));
+                            ui.label(node_vote_choice_label(row));
+                            ui.label(if row.choice.is_some() {
+                                changes_left_label(row.changes)
+                            } else {
+                                String::new()
+                            });
+                            ui.label(match row.end_time {
+                                Some(end) => ends_in_label(time_left(end, now)),
+                                None => String::new(),
+                            });
+                            ui.end_row();
+                        }
+                    });
+            }
+        }
+        ui.add_space(6.0);
+        let can_vote = self.identity.can_cast_masternode_vote();
+        ui.add_enabled(
+            can_vote,
+            ComponentStyles::secondary_button("Vote with this node", dark_mode),
+        )
+        .disabled_tooltip("Add a voting key to vote with this node.")
+        .clicked()
+        .then_some(node)
     }
 
     fn render_remove_section(&mut self, ui: &mut Ui, _dark_mode: bool) -> Option<AppAction> {

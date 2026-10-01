@@ -890,41 +890,50 @@ impl DPNSScreen {
             .sum()
     }
 
+    /// Vote with one node for this session (VOTE-FR-076): To decide opens with
+    /// that node as the node set and no staged decisions carried over.
+    pub fn vote_with_node(&mut self, node: Identifier) {
+        self.selected_votes.clear();
+        self.selected_cards.clear();
+        self.view = VotesView::ToDecide;
+        // The node may have been loaded after this panel last read its nodes.
+        self.refresh_on_arrival();
+        self.apply_node_set(NodeSet::Custom(BTreeSet::from([node])));
+    }
+
     fn apply_node_set(&mut self, node_set: NodeSet) {
         self.node_set = node_set;
         self.rebuild_cards();
+    }
+
+    /// The `Vote with:` chip and its popover, when any node is loaded.
+    fn render_node_set_chip(&mut self, ui: &mut Ui) {
+        if self.voting_nodes.is_empty() {
+            return;
+        }
+        let picked =
+            node_set_picker::show(ui, &self.node_set, &self.resolved_nodes, &self.voting_nodes);
+        if picked.save_default {
+            match self.app_context.save_dpns_node_set(&self.node_set) {
+                Ok(()) => {
+                    self.app_context.recompute_dpns_vote_attention();
+                }
+                Err(error) => {
+                    MessageBanner::set_global(ui.ctx(), error.to_string(), MessageType::Error)
+                        .with_details(&error);
+                }
+            }
+        }
+        if let Some(node_set) = picked.changed {
+            self.apply_node_set(node_set);
+        }
     }
 
     /// Render To decide or Voted: node-set chip, filter, cards and the tray.
     fn render_active_contests(&mut self, ui: &mut Ui) {
         let dark_mode = ui.style().visuals.dark_mode;
         ui.horizontal(|ui| {
-            if !self.voting_nodes.is_empty() {
-                let picked = node_set_picker::show(
-                    ui,
-                    &self.node_set,
-                    &self.resolved_nodes,
-                    &self.voting_nodes,
-                );
-                if picked.save_default {
-                    match self.app_context.save_dpns_node_set(&self.node_set) {
-                        Ok(()) => {
-                            self.app_context.recompute_dpns_vote_attention();
-                        }
-                        Err(error) => {
-                            MessageBanner::set_global(
-                                ui.ctx(),
-                                error.to_string(),
-                                MessageType::Error,
-                            )
-                            .with_details(&error);
-                        }
-                    }
-                }
-                if let Some(node_set) = picked.changed {
-                    self.apply_node_set(node_set);
-                }
-            }
+            self.render_node_set_chip(ui);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let shortcuts = ui.button("Shortcuts");
                 egui::Popup::from_toggle_button_response(&shortcuts)
@@ -2640,6 +2649,7 @@ impl ScreenLike for DPNSScreen {
                 }
                 self.render_needs_attention(ui);
                 if self.active_contests.is_empty() {
+                    self.render_node_set_chip(ui);
                     action |= self.render_empty_view(ui);
                 } else {
                     self.render_active_contests(ui);

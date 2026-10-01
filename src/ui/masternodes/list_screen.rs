@@ -538,6 +538,12 @@ impl MasternodesScreen {
                 AppAction::None
             }
             DetailOutcome::Forward(action) => *action,
+            DetailOutcome::VoteWithNode(node) => {
+                self.view = MasternodesView::List;
+                self.votes.vote_with_node(node);
+                self.select_segment(MasternodesSegment::Votes);
+                AppAction::None
+            }
         };
         self.capture_removal_dispatch(&action);
         action

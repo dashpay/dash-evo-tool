@@ -713,10 +713,11 @@ fn detail_view_opens_from_card_with_sections_and_back() {
     });
 }
 
-/// The detail screen has one plain route to DPNS voting and no inline voting
-/// controls or node-prefilter state.
+/// VOTE-TC-091: the node detail lists the node's votes and its list status;
+/// `Vote with this node` opens Votes ▸ To decide with that node alone and no
+/// staged decision. Without a voting key the action is disabled.
 #[test]
-fn detail_dpns_voting_button_opens_active_contests() {
+fn detail_vote_with_this_node_opens_votes_for_that_node() {
     with_isolated_data_dir(|| {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
@@ -724,26 +725,41 @@ fn detail_dpns_voting_button_opens_active_contests() {
         let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
         let app_context = harness.state().current_app_context().clone();
         seed_node(&app_context, 0x95, "mn-vote-01", IdentityType::Masternode);
+        seed_node_with_voter_key(&app_context, 0x96, "mn-vote-02");
         activate_masternodes_tab(&mut harness, &app_context);
+
         harness.get_by_label("Open mn-vote-01").click();
         harness.run_steps(3);
-
-        assert!(harness.query_by_label("DPNS Voting").is_some());
+        assert!(harness.query_by_label("This node's votes").is_some());
         assert!(
             harness
-                .query_by_label_contains("DPNS name contests to vote on")
-                .is_none()
+                .query_by_label("Masternode list membership unknown.")
+                .is_some()
         );
-        assert!(harness.query_by_label("Add voting key").is_some());
-        assert!(harness.query_by_label_contains("Review ").is_none());
+        assert!(harness.query_by_label("DPNS Voting").is_none());
+        let keyless = harness.get_by_label("Vote with this node");
+        assert!(
+            keyless.accesskit_node().is_disabled(),
+            "a key-less node cannot vote"
+        );
 
-        harness.get_by_label("DPNS Voting").click();
+        harness.get_by_label("‹ All masternodes").click();
+        harness.run_steps(3);
+        harness.get_by_label("Open mn-vote-02").click();
+        harness.run_steps(3);
+        harness.get_by_label("Vote with this node").click();
         harness.run_steps(3);
         assert_eq!(
             harness.state().selected_main_screen,
             RootScreenType::RootScreenMasternodes
         );
         assert!(harness.query_by_label("To decide").is_some());
+        assert!(
+            harness
+                .query_by_label_contains("Vote with: Custom · 1 node")
+                .is_some(),
+            "the node-set chip names that single node"
+        );
     });
 }
 

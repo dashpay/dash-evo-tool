@@ -341,6 +341,25 @@ impl<C> Decode<C> for QualifiedIdentity {
     }
 }
 
+/// The sentence naming the wallet a signing key comes from.
+///
+/// Named wallets are listed by alias. A wallet that is on this device but has no
+/// name is described as such, so the user is not told to re-import a wallet they
+/// still have. Only when no associated wallet is loaded does the sentence say the
+/// wallet is missing.
+fn signing_wallet_sentence(names: &[String], unnamed_on_device: bool) -> String {
+    if !names.is_empty() {
+        format!(
+            "The key comes from the wallet {wallet_names}.",
+            wallet_names = names.join(", ")
+        )
+    } else if unnamed_on_device {
+        "The key comes from an unnamed wallet on this device.".to_string()
+    } else {
+        "The key comes from a wallet that is not on this device.".to_string()
+    }
+}
+
 /// A plain-language name for a key purpose, for user-facing messages.
 fn purpose_label(purpose: Purpose) -> &'static str {
     match purpose {
@@ -805,24 +824,26 @@ impl QualifiedIdentity {
             purpose = purpose_label(key.purpose()),
         );
         if !seed_hashes.is_empty() {
-            let mut names: Vec<String> = seed_hashes
+            let mut names: Vec<String> = Vec::new();
+            let mut unnamed_on_device = false;
+            for wallet in seed_hashes
                 .iter()
                 .filter_map(|hash| self.associated_wallets.get(hash))
-                .filter_map(|wallet| wallet.read().ok()?.initial_alias.clone())
-                .filter(|alias| !alias.is_empty())
-                .collect();
+            {
+                let alias = wallet
+                    .read()
+                    .ok()
+                    .and_then(|wallet| wallet.initial_alias.clone())
+                    .filter(|alias| !alias.is_empty());
+                match alias {
+                    Some(alias) => names.push(alias),
+                    None => unnamed_on_device = true,
+                }
+            }
             names.sort();
             names.dedup();
-            let wallet_sentence = if names.is_empty() {
-                "The key comes from a wallet that is not on this device.".to_string()
-            } else {
-                format!(
-                    "The key comes from the wallet {wallet_names}.",
-                    wallet_names = names.join(", ")
-                )
-            };
             text.push(' ');
-            text.push_str(&wallet_sentence);
+            text.push_str(&signing_wallet_sentence(&names, unnamed_on_device));
         }
         ProtocolError::Generic(text)
     }
@@ -2200,6 +2221,24 @@ mod key_resolution_tests {
         assert!(
             !message.contains(&hex::encode(seed_hash)),
             "the raw seed hash stays out of the banner: {message}"
+        );
+    }
+
+    /// An unnamed wallet that is loaded must not be reported as missing from
+    /// this device; only an absent wallet is.
+    #[test]
+    fn signing_wallet_sentence_distinguishes_unnamed_from_absent() {
+        assert_eq!(
+            signing_wallet_sentence(&[], true),
+            "The key comes from an unnamed wallet on this device."
+        );
+        assert_eq!(
+            signing_wallet_sentence(&[], false),
+            "The key comes from a wallet that is not on this device."
+        );
+        assert_eq!(
+            signing_wallet_sentence(&["Main".to_string()], true),
+            "The key comes from the wallet Main."
         );
     }
 }

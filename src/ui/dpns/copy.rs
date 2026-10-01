@@ -4,7 +4,7 @@
 //! so no caller concatenates fragments.
 
 use crate::model::dpns_voting::composer::SkipReason;
-use crate::model::dpns_voting::operator::{ChangesLeft, TimeLeft};
+use crate::model::dpns_voting::operator::{ChangesLeft, NodeExclusion, TimeLeft};
 use crate::model::dpns_voting::progress::{NeedsAttention, ProgressCounts};
 use crate::model::dpns_voting::{DpnsVoteFailure, DpnsVoteTargetStatus};
 
@@ -267,6 +267,38 @@ pub fn needs_attention_line(attention: NeedsAttention) -> String {
     format!("Needs attention: {parts}.", parts = parts.join(" · "))
 }
 
+/// One part of the History `Your nodes voted` cell, e.g.
+/// `Vote for Zed (24 nodes, 51 votes)`.
+pub fn nodes_voted_part(choice: &str, nodes: usize, votes: u32) -> String {
+    match (nodes, votes) {
+        (1, 1) => format!("{choice} (1 node, 1 vote)"),
+        (1, votes) => format!("{choice} (1 node, {votes} votes)"),
+        (nodes, votes) => format!("{choice} ({nodes} nodes, {votes} votes)"),
+    }
+}
+
+/// A node's voting weight on its detail page (MN-003).
+pub fn voting_weight_label(weight: u32) -> String {
+    match weight {
+        1 => "Voting weight: 1 vote".to_owned(),
+        weight => format!("Voting weight: {weight} votes"),
+    }
+}
+
+/// History outcome of an awarded contest (VOTE-FR-087).
+pub fn went_to_label(name: Option<&str>, short_id: &str) -> String {
+    match name {
+        Some(name) => format!("Went to {name} ({short_id})"),
+        None => format!("Went to {short_id}"),
+    }
+}
+
+/// History outcome of a locked contest.
+pub const LOCKED_FOR_GOOD: &str = "Locked for good, no one can register it";
+
+/// History cell when none of your nodes voted on a finished contest.
+pub const NODES_DID_NOT_VOTE: &str = "Your nodes didn't vote.";
+
 /// Expander label of a scheduled decision's node list (VOTE-FR-088).
 pub fn scheduled_nodes_label(nodes: usize) -> String {
     match nodes {
@@ -311,6 +343,25 @@ pub fn skipped_header(count: usize) -> String {
     match count {
         1 => "Skipped: 1 vote".to_owned(),
         count => format!("Skipped: {count} votes"),
+    }
+}
+
+/// Confirm line for nodes in the set that cannot vote at all (VOTE-FR-080).
+pub fn excluded_nodes_line(count: usize, exclusion: NodeExclusion) -> String {
+    match (count, exclusion) {
+        (1, NodeExclusion::NotInMasternodeList) => {
+            "1 node not used: it is not in the masternode list, so its votes don't count."
+                .to_owned()
+        }
+        (count, NodeExclusion::NotInMasternodeList) => format!(
+            "{count} nodes not used: they are not in the masternode list, so their votes don't count."
+        ),
+        (1, NodeExclusion::NoVotingKey) => {
+            "1 node not used: no voting key is loaded for it.".to_owned()
+        }
+        (count, NodeExclusion::NoVotingKey) => {
+            format!("{count} nodes not used: no voting key is loaded for them.")
+        }
     }
 }
 
@@ -382,6 +433,26 @@ pub fn changes_left_label(changes: ChangesLeft) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// History outcome and node-vote wording (frame V4).
+    #[test]
+    fn history_copy_names_the_outcome_and_votes() {
+        use super::*;
+        assert_eq!(went_to_label(Some("zed"), "AbC1…"), "Went to zed (AbC1…)");
+        assert_eq!(went_to_label(None, "AbC1…"), "Went to AbC1…");
+        assert_eq!(voting_weight_label(4), "Voting weight: 4 votes");
+        assert_eq!(voting_weight_label(1), "Voting weight: 1 vote");
+        assert_eq!(
+            nodes_voted_part("Vote for Zed", 24, 51),
+            "Vote for Zed (24 nodes, 51 votes)"
+        );
+        assert_eq!(nodes_voted_part("Lock", 1, 1), "Lock (1 node, 1 vote)");
+        assert_eq!(nodes_voted_part("Lock", 1, 4), "Lock (1 node, 4 votes)");
+        assert_eq!(
+            excluded_nodes_line(2, NodeExclusion::NotInMasternodeList),
+            "2 nodes not used: they are not in the masternode list, so their votes don't count."
+        );
+    }
+
     use super::*;
 
     /// VOTE-TC-085 (copy half).

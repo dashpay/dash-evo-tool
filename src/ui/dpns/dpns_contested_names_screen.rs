@@ -26,9 +26,10 @@ use crate::model::dpns_voting::composer::{
     SkipReason, compose,
 };
 use crate::model::dpns_voting::contest_timing::{contest_durations, urgency_window};
+use crate::model::dpns_voting::operator::NodeExclusion;
 use crate::model::dpns_voting::operator::{
-    ChangesLeft, NodeSet, ResolvedNodeSet, VotingNode, VotingNodeKind, relative_schedule_preset,
-    time_left,
+    ChangesLeft, ChoiceTally, NodeSet, ResolvedNodeSet, VotingNode, VotingNodeKind,
+    relative_schedule_preset, tally_node_choices, time_left,
 };
 use crate::model::dpns_voting::progress::needs_attention;
 use crate::model::dpns_voting::{
@@ -44,12 +45,14 @@ use crate::ui::components::utc_schedule_input::UtcScheduleInput;
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::dpns::contest_card::node_label;
 use crate::ui::dpns::contest_card::{CardEvent, CardView};
+use crate::ui::dpns::copy::excluded_nodes_line;
 use crate::ui::dpns::copy::needs_attention_line;
 use crate::ui::dpns::copy::tray_label;
 use crate::ui::dpns::copy::{
-    before_end_phrase, changes_left_label, confirm_button_label, confirm_change_warning,
-    confirm_title, confirm_transactions_line, decision_row, ends_in_label, relative_schedule_label,
-    scheduled_nodes_label, skipped_header, skipped_reason_line,
+    LOCKED_FOR_GOOD, NODES_DID_NOT_VOTE, before_end_phrase, changes_left_label,
+    confirm_button_label, confirm_change_warning, confirm_title, confirm_transactions_line,
+    decision_row, ends_in_label, nodes_voted_part, relative_schedule_label, scheduled_nodes_label,
+    skipped_header, skipped_reason_line, went_to_label,
 };
 use crate::ui::dpns::node_set_picker;
 use crate::ui::dpns::progress_drawer;
@@ -518,6 +521,9 @@ pub struct DPNSScreen {
     /// Cards ticked for a bulk decision, by contest name.
     selected_cards: BTreeSet<String>,
     focused_card: Option<String>,
+    /// History `Your nodes voted` per finished contest; absent when no node's
+    /// vote is known on this device.
+    history_votes: BTreeMap<String, Vec<ChoiceTally>>,
     /// Whether the contest list has keyboard focus for shortcuts.
     list_focused: bool,
 }
@@ -609,6 +615,7 @@ impl DPNSScreen {
             relative_schedule_labels: BTreeMap::new(),
             selected_cards: BTreeSet::new(),
             focused_card: None,
+            history_votes: BTreeMap::new(),
             list_focused: false,
         };
         screen.rebuild_cards();
@@ -667,6 +674,8 @@ impl DPNSScreen {
         self.cards.clear();
         self.selected_cards.clear();
         self.focused_card = None;
+        self.list_focused = false;
+        self.history_votes.clear();
     }
 
     // ---------------------------
@@ -811,6 +820,87 @@ impl DPNSScreen {
 
     /// Rebuild the card view-model from contests, proved state, the journal and
     /// the node set. Call after any of them changes; rendering only reads it.
+    /// Every loaded node's proved choice on each finished contest, tallied.
+    /// A contest is listed only when at least one node's vote is known.
+    fn collect_history_votes(&self) -> BTreeMap<String, Vec<ChoiceTally>> {
+        let finished: Vec<(String, Identifier)> = self
+            .contested_names
+            .lock_recover()
+            .iter()
+            .filter(|contest| contest.awarded_to.is_some() || contest.state == ContestState::Locked)
+            .filter_map(|contest| {
+                let poll = self
+                    .app_context
+                    .dpns_vote_poll_id(&contest.normalized_contested_name)
+                    .ok()?;
+                Some((contest.normalized_contested_name.clone(), poll))
+            })
+            .collect();
+        if finished.is_empty() {
+            return BTreeMap::new();
+        }
+        let states: Vec<(VotingNodeKind, BTreeMap<Identifier, DpnsCurrentVoteState>)> = self
+            .voting_nodes
+            .iter()
+            .filter_map(|node| {
+                let states = self
+                    .app_context
+                    .dpns_current_vote_states(node.id, finished.iter().map(|(_, poll)| *poll))
+                    .inspect_err(|error| {
+                        tracing::debug!(
+                            ?error,
+                            "Could not read a node's votes on finished contests"
+                        );
+                    })
+                    .ok()?;
+                Some((node.kind, states))
+            })
+            .collect();
+        finished
+            .into_iter()
+            .filter_map(|(name, poll)| {
+                let known: Vec<(VotingNodeKind, Option<ResourceVoteChoice>)> = states
+                    .iter()
+                    .filter_map(|(kind, states)| match states.get(&poll) {
+                        Some(DpnsCurrentVoteState::Available(choice)) => Some((*kind, *choice)),
+                        _ => None,
+                    })
+                    .collect();
+                if known.is_empty() {
+                    return None;
+                }
+                let tallies = tally_node_choices(
+                    known
+                        .into_iter()
+                        .filter_map(|(kind, choice)| choice.map(|choice| (kind, choice))),
+                );
+                Some((name, tallies))
+            })
+            .collect()
+    }
+
+    /// The History `Your nodes voted` cell; empty when nothing is known.
+    fn history_votes_cell(&self, contested_name: &str) -> String {
+        match self.history_votes.get(contested_name) {
+            None => String::new(),
+            Some(tallies) if tallies.is_empty() => NODES_DID_NOT_VOTE.to_owned(),
+            Some(tallies) => tallies
+                .iter()
+                .map(|tally| {
+                    nodes_voted_part(
+                        &vote_choice_label(
+                            tally.choice,
+                            self.candidate_name(contested_name, tally.choice),
+                        ),
+                        tally.nodes,
+                        tally.weight,
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; "),
+        }
+    }
+
     pub(crate) fn rebuild_cards(&mut self) {
         let network = self.app_context.network();
         if self.node_set_network != Some(network) {
@@ -867,6 +957,7 @@ impl DPNSScreen {
             .collect();
         sort_by_time_left(&mut cards);
         self.cards = cards;
+        self.history_votes = self.collect_history_votes();
         let names: BTreeSet<&str> = self.cards.iter().map(VoteCard::name).collect();
         self.selected_cards
             .retain(|name| names.contains(name.as_str()));
@@ -1407,6 +1498,7 @@ impl DPNSScreen {
                 .column(Column::auto().resizable(true)) // Ended Time
                 .column(Column::auto().resizable(true)) // Last Updated
                 .column(Column::auto().resizable(true)) // Awarded To
+                .column(Column::remainder()) // Your nodes voted
                 .header(30.0, |mut header| {
                     header.col(|ui| {
                         if ui.button("Name").clicked() {
@@ -1427,6 +1519,9 @@ impl DPNSScreen {
                         if ui.button("Outcome").clicked() {
                             self.toggle_sort(SortColumn::AwardedTo);
                         }
+                    });
+                    header.col(|ui| {
+                        ui.label(RichText::new("Your nodes voted").strong());
                     });
                 })
                 .body(|mut body| {
@@ -1521,17 +1616,30 @@ impl DPNSScreen {
                                                     .iter()
                                                     .find(|contestant| contestant.id == identifier)
                                             })
-                                            .map(|contestant| contestant.name.clone())
-                                            .unwrap_or_else(|| short_identifier(identifier));
-                                        ui.label(format!("Won by {winner}."));
+                                            .map(|contestant| contestant.name.as_str());
+                                        ui.label(went_to_label(
+                                            winner,
+                                            &short_identifier(identifier),
+                                        ));
+                                        if ui.small_button("Copy ID").clicked() {
+                                            ui.ctx()
+                                                .copy_text(identifier.to_string(Encoding::Base58));
+                                        }
                                     }
                                     ContestState::Locked => {
                                         ui.label(
-                                            RichText::new("Locked; no name was awarded.")
+                                            RichText::new(LOCKED_FOR_GOOD)
                                                 .color(DashColors::text_primary(dark_mode)),
                                         );
                                     }
                                 }
+                            });
+                            row.col(|ui| {
+                                ui.label(
+                                    self.history_votes_cell(
+                                        &contested_name.normalized_contested_name,
+                                    ),
+                                );
                             });
                         });
                     }
@@ -1539,7 +1647,6 @@ impl DPNSScreen {
         });
     }
 
-    /// Show the Scheduled Votes table
     /// Scheduled view grouped by decision (VOTE-FR-088): one row per name ×
     /// choice × time with an expandable node list carrying per-node status
     /// and actions.
@@ -1917,6 +2024,20 @@ impl DPNSScreen {
                     ui.label(RichText::new(skipped_header(plan.aggregate.skipped.len())).strong());
                     for (reason, count) in skipped {
                         ui.label(skipped_reason_line(count, reason));
+                    }
+                }
+                for exclusion in [
+                    NodeExclusion::NotInMasternodeList,
+                    NodeExclusion::NoVotingKey,
+                ] {
+                    let count = self
+                        .resolved_nodes
+                        .excluded
+                        .iter()
+                        .filter(|(_, reason)| *reason == exclusion)
+                        .count();
+                    if count > 0 {
+                        ui.label(excluded_nodes_line(count, exclusion));
                     }
                 }
             }
@@ -3769,6 +3890,51 @@ mod tests {
                 .query_by_label("Your nodes: 1 not voted · 1 voted Lock")
                 .is_some()
         );
+    }
+
+    /// VOTE-FR-087 (History): `Your nodes voted` tallies proved choices with
+    /// weight, says when no node voted, and stays blank when nothing is known.
+    #[tokio::test]
+    async fn history_cell_tallies_node_votes() {
+        let (ctx, _dir) = kv_ctx();
+        let mut evonode = masternode_identity(1, "evo", true, ctx.network());
+        evonode.identity_type = crate::model::qualified_identity::IdentityType::Evonode;
+        let masternode = masternode_identity(2, "mn", true, ctx.network());
+        let finished = |name: &str| ContestedName {
+            normalized_contested_name: name.to_owned(),
+            contestants: None,
+            locked_votes: None,
+            abstain_votes: None,
+            awarded_to: None,
+            end_time: Some(1),
+            state: ContestState::Locked,
+            last_updated: None,
+            my_votes: BTreeMap::new(),
+        };
+        let voted = ctx.dpns_vote_poll_id("voted").unwrap();
+        ctx.seed_proved_dpns_votes_for_test(
+            evonode.identity.id(),
+            BTreeMap::from([(voted.to_buffer(), ResourceVoteChoice::Lock)]),
+        )
+        .await
+        .unwrap();
+        ctx.seed_proved_dpns_votes_for_test(
+            masternode.identity.id(),
+            BTreeMap::from([(voted.to_buffer(), ResourceVoteChoice::Lock)]),
+        )
+        .await
+        .unwrap();
+        let mut screen = DPNSScreen::new(&ctx, VotesView::History);
+        *screen.contested_names.lock_recover() =
+            vec![finished("voted"), finished("skipped"), finished("unknown")];
+        screen.voting_identities = vec![evonode, masternode];
+        screen.rebuild_cards();
+        assert_eq!(
+            screen.history_votes_cell("voted"),
+            "Lock (2 nodes, 5 votes)"
+        );
+        assert_eq!(screen.history_votes_cell("skipped"), NODES_DID_NOT_VOTE);
+        assert_eq!(screen.history_votes_cell("absent"), "");
     }
 
     /// Two open contests a single voting node has not voted on yet.

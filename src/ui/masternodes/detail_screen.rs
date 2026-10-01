@@ -22,7 +22,9 @@ use crate::backend_task::identity::{IdentityInputToLoad, IdentityLoadMode, Ident
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::context::identity_load_registry::{IdentityLoadPhase, IdentityLoadToken};
-use crate::model::dpns_voting::operator::{ListMembership, NodeVoteRow, time_left};
+use crate::model::dpns_voting::operator::{
+    EVONODE_VOTE_WEIGHT, ListMembership, MASTERNODE_VOTE_WEIGHT, NodeVoteRow, time_left,
+};
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::legacy_recovery::RecoveryItem;
 use crate::model::qualified_identity::{IdentityType, MasternodeKeyPresence, QualifiedIdentity};
@@ -32,7 +34,7 @@ use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::legacy_recovery_section::host_offer;
 use crate::ui::components::password_input::PasswordInput;
-use crate::ui::dpns::copy::{changes_left_label, ends_in_label};
+use crate::ui::dpns::copy::{changes_left_label, ends_in_label, voting_weight_label};
 use crate::ui::identity::identity_picker_card::draw_type_badge;
 use crate::ui::identity::identity_pill::shorten_id;
 use crate::ui::identity::keys::key_info_screen::KeyInfoScreen;
@@ -456,6 +458,14 @@ impl MasternodeDetailView {
                 ui.ctx().copy_text(self.node_id_hex_full.clone());
             }
             draw_type_badge(ui, self.badge_label(), dark_mode);
+            let weight = match self.identity.identity_type {
+                IdentityType::Evonode => EVONODE_VOTE_WEIGHT,
+                _ => MASTERNODE_VOTE_WEIGHT,
+            };
+            ui.label(
+                RichText::new(voting_weight_label(weight))
+                    .color(DashColors::text_secondary(dark_mode)),
+            );
         });
         let balance = format_credits_as_dash(self.identity.identity.balance());
         ui.label(

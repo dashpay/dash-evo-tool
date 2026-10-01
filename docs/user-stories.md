@@ -790,7 +790,7 @@ As a user, I want to see each identity's usernames and their state so that I kno
 - Row actions: Copy username, Show QR code, Show as main. Usernames can't be deleted, so no delete action is offered.
 - The identity switcher and "See all identities" show each identity's usernames. There is no separate cross-identity usernames table.
 
-### DPN-003: See name contests my nodes can vote on [Gap]
+### DPN-003: See name contests my nodes can vote on [Implemented]
 **Persona:** Priya
 
 As a masternode operator, I want to see the name contests that need a decision from my nodes so that I can vote before they end.
@@ -800,7 +800,7 @@ As a masternode operator, I want to see the name contests that need a decision f
 - Contest refresh remains available if saved voting progress cannot be recovered.
 - Tools no longer has a DPNS entry.
 
-### DPN-004: View past name contests [Gap]
+### DPN-004: View past name contests [Implemented]
 **Persona:** Priya
 
 As a power user, I want to review past contests so that I can see outcomes and how my nodes voted.
@@ -819,7 +819,7 @@ As a masternode operator, I want to make one decision per contest and have all m
 - Unavailable voting information leaves the affected nodes out and offers Refresh voting. Other nodes can still vote.
 - If a first vote becomes a change during preflight, the confirm reopens with the change warning.
 
-### DPN-006: Schedule votes [Gap]
+### DPN-006: Schedule votes [Implemented]
 **Persona:** Priya
 
 As a masternode operator, I want to schedule votes so that they are cast before the deadline without my watching.
@@ -830,7 +830,7 @@ As a masternode operator, I want to schedule votes so that they are cast before 
 - Missed votes (more than 120 seconds past due) explain why and offer Cast now, Edit, and Remove.
 - Completed scheduled and mixed batches retain the latest 256 operations per network, without discarding unresolved votes or bringing removed schedules back.
 
-### DPN-007: Vote with many nodes and contests at once [Gap]
+### DPN-007: Vote with many nodes and contests at once [Implemented]
 **Persona:** Priya
 
 As a masternode operator, I want to choose which nodes vote and decide many contests quickly so that I do not repeat work per node or per contest.
@@ -891,7 +891,7 @@ As a user waiting for a community vote, I want to see how my request is doing an
 - Outcomes (won, went to someone else, locked) are announced once with a banner and stay in Profile for 30 days.
 - Power users whose nodes can vote on the contest get a link to Masternodes ▸ Votes for that name.
 
-### DPN-013: Know from anywhere that a vote is needed [Gap]
+### DPN-013: Know from anywhere that a vote is needed [Implemented]
 **Persona:** Priya
 
 As a masternode operator, I want the app to tell me when my nodes have contests to decide so that I never miss a deadline.
@@ -900,7 +900,7 @@ As a masternode operator, I want the app to tell me when my nodes have contests 
 - The Masternodes nav item shows a badge, and Masternodes opens on Votes when something needs a decision.
 - A background refresh keeps the signal current: every 30 minutes on Mainnet and every 3 minutes on Testnet while voting nodes are loaded.
 
-### DPN-014: See my voting weight and remaining changes [Gap]
+### DPN-014: See my voting weight and remaining changes [Implemented]
 **Persona:** Priya
 
 As a masternode operator, I want to see how much my votes matter and how many changes each node has left so that I use my votes well.
@@ -908,7 +908,7 @@ As a masternode operator, I want to see how much my votes matter and how many ch
 - Cards state my node-set weight and, when it can change the leader, say so.
 - Node detail lists the node's votes with changes left and its masternode-list status. A node removed from the masternode list is excluded, with the explanation that its votes don't count.
 
-### DPN-015: Keep working while votes are cast [Gap]
+### DPN-015: Keep working while votes are cast [Implemented]
 **Persona:** Priya
 
 As a masternode operator, I want votes to go out in the background with per-node progress so that a large batch doesn't block the app.
@@ -1726,7 +1726,7 @@ As a masternode operator, I want a card list of my loaded masternodes showing ty
 - An empty state explains what a masternode identity is for and offers a primary "Load a masternode" action when none are loaded.
 - The Masternodes tab and its nav entry are visible only at the Detailed view interface mode or above; dropping below Detailed view while the tab is active falls back to the Identities screen.
 
-### MN-003: Open a masternode and vote [Gap]
+### MN-003: Open a masternode and vote [Implemented]
 **Persona:** Priya
 
 As a masternode operator, I want to open a node, see its votes, and vote with just that node when needed, so that I can fulfil and check my node's governance role.

@@ -152,13 +152,43 @@ pub fn node_exclusion(node: &VotingNode) -> Option<NodeExclusion> {
     }
 }
 
+/// Your nodes' votes on one contest grouped by choice, heaviest first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChoiceTally {
+    pub choice: ResourceVoteChoice,
+    pub nodes: usize,
+    pub weight: u32,
+}
+
+/// Group nodes' proved choices by choice with summed vote weight; ties break
+/// by node count (History, VOTE-FR-087).
+pub fn tally_node_choices(
+    votes: impl IntoIterator<Item = (VotingNodeKind, ResourceVoteChoice)>,
+) -> Vec<ChoiceTally> {
+    let mut tallies: Vec<ChoiceTally> = Vec::new();
+    for (kind, choice) in votes {
+        match tallies.iter_mut().find(|tally| tally.choice == choice) {
+            Some(tally) => {
+                tally.nodes += 1;
+                tally.weight += node_weight(kind);
+            }
+            None => tallies.push(ChoiceTally {
+                choice,
+                nodes: 1,
+                weight: node_weight(kind),
+            }),
+        }
+    }
+    tallies.sort_by(|a, b| b.weight.cmp(&a.weight).then(b.nodes.cmp(&a.nodes)));
+    tallies
+}
+
 /// One open contest as a node's detail page lists it (VOTE-FR-076).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeVoteRow {
     pub contested_name: String,
     /// `None` = not voted yet; `Some` = the proved current choice.
-    pub choice:
-        Option<dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice>,
+    pub choice: Option<ResourceVoteChoice>,
     /// Display name of the contender the choice goes to, when cached.
     pub contender_name: Option<String>,
     /// Whether the proved state could be read at all.
@@ -536,6 +566,34 @@ mod tests {
     }
 
     /// VOTE-TC-092: influence shows when the set's weight reaches the margin.
+    /// History aggregate: choices group with weight, heaviest first.
+    #[test]
+    fn node_choices_tally_by_weight() {
+        let zed = ResourceVoteChoice::TowardsIdentity(Identifier::from([9; 32]));
+        let tallies = tally_node_choices([
+            (VotingNodeKind::Masternode, ResourceVoteChoice::Lock),
+            (VotingNodeKind::Masternode, ResourceVoteChoice::Lock),
+            (VotingNodeKind::Evonode, zed),
+            (VotingNodeKind::Masternode, zed),
+        ]);
+        assert_eq!(
+            tallies,
+            vec![
+                ChoiceTally {
+                    choice: zed,
+                    nodes: 2,
+                    weight: 5
+                },
+                ChoiceTally {
+                    choice: ResourceVoteChoice::Lock,
+                    nodes: 2,
+                    weight: 2
+                },
+            ]
+        );
+        assert!(tally_node_choices([]).is_empty());
+    }
+
     #[test]
     fn influence_needs_weight_at_least_the_margin() {
         let zed = Identifier::from([1; 32]);

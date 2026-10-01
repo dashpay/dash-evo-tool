@@ -1301,6 +1301,18 @@ mod tests {
                 .has_failed_scheduled_vote,
             "the node card must report the failure of the same operation the other sites prefer"
         );
+
+        let (_temp, context) = seed();
+        let rows =
+            crate::ui::state::dpns_vote_operations::DpnsVoteOperationSnapshot::load(&context)
+                .scheduled_vote_rows(&[]);
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.journal_target.as_ref().map(|(id, _)| *id))
+                .collect::<Vec<_>>(),
+            vec![Some(newer_id)],
+            "Scheduled Votes must show the same operation the other sites prefer"
+        );
     }
 
     /// VOTE-TC-040/041: one unresolved target cannot be inserted twice.

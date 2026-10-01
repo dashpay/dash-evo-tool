@@ -7,8 +7,8 @@ use crate::backend_task::contested_names::ScheduledDPNSVote;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::dpns_voting::{
-    DpnsVoteFailure, DpnsVoteOperation, DpnsVoteOperationId, DpnsVoteTargetKey,
-    DpnsVoteTargetStatus, VoteTiming,
+    DpnsVoteAuthorityRank, DpnsVoteFailure, DpnsVoteOperation, DpnsVoteOperationId,
+    DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming, dpns_vote_authority_rank,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -115,9 +115,9 @@ impl DpnsVoteOperationSnapshot {
     ) -> Vec<ScheduledDpnsVoteRow> {
         let mut journal_rows = BTreeMap::<
             (dash_sdk::platform::Identifier, String),
-            ((u64, usize), ScheduledDpnsVoteRow),
+            (DpnsVoteAuthorityRank, ScheduledDpnsVoteRow),
         >::new();
-        for (operation_index, operation) in self.operations.iter().enumerate() {
+        for operation in &self.operations {
             for outcome in &operation.targets {
                 let VoteTiming::Scheduled(timestamp) = outcome.target.timing else {
                     continue;
@@ -126,7 +126,8 @@ impl DpnsVoteOperationSnapshot {
                     outcome.target.key.voter_id,
                     outcome.target.contested_name.clone(),
                 );
-                let rank = (operation.created_at, operation_index);
+                let rank =
+                    dpns_vote_authority_rank(operation.created_at, operation.id, outcome.status);
                 if journal_rows
                     .get(&pair)
                     .is_some_and(|(current_rank, _)| *current_rank > rank)
@@ -316,6 +317,35 @@ mod tests {
         );
     }
 
+    /// A schedule that still holds its lock outranks a newer terminal record
+    /// for the same target, as everywhere else that picks an authority.
+    #[test]
+    fn scheduled_rows_prefer_the_lock_holder_over_newer_history() {
+        let pending = scheduled_operation(
+            10,
+            DpnsVoteTargetStatus::Scheduled,
+            ResourceVoteChoice::Lock,
+            100,
+        );
+        let newer_rejected = scheduled_operation(
+            20,
+            DpnsVoteTargetStatus::Rejected,
+            ResourceVoteChoice::Abstain,
+            200,
+        );
+        let mut snapshot = DpnsVoteOperationSnapshot::default();
+        snapshot.replace(vec![pending.clone(), newer_rejected]);
+
+        let rows = snapshot.scheduled_vote_rows(&[]);
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].journal_target.as_ref().map(|(id, _)| *id),
+            Some(pending.id)
+        );
+        assert_eq!(rows[0].status, DpnsVoteTargetStatus::Scheduled);
+    }
+
     fn scheduled_operation(
         created_at: u64,
         status: DpnsVoteTargetStatus,
@@ -391,21 +421,25 @@ mod tests {
         assert!(!rows[0].vote.executed_successfully);
     }
 
+    /// Operations stamped in the same millisecond break the tie on the
+    /// operation id, not on persisted order — the rule every other site uses.
     #[test]
-    fn scheduled_rows_use_later_persisted_order_when_created_times_match() {
-        let first = scheduled_operation(
+    fn scheduled_rows_break_created_time_ties_on_the_operation_id() {
+        let mut first = scheduled_operation(
             10,
             DpnsVoteTargetStatus::Rejected,
             ResourceVoteChoice::Lock,
             100,
         );
-        let second = scheduled_operation(
+        first.id = DpnsVoteOperationId::from_bytes([2; 16]);
+        let mut second = scheduled_operation(
             10,
             DpnsVoteTargetStatus::NotApplied,
             ResourceVoteChoice::Abstain,
             200,
         );
-        let expected_id = second.id;
+        second.id = DpnsVoteOperationId::from_bytes([1; 16]);
+        let expected_id = first.id;
         let mut snapshot = DpnsVoteOperationSnapshot::default();
         snapshot.replace(vec![first, second]);
 
@@ -416,8 +450,8 @@ mod tests {
             rows[0].journal_target.as_ref().map(|(id, _)| *id),
             Some(expected_id)
         );
-        assert_eq!(rows[0].status, DpnsVoteTargetStatus::NotApplied);
-        assert_eq!(rows[0].vote.unix_timestamp, 200);
+        assert_eq!(rows[0].status, DpnsVoteTargetStatus::Rejected);
+        assert_eq!(rows[0].vote.unix_timestamp, 100);
     }
 
     /// Removing a scheduled vote cancels its journal target. The row must then

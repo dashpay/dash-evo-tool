@@ -374,9 +374,7 @@ impl IdentityHubScreen {
             BreadcrumbEffect::AddWallet => {
                 AppAction::SetMainScreen(RootScreenType::RootScreenWalletsBalances)
             }
-            // The bulk-create flow is not wired yet; route to the single-create
-            // screen so the dev entry is functional in the interim.
-            BreadcrumbEffect::AddIdentityCreate | BreadcrumbEffect::CreateTestIdentities => {
+            BreadcrumbEffect::AddIdentityCreate => {
                 AppAction::AddScreen(crate::ui::Screen::AddNewIdentityScreen(
                     super::add_new_identity_screen::AddNewIdentityScreen::new_with_wallet(
                         &self.app_context,
@@ -428,9 +426,7 @@ impl ScreenLike for IdentityHubScreen {
             },
             vec![(
                 "Add",
-                DesiredAppAction::Menu(breadcrumb_switcher::add_identity_menu_items(
-                    self.app_context.user_role(),
-                )),
+                DesiredAppAction::Menu(breadcrumb_switcher::add_identity_menu_items()),
             )],
         );
 

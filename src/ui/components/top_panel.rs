@@ -453,7 +453,7 @@ pub fn apply_global_nav_effect(
         GlobalNavEffect::AddWallet => {
             AppAction::SetMainScreen(RootScreenType::RootScreenWalletsBalances)
         }
-        GlobalNavEffect::AddIdentityCreate | GlobalNavEffect::CreateTestIdentities => {
+        GlobalNavEffect::AddIdentityCreate => {
             AppAction::AddScreen(ScreenType::AddNewIdentity.create_screen(app_context))
         }
         GlobalNavEffect::AddIdentityLoad => {

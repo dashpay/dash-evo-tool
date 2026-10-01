@@ -567,6 +567,11 @@ fn ui_polish_many_identities_picker_scroll_reaches_add_card() {
         );
         add.click();
         harness.run_steps(5);
+        // The card opens its create/load menu; picking an item opens the screen.
+        harness
+            .get_by_role_and_label(egui::accesskit::Role::Button, "Load an existing identity")
+            .click();
+        harness.run_steps(5);
         assert!(
             !harness.state().screen_stack.is_empty(),
             "Add card must be clickable after scrolling"

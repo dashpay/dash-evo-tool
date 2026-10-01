@@ -12,7 +12,6 @@
 
 use crate::app::{AppAction, DesiredAppAction, ToolbarMenuItem};
 use crate::context::AppContext;
-use crate::model::user_role::UserRole;
 use crate::ui::RootScreenType;
 use crate::ui::components::global_nav_switcher::{self, GlobalNavEffect};
 use crate::ui::state::global_nav::{IdentityPillScope, PageNavSpec, PillConsumption};
@@ -41,8 +40,6 @@ pub enum BreadcrumbEffect {
     AddIdentityCreate,
     /// "Add another identity" → load an existing identity.
     AddIdentityLoad,
-    /// Dev-mode: bulk-create test identities.
-    CreateTestIdentities,
 }
 
 /// The hub's page-nav spec: `Identities` segment-1 linking to the hub root, an
@@ -71,7 +68,6 @@ fn map_effect(effect: GlobalNavEffect) -> BreadcrumbEffect {
         GlobalNavEffect::AddWallet => BreadcrumbEffect::AddWallet,
         GlobalNavEffect::AddIdentityCreate => BreadcrumbEffect::AddIdentityCreate,
         GlobalNavEffect::AddIdentityLoad => BreadcrumbEffect::AddIdentityLoad,
-        GlobalNavEffect::CreateTestIdentities => BreadcrumbEffect::CreateTestIdentities,
     }
 }
 
@@ -79,15 +75,13 @@ fn map_effect(effect: GlobalNavEffect) -> BreadcrumbEffect {
 const ADD_IDENTITY_CREATE_COMMAND: &str = "IdentityHubAddCreate";
 /// `AppAction::Custom` command emitted by the "Load an existing identity" item.
 const ADD_IDENTITY_LOAD_COMMAND: &str = "IdentityHubAddLoad";
-/// `AppAction::Custom` command emitted by the Power-user test-identities item.
-const CREATE_TEST_IDENTITIES_COMMAND: &str = "IdentityHubCreateTestIdentities";
 
 /// Items of the hub's "Add" menu, shared by the top-bar dropdown and the
 /// picker's "Add a new identity" card so both offer the same choices as the
 /// identity pill's dropdown. Each item emits an `AppAction::Custom` command the
 /// hub maps back via [`add_identity_command_effect`].
-pub(crate) fn add_identity_menu_items(role: UserRole) -> Vec<ToolbarMenuItem> {
-    let mut items = vec![
+pub(crate) fn add_identity_menu_items() -> Vec<ToolbarMenuItem> {
+    vec![
         ToolbarMenuItem {
             label: "Create a new identity",
             action: DesiredAppAction::Custom(ADD_IDENTITY_CREATE_COMMAND.into()),
@@ -100,16 +94,7 @@ pub(crate) fn add_identity_menu_items(role: UserRole) -> Vec<ToolbarMenuItem> {
             enabled: true,
             tooltip: "Load an identity you already own, by its ID or from your wallet.",
         },
-    ];
-    if role.at_least(UserRole::Power) {
-        items.push(ToolbarMenuItem {
-            label: "Create multiple test identities",
-            action: DesiredAppAction::Custom(CREATE_TEST_IDENTITIES_COMMAND.into()),
-            enabled: true,
-            tooltip: "Create identities for testing.",
-        });
-    }
-    items
+    ]
 }
 
 /// Map an action produced by an [`add_identity_menu_items`] entry to the hub
@@ -121,7 +106,6 @@ pub(crate) fn add_identity_command_effect(action: &AppAction) -> Option<Breadcru
     match command.as_str() {
         ADD_IDENTITY_CREATE_COMMAND => Some(BreadcrumbEffect::AddIdentityCreate),
         ADD_IDENTITY_LOAD_COMMAND => Some(BreadcrumbEffect::AddIdentityLoad),
-        CREATE_TEST_IDENTITIES_COMMAND => Some(BreadcrumbEffect::CreateTestIdentities),
         _ => None,
     }
 }
@@ -182,39 +166,19 @@ mod tests {
             map_effect(GlobalNavEffect::AddWallet),
             BreadcrumbEffect::AddWallet
         );
-        assert_eq!(
-            map_effect(GlobalNavEffect::CreateTestIdentities),
-            BreadcrumbEffect::CreateTestIdentities
-        );
     }
 
-    /// Everyday users get create + load; the dev bulk-create entry is gated
-    /// to Power users and up, matching the identity pill's dropdown.
+    /// The Add menu offers exactly create and load, both enabled, matching
+    /// the identity pill's dropdown.
     #[test]
-    fn add_menu_items_follow_the_user_role() {
-        let labels = |role| {
-            add_identity_menu_items(role)
-                .into_iter()
-                .map(|item| item.label)
-                .collect::<Vec<_>>()
-        };
+    fn add_menu_offers_create_and_load() {
+        let items = add_identity_menu_items();
+        let labels: Vec<_> = items.iter().map(|item| item.label).collect();
         assert_eq!(
-            labels(UserRole::Everyday),
+            labels,
             ["Create a new identity", "Load an existing identity"]
         );
-        assert_eq!(
-            labels(UserRole::Power),
-            [
-                "Create a new identity",
-                "Load an existing identity",
-                "Create multiple test identities"
-            ]
-        );
-        assert!(
-            add_identity_menu_items(UserRole::Developer)
-                .iter()
-                .all(|item| item.enabled)
-        );
+        assert!(items.iter().all(|item| item.enabled));
     }
 
     /// Every add-menu item maps back to its hub effect; unrelated actions do not.
@@ -224,7 +188,7 @@ mod tests {
             DesiredAppAction::Custom(command) => AppAction::Custom(command.clone()),
             other => panic!("unexpected menu action {other:?}"),
         };
-        let effects: Vec<_> = add_identity_menu_items(UserRole::Developer)
+        let effects: Vec<_> = add_identity_menu_items()
             .iter()
             .map(|item| add_identity_command_effect(&ctx_free_action(item)))
             .collect();
@@ -233,7 +197,6 @@ mod tests {
             [
                 Some(BreadcrumbEffect::AddIdentityCreate),
                 Some(BreadcrumbEffect::AddIdentityLoad),
-                Some(BreadcrumbEffect::CreateTestIdentities),
             ]
         );
         assert_eq!(

@@ -163,7 +163,7 @@ fn show_add_menu(
     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
     .frame(egui::Frame::popup(ui.style()).fill(DashColors::popup_fill(dark_mode)))
     .show(|ui| {
-        for item in add_identity_menu_items(app_context.user_role()) {
+        for item in add_identity_menu_items() {
             let clicked = ui
                 .add_enabled_ui(item.enabled, |ui| {
                     ComponentStyles::add_button(ui, egui::Button::new(item.label))

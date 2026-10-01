@@ -865,7 +865,7 @@ impl ScreenLike for AddKeyScreen {
             ui,
             &self.app_context,
             vec![
-                ("Identities", AppAction::GoToMainScreen),
+                ("Identities", AppAction::OpenIdentityPicker),
                 ("Add Key", AppAction::None),
             ],
             vec![],

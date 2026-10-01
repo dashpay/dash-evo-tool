@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- Avatar decoding rejects images wider or taller than 2048 pixels, including cached images,
+  and applies a decoder allocation budget. Rejected images show the existing fallback.
+- Identity labels strip control and bidirectional formatting characters while retaining
+  display name, username, and identity ID priority.
+
+- Avatar downloads reject private and internal destinations, including DNS answers
+  and redirects, and cannot bypass destination checks through system proxies.
+
 - Identity imports with a password now encrypt private keys before their first
   storage write. Interrupted new imports retain protected entries, and retries
   preserve existing keys when a supplied password or key conflicts. A durable
@@ -181,6 +189,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - DPNS scheduled retries keep the selected choice, and simultaneous scheduled votes share fresh voting information without losing their due status. If a first vote becomes a vote change before submission, DET asks for another review. Unavailable voting information stays visible with a refresh action, successful mixed batches report both cast and scheduled votes, and contest refresh remains available when saved voting progress cannot be recovered.
 - DPNS voting now explains missed automatic schedules and unreadable saved progress, with manual recovery actions. Completed scheduled and mixed voting history is bounded without discarding unresolved votes or restoring removed schedules. Adding another node's voting key gives a key-specific error.
+
+- Token detail headers sort rows by identity name, identity ID, or numeric balance;
+  unchecked balances stay last in either direction.
+
+- Profile saves confirm their exact submitted fields even after leaving the hub.
+  Delayed profile loads and saves cannot replace newer data; drafts survive a
+  refresh after an obsolete completion.
+
+- Refresh identity recipient names without clearing typed searches, show cached profile avatars while refreshing, and keep delayed profile results tied to their owning screen request.
+
+- Identity cards fit the window, display available profile avatars, and scroll
+  to every identity and the add/load actions. Clickable identity controls show a
+  link cursor. The Identities breadcrumb opens all User identities; choosing a
+  wallet in Identities filters the picker to that wallet. The All wallets
+  identity dropdown includes both wallet-backed and imported User identities.
+- Avatar downloads stop once they exceed 5 MiB, including responses without a
+  declared size, instead of buffering the entire response first.
 
 - **Safer guidance for wallet data this version cannot open**: the message no
   longer tells you to remove your local wallet data, which could have deleted
@@ -622,6 +647,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- User identities use their DashPay Display name on cards, navigation, and selectors, falling back to a username or shortened identity ID. The identity-list tool reports cached profile display names for User identities and preserves administrative node names.
+
 - Wallet registries and live names now share one WalletContext across the UI,
   MCP tools and password prompts. Metadata writes are serialized while wallet
   names and password prompts continue to use the last committed snapshot.
@@ -814,6 +841,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   note-level breakdown is unavailable in this release.
 
 ### Removed
+
+- Local names for User identities in profile, create, load, and owned-name screens. Existing records remain readable; node administrative names and contact nicknames remain available.
 
 - Proof log screen (internal developer tool, not part of the public feature set).
   Proof-log records now go only to the `tracing` log target — both the persisted

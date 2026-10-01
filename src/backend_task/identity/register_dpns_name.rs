@@ -277,6 +277,10 @@ impl AppContext {
             }
         }
 
+        // Name an unnamed node after its main username, never a pending request.
+        let main_username = self.main_username(&identity);
+        identity.initialize_node_alias(None, main_username.as_deref());
+
         let fee_result = match dash_sdk::platform::Identity::fetch_by_identifier(sdk, identity_id)
             .await
         {

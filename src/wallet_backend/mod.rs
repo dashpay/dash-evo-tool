@@ -2331,7 +2331,13 @@ impl WalletBackend {
                 (
                     id,
                     secret_access::PromptMeta {
-                        alias: Some(qi.to_string()),
+                        alias: Some(
+                            qi.display_name_label(
+                                self.dashpay_view()
+                                    .cached_display_name(&qi.identity.id())
+                                    .as_deref(),
+                            ),
+                        ),
                         password_hint,
                     },
                 )

@@ -141,7 +141,9 @@ fn get_username_names_the_identity_without_a_picker() {
         ));
         assert!(
             harness
-                .query_by_label_contains("For Alice Novak. People will use it to find and pay you.")
+                // A User identity is named by its profile, then its main username;
+                // the legacy device-only alias is never shown.
+                .query_by_label_contains("For alice. People will use it to find and pay you.")
                 .is_some()
         );
         assert!(harness.query_by_label("Get another username").is_some());

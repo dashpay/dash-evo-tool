@@ -418,8 +418,12 @@ impl AddressInput {
     }
 
     /// Provide identity references for Identity-type autocomplete.
-    pub fn with_identities(mut self, identities: &[QualifiedIdentity]) -> Self {
-        self.extract_identity_entries(identities);
+    pub fn with_identities(
+        mut self,
+        app_context: &crate::context::AppContext,
+        identities: &[QualifiedIdentity],
+    ) -> Self {
+        self.extract_identity_entries(app_context, identities);
         self
     }
 
@@ -518,10 +522,14 @@ impl AddressInput {
     }
 
     /// Update identity data after initialization.
-    pub fn set_identities(&mut self, identities: &[QualifiedIdentity]) {
+    pub fn set_identities(
+        &mut self,
+        app_context: &crate::context::AppContext,
+        identities: &[QualifiedIdentity],
+    ) {
         self.all_entries
             .retain(|e| e.address_kind != AddressKind::Identity);
-        self.extract_identity_entries(identities);
+        self.extract_identity_entries(app_context, identities);
     }
 
     /// Update shielded balance data after initialization.
@@ -600,13 +608,16 @@ impl AddressInput {
         }
     }
 
-    fn extract_identity_entries(&mut self, identities: &[QualifiedIdentity]) {
+    fn extract_identity_entries(
+        &mut self,
+        app_context: &crate::context::AppContext,
+        identities: &[QualifiedIdentity],
+    ) {
         for qi in identities {
             let id = qi.identity.id();
             let id_str = id.to_string(Encoding::Base58);
-            // Loaded identities list their main username first.
-            let dpns_name = qi.dpns_names.first().map(|n| n.name.clone());
-            let name_label = dpns_name.clone().or_else(|| qi.alias.clone());
+            let dpns_name = app_context.main_username(qi);
+            let name_label = Some(app_context.identity_display_label(qi));
             self.all_entries.push(AddressEntry {
                 address_string: id_str,
                 address_kind: AddressKind::Identity,
@@ -2245,7 +2256,9 @@ mod tests {
             status: IdentityStatus::PendingCreation,
             network: Network::Testnet,
         };
-        AddressInput::new(Network::Testnet).with_identities(&[qi])
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        AddressInput::new(Network::Testnet).with_identities(&context, &[qi])
     }
 
     #[test]
@@ -2463,14 +2476,19 @@ mod tests {
     }
 
     #[test]
-    fn identity_entry_uses_alias_when_no_dpns() {
+    fn identity_entry_ignores_legacy_alias_without_username() {
         let input = identity_input(Some("bob-alias"), None);
         let entry = input
             .all_entries
             .iter()
             .find(|e| e.address_kind == AddressKind::Identity)
             .expect("identity entry present");
-        assert_eq!(entry.name_label.as_deref(), Some("bob-alias"));
+        assert_eq!(
+            entry.name_label,
+            Some(crate::model::identity_name::shorten_id(
+                &entry.address_string
+            ))
+        );
         assert_eq!(entry.wallet_name, None);
     }
 
@@ -2486,14 +2504,19 @@ mod tests {
     }
 
     #[test]
-    fn identity_entry_has_no_name_when_neither() {
+    fn identity_entry_uses_short_id_without_profile_or_username() {
         let input = identity_input(None, None);
         let entry = input
             .all_entries
             .iter()
             .find(|e| e.address_kind == AddressKind::Identity)
             .expect("identity entry present");
-        assert_eq!(entry.name_label, None);
+        assert_eq!(
+            entry.name_label,
+            Some(crate::model::identity_name::shorten_id(
+                &entry.address_string
+            ))
+        );
     }
 
     // --- Dynamic hint legend ---

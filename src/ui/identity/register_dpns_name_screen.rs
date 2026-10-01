@@ -30,7 +30,6 @@ use crate::ui::components::{
     MessageBanner, OptionOverlayExt, OverlayConfig, OverlayHandle, ResultBannerExt,
 };
 use crate::ui::helpers::{TransactionType, add_key_chooser_with_doc_type};
-use crate::ui::identity::identity_pill::display_label;
 use crate::ui::identity::username_copy::{
     self, AvailabilityRow, Tone, USERNAME_RULES, availability_line, offers_suggestions,
 };
@@ -39,7 +38,6 @@ use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::IdentityPublicKey;
 use eframe::egui::{Context, Frame, Margin};
 use egui::{RichText, Ui};
@@ -166,14 +164,7 @@ impl RegisterDpnsNameScreen {
     fn identity_label(&self) -> String {
         self.selected_qualified_identity
             .as_ref()
-            .map(|qi| {
-                display_label(
-                    crate::model::dpns_usernames::user_alias(qi),
-                    None,
-                    self.app_context.main_username(qi).as_deref(),
-                    &qi.identity.id().to_string(Encoding::Base58),
-                )
-            })
+            .map(|qi| self.app_context.identity_display_label(qi))
             .unwrap_or_default()
     }
 
@@ -807,10 +798,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
                 ("Get a username", AppAction::None),
             ],
             RegisterDpnsNameSource::Identities => vec![
-                (
-                    "Identities",
-                    AppAction::SetMainScreen(RootScreenType::RootScreenIdentityHub),
-                ),
+                ("Identities", AppAction::OpenIdentityPicker),
                 (identity_label.as_str(), AppAction::PopScreen),
                 ("Get a username", AppAction::None),
             ],

@@ -11,6 +11,8 @@ const MAX_IMAGE_SIZE: usize = 5 * 1024 * 1024;
 pub enum AvatarProcessingError {
     #[error("The picture URL must use HTTPS. Enter an HTTPS URL and try again.")]
     HttpsRequired,
+    #[error("The picture URL must point to a public server. Choose a different picture URL.")]
+    PrivateDestination,
     #[error("The picture URL is too long. Use a URL with at most 2048 characters.")]
     UrlTooLong,
     #[error("The picture could not be downloaded. Check its URL and try again.")]
@@ -78,7 +80,7 @@ pub fn calculate_avatar_hash(image_bytes: &[u8]) -> [u8; 32] {
 /// 4. Generate 64-bit hash based on comparisons
 pub fn calculate_dhash_fingerprint(image_bytes: &[u8]) -> Result<[u8; 8], AvatarProcessingError> {
     // Load the image from bytes
-    let img = image::load_from_memory(image_bytes)?;
+    let img = crate::model::avatar::decode_avatar(image_bytes)?;
 
     // Convert to grayscale and resize to 9x8
     let grayscale = img.grayscale();
@@ -233,13 +235,74 @@ pub async fn fetch_image_bytes(url: &str) -> Result<Vec<u8>, AvatarProcessingErr
     }
 
     // Create HTTP client with timeout
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()?;
+    let client = avatar_client_builder().build()?;
 
     // Send GET request
-    let response = client.get(url).send().await?.error_for_status()?;
+    let request = client.get(url).build()?;
+    validate_avatar_destination(request.url())?;
+    let response = client.execute(request).await?.error_for_status()?;
+    validate_image_response(response).await
+}
 
+fn avatar_client_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
+        .https_only(true)
+        // A proxy could resolve the destination itself and bypass the checked resolver.
+        .no_proxy()
+        .dns_resolver(Arc::new(PublicAvatarResolver))
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if let Err(error) = validate_avatar_destination(attempt.url()) {
+                attempt.error(error)
+            } else {
+                reqwest::redirect::Policy::limited(10).redirect(attempt)
+            }
+        }))
+        .timeout(std::time::Duration::from_secs(30))
+}
+
+fn validate_avatar_destination(url: &reqwest::Url) -> Result<(), AvatarProcessingError> {
+    if url.scheme() != "https" {
+        return Err(AvatarProcessingError::HttpsRequired);
+    }
+    // Literal IPs bypass reqwest's DNS resolver, including canonicalized numeric IPv4 URLs.
+    if let Some(host) = url.host_str()
+        && let Ok(ip) = host.trim_matches(['[', ']']).parse::<std::net::IpAddr>()
+        && !crate::model::avatar::is_public_avatar_address(ip)
+    {
+        return Err(AvatarProcessingError::PrivateDestination);
+    }
+    Ok(())
+}
+
+struct PublicAvatarResolver;
+
+impl reqwest::dns::Resolve for PublicAvatarResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        Box::pin(async move {
+            let addresses = tokio::net::lookup_host((name.as_str(), 0)).await?.collect();
+            public_avatar_addresses(addresses).map_err(Into::into)
+        })
+    }
+}
+
+fn public_avatar_addresses(
+    addresses: Vec<std::net::SocketAddr>,
+) -> Result<reqwest::dns::Addrs, AvatarProcessingError> {
+    if addresses.is_empty()
+        || addresses
+            .iter()
+            .any(|address| !crate::model::avatar::is_public_avatar_address(address.ip()))
+    {
+        return Err(AvatarProcessingError::PrivateDestination);
+    }
+    // Return exactly the checked addresses to the connector: no second DNS lookup
+    // that could rebind a previously public name to an internal destination.
+    Ok(Box::new(addresses.into_iter()))
+}
+
+async fn validate_image_response(
+    mut response: reqwest::Response,
+) -> Result<Vec<u8>, AvatarProcessingError> {
     // Check content type
     if let Some(content_type) = response.headers().get("content-type") {
         let content_type_str = content_type.to_str()?;
@@ -260,18 +323,19 @@ pub async fn fetch_image_bytes(url: &str) -> Result<Vec<u8>, AvatarProcessingErr
         }
     }
 
-    // Download the image bytes
-    let bytes = response.bytes().await?;
-
-    // Verify actual size
-    if bytes.len() > MAX_IMAGE_SIZE {
-        return Err(AvatarProcessingError::ImageTooLarge);
+    // Enforce the limit while reading, including responses without Content-Length.
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if chunk.len() > MAX_IMAGE_SIZE - bytes.len() {
+            return Err(AvatarProcessingError::ImageTooLarge);
+        }
+        bytes.extend_from_slice(&chunk);
     }
 
     // Try to validate it's actually an image by attempting to load it
-    image::load_from_memory(&bytes)?;
+    crate::model::avatar::decode_avatar(&bytes)?;
 
-    Ok(bytes.to_vec())
+    Ok(bytes)
 }
 
 /// Process an avatar image: fetch, validate, and calculate hashes
@@ -293,6 +357,213 @@ pub async fn process_avatar(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn avatar_dimension_limits_cover_download_validation_and_fingerprint() {
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        image::RgbImage::new(2049, 1)
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
+        let bytes = encoded.into_inner();
+        let (response, server) = chunked_image_response(bytes.clone(), true).await;
+        let result = validate_image_response(response).await;
+        server.await.unwrap();
+        assert!(matches!(
+            result,
+            Err(AvatarProcessingError::InvalidImage(
+                image::ImageError::Limits(_)
+            ))
+        ));
+        assert!(matches!(
+            calculate_dhash_fingerprint(&bytes),
+            Err(AvatarProcessingError::InvalidImage(
+                image::ImageError::Limits(_)
+            ))
+        ));
+        // The PNG header alone must trigger the limit, before any pixel payload is read.
+        assert!(matches!(
+            calculate_dhash_fingerprint(&bytes[..33]),
+            Err(AvatarProcessingError::InvalidImage(
+                image::ImageError::Limits(_)
+            ))
+        ));
+    }
+
+    #[tokio::test]
+    async fn avatar_private_literal_is_rejected_before_connecting() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            fetch_image_bytes(&format!(
+                "https://{}/avatar.png",
+                listener.local_addr().unwrap()
+            )),
+        )
+        .await;
+        assert!(
+            result.is_ok_and(|result| result.is_err()),
+            "private destinations must fail before opening a connection"
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), listener.accept())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn avatar_client_rejects_http_before_connecting() {
+        let error = avatar_client_builder()
+            .no_proxy()
+            .build()
+            .unwrap()
+            .get("http://127.0.0.1:1/avatar.png")
+            .send()
+            .await
+            .unwrap_err();
+        assert!(
+            error.is_builder(),
+            "insecure URLs must be rejected before connecting: {error:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn avatar_dns_rejects_localhost_and_rebinding_answers() {
+        use reqwest::dns::Resolve;
+        assert!(
+            PublicAvatarResolver
+                .resolve("localhost".parse().unwrap())
+                .await
+                .is_err()
+        );
+        let public = "93.184.216.34:0".parse().unwrap();
+        let private = "127.0.0.1:0".parse().unwrap();
+        assert_eq!(
+            public_avatar_addresses(vec![public])
+                .unwrap()
+                .collect::<Vec<_>>(),
+            vec![public]
+        );
+        assert!(public_avatar_addresses(vec![public, private]).is_err());
+        assert!(
+            public_avatar_addresses(vec![private]).is_err(),
+            "a subsequent private answer must fail closed"
+        );
+    }
+
+    #[tokio::test]
+    async fn avatar_redirects_reject_private_literals_dns_and_http() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        for destination in [
+            "https://127.0.0.1:1/avatar",
+            "https://localhost:1/avatar",
+            "http://example.com/avatar",
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0; 4096];
+                assert!(stream.read(&mut request).await.unwrap() > 0);
+                stream.write_all(format!("HTTP/1.1 302 Found\r\nLocation: {destination}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+            });
+            // Only the synthetic origin uses HTTP; exercise the production redirect
+            // policy and checked DNS resolver without a test TLS dependency or keys.
+            let error = avatar_client_builder()
+                .https_only(false)
+                .build()
+                .unwrap()
+                .get(format!("http://{address}/redirect"))
+                .send()
+                .await
+                .unwrap_err();
+            let mut source: Option<&(dyn std::error::Error + 'static)> = Some(&error);
+            let mut denied = false;
+            while let Some(error) = source {
+                denied |= error
+                    .downcast_ref::<AvatarProcessingError>()
+                    .is_some_and(|error| {
+                        matches!(
+                            error,
+                            AvatarProcessingError::PrivateDestination
+                                | AvatarProcessingError::HttpsRequired
+                        )
+                    });
+                source = error.source();
+            }
+            assert!(
+                denied,
+                "redirect must fail at destination policy, not connection: {error:?}"
+            );
+            server.await.unwrap();
+        }
+    }
+
+    async fn chunked_image_response(
+        bytes: Vec<u8>,
+        finish: bool,
+    ) -> (reqwest::Response, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                request.push(socket.read_u8().await.unwrap());
+            }
+            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nTransfer-Encoding: chunked\r\n\r\n").await.unwrap();
+            socket
+                .write_all(format!("{:x}\r\n", bytes.len()).as_bytes())
+                .await
+                .unwrap();
+            socket.write_all(&bytes).await.unwrap();
+            socket.write_all(b"\r\n").await.unwrap();
+            if finish {
+                socket.write_all(b"0\r\n\r\n").await.unwrap();
+            } else {
+                std::future::pending::<()>().await;
+            }
+        });
+        let response = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap()
+            .get(format!("http://{address}/avatar.png"))
+            .send()
+            .await
+            .unwrap();
+        assert!(response.content_length().is_none());
+        (response, server)
+    }
+
+    #[tokio::test]
+    async fn avatar_chunked_response_rejects_oversize_before_eof() {
+        let (response, server) = chunked_image_response(vec![0; MAX_IMAGE_SIZE + 1], false).await;
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            validate_image_response(response),
+        )
+        .await;
+        server.abort();
+        assert!(
+            matches!(result, Ok(Err(AvatarProcessingError::ImageTooLarge))),
+            "oversized avatar must be rejected before the server finishes: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn avatar_chunked_response_accepts_valid_png() {
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([0, 128, 255, 255]))
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
+        let bytes = encoded.into_inner();
+        let (response, server) = chunked_image_response(bytes.clone(), true).await;
+        let actual = validate_image_response(response).await.unwrap();
+        server.await.unwrap();
+        assert_eq!(actual, bytes);
+    }
 
     #[test]
     fn test_avatar_hash() {

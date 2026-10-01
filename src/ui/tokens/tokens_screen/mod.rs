@@ -268,7 +268,7 @@ pub enum TokenCreatorStatus {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SortColumn {
     OwnerIdentity,
-    OwnerIdentityAlias,
+    OwnerIdentityName,
     Balance,
 }
 
@@ -1464,7 +1464,7 @@ impl TokensScreen {
             next_cursors: vec![],
             previous_cursors: vec![],
             search_results: Arc::new(Mutex::new(Vec::new())),
-            sort_column: SortColumn::OwnerIdentityAlias,
+            sort_column: SortColumn::OwnerIdentityName,
             sort_order: SortOrder::Ascending,
             use_custom_order: false,
             pending_backend_task: None,

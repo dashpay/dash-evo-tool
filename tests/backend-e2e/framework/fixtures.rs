@@ -52,8 +52,7 @@ pub async fn shared_identity() -> &'static SharedIdentity {
             tracing::info!("SharedIdentity: creating funded test wallet (30M duffs)...");
             let (seed_hash, wallet_arc) = ctx.create_funded_test_wallet(30_000_000).await;
 
-            let reg_info =
-                build_identity_registration(&ctx.app_context, &wallet_arc, seed_hash).await;
+            let reg_info = build_identity_registration(&ctx.app_context, &wallet_arc).await;
 
             let task = BackendTask::IdentityTask(IdentityTask::RegisterIdentity(reg_info));
             let result = run_task(&ctx.app_context, task)
@@ -337,7 +336,7 @@ async fn create_dashpay_member(
     dash_evo_tool::model::qualified_identity::QualifiedIdentity,
 ) {
     let (seed_hash, wallet) = ctx.create_funded_test_wallet(30_000_000).await;
-    let qi = dashpay_helpers::create_dashpay_identity(app_context, &wallet, seed_hash).await;
+    let qi = dashpay_helpers::create_dashpay_identity(app_context, &wallet).await;
     (seed_hash, wallet, qi)
 }
 

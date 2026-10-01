@@ -17,8 +17,8 @@ use crate::ui::tokens::resume_tokens_screen::ResumeTokensScreen;
 use crate::ui::tokens::set_token_price_screen::SetTokenPriceScreen;
 use crate::ui::tokens::tokens_screen::{
     IdentityTokenIdentifier, IdentityTokenInfo, IdentityTokenMaybeBalanceWithActions,
-    RefreshingStatus, SortColumn, TokenInfoWithDataContract, TokensScreen, TokensSubscreen,
-    get_available_token_actions_for_identity,
+    RefreshingStatus, SortColumn, SortOrder, TokenInfoWithDataContract, TokensScreen,
+    TokensSubscreen, get_available_token_actions_for_identity,
 };
 use crate::ui::tokens::transfer_tokens_screen::TransferTokensScreen;
 use crate::ui::tokens::unfreeze_tokens_screen::UnfreezeTokensScreen;
@@ -338,7 +338,7 @@ impl TokensScreen {
                     token_alias: known_token_balance.token_alias.clone(),
                     token_config: known_token_balance.token_config.clone(),
                     identity_id: *identity_id,
-                    identity_alias: identity.alias.clone(),
+                    identity_name: Some(self.app_context.identity_display_label(identity)),
                     balance: Some(known_token_balance.balance),
                     estimated_unclaimed_rewards: known_token_balance.estimated_unclaimed_rewards,
                     data_contract_id: known_token_balance.data_contract_id,
@@ -351,7 +351,7 @@ impl TokensScreen {
                     token_alias: token_info.token_name.clone(),
                     token_config: token_info.token_configuration.clone(),
                     identity_id: *identity_id,
-                    identity_alias: identity.alias.clone(),
+                    identity_name: Some(self.app_context.identity_display_label(identity)),
                     balance: None,
                     estimated_unclaimed_rewards: None,
                     data_contract_id: token_info.data_contract.id(),
@@ -391,7 +391,7 @@ impl TokensScreen {
                             .striped(false)
                             .resizable(true)
                             .cell_layout(egui::Layout::left_to_right(Align::Center))
-                            .column(Column::initial(60.0).resizable(true)) // Identity Alias
+                            .column(Column::initial(60.0).resizable(true)) // Identity name
                             .column(Column::initial(200.0).resizable(true)) // Identity ID
                             .column(Column::initial(60.0).resizable(true)); // Balance
 
@@ -403,8 +403,8 @@ impl TokensScreen {
                         table = table.column(Column::initial(200.0).resizable(true));// Actions
                         table.header(30.0, |mut header| {
                             header.col(|ui| {
-                                if ui.button("Identity Alias").clicked() {
-                                    self.toggle_sort(SortColumn::OwnerIdentityAlias);
+                                if ui.button("Identity name").clicked() {
+                                    self.toggle_sort(SortColumn::OwnerIdentityName);
                                 }
                             });
                             header.col(|ui| {
@@ -427,19 +427,28 @@ impl TokensScreen {
                             });
                         })
                             .body(|mut body| {
+                                detail_list.sort_by(|left, right| {
+                                    // Unknown balances stay last in either direction.
+                                    if self.sort_column == SortColumn::Balance && left.balance.is_some() != right.balance.is_some() {
+                                        return right.balance.is_some().cmp(&left.balance.is_some());
+                                    }
+                                    let ordering = match self.sort_column {
+                                        SortColumn::OwnerIdentityName => left.identity_name.as_deref().unwrap_or_default().to_lowercase()
+                                            .cmp(&right.identity_name.as_deref().unwrap_or_default().to_lowercase()),
+                                        SortColumn::OwnerIdentity => left.identity_id.to_string(Encoding::Base58)
+                                            .cmp(&right.identity_id.to_string(Encoding::Base58)),
+                                        SortColumn::Balance => left.balance.cmp(&right.balance),
+                                    };
+                                    let ordering = match self.sort_order {
+                                        SortOrder::Ascending => ordering,
+                                        SortOrder::Descending => ordering.reverse(),
+                                    };
+                                    ordering.then_with(|| left.identity_id.cmp(&right.identity_id))
+                                });
                                 for itb in &detail_list {
                                     body.row(30.0, |mut row| {
                                         row.col(|ui| {
-                                            // Show identity alias or ID
-                                            if let Some(alias) = self
-                                                .app_context
-                                                .get_identity_alias(&itb.identity_id)
-                                                .expect("Expected to get alias")
-                                            {
-                                                ui.label(alias);
-                                            } else {
-                                                ui.label("-");
-                                            }
+                                            ui.label(itb.identity_name.as_deref().unwrap_or("Unknown identity"));
                                         });
                                         row.col(|ui| {
                                             if itb.identity_id == token_info.data_contract.owner_id() {
@@ -1088,5 +1097,131 @@ impl TokensScreen {
                 });
         });
         Ok(action)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::qualified_identity::QualifiedIdentity;
+    use crate::ui::tokens::tokens_screen::IdentityTokenBalance;
+    use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+    use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+    use dash_sdk::platform::Identifier;
+    use egui_kittest::{Harness, kittest::Queryable};
+
+    #[test]
+    fn token_detail_headers_sort_displayed_names_ids_and_numeric_balances() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let mut screen = TokensScreen::new(&context, TokensSubscreen::MyTokens);
+        let token_id = Identifier::from([42; 32]);
+        let config = TokenConfigurationV0::default_most_restrictive().into();
+        let contract = context.dpns_contract.as_ref().clone();
+        screen.all_known_tokens.insert(
+            token_id,
+            TokenInfoWithDataContract {
+                token_id,
+                token_name: "Test token".into(),
+                data_contract: contract.clone(),
+                token_position: 0,
+                token_configuration: config,
+                description: None,
+            },
+        );
+        let config = screen.all_known_tokens[&token_id]
+            .token_configuration
+            .clone();
+        for (byte, name, balance) in [
+            (1, "Zulu profile", Some(10)),
+            (2, "Alpha profile", Some(2)),
+            (3, "Middle profile", None),
+        ] {
+            let identity = QualifiedIdentity::from_bytes(
+                &crate::database::test_helpers::basic_legacy_identity_blob(
+                    [byte; 32],
+                    Some("Ignored device name"),
+                    context.network,
+                ),
+            )
+            .unwrap();
+            let id = identity.identity.id();
+            context.save_identity_profile_name(id, Some(name));
+            if let Some(balance) = balance {
+                screen.my_tokens.insert(
+                    IdentityTokenIdentifier {
+                        identity_id: id,
+                        token_id,
+                    },
+                    IdentityTokenBalance {
+                        token_id,
+                        token_alias: "Test token".into(),
+                        token_config: config.clone(),
+                        identity_id: id,
+                        balance,
+                        estimated_unclaimed_rewards: None,
+                        data_contract_id: contract.id(),
+                        token_position: 0,
+                    }
+                    .into_with_actions(&identity, &contract, false, None),
+                );
+            }
+            screen.identities.insert(id, identity);
+        }
+        screen.selected_token = Some(token_id);
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1200.0, 600.0))
+            .build_ui_state(
+                |ui, screen: &mut TokensScreen| {
+                    screen.render_token_details(ui);
+                },
+                screen,
+            );
+        harness.run();
+        for (header, expected) in [
+            (
+                "Identity name",
+                ["Zulu profile", "Middle profile", "Alpha profile"],
+            ),
+            (
+                "Identity name",
+                ["Alpha profile", "Middle profile", "Zulu profile"],
+            ),
+            (
+                "Identity ID",
+                ["Zulu profile", "Alpha profile", "Middle profile"],
+            ),
+            (
+                "Identity ID",
+                ["Middle profile", "Alpha profile", "Zulu profile"],
+            ),
+            (
+                "Balance",
+                ["Alpha profile", "Zulu profile", "Middle profile"],
+            ),
+            (
+                "Balance",
+                ["Zulu profile", "Alpha profile", "Middle profile"],
+            ),
+        ] {
+            harness.get_by_label(header).click();
+            harness.run();
+            let positions = expected.map(|label| harness.get_by_label(label).rect().center().y);
+            assert!(
+                positions[0] < positions[1] && positions[1] < positions[2],
+                "{header}: {expected:?} at {positions:?}"
+            );
+        }
+        context.save_identity_profile_name(Identifier::from([2; 32]), Some("Zulu profile"));
+        harness.get_by_label("Identity name").click();
+        harness.run();
+        let positions = [3, 1, 2].map(|byte| {
+            let id = Identifier::from([byte; 32]).to_string(Encoding::Base58);
+            harness.get_by_label(&id).rect().center().y
+        });
+        assert!(
+            positions[0] < positions[1] && positions[1] < positions[2],
+            "updated names use ID tie-breaks"
+        );
     }
 }

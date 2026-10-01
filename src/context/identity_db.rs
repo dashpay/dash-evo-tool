@@ -1717,6 +1717,7 @@ impl AppContext {
                 "Removed identity's username records could not be cleared"
             );
         }
+        self.save_identity_profile_name(*identifier, None);
         let sidecar_cleanup = self.finish_identity_removal_cleanup(&kv, &id, vault_keys)?;
         // Mirror removal into the upstream unowned scope; wallet-owned identities are unaffected.
         if let Ok(backend) = self.wallet_backend()

@@ -580,7 +580,11 @@ fn build_hero(
     // Best-effort DashPay display name. The local profile cache was removed in
     // the platform-wallet migration; the hub loads profiles asynchronously, so
     // this is empty until the first load completes and the hero re-renders.
-    let display_name = load_display_name_opt(profiles, qi);
+    let profile_name = profiles
+        .get_or_request(qi)
+        .and_then(Option::as_ref)
+        .and_then(|profile| profile.display_name_opt());
+    let display_name = app_context.identity_display_name_or(qi.identity.id(), profile_name);
 
     let mut card = IdentityHeroCard::new(kind, balance_dash);
     match handle {
@@ -602,16 +606,6 @@ fn build_hero(
             "You are on {network_label}. Identities and balances are separate per network.",
         ));
     card
-}
-
-fn load_display_name_opt(
-    profiles: &mut super::profile_cache::ProfileCache,
-    qi: &QualifiedIdentity,
-) -> Option<String> {
-    profiles
-        .get_or_request(qi)
-        .and_then(|p| p.as_ref())
-        .and_then(|fields| fields.display_name_opt().map(str::to_owned))
 }
 
 /// Format a credit balance (u64, Platform credits) as a bare DASH amount

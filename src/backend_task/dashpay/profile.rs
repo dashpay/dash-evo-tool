@@ -2,6 +2,7 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::dashpay::errors::DashPayError;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::model::dashpay::ProfileSnapshot;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::document::DocumentV0Getters;
@@ -18,6 +19,8 @@ pub async fn load_profile(
     identity: QualifiedIdentity,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     let identity_id = identity.identity.id();
+    let _operation = app_context.lock_identity_profile(identity_id).await;
+    let name_revision = app_context.begin_identity_profile_load(identity_id);
     let dashpay_contract = app_context.dashpay_contract.clone();
 
     // Query for profile document owned by this identity
@@ -53,36 +56,51 @@ pub async fn load_profile(
             .and_then(|v| v.as_text())
             .unwrap_or_default();
 
-        // Mirror to upstream so DashpayView::profile observes the loaded state.
-        mirror_profile_to_backend(
-            app_context,
-            &identity_id,
-            Some(BackendProfileFields {
-                display_name: non_empty(display_name),
-                bio: non_empty(bio),
-                avatar_url: non_empty(avatar_url),
-                avatar_hash: doc
-                    .get("avatarHash")
-                    .and_then(|value| value.as_bytes_slice().ok())
-                    .and_then(|bytes| bytes.try_into().ok()),
-                avatar_fingerprint: doc
-                    .get("avatarFingerprint")
-                    .and_then(|value| value.as_bytes_slice().ok())
-                    .and_then(|bytes| bytes.try_into().ok()),
-            }),
-        )
-        .await;
+        // A completed save invalidates older profile reads.
+        if app_context.record_identity_profile_name(identity_id, name_revision, Some(display_name))
+        {
+            mirror_profile_to_backend(
+                app_context,
+                &identity_id,
+                Some(BackendProfileFields {
+                    display_name: non_empty(display_name),
+                    bio: non_empty(bio),
+                    avatar_url: non_empty(avatar_url),
+                    avatar_hash: doc
+                        .get("avatarHash")
+                        .and_then(|value| value.as_bytes_slice().ok())
+                        .and_then(|bytes| bytes.try_into().ok()),
+                    avatar_fingerprint: doc
+                        .get("avatarFingerprint")
+                        .and_then(|value| value.as_bytes_slice().ok())
+                        .and_then(|bytes| bytes.try_into().ok()),
+                }),
+            )
+            .await;
+        }
 
-        Ok(BackendTaskSuccessResult::DashPayProfile(Some((
-            display_name.to_string(),
-            bio.to_string(),
-            avatar_url.to_string(),
-        ))))
+        Ok(BackendTaskSuccessResult::DashPayProfile(ProfileSnapshot {
+            network: app_context.network,
+            owner: identity_id,
+            revision: name_revision,
+            profile: Some((
+                display_name.to_string(),
+                bio.to_string(),
+                avatar_url.to_string(),
+            )),
+        }))
     } else {
         // No profile found — clear any stale upstream entry for this owner.
-        mirror_profile_to_backend(app_context, &identity_id, None).await;
+        if app_context.record_identity_profile_name(identity_id, name_revision, None) {
+            mirror_profile_to_backend(app_context, &identity_id, None).await;
+        }
 
-        Ok(BackendTaskSuccessResult::DashPayProfile(None))
+        Ok(BackendTaskSuccessResult::DashPayProfile(ProfileSnapshot {
+            network: app_context.network,
+            owner: identity_id,
+            revision: name_revision,
+            profile: None,
+        }))
     }
 }
 
@@ -156,6 +174,8 @@ pub async fn update_profile(
     bio: Option<String>,
     avatar_url: Option<String>,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
+    let identity_id = identity.identity.id();
+    let _operation = app_context.lock_identity_profile(identity_id).await;
     let mut input = profile_update_input(display_name, bio, avatar_url)?;
     if let Some(url) = &input.avatar_url {
         input.avatar_bytes = Some(
@@ -173,7 +193,6 @@ pub async fn update_profile(
             "Failed to cache the avatar fetched for a profile update"
         );
     }
-    let identity_id = identity.identity.id();
     let mut query =
         DocumentQuery::new(app_context.dashpay_contract.clone(), "profile").map_err(|e| {
             DashPayError::QueryCreation {
@@ -191,10 +210,23 @@ pub async fn update_profile(
     let existing = profiles.values().flatten().next();
     ensure_profile_fields_preserved(existing, &input)?;
 
+    let fields = (
+        input.display_name.clone().unwrap_or_default(),
+        input.public_message.clone().unwrap_or_default(),
+        input.avatar_url.clone().unwrap_or_default(),
+    );
     backend
         .dashpay_write_profile(&identity, input, existing.is_none())
         .await?;
-    Ok(BackendTaskSuccessResult::DashPayProfileUpdated(identity_id))
+    let revision = app_context.save_identity_profile_name(identity_id, Some(&fields.0));
+    Ok(BackendTaskSuccessResult::DashPayProfileUpdated(
+        ProfileSnapshot {
+            network: app_context.network,
+            owner: identity_id,
+            revision,
+            profile: Some(fields),
+        },
+    ))
 }
 
 fn profile_update_input(

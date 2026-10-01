@@ -22,6 +22,8 @@ impl AppContext {
             qualified_identity.dpns_names = self
                 .fetch_owned_dpns_names(&sdk, qualified_identity.identity.id())
                 .await?;
+            let main_username = self.main_username(&qualified_identity);
+            qualified_identity.initialize_node_alias(None, main_username.as_deref());
             self.update_local_qualified_identity(&qualified_identity)?;
         }
 

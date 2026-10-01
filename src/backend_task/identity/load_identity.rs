@@ -461,22 +461,13 @@ impl AppContext {
             source: Box::new(e),
         })?;
 
-        // Determine alias: use user input, or fall back to first DPNS name if available
-        let alias = if !alias_input.is_empty() {
-            Some(alias_input)
-        } else if !maybe_owned_dpns_names.is_empty() {
-            Some(format!("{}.dash", maybe_owned_dpns_names[0].name))
-        } else {
-            None
-        };
-
         let mut qualified_identity = QualifiedIdentity {
             identity,
             associated_voter_identity,
             associated_operator_identity: None,
             associated_owner_key_id: None,
             identity_type,
-            alias,
+            alias: None,
             private_keys: encrypted_private_keys.into(),
             dpns_names: maybe_owned_dpns_names,
             associated_wallets: wallets
@@ -492,6 +483,9 @@ impl AppContext {
             status: IdentityStatus::Active,
             network: self.network,
         };
+        // Name an unnamed node after its main username, never an arbitrary one.
+        let main_username = self.main_username(&qualified_identity);
+        qualified_identity.initialize_node_alias(Some(&alias_input), main_username.as_deref());
         // Recheck the scoped load and merge the current stored keys under the
         // record guard before any seal or write: removal and protection changes
         // may have happened while the network requests were in flight.

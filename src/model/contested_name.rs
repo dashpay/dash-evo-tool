@@ -47,20 +47,9 @@ impl ContestedName {
 /// Return a bounded pending-name label safe to interpolate into UI text.
 pub fn sanitize_pending_username_for_display(name: &str) -> String {
     name.chars()
-        .filter(|character| !character.is_control() && !is_bidi_control(*character))
+        .filter(|character| crate::model::identity_name::is_safe_display_character(*character))
         .take(MAX_PENDING_USERNAME_DISPLAY_CHARS)
         .collect()
-}
-
-fn is_bidi_control(character: char) -> bool {
-    matches!(
-        character,
-        '\u{061c}'
-            | '\u{200e}'
-            | '\u{200f}'
-            | '\u{202a}'..='\u{202e}'
-            | '\u{2066}'..='\u{2069}'
-    )
 }
 
 /// Build a complete pending-name tooltip for `decided_at_ms`, measured from

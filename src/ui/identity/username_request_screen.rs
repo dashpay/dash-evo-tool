@@ -16,7 +16,7 @@ use crate::model::user_role::UserRole;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::identity::identity_pill::{display_label, shorten_id};
+use crate::ui::identity::identity_pill::shorten_id;
 use crate::ui::identity::register_dpns_name_screen::status_line;
 use crate::ui::identity::username_copy::{
     Tone, format_date, format_date_time, phase_label, what_happens_next,
@@ -80,12 +80,7 @@ impl UsernameRequestScreen {
             .into_iter()
             .find(|qi| qi.identity.id() == self.identity_id);
         match identity {
-            Some(qi) => display_label(
-                crate::model::dpns_usernames::user_alias(&qi),
-                None,
-                self.app_context.main_username(&qi).as_deref(),
-                &qi.identity.id().to_string(Encoding::Base58),
-            ),
+            Some(qi) => self.app_context.identity_display_label(&qi),
             None => shorten_id(&self.identity_id.to_string(Encoding::Base58)),
         }
     }

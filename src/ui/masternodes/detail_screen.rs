@@ -850,7 +850,7 @@ impl MasternodeDetailView {
         // No target is handed over: the screen resolves the placement itself, so
         // there is nothing for this caller to get wrong or for the `ScreenType`
         // round trip to drop.
-        AppAction::AddScreen(Screen::KeyInfoScreen(screen))
+        AppAction::AddScreen(Screen::KeyInfoScreen(screen.with_masternode_origin()))
     }
 
     /// `This node's votes`, its masternode-list status and `Vote with this

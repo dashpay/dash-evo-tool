@@ -208,7 +208,7 @@ impl TokensScreen {
                                     format!("member_identity_selector_{}", j),
                                     &mut member.identity_str,
                                     &identities,
-                                )
+                                ).with_context(&self.app_context)
                                 .width(200.0)
                                 .exclude(&exclude_identities));
 

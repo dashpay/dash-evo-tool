@@ -157,18 +157,6 @@ pub fn can_register_usernames(
         .any(|(_, key)| key_can_sign_documents(&key.identity_public_key, required))
 }
 
-/// The device-only name the user chose, ignoring a legacy automatic copy of a
-/// username. Earlier versions wrote `{name}.dash` into the alias at registration,
-/// including for requests later lost, so any alias of that exact form is treated
-/// as automatic and never hides the chosen main username.
-pub fn user_alias(identity: &QualifiedIdentity) -> Option<&str> {
-    let alias = identity.alias.as_deref()?.trim();
-    let automatic = alias.strip_suffix(".dash").is_some_and(|stem| {
-        super::dpns::validate_dpns_name(stem) == super::dpns::DpnsNameValidationResult::Valid
-    });
-    (!alias.is_empty() && !automatic).then_some(alias)
-}
-
 /// Whether a username can be requested right now, and on what terms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UsernameAvailability {
@@ -845,12 +833,12 @@ mod tests {
             status: IdentityStatus::Active,
             network: dash_sdk::dpp::dashcore::Network::Testnet,
         };
-        assert_eq!(user_alias(&identity), None);
         assert_eq!(identity.to_string(), "bob");
+        // A User identity's device-only name never replaces its username.
         identity.alias = Some("Alice Novak".to_owned());
-        assert_eq!(user_alias(&identity), Some("Alice Novak"));
+        assert_eq!(identity.to_string(), "bob");
         identity.alias = Some("  ".to_owned());
-        assert_eq!(user_alias(&identity), None);
+        assert_eq!(identity.to_string(), "bob");
     }
 
     #[test]

@@ -70,13 +70,6 @@ impl AppContext {
             Err(e) => return Err(TaskError::from(e)),
         };
 
-        // Get the label from the document for display
-        let label = domain_doc
-            .get("label")
-            .and_then(|l| l.to_str().ok())
-            .unwrap_or(&dpns_name)
-            .to_string();
-
         // Fetch all DPNS names owned by this identity
         let dpns_names_document_query = DocumentQuery {
             sub_queries: Vec::new(),
@@ -142,7 +135,7 @@ impl AppContext {
             associated_operator_identity: None,
             associated_owner_key_id: None,
             identity_type: IdentityType::User,
-            alias: Some(format!("{}.dash", label)),
+            alias: None,
             private_keys: encrypted_private_keys.into(),
             dpns_names: owned_dpns_names,
             associated_wallets: wallets

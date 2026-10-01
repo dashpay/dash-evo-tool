@@ -451,6 +451,8 @@ impl PartialEq for IdentityTopUpInfo {
 pub struct RegisterDpnsNameInput {
     pub qualified_identity: QualifiedIdentity,
     pub name_input: String,
+    /// Authentication key to sign with; `None` picks the identity's default document key.
+    pub signing_key_id: Option<KeyID>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

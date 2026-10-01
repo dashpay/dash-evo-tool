@@ -769,7 +769,7 @@ As a user, I want to remove an identity from this device from the identity's own
 
 ## DPNS (DPN)
 
-### DPN-001: Register a username [Gap]
+### DPN-001: Register a username [Implemented]
 **Persona:** Alex, Priya
 
 As a user, I want to register a username for one of my identities so that others can send me Dash using a name instead of an address.
@@ -781,7 +781,7 @@ As a user, I want to register a username for one of my identities so that others
 - While registration runs, a full-window blocking overlay (UX-001) prevents a duplicate submission.
 - Completion distinguishes a username registered for immediate use from a request submitted for a community vote.
 
-### DPN-002: View my usernames [Gap]
+### DPN-002: View my usernames [Implemented]
 **Persona:** Alex, Priya
 
 As a user, I want to see each identity's usernames and their state so that I know which names I have and which are still being decided.
@@ -842,7 +842,7 @@ As a masternode operator, I want to choose which nodes vote and decide many cont
 - Switching networks clears drafts and open dialogs.
 - A successful mixed batch reports cast and scheduled counts.
 
-### DPN-008: Choose which username is shown [Gap]
+### DPN-008: Choose which username is shown [Implemented]
 **Persona:** Alex, Priya
 
 As a user with several usernames on one identity, I want to choose the one shown by default so that people and lists see the name I prefer.
@@ -861,7 +861,7 @@ As a masternode operator, I want my previously scheduled DPNS votes to survive a
 - A single unreadable vote row costs only itself: the readable votes in the same batch still import.
 - The report of unreadable votes returns on every launch until it is explicitly acknowledged, so a vote whose deadline is still open cannot lose its only notice to a missed or dismissed banner.
 
-### DPN-010: See a pending username request [Gap]
+### DPN-010: See a pending username request [Implemented]
 **Persona:** Alex
 
 As a user who has requested a username that is not yet awarded, I want to see that the request is pending so that I am not told to pick a username I have already chosen.
@@ -881,7 +881,7 @@ As a masternode operator, I want DET to keep checking a submitted vote whose res
 - DET reconciles against proved current vote state without rebroadcasting. The progress drawer and Needs-attention row offer Check again, never Submit again.
 - A confirmed match updates the current vote and releases the target lock.
 
-### DPN-012: Follow my username request to a result [Gap]
+### DPN-012: Follow my username request to a result [Implemented]
 **Persona:** Alex
 
 As a user waiting for a community vote, I want to see how my request is doing and what happens next so that I know whether I'm likely to get the name.
@@ -917,7 +917,7 @@ As a masternode operator, I want votes to go out in the background with per-node
 - Only the contests and nodes being sent are locked. Everything else stays usable.
 - Votes not sent before their contest ends are reported as not cast because voting ended.
 
-### DPN-016: Avoid a community vote when I just need a name [Gap]
+### DPN-016: Avoid a community vote when I just need a name [Implemented]
 **Persona:** Alex, Jordan
 
 As a user, I want suggestions that need no vote so that I can get a working username right away.

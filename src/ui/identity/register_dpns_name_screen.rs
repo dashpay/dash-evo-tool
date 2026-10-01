@@ -27,6 +27,7 @@ use crate::ui::components::wallet_unlock_popup::{
 use crate::ui::components::{
     MessageBanner, OptionOverlayExt, OverlayConfig, OverlayHandle, ResultBannerExt,
 };
+use crate::ui::helpers::{TransactionType, add_key_chooser_with_doc_type};
 use crate::ui::identity::identity_pill::display_label;
 use crate::ui::identity::username_copy::{
     self, AvailabilityRow, Tone, USERNAME_RULES, availability_line, offers_suggestions,
@@ -37,6 +38,7 @@ use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use dash_sdk::platform::IdentityPublicKey;
 use eframe::egui::{Context, Frame, Margin};
 use egui::{RichText, Ui};
 use std::sync::{Arc, RwLock};
@@ -83,6 +85,8 @@ pub struct RegisterDpnsNameScreen {
     availability: Availability,
     step: Step,
     consent_dialog: Option<ConfirmationDialog>,
+    /// Signing key chosen under Advanced; `None` lets the backend pick the default.
+    selected_key: Option<IdentityPublicKey>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
     wallet_open_attempted: bool,
@@ -102,6 +106,7 @@ impl RegisterDpnsNameScreen {
             availability: Availability::Idle,
             step: Step::Choose,
             consent_dialog: None,
+            selected_key: None,
             selected_wallet: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             wallet_open_attempted: false,
@@ -141,6 +146,7 @@ impl RegisterDpnsNameScreen {
             .and_then(|id| identities.iter().find(|qi| qi.identity.id() == id).cloned())
             .or_else(|| identities.first().cloned());
         if identity.as_ref().map(|qi| qi.identity.id()) != current {
+            self.selected_key = None;
             self.selected_wallet = identity.as_ref().and_then(|qi| {
                 get_selected_wallet(qi, Some(&self.app_context), None)
                     .or_show_error(self.app_context.egui_ctx())
@@ -265,6 +271,7 @@ impl RegisterDpnsNameScreen {
         let task = IdentityTask::RegisterDpnsName(RegisterDpnsNameInput {
             qualified_identity: identity.clone(),
             name_input: self.label().to_owned(),
+            signing_key_id: self.selected_key.as_ref().map(|key| key.id()),
         });
         self.step = Step::Submitting;
         self.raise_progress_overlay(ctx);
@@ -480,17 +487,25 @@ impl RegisterDpnsNameScreen {
             egui::CollapsingHeader::new("Advanced")
                 .default_open(false)
                 .show(ui, |ui| {
-                    let key = self
+                    let document_type = self
                         .app_context
                         .dpns_contract
-                        .document_type_for_name("domain")
-                        .ok()
-                        .and_then(|document_type| identity.document_signing_key(&document_type))
-                        .map(|key| key.id());
-                    match key {
-                        Some(id) => ui.label(format!("Signing key: Authentication key {id}")),
-                        None => ui.label("No signing key is available for this identity."),
-                    };
+                        .document_type_cloned_for_name("domain")
+                        .ok();
+                    if self.selected_key.is_none() {
+                        self.selected_key = document_type
+                            .as_ref()
+                            .and_then(|doc_type| identity.document_signing_key(&doc_type.as_ref()))
+                            .cloned();
+                    }
+                    action |= add_key_chooser_with_doc_type(
+                        ui,
+                        &self.app_context,
+                        &identity,
+                        &mut self.selected_key,
+                        TransactionType::DocumentAction,
+                        document_type.as_ref(),
+                    );
                 });
         }
 

@@ -28,6 +28,20 @@ use dash_sdk::{
 
 use super::{BackendTaskSuccessResult, RegisterDpnsNameInput};
 
+/// Whether `key` may sign documents of `document_type`: an enabled authentication
+/// key at least as strong as the type requires, and never a master key.
+fn can_sign_documents(
+    key: &dash_sdk::platform::IdentityPublicKey,
+    document_type: &dash_sdk::dpp::data_contract::document_type::DocumentTypeRef,
+) -> bool {
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+    use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
+    key.purpose() == Purpose::AUTHENTICATION
+        && !key.is_disabled()
+        && key.security_level() != SecurityLevel::MASTER
+        && key.security_level() <= document_type.security_level_requirement()
+}
+
 fn rebrand_dpns_domain_conflict(error: TaskError) -> TaskError {
     match error {
         TaskError::PlatformEntryConflict { source_error } => {
@@ -159,9 +173,15 @@ impl AppContext {
         )
         .map_err(|error| SdkError::Protocol(*error))?;
 
-        let public_key = qualified_identity
-            .document_signing_key(&preorder_document_type)
-            .ok_or(TaskError::NoDocumentSigningKey)?;
+        let public_key = match input.signing_key_id {
+            Some(key_id) => qualified_identity
+                .identity
+                .get_public_key_by_id(key_id)
+                .filter(|key| can_sign_documents(key, &preorder_document_type))
+                .filter(|key| can_sign_documents(key, &domain_document_type)),
+            None => qualified_identity.document_signing_key(&preorder_document_type),
+        }
+        .ok_or(TaskError::NoDocumentSigningKey)?;
 
         let fee_estimator = self.fee_estimator();
         let estimated_fee = fee_estimator.estimate_document_batch(2);
@@ -303,6 +323,36 @@ impl AppContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chosen_signing_key_must_suit_dpns_documents() {
+        use dash_sdk::dpp::data_contracts::SystemDataContract;
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+        use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
+        use dash_sdk::dpp::system_data_contracts::load_system_data_contract;
+        use dash_sdk::dpp::version::PlatformVersion;
+        let pv = PlatformVersion::latest();
+        let contract = load_system_data_contract(SystemDataContract::DPNS, pv).expect("DPNS");
+        let domain = contract.document_type_for_name("domain").expect("domain");
+        let key = |purpose, level| {
+            let mut key = dash_sdk::platform::IdentityPublicKey::random_key(1, Some(1), pv);
+            key.set_purpose(purpose);
+            key.set_security_level(level);
+            key
+        };
+        assert!(can_sign_documents(
+            &key(Purpose::AUTHENTICATION, SecurityLevel::HIGH),
+            &domain
+        ));
+        assert!(!can_sign_documents(
+            &key(Purpose::AUTHENTICATION, SecurityLevel::MASTER),
+            &domain
+        ));
+        assert!(!can_sign_documents(
+            &key(Purpose::TRANSFER, SecurityLevel::CRITICAL),
+            &domain
+        ));
+    }
     use dash_sdk::dpp::consensus::ConsensusError::StateError as ConsensusStateError;
     use dash_sdk::dpp::consensus::state::state_error::StateError;
 

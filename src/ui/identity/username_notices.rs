@@ -75,9 +75,9 @@ pub fn render(
         .data(|data| data.get_temp(session_id))
         .unwrap_or_default();
     let before = session.clone();
-    // Outcomes not yet recorded as seen. The mark is re-sent on every frame
-    // until the store confirms it, so a frame whose action is replaced by
-    // another dispatch (e.g. a profile load) cannot lose it; the task is idempotent.
+    // Outcomes not yet recorded as seen. The mark is re-sent until the store
+    // confirms it, so a frame whose action is replaced by another dispatch
+    // (e.g. a profile load) cannot lose it; the context bounds the retries.
     let mut unrecorded: Vec<UsernameRequest> = Vec::new();
 
     for request in &requests {
@@ -113,7 +113,10 @@ pub fn render(
             });
         });
     }
-    if !unrecorded.is_empty() && matches!(action, AppAction::None) {
+    if !unrecorded.is_empty()
+        && matches!(action, AppAction::None)
+        && app_context.try_dispatch_username_seen_mark(&identity_id, ui.ctx().cumulative_pass_nr())
+    {
         action = mark_seen_action(identity_id, unrecorded);
     }
     if session != before {
@@ -172,6 +175,7 @@ fn notice_frame(ui: &mut Ui, dark_mode: bool, add: impl FnOnce(&mut Ui)) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend_task::error::TaskError;
     use crate::model::dpns::ContestDurations;
     use std::time::Duration;
 
@@ -197,5 +201,93 @@ mod tests {
             outcome_banner_text(&request).as_deref(),
             Some("No one can register @ali anymore. The community vote locked it.")
         );
+    }
+
+    /// A store that keeps failing the "seen" write does not get a new task (or
+    /// a new error banner) on every frame: the next frame stays quiet, and the
+    /// retries stop for the session after a few failures.
+    #[test]
+    fn failing_seen_store_is_not_retried_every_frame() {
+        use crate::model::dpns_usernames::{SEEN_MARK_MAX_FAILURES, UsernameRequest};
+        use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
+        use crate::model::qualified_identity::{IdentityStatus, IdentityType};
+        use crate::utils::egui_mpsc::SenderAsync;
+        use crate::wallet_backend::DetKv;
+        use crate::wallet_backend::kv_test_support::FailingKv;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let store = Arc::new(FailingKv::default());
+        ctx.set_det_kv_override_for_test(DetKv::from_store(store.clone()));
+        let identity = QualifiedIdentity {
+            identity: dash_sdk::dpp::identity::Identity::create_basic_identity(
+                [0x61; 32].into(),
+                dash_sdk::dpp::version::PlatformVersion::latest(),
+            )
+            .expect("identity"),
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: None,
+            private_keys: KeyStorage::default(),
+            dpns_names: Vec::new(),
+            associated_wallets: Default::default(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: Default::default(),
+            status: IdentityStatus::Active,
+            network: dash_sdk::dpp::dashcore::Network::Testnet,
+        };
+        let id = identity.identity.id();
+        let mut won = UsernameRequest::submitted(
+            "ali",
+            0,
+            ContestDurations {
+                total: Duration::ZERO,
+                join: Duration::ZERO,
+            },
+            None,
+        );
+        won.phase = RequestPhase::Won;
+        ctx.store_username_requests(&id, vec![won]).expect("store");
+        store.fail_next_puts_containing("det:username_outcomes_seen:", usize::MAX);
+
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        let app_context = ctx.clone();
+        let mut harness = egui_kittest::Harness::builder().build_ui_state(
+            move |ui, last: &mut Option<AppAction>| {
+                let action = render(ui, &app_context, &identity);
+                if !matches!(action, AppAction::None) {
+                    *last = Some(action);
+                }
+            },
+            None,
+        );
+        let mut failures = 0;
+        for _ in 0..20 {
+            harness.step();
+            let Some(AppAction::BackendTask(task)) = harness.state_mut().take() else {
+                continue;
+            };
+            let (tx, _rx) = tokio::sync::mpsc::channel(8);
+            let sender = SenderAsync::new(tx, egui::Context::default());
+            let result = rt.block_on(ctx.run_backend_task(task, sender));
+            assert!(matches!(result, Err(TaskError::UsernameStorage { .. })));
+            failures += 1;
+            // Right after a failure, the next frame must not dispatch again.
+            harness.step();
+            assert!(
+                harness.state_mut().take().is_none(),
+                "a failing store was retried on the very next frame"
+            );
+            // Skip the backoff so the test exercises the session cap.
+            ctx.username_cache_mut()
+                .seen_marks
+                .get_mut(&id)
+                .expect("attempts")
+                .expire_backoff_for_test();
+        }
+        assert_eq!(failures, SEEN_MARK_MAX_FAILURES);
     }
 }

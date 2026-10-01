@@ -344,7 +344,10 @@ impl AppContext {
         identity_id: Identifier,
         requests: Vec<UsernameRequest>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        self.mark_username_outcomes_seen(&identity_id, &requests)?;
+        self.note_username_seen_mark(&identity_id, None);
+        let result = self.mark_username_outcomes_seen(&identity_id, &requests);
+        self.note_username_seen_mark(&identity_id, Some(result.is_ok()));
+        result?;
         Ok(BackendTaskSuccessResult::UsernamePreferencesSaved)
     }
 }

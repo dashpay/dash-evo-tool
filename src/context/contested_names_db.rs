@@ -11,7 +11,7 @@ use crate::backend_task::error::TaskError;
 use crate::model::contested_name::{
     ContestState, Contestant, ContestedName, MasternodeVoteStateSummary,
 };
-use crate::model::dpns_usernames::UsernameRequest;
+use crate::model::dpns_usernames::{SeenMarkAttempts, UsernameRequest};
 use crate::model::dpns_voting::{
     DpnsCurrentVoteState, DpnsVoteOperation, DpnsVoteOperationId, DpnsVoteTargetKey,
     DpnsVoteTargetStatus, VoteTiming, dpns_vote_authority_rank,
@@ -287,7 +287,9 @@ impl AppContext {
                 cache.seen.insert(id, seen);
             }
         }
-        *self.username_cache_mut() = cache;
+        let mut current = self.username_cache_mut();
+        cache.seen_marks = std::mem::take(&mut current.seen_marks);
+        *current = cache;
         Ok(())
     }
 
@@ -299,7 +301,7 @@ impl AppContext {
 
     /// Write guard over the username snapshot. Every username write holds it
     /// across its read-modify-write and store update, so writers never interleave.
-    fn username_cache_mut(&self) -> std::sync::RwLockWriteGuard<'_, UsernameCache> {
+    pub(crate) fn username_cache_mut(&self) -> std::sync::RwLockWriteGuard<'_, UsernameCache> {
         self.pending_dpns_usernames
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -440,6 +442,28 @@ impl AppContext {
             .seen
             .get(identity_id)
             .is_some_and(|seen| seen.contains(&outcome_key(request)))
+    }
+
+    /// Whether a "banner seen" write for `identity_id` may be dispatched in
+    /// frame `pass`; records the dispatch when it may. Frame-safe, in memory only.
+    pub fn try_dispatch_username_seen_mark(&self, identity_id: &Identifier, pass: u64) -> bool {
+        let mut cache = self.username_cache_mut();
+        let attempts = cache.seen_marks.entry(*identity_id).or_default();
+        if !attempts.may_dispatch(pass, std::time::Instant::now()) {
+            return false;
+        }
+        attempts.dispatched(pass);
+        true
+    }
+
+    /// Update the in-memory "banner seen" write bounds as the backend runs it.
+    pub(crate) fn note_username_seen_mark(&self, identity_id: &Identifier, outcome: Option<bool>) {
+        let mut cache = self.username_cache_mut();
+        let attempts = cache.seen_marks.entry(*identity_id).or_default();
+        match outcome {
+            None => attempts.started(),
+            Some(succeeded) => attempts.finished(succeeded, std::time::Instant::now()),
+        }
     }
 
     /// Record that the outcome banners for `requests` were shown.
@@ -819,6 +843,8 @@ pub(crate) struct UsernameCache {
     requests: HashMap<Identifier, Vec<UsernameRequest>>,
     main: HashMap<Identifier, String>,
     seen: HashMap<Identifier, BTreeSet<String>>,
+    /// In-memory write bounds for "banner seen"; never persisted.
+    pub(crate) seen_marks: HashMap<Identifier, SeenMarkAttempts>,
 }
 
 fn identity_key(prefix: &str, identity_id: &Identifier) -> String {

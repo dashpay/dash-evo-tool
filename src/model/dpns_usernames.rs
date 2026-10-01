@@ -50,6 +50,71 @@ pub fn username_refresh_due(
         || (any_pending && elapsed >= duration_ms(pending_refresh_interval(network)))
 }
 
+/// Failed "banner seen" writes allowed per identity and session before giving up.
+pub const SEEN_MARK_MAX_FAILURES: u32 = 3;
+/// Wait after each failed "banner seen" write, multiplied by the failure count.
+pub const SEEN_MARK_BACKOFF: Duration = Duration::from_secs(5);
+/// Frames a dispatched "banner seen" task may take to start before it is
+/// treated as dropped (its action replaced by another) and sent again.
+const SEEN_MARK_START_GRACE_PASSES: u64 = 2;
+
+/// Bounds the "banner seen" writes for one identity: one in flight at a time,
+/// a backoff after each failure, and none after repeated failures.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SeenMarkAttempts {
+    dispatched_pass: Option<u64>,
+    started: bool,
+    failures: u32,
+    last_failure: Option<std::time::Instant>,
+}
+
+impl SeenMarkAttempts {
+    /// Whether a new write may be dispatched in frame `pass` at `now`.
+    pub fn may_dispatch(&self, pass: u64, now: std::time::Instant) -> bool {
+        if self.started || self.failures >= SEEN_MARK_MAX_FAILURES {
+            return false;
+        }
+        if self
+            .dispatched_pass
+            .is_some_and(|dispatched| pass <= dispatched + SEEN_MARK_START_GRACE_PASSES)
+        {
+            return false;
+        }
+        self.last_failure.is_none_or(|failed| {
+            now.saturating_duration_since(failed) >= SEEN_MARK_BACKOFF * self.failures
+        })
+    }
+
+    /// A write was dispatched in frame `pass`.
+    pub fn dispatched(&mut self, pass: u64) {
+        self.dispatched_pass = Some(pass);
+    }
+
+    /// The backend started the write.
+    pub fn started(&mut self) {
+        self.started = true;
+    }
+
+    /// Test seam: pretend the backoff after the last failure has elapsed.
+    #[cfg(test)]
+    pub(crate) fn expire_backoff_for_test(&mut self) {
+        self.last_failure = None;
+    }
+
+    /// The write finished; a failure starts the backoff.
+    pub fn finished(&mut self, succeeded: bool, now: std::time::Instant) {
+        self.started = false;
+        self.dispatched_pass = None;
+        if succeeded {
+            self.failures = 0;
+            self.last_failure = None;
+        } else {
+            self.failures += 1;
+            self.last_failure = Some(now);
+        }
+    }
+}
+
 /// Whether `key` may sign documents that require `required` security: an enabled
 /// authentication key at least as strong as required, and never a master key.
 pub fn key_can_sign_documents(
@@ -721,6 +786,32 @@ mod tests {
         assert_eq!(request.end, Some(1_000 + 90 * MINUTE));
         let opened = UsernameRequest::submitted("alice", 5_000, durations(), None);
         assert_eq!(opened.join_end, Some(5_000 + 45 * MINUTE));
+    }
+
+    #[test]
+    fn seen_mark_attempts_are_bounded() {
+        let t0 = std::time::Instant::now();
+        let mut attempts = SeenMarkAttempts::default();
+        assert!(attempts.may_dispatch(1, t0));
+        attempts.dispatched(1);
+        // One in flight: no new dispatch while it may still start.
+        assert!(!attempts.may_dispatch(2, t0));
+        assert!(!attempts.may_dispatch(3, t0));
+        // Never started (its action was replaced): sent again.
+        assert!(attempts.may_dispatch(4, t0));
+        attempts.dispatched(4);
+        attempts.started();
+        assert!(!attempts.may_dispatch(100, t0));
+        // Each failure backs off longer; three failures stop it for the session.
+        for failure in 1..=SEEN_MARK_MAX_FAILURES {
+            attempts.finished(false, t0);
+            let wait = SEEN_MARK_BACKOFF * failure;
+            assert!(!attempts.may_dispatch(200, t0 + wait - Duration::from_millis(1)));
+            let ready = attempts.may_dispatch(200, t0 + wait);
+            assert_eq!(ready, failure < SEEN_MARK_MAX_FAILURES);
+            attempts.started();
+        }
+        assert!(!attempts.may_dispatch(1_000, t0 + Duration::from_secs(3_600)));
     }
 
     #[test]

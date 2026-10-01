@@ -927,9 +927,16 @@ fn seen_mark_survives_a_replaced_action() {
             "precondition: first frame marks, got {replaced:?}"
         );
 
-        // The hub dropped that action; the next frame must send it again.
-        home.step();
-        let retried = home.state_mut().2.take();
+        // The hub dropped that action, so the task never starts; the mark is
+        // sent again once its short start grace (a couple of frames) passes.
+        let mut retried = None;
+        for _ in 0..4 {
+            home.step();
+            retried = home.state_mut().2.take();
+            if retried.is_some() {
+                break;
+            }
+        }
         assert!(is_mark(&retried), "the seen mark was lost, got {retried:?}");
         run_action(&rt, &app_context, retried);
 

@@ -11,119 +11,73 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::platform::Identifier;
-use eframe::egui::{self, Button, Color32, ComboBox, Label, RichText, Ui};
+use eframe::egui::{self, Button, ComboBox, Label, RichText, Ui};
 use egui_extras::{Column, TableBuilder};
 
-use crate::app::{AppAction, DesiredAppAction, scheduled_vote_sweep_is_quiet};
+use crate::app::{AppAction, scheduled_vote_sweep_is_quiet};
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::error::TaskError;
-use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::{BackendTask, BackendTaskContext};
 use crate::context::AppContext;
 use crate::model::contested_name::{ContestState, ContestedName};
 use crate::model::dpns::normalize_dpns_label;
+use crate::model::dpns_voting::composer::{
+    AggregatePlan, BatchTiming, ComposeError, ComposerNode, Decision, NodeStanding, NodeTiming,
+    SkipReason, compose,
+};
+use crate::model::dpns_voting::contest_timing::{contest_durations, urgency_window};
+use crate::model::dpns_voting::operator::NodeExclusion;
+use crate::model::dpns_voting::operator::{
+    ChangesLeft, ChoiceTally, NodeSet, ResolvedNodeSet, VotingNode, VotingNodeKind,
+    relative_schedule_preset, tally_node_choices, time_left,
+};
+use crate::model::dpns_voting::progress::needs_attention;
 use crate::model::dpns_voting::{
     DpnsCurrentVoteState, DpnsScheduledVoteKey, DpnsVoteFailure, DpnsVoteOperation,
     DpnsVoteOperationId, DpnsVoteTarget, DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming,
-    dpns_schedule_is_overdue, validate_dpns_schedule_time,
+    dpns_schedule_is_overdue,
 };
-use crate::model::qualified_identity::{DPNSNameInfo, QualifiedIdentity};
+use crate::model::qualified_identity::IdentityType;
+use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
-use crate::ui::components::dpns_subscreen_chooser_panel::add_dpns_subscreen_chooser_panel;
-use crate::ui::components::left_panel::add_left_panel;
-use crate::ui::components::progress_overlay::{OptionOverlayExt, OverlayConfig, OverlayHandle};
-use crate::ui::components::styled::{StyledButton, island_central_panel};
-use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
-use crate::ui::components::top_panel::{add_top_panel_with_global_nav, subdued_everyday_spec};
 use crate::ui::components::utc_schedule_input::UtcScheduleInput;
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
-use crate::ui::identity::register_dpns_name_screen::RegisterDpnsNameSource;
-use crate::ui::state::dpns_contests::{ActiveDpnsContestSnapshot, ActiveDpnsContestView};
-use crate::ui::state::dpns_vote_operations::{DpnsVoteOperationSnapshot, ScheduledDpnsVoteRow};
+use crate::ui::dpns::contest_card::node_label;
+use crate::ui::dpns::contest_card::{CardEvent, CardView};
+use crate::ui::dpns::copy::excluded_nodes_line;
+use crate::ui::dpns::copy::needs_attention_line;
+use crate::ui::dpns::copy::tray_label;
+use crate::ui::dpns::copy::{
+    LOCKED_FOR_GOOD, NODES_DID_NOT_VOTE, before_end_phrase, changes_left_label,
+    confirm_button_label, confirm_change_warning, confirm_title, confirm_transactions_line,
+    decision_row, ends_in_label, nodes_voted_part, relative_schedule_label, scheduled_nodes_label,
+    skipped_header, skipped_reason_line, went_to_label,
+};
+use crate::ui::dpns::node_set_picker;
+use crate::ui::dpns::progress_drawer;
+use crate::ui::state::dpns_contests::ActiveDpnsContestSnapshot;
+use crate::ui::state::dpns_vote_cards::{
+    CantVoteReason, CardPlacement, NodeContestState, NodeContestStatus, SHORTCUT_HELP, Shortcut,
+    VoteCard, move_focus, shortcut_for, sort_by_time_left,
+};
+use crate::ui::state::dpns_vote_operations::{
+    DpnsVoteOperationSnapshot, ScheduledDpnsVoteRow, group_scheduled_rows,
+};
 use crate::ui::state::dpns_vote_state::DpnsVoteStateSnapshot;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
-use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike, ScreenType};
+use crate::ui::{BackendTaskSuccessResult, MessageType, ScreenLike};
+use crate::utils::time::now_ms;
 
-/// Which DPNS sub-screen is currently showing.
-#[derive(PartialEq)]
-pub enum DPNSSubscreen {
-    Active,
-    Past,
-    Owned,
-    ScheduledVotes,
-}
+pub use super::VotesView;
 
-/// Active contests bucketed by what the loaded nodes can do with them.
-///
-/// Declaration order is display order: the derived `Ord` keys the render map.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum ActiveContestGroup {
-    NeedsVote,
-    Voted,
-    VoteStateUnavailable,
-    NotVotable,
-}
-
-/// How one contest group renders. Named fields so a callsite cannot transpose
-/// "this group is expanded" with "this group accepts votes".
-#[derive(Clone, Copy)]
-struct ContestGroupPresentation {
-    default_open: bool,
-    voting_enabled: bool,
-    show_current_vote: bool,
-}
-
-impl ActiveContestGroup {
-    /// Every group, in the order the screen stacks them.
-    const ALL: [Self; 4] = [
-        Self::NeedsVote,
-        Self::Voted,
-        Self::VoteStateUnavailable,
-        Self::NotVotable,
-    ];
-
-    fn title(self) -> &'static str {
-        match self {
-            Self::NeedsVote => "Needs your vote",
-            Self::Voted => "Voted",
-            Self::VoteStateUnavailable => "Vote state unavailable",
-            Self::NotVotable => "Not votable by your nodes",
-        }
-    }
-
-    /// `no_voting_nodes` opens the un-votable group only when it is all the
-    /// operator has to look at.
-    fn presentation(self, no_voting_nodes: bool) -> ContestGroupPresentation {
-        match self {
-            Self::NeedsVote => ContestGroupPresentation {
-                default_open: true,
-                voting_enabled: true,
-                show_current_vote: false,
-            },
-            Self::Voted => ContestGroupPresentation {
-                default_open: false,
-                voting_enabled: true,
-                show_current_vote: true,
-            },
-            Self::VoteStateUnavailable => ContestGroupPresentation {
-                default_open: true,
-                voting_enabled: false,
-                show_current_vote: false,
-            },
-            Self::NotVotable => ContestGroupPresentation {
-                default_open: no_voting_nodes,
-                voting_enabled: false,
-                show_current_vote: false,
-            },
-        }
-    }
-}
-
+const NO_OPEN_CONTESTS_MESSAGE: &str =
+    "There are no open name contests right now. New contests appear here automatically.";
+const CANT_VOTE_REASON: &str = "None of the nodes you vote with has a voting key that is in the masternode list. Load a voting key or change the nodes you vote with.";
 const NO_VOTING_NODES_MESSAGE: &str = "None of your loaded nodes has a voting key.";
 const NO_VOTING_NODES_DETAIL: &str = "Load a masternode with its voting key to cast votes.";
 const JOURNAL_UNAVAILABLE_MESSAGE: &str = "Saved voting progress could not be read. The displayed history may be incomplete or out of date. Retry loading before managing votes.";
-const MISSED_SCHEDULE_GUIDANCE: &str = "The automatic voting time was missed. In Scheduled Votes, use Cast now to vote, Edit to reschedule, or Remove to cancel.";
+const MISSED_SCHEDULE_GUIDANCE: &str = "The automatic voting time was missed. On the Scheduled tab, use Cast now to vote, Edit to reschedule, or Remove to cancel.";
 const SCHEDULE_IN_FUTURE_MESSAGE: &str =
     "Choose a future date and time before scheduling these votes.";
 const KEEP_RUNNING_MESSAGE: &str = "Keep Dash Evo Tool running and connected until the scheduled time, or the scheduled votes will not be cast.";
@@ -150,39 +104,6 @@ fn schedule_is_missed(status: DpnsVoteTargetStatus, timing: VoteTiming, now_ms: 
 
 fn candidate_choice_label(candidate_name: &str) -> String {
     format!("Vote for {candidate_name}")
-}
-
-fn classify_vote_states(
-    states: impl IntoIterator<Item = DpnsCurrentVoteState>,
-) -> ActiveContestGroup {
-    let mut has_vote = false;
-    let mut has_unavailable_state = false;
-    for state in states {
-        match state {
-            DpnsCurrentVoteState::Available(None) => return ActiveContestGroup::NeedsVote,
-            DpnsCurrentVoteState::Available(Some(_)) => has_vote = true,
-            DpnsCurrentVoteState::Checking | DpnsCurrentVoteState::Unavailable => {
-                has_unavailable_state = true;
-            }
-        }
-    }
-    if has_vote {
-        ActiveContestGroup::Voted
-    } else if has_unavailable_state {
-        ActiveContestGroup::VoteStateUnavailable
-    } else {
-        ActiveContestGroup::NotVotable
-    }
-}
-
-fn tally_chip(ui: &mut Ui, votes: u32, dark_mode: bool) {
-    egui::Frame::new()
-        .fill(DashColors::surface(dark_mode))
-        .corner_radius(egui::CornerRadius::same(255))
-        .inner_margin(egui::Margin::symmetric(8, 2))
-        .show(ui, |ui| {
-            ui.label(format!("{votes} votes"));
-        });
 }
 
 fn short_identifier(identifier: Identifier) -> String {
@@ -241,29 +162,6 @@ fn candidate_name_index(
     index
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ProvedVoteSummary {
-    None,
-    Choice(ResourceVoteChoice),
-    Mixed,
-}
-
-fn proved_vote_summary(
-    states: impl IntoIterator<Item = DpnsCurrentVoteState>,
-) -> ProvedVoteSummary {
-    let mut proved_choice = None;
-    for state in states {
-        let DpnsCurrentVoteState::Available(Some(choice)) = state else {
-            continue;
-        };
-        if proved_choice.is_some_and(|current| current != choice) {
-            return ProvedVoteSummary::Mixed;
-        }
-        proved_choice = Some(choice);
-    }
-    proved_choice.map_or(ProvedVoteSummary::None, ProvedVoteSummary::Choice)
-}
-
 fn target_status_label(status: DpnsVoteTargetStatus) -> &'static str {
     match status {
         DpnsVoteTargetStatus::Scheduled => "Scheduled",
@@ -299,12 +197,17 @@ fn scheduled_failure_guidance(
     }
     match failure? {
         DpnsVoteFailure::CurrentVoteUnavailable => Some(
-            "Current vote could not be verified. In Scheduled Votes, use Cast now to check again or Edit to reschedule.",
+            "Current vote could not be verified. On the Scheduled tab, use Cast now to check again or Edit to reschedule.",
         ),
         DpnsVoteFailure::SubmissionFailed => Some(
-            "The vote could not be submitted. Check your connection and voting key, then use Cast now or Edit in Scheduled Votes.",
+            "The vote could not be submitted. Check your connection and voting key, then use Cast now or Edit on the Scheduled tab.",
         ),
-        DpnsVoteFailure::PlatformRejected | DpnsVoteFailure::ResultUnconfirmed => None,
+        DpnsVoteFailure::VotingKeyMissing => Some(
+            "This node's voting key is not loaded. Load it on the Nodes tab, then use Cast now on the Scheduled tab.",
+        ),
+        DpnsVoteFailure::PlatformRejected
+        | DpnsVoteFailure::ResultUnconfirmed
+        | DpnsVoteFailure::VotingEnded => None,
     }
 }
 
@@ -357,70 +260,78 @@ fn loaded_voting_identities(app_context: &AppContext) -> Result<Vec<QualifiedIde
         .collect())
 }
 
-/// One reviewed node × contest line, carrying the timing text the operator chose.
-struct ReviewEntry {
-    target: DpnsVoteTarget,
-    timing_label: String,
-}
-
-impl ReviewEntry {
-    fn node_label(&self) -> String {
-        self.target
-            .voter_alias
-            .clone()
-            .unwrap_or_else(|| short_identifier(self.target.key.voter_id))
-    }
-}
-
-/// Exactly what a submit click would send, resolved before the review is shown.
+/// Exactly what a confirm click would send, resolved before the confirm step
+/// is shown.
 struct ReviewPlan {
-    entries: Vec<ReviewEntry>,
+    aggregate: AggregatePlan,
+    /// One line per staged decision: name, choice, and the nodes casting it.
+    decisions: Vec<(Decision, usize)>,
     voters: Vec<QualifiedIdentity>,
 }
 
 impl ReviewPlan {
-    /// The targets that will really be submitted, no-op targets removed.
-    fn effective(&self) -> impl Iterator<Item = &ReviewEntry> {
-        self.entries.iter().filter(|entry| !entry.target.is_no_op())
+    /// The targets that will really be submitted.
+    fn targets(&self) -> &[DpnsVoteTarget] {
+        &self.aggregate.targets
     }
 
     fn effective_count(&self) -> usize {
-        self.effective().count()
-    }
-
-    fn no_op_count(&self) -> usize {
-        self.entries.len() - self.effective_count()
+        self.aggregate.targets.len()
     }
 
     fn node_count(&self) -> usize {
-        self.effective()
-            .map(|entry| entry.target.key.voter_id)
-            .collect::<BTreeSet<_>>()
-            .len()
+        self.aggregate.node_count()
     }
 
     fn has_immediate(&self) -> bool {
-        self.effective()
-            .any(|entry| matches!(entry.target.timing, VoteTiming::Now))
+        self.targets()
+            .iter()
+            .any(|target| matches!(target.timing, VoteTiming::Now))
     }
 
     fn has_scheduled(&self) -> bool {
-        self.effective()
-            .any(|entry| matches!(entry.target.timing, VoteTiming::Scheduled(_)))
+        self.targets()
+            .iter()
+            .any(|target| matches!(target.timing, VoteTiming::Scheduled(_)))
     }
 }
 
-fn review_headline(effective_count: usize, node_count: usize) -> String {
-    format!("Votes to submit ({effective_count}) from your nodes ({node_count}).")
+/// The batch timing picked in the confirm step (VOTE-FR-023).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ConfirmTiming {
+    #[default]
+    Now,
+    BeforeEnd,
+    At,
 }
 
-fn review_skipped_line(no_op_count: usize) -> String {
-    match no_op_count {
-        1 => "1 vote is already cast as requested and will be skipped.".to_owned(),
-        skipped_count => {
-            format!("{skipped_count} votes are already cast as requested and will be skipped.")
+impl ConfirmTiming {
+    const ALL: [Self; 3] = [Self::Now, Self::BeforeEnd, Self::At];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Now => "Now",
+            Self::BeforeEnd => "When voting is about to end",
+            Self::At => "At a specific time",
         }
     }
+}
+
+/// A per-node choice under `Adjust nodes`.
+fn node_timing_label(timing: NodeTiming) -> &'static str {
+    match timing {
+        NodeTiming::Batch => "Same as above",
+        NodeTiming::Override(BatchTiming::Now) => "Now",
+        NodeTiming::Override(BatchTiming::BeforeEnd(_)) => "When voting is about to end",
+        NodeTiming::Override(BatchTiming::At(_)) => "At a specific time",
+        NodeTiming::DontUse => "Don't use this node",
+    }
+}
+
+fn utc_minute(timestamp: u64) -> String {
+    DateTime::from_timestamp_millis(timestamp as i64)
+        .map(|date| date.format("%Y-%m-%d %H:%M").to_string())
+        .unwrap_or_default()
 }
 
 fn review_current_choice_label(
@@ -445,17 +356,24 @@ pub enum ReviewPlanError {
     ScheduleIsNotAValidTime,
     #[error("Choose a future time before the contest ends for {contested_name}.dash.")]
     ScheduleOutlastsContest { contested_name: String },
-    #[error("This vote could not be prepared. Refresh Active contests and try again.")]
+    #[error("This vote could not be prepared. Refresh the contests and try again.")]
     VotePollUnavailable {
         #[source]
         source: Arc<TaskError>,
     },
-    #[error(
-        "This node's vote for {contested_name} is already in progress. Check its result before submitting again."
-    )]
-    VoteAlreadyInProgress { contested_name: String },
-    #[error("Current vote state is unavailable. Refresh voting before applying votes.")]
-    CurrentVoteUnavailable,
+    #[error("Voting has ended for {contested_name}.dash. Clear it from your decisions.")]
+    VotingEnded { contested_name: String },
+}
+
+impl From<ComposeError> for ReviewPlanError {
+    fn from(error: ComposeError) -> Self {
+        match error {
+            ComposeError::ScheduleOutlastsContest { contested_name } => {
+                Self::ScheduleOutlastsContest { contested_name }
+            }
+            ComposeError::VotingEnded { contested_name } => Self::VotingEnded { contested_name },
+        }
+    }
 }
 
 /// Why a submit click produced nothing to send.
@@ -494,17 +412,6 @@ fn dpns_operation_id(
     }
 }
 
-impl DPNSSubscreen {
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            Self::Active => "Active contests",
-            Self::Past => "Past contests",
-            Self::Owned => "My usernames",
-            Self::ScheduledVotes => "Scheduled votes",
-        }
-    }
-}
-
 /// Minimal object for storing the user’s currently selected vote on a single contested name.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SelectedVote {
@@ -513,24 +420,10 @@ pub struct SelectedVote {
     pub end_time: Option<u64>,
 }
 
-#[derive(Clone)]
-pub enum VoteOption {
-    NoVote,
-    CastNow,
-    Scheduled {
-        days: u32,
-        hours: u32,
-        minutes: u32,
-    },
-    /// Absolute UTC time, in Unix milliseconds.
-    ScheduledAt(u64),
-}
-
 pub enum VoteHandlingStatus {
     NotStarted,
     CastingVotes,
     SchedulingVotes,
-    Completed,
     Failed(VoteSubmissionError),
 }
 
@@ -555,31 +448,29 @@ enum SortOrder {
     Descending,
 }
 
-/// The main, combined DPNSScreen:
-/// - Displays active/past/owned DPNS contests
-/// - Allows clicking selection of votes (bulk scheduling)
-/// - Allows single immediate vote or single schedule
-/// - Shows scheduled votes listing
+/// The Masternodes ▸ Votes panel: the single voting workspace.
+///
+/// One instance lives inside [`crate::ui::masternodes::MasternodesScreen`]; it
+/// owns the contest cache, the composer and the scheduled-vote views.
 pub struct DPNSScreen {
     voting_identities: Vec<QualifiedIdentity>,
     voting_identity_load_error: Option<TaskError>,
-    user_identities: Vec<QualifiedIdentity>,
     contested_names: Arc<Mutex<Vec<ContestedName>>>,
     active_contests: ActiveDpnsContestSnapshot,
     /// Rebuilt from `active_contests` and `contested_names` whenever either is
     /// replaced. Keep the three in step: the render path reads only this.
     candidate_names: CandidateNameIndex,
-    local_dpns_names: Arc<Mutex<Vec<(Identifier, DPNSNameInfo)>>>,
     scheduled_votes: Arc<Mutex<Vec<ScheduledDpnsVoteRow>>>,
     pub selected_votes: Vec<SelectedVote>,
     pub app_context: Arc<AppContext>,
     pending_backend_task: Option<BackendTask>,
     vote_operations: DpnsVoteOperationSnapshot,
     vote_state: DpnsVoteStateSnapshot,
-    vote_overlay: Option<OverlayHandle>,
     pending_vote_operation: Option<DpnsVoteOperationId>,
     pending_scheduled_actions: BTreeMap<DpnsScheduledVoteKey, BackendTaskContext>,
-    clear_vote_overlay_on_error: bool,
+    /// Set by `display_backend_task_error` when the failed task is this
+    /// panel's pending submission; `display_task_error` then releases it.
+    release_pending_on_error: bool,
     scheduled_clear_dialog: Option<(bool, ConfirmationDialog)>,
     scheduled_vote_editor: Option<ScheduledVoteEditor>,
 
@@ -588,58 +479,74 @@ pub struct DPNSScreen {
     sort_order: SortOrder,
     active_filter_term: String,
     past_filter_term: String,
-    owned_filter_term: String,
 
-    /// Which sub-screen is active: Active contests, Past, Owned, or Scheduled
-    pub dpns_subscreen: DPNSSubscreen,
+    /// The visible Votes sub-view.
+    pub view: VotesView,
     refreshing_status: RefreshingStatus,
     refresh_banner: Option<BannerHandle>,
     journal_error_banner: Option<BannerHandle>,
 
     /// Selected vote handling
     show_bulk_schedule_popup: bool,
-    bulk_identity_options: Vec<VoteOption>,
+    /// Per-node overrides under `Adjust nodes`; absent means "same as above".
+    node_overrides: BTreeMap<Identifier, NodeTiming>,
+    /// Set by `Review again`: the confirm step covers only this node.
+    retry_voter: Option<Identifier>,
     bulk_vote_handling_status: VoteHandlingStatus,
     submission_error_banner: Option<BannerHandle>,
-    set_all_option: VoteOption,
+    confirm_timing: ConfirmTiming,
+    /// Lead time for "When voting is about to end" (VOTE-FR-081).
+    relative_preset: std::time::Duration,
     /// Eagerly built, unlike most components: its default is the construction
     /// time plus a day, and the read-only accessors below must see it.
     simple_schedule: UtcScheduleInput,
+    /// Set when the operator asks to load a node; the hosting Masternodes
+    /// screen consumes it and opens its load form.
+    load_node_requested: bool,
+
+    /// Node set for this session; starts from the saved default (VOTE-FR-075).
+    node_set: NodeSet,
+    /// Network `node_set` was loaded for; `None` forces a reload.
+    node_set_network: Option<dash_sdk::dpp::dashcore::Network>,
+    voting_nodes: Vec<VotingNode>,
+    resolved_nodes: ResolvedNodeSet,
+    node_labels: BTreeMap<Identifier, String>,
+    /// Open contests as cards, sorted by time left. Rebuilt by `rebuild_cards`.
+    cards: Vec<VoteCard>,
+    /// "Before the end" presets of scheduled rows, by target and time; a row
+    /// without one shows its absolute time only (VOTE-FR-081).
+    relative_schedule_labels: BTreeMap<(DpnsVoteTargetKey, u64), std::time::Duration>,
+    /// Settled failures older than this are not raised in `Needs attention`.
+    session_started_ms: u64,
+    /// Cards ticked for a bulk decision, by contest name.
+    selected_cards: BTreeSet<String>,
+    focused_card: Option<String>,
+    /// History `Your nodes voted` per finished contest; absent when no node's
+    /// vote is known on this device.
+    history_votes: BTreeMap<String, Vec<ChoiceTally>>,
+    /// Whether the contest list has keyboard focus for shortcuts.
+    list_focused: bool,
 }
 
 impl DPNSScreen {
-    pub fn new(app_context: &Arc<AppContext>, dpns_subscreen: DPNSSubscreen) -> Self {
+    pub fn new(app_context: &Arc<AppContext>, view: VotesView) -> Self {
         let vote_operations = DpnsVoteOperationSnapshot::load(app_context);
         let legacy_scheduled_votes = app_context.get_scheduled_votes().unwrap_or_default();
         let scheduled_votes = Arc::new(Mutex::new(
             vote_operations.scheduled_vote_rows(&legacy_scheduled_votes),
         ));
 
-        // Load contested names, local dpns, scheduled, etc.:
-        let contested_names = Arc::new(Mutex::new(match dpns_subscreen {
-            DPNSSubscreen::Active => Vec::new(),
-            DPNSSubscreen::Past => app_context.all_contested_names().unwrap_or_default(),
-            DPNSSubscreen::Owned => Vec::new(),
-            DPNSSubscreen::ScheduledVotes => app_context.all_contested_names().unwrap_or_default(),
-        }));
-        let active_contests = if dpns_subscreen == DPNSSubscreen::Active {
-            ActiveDpnsContestSnapshot::new(
-                app_context,
-                app_context.ongoing_contested_names().unwrap_or_default(),
-            )
-        } else {
-            ActiveDpnsContestSnapshot::default()
-        };
+        // One instance serves every sub-view, so it loads every cache.
+        let contested_names = Arc::new(Mutex::new(
+            app_context.all_contested_names().unwrap_or_default(),
+        ));
+        let active_contests = ActiveDpnsContestSnapshot::new(
+            app_context,
+            app_context.ongoing_contested_names().unwrap_or_default(),
+        );
 
         let candidate_names =
             candidate_name_index(&active_contests, &contested_names.lock_recover());
-
-        let local_dpns_names = Arc::new(Mutex::new(match dpns_subscreen {
-            DPNSSubscreen::Active => Vec::new(),
-            DPNSSubscreen::Past => Vec::new(),
-            DPNSSubscreen::Owned => app_context.local_dpns_names().unwrap_or_default(),
-            DPNSSubscreen::ScheduledVotes => Vec::new(),
-        }));
 
         let (voting_identities, voting_identity_load_error) =
             match loaded_voting_identities(app_context) {
@@ -649,7 +556,6 @@ impl DPNSScreen {
                     (Vec::new(), Some(error))
                 }
             };
-        let user_identities = app_context.load_local_user_identities().unwrap_or_default();
         let vote_poll_ids = active_contests.vote_poll_ids();
         let voter_ids = voting_identities
             .iter()
@@ -661,18 +567,14 @@ impl DPNSScreen {
         }
 
         // Initialize vote handling pop-up state to hidden
-        let identity_count = voting_identities.len();
-        let bulk_identity_options = vec![VoteOption::CastNow; identity_count];
         let default_schedule_time = Utc::now() + chrono::Duration::days(1);
 
-        Self {
+        let mut screen = Self {
             voting_identities,
             voting_identity_load_error,
-            user_identities,
             contested_names,
             active_contests,
             candidate_names,
-            local_dpns_names,
             scheduled_votes,
             selected_votes: Vec::new(),
             app_context: app_context.clone(),
@@ -680,29 +582,50 @@ impl DPNSScreen {
             sort_order: SortOrder::Ascending,
             active_filter_term: String::new(),
             past_filter_term: String::new(),
-            owned_filter_term: String::new(),
             pending_backend_task: None,
             vote_operations,
             vote_state,
-            vote_overlay: None,
             pending_vote_operation: None,
             pending_scheduled_actions: BTreeMap::new(),
-            clear_vote_overlay_on_error: false,
+            release_pending_on_error: false,
+            session_started_ms: now_ms(),
             scheduled_clear_dialog: None,
             scheduled_vote_editor: None,
-            dpns_subscreen,
+            view,
             refreshing_status: RefreshingStatus::NotRefreshing,
             refresh_banner: None,
             journal_error_banner: None,
 
             // Vote handling
             show_bulk_schedule_popup: false,
-            bulk_identity_options,
+            node_overrides: BTreeMap::new(),
+            retry_voter: None,
             bulk_vote_handling_status: VoteHandlingStatus::NotStarted,
             submission_error_banner: None,
-            set_all_option: VoteOption::CastNow,
+            confirm_timing: ConfirmTiming::Now,
+            relative_preset: relative_schedule_preset(app_context.network()),
             simple_schedule: UtcScheduleInput::new().with_time(default_schedule_time),
-        }
+            load_node_requested: false,
+            node_set: NodeSet::All,
+            node_set_network: None,
+            voting_nodes: Vec::new(),
+            resolved_nodes: ResolvedNodeSet::default(),
+            node_labels: BTreeMap::new(),
+            cards: Vec::new(),
+            relative_schedule_labels: BTreeMap::new(),
+            selected_cards: BTreeSet::new(),
+            focused_card: None,
+            history_votes: BTreeMap::new(),
+            list_focused: false,
+        };
+        screen.rebuild_cards();
+        screen.rebuild_scheduled_vote_rows();
+        screen
+    }
+
+    /// Consume a pending "load a masternode" request from this panel.
+    pub fn take_load_node_request(&mut self) -> bool {
+        std::mem::take(&mut self.load_node_requested)
     }
 
     fn finish_scheduled_dispatch(&mut self, context: &BackendTaskContext) -> bool {
@@ -713,9 +636,6 @@ impl DPNSScreen {
             .map(|(key, _)| key.clone());
         if let Some(key) = key {
             self.pending_scheduled_actions.remove(&key);
-            if self.pending_vote_operation.is_none() {
-                self.vote_overlay.take_and_clear();
-            }
             true
         } else {
             false
@@ -726,29 +646,36 @@ impl DPNSScreen {
         self.selected_votes.clear();
         self.show_bulk_schedule_popup = false;
         self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
-        self.bulk_identity_options.clear();
-        self.set_all_option = VoteOption::CastNow;
+        self.node_overrides.clear();
+        self.retry_voter = None;
+        self.confirm_timing = ConfirmTiming::Now;
+        self.relative_preset = relative_schedule_preset(self.app_context.network());
         self.pending_backend_task = None;
         self.pending_vote_operation = None;
         self.pending_scheduled_actions.clear();
-        self.clear_vote_overlay_on_error = false;
+        self.release_pending_on_error = false;
         self.scheduled_clear_dialog = None;
         self.scheduled_vote_editor = None;
-        self.vote_overlay.take_and_clear();
         self.refresh_banner.take_and_clear();
         self.journal_error_banner.take_and_clear();
         self.submission_error_banner.take_and_clear();
         self.refreshing_status = RefreshingStatus::NotRefreshing;
         self.voting_identities.clear();
         self.voting_identity_load_error = None;
-        self.user_identities.clear();
         self.vote_state = DpnsVoteStateSnapshot::default();
         self.vote_operations = DpnsVoteOperationSnapshot::default();
         self.active_contests = ActiveDpnsContestSnapshot::default();
         self.candidate_names.clear();
         self.contested_names.lock_recover().clear();
         self.scheduled_votes.lock_recover().clear();
-        self.local_dpns_names.lock_recover().clear();
+        self.node_set_network = None;
+        self.voting_nodes.clear();
+        self.resolved_nodes = ResolvedNodeSet::default();
+        self.cards.clear();
+        self.selected_cards.clear();
+        self.focused_card = None;
+        self.list_focused = false;
+        self.history_votes.clear();
     }
 
     // ---------------------------
@@ -787,8 +714,8 @@ impl DPNSScreen {
     // ---------------------------
     // Rendering: Empty states
     // ---------------------------
-    fn render_no_voting_nodes(&self, ui: &mut Ui) -> AppAction {
-        let mut action = AppAction::None;
+    fn render_no_voting_nodes(&mut self, ui: &mut Ui) -> AppAction {
+        let action = AppAction::None;
         let dark_mode = ui.style().visuals.dark_mode;
         ui.vertical_centered(|ui| {
             ui.add_space(24.0);
@@ -806,7 +733,7 @@ impl DPNSScreen {
                     );
                     ui.add_space(12.0);
                     if ComponentStyles::add_primary_button(ui, "Load a masternode").clicked() {
-                        action = AppAction::SetMainScreen(RootScreenType::RootScreenMasternodes);
+                        self.load_node_requested = true;
                     }
                 });
             });
@@ -814,408 +741,654 @@ impl DPNSScreen {
         action
     }
 
-    fn render_no_active_contests_or_owned_names(&mut self, ui: &mut Ui) -> AppAction {
+    fn render_empty_view(&mut self, ui: &mut Ui) -> AppAction {
         let mut app_action = AppAction::None;
+        let dark_mode = ui.style().visuals.dark_mode;
+        let (heading, detail) = match self.view {
+            VotesView::ToDecide | VotesView::Voted => (NO_OPEN_CONTESTS_MESSAGE, None),
+            VotesView::History => ("There are no finished name contests yet.", None),
+            VotesView::Scheduled => (
+                "No scheduled votes.",
+                Some("Pick a decision in To decide, then choose a later time in the confirm step."),
+            ),
+        };
         ui.vertical_centered(|ui| {
             ui.add_space(20.0);
-            match self.dpns_subscreen {
-                DPNSSubscreen::Active => {
-                    ui.label(
-                        egui::RichText::new("No active contests at the moment.")
-                            .heading()
-                            .strong()
-                            .color(Color32::GRAY),
-                    );
-                }
-                DPNSSubscreen::Past => {
-                    ui.label(
-                        egui::RichText::new("No active or past contests at the moment.")
-                            .heading()
-                            .strong()
-                            .color(Color32::GRAY),
-                    );
-                }
-                DPNSSubscreen::Owned => {
-                    ui.label(
-                        egui::RichText::new("No owned usernames.")
-                            .heading()
-                            .strong()
-                            .color(Color32::GRAY),
-                    );
-                }
-                DPNSSubscreen::ScheduledVotes => {
-                    ui.label(
-                        egui::RichText::new("No scheduled votes.")
-                            .heading()
-                            .strong()
-                            .color(Color32::GRAY),
-                    );
-                }
+            ui.label(
+                RichText::new(heading)
+                    .heading()
+                    .strong()
+                    .color(DashColors::text_secondary(dark_mode)),
+            );
+            if let Some(detail) = detail {
+                ui.add_space(10.0);
+                ui.label(RichText::new(detail).color(DashColors::text_primary(dark_mode)));
             }
-            ui.add_space(10.0);
-
-            if self.dpns_subscreen != DPNSSubscreen::ScheduledVotes {
-                let dark_mode = ui.style().visuals.dark_mode;
-                ui.label(RichText::new("Please check back later or try refreshing the list.").color(DashColors::text_primary(dark_mode)));
+            if self.view != VotesView::Scheduled {
                 ui.add_space(20.0);
-                if StyledButton::primary("Refresh").show(ui).clicked() {
-                    if let RefreshingStatus::Refreshing = self.refreshing_status {
-                        app_action = AppAction::None;
-                    } else {
-                        self.refreshing_status = RefreshingStatus::Refreshing;
-                        match self.dpns_subscreen {
-                            DPNSSubscreen::Active | DPNSSubscreen::Past => {
-                                app_action = AppAction::BackendTask(BackendTask::ContestedResourceTask(
-                                    ContestedResourceTask::QueryDPNSContests,
-                                ));
-                            }
-                            DPNSSubscreen::Owned => {
-                                app_action = AppAction::BackendTask(BackendTask::IdentityTask(
-                                    IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames,
-                                ));
-                            }
-                            _ => {
-                                app_action = AppAction::Refresh;
-                            }
-                        }
-                    }
+                let refreshing = self.refreshing_status == RefreshingStatus::Refreshing;
+                if ComponentStyles::add_primary_button_enabled(ui, !refreshing, "Refresh")
+                    .disabled_tooltip("Contests are already being refreshed.")
+                    .clicked()
+                {
+                    self.refreshing_status = RefreshingStatus::Refreshing;
+                    app_action = AppAction::BackendTask(BackendTask::ContestedResourceTask(
+                        ContestedResourceTask::QueryDPNSContests,
+                    ));
                 }
-            } else {
-                let dark_mode = ui.style().visuals.dark_mode;
-                let text_color = DashColors::text_primary(dark_mode);
-                ui.label(
-                    RichText::new("Choose votes on the Active contests screen, then use Review and cast to schedule them.").color(text_color)
-                );
             }
         });
-
         app_action
     }
 
     // ---------------------------
-    // Rendering: Active, Past, Owned, Scheduled
+    // Rendering: To decide, Voted, Scheduled, History
     // ---------------------------
 
-    /// Render active contests as decision cards grouped by what the loaded nodes can do.
+    /// The loaded voting nodes plus key-less ones, as the node-set picker sees them.
+    fn collect_voting_nodes(&self) -> Vec<VotingNode> {
+        let mut nodes: Vec<VotingNode> = self
+            .voting_identities
+            .iter()
+            .map(|identity| {
+                let id = identity.identity.id();
+                VotingNode {
+                    id,
+                    kind: if identity.identity_type == IdentityType::Evonode {
+                        VotingNodeKind::Evonode
+                    } else {
+                        VotingNodeKind::Masternode
+                    },
+                    has_voting_key: true,
+                    membership: self.app_context.masternode_list_membership(id),
+                    alias: identity.alias.clone(),
+                }
+            })
+            .collect();
+        match self.app_context.dpns_voting_nodes() {
+            Ok(all) => {
+                let known: BTreeSet<Identifier> = nodes.iter().map(|node| node.id).collect();
+                nodes.extend(
+                    all.into_iter()
+                        .filter(|node| !node.has_voting_key && !known.contains(&node.id)),
+                );
+            }
+            Err(error) => tracing::debug!(?error, "Could not list key-less nodes for the node set"),
+        }
+        nodes
+    }
+
+    /// Rebuild the card view-model from contests, proved state, the journal and
+    /// the node set. Call after any of them changes; rendering only reads it.
+    /// Every loaded node's proved choice on each finished contest, tallied.
+    /// A contest is listed only when at least one node's vote is known.
+    fn collect_history_votes(&self) -> BTreeMap<String, Vec<ChoiceTally>> {
+        let finished: Vec<(String, Identifier)> = self
+            .contested_names
+            .lock_recover()
+            .iter()
+            .filter(|contest| contest.awarded_to.is_some() || contest.state == ContestState::Locked)
+            .filter_map(|contest| {
+                let poll = self
+                    .app_context
+                    .dpns_vote_poll_id(&contest.normalized_contested_name)
+                    .ok()?;
+                Some((contest.normalized_contested_name.clone(), poll))
+            })
+            .collect();
+        if finished.is_empty() {
+            return BTreeMap::new();
+        }
+        let states: Vec<(VotingNodeKind, BTreeMap<Identifier, DpnsCurrentVoteState>)> = self
+            .voting_nodes
+            .iter()
+            .filter_map(|node| {
+                let states = self
+                    .app_context
+                    .dpns_current_vote_states(node.id, finished.iter().map(|(_, poll)| *poll))
+                    .inspect_err(|error| {
+                        tracing::debug!(
+                            ?error,
+                            "Could not read a node's votes on finished contests"
+                        );
+                    })
+                    .ok()?;
+                Some((node.kind, states))
+            })
+            .collect();
+        finished
+            .into_iter()
+            .filter_map(|(name, poll)| {
+                let known: Vec<(VotingNodeKind, Option<ResourceVoteChoice>)> = states
+                    .iter()
+                    .filter_map(|(kind, states)| match states.get(&poll) {
+                        Some(DpnsCurrentVoteState::Available(choice)) => Some((*kind, *choice)),
+                        _ => None,
+                    })
+                    .collect();
+                if known.is_empty() {
+                    return None;
+                }
+                let tallies = tally_node_choices(
+                    known
+                        .into_iter()
+                        .filter_map(|(kind, choice)| choice.map(|choice| (kind, choice))),
+                );
+                Some((name, tallies))
+            })
+            .collect()
+    }
+
+    /// The History `Your nodes voted` cell; empty when nothing is known.
+    fn history_votes_cell(&self, contested_name: &str) -> String {
+        match self.history_votes.get(contested_name) {
+            None => String::new(),
+            Some(tallies) if tallies.is_empty() => NODES_DID_NOT_VOTE.to_owned(),
+            Some(tallies) => tallies
+                .iter()
+                .map(|tally| {
+                    nodes_voted_part(
+                        &vote_choice_label(
+                            tally.choice,
+                            self.candidate_name(contested_name, tally.choice),
+                        ),
+                        tally.nodes,
+                        tally.weight,
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; "),
+        }
+    }
+
+    pub(crate) fn rebuild_cards(&mut self) {
+        let network = self.app_context.network();
+        if self.node_set_network != Some(network) {
+            self.node_set = self
+                .app_context
+                .saved_dpns_node_set()
+                .unwrap_or_else(|error| {
+                    tracing::debug!(
+                        ?error,
+                        "Could not read the saved node set; voting with all nodes"
+                    );
+                    NodeSet::All
+                });
+            self.node_set_network = Some(network);
+        }
+        self.voting_nodes = self.collect_voting_nodes();
+        self.resolved_nodes = self.node_set.resolve(&self.voting_nodes);
+        self.node_labels = self
+            .voting_nodes
+            .iter()
+            .filter_map(|node| node.alias.clone().map(|alias| (node.id, alias)))
+            .collect();
+        let mut cards: Vec<VoteCard> = self
+            .active_contests
+            .contests()
+            .iter()
+            .map(|view| {
+                let nodes = view.vote_poll_id.map_or_else(Vec::new, |poll| {
+                    self.resolved_nodes
+                        .included
+                        .iter()
+                        .map(|voter| {
+                            let state = self.vote_state.state(*voter, poll);
+                            let lock = self.vote_operations.target_status(&DpnsVoteTargetKey {
+                                network,
+                                voter_id: *voter,
+                                vote_poll_id: poll,
+                            });
+                            let changes = self.app_context.dpns_changes_left(*voter, poll, state);
+                            NodeContestState {
+                                node: *voter,
+                                status: NodeContestStatus::classify(state, lock, changes),
+                                current: match state {
+                                    DpnsCurrentVoteState::Available(current) => current,
+                                    _ => None,
+                                },
+                                changes,
+                            }
+                        })
+                        .collect()
+                });
+                VoteCard::new(view.contest.clone(), view.vote_poll_id, nodes)
+            })
+            .collect();
+        sort_by_time_left(&mut cards);
+        self.cards = cards;
+        self.history_votes = self.collect_history_votes();
+        let names: BTreeSet<&str> = self.cards.iter().map(VoteCard::name).collect();
+        self.selected_cards
+            .retain(|name| names.contains(name.as_str()));
+    }
+
+    /// Votes a staged decision would send: submittable nodes not already on it.
+    fn transaction_count(&self) -> usize {
+        self.selected_votes
+            .iter()
+            .filter_map(|vote| {
+                let card = self
+                    .cards
+                    .iter()
+                    .find(|card| card.name() == vote.contested_name)?;
+                Some(
+                    card.nodes
+                        .iter()
+                        .filter(|node| node.status.can_submit())
+                        .filter(|node| node.current != Some(vote.vote_choice))
+                        .count(),
+                )
+            })
+            .sum()
+    }
+
+    /// Show one contest by normalized label: the view holding its card, the
+    /// filter set to the label and the card focused.
+    pub(crate) fn show_contest(&mut self, label: String) {
+        self.view = match self
+            .cards
+            .iter()
+            .find(|card| card.name() == label)
+            .map(|card| card.placement)
+        {
+            Some(CardPlacement::Voted) => VotesView::Voted,
+            _ => VotesView::ToDecide,
+        };
+        self.active_filter_term = label.clone();
+        self.focused_card = Some(label);
+        self.list_focused = true;
+    }
+
+    /// Vote with one node for this session (VOTE-FR-076): To decide opens with
+    /// that node as the node set and no staged decisions carried over.
+    pub fn vote_with_node(&mut self, node: Identifier) {
+        self.selected_votes.clear();
+        self.selected_cards.clear();
+        self.view = VotesView::ToDecide;
+        // The node may have been loaded after this panel last read its nodes.
+        self.refresh_on_arrival();
+        self.apply_node_set(NodeSet::Custom(BTreeSet::from([node])));
+    }
+
+    fn apply_node_set(&mut self, node_set: NodeSet) {
+        self.node_set = node_set;
+        self.rebuild_cards();
+    }
+
+    /// The `Vote with:` chip and its popover, when any node is loaded.
+    fn render_node_set_chip(&mut self, ui: &mut Ui) {
+        if self.voting_nodes.is_empty() {
+            return;
+        }
+        let picked =
+            node_set_picker::show(ui, &self.node_set, &self.resolved_nodes, &self.voting_nodes);
+        if picked.save_default {
+            match self.app_context.save_dpns_node_set(&self.node_set) {
+                Ok(()) => {
+                    self.app_context.recompute_dpns_vote_attention();
+                }
+                Err(error) => {
+                    MessageBanner::set_global(ui.ctx(), error.to_string(), MessageType::Error)
+                        .with_details(&error);
+                }
+            }
+        }
+        if let Some(node_set) = picked.changed {
+            self.apply_node_set(node_set);
+        }
+    }
+
+    /// Render To decide or Voted: node-set chip, filter, cards and the tray.
     fn render_active_contests(&mut self, ui: &mut Ui) {
         let dark_mode = ui.style().visuals.dark_mode;
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Filter by name:").color(DashColors::text_primary(dark_mode)));
-            ui.text_edit_singleline(&mut self.active_filter_term)
-                .on_hover_text(
-                    "The letters i and l match the digit 1, and the letter o matches 0.",
-                );
+            self.render_node_set_chip(ui);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let shortcuts = ui.button("Shortcuts");
+                egui::Popup::from_toggle_button_response(&shortcuts)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                    .show(|ui| {
+                        ui.label(
+                            RichText::new("Shortcuts work while the list of names has focus.")
+                                .strong(),
+                        );
+                        egui::Grid::new("dpns_vote_shortcuts").show(ui, |ui| {
+                            for (keys, action) in SHORTCUT_HELP {
+                                ui.label(RichText::new(keys).monospace());
+                                ui.label(action);
+                                ui.end_row();
+                            }
+                        });
+                    });
+                let filter = ui
+                    .add(
+                        egui::TextEdit::singleline(&mut self.active_filter_term)
+                            .hint_text("Filter by name")
+                            .desired_width(180.0),
+                    )
+                    .on_hover_text(
+                        "The letters i and l match the digit 1, and the letter o matches 0.",
+                    );
+                if filter.has_focus() {
+                    self.list_focused = false;
+                }
+            });
         });
-        ui.label(
-            RichText::new("Each node can change its vote up to four times after its initial vote.")
-                .color(DashColors::text_secondary(dark_mode)),
-        );
         ui.add_space(8.0);
 
         let filter = normalize_dpns_label(&self.active_filter_term);
-        let contests = self.active_contests.contests();
-        let mut groups = BTreeMap::<ActiveContestGroup, Vec<&ActiveDpnsContestView>>::new();
-        for contest in contests.iter() {
-            groups
-                .entry(self.contest_group(contest.vote_poll_id))
-                .or_default()
-                .push(contest);
-        }
-
-        // Counted before the filter is applied: the summary describes the whole
-        // set of names still open to the operator, not the current search.
-        let still_open = groups
-            .get(&ActiveContestGroup::NeedsVote)
-            .map_or(&[][..], Vec::as_slice);
-        let available = still_open.len();
-        let closing = still_open
+        let view = self.view;
+        let now = crate::utils::time::now_ms();
+        let network = self.app_context.network();
+        let durations = contest_durations(network, self.app_context.platform_version());
+        let urgency = urgency_window(network);
+        let has_voting_nodes = !self.resolved_nodes.included.is_empty();
+        let matches_filter =
+            |card: &VoteCard| filter.is_empty() || card.name().to_lowercase().contains(&filter);
+        let listed: Vec<usize> = self
+            .cards
             .iter()
-            .filter(|contest| {
-                contest.contest.end_time.is_some_and(|end_time| {
-                    let remaining = end_time as i64 - Utc::now().timestamp_millis();
-                    remaining > 0 && remaining <= chrono::Duration::days(1).num_milliseconds()
-                })
+            .enumerate()
+            .filter(|(_, card)| matches_filter(card))
+            .filter(|(_, card)| match view {
+                VotesView::Voted => card.placement == CardPlacement::Voted,
+                // Unproved state is temporary and fixed by a refresh, so those
+                // cards stay in view rather than in the collapsed group.
+                _ => matches!(
+                    card.placement,
+                    CardPlacement::ToDecide
+                        | CardPlacement::CantVote(CantVoteReason::VoteStateUnavailable)
+                ),
             })
-            .count();
-        egui::Frame::group(ui.style()).show(ui, |ui| {
-            ui.label(format!(
-                "Names still available to your nodes: {available}. Names closing within 24 hours: {closing}.",
-            ));
-        });
-        ui.add_space(8.0);
-
-        if !filter.is_empty() {
-            for group in groups.values_mut() {
-                group.retain(|contest| {
-                    contest
-                        .contest
-                        .normalized_contested_name
-                        .to_lowercase()
-                        .contains(&filter)
-                });
-            }
-        }
-
-        let no_voting_nodes = self.voting_identities.is_empty();
-        egui::ScrollArea::vertical()
-            .id_salt("active_contest_cards")
-            .show(ui, |ui| {
-                for group in ActiveContestGroup::ALL {
-                    let contests = groups.get(&group).map_or(&[][..], Vec::as_slice);
-                    if group == ActiveContestGroup::VoteStateUnavailable {
-                        if contests.is_empty() {
-                            continue;
-                        }
-                        ui.label("Current votes are unavailable or out of date. Refresh voting to check these nodes.");
-                        if ui.button("Refresh voting").clicked() {
-                            self.pending_backend_task = Some(BackendTask::ContestedResourceTask(
-                                ContestedResourceTask::QueryDPNSContests,
-                            ));
-                        }
-                    }
-                    self.render_contest_group(
-                        ui,
-                        group.title(),
-                        contests,
-                        group.presentation(no_voting_nodes),
-                    );
-                }
-                self.render_voting_activity(ui);
-            });
-
-        ui.separator();
-        ui.horizontal(|ui| {
-            let count = self.selected_votes.len();
-            ui.label(
-                RichText::new(format!("Votes ready to cast: {count}"))
-                    .strong()
-                    .color(DashColors::text_primary(dark_mode)),
-            );
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ComponentStyles::add_primary_button_enabled(ui, count > 0, "Review and cast")
-                    .disabled_tooltip("Choose a vote on at least one contest before reviewing it.")
-                    .clicked()
-                {
-                    self.show_bulk_schedule_popup = true;
-                }
-            });
-        });
-    }
-
-    fn contest_group(&self, vote_poll_id: Option<Identifier>) -> ActiveContestGroup {
-        let Some(poll_id) = vote_poll_id else {
-            return ActiveContestGroup::NotVotable;
-        };
-        classify_vote_states(
-            self.voting_identities
+            .map(|(index, _)| index)
+            .collect();
+        let cant_vote: Vec<usize> = if view == VotesView::ToDecide {
+            self.cards
                 .iter()
-                .map(|identity| self.vote_state.state(identity.identity.id(), poll_id)),
-        )
-    }
-
-    fn render_contest_group(
-        &mut self,
-        ui: &mut Ui,
-        title: &str,
-        contests: &[&ActiveDpnsContestView],
-        presentation: ContestGroupPresentation,
-    ) {
-        egui::CollapsingHeader::new(format!("{title} ({count})", count = contests.len()))
-            .default_open(presentation.default_open)
-            .show(ui, |ui| {
-                if contests.is_empty() {
-                    ui.label("There are no contests in this group.");
-                }
-                for contest in contests {
-                    let mut card = presentation;
-                    card.voting_enabled = presentation.voting_enabled
-                        && self.contest_has_available_target(contest.vote_poll_id);
-                    ui.add_enabled_ui(card.voting_enabled, |ui| {
-                        self.render_contest_card(
-                            ui,
-                            contest.contest.as_ref(),
-                            contest.vote_poll_id,
-                            card,
-                        );
-                    });
-                    ui.add_space(8.0);
-                }
-            });
-    }
-
-    fn contest_has_available_target(&self, vote_poll_id: Option<Identifier>) -> bool {
-        let Some(vote_poll_id) = vote_poll_id else {
-            return false;
-        };
-        self.voting_identities.iter().any(|identity| {
-            let voter_id = identity.identity.id();
-            matches!(
-                self.vote_state.state(voter_id, vote_poll_id),
-                DpnsCurrentVoteState::Available(_)
-            ) && self
-                .vote_operations
-                .target_status(&DpnsVoteTargetKey {
-                    network: self.app_context.network(),
-                    voter_id,
-                    vote_poll_id,
+                .enumerate()
+                .filter(|(_, card)| matches_filter(card))
+                .filter(|(_, card)| {
+                    card.placement == CardPlacement::CantVote(CantVoteReason::NoVotingNodes)
                 })
-                .is_none()
-        })
-    }
-
-    fn proved_vote_for_contest(&self, vote_poll_id: Option<Identifier>) -> ProvedVoteSummary {
-        let Some(poll_id) = vote_poll_id else {
-            return ProvedVoteSummary::None;
-        };
-        proved_vote_summary(
-            self.voting_identities
-                .iter()
-                .map(|identity| self.vote_state.state(identity.identity.id(), poll_id)),
-        )
-    }
-
-    fn candidate_name_in_contest(
-        contest: &ContestedName,
-        choice: ResourceVoteChoice,
-    ) -> Option<&str> {
-        let ResourceVoteChoice::TowardsIdentity(candidate_id) = choice else {
-            return None;
-        };
-        contest
-            .contestants
-            .as_ref()?
-            .iter()
-            .find(|candidate| candidate.id == candidate_id)
-            .map(|candidate| candidate.name.as_str())
-    }
-
-    fn render_contest_card(
-        &mut self,
-        ui: &mut Ui,
-        contest: &ContestedName,
-        vote_poll_id: Option<Identifier>,
-        presentation: ContestGroupPresentation,
-    ) {
-        let ContestGroupPresentation {
-            voting_enabled,
-            show_current_vote,
-            ..
-        } = presentation;
-        let dark_mode = ui.style().visuals.dark_mode;
-        let staged = self
-            .selected_votes
-            .iter()
-            .find(|vote| vote.contested_name == contest.normalized_contested_name)
-            .map(|vote| vote.vote_choice);
-        let proved = if show_current_vote {
-            self.proved_vote_for_contest(vote_poll_id)
+                .map(|(index, _)| index)
+                .collect()
         } else {
-            ProvedVoteSummary::None
+            Vec::new()
         };
-        let selected = staged.or(match proved {
-            ProvedVoteSummary::Choice(choice) => Some(choice),
-            ProvedVoteSummary::None | ProvedVoteSummary::Mixed => None,
-        });
-        let locked_votes = contest.locked_votes.unwrap_or_default();
-        let abstain_votes = contest.abstain_votes.unwrap_or_default();
 
-        egui::Frame::group(ui.style()).show(ui, |ui| {
-            ui.set_min_width(ui.available_width());
-            ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new(format!(
-                        "{name}.dash",
-                        name = contest.normalized_contested_name
+        let scroll_to = self.handle_shortcuts(ui, &listed);
+        self.render_bulk_bar(ui);
+
+        let mut events: Vec<(usize, CardEvent)> = Vec::new();
+        let list = egui::ScrollArea::vertical()
+            .id_salt("active_contest_cards")
+            .max_height(ui.available_height() - 48.0)
+            .show(ui, |ui| {
+                if listed.is_empty() {
+                    let empty = match view {
+                        VotesView::Voted => "Your nodes haven't voted on any open contest yet.",
+                        _ => "Nothing needs your vote right now.",
+                    };
+                    ui.label(RichText::new(empty).color(DashColors::text_secondary(dark_mode)));
+                }
+                let render = |ui: &mut Ui, index: usize, events: &mut Vec<(usize, CardEvent)>| {
+                    let card = &self.cards[index];
+                    let staged = self
+                        .selected_votes
+                        .iter()
+                        .find(|vote| vote.contested_name == card.name())
+                        .map(|vote| vote.vote_choice);
+                    let card_events = CardView {
+                        card,
+                        staged,
+                        selected: self.selected_cards.contains(card.name()),
+                        focused: self.focused_card.as_deref() == Some(card.name()),
+                        scroll_into_view: scroll_to.as_deref() == Some(card.name()),
+                        node_labels: &self.node_labels,
+                        node_set_weight: self.resolved_nodes.weight,
+                        now_ms: now,
+                        urgency,
+                        durations,
+                        has_voting_nodes,
+                    }
+                    .show(ui);
+                    events.extend(card_events.into_iter().map(|event| (index, event)));
+                    ui.add_space(8.0);
+                };
+                for index in &listed {
+                    render(ui, *index, &mut events);
+                }
+                if !cant_vote.is_empty() {
+                    egui::CollapsingHeader::new(format!(
+                        "Can't vote with your nodes ({count})",
+                        count = cant_vote.len()
                     ))
-                    .heading()
-                    .strong()
-                    .color(DashColors::text_primary(dark_mode)),
-                );
-                if let Some(end_time) = contest.end_time
-                    && let LocalResult::Single(date_time) =
-                        Utc.timestamp_millis_opt(end_time as i64)
-                {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    .default_open(!has_voting_nodes)
+                    .show(ui, |ui| {
                         ui.label(
-                            RichText::new(format!(
-                                "Voting ends {when}.",
-                                when = HumanTime::from(date_time)
-                            ))
-                            .color(DashColors::text_secondary(dark_mode)),
-                        );
-                    });
-                }
-            });
-            ui.add_space(6.0);
-
-            match proved {
-                ProvedVoteSummary::Choice(choice) => {
-                    let candidate_name = Self::candidate_name_in_contest(contest, choice);
-                    ui.label(
-                        RichText::new(format!(
-                            "You voted: {}.",
-                            vote_choice_label(choice, candidate_name)
-                        ))
-                        .strong()
-                        .color(DashColors::text_primary(dark_mode)),
-                    );
-                    ui.add_space(4.0);
-                }
-                ProvedVoteSummary::Mixed => {
-                    ui.label(
-                        RichText::new("Your loaded nodes have different current votes.")
-                            .strong()
-                            .color(DashColors::text_primary(dark_mode)),
-                    );
-                    ui.add_space(4.0);
-                }
-                ProvedVoteSummary::None => {}
-            }
-
-            ui.horizontal_wrapped(|ui| {
-                let clicked = ui
-                    .selectable_label(selected == Some(ResourceVoteChoice::Lock), "Lock name")
-                    .on_disabled_hover_text(
-                        "None of your loaded nodes can vote on this contest right now.",
-                    )
-                    .clicked();
-                tally_chip(ui, locked_votes, dark_mode);
-                if clicked && voting_enabled {
-                    self.set_selected_vote(contest, ResourceVoteChoice::Lock);
-                }
-
-                let clicked = ui
-                    .selectable_label(selected == Some(ResourceVoteChoice::Abstain), "Abstain")
-                    .clicked();
-                tally_chip(ui, abstain_votes, dark_mode);
-                if clicked && voting_enabled {
-                    self.set_selected_vote(contest, ResourceVoteChoice::Abstain);
-                }
-            });
-
-            if let Some(contestants) = &contest.contestants {
-                for contestant in contestants {
-                    ui.horizontal_wrapped(|ui| {
-                        let choice = ResourceVoteChoice::TowardsIdentity(contestant.id);
-                        let clicked = ui
-                            .selectable_label(
-                                selected == Some(choice),
-                                candidate_choice_label(&contestant.name),
-                            )
-                            .clicked();
-                        tally_chip(ui, contestant.votes, dark_mode);
-                        ui.label(
-                            RichText::new(short_identifier(contestant.id))
-                                .monospace()
+                            RichText::new(CANT_VOTE_REASON)
                                 .color(DashColors::text_secondary(dark_mode)),
                         );
-                        if clicked && voting_enabled {
-                            self.set_selected_vote(contest, choice);
+                        for index in &cant_vote {
+                            render(ui, *index, &mut events);
                         }
                     });
                 }
+            });
+
+        // The list owns keyboard focus after a click inside it (VOTE-NFR-010).
+        if let Some(pos) = ui.input(|input| {
+            input
+                .pointer
+                .any_pressed()
+                .then(|| input.pointer.interact_pos())
+                .flatten()
+        }) {
+            self.list_focused = list.inner_rect.contains(pos);
+        }
+        if !events.is_empty() {
+            self.list_focused = true;
+        }
+        for (index, event) in events {
+            let name = self.cards[index].name().to_owned();
+            match event {
+                CardEvent::Choose(choice) => {
+                    let contest = Arc::clone(&self.cards[index].contest);
+                    self.set_selected_vote(&contest, choice);
+                }
+                CardEvent::ToggleSelected => {
+                    if !self.selected_cards.remove(&name) {
+                        self.selected_cards.insert(name.clone());
+                    }
+                }
+                CardEvent::RefreshVoting => {
+                    self.pending_backend_task = Some(BackendTask::ContestedResourceTask(
+                        ContestedResourceTask::QueryDPNSContests,
+                    ));
+                }
+            }
+            self.focused_card = Some(name);
+        }
+
+        self.render_tray(ui);
+    }
+
+    /// Stage `choice` for a contest (never toggles it off).
+    fn stage_choice(&mut self, contest: &ContestedName, choice: ResourceVoteChoice) {
+        match self
+            .selected_votes
+            .iter_mut()
+            .find(|vote| vote.contested_name == contest.normalized_contested_name)
+        {
+            Some(vote) => vote.vote_choice = choice,
+            None => self.selected_votes.push(SelectedVote {
+                contested_name: contest.normalized_contested_name.clone(),
+                vote_choice: choice,
+                end_time: contest.end_time,
+            }),
+        }
+    }
+
+    fn clear_choice(&mut self, contested_name: &str) {
+        self.selected_votes
+            .retain(|vote| vote.contested_name != contested_name);
+    }
+
+    /// Apply this frame's list shortcuts (VOTE-FR-082). Active only while the
+    /// list has focus and no text field wants the keyboard (VOTE-NFR-010).
+    /// Returns the card to scroll into view when focus moved.
+    fn handle_shortcuts(&mut self, ui: &Ui, listed: &[usize]) -> Option<String> {
+        if !self.list_focused
+            || self.show_bulk_schedule_popup
+            || ui.ctx().egui_wants_keyboard_input()
+        {
+            return None;
+        }
+        let shortcuts: Vec<Shortcut> = ui.input(|input| {
+            input
+                .events
+                .iter()
+                .filter_map(|event| match event {
+                    egui::Event::Key {
+                        key,
+                        pressed: true,
+                        modifiers,
+                        ..
+                    } if modifiers.is_none() => shortcut_for(*key),
+                    _ => None,
+                })
+                .collect()
+        });
+        let mut scroll_to = None;
+        for shortcut in shortcuts {
+            let position = listed
+                .iter()
+                .position(|index| Some(self.cards[*index].name()) == self.focused_card.as_deref());
+            let focused = position.map(|position| listed[position]);
+            match shortcut {
+                Shortcut::Next | Shortcut::Previous => {
+                    if let Some(next) = move_focus(position, listed.len(), shortcut) {
+                        let name = self.cards[listed[next]].name().to_owned();
+                        scroll_to = Some(name.clone());
+                        self.focused_card = Some(name);
+                    }
+                }
+                Shortcut::Contender(_) | Shortcut::Lock | Shortcut::Abstain => {
+                    let Some(index) = focused else { continue };
+                    let card = &self.cards[index];
+                    if !card.accepts_decision() {
+                        continue;
+                    }
+                    let choice = match shortcut {
+                        Shortcut::Lock => Some(ResourceVoteChoice::Lock),
+                        Shortcut::Abstain => Some(ResourceVoteChoice::Abstain),
+                        Shortcut::Contender(n) => card
+                            .contest
+                            .contestants
+                            .as_ref()
+                            .and_then(|contenders| contenders.get(n))
+                            .map(|contender| ResourceVoteChoice::TowardsIdentity(contender.id)),
+                        _ => None,
+                    };
+                    if let Some(choice) = choice {
+                        let contest = Arc::clone(&card.contest);
+                        self.stage_choice(&contest, choice);
+                    }
+                }
+                Shortcut::Clear => {
+                    if let Some(index) = focused {
+                        let name = self.cards[index].name().to_owned();
+                        self.clear_choice(&name);
+                    }
+                }
+                Shortcut::ToggleSelected => {
+                    if let Some(index) = focused {
+                        let name = self.cards[index].name().to_owned();
+                        if !self.selected_cards.remove(&name) {
+                            self.selected_cards.insert(name);
+                        }
+                    }
+                }
+                Shortcut::Confirm => {
+                    if !self.selected_votes.is_empty() {
+                        self.open_review_for_node_set();
+                    }
+                }
+            }
+        }
+        scroll_to
+    }
+
+    /// Bulk bar for two or more selected names (VOTE-FR-082).
+    fn render_bulk_bar(&mut self, ui: &mut Ui) {
+        let selected = self.selected_cards.len();
+        if selected < 2 {
+            return;
+        }
+        let mut apply: Option<Option<ResourceVoteChoice>> = None;
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(format!("{selected} names selected")).strong());
+            if ui.button("Lock name").clicked() {
+                apply = Some(Some(ResourceVoteChoice::Lock));
+            }
+            if ui.button("Abstain").clicked() {
+                apply = Some(Some(ResourceVoteChoice::Abstain));
+            }
+            if ui.button("Clear").clicked() {
+                apply = Some(None);
             }
         });
+        let Some(apply) = apply else {
+            return;
+        };
+        let targets: Vec<Arc<ContestedName>> = self
+            .cards
+            .iter()
+            .filter(|card| self.selected_cards.contains(card.name()))
+            .filter(|card| apply.is_none() || card.accepts_decision())
+            .map(|card| Arc::clone(&card.contest))
+            .collect();
+        for contest in targets {
+            match apply {
+                Some(choice) => self.stage_choice(&contest, choice),
+                None => self.clear_choice(&contest.normalized_contested_name),
+            }
+        }
+    }
+
+    /// The tray under the list: what is staged and the Cast action (VOTE-FR-086).
+    fn render_tray(&mut self, ui: &mut Ui) {
+        let decisions = self.selected_votes.len();
+        if decisions == 0 {
+            return;
+        }
+        let transactions = self.transaction_count();
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(tray_label(decisions, transactions)).strong());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ComponentStyles::add_primary_button_enabled(ui, transactions > 0, "Cast")
+                    .disabled_tooltip(
+                        "Your nodes already hold these choices. Pick a different decision.",
+                    )
+                    .clicked()
+                {
+                    self.open_review_for_node_set();
+                }
+                if ui.button("Clear").clicked() {
+                    self.selected_votes.clear();
+                }
+            });
+        });
+    }
+
+    /// Open the confirm step for the staged decisions across the node set.
+    fn open_review_for_node_set(&mut self) {
+        self.retry_voter = None;
+        self.node_overrides.clear();
+        self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
+        self.show_bulk_schedule_popup = true;
     }
 
     fn set_selected_vote(&mut self, contest: &ContestedName, choice: ResourceVoteChoice) {
@@ -1241,117 +1414,45 @@ impl DPNSScreen {
     fn review_failed_target(&mut self, outcome: &crate::model::dpns_voting::DpnsVoteOutcome) {
         self.selected_votes.clear();
         self.set_selected_vote_from_outcome(outcome);
-        self.bulk_identity_options = self
-            .voting_identities
-            .iter()
-            .map(|voter| {
-                if voter.identity.id() == outcome.target.key.voter_id {
-                    VoteOption::CastNow
-                } else {
-                    VoteOption::NoVote
-                }
-            })
-            .collect();
-        self.set_all_option = VoteOption::CastNow;
+        self.retry_voter = Some(outcome.target.key.voter_id);
+        self.node_overrides.clear();
+        self.confirm_timing = ConfirmTiming::Now;
         self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
         self.show_bulk_schedule_popup = true;
     }
 
-    fn render_voting_activity(&mut self, ui: &mut Ui) {
-        let operations = self.vote_operations.recent_operations();
-        if operations.is_empty() {
+    /// `Needs attention` row (VOTE-FR-084): unconfirmed, failed or missed
+    /// targets, linking to the drawer or Scheduled.
+    fn render_needs_attention(&mut self, ui: &mut Ui) {
+        let attention = needs_attention(
+            self.vote_operations.operations(),
+            self.session_started_ms,
+            now_ms(),
+        );
+        if attention.is_empty() {
             return;
         }
-
-        let dark_mode = ui.style().visuals.dark_mode;
-        ui.add_space(12.0);
-        ui.heading("Voting activity");
-        for operation in operations.iter() {
-            let settled = operation
-                .targets
-                .iter()
-                .filter(|outcome| !outcome.status.holds_lock())
-                .count();
-            ui.group(|ui| {
-                ui.label(
-                    RichText::new(format!(
-                        "{settled} of {} votes settled.",
-                        operation.targets.len()
-                    ))
-                    .strong(),
-                );
-                for outcome in &operation.targets {
-                    let missed = schedule_is_missed(outcome.status, outcome.target.timing, Utc::now().timestamp_millis().max(0) as u64);
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(format!(
-                            "{node} — {name}.dash — {choice} — {status}",
-                            node = outcome.target.voter_alias.clone().unwrap_or_else(|| short_identifier(outcome.target.key.voter_id)),
-                            name = outcome.target.contested_name,
-                            choice = vote_choice_label(
-                                outcome.target.requested_choice,
-                                self.candidate_name(
-                                    &outcome.target.contested_name,
-                                    outcome.target.requested_choice,
-                                ),
-                            ),
-                            status = if missed { "Missed automatic vote" } else { target_outcome_label(outcome.status, outcome.failure) },
-                        ));
-                        if outcome.status == DpnsVoteTargetStatus::Unconfirmed
-                            && ComponentStyles::add_secondary_button(
-                                ui,
-                                "Check again",
-                                dark_mode,
-                            )
-                            .clicked()
-                        {
-                            self.pending_backend_task = Some(BackendTask::ContestedResourceTask(
-                                ContestedResourceTask::ReconcileDpnsVoteOperation(
-                                    operation.id,
-                                    self.app_context.network(),
-                                ),
-                            ));
-                            self.pending_vote_operation = Some(operation.id);
-                            self.raise_vote_overlay(
-                                ui.ctx(),
-                                "Checking the submitted votes with Platform…",
-                            );
-                        }
-                        if matches!(
-                            outcome.status,
-                            DpnsVoteTargetStatus::Rejected
-                                | DpnsVoteTargetStatus::FailedBeforeSubmission
-                                | DpnsVoteTargetStatus::NotApplied
-                        ) && ComponentStyles::add_secondary_button(
-                            ui,
-                            "Review again",
-                            dark_mode,
-                        )
-                        .clicked()
-                        {
-                            self.review_failed_target(outcome);
-                        }
-                    });
-                    if let Some(guidance) = scheduled_failure_guidance(outcome.status, outcome.failure) {
-                        ui.label(guidance);
-                    }
-                    if missed {
-                        ui.label(MISSED_SCHEDULE_GUIDANCE);
-                    }
-                    if matches!(
-                        outcome.status,
-                        DpnsVoteTargetStatus::Confirming
-                            | DpnsVoteTargetStatus::Unconfirmed
-                    ) {
-                        ui.label(
-                            RichText::new(
-                                "This vote may already have been submitted. Do not submit it again.",
-                            )
+        let dark_mode = ui.visuals().dark_mode;
+        egui::Frame::group(ui.style())
+            .stroke(egui::Stroke::new(1.0, DashColors::warning_color(dark_mode)))
+            .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        RichText::new(needs_attention_line(attention))
                             .color(DashColors::warning_color(dark_mode)),
-                        );
+                    );
+                    if attention.checking + attention.failed > 0
+                        && ui.button("Show progress").clicked()
+                    {
+                        self.show_vote_progress(ui.ctx());
                     }
-                }
+                    if attention.missed_schedules > 0 && ui.button("Open Scheduled").clicked() {
+                        self.view = VotesView::Scheduled;
+                    }
+                });
             });
-        }
+        ui.add_space(6.0);
     }
 
     fn set_selected_vote_from_outcome(
@@ -1374,9 +1475,10 @@ impl DPNSScreen {
         }
     }
 
-    fn raise_vote_overlay(&mut self, ctx: &egui::Context, message: &str) {
-        self.vote_overlay
-            .raise(ctx, message, OverlayConfig::default());
+    /// Progress shows in the non-blocking drawer, never a window overlay
+    /// (VOTE-FR-035/083).
+    fn show_vote_progress(&self, ctx: &egui::Context) {
+        progress_drawer::expand(ctx);
     }
     fn render_table_past_contests(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
@@ -1413,6 +1515,7 @@ impl DPNSScreen {
                 .column(Column::auto().resizable(true)) // Ended Time
                 .column(Column::auto().resizable(true)) // Last Updated
                 .column(Column::auto().resizable(true)) // Awarded To
+                .column(Column::remainder()) // Your nodes voted
                 .header(30.0, |mut header| {
                     header.col(|ui| {
                         if ui.button("Name").clicked() {
@@ -1433,6 +1536,9 @@ impl DPNSScreen {
                         if ui.button("Outcome").clicked() {
                             self.toggle_sort(SortColumn::AwardedTo);
                         }
+                    });
+                    header.col(|ui| {
+                        ui.label(RichText::new("Your nodes voted").strong());
                     });
                 })
                 .body(|mut body| {
@@ -1527,170 +1633,30 @@ impl DPNSScreen {
                                                     .iter()
                                                     .find(|contestant| contestant.id == identifier)
                                             })
-                                            .map(|contestant| contestant.name.clone())
-                                            .unwrap_or_else(|| short_identifier(identifier));
-                                        ui.label(format!("Won by {winner}."));
+                                            .map(|contestant| contestant.name.as_str());
+                                        ui.label(went_to_label(
+                                            winner,
+                                            &short_identifier(identifier),
+                                        ));
+                                        if ui.small_button("Copy ID").clicked() {
+                                            ui.ctx()
+                                                .copy_text(identifier.to_string(Encoding::Base58));
+                                        }
                                     }
                                     ContestState::Locked => {
                                         ui.label(
-                                            RichText::new("Locked; no name was awarded.")
+                                            RichText::new(LOCKED_FOR_GOOD)
                                                 .color(DashColors::text_primary(dark_mode)),
                                         );
                                     }
                                 }
                             });
-                        });
-                    }
-                });
-        });
-    }
-
-    /// Show the Owned DPNS names table
-    fn render_table_local_dpns_names(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            let dark_mode = ui.style().visuals.dark_mode;
-            ui.label(RichText::new("Filter by name:").color(DashColors::text_primary(dark_mode)));
-            ui.text_edit_singleline(&mut self.owned_filter_term);
-        });
-
-        let mut filtered_names = {
-            let guard = self.local_dpns_names.lock_recover();
-            let mut name_infos = guard.clone();
-            if !self.owned_filter_term.is_empty() {
-                let filter_lc = self.owned_filter_term.to_lowercase();
-                name_infos.retain(|c| c.1.name.to_lowercase().contains(&filter_lc));
-            }
-            name_infos
-        };
-        // Sort
-        filtered_names.sort_by(|a, b| match self.sort_column {
-            SortColumn::ContestedName => {
-                let order = a.1.name.cmp(&b.1.name);
-                if self.sort_order == SortOrder::Descending {
-                    order.reverse()
-                } else {
-                    order
-                }
-            }
-            SortColumn::AwardedTo => {
-                let order = a.0.cmp(&b.0);
-                if self.sort_order == SortOrder::Descending {
-                    order.reverse()
-                } else {
-                    order
-                }
-            }
-            SortColumn::EndingTime => {
-                let order = a.1.acquired_at.cmp(&b.1.acquired_at);
-                if self.sort_order == SortOrder::Descending {
-                    order.reverse()
-                } else {
-                    order
-                }
-            }
-            _ => std::cmp::Ordering::Equal,
-        });
-
-        // Space allocation for UI elements is handled by the layout system
-
-        egui::ScrollArea::both().show(ui, |ui| {
-            TableBuilder::new(ui)
-                .striped(false)
-                .resizable(true)
-                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                .column(Column::auto().resizable(true)) // DPNS Name
-                .column(Column::auto().resizable(true)) // Owner ID
-                .column(Column::auto().resizable(true)) // Acquired At
-                .column(Column::auto().resizable(true)) // Actions
-                .header(30.0, |mut header| {
-                    header.col(|ui| {
-                        if ui.button("Name").clicked() {
-                            self.toggle_sort(SortColumn::ContestedName);
-                        }
-                    });
-                    header.col(|ui| {
-                        if ui.button("Owner ID").clicked() {
-                            self.toggle_sort(SortColumn::AwardedTo);
-                        }
-                    });
-                    header.col(|ui| {
-                        if ui.button("Acquired At").clicked() {
-                            self.toggle_sort(SortColumn::EndingTime);
-                        }
-                    });
-                    header.col(|ui| {
-                        let dark_mode = ui.style().visuals.dark_mode;
-                        ui.label(
-                            RichText::new("Actions").color(DashColors::text_primary(dark_mode)),
-                        );
-                    });
-                })
-                .body(|mut body| {
-                    for (identifier, dpns_info) in filtered_names {
-                        let name_for_alias = dpns_info.name.clone();
-                        // Display name with .dash suffix
-                        let display_name = if name_for_alias.ends_with(".dash") {
-                            name_for_alias.clone()
-                        } else {
-                            format!("{name}.dash", name = name_for_alias)
-                        };
-                        body.row(25.0, |mut row| {
                             row.col(|ui| {
-                                let dark_mode = ui.style().visuals.dark_mode;
                                 ui.label(
-                                    RichText::new(&display_name)
-                                        .color(DashColors::text_primary(dark_mode)),
+                                    self.history_votes_cell(
+                                        &contested_name.normalized_contested_name,
+                                    ),
                                 );
-                            });
-                            row.col(|ui| {
-                                let dark_mode = ui.style().visuals.dark_mode;
-                                ui.label(
-                                    RichText::new(identifier.to_string(Encoding::Base58))
-                                        .color(DashColors::text_primary(dark_mode)),
-                                );
-                            });
-                            let dt = DateTime::from_timestamp(
-                                dpns_info.acquired_at as i64 / 1000,
-                                ((dpns_info.acquired_at % 1000) * 1_000_000) as u32,
-                            )
-                            .map(|dt| dt.to_string())
-                            .unwrap_or_else(|| "Invalid timestamp".to_string());
-                            row.col(|ui| {
-                                let dark_mode = ui.style().visuals.dark_mode;
-                                ui.label(
-                                    RichText::new(dt).color(DashColors::text_primary(dark_mode)),
-                                );
-                            });
-                            row.col(|ui| {
-                                if ui.small_button("Set Alias").clicked() {
-                                    // Append .dash suffix for DPNS names
-                                    let alias_with_suffix = if name_for_alias.ends_with(".dash") {
-                                        name_for_alias.clone()
-                                    } else {
-                                        format!("{name}.dash", name = name_for_alias)
-                                    };
-                                    if let Err(e) = self
-                                        .app_context
-                                        .set_identity_alias(&identifier, Some(&alias_with_suffix))
-                                    {
-                                        MessageBanner::set_global(
-                                            ui.ctx(),
-                                        "The alias could not be saved. Check available disk space and try again.",
-                                        MessageType::Error,
-                                        )
-                                        .with_details(e);
-                                    } else {
-                                        MessageBanner::set_global(
-                                            ui.ctx(),
-                                            format!(
-                                            "Alias set to '{alias}' for identity {identity_id}",
-                                            alias = alias_with_suffix,
-                                            identity_id = identifier.to_string(Encoding::Base58)
-                                            ),
-                                            MessageType::Success,
-                                        );
-                                    }
-                                }
                             });
                         });
                     }
@@ -1698,186 +1664,212 @@ impl DPNSScreen {
         });
     }
 
-    /// Show the Scheduled Votes table
+    /// Scheduled view grouped by decision (VOTE-FR-088): one row per name ×
+    /// choice × time with an expandable node list carrying per-node status
+    /// and actions.
     fn render_table_scheduled_votes(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
-        let mut show_cast_overlay = false;
-        let mut sorted_votes = {
-            let guard = self.scheduled_votes.lock_recover();
-            guard.clone()
-        };
-        sorted_votes.sort_by(|a, b| {
-            let order = a.vote.contested_name.cmp(&b.vote.contested_name);
-            if self.sort_order == SortOrder::Descending {
-                order.reverse()
-            } else {
-                order
+        let mut show_cast_progress = false;
+        let rows = self.scheduled_votes.lock_recover().clone();
+        let mut groups = group_scheduled_rows(rows);
+        if self.sort_order == SortOrder::Descending {
+            groups.reverse();
+        }
+        let now = Utc::now().timestamp_millis().max(0) as u64;
+        egui::ScrollArea::both().show(ui, |ui| {
+            for (index, group) in groups.iter().enumerate() {
+                let dark_mode = ui.visuals().dark_mode;
+                let choice = vote_choice_label(
+                    group.choice,
+                    self.candidate_name(&group.contested_name, group.choice),
+                );
+                let preset = group.rows.iter().find_map(|row| {
+                    let (_, key) = row.journal_target.as_ref()?;
+                    self.relative_schedule_labels
+                        .get(&(key.clone(), group.unix_timestamp))
+                });
+                let when = match preset {
+                    Some(preset) => {
+                        relative_schedule_label(*preset, &utc_minute(group.unix_timestamp))
+                    }
+                    None => match Utc.timestamp_millis_opt(group.unix_timestamp as i64) {
+                        LocalResult::Single(date) => timestamp_with_relative(date),
+                        _ => "Invalid timestamp".to_owned(),
+                    },
+                };
+                let needs_attention = group.rows.iter().any(|row| {
+                    schedule_is_missed(
+                        row.status,
+                        VoteTiming::Scheduled(row.vote.unix_timestamp),
+                        now,
+                    ) || scheduled_failure_guidance(row.status, row.failure).is_some()
+                });
+                egui::Frame::group(ui.style()).show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
+                    ui.label(
+                        RichText::new(format!(
+                            "{name}.dash · {choice}",
+                            name = group.contested_name
+                        ))
+                        .strong()
+                        .color(DashColors::text_primary(dark_mode)),
+                    );
+                    ui.label(RichText::new(when).color(DashColors::text_secondary(dark_mode)));
+                    egui::CollapsingHeader::new(scheduled_nodes_label(group.rows.len()))
+                        .id_salt(("scheduled_group", index))
+                        .default_open(group.rows.len() <= 3 || needs_attention)
+                        .show(ui, |ui| {
+                            self.render_scheduled_group_rows(
+                                ui,
+                                index,
+                                &group.rows,
+                                &mut action,
+                                &mut show_cast_progress,
+                            );
+                        });
+                });
+                ui.add_space(6.0);
             }
         });
+        if show_cast_progress {
+            self.show_vote_progress(ui.ctx());
+        }
+        action
+    }
 
-        egui::ScrollArea::both().show(ui, |ui| {
-            TableBuilder::new(ui)
-                .striped(false)
-                .resizable(true)
-                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                .column(Column::auto().resizable(true)) // ContestedName
-                .column(Column::auto().resizable(true)) // Voter
-                .column(Column::auto().resizable(true)) // Choice
-                .column(Column::auto().resizable(true)) // Time
-                .column(Column::initial(280.0).resizable(true)) // Status
-                .column(Column::auto().resizable(true)) // Actions
-                .header(30.0, |mut header| {
-                    header.col(|ui| {
-                        if ui.button("Name").clicked() {
-                            self.toggle_sort(SortColumn::ContestedName);
-                        }
-                    });
-                    header.col(|ui| {
-                        let dark_mode = ui.style().visuals.dark_mode;
-                        ui.heading(
-                            RichText::new("Voter").color(DashColors::text_primary(dark_mode)),
-                        );
-                    });
-                    header.col(|ui| {
-                        let dark_mode = ui.style().visuals.dark_mode;
-                        ui.heading(
-                            RichText::new("Vote Choice").color(DashColors::text_primary(dark_mode)),
-                        );
-                    });
-                    header.col(|ui| {
-                        if ui.button("Scheduled Time").clicked() {
-                            self.toggle_sort(SortColumn::EndingTime);
-                        }
-                    });
-                    header.col(|ui| {
-                        let dark_mode = ui.style().visuals.dark_mode;
-                        ui.heading(
-                            RichText::new("Status").color(DashColors::text_primary(dark_mode)),
-                        );
-                    });
-                    header.col(|ui| {
-                        let dark_mode = ui.style().visuals.dark_mode;
-                        ui.heading(
-                            RichText::new("Actions").color(DashColors::text_primary(dark_mode)),
-                        );
-                    });
-                })
-                .body(|mut body| {
-                    for scheduled_row in &sorted_votes {
-                        let vote = &scheduled_row.vote;
-                        let pending_key = DpnsScheduledVoteKey {
-                            network: scheduled_row
-                                .journal_target
-                                .as_ref()
-                                .map_or(self.app_context.network(), |(_, key)| key.network),
-                            voter_id: vote.voter_id,
-                            contested_name: vote.contested_name.clone(),
-                        };
-                        let missed = schedule_is_missed(scheduled_row.status, VoteTiming::Scheduled(vote.unix_timestamp), Utc::now().timestamp_millis().max(0) as u64);
-                        let failure_guidance = if missed { Some(MISSED_SCHEDULE_GUIDANCE) } else { scheduled_failure_guidance(scheduled_row.status, scheduled_row.failure) };
-                        body.row(if failure_guidance.is_some() { 95.0 } else { 25.0 }, |mut row| {
-                            row.col(|ui| {
-                                ui.add(Label::new(format!(
-                                    "{name}.dash",
-                                    name = vote.contested_name
-                                )));
-                            });
-                            row.col(|ui| {
-                                let voter = self
-                                    .voting_identities
-                                    .iter()
-                                    .find(|identity| identity.identity.id() == vote.voter_id)
-                                    .and_then(|identity| identity.alias.clone())
-                                    .unwrap_or_else(|| short_identifier(vote.voter_id));
-                                ui.add(Label::new(voter));
-                            });
-                            row.col(|ui| {
-                                let candidate_name =
-                                    self.candidate_name(&vote.contested_name, vote.choice);
-                                ui.add(Label::new(vote_choice_label(vote.choice, candidate_name)));
-                            });
-                            row.col(|ui| {
-                                let dark_mode = ui.style().visuals.dark_mode;
-                                if let LocalResult::Single(dt) =
-                                    Utc.timestamp_millis_opt(vote.unix_timestamp as i64)
-                                {
-                                    ui.label(
-                                        RichText::new(timestamp_with_relative(dt))
-                                            .color(DashColors::text_primary(dark_mode)),
-                                    );
+    /// The node list inside one scheduled decision: status, guidance and the
+    /// per-node Remove / Edit / Cast now actions.
+    fn render_scheduled_group_rows(
+        &mut self,
+        ui: &mut Ui,
+        group_index: usize,
+        rows: &[ScheduledDpnsVoteRow],
+        action: &mut AppAction,
+        show_cast_progress: &mut bool,
+    ) {
+        let now = Utc::now().timestamp_millis().max(0) as u64;
+        TableBuilder::new(ui)
+            .id_salt(("scheduled_group_rows", group_index))
+            .striped(false)
+            .resizable(true)
+            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+            .column(Column::auto().resizable(true)) // Voter
+            .column(Column::initial(280.0).resizable(true)) // Status
+            .column(Column::auto().resizable(true)) // Actions
+            .body(|mut body| {
+                for scheduled_row in rows {
+                    let vote = &scheduled_row.vote;
+                    let pending_key = DpnsScheduledVoteKey {
+                        network: scheduled_row
+                            .journal_target
+                            .as_ref()
+                            .map_or(self.app_context.network(), |(_, key)| key.network),
+                        voter_id: vote.voter_id,
+                        contested_name: vote.contested_name.clone(),
+                    };
+                    let missed = schedule_is_missed(
+                        scheduled_row.status,
+                        VoteTiming::Scheduled(vote.unix_timestamp),
+                        now,
+                    );
+                    let failure_guidance = if missed {
+                        Some(MISSED_SCHEDULE_GUIDANCE)
+                    } else {
+                        scheduled_failure_guidance(scheduled_row.status, scheduled_row.failure)
+                    };
+                    let height = if failure_guidance.is_some() { 95.0 } else { 25.0 };
+                    body.row(height, |mut row| {
+                        row.col(|ui| {
+                            let voter = self
+                                .voting_identities
+                                .iter()
+                                .find(|identity| identity.identity.id() == vote.voter_id)
+                                .and_then(|identity| identity.alias.clone())
+                                .unwrap_or_else(|| short_identifier(vote.voter_id));
+                            ui.add(Label::new(voter));
+                        });
+                        row.col(|ui| {
+                            let dark_mode = ui.style().visuals.dark_mode;
+                            ui.vertical(|ui| {
+                                let status = if missed {
+                                    "Missed automatic vote"
                                 } else {
-                                    ui.label(
-                                        RichText::new("Invalid timestamp")
-                                            .color(DashColors::text_primary(dark_mode)),
-                                    );
-                                }
-                            });
-                            row.col(|ui| {
-                                let dark_mode = ui.style().visuals.dark_mode;
-                                ui.vertical(|ui| {
-                                    ui.label(RichText::new(if missed { "Missed automatic vote" } else { target_outcome_label(scheduled_row.status, scheduled_row.failure) })
-                                        .color(DashColors::text_primary(dark_mode)));
-                                    if let Some(guidance) = failure_guidance {
-                                        ui.add(Label::new(guidance).wrap());
-                                    }
-                                });
-                            });
-                            row.col(|ui| {
-                                let remove_enabled =
-                                    scheduled_vote_remove_enabled(scheduled_row.status);
-                                if ui
-                                    .add_enabled(remove_enabled, Button::new("Remove"))
-                                    .disabled_tooltip(
-                                        "This scheduled vote cannot be removed while its result is being checked.",
-                                    )
-                                    .clicked()
-                                {
-                                    action = AppAction::BackendTask(
-                                        BackendTask::ContestedResourceTask(
-                                            scheduled_vote_removal_task(scheduled_row),
-                                        ),
-                                    );
-                                }
-                                if ui.add_enabled(scheduled_row.status == DpnsVoteTargetStatus::Scheduled
-                                    && !self.pending_scheduled_actions.contains_key(&pending_key), Button::new("Edit"))
-                                    .disabled_tooltip("Only scheduled votes that have not started can be edited.")
-                                    .clicked() {
-                                    self.open_schedule_editor(scheduled_row);
-                                }
-                                let cast_button_enabled = scheduled_vote_cast_enabled(
-                                    scheduled_row.status,
-                                    self.pending_scheduled_actions.contains_key(&pending_key),
-                                ) && self.voting_identities.iter().any(|identity| identity.identity.id() == vote.voter_id);
-                                if ui
-                                    .add_enabled(cast_button_enabled, Button::new("Cast now"))
-                                    .disabled_tooltip("Load this node's voting key and wait for any pending submission to finish before casting.")
-                                    .clicked()
-                                    && let Some(found) = self
-                                        .voting_identities
-                                        .iter()
-                                        .find(|identity| {
-                                            identity.identity.id() == vote.voter_id
-                                        })
-                                        .cloned()
-                                {
-                                    let task = BackendTask::ContestedResourceTask(
-                                        ContestedResourceTask::CastScheduledVote(vote.clone(), Box::new(found)));
-                                    let context = BackendTaskContext::for_dispatch_on(&task, self.app_context.network());
-                                    self.pending_scheduled_actions.insert(pending_key.clone(), context.clone());
-                                    action = AppAction::BackendTaskWithContext { task, context };
-                                    show_cast_overlay = true;
+                                    target_outcome_label(scheduled_row.status, scheduled_row.failure)
+                                };
+                                ui.label(
+                                    RichText::new(status)
+                                        .color(DashColors::text_primary(dark_mode)),
+                                );
+                                if let Some(guidance) = failure_guidance {
+                                    ui.add(Label::new(guidance).wrap());
                                 }
                             });
                         });
-                    }
-                });
-        });
-
-        if show_cast_overlay {
-            self.raise_vote_overlay(ui.ctx(), "Submitting the scheduled vote to Dash Platform…");
-        }
-
-        action
+                        row.col(|ui| {
+                            if ui
+                                .add_enabled(
+                                    scheduled_vote_remove_enabled(scheduled_row.status),
+                                    Button::new("Remove"),
+                                )
+                                .disabled_tooltip(
+                                    "This scheduled vote cannot be removed while its result is being checked.",
+                                )
+                                .clicked()
+                            {
+                                *action = AppAction::BackendTask(BackendTask::ContestedResourceTask(
+                                    scheduled_vote_removal_task(scheduled_row),
+                                ));
+                            }
+                            let dispatch_pending =
+                                self.pending_scheduled_actions.contains_key(&pending_key);
+                            if ui
+                                .add_enabled(
+                                    scheduled_row.status == DpnsVoteTargetStatus::Scheduled
+                                        && !dispatch_pending,
+                                    Button::new("Edit"),
+                                )
+                                .disabled_tooltip(
+                                    "Only scheduled votes that have not started can be edited.",
+                                )
+                                .clicked()
+                            {
+                                self.open_schedule_editor(scheduled_row);
+                            }
+                            let voter = self
+                                .voting_identities
+                                .iter()
+                                .find(|identity| identity.identity.id() == vote.voter_id)
+                                .cloned();
+                            let cast_enabled =
+                                scheduled_vote_cast_enabled(scheduled_row.status, dispatch_pending)
+                                    && voter.is_some();
+                            if ui
+                                .add_enabled(cast_enabled, Button::new("Cast now"))
+                                .disabled_tooltip(
+                                    "Load this node's voting key and wait for any pending submission to finish before casting.",
+                                )
+                                .clicked()
+                                && let Some(found) = voter
+                            {
+                                let task = BackendTask::ContestedResourceTask(
+                                    ContestedResourceTask::CastScheduledVote(
+                                        vote.clone(),
+                                        Box::new(found),
+                                    ),
+                                );
+                                let context = BackendTaskContext::for_dispatch_on(
+                                    &task,
+                                    self.app_context.network(),
+                                );
+                                self.pending_scheduled_actions
+                                    .insert(pending_key.clone(), context.clone());
+                                *action = AppAction::BackendTaskWithContext { task, context };
+                                *show_cast_progress = true;
+                            }
+                        });
+                    });
+                }
+            });
     }
 
     fn open_schedule_editor(&mut self, row: &ScheduledDpnsVoteRow) {
@@ -1914,15 +1906,22 @@ impl DPNSScreen {
             ScheduledVoteEditor::new(row.clone(), key, node_label, choices);
     }
 
-    fn simple_schedule_option(&self) -> Option<VoteOption> {
-        let timestamp = self.simple_schedule.current_value()?;
-        (timestamp > Utc::now().timestamp_millis() as u64)
-            .then_some(VoteOption::ScheduledAt(timestamp))
-    }
-
-    fn apply_all_nodes_option(&mut self, option: VoteOption) {
-        self.set_all_option = option.clone();
-        self.bulk_identity_options.fill(option);
+    /// The batch timing the confirm step resolves targets with.
+    fn batch_timing(&self, now_ms: u64) -> Result<BatchTiming, ReviewPlanError> {
+        match self.confirm_timing {
+            ConfirmTiming::Now => Ok(BatchTiming::Now),
+            ConfirmTiming::BeforeEnd => Ok(BatchTiming::BeforeEnd(self.relative_preset)),
+            ConfirmTiming::At => {
+                let at = self
+                    .simple_schedule
+                    .current_value()
+                    .ok_or(ReviewPlanError::ScheduleIsNotAValidTime)?;
+                if at <= now_ms {
+                    return Err(ReviewPlanError::ScheduleIsNotInTheFuture);
+                }
+                Ok(BatchTiming::At(at))
+            }
+        }
     }
 
     /// The cached display name of a `TowardsIdentity` candidate.
@@ -1946,8 +1945,17 @@ impl DPNSScreen {
 
     fn rebuild_scheduled_vote_rows(&mut self) {
         let legacy_votes = self.app_context.get_scheduled_votes().unwrap_or_default();
-        *self.scheduled_votes.lock_recover() =
-            self.vote_operations.scheduled_vote_rows(&legacy_votes);
+        let rows = self.vote_operations.scheduled_vote_rows(&legacy_votes);
+        self.relative_schedule_labels = rows
+            .iter()
+            .filter_map(|row| {
+                let (_, key) = row.journal_target.as_ref()?;
+                let at = row.vote.unix_timestamp;
+                let preset = self.app_context.dpns_relative_schedule_label(key, at)?;
+                Some(((key.clone(), at), preset))
+            })
+            .collect();
+        *self.scheduled_votes.lock_recover() = rows;
     }
 
     fn render_voting_identity_load_error(&mut self, ui: &mut Ui) {
@@ -1960,18 +1968,11 @@ impl DPNSScreen {
         }
     }
 
+    /// The confirm step (VOTE-FR-080): an aggregate of the staged decisions
+    /// across the node set, the batch timing, and `Adjust nodes`.
     fn show_review_and_cast_window(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
-
         let dark_mode = ui.style().visuals.dark_mode;
-
-        if matches!(
-            self.bulk_vote_handling_status,
-            VoteHandlingStatus::Completed
-        ) {
-            action |= self.show_bulk_vote_handling_complete(ui);
-            return action;
-        }
 
         if self.voting_identity_load_error.is_some() {
             self.render_voting_identity_load_error(ui);
@@ -1980,18 +1981,15 @@ impl DPNSScreen {
             }
             return action;
         }
-
         if self.voting_identities.is_empty() {
-            ui.add_space(5.0);
             ui.colored_label(
                 DashColors::warning_color(dark_mode),
                 NO_VOTING_NODES_MESSAGE,
             );
             ui.label(NO_VOTING_NODES_DETAIL);
-            ui.add_space(10.0);
             ui.horizontal(|ui| {
                 if ComponentStyles::add_primary_button(ui, "Load a masternode").clicked() {
-                    action = AppAction::SetMainScreen(RootScreenType::RootScreenMasternodes);
+                    self.load_node_requested = true;
                     self.show_bulk_schedule_popup = false;
                 }
                 if ComponentStyles::add_secondary_button(ui, "Close", dark_mode).clicked() {
@@ -2000,244 +1998,108 @@ impl DPNSScreen {
             });
             return action;
         }
-
         if self.selected_votes.is_empty() {
-            ui.add_space(5.0);
             ui.colored_label(
                 DashColors::warning_color(dark_mode),
-                "No votes are ready to review. Choose at least one vote on Active contests, then try again.",
+                "No decisions are staged. Pick a choice on at least one name, then try again.",
             );
-            ui.add_space(10.0);
-            if ComponentStyles::add_secondary_button(ui, "Back to Active contests", dark_mode)
-                .clicked()
-            {
+            if ComponentStyles::add_secondary_button(ui, "Back to To decide", dark_mode).clicked() {
                 self.show_bulk_schedule_popup = false;
             }
             return action;
         }
 
-        self.bulk_identity_options
-            .resize(self.voting_identities.len(), VoteOption::CastNow);
         let plan = self.build_review_plan();
-
-        let mut simple_schedule_valid = true;
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            match &plan {
-                Ok(plan) => {
-                    ui.heading(review_headline(plan.effective_count(), plan.node_count()));
-                    for entry in plan.effective() {
-                        let requested = vote_choice_label(
-                            entry.target.requested_choice,
-                            self.candidate_name(
-                                &entry.target.contested_name,
-                                entry.target.requested_choice,
-                            ),
-                        );
-                        let current = review_current_choice_label(
-                            entry.target.current_choice,
-                            entry.target.current_choice.and_then(|choice| {
-                                self.candidate_name(&entry.target.contested_name, choice)
-                            }),
-                        );
-                        ui.group(|ui| {
-                            ui.set_width(ui.available_width());
-                            ui.heading(format!("{name}.dash", name = entry.target.contested_name));
-                            let decision = match entry.target.requested_choice {
-                                ResourceVoteChoice::Lock => "Your vote: Lock this name".to_owned(),
-                                ResourceVoteChoice::Abstain => "Your vote: Abstain".to_owned(),
-                                ResourceVoteChoice::TowardsIdentity(_) => format!("Your vote: {requested}"),
-                            };
-                            ui.label(RichText::new(decision).strong());
-                            match entry.target.requested_choice {
-                                ResourceVoteChoice::Lock => {
-                                    ui.label("You are voting to prevent any contestant from receiving this name.");
-                                }
-                                ResourceVoteChoice::Abstain => {
-                                    ui.label("You are voting without supporting a contestant or locking this name.");
-                                }
-                                ResourceVoteChoice::TowardsIdentity(_) => {}
-                            }
-                            ui.label(format!("Voting node: {node}", node = entry.node_label()));
-                            ui.label(format!("Previous vote: {current}"));
-                            ui.label(format!("When: {timing}", timing = entry.timing_label));
-                        });
-                        ui.add_space(8.0);
-                    }
-                    if plan.effective().any(|entry| entry.target.current_choice.is_some()) {
-                        ui.colored_label(DashColors::warning_color(dark_mode),
-                            "Changing an existing vote uses one of that node's four allowed vote changes.");
-                    }
-                    if plan.no_op_count() > 0 {
-                        ui.label(review_skipped_line(plan.no_op_count()));
-                    }
-                    if plan.effective_count() == 0 {
-                        ui.colored_label(
-                            DashColors::warning_color(dark_mode),
-                            "Nothing will be submitted. Choose at least one node and a vote it has not already cast.",
+        match &plan {
+            Ok(plan) => {
+                ui.heading(confirm_title(plan.decisions.len(), plan.node_count()));
+                for (decision, nodes) in &plan.decisions {
+                    let choice = vote_choice_label(
+                        decision.choice,
+                        self.candidate_name(&decision.contested_name, decision.choice),
+                    );
+                    let mut row = decision_row(&decision.contested_name, &choice, *nodes);
+                    if let Some(end) = decision.end_time {
+                        row = format!(
+                            "{row} · {ends}",
+                            ends = ends_in_label(time_left(end, now_ms()))
                         );
                     }
+                    ui.label(row);
                 }
-                Err(error) => {
-                    ui.colored_label(DashColors::warning_color(dark_mode), error.to_string());
-                }
-            }
-            ui.separator();
-            ui.horizontal(|ui| {
-                ui.label("When:");
-                if ui
-                    .selectable_label(
-                        matches!(self.set_all_option, VoteOption::CastNow),
-                        "Cast now",
-                    )
-                    .clicked()
-                {
-                    self.apply_all_nodes_option(VoteOption::CastNow);
-                }
-                if ui
-                    .selectable_label(
-                        matches!(self.set_all_option, VoteOption::ScheduledAt(_)),
-                        "Schedule for later",
-                    )
-                    .clicked()
-                {
-                    let option = self.simple_schedule_option().unwrap_or(VoteOption::ScheduledAt(0));
-                    self.apply_all_nodes_option(option);
-                }
-            });
-
-            if matches!(self.set_all_option, VoteOption::ScheduledAt(_)) {
-                let schedule_changed = self.simple_schedule.show(ui).inner.has_changed();
-                simple_schedule_valid = self.simple_schedule_option().is_some();
-                if schedule_changed
-                    && let Some(option) = self.simple_schedule_option()
-                {
-                    self.set_all_option = option.clone();
-                    for current in &mut self.bulk_identity_options {
-                        if matches!(current, VoteOption::ScheduledAt(_)) {
-                            *current = option.clone();
-                        }
-                    }
-                }
-                if !simple_schedule_valid {
+                ui.add_space(6.0);
+                ui.label(confirm_transactions_line(plan.effective_count()));
+                let changes = plan.aggregate.change_count();
+                if changes > 0 {
                     ui.colored_label(
                         DashColors::warning_color(dark_mode),
-                        SCHEDULE_IN_FUTURE_MESSAGE,
+                        confirm_change_warning(changes),
                     );
                 }
+                let skipped = plan.aggregate.skipped_by_reason();
+                if !skipped.is_empty() {
+                    ui.label(RichText::new(skipped_header(plan.aggregate.skipped.len())).strong());
+                    for (reason, count) in skipped {
+                        ui.label(skipped_reason_line(count, reason));
+                    }
+                }
+                for exclusion in [
+                    NodeExclusion::NotInMasternodeList,
+                    NodeExclusion::NoVotingKey,
+                ] {
+                    let count = self
+                        .resolved_nodes
+                        .excluded
+                        .iter()
+                        .filter(|(_, reason)| *reason == exclusion)
+                        .count();
+                    if count > 0 {
+                        ui.label(excluded_nodes_line(count, exclusion));
+                    }
+                }
+            }
+            Err(error) => {
+                ui.colored_label(DashColors::warning_color(dark_mode), error.to_string());
+            }
+        }
+
+        ui.separator();
+        ui.horizontal_wrapped(|ui| {
+            ui.label("When:");
+            for timing in ConfirmTiming::ALL {
+                if ui
+                    .selectable_label(self.confirm_timing == timing, timing.label())
+                    .clicked()
+                {
+                    self.confirm_timing = timing;
+                }
+            }
+        });
+        match self.confirm_timing {
+            ConfirmTiming::Now => {}
+            ConfirmTiming::BeforeEnd => {
+                ui.horizontal(|ui| {
+                    let mut minutes = self.relative_preset.as_secs() / 60;
+                    ui.label("Lead time before the end, in minutes:");
+                    if ui
+                        .add(egui::DragValue::new(&mut minutes).range(1..=7 * 24 * 60))
+                        .changed()
+                    {
+                        self.relative_preset = std::time::Duration::from_secs(minutes * 60);
+                    }
+                    ui.label(before_end_phrase(self.relative_preset));
+                });
                 ui.colored_label(DashColors::warning_color(dark_mode), KEEP_RUNNING_MESSAGE);
             }
-
-            ui.separator();
-            ui.add_space(10.0);
-            egui::CollapsingHeader::new("Choose per node (advanced)")
-                .default_open(false)
-                .show(ui, |ui| {
-                    for (i, identity) in self.voting_identities.iter().enumerate() {
-                        ui.group(|ui| {
-                            ui.horizontal(|ui| {
-                                let identity_label = identity.alias.clone().unwrap_or_else(|| {
-                                    identity.identity.id().to_string(Encoding::Base58)
-                                });
-                                let dark_mode = ui.style().visuals.dark_mode;
-                                ui.label(
-                                    RichText::new(format!("Identity: {identity_label}"))
-                                        .color(DashColors::text_primary(dark_mode)),
-                                );
-
-                                let current_option = &mut self.bulk_identity_options[i];
-                                ComboBox::from_id_salt(format!("combo_bulk_identity_{i}"))
-                                    .width(120.0)
-                                    .selected_text(match current_option {
-                                        VoteOption::NoVote => "Do not use this node".to_string(),
-                                        VoteOption::CastNow => "Cast now".to_string(),
-                                        VoteOption::Scheduled { .. } => "Schedule after a delay".to_string(),
-                                        VoteOption::ScheduledAt(_) => "At selected UTC time".to_string(),
-                                    })
-                                    .show_ui(ui, |ui| {
-                                        if ui
-                                            .selectable_label(
-                                                matches!(current_option, VoteOption::NoVote),
-                                                "Do not use this node",
-                                            )
-                                            .clicked()
-                                        {
-                                            *current_option = VoteOption::NoVote;
-                                        }
-                                        if ui
-                                            .selectable_label(
-                                                matches!(current_option, VoteOption::CastNow),
-                                                "Cast now",
-                                            )
-                                            .clicked()
-                                        {
-                                            *current_option = VoteOption::CastNow;
-                                        }
-                                        if ui
-                                            .selectable_label(
-                                                matches!(
-                                                    current_option,
-                                                    VoteOption::Scheduled { .. }
-                                                ),
-                                                "Schedule",
-                                            )
-                                            .clicked()
-                                        {
-                                            let (d, h, m) = match current_option {
-                                                VoteOption::Scheduled {
-                                                    days,
-                                                    hours,
-                                                    minutes,
-                                                } => (*days, *hours, *minutes),
-                                                _ => (0, 0, 0),
-                                            };
-                                            *current_option = VoteOption::Scheduled {
-                                                days: d,
-                                                hours: h,
-                                                minutes: m,
-                                            };
-                                        }
-                                    });
-
-                                if let VoteOption::Scheduled {
-                                    days,
-                                    hours,
-                                    minutes,
-                                } = current_option
-                                {
-                                    let dark_mode = ui.style().visuals.dark_mode;
-                                    ui.label(
-                                        RichText::new("Schedule after:")
-                                            .color(DashColors::text_primary(dark_mode)),
-                                    );
-                                    ui.add(
-                                        egui::DragValue::new(days).prefix("Days: ").range(0..=14),
-                                    );
-                                    ui.add(
-                                        egui::DragValue::new(hours).prefix("Hours: ").range(0..=23),
-                                    );
-                                    ui.add(
-                                        egui::DragValue::new(minutes).prefix("Min: ").range(0..=59),
-                                    );
-                                }
-                            });
-                        });
-                        ui.add_space(10.0);
-                    }
-                });
-        });
-        // If any selected votes are scheduled, show a warning
-        if !matches!(self.set_all_option, VoteOption::ScheduledAt(_))
-            && self
-                .bulk_identity_options
-                .iter()
-                .any(|option| matches!(option, VoteOption::Scheduled { .. }))
-        {
-            ui.colored_label(
-                DashColors::warning_color(ui.style().visuals.dark_mode),
-                KEEP_RUNNING_MESSAGE,
-            );
-            ui.add_space(10.0);
+            ConfirmTiming::At => {
+                self.simple_schedule.show(ui);
+                ui.colored_label(DashColors::warning_color(dark_mode), KEEP_RUNNING_MESSAGE);
+            }
         }
+
+        egui::CollapsingHeader::new("Adjust nodes")
+            .default_open(false)
+            .show(ui, |ui| self.render_adjust_nodes(ui, plan.as_ref().ok()));
 
         let operation_in_progress = matches!(
             self.bulk_vote_handling_status,
@@ -2249,33 +2111,25 @@ impl DPNSScreen {
                 ui.label("Submitting votes…");
             });
         }
-        let has_submittable = plan.as_ref().is_ok_and(|plan| plan.effective_count() > 0);
-        let submit_label = match plan
-            .as_ref()
-            .map(|plan| (plan.has_immediate(), plan.has_scheduled()))
-        {
-            Ok((true, false)) => "Cast votes",
-            Ok((false, true)) => "Schedule votes",
-            _ => "Submit votes",
-        };
+        let transactions = plan.as_ref().map_or(0, ReviewPlan::effective_count);
+        let all_now = plan.as_ref().is_ok_and(|plan| !plan.has_scheduled());
         let submit_disabled_reason = if operation_in_progress {
             "The selected votes are already being submitted."
-        } else if !simple_schedule_valid {
-            SCHEDULE_IN_FUTURE_MESSAGE
         } else if plan.is_err() {
             "These votes cannot be submitted yet. Fix the problem shown above and try again."
         } else {
             "Nothing can be submitted. Choose at least one node and a vote it has not already cast."
         };
-        let (submit_clicked, cancel_clicked) = ui
+        let can_submit = !operation_in_progress && transactions > 0;
+        let (mut submit_clicked, mut cancel_clicked) = ui
             .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let submit_clicked = ComponentStyles::add_primary_button_enabled(
                     ui,
-                    !operation_in_progress && simple_schedule_valid && has_submittable,
+                    can_submit,
                     if operation_in_progress {
-                        "Submitting votes…"
+                        "Submitting votes…".to_owned()
                     } else {
-                        submit_label
+                        confirm_button_label(transactions, all_now)
                     },
                 )
                 .disabled_tooltip(submit_disabled_reason)
@@ -2290,49 +2144,122 @@ impl DPNSScreen {
                 (submit_clicked, cancel_clicked)
             })
             .inner;
+        // Enter confirms, Esc cancels (VOTE-FR-080) — unless a text field has focus.
+        if !ui.ctx().egui_wants_keyboard_input() {
+            ui.input_mut(|input| {
+                if can_submit && input.consume_key(egui::Modifiers::NONE, egui::Key::Enter) {
+                    submit_clicked = true;
+                }
+                if !operation_in_progress
+                    && input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
+                {
+                    cancel_clicked = true;
+                }
+            });
+        }
         if submit_clicked {
             action = self.bulk_apply_votes();
             if matches!(
                 self.bulk_vote_handling_status,
                 VoteHandlingStatus::CastingVotes | VoteHandlingStatus::SchedulingVotes
             ) {
-                self.raise_vote_overlay(
-                    ui.ctx(),
-                    "Submitting the selected votes to Dash Platform…",
-                );
+                // The confirm step closes at once; the drawer tracks progress
+                // and the staged decisions clear when the operation reports.
+                self.show_bulk_schedule_popup = false;
+                self.show_vote_progress(ui.ctx());
             }
         }
-
         if cancel_clicked {
-            self.selected_votes.clear();
+            // Cancel closes the confirm step; staged decisions stay in the tray.
             self.show_bulk_schedule_popup = false;
+            self.retry_voter = None;
             self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
-            self.vote_overlay.take_and_clear();
-            self.pending_vote_operation = None;
         }
-
-        // Handle status
-        ui.add_space(10.0);
-        match &self.bulk_vote_handling_status {
-            VoteHandlingStatus::NotStarted => {}
-            VoteHandlingStatus::CastingVotes => {
-                // Elapsed time is shown in the global banner
-            }
-            VoteHandlingStatus::SchedulingVotes => {
-                let dark_mode = ui.style().visuals.dark_mode;
-                ui.label(
-                    RichText::new("Scheduling votes...").color(DashColors::text_primary(dark_mode)),
-                );
-            }
-            VoteHandlingStatus::Completed => {
-                // handled above
-            }
-            VoteHandlingStatus::Failed(error) => {
-                ui.colored_label(DashColors::error_color(dark_mode), error.to_string());
-            }
+        if let VoteHandlingStatus::Failed(error) = &self.bulk_vote_handling_status {
+            ui.colored_label(DashColors::error_color(dark_mode), error.to_string());
         }
-
         action
+    }
+
+    /// `Adjust nodes`: per-node timing and the full node × name list.
+    fn render_adjust_nodes(&mut self, ui: &mut Ui, plan: Option<&ReviewPlan>) {
+        let nodes = self.confirm_nodes();
+        for node in &nodes {
+            let current = self
+                .node_overrides
+                .get(&node.voter_id)
+                .copied()
+                .unwrap_or(NodeTiming::Batch);
+            ui.horizontal(|ui| {
+                ui.label(node_label(node.voter_id, &self.node_labels));
+                ComboBox::from_id_salt(("adjust_node", node.voter_id))
+                    .selected_text(node_timing_label(current))
+                    .show_ui(ui, |ui| {
+                        for option in [
+                            NodeTiming::Batch,
+                            NodeTiming::Override(BatchTiming::Now),
+                            NodeTiming::Override(BatchTiming::BeforeEnd(self.relative_preset)),
+                            NodeTiming::DontUse,
+                        ] {
+                            if ui
+                                .selectable_label(current == option, node_timing_label(option))
+                                .clicked()
+                            {
+                                if option == NodeTiming::Batch {
+                                    self.node_overrides.remove(&node.voter_id);
+                                } else {
+                                    self.node_overrides.insert(node.voter_id, option);
+                                }
+                            }
+                        }
+                    });
+            });
+        }
+        let Some(plan) = plan else {
+            return;
+        };
+        ui.separator();
+        egui::Grid::new("adjust_nodes_targets")
+            .num_columns(4)
+            .striped(true)
+            .show(ui, |ui| {
+                for target in plan.targets() {
+                    ui.label(node_label(target.key.voter_id, &self.node_labels));
+                    ui.label(format!("{name}.dash", name = target.contested_name));
+                    let requested = vote_choice_label(
+                        target.requested_choice,
+                        self.candidate_name(&target.contested_name, target.requested_choice),
+                    );
+                    let current = review_current_choice_label(
+                        target.current_choice,
+                        target
+                            .current_choice
+                            .and_then(|choice| self.candidate_name(&target.contested_name, choice)),
+                    );
+                    ui.label(format!("{current} → {requested}"));
+                    let timing = match target.timing {
+                        VoteTiming::Now => "Now".to_owned(),
+                        VoteTiming::Scheduled(at) => format!("{when} UTC", when = utc_minute(at)),
+                    };
+                    let changes = self
+                        .cards
+                        .iter()
+                        .find(|card| card.vote_poll_id == Some(target.key.vote_poll_id))
+                        .and_then(|card| {
+                            card.nodes
+                                .iter()
+                                .find(|node| node.node == target.key.voter_id)
+                        })
+                        .map(|node| node.changes);
+                    ui.label(match changes {
+                        Some(changes) if target.current_choice.is_some() => {
+                            format!("{timing} · {left}", left = changes_left_label(changes))
+                        }
+                        _ => timing,
+                    });
+                    ui.end_row();
+                }
+            });
     }
 
     /// Record a failed submission and surface it the way the rest of the app
@@ -2366,100 +2293,112 @@ impl DPNSScreen {
         self.build_review_plan_at(Utc::now())
     }
 
-    fn build_review_plan_at(&self, now: DateTime<Utc>) -> Result<ReviewPlan, ReviewPlanError> {
-        let mut entries = Vec::new();
-        let mut voters = Vec::new();
-        for (identity, option) in self
-            .voting_identities
+    /// Nodes the confirm step composes with: the retried node alone, else the
+    /// node set's voting nodes.
+    fn confirm_nodes(&self) -> Vec<ComposerNode> {
+        let included: BTreeSet<Identifier> = self.resolved_nodes.included.iter().copied().collect();
+        self.voting_identities
             .iter()
-            .zip(&self.bulk_identity_options)
-        {
-            let (timing, timing_label) = match option {
-                VoteOption::NoVote => continue,
-                VoteOption::CastNow => (VoteTiming::Now, "Cast now".to_owned()),
-                VoteOption::ScheduledAt(timestamp) => {
-                    if *timestamp <= now.timestamp_millis() as u64 {
-                        return Err(ReviewPlanError::ScheduleIsNotInTheFuture);
-                    }
-                    let date = DateTime::from_timestamp_millis(*timestamp as i64)
-                        .ok_or(ReviewPlanError::ScheduleIsNotAValidTime)?;
-                    (
-                        VoteTiming::Scheduled(*timestamp),
-                        format!(
-                            "Scheduled for {when} UTC",
-                            when = date.format("%Y-%m-%d %H:%M"),
-                        ),
-                    )
-                }
-                VoteOption::Scheduled {
-                    days,
-                    hours,
-                    minutes,
-                } => {
-                    let offset = chrono::Duration::days(*days as i64)
-                        + chrono::Duration::hours(*hours as i64)
-                        + chrono::Duration::minutes(*minutes as i64);
-                    (
-                        VoteTiming::Scheduled((now + offset).timestamp_millis() as u64),
-                        format!("Scheduled in {days} d {hours} h {minutes} min"),
-                    )
-                }
-            };
-            voters.push(identity.clone());
-            for selected_vote in &self.selected_votes {
-                if let VoteTiming::Scheduled(timestamp) = timing {
-                    validate_dpns_schedule_time(
-                        timestamp,
-                        now.timestamp_millis() as u64,
-                        selected_vote.end_time,
-                    )
-                    .map_err(|_| ReviewPlanError::ScheduleOutlastsContest {
-                        contested_name: selected_vote.contested_name.clone(),
-                    })?;
-                }
-                let voter_id = identity.identity.id();
+            .map(|identity| identity.identity.id())
+            .filter(|id| match self.retry_voter {
+                Some(voter) => *id == voter,
+                None => included.contains(id),
+            })
+            .map(|voter_id| ComposerNode {
+                voter_id,
+                alias: self
+                    .voting_identities
+                    .iter()
+                    .find(|identity| identity.identity.id() == voter_id)
+                    .and_then(|identity| identity.alias.clone()),
+            })
+            .collect()
+    }
+
+    fn build_review_plan_at(&self, now: DateTime<Utc>) -> Result<ReviewPlan, ReviewPlanError> {
+        let now_ms = now.timestamp_millis() as u64;
+        let decisions = self
+            .selected_votes
+            .iter()
+            .map(|vote| {
                 let vote_poll_id = self
                     .app_context
-                    .dpns_vote_poll_id(&selected_vote.contested_name)
+                    .dpns_vote_poll_id(&vote.contested_name)
                     .map_err(|error| {
                         tracing::warn!(
                             ?error,
-                            contested_name = selected_vote.contested_name,
+                            contested_name = vote.contested_name,
                             "Could not build a DPNS vote target"
                         );
                         ReviewPlanError::VotePollUnavailable {
                             source: Arc::new(error),
                         }
                     })?;
-                let target_key = DpnsVoteTargetKey {
-                    network: self.app_context.network(),
-                    voter_id,
+                Ok(Decision {
+                    contested_name: vote.contested_name.clone(),
                     vote_poll_id,
-                };
-                if self.vote_operations.target_status(&target_key).is_some() {
-                    return Err(ReviewPlanError::VoteAlreadyInProgress {
-                        contested_name: selected_vote.contested_name.clone(),
-                    });
-                }
-                let DpnsCurrentVoteState::Available(current_choice) =
-                    self.vote_state.state(voter_id, vote_poll_id)
-                else {
-                    return Err(ReviewPlanError::CurrentVoteUnavailable);
-                };
-                entries.push(ReviewEntry {
-                    target: DpnsVoteTarget {
-                        key: target_key,
-                        voter_alias: identity.alias.clone(),
-                        contested_name: selected_vote.contested_name.clone(),
-                        requested_choice: selected_vote.vote_choice,
-                        current_choice,
-                        timing,
-                    },
-                    timing_label: timing_label.clone(),
-                });
+                    choice: vote.vote_choice,
+                    end_time: vote.end_time,
+                })
+            })
+            .collect::<Result<Vec<_>, ReviewPlanError>>()?;
+        let network = self.app_context.network();
+        let standing = |voter_id: Identifier, vote_poll_id: Identifier| {
+            let key = DpnsVoteTargetKey {
+                network,
+                voter_id,
+                vote_poll_id,
+            };
+            // Changes left come from the card cache; an uncached contest never
+            // blocks a vote, since Platform enforces the limit itself.
+            let changes = self
+                .cards
+                .iter()
+                .find(|card| card.vote_poll_id == Some(vote_poll_id))
+                .and_then(|card| card.nodes.iter().find(|node| node.node == voter_id))
+                .map_or(ChangesLeft::Unknown, |node| node.changes);
+            NodeStanding {
+                state: self.vote_state.state(voter_id, vote_poll_id),
+                locked: self.vote_operations.target_status(&key).is_some(),
+                changes,
             }
-        }
-        Ok(ReviewPlan { entries, voters })
+        };
+        let aggregate = compose(
+            network,
+            &decisions,
+            &self.confirm_nodes(),
+            standing,
+            self.batch_timing(now_ms)?,
+            &self.node_overrides,
+            now_ms,
+        )?;
+        let casting: BTreeSet<Identifier> = aggregate
+            .targets
+            .iter()
+            .map(|target| target.key.voter_id)
+            .collect();
+        let voters = self
+            .voting_identities
+            .iter()
+            .filter(|identity| casting.contains(&identity.identity.id()))
+            .cloned()
+            .collect();
+        let decisions = decisions
+            .into_iter()
+            .map(|decision| {
+                let nodes = aggregate
+                    .targets
+                    .iter()
+                    .filter(|target| target.key.vote_poll_id == decision.vote_poll_id)
+                    .count();
+                (decision, nodes)
+            })
+            .collect();
+        Ok(ReviewPlan {
+            aggregate,
+            decisions,
+            voters,
+        })
     }
 
     fn bulk_apply_votes(&mut self) -> AppAction {
@@ -2471,22 +2410,37 @@ impl DPNSScreen {
             }
         };
         let has_immediate = plan.has_immediate();
-        let ReviewPlan {
-            entries,
-            voters: selected_voters,
-        } = plan;
-
-        if entries.is_empty() {
-            self.fail_submission(VoteSubmissionError::NoTargets);
+        if plan.aggregate.targets.is_empty() {
+            let all_no_ops = !plan.aggregate.skipped.is_empty()
+                && plan
+                    .aggregate
+                    .skipped
+                    .iter()
+                    .all(|skipped| skipped.reason == SkipReason::AlreadyVoted);
+            self.fail_submission(if all_no_ops {
+                VoteSubmissionError::AllNoOps
+            } else {
+                VoteSubmissionError::NoTargets
+            });
             return AppAction::None;
         }
-        // No-op targets are handed over unfiltered: the operation counts them,
-        // and that count drives the post-submit feedback.
-        let operation =
-            DpnsVoteOperation::new(entries.into_iter().map(|entry| entry.target).collect());
-        if operation.targets.is_empty() {
-            self.fail_submission(VoteSubmissionError::AllNoOps);
-            return AppAction::None;
+        let operation = DpnsVoteOperation::new(plan.aggregate.targets);
+        if self.confirm_timing == ConfirmTiming::BeforeEnd {
+            for outcome in &operation.targets {
+                if let VoteTiming::Scheduled(at) = outcome.target.timing
+                    && !self
+                        .node_overrides
+                        .contains_key(&outcome.target.key.voter_id)
+                    && let Err(error) = self.app_context.save_dpns_relative_schedule_label(
+                        &outcome.target.key,
+                        at,
+                        self.relative_preset,
+                    )
+                {
+                    // Display only: the row falls back to the absolute time.
+                    tracing::debug!(?error, "Could not save a relative schedule label");
+                }
+            }
         }
         self.submission_error_banner.take_and_clear();
         self.bulk_vote_handling_status = if has_immediate {
@@ -2494,76 +2448,16 @@ impl DPNSScreen {
         } else {
             VoteHandlingStatus::SchedulingVotes
         };
+        self.retry_voter = None;
         self.pending_vote_operation = Some(operation.id);
         AppAction::BackendTask(BackendTask::ContestedResourceTask(
             ContestedResourceTask::SubmitDpnsVoteOperation(
                 operation,
-                selected_voters,
+                plan.voters,
                 None,
                 self.app_context.network(),
             ),
         ))
-    }
-
-    /// If voting/scheduling is successful, show success message
-    fn show_bulk_vote_handling_complete(&mut self, ui: &mut Ui) -> AppAction {
-        let mut action = AppAction::None;
-
-        self.selected_votes.clear();
-
-        ui.vertical_centered(|ui| {
-            let dark_mode = ui.style().visuals.dark_mode;
-            ui.add_space(20.0);
-            match &self.bulk_vote_handling_status {
-                VoteHandlingStatus::Completed => {
-                    ui.heading(
-                        RichText::new("Your votes have been submitted or scheduled as requested.")
-                            .color(DashColors::text_primary(dark_mode)),
-                    );
-                    ui.label(
-                        "Check the recent voting activity to see which votes were confirmed, are still pending, or failed.",
-                    );
-                }
-                VoteHandlingStatus::Failed(error) => {
-                    // This means there was a DET-side error, not Platform-side
-                    let dark_mode = ui.style().visuals.dark_mode;
-                    ui.heading(
-                        RichText::new("The votes could not be submitted.")
-                            .color(DashColors::text_primary(dark_mode)),
-                    );
-                    ui.add_space(10.0);
-                    ui.label(
-                        RichText::new(error.to_string())
-                            .color(DashColors::text_primary(dark_mode)),
-                    );
-                }
-                _ => {
-                    // this should not occur
-                }
-            }
-
-            ui.add_space(20.0);
-            let dark_mode = ui.style().visuals.dark_mode;
-            if ComponentStyles::add_primary_button(ui, "Go back to Active Contests").clicked() {
-                self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
-                self.show_bulk_schedule_popup = false;
-                action = AppAction::BackendTask(BackendTask::ContestedResourceTask(
-                    ContestedResourceTask::QueryDPNSContests,
-                ))
-            }
-            ui.add_space(5.0);
-            if ComponentStyles::add_secondary_button(ui, "Go to Scheduled Votes Screen", dark_mode)
-                .clicked()
-            {
-                self.show_bulk_schedule_popup = false;
-                self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
-                action = AppAction::SetMainScreenThenPopScreen(
-                    RootScreenType::RootScreenDPNSScheduledVotes,
-                );
-            }
-        });
-
-        action
     }
 }
 
@@ -2577,28 +2471,14 @@ impl ScreenLike for DPNSScreen {
         }
         self.rebuild_scheduled_vote_rows();
 
-        match self.dpns_subscreen {
-            DPNSSubscreen::Active => {
-                self.active_contests = ActiveDpnsContestSnapshot::new(
-                    &self.app_context,
-                    self.app_context
-                        .ongoing_contested_names()
-                        .unwrap_or_default(),
-                );
-            }
-            DPNSSubscreen::Past => {
-                *self.contested_names.lock_recover() =
-                    self.app_context.all_contested_names().unwrap_or_default();
-            }
-            DPNSSubscreen::Owned => {
-                *self.local_dpns_names.lock_recover() =
-                    self.app_context.local_dpns_names().unwrap_or_default();
-            }
-            DPNSSubscreen::ScheduledVotes => {
-                *self.contested_names.lock_recover() =
-                    self.app_context.all_contested_names().unwrap_or_default();
-            }
-        }
+        self.active_contests = ActiveDpnsContestSnapshot::new(
+            &self.app_context,
+            self.app_context
+                .ongoing_contested_names()
+                .unwrap_or_default(),
+        );
+        *self.contested_names.lock_recover() =
+            self.app_context.all_contested_names().unwrap_or_default();
         self.rebuild_candidate_names();
 
         let voter_ids = self
@@ -2613,15 +2493,16 @@ impl ScreenLike for DPNSScreen {
         {
             tracing::warn!(?error, "Could not refresh cached DPNS vote state");
         }
+        self.rebuild_cards();
+        self.app_context.recompute_dpns_vote_attention();
     }
 
     fn refresh_on_arrival(&mut self) {
-        let previous_options = self
+        let previous_voters: BTreeSet<Identifier> = self
             .voting_identities
             .iter()
-            .zip(&self.bulk_identity_options)
-            .map(|(identity, option)| (identity.identity.id(), option.clone()))
-            .collect::<BTreeMap<_, _>>();
+            .map(|identity| identity.identity.id())
+            .collect();
         match loaded_voting_identities(&self.app_context) {
             Ok(identities) => {
                 self.voting_identities = identities;
@@ -2633,26 +2514,15 @@ impl ScreenLike for DPNSScreen {
                 self.voting_identity_load_error = Some(error);
             }
         }
-        self.bulk_identity_options = self
-            .voting_identities
-            .iter()
-            .map(|identity| {
-                previous_options
-                    .get(&identity.identity.id())
-                    .cloned()
-                    .unwrap_or({
-                        if self.selected_votes.is_empty() {
-                            VoteOption::CastNow
-                        } else {
-                            VoteOption::NoVote
-                        }
-                    })
-            })
-            .collect();
-        self.user_identities = self
-            .app_context
-            .load_local_user_identities()
-            .unwrap_or_default();
+        // A node loaded after decisions were staged never joins them silently.
+        if !self.selected_votes.is_empty() {
+            for identity in &self.voting_identities {
+                let id = identity.identity.id();
+                if !previous_voters.contains(&id) {
+                    self.node_overrides.entry(id).or_insert(NodeTiming::DontUse);
+                }
+            }
+        }
         self.refresh();
     }
 
@@ -2664,7 +2534,7 @@ impl ScreenLike for DPNSScreen {
     }
 
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
-        self.clear_vote_overlay_on_error = match self.pending_vote_operation {
+        self.release_pending_on_error = match self.pending_vote_operation {
             Some(operation_id) => {
                 dpns_operation_id(context, self.app_context.network()) == Some(operation_id)
             }
@@ -2679,10 +2549,9 @@ impl ScreenLike for DPNSScreen {
                 "Could not refresh proved DPNS votes after a task error"
             );
         }
-        if self.clear_vote_overlay_on_error {
-            self.vote_overlay.take_and_clear();
+        if self.release_pending_on_error {
             self.pending_vote_operation = None;
-            self.clear_vote_overlay_on_error = false;
+            self.release_pending_on_error = false;
             // The review window disables both Submit and Cancel while a
             // submission is in flight, so a failed submission must leave that
             // state here. Otherwise the window stays on "Submitting votes…"
@@ -2704,6 +2573,7 @@ impl ScreenLike for DPNSScreen {
             );
         }
         self.rebuild_scheduled_vote_rows();
+        self.rebuild_cards();
         scheduled_vote_sweep_is_quiet(error)
     }
 
@@ -2730,13 +2600,14 @@ impl ScreenLike for DPNSScreen {
                 }
                 let owns_result = self.pending_vote_operation == Some(operation_id);
                 if owns_result {
-                    self.vote_overlay.take_and_clear();
                     self.pending_vote_operation = None;
                     if matches!(
                         self.bulk_vote_handling_status,
                         VoteHandlingStatus::CastingVotes | VoteHandlingStatus::SchedulingVotes
                     ) {
-                        self.bulk_vote_handling_status = VoteHandlingStatus::Completed;
+                        self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
+                        self.selected_votes.clear();
+                        self.selected_cards.clear();
                     }
                 }
                 if let Err(error) = self.vote_operations.refresh(&self.app_context) {
@@ -2746,6 +2617,8 @@ impl ScreenLike for DPNSScreen {
                     );
                 }
                 self.rebuild_scheduled_vote_rows();
+                self.rebuild_cards();
+                self.app_context.recompute_dpns_vote_attention();
             }
             BackendTaskSuccessResult::ScheduledVoteSweepCompleted { network, .. }
                 if network == self.app_context.network() =>
@@ -2767,8 +2640,7 @@ impl ScreenLike for DPNSScreen {
                 }
                 self.rebuild_scheduled_vote_rows();
             }
-            BackendTaskSuccessResult::RefreshedDpnsContests
-            | BackendTaskSuccessResult::RefreshedOwnedDpnsNames => {
+            BackendTaskSuccessResult::RefreshedDpnsContests => {
                 self.refresh_banner.take_and_clear();
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
             }
@@ -2776,293 +2648,203 @@ impl ScreenLike for DPNSScreen {
         }
     }
 
+    /// Render the Votes body inside an already laid-out central panel.
+    ///
+    /// The Masternodes screen owns the window chrome (top bar, left nav,
+    /// segment header); this draws the sub-view chips and the active view.
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
         let ctx = ui.ctx().clone();
         let ctx = &ctx;
-        let has_identity_that_can_register = !self.user_identities.is_empty();
-        // Build top-right buttons
-        let mut right_buttons = match self.dpns_subscreen {
-            DPNSSubscreen::Active => {
-                let refresh_button = (
-                    "Refresh",
-                    DesiredAppAction::BackendTask(Box::new(BackendTask::ContestedResourceTask(
-                        ContestedResourceTask::QueryDPNSContests,
-                    ))),
-                );
-                vec![refresh_button]
-            }
-            DPNSSubscreen::Past => {
-                let refresh_button = (
-                    "Refresh",
-                    DesiredAppAction::BackendTask(Box::new(BackendTask::ContestedResourceTask(
-                        ContestedResourceTask::QueryDPNSContests,
-                    ))),
-                );
-                vec![refresh_button]
-            }
-            DPNSSubscreen::Owned => {
-                let refresh_button = (
-                    "Refresh",
-                    DesiredAppAction::BackendTask(Box::new(BackendTask::IdentityTask(
-                        IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames,
-                    ))),
-                );
-                vec![refresh_button]
-            }
-            DPNSSubscreen::ScheduledVotes => {
-                vec![
-                    (
-                        "Clear All",
-                        DesiredAppAction::Custom("Clear all scheduled votes".to_owned()),
-                    ),
-                    (
-                        "Clear Completed",
-                        DesiredAppAction::Custom("Clear completed scheduled votes".to_owned()),
-                    ),
-                ]
-            }
-        };
+        let mut action = AppAction::None;
 
-        if has_identity_that_can_register && self.dpns_subscreen != DPNSSubscreen::ScheduledVotes {
-            // "Register Name" button on the left
-            right_buttons.insert(
-                0,
-                (
-                    "Register Name",
-                    DesiredAppAction::AddScreenType(Box::new(ScreenType::RegisterDpnsName(
-                        RegisterDpnsNameSource::Dpns,
-                    ))),
-                ),
-            );
+        // `Review again` from the progress drawer, which lives outside this panel.
+        if let Some(outcome) = self.app_context.take_dpns_vote_review_request() {
+            self.view = VotesView::ToDecide;
+            self.review_failed_target(&outcome);
+        }
+        if let Some(label) = self.app_context.take_dpns_votes_name_request() {
+            self.show_contest(label);
         }
 
-        // TODO: wire wallet/identity selection consumption for the DPNS page.
-        let mut action = add_top_panel_with_global_nav(
-            ui,
-            &self.app_context,
-            subdued_everyday_spec("DPNS", RootScreenType::RootScreenDPNSActiveContests),
-            right_buttons,
-        );
-        if action == AppAction::Custom("Clear all scheduled votes".to_owned()) {
-            self.scheduled_clear_dialog = Some((
-                true,
-                ConfirmationDialog::new(
-                    "Clear all scheduled votes",
-                    "Remove every scheduled vote from this device? Votes already submitted to Platform cannot be undone.",
-                )
-                .danger_mode(true)
-                .confirm_text(Some("Clear all scheduled votes")),
-            ));
-            action = AppAction::None;
-        } else if action == AppAction::Custom("Clear completed scheduled votes".to_owned()) {
-            self.scheduled_clear_dialog = Some((
-                false,
-                ConfirmationDialog::new(
-                    "Clear completed scheduled votes",
-                    "Remove every completed scheduled vote from this device? Pending votes will stay scheduled.",
-                )
-                .danger_mode(true)
-                .confirm_text(Some("Clear completed scheduled votes")),
-            ));
-            action = AppAction::None;
-        }
-
-        // Left panel
-        action |= add_left_panel(
-            ui,
-            &self.app_context,
-            RootScreenType::RootScreenToolsPlatformInfoScreen,
-        );
-
-        // Tools area chooser
-        action |= add_tools_subscreen_chooser_panel(ui, self.app_context.as_ref());
-
-        // DPNS subscreen chooser
-        action |= add_dpns_subscreen_chooser_panel(ui, self.app_context.as_ref());
-
-        // Main panel
-        action |= island_central_panel(ui, |ui| {
-            let mut inner_action = AppAction::None;
-            if let Some(error) = self.vote_operations.read_error() {
-                if self.journal_error_banner.is_none() || self.journal_error_banner.was_evicted() {
-                    self.journal_error_banner.raise_persistent(
-                        ui.ctx(),
-                        JOURNAL_UNAVAILABLE_MESSAGE,
-                        MessageType::Warning,
-                    );
-                    if let Some(handle) = &self.journal_error_banner {
-                        handle.with_details(error);
-                    }
-                }
-                // The banner is dismissible, but the warning has to outlive a
-                // dismissal for as long as the history is unreliable — so the
-                // same sentence falls back inline once the banner is gone, and
-                // never renders twice at once.
-                if self
-                    .journal_error_banner
-                    .as_ref()
-                    .and_then(BannerHandle::text)
-                    .is_none()
-                {
-                    ui.label(JOURNAL_UNAVAILABLE_MESSAGE);
-                }
-                if ComponentStyles::add_secondary_button(
-                    ui,
-                    "Retry loading",
-                    ui.visuals().dark_mode,
-                )
-                .clicked()
-                {
-                    self.refresh();
-                }
-                ui.separator();
-            } else {
-                self.journal_error_banner.take_and_clear();
-            }
-            if let Some((clear_all, dialog)) = self.scheduled_clear_dialog.as_mut()
-                && let Some(status) = dialog.show(ui).inner.dialog_response
-            {
-                let clear_all = *clear_all;
-                self.scheduled_clear_dialog = None;
-                if status == ConfirmationStatus::Confirmed {
-                    inner_action =
-                        AppAction::BackendTask(BackendTask::ContestedResourceTask(if clear_all {
-                            ContestedResourceTask::ClearAllScheduledVotes
-                        } else {
-                            ContestedResourceTask::ClearExecutedScheduledVotes
-                        }));
+        ui.horizontal(|ui| {
+            for view in VotesView::ALL {
+                if ui.selectable_label(self.view == view, view.label()).clicked() {
+                    self.view = view;
                 }
             }
-            if let Some(editor) = self.scheduled_vote_editor.as_mut() {
-                match editor.show(ui.ctx()) {
-                    EditOutcome::KeepOpen => {}
-                    EditOutcome::Cancel => self.scheduled_vote_editor = None,
-                    EditOutcome::Save(edit) => {
-                        let key = editor.scheduled_key();
-                        let task = BackendTask::ContestedResourceTask(edit);
-                        let context =
-                            BackendTaskContext::for_dispatch_on(&task, self.app_context.network());
-                        self.pending_scheduled_actions.insert(key, context.clone());
-                        inner_action = AppAction::BackendTaskWithContext { task, context };
-                        self.scheduled_vote_editor = None;
-                        self.raise_vote_overlay(ui.ctx(), "Saving the scheduled vote…");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let dark_mode = ui.visuals().dark_mode;
+                match self.view {
+                    VotesView::Scheduled => {
+                        if ComponentStyles::add_secondary_button(
+                            ui,
+                            "Remove finished votes",
+                            dark_mode,
+                        )
+                        .clicked()
+                        {
+                            self.scheduled_clear_dialog = Some((
+                                false,
+                                ConfirmationDialog::new(
+                                    "Remove finished votes",
+                                    "Remove every finished scheduled vote from this device? Pending votes will stay scheduled.",
+                                )
+                                .danger_mode(true)
+                                .confirm_text(Some("Remove finished votes")),
+                            ));
+                        }
+                        if ComponentStyles::add_secondary_button(ui, "Remove all", dark_mode)
+                            .clicked()
+                        {
+                            self.scheduled_clear_dialog = Some((
+                                true,
+                                ConfirmationDialog::new(
+                                    "Remove all scheduled votes",
+                                    "Remove every scheduled vote from this device? Votes already submitted to Platform cannot be undone.",
+                                )
+                                .danger_mode(true)
+                                .confirm_text(Some("Remove all scheduled votes")),
+                            ));
+                        }
+                    }
+                    VotesView::ToDecide | VotesView::Voted | VotesView::History => {
+                        let refreshing = self.refreshing_status == RefreshingStatus::Refreshing;
+                        if ui
+                            .add_enabled(
+                                !refreshing,
+                                ComponentStyles::secondary_button("Refresh", dark_mode),
+                            )
+                            .disabled_tooltip("Contests are already being refreshed.")
+                        .clicked()
+                        {
+                            action = AppAction::BackendTask(BackendTask::ContestedResourceTask(
+                                ContestedResourceTask::QueryDPNSContests,
+                            ));
+                        }
                     }
                 }
-            }
-            // Bulk-schedule ephemeral popup
-            if self.show_bulk_schedule_popup {
-                egui::Window::new("Review and cast")
-                    .collapsible(false)
-                    .resizable(true)
-                    .vscroll(true)
-                    .show(ui.ctx(), |ui| {
-                        inner_action |= self.show_review_and_cast_window(ui);
-                    });
-            }
-
-            if self.voting_identity_load_error.is_some() && !self.show_bulk_schedule_popup {
-                self.render_voting_identity_load_error(ui);
-            }
-            // Render sub-screen
-            match self.dpns_subscreen {
-                DPNSSubscreen::Active => {
-                    let has_any = !self.active_contests.is_empty();
-                    if self.voting_identities.is_empty()
-                        && self.voting_identity_load_error.is_none()
-                    {
-                        inner_action |= self.render_no_voting_nodes(ui);
-                    }
-                    if has_any {
-                        self.render_active_contests(ui);
-                    } else {
-                        inner_action |= self.render_no_active_contests_or_owned_names(ui);
-                        egui::ScrollArea::vertical()
-                            .id_salt("voting_activity_without_contests")
-                            .show(ui, |ui| self.render_voting_activity(ui));
-                    }
-                }
-                DPNSSubscreen::Past => {
-                    let has_any = {
-                        let guard = self.contested_names.lock_recover();
-                        !guard.is_empty()
-                    };
-                    if has_any {
-                        self.render_table_past_contests(ui);
-                    } else {
-                        inner_action |= self.render_no_active_contests_or_owned_names(ui);
-                    }
-                }
-                DPNSSubscreen::Owned => {
-                    let has_any = {
-                        let guard = self.local_dpns_names.lock_recover();
-                        !guard.is_empty()
-                    };
-                    if has_any {
-                        self.render_table_local_dpns_names(ui);
-                    } else {
-                        inner_action |= self.render_no_active_contests_or_owned_names(ui);
-                    }
-                }
-                DPNSSubscreen::ScheduledVotes => {
-                    let has_any = {
-                        let guard = self.scheduled_votes.lock_recover();
-                        !guard.is_empty()
-                    };
-                    if has_any {
-                        inner_action |= self.render_table_scheduled_votes(ui);
-                    } else {
-                        inner_action |= self.render_no_active_contests_or_owned_names(ui);
-                    }
-                }
-            }
-
-            // Refreshing indicator is shown via the global banner
-            // (no inline elapsed rendering needed)
-            inner_action
+            });
         });
+        ui.add_space(8.0);
 
-        // Extra handling for actions
-        match action {
-            // If refreshing contested names, set self.refreshing = true
-            AppAction::BackendTask(BackendTask::ContestedResourceTask(
-                ContestedResourceTask::QueryDPNSContests,
-            )) => {
-                self.refresh_banner.take_and_clear();
-                let handle = MessageBanner::set_global(
-                    ctx,
-                    "Refreshing contested names...",
-                    MessageType::Info,
+        if let Some(error) = self.vote_operations.read_error() {
+            if self.journal_error_banner.is_none() || self.journal_error_banner.was_evicted() {
+                self.journal_error_banner.raise_persistent(
+                    ui.ctx(),
+                    JOURNAL_UNAVAILABLE_MESSAGE,
+                    MessageType::Warning,
                 );
-                handle.with_elapsed();
-                self.refresh_banner = Some(handle);
-                self.refreshing_status = RefreshingStatus::Refreshing;
+                if let Some(handle) = &self.journal_error_banner {
+                    handle.with_details(error);
+                }
             }
-            // If refreshing owned names, set self.refreshing = true
-            AppAction::BackendTask(BackendTask::IdentityTask(
-                IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames,
-            )) => {
-                self.refresh_banner.take_and_clear();
-                let handle = MessageBanner::set_global(
-                    ctx,
-                    "Refreshing contested names...",
-                    MessageType::Info,
-                );
-                handle.with_elapsed();
-                self.refresh_banner = Some(handle);
-                self.refreshing_status = RefreshingStatus::Refreshing;
+            // The banner is dismissible, but the warning has to outlive a
+            // dismissal for as long as the history is unreliable — so the same
+            // sentence falls back inline once the banner is gone, and never
+            // renders twice at once.
+            if self
+                .journal_error_banner
+                .as_ref()
+                .and_then(BannerHandle::text)
+                .is_none()
+            {
+                ui.label(JOURNAL_UNAVAILABLE_MESSAGE);
             }
-            AppAction::SetMainScreen(_) => {
-                self.refresh_banner.take_and_clear();
-                self.refreshing_status = RefreshingStatus::NotRefreshing;
+            if ComponentStyles::add_secondary_button(ui, "Retry loading", ui.visuals().dark_mode)
+                .clicked()
+            {
+                self.refresh();
             }
-            _ => {}
+            ui.separator();
+        } else {
+            self.journal_error_banner.take_and_clear();
+        }
+        if let Some((clear_all, dialog)) = self.scheduled_clear_dialog.as_mut()
+            && let Some(status) = dialog.show(ui).inner.dialog_response
+        {
+            let clear_all = *clear_all;
+            self.scheduled_clear_dialog = None;
+            if status == ConfirmationStatus::Confirmed {
+                action = AppAction::BackendTask(BackendTask::ContestedResourceTask(if clear_all {
+                    ContestedResourceTask::ClearAllScheduledVotes
+                } else {
+                    ContestedResourceTask::ClearExecutedScheduledVotes
+                }));
+            }
+        }
+        if let Some(editor) = self.scheduled_vote_editor.as_mut() {
+            match editor.show(ui.ctx()) {
+                EditOutcome::KeepOpen => {}
+                EditOutcome::Cancel => self.scheduled_vote_editor = None,
+                EditOutcome::Save(edit) => {
+                    let key = editor.scheduled_key();
+                    let task = BackendTask::ContestedResourceTask(edit);
+                    let context =
+                        BackendTaskContext::for_dispatch_on(&task, self.app_context.network());
+                    self.pending_scheduled_actions.insert(key, context.clone());
+                    action = AppAction::BackendTaskWithContext { task, context };
+                    self.scheduled_vote_editor = None;
+                }
+            }
+        }
+        if self.show_bulk_schedule_popup {
+            egui::Window::new("Confirm votes")
+                .collapsible(false)
+                .resizable(true)
+                .vscroll(true)
+                .show(ui.ctx(), |ui| {
+                    action |= self.show_review_and_cast_window(ui);
+                });
         }
 
-        // If we have a pending backend task from scheduling (e.g. after immediate votes)
-        if action == AppAction::None
-            && let Some(bt) = self.pending_backend_task.take()
+        if self.voting_identity_load_error.is_some() && !self.show_bulk_schedule_popup {
+            self.render_voting_identity_load_error(ui);
+        }
+        match self.view {
+            VotesView::ToDecide | VotesView::Voted => {
+                if self.voting_identities.is_empty() && self.voting_identity_load_error.is_none() {
+                    action |= self.render_no_voting_nodes(ui);
+                }
+                self.render_needs_attention(ui);
+                if self.active_contests.is_empty() {
+                    self.render_node_set_chip(ui);
+                    action |= self.render_empty_view(ui);
+                } else {
+                    self.render_active_contests(ui);
+                }
+            }
+            VotesView::History => {
+                if self.contested_names.lock_recover().is_empty() {
+                    action |= self.render_empty_view(ui);
+                } else {
+                    self.render_table_past_contests(ui);
+                }
+            }
+            VotesView::Scheduled => {
+                if self.scheduled_votes.lock_recover().is_empty() {
+                    action |= self.render_empty_view(ui);
+                } else {
+                    action |= self.render_table_scheduled_votes(ui);
+                }
+            }
+        }
+
+        if let AppAction::BackendTask(BackendTask::ContestedResourceTask(
+            ContestedResourceTask::QueryDPNSContests,
+        )) = &action
         {
-            action = AppAction::BackendTask(bt);
+            self.refresh_banner.take_and_clear();
+            let handle =
+                MessageBanner::set_global(ctx, "Refreshing name contests…", MessageType::Info);
+            handle.with_elapsed();
+            self.refresh_banner = Some(handle);
+            self.refreshing_status = RefreshingStatus::Refreshing;
+        }
+
+        if action == AppAction::None
+            && let Some(task) = self.pending_backend_task.take()
+        {
+            action = AppAction::BackendTask(task);
         }
         action
     }
@@ -3182,27 +2964,26 @@ mod tests {
         }
     }
 
+    /// VOTE-TC-100: no window overlay; staged decisions clear only when this
+    /// panel's own operation reports, never on another operation's update.
     #[test]
-    fn vote_submission_overlay_clears_when_the_operation_finishes() {
+    fn own_operation_result_clears_staged_decisions_without_an_overlay() {
         let (ctx, _temp_dir) = offline_ctx();
-        let mut screen = DPNSScreen::new(&ctx, DPNSSubscreen::Active);
-
-        screen.raise_vote_overlay(
-            ctx.egui_ctx(),
-            "Submitting the selected votes to Dash Platform…",
-        );
+        let mut screen = DPNSScreen::new(&ctx, VotesView::ToDecide);
+        screen.selected_votes = vec![SelectedVote {
+            contested_name: "alpha".to_owned(),
+            vote_choice: ResourceVoteChoice::Lock,
+            end_time: None,
+        }];
+        screen.bulk_vote_handling_status = VoteHandlingStatus::CastingVotes;
         screen.pending_vote_operation = Some(DpnsVoteOperationId::from_bytes([7; 16]));
-        assert!(
-            crate::ui::components::progress_overlay::ProgressOverlay::has_global(ctx.egui_ctx())
-        );
 
         screen.display_task_result(BackendTaskSuccessResult::DpnsVoteOperationUpdated {
             network: ctx.network(),
             operation_id: DpnsVoteOperationId::from_bytes([8; 16]),
         });
-        assert!(
-            crate::ui::components::progress_overlay::ProgressOverlay::has_global(ctx.egui_ctx())
-        );
+        assert_eq!(screen.selected_votes.len(), 1);
+        assert!(screen.pending_vote_operation.is_some());
 
         screen
             .pending_scheduled_actions
@@ -3212,10 +2993,16 @@ mod tests {
             operation_id: DpnsVoteOperationId::from_bytes([7; 16]),
         });
 
+        assert!(screen.selected_votes.is_empty());
+        assert!(screen.pending_vote_operation.is_none());
+        assert!(matches!(
+            screen.bulk_vote_handling_status,
+            VoteHandlingStatus::NotStarted
+        ));
+        assert!(!screen.pending_scheduled_actions.is_empty());
         assert!(
             !crate::ui::components::progress_overlay::ProgressOverlay::has_global(ctx.egui_ctx())
         );
-        assert!(!screen.pending_scheduled_actions.is_empty());
     }
 
     #[test]
@@ -3235,7 +3022,7 @@ mod tests {
         ctx.cache_confirmed_dpns_vote(voter, poll, old_choice)
             .expect("seed old proved choice");
 
-        let mut screen = DPNSScreen::new(&ctx, DPNSSubscreen::Active);
+        let mut screen = DPNSScreen::new(&ctx, VotesView::ToDecide);
         screen.vote_state = DpnsVoteStateSnapshot::load(&ctx, &[voter], &[poll])
             .expect("load initial proved choice");
         assert_eq!(
@@ -3256,34 +3043,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn active_contest_groups_prioritize_nodes_that_still_need_a_vote() {
-        assert!(matches!(
-            classify_vote_states([
-                DpnsCurrentVoteState::Available(Some(ResourceVoteChoice::Lock)),
-                DpnsCurrentVoteState::Available(None),
-            ]),
-            ActiveContestGroup::NeedsVote
-        ));
-        assert!(matches!(
-            classify_vote_states([DpnsCurrentVoteState::Available(Some(
-                ResourceVoteChoice::Abstain,
-            ))]),
-            ActiveContestGroup::Voted
-        ));
-        assert!(matches!(
-            classify_vote_states([
-                DpnsCurrentVoteState::Checking,
-                DpnsCurrentVoteState::Unavailable,
-            ]),
-            ActiveContestGroup::VoteStateUnavailable
-        ));
-    }
-
-    /// The review sheet is the last surface an operator reads before a
-    /// masternode vote is submitted, and a vote change is budgeted, so the sheet
-    /// must always disclose which identity the vote goes to — by name when one
-    /// is cached, by its copyable handle when none is.
     #[test]
     fn review_choice_names_the_candidate_or_falls_back_to_its_identifier() {
         let candidate_id = Identifier::from([42; 32]);
@@ -3316,9 +3075,10 @@ mod tests {
             screen.candidate_name("alpha", choice).is_none(),
             "the fixture must leave the candidate name uncached, or this proves nothing"
         );
-        let expected = format!(
-            "Your vote: Vote for {handle}",
-            handle = short_identifier(candidate_id),
+        let expected = decision_row(
+            "alpha",
+            &format!("Vote for {handle}", handle = short_identifier(candidate_id)),
+            1,
         );
 
         let mut harness = egui_kittest::Harness::builder()
@@ -3330,10 +3090,9 @@ mod tests {
 
         assert!(harness.query_by_label(&expected).is_some());
         for label in [
-            "alpha.dash",
-            "Voting node: node-one",
-            "Previous vote: Lock",
-            "When: Cast now",
+            "Cast 1 decision with 1 node",
+            "1 transaction, one per node and name. Voting is free for your nodes.",
+            "Cast 1 vote",
         ] {
             assert!(
                 harness.query_by_label(label).is_some(),
@@ -3348,7 +3107,7 @@ mod tests {
     fn candidate_labels_come_from_the_refresh_time_index_not_a_per_frame_scan() {
         let (ctx, _temp_dir) = kv_ctx();
         ctx.seed_dpns_contest_for_test("alpha", None, false);
-        let mut screen = DPNSScreen::new(&ctx, DPNSSubscreen::ScheduledVotes);
+        let mut screen = DPNSScreen::new(&ctx, VotesView::Scheduled);
         let candidate = ResourceVoteChoice::TowardsIdentity(Identifier::from([3; 32]));
         assert_eq!(screen.candidate_name("alpha", candidate), Some("alpha"));
 
@@ -3382,24 +3141,6 @@ mod tests {
     }
 
     #[test]
-    fn proved_choice_is_highlighted_only_when_loaded_nodes_agree() {
-        assert_eq!(
-            proved_vote_summary([
-                DpnsCurrentVoteState::Available(Some(ResourceVoteChoice::Abstain)),
-                DpnsCurrentVoteState::Checking,
-            ]),
-            ProvedVoteSummary::Choice(ResourceVoteChoice::Abstain)
-        );
-        assert_eq!(
-            proved_vote_summary([
-                DpnsCurrentVoteState::Available(Some(ResourceVoteChoice::Abstain)),
-                DpnsCurrentVoteState::Available(Some(ResourceVoteChoice::Lock)),
-            ]),
-            ProvedVoteSummary::Mixed
-        );
-    }
-
-    #[test]
     fn missing_voting_nodes_copy_is_actionable_and_avoids_the_stale_route() {
         assert!(NO_VOTING_NODES_DETAIL.contains("masternode"));
         assert!(!NO_VOTING_NODES_MESSAGE.contains("Identities screen"));
@@ -3408,7 +3149,7 @@ mod tests {
     #[test]
     fn scheduled_vote_sweep_error_preserves_unrelated_manual_cast() {
         let (ctx, _temp_dir) = offline_ctx();
-        let mut screen = DPNSScreen::new(&ctx, DPNSSubscreen::ScheduledVotes);
+        let mut screen = DPNSScreen::new(&ctx, VotesView::Scheduled);
         let error = TaskError::ScheduledVoteSweepFailed {
             network: Network::Regtest,
             source: Box::new(TaskError::NoVotingIdentity {
@@ -3426,7 +3167,7 @@ mod tests {
     #[test]
     fn direct_scheduled_vote_error_remains_available_to_global_handling() {
         let (ctx, _temp_dir) = offline_ctx();
-        let mut screen = DPNSScreen::new(&ctx, DPNSSubscreen::ScheduledVotes);
+        let mut screen = DPNSScreen::new(&ctx, VotesView::Scheduled);
 
         screen
             .pending_scheduled_actions
@@ -3548,7 +3289,7 @@ mod tests {
     #[test]
     fn failed_submission_releases_the_review_window() {
         let (ctx, _temp_dir) = offline_ctx();
-        let mut screen = DPNSScreen::new(&ctx, DPNSSubscreen::Active);
+        let mut screen = DPNSScreen::new(&ctx, VotesView::ToDecide);
         let operation_id = DpnsVoteOperationId::from_bytes([11; 16]);
         let context = BackendTaskContext::DpnsVoteOperation {
             network: ctx.network(),
@@ -3563,16 +3304,10 @@ mod tests {
             screen.show_bulk_schedule_popup = true;
             screen.bulk_vote_handling_status = in_progress;
             screen.pending_vote_operation = Some(operation_id);
-            screen.raise_vote_overlay(ctx.egui_ctx(), "Submitting the selected votes…");
 
             screen.display_backend_task_error(&context, &error);
             screen.display_task_error(&error);
 
-            assert!(
-                !crate::ui::components::progress_overlay::ProgressOverlay::has_global(
-                    ctx.egui_ctx()
-                )
-            );
             assert_eq!(screen.pending_vote_operation, None);
             let VoteHandlingStatus::Failed(failure) = &screen.bulk_vote_handling_status else {
                 panic!(
@@ -3592,7 +3327,7 @@ mod tests {
     #[test]
     fn unrelated_error_keeps_the_pending_submission_in_progress() {
         let (ctx, _temp_dir) = offline_ctx();
-        let mut screen = DPNSScreen::new(&ctx, DPNSSubscreen::Active);
+        let mut screen = DPNSScreen::new(&ctx, VotesView::ToDecide);
         let error = TaskError::DpnsCurrentVoteUnavailable;
         screen.show_bulk_schedule_popup = true;
         screen.bulk_vote_handling_status = VoteHandlingStatus::CastingVotes;
@@ -3629,7 +3364,7 @@ mod tests {
         )
         .expect("insert keyless masternode");
 
-        let screen = DPNSScreen::new(&ctx, DPNSSubscreen::Active);
+        let screen = DPNSScreen::new(&ctx, VotesView::ToDecide);
 
         assert!(
             !ctx.load_local_voting_identities()
@@ -3652,7 +3387,7 @@ mod tests {
         )
         .expect("insert voting masternode");
 
-        let screen = DPNSScreen::new(&ctx, DPNSSubscreen::Active);
+        let screen = DPNSScreen::new(&ctx, VotesView::ToDecide);
 
         assert_eq!(screen.voting_identities.len(), 1);
     }
@@ -3663,9 +3398,9 @@ mod tests {
         let poll = ctx.dpns_vote_poll_id("alpha").unwrap();
         ctx.cache_confirmed_dpns_vote(voter.identity.id(), poll, ResourceVoteChoice::Lock)
             .unwrap();
-        let mut screen = DPNSScreen::new(&ctx, DPNSSubscreen::Active);
+        let mut screen = DPNSScreen::new(&ctx, VotesView::ToDecide);
         screen.voting_identities = vec![voter.clone()];
-        screen.bulk_identity_options = vec![VoteOption::CastNow];
+        screen.rebuild_cards();
         screen.selected_votes = vec![SelectedVote {
             contested_name: "alpha".to_owned(),
             vote_choice: ResourceVoteChoice::Abstain,
@@ -3680,16 +3415,14 @@ mod tests {
     fn voting_ui_unconfirmed_activity_is_reachable_without_active_contests_after_restart() {
         use egui_kittest::kittest::Queryable;
         let (screen, _dir) = voting_ui_review_fixture();
-        let target = screen.build_review_plan().unwrap().entries[0]
-            .target
-            .clone();
+        let target = screen.build_review_plan().unwrap().aggregate.targets[0].clone();
         let mut operation = DpnsVoteOperation::new(vec![target]);
         operation.targets[0].status = DpnsVoteTargetStatus::Unconfirmed;
         screen
             .app_context
             .insert_dpns_vote_operation(&mut operation, None)
             .unwrap();
-        let mut reopened = DPNSScreen::new(&screen.app_context, DPNSSubscreen::Active);
+        let mut reopened = DPNSScreen::new(&screen.app_context, VotesView::ToDecide);
         assert!(reopened.active_contests.is_empty());
         let mut harness = egui_kittest::Harness::builder()
             .with_size(egui::vec2(1000.0, 1200.0))
@@ -3697,7 +3430,13 @@ mod tests {
                 reopened.ui(ui);
             });
         harness.run();
-        assert!(harness.query_by_label("Check again").is_some());
+        // VOTE-TC-102: the Needs attention row leads to the drawer's Check again.
+        assert!(
+            harness
+                .query_by_label("Needs attention: 1 vote is still being checked.")
+                .is_some()
+        );
+        assert!(harness.query_by_label("Show progress").is_some());
     }
 
     #[test]
@@ -3708,9 +3447,7 @@ mod tests {
             DpnsVoteTargetStatus::Queued,
         ] {
             let (screen, _dir) = voting_ui_review_fixture();
-            let mut target = screen.build_review_plan().unwrap().entries[0]
-                .target
-                .clone();
+            let mut target = screen.build_review_plan().unwrap().aggregate.targets[0].clone();
             target.timing = VoteTiming::Scheduled(1);
             let mut operation = DpnsVoteOperation::new(vec![target]);
             operation.targets[0].status = status;
@@ -3718,7 +3455,7 @@ mod tests {
                 .app_context
                 .insert_dpns_vote_operation(&mut operation, None)
                 .unwrap();
-            let mut reopened = DPNSScreen::new(&screen.app_context, DPNSSubscreen::ScheduledVotes);
+            let mut reopened = DPNSScreen::new(&screen.app_context, VotesView::Scheduled);
             let mut harness = egui_kittest::Harness::builder()
                 .with_size(egui::vec2(1600.0, 1200.0))
                 .build_ui(move |ui| {
@@ -3730,7 +3467,7 @@ mod tests {
                 status == DpnsVoteTargetStatus::Scheduled
             );
             if status == DpnsVoteTargetStatus::Scheduled {
-                assert!(harness.query_by_label("The automatic voting time was missed. In Scheduled Votes, use Cast now to vote, Edit to reschedule, or Remove to cancel.").is_some());
+                assert!(harness.query_by_label("The automatic voting time was missed. On the Scheduled tab, use Cast now to vote, Edit to reschedule, or Remove to cancel.").is_some());
                 assert!(harness.query_by_label("Cast now").is_some());
                 assert!(harness.query_by_label("Edit").is_some());
             }
@@ -3749,7 +3486,7 @@ mod tests {
             if fail_at_construction {
                 store.fail_next_gets_containing("det:dpns_vote_operations:v2:", 1);
             }
-            let mut screen = DPNSScreen::new(&context, DPNSSubscreen::ScheduledVotes);
+            let mut screen = DPNSScreen::new(&context, VotesView::Scheduled);
             if !fail_at_construction {
                 store.fail_next_gets_containing("det:dpns_vote_operations:v2:", 1);
                 screen.refresh();
@@ -3759,7 +3496,11 @@ mod tests {
             let mut harness = egui_kittest::Harness::builder()
                 .with_size(egui::vec2(1600.0, 1200.0))
                 .build_ui(move |ui| {
-                    rendering.lock_recover().ui(ui);
+                    // The hosting Masternodes screen renders global banners
+                    // through its island panel.
+                    crate::ui::components::styled::island_central_panel(ui, |ui| {
+                        rendering.lock_recover().ui(ui)
+                    });
                 });
             harness.run();
             let message = "Saved voting progress could not be read. The displayed history may be incomplete or out of date. Retry loading before managing votes.";
@@ -3786,17 +3527,15 @@ mod tests {
         for (failure, reason) in [
             (
                 DpnsVoteFailure::CurrentVoteUnavailable,
-                "Current vote could not be verified. In Scheduled Votes, use Cast now to check again or Edit to reschedule.",
+                "Current vote could not be verified. On the Scheduled tab, use Cast now to check again or Edit to reschedule.",
             ),
             (
                 DpnsVoteFailure::SubmissionFailed,
-                "The vote could not be submitted. Check your connection and voting key, then use Cast now or Edit in Scheduled Votes.",
+                "The vote could not be submitted. Check your connection and voting key, then use Cast now or Edit on the Scheduled tab.",
             ),
         ] {
             let (screen, _dir) = voting_ui_review_fixture();
-            let mut target = screen.build_review_plan().unwrap().entries[0]
-                .target
-                .clone();
+            let mut target = screen.build_review_plan().unwrap().aggregate.targets[0].clone();
             target.timing = VoteTiming::Scheduled(Utc::now().timestamp_millis() as u64);
             let mut operation = DpnsVoteOperation::new(vec![target]);
             operation.targets[0].failure = Some(failure);
@@ -3804,20 +3543,16 @@ mod tests {
                 .app_context
                 .insert_dpns_vote_operation(&mut operation, None)
                 .unwrap();
-            for subscreen in [DPNSSubscreen::ScheduledVotes, DPNSSubscreen::Active] {
-                let scheduled = subscreen == DPNSSubscreen::ScheduledVotes;
-                let mut reopened = DPNSScreen::new(&screen.app_context, subscreen);
-                let mut harness = egui_kittest::Harness::builder()
-                    .with_size(egui::vec2(1600.0, 1200.0))
-                    .build_ui(move |ui| {
-                        reopened.ui(ui);
-                    });
-                harness.run();
-                if scheduled {
-                    assert!(harness.query_by_label("Not submitted").is_some());
-                }
-                assert!(harness.query_by_label(reason).is_some());
-            }
+            // The reason lives on the Scheduled tab, which its own copy names.
+            let mut reopened = DPNSScreen::new(&screen.app_context, VotesView::Scheduled);
+            let mut harness = egui_kittest::Harness::builder()
+                .with_size(egui::vec2(1600.0, 1200.0))
+                .build_ui(move |ui| {
+                    reopened.ui(ui);
+                });
+            harness.run();
+            assert!(harness.query_by_label("Not submitted").is_some());
+            assert!(harness.query_by_label(reason).is_some());
         }
     }
 
@@ -3841,7 +3576,7 @@ mod tests {
             .insert_name_contests_as_normalized_names(vec!["alpha".into()])
             .unwrap();
         store.fail_next_gets_containing("det:dpns_current_votes:v3:", 1);
-        let screen = DPNSScreen::new(&context, DPNSSubscreen::Active);
+        let screen = DPNSScreen::new(&context, VotesView::ToDecide);
         assert_eq!(screen.voting_identities.len(), 2);
         let poll = context.dpns_vote_poll_id("alpha").unwrap();
         assert_eq!(
@@ -3874,7 +3609,7 @@ mod tests {
         context
             .cache_confirmed_dpns_vote(voter, other, ResourceVoteChoice::Lock)
             .unwrap();
-        let mut screen = DPNSScreen::new(&context, DPNSSubscreen::Active);
+        let mut screen = DPNSScreen::new(&context, VotesView::ToDecide);
         screen
             .vote_state
             .refresh(&context, &[voter], &[poll, other])
@@ -3906,28 +3641,41 @@ mod tests {
         );
     }
 
+    /// VOTE-FR-081: absolute and relative schedules must fall strictly
+    /// before each contest's end and after now.
     #[test]
     fn voting_ui_review_rejects_absolute_and_relative_schedules_at_contest_deadline() {
         let (mut screen, _dir) = voting_ui_review_fixture();
         let now = Utc::now();
-        let scheduled_at = (now + chrono::Duration::hours(1)).timestamp_millis() as u64;
-        for option in [
-            VoteOption::ScheduledAt(scheduled_at),
-            VoteOption::Scheduled {
-                days: 0,
-                hours: 1,
-                minutes: 0,
-            },
-        ] {
-            screen.bulk_identity_options = vec![option];
-            for deadline in [scheduled_at - 1, scheduled_at, scheduled_at + 1] {
-                screen.selected_votes[0].end_time = Some(deadline);
-                assert_eq!(
-                    screen.build_review_plan_at(now).is_ok(),
-                    deadline > scheduled_at
-                );
-            }
+        screen.confirm_timing = ConfirmTiming::At;
+        screen.simple_schedule =
+            UtcScheduleInput::new().with_time(now + chrono::Duration::hours(1));
+        let scheduled_at = screen.simple_schedule.current_value().unwrap();
+        for deadline in [scheduled_at - 1, scheduled_at, scheduled_at + 1] {
+            screen.selected_votes[0].end_time = Some(deadline);
+            assert_eq!(
+                screen.build_review_plan_at(now).is_ok(),
+                deadline > scheduled_at
+            );
         }
+
+        screen.confirm_timing = ConfirmTiming::BeforeEnd;
+        screen.relative_preset = std::time::Duration::from_secs(10 * 60);
+        let now_ms = now.timestamp_millis() as u64;
+        screen.selected_votes[0].end_time = Some(now_ms + 5 * 60_000);
+        assert!(
+            screen.build_review_plan_at(now).is_err(),
+            "ten minutes before an end five minutes away is in the past"
+        );
+        let end = now_ms + 60 * 60_000;
+        screen.selected_votes[0].end_time = Some(end);
+        assert_eq!(
+            screen.build_review_plan_at(now).unwrap().aggregate.targets[0].timing,
+            VoteTiming::Scheduled(end - 10 * 60_000)
+        );
+
+        screen.confirm_timing = ConfirmTiming::At;
+        screen.selected_votes[0].end_time = Some(scheduled_at + 1);
         screen.selected_votes.push(SelectedVote {
             contested_name: "beta".into(),
             vote_choice: ResourceVoteChoice::Abstain,
@@ -3951,19 +3699,18 @@ mod tests {
             .unwrap()
             .and_utc();
         screen.simple_schedule = UtcScheduleInput::new().with_time(requested);
-        let option = screen.simple_schedule_option().unwrap();
-        screen.apply_all_nodes_option(option);
+        screen.confirm_timing = ConfirmTiming::At;
         let plan = screen.build_review_plan().unwrap();
         assert_eq!(
-            plan.entries[0].target.timing,
+            plan.aggregate.targets[0].timing,
             VoteTiming::Scheduled(requested.timestamp_millis() as u64)
         );
         let delayed = screen
             .build_review_plan_at(Utc::now() + chrono::Duration::minutes(20))
             .unwrap();
         assert_eq!(
-            delayed.entries[0].target.timing,
-            plan.entries[0].target.timing
+            delayed.aggregate.targets[0].timing,
+            plan.aggregate.targets[0].timing
         );
     }
 
@@ -3993,14 +3740,12 @@ mod tests {
         screen
             .pending_scheduled_actions
             .insert(key.clone(), dispatch.clone());
-        screen.raise_vote_overlay(&screen.app_context.egui_ctx().clone(), "Submitting…");
         let updated = BackendTaskSuccessResult::DpnsVoteOperationUpdated {
             network: screen.app_context.network(),
             operation_id: DpnsVoteOperationId::from_bytes([9; 16]),
         };
         screen.display_backend_task_result(&unrelated_dispatch, updated.clone());
         assert!(screen.pending_scheduled_actions.contains_key(&key));
-        assert!(screen.vote_overlay.is_some());
         let sweep = BackendTaskContext::ScheduledVoteSweep {
             network: screen.app_context.network(),
         };
@@ -4015,10 +3760,8 @@ mod tests {
         screen.display_backend_task_error(&sweep, &error);
         screen.display_task_error(&error);
         assert!(screen.pending_scheduled_actions.contains_key(&key));
-        assert!(screen.vote_overlay.is_some());
         screen.display_backend_task_result(&dispatch, updated);
         assert!(screen.pending_scheduled_actions.is_empty());
-        assert!(screen.vote_overlay.is_none());
         screen
             .pending_scheduled_actions
             .insert(key.clone(), dispatch.clone());
@@ -4043,6 +3786,7 @@ mod tests {
             .seed_dpns_contest_for_test("alpha", None, false);
         screen.refresh();
         screen.vote_state = DpnsVoteStateSnapshot::default();
+        screen.rebuild_cards();
         let refreshed = Arc::new(AtomicBool::new(false));
         let received_refresh = refreshed.clone();
         let mut harness = egui_kittest::Harness::builder()
@@ -4063,9 +3807,11 @@ mod tests {
             "unavailable state must not hide the contest"
         );
         assert!(harness.query_by_label("Refresh voting").is_some());
-        assert!(harness.query_by_label(
-            "Current votes are unavailable or out of date. Refresh voting to check these nodes."
-        ).is_some());
+        assert!(
+            harness
+                .query_by_label("Vote state is unavailable for 1 node; it's left out.")
+                .is_some()
+        );
         harness.get_by_label("Refresh voting").click();
         harness.run();
         assert!(refreshed.load(Ordering::Relaxed));
@@ -4107,9 +3853,7 @@ mod tests {
             VoteHandlingStatus::Failed(_)
         ));
         assert_eq!(
-            screen.build_review_plan().unwrap().entries[0]
-                .target
-                .current_choice,
+            screen.build_review_plan().unwrap().aggregate.targets[0].current_choice,
             Some(ResourceVoteChoice::Lock)
         );
         let mut harness = egui_kittest::Harness::builder()
@@ -4121,17 +3865,249 @@ mod tests {
         assert!(
             harness
                 .query_by_label(
-                    "Changing an existing vote uses one of that node's four allowed vote changes."
+                    "1 of these changes an earlier vote. Each node can change its vote 4 times per name."
                 )
                 .is_some()
         );
+    }
+
+    /// VOTE-TC-089: a contest only some node-set nodes voted on stays in To
+    /// decide and says how many voted; the Voted view does not list it.
+    #[tokio::test]
+    async fn partly_voted_contest_stays_in_to_decide() {
+        use egui_kittest::kittest::Queryable;
+        let (ctx, _dir) = kv_ctx();
+        ctx.seed_dpns_contest_for_test("alpha", None, false);
+        let voted = masternode_identity(1, "node-one", true, ctx.network());
+        let pending = masternode_identity(2, "node-two", true, ctx.network());
+        let poll = ctx.dpns_vote_poll_id("alpha").unwrap();
+        ctx.seed_proved_dpns_votes_for_test(pending.identity.id(), BTreeMap::new())
+            .await
+            .unwrap();
+        ctx.cache_confirmed_dpns_vote(voted.identity.id(), poll, ResourceVoteChoice::Lock)
+            .unwrap();
+        let mut screen = DPNSScreen::new(&ctx, VotesView::ToDecide);
+        screen.voting_identities = vec![voted.clone(), pending.clone()];
+        screen.vote_state = DpnsVoteStateSnapshot::load(
+            &ctx,
+            &[voted.identity.id(), pending.identity.id()],
+            &[poll],
+        )
+        .unwrap();
+        screen.rebuild_cards();
+        assert_eq!(screen.cards[0].placement, CardPlacement::ToDecide);
+
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1200.0, 1200.0))
+            .build_ui(move |ui| {
+                screen.ui(ui);
+            });
+        harness.run();
+        assert!(harness.query_by_label("alpha.dash").is_some());
+        assert!(harness.query_by_label("Voted with 1 of 2 nodes").is_some());
+        assert!(
+            harness
+                .query_by_label("Your nodes: 1 not voted · 1 voted Lock")
+                .is_some()
+        );
+    }
+
+    /// VOTE-FR-087 (History): `Your nodes voted` tallies proved choices with
+    /// weight, says when no node voted, and stays blank when nothing is known.
+    #[tokio::test]
+    async fn history_cell_tallies_node_votes() {
+        let (ctx, _dir) = kv_ctx();
+        let mut evonode = masternode_identity(1, "evo", true, ctx.network());
+        evonode.identity_type = crate::model::qualified_identity::IdentityType::Evonode;
+        let masternode = masternode_identity(2, "mn", true, ctx.network());
+        let finished = |name: &str| ContestedName {
+            normalized_contested_name: name.to_owned(),
+            contestants: None,
+            locked_votes: None,
+            abstain_votes: None,
+            awarded_to: None,
+            end_time: Some(1),
+            state: ContestState::Locked,
+            last_updated: None,
+            my_votes: BTreeMap::new(),
+        };
+        let voted = ctx.dpns_vote_poll_id("voted").unwrap();
+        ctx.seed_proved_dpns_votes_for_test(
+            evonode.identity.id(),
+            BTreeMap::from([(voted.to_buffer(), ResourceVoteChoice::Lock)]),
+        )
+        .await
+        .unwrap();
+        ctx.seed_proved_dpns_votes_for_test(
+            masternode.identity.id(),
+            BTreeMap::from([(voted.to_buffer(), ResourceVoteChoice::Lock)]),
+        )
+        .await
+        .unwrap();
+        let mut screen = DPNSScreen::new(&ctx, VotesView::History);
+        *screen.contested_names.lock_recover() =
+            vec![finished("voted"), finished("skipped"), finished("unknown")];
+        screen.voting_identities = vec![evonode, masternode];
+        screen.rebuild_cards();
+        assert_eq!(
+            screen.history_votes_cell("voted"),
+            "Lock (2 nodes, 5 votes)"
+        );
+        assert_eq!(screen.history_votes_cell("skipped"), NODES_DID_NOT_VOTE);
+        assert_eq!(screen.history_votes_cell("absent"), "");
+    }
+
+    /// A request from another screen opens the contest's card, filtered and
+    /// focused, once.
+    #[tokio::test]
+    async fn name_request_shows_that_contest() {
+        let (screen, _dir) = two_contest_screen().await;
+        let ctx = screen.lock_recover().app_context.clone();
+        ctx.request_dpns_votes_for_name("beta".to_owned());
+        let rendering = screen.clone();
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1400.0, 1200.0))
+            .build_ui(move |ui| {
+                rendering.lock_recover().ui(ui);
+            });
+        harness.run();
+        let screen = screen.lock_recover();
+        assert_eq!(screen.view, VotesView::ToDecide);
+        assert_eq!(screen.active_filter_term, "beta");
+        assert_eq!(screen.focused_card.as_deref(), Some("beta"));
+        assert!(ctx.take_dpns_votes_name_request().is_none());
+    }
+
+    /// Two open contests a single voting node has not voted on yet.
+    async fn two_contest_screen() -> (Arc<Mutex<DPNSScreen>>, tempfile::TempDir) {
+        let (ctx, dir) = kv_ctx();
+        ctx.seed_dpns_contest_for_test("alpha", None, false);
+        ctx.seed_dpns_contest_for_test("beta", None, false);
+        let node = masternode_identity(1, "node-one", true, ctx.network());
+        ctx.seed_proved_dpns_votes_for_test(node.identity.id(), BTreeMap::new())
+            .await
+            .unwrap();
+        let polls = [
+            ctx.dpns_vote_poll_id("alpha").unwrap(),
+            ctx.dpns_vote_poll_id("beta").unwrap(),
+        ];
+        let mut screen = DPNSScreen::new(&ctx, VotesView::ToDecide);
+        screen.voting_identities = vec![node.clone()];
+        screen.vote_state =
+            DpnsVoteStateSnapshot::load(&ctx, &[node.identity.id()], &polls).unwrap();
+        screen.rebuild_cards();
+        assert_eq!(screen.cards.len(), 2);
+        (Arc::new(Mutex::new(screen)), dir)
+    }
+
+    fn staged(screen: &Arc<Mutex<DPNSScreen>>) -> Vec<(String, ResourceVoteChoice)> {
+        screen
+            .lock_recover()
+            .selected_votes
+            .iter()
+            .map(|vote| (vote.contested_name.clone(), vote.vote_choice))
+            .collect()
+    }
+
+    /// VOTE-TC-098: J, 1, J, L, Enter stages both decisions and opens the
+    /// confirm step; keys do nothing without list focus or in the filter field.
+    #[tokio::test]
+    async fn keyboard_flow_stages_decisions_and_opens_confirm() {
+        use egui_kittest::kittest::Queryable;
+        let (screen, _dir) = two_contest_screen().await;
+        let rendering = screen.clone();
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1400.0, 1200.0))
+            .build_ui(move |ui| {
+                rendering.lock_recover().ui(ui);
+            });
+        harness.run();
+
+        harness.key_press(egui::Key::J);
+        harness.run();
+        assert!(staged(&screen).is_empty(), "no list focus, no shortcut");
+
+        screen.lock_recover().list_focused = true;
+        for key in [egui::Key::J, egui::Key::Num1, egui::Key::J, egui::Key::L] {
+            harness.key_press(key);
+            harness.run();
+        }
+        let contender = ResourceVoteChoice::TowardsIdentity(Identifier::from([3; 32]));
+        assert_eq!(
+            staged(&screen),
+            vec![
+                ("alpha".to_owned(), contender),
+                ("beta".to_owned(), ResourceVoteChoice::Lock),
+            ]
+        );
+
+        harness
+            .get_by_role(egui::accesskit::Role::TextInput)
+            .click();
+        harness.run();
+        harness.key_press(egui::Key::A);
+        harness.run();
+        assert_eq!(
+            staged(&screen)[1],
+            ("beta".to_owned(), ResourceVoteChoice::Lock),
+            "a focused text field swallows shortcuts"
+        );
+
+        screen.lock_recover().list_focused = true;
+        harness.key_press(egui::Key::Escape);
+        harness.run();
+        screen.lock_recover().list_focused = true;
+        harness.key_press(egui::Key::Enter);
+        harness.run();
+        assert!(screen.lock_recover().show_bulk_schedule_popup);
+        assert!(
+            harness
+                .query_by_label("Cast 2 decisions with 1 node")
+                .is_some()
+        );
+    }
+
+    /// VOTE-TC-099: with several names selected, the bulk bar stages one
+    /// decision on each.
+    #[tokio::test]
+    async fn bulk_bar_applies_a_decision_to_every_selected_name() {
+        use egui_kittest::kittest::Queryable;
+        let (screen, _dir) = two_contest_screen().await;
+        screen.lock_recover().selected_cards =
+            BTreeSet::from(["alpha".to_owned(), "beta".to_owned()]);
+        let rendering = screen.clone();
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1400.0, 1200.0))
+            .build_ui(move |ui| {
+                rendering.lock_recover().ui(ui);
+            });
+        harness.run();
+        assert!(harness.query_by_label("2 names selected").is_some());
+        harness
+            .get_by_role_and_label(egui::accesskit::Role::Button, "Abstain")
+            .click();
+        harness.run();
+        assert_eq!(
+            staged(&screen),
+            vec![
+                ("alpha".to_owned(), ResourceVoteChoice::Abstain),
+                ("beta".to_owned(), ResourceVoteChoice::Abstain),
+            ]
+        );
+        harness
+            .get_all_by_role_and_label(egui::accesskit::Role::Button, "Clear")
+            .next()
+            .expect("the bulk bar's Clear")
+            .click();
+        harness.run();
+        assert!(staged(&screen).is_empty());
     }
 
     #[test]
     fn voting_ui_keyless_users_can_read_cached_active_contests() {
         use egui_kittest::kittest::Queryable;
         let (context, _dir) = kv_ctx();
-        let mut screen = DPNSScreen::new(&context, DPNSSubscreen::Active);
+        let mut screen = DPNSScreen::new(&context, VotesView::ToDecide);
         screen.active_contests = ActiveDpnsContestSnapshot::new(
             &context,
             vec![ContestedName {
@@ -4146,6 +4122,7 @@ mod tests {
                 my_votes: BTreeMap::new(),
             }],
         );
+        screen.rebuild_cards();
         let mut harness = egui_kittest::Harness::builder()
             .with_size(egui::vec2(1000.0, 1200.0))
             .build_ui(move |ui| {
@@ -4170,7 +4147,7 @@ mod tests {
         store.fail_all_reads(true);
         assert!(loaded_voting_identities(&context).is_err());
         for reviewing in [false, true] {
-            let mut screen = DPNSScreen::new(&context, DPNSSubscreen::Active);
+            let mut screen = DPNSScreen::new(&context, VotesView::ToDecide);
             assert!(screen.voting_identity_load_error.is_some());
             screen.show_bulk_schedule_popup = reviewing;
             let mut harness = egui_kittest::Harness::builder().build_ui(move |ui| {
@@ -4189,44 +4166,31 @@ mod tests {
         let second = masternode_identity(2, "other-node", true, ctx.network());
         ctx.insert_local_qualified_identity(&first, &None).unwrap();
         ctx.insert_local_qualified_identity(&second, &None).unwrap();
-        let mut screen = DPNSScreen::new(&ctx, DPNSSubscreen::Active);
+        let mut screen = DPNSScreen::new(&ctx, VotesView::ToDecide);
         screen.selected_votes = vec![SelectedVote {
             contested_name: "alpha".into(),
             vote_choice: ResourceVoteChoice::Lock,
             end_time: None,
         }];
-        screen.bulk_identity_options = screen
-            .voting_identities
-            .iter()
-            .map(|identity| {
-                if identity.identity.id() == first.identity.id() {
-                    VoteOption::CastNow
-                } else {
-                    VoteOption::NoVote
-                }
-            })
-            .collect();
+        screen
+            .node_overrides
+            .insert(second.identity.id(), NodeTiming::DontUse);
         screen.refresh_on_arrival();
-        let selected = screen
-            .voting_identities
-            .iter()
-            .zip(&screen.bulk_identity_options)
-            .filter(|(_, option)| !matches!(option, VoteOption::NoVote))
-            .map(|(identity, _)| identity.identity.id())
-            .collect::<Vec<_>>();
-        assert_eq!(selected, vec![first.identity.id()]);
+        assert_eq!(
+            screen.node_overrides.get(&second.identity.id()),
+            Some(&NodeTiming::DontUse),
+            "an operator's per-node choice survives returning to the page"
+        );
+        assert!(!screen.node_overrides.contains_key(&first.identity.id()));
         let newly_loaded = masternode_identity(3, "new-node", true, ctx.network());
         ctx.insert_local_qualified_identity(&newly_loaded, &None)
             .unwrap();
         screen.refresh_on_arrival();
-        let new_option = screen
-            .voting_identities
-            .iter()
-            .zip(&screen.bulk_identity_options)
-            .find(|(identity, _)| identity.identity.id() == newly_loaded.identity.id())
-            .unwrap()
-            .1;
-        assert!(matches!(new_option, VoteOption::NoVote));
+        assert_eq!(
+            screen.node_overrides.get(&newly_loaded.identity.id()),
+            Some(&NodeTiming::DontUse),
+            "a node loaded after decisions were staged does not join them"
+        );
         ctx.wallet_backend().unwrap().shutdown().await;
     }
 
@@ -4234,7 +4198,12 @@ mod tests {
     fn voting_ui_retry_reviews_only_the_failed_node_and_contest() {
         let (mut screen, _dir) = voting_ui_review_fixture();
         let operation = DpnsVoteOperation::new(vec![
-            screen.build_review_plan().unwrap().entries.remove(0).target,
+            screen
+                .build_review_plan()
+                .unwrap()
+                .aggregate
+                .targets
+                .remove(0),
         ]);
         screen.voting_identities.push(masternode_identity(
             2,
@@ -4250,7 +4219,10 @@ mod tests {
         screen.review_failed_target(&operation.targets[0]);
         let plan = screen.build_review_plan().unwrap();
         assert_eq!(plan.effective_count(), 1);
-        assert_eq!(plan.entries[0].target.key, operation.targets[0].target.key);
+        assert_eq!(
+            plan.aggregate.targets[0].key,
+            operation.targets[0].target.key
+        );
     }
 
     #[test]
@@ -4264,7 +4236,7 @@ mod tests {
         assert!(
             harness
                 .query_by_label(
-                    "Changing an existing vote uses one of that node's four allowed vote changes."
+                    "1 of these changes an earlier vote. Each node can change its vote 4 times per name."
                 )
                 .is_some()
         );
@@ -4283,44 +4255,56 @@ mod tests {
         assert!(
             harness
                 .query_by_label(
-                    "Changing an existing vote uses one of that node's four allowed vote changes."
+                    "1 of these changes an earlier vote. Each node can change its vote 4 times per name."
                 )
                 .is_none()
         );
     }
 
+    /// VOTE-TC-101: the drawer names each node and its typed status, and
+    /// offers only the valid action.
     #[test]
-    fn voting_ui_activity_identifies_each_node() {
+    fn progress_drawer_identifies_each_node_and_status() {
         use egui_kittest::kittest::Queryable;
-        let (mut screen, _temp_dir) = voting_ui_review_fixture();
+        let (screen, _temp_dir) = voting_ui_review_fixture();
         let plan = screen.build_review_plan().unwrap();
-        let mut first = plan.entries[0].target.clone();
+        let mut first = plan.aggregate.targets[0].clone();
         first.voter_alias = Some("node-one".to_owned());
         let mut second = first.clone();
         second.key.voter_id = Identifier::from([2; 32]);
         second.voter_alias = Some("node-two".to_owned());
-        let mut operation = DpnsVoteOperation::new(vec![first, second]);
+        let mut third = first.clone();
+        third.key.voter_id = Identifier::from([3; 32]);
+        third.voter_alias = Some("node-three".to_owned());
+        let mut operation = DpnsVoteOperation::new(vec![first, second, third]);
         operation.targets[0].status = DpnsVoteTargetStatus::Confirmed;
         operation.targets[1].status = DpnsVoteTargetStatus::Rejected;
-        screen
-            .app_context
+        operation.targets[2].status = DpnsVoteTargetStatus::Unconfirmed;
+        let context = screen.app_context.clone();
+        context
             .insert_dpns_vote_operation(&mut operation, None)
             .unwrap();
-        screen.vote_operations.refresh(&screen.app_context).unwrap();
-        let mut harness = egui_kittest::Harness::builder().build_ui(move |ui| {
-            screen.render_voting_activity(ui);
-        });
+        context.recompute_dpns_vote_attention();
+        let mut state = progress_drawer::DrawerState::new(0);
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1000.0, 800.0))
+            .build_ui(move |ui| {
+                progress_drawer::expand(ui.ctx());
+                progress_drawer::show(ui.ctx(), &context, &mut state);
+            });
         harness.run();
-        assert!(
-            harness
-                .query_by_label("node-one — alpha.dash — Abstain — Confirmed")
-                .is_some()
-        );
-        assert!(
-            harness
-                .query_by_label("node-two — alpha.dash — Abstain — Rejected")
-                .is_some()
-        );
+        for label in [
+            "Casting 3 votes · 2 done · 0 sending · 1 being checked",
+            "node-one · alpha.dash · Abstain",
+            "Voted",
+            "node-two · alpha.dash · Abstain",
+            "Rejected by Platform",
+            "Review again",
+            "Still being checked. Don't submit it again.",
+            "Check again",
+        ] {
+            assert!(harness.query_by_label(label).is_some(), "missing {label}");
+        }
     }
 
     #[test]
@@ -4337,12 +4321,10 @@ mod tests {
             Network::Regtest,
         );
         assert_ne!(screen.app_context.network(), new_context.network());
-        let mut wrapper = crate::ui::Screen::DPNSScreen(screen);
-        wrapper.change_context(new_context);
-        wrapper.refresh_on_arrival();
-        let crate::ui::Screen::DPNSScreen(screen) = wrapper else {
-            unreachable!()
-        };
+        // What `MasternodesScreen::reset_for_network_change` does for its panel.
+        screen.app_context = new_context;
+        screen.reset_for_network_switch();
+        screen.refresh_on_arrival();
         assert!(screen.selected_votes.is_empty());
         assert!(!screen.show_bulk_schedule_popup);
         assert!(screen.pending_scheduled_actions.is_empty());
@@ -4351,8 +4333,13 @@ mod tests {
     #[test]
     fn voting_ui_sweep_completion_refreshes_the_scheduled_row() {
         let (mut screen, _temp_dir) = voting_ui_review_fixture();
-        screen.dpns_subscreen = DPNSSubscreen::ScheduledVotes;
-        let mut target = screen.build_review_plan().unwrap().entries.remove(0).target;
+        screen.view = VotesView::Scheduled;
+        let mut target = screen
+            .build_review_plan()
+            .unwrap()
+            .aggregate
+            .targets
+            .remove(0);
         target.timing = VoteTiming::Scheduled(42);
         let mut operation = DpnsVoteOperation::new(vec![target]);
         operation.targets[0].status = DpnsVoteTargetStatus::Queued;
@@ -4402,26 +4389,25 @@ mod tests {
         .await
         .expect("seed second node's complete proved votes");
 
-        let mut screen = DPNSScreen::new(&ctx, DPNSSubscreen::Active);
+        let mut screen = DPNSScreen::new(&ctx, VotesView::ToDecide);
         screen.voting_identities = vec![first.clone(), second.clone()];
-        screen.bulk_identity_options = vec![
-            VoteOption::CastNow,
-            VoteOption::Scheduled {
-                days: 1,
-                hours: 2,
-                minutes: 3,
-            },
-        ];
+        screen.rebuild_cards();
+        screen.relative_preset = std::time::Duration::from_secs(10 * 60);
+        screen.node_overrides.insert(
+            second.identity.id(),
+            NodeTiming::Override(BatchTiming::BeforeEnd(screen.relative_preset)),
+        );
+        let end = now_ms() + 24 * 3_600_000;
         screen.selected_votes = vec![
             SelectedVote {
                 contested_name: "alpha".to_owned(),
                 vote_choice: ResourceVoteChoice::Lock,
-                end_time: None,
+                end_time: Some(end),
             },
             SelectedVote {
                 contested_name: "beta".to_owned(),
                 vote_choice: ResourceVoteChoice::Abstain,
-                end_time: None,
+                end_time: Some(end),
             },
         ];
         screen.vote_state = DpnsVoteStateSnapshot::load(
@@ -4433,19 +4419,23 @@ mod tests {
 
         let plan = screen.build_review_plan().expect("review plan");
 
-        assert_eq!(plan.entries.len(), 4, "two nodes across two contests");
         assert_eq!(plan.effective_count(), 2);
-        assert_eq!(plan.no_op_count(), 2);
+        assert_eq!(
+            plan.aggregate.skipped_by_reason(),
+            BTreeMap::from([(SkipReason::AlreadyVoted, 2)]),
+            "two nodes across two contests, two already as requested"
+        );
         assert_eq!(plan.node_count(), 2);
         assert!(plan.has_immediate());
         assert!(plan.has_scheduled());
         let retained = plan
-            .effective()
-            .map(|entry| {
+            .targets()
+            .iter()
+            .map(|target| {
                 (
-                    entry.node_label(),
-                    entry.target.contested_name.clone(),
-                    entry.timing_label.clone(),
+                    target.voter_alias.clone(),
+                    target.contested_name.clone(),
+                    target.timing,
                 )
             })
             .collect::<Vec<_>>();
@@ -4453,17 +4443,19 @@ mod tests {
             retained,
             vec![
                 (
-                    "node-one".to_owned(),
-                    "beta".to_owned(),
-                    "Cast now".to_owned()
+                    Some("node-two".to_owned()),
+                    "alpha".to_owned(),
+                    VoteTiming::Scheduled(end - 10 * 60_000)
                 ),
                 (
-                    "node-two".to_owned(),
-                    "alpha".to_owned(),
-                    "Scheduled in 1 d 2 h 3 min".to_owned()
+                    Some("node-one".to_owned()),
+                    "beta".to_owned(),
+                    VoteTiming::Now
                 ),
             ]
         );
+        assert_eq!(plan.decisions.len(), 2);
+        assert!(plan.decisions.iter().all(|(_, nodes)| *nodes == 1));
     }
 
     /// A review whose every target is a no-op must submit nothing.
@@ -4475,9 +4467,9 @@ mod tests {
         ctx.cache_confirmed_dpns_vote(node.identity.id(), alpha, ResourceVoteChoice::Lock)
             .expect("seed proved vote");
 
-        let mut screen = DPNSScreen::new(&ctx, DPNSSubscreen::Active);
+        let mut screen = DPNSScreen::new(&ctx, VotesView::ToDecide);
         screen.voting_identities = vec![node.clone()];
-        screen.bulk_identity_options = vec![VoteOption::CastNow];
+        screen.rebuild_cards();
         screen.selected_votes = vec![SelectedVote {
             contested_name: "alpha".to_owned(),
             vote_choice: ResourceVoteChoice::Lock,
@@ -4489,7 +4481,10 @@ mod tests {
         let plan = screen.build_review_plan().expect("review plan");
 
         assert_eq!(plan.effective_count(), 0);
-        assert_eq!(plan.no_op_count(), 1);
+        assert_eq!(
+            plan.aggregate.skipped_by_reason(),
+            BTreeMap::from([(SkipReason::AlreadyVoted, 1)])
+        );
         assert_eq!(plan.node_count(), 0);
     }
 
@@ -4503,9 +4498,9 @@ mod tests {
         ctx.cache_confirmed_dpns_vote(node.identity.id(), alpha, ResourceVoteChoice::Lock)
             .expect("seed proved vote");
 
-        let mut screen = DPNSScreen::new(&ctx, DPNSSubscreen::Active);
+        let mut screen = DPNSScreen::new(&ctx, VotesView::ToDecide);
         screen.voting_identities = vec![node.clone()];
-        screen.bulk_identity_options = vec![VoteOption::CastNow];
+        screen.rebuild_cards();
         screen.selected_votes = vec![SelectedVote {
             contested_name: "alpha".to_owned(),
             vote_choice: ResourceVoteChoice::Abstain,
@@ -4518,9 +4513,7 @@ mod tests {
 
         assert_eq!(plan.effective_count(), 1);
         assert_eq!(
-            plan.effective()
-                .next()
-                .map(|entry| entry.target.current_choice),
+            plan.targets().first().map(|target| target.current_choice),
             Some(Some(ResourceVoteChoice::Lock))
         );
         assert_eq!(
@@ -4530,19 +4523,7 @@ mod tests {
     }
 
     #[test]
-    fn review_summary_counts_votes_and_labels_previous_choices() {
-        assert_eq!(
-            review_headline(6, 3),
-            "Votes to submit (6) from your nodes (3)."
-        );
-        assert_eq!(
-            review_skipped_line(1),
-            "1 vote is already cast as requested and will be skipped."
-        );
-        assert_eq!(
-            review_skipped_line(2),
-            "2 votes are already cast as requested and will be skipped."
-        );
+    fn review_labels_previous_choices() {
         assert_eq!(
             review_current_choice_label(Some(ResourceVoteChoice::Abstain), None),
             "Abstain"
@@ -4579,7 +4560,7 @@ mod tests {
             executed_successfully: false,
         }])
         .expect("insert compatibility mirror");
-        let mut screen = DPNSScreen::new(&ctx, DPNSSubscreen::ScheduledVotes);
+        let mut screen = DPNSScreen::new(&ctx, VotesView::Scheduled);
         assert_eq!(screen.scheduled_votes.lock_recover().len(), 1);
 
         ctx.cancel_scheduled_dpns_vote_target(operation.id, &key, "remove-me")
@@ -4592,6 +4573,46 @@ mod tests {
         assert!(
             screen.scheduled_votes.lock_recover().is_empty(),
             "a removed schedule must not return to the table"
+        );
+    }
+
+    /// VOTE-TC-067: a "before the end" schedule shows its preset next to the
+    /// absolute UTC time; without a stored label only the absolute time shows.
+    #[test]
+    fn relative_schedule_shows_its_preset_and_absolute_time() {
+        use egui_kittest::kittest::Queryable;
+        let (ctx, _temp_dir) = kv_ctx();
+        let voter_id = Identifier::from([25; 32]);
+        let key = DpnsVoteTargetKey {
+            network: ctx.network(),
+            voter_id,
+            vote_poll_id: Identifier::from([26; 32]),
+        };
+        let at = 1_900_000_000_000;
+        let mut operation = DpnsVoteOperation::new(vec![DpnsVoteTarget {
+            key: key.clone(),
+            voter_alias: None,
+            contested_name: "later".to_owned(),
+            requested_choice: ResourceVoteChoice::Lock,
+            current_choice: None,
+            timing: VoteTiming::Scheduled(at),
+        }]);
+        ctx.insert_dpns_vote_operation(&mut operation, None)
+            .expect("insert scheduled operation");
+        ctx.save_dpns_relative_schedule_label(&key, at, std::time::Duration::from_secs(6 * 3600))
+            .expect("save label");
+        let mut screen = DPNSScreen::new(&ctx, VotesView::Scheduled);
+        let expected =
+            relative_schedule_label(std::time::Duration::from_secs(6 * 3600), &utc_minute(at));
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1400.0, 800.0))
+            .build_ui(move |ui| {
+                screen.ui(ui);
+            });
+        harness.run();
+        assert!(
+            harness.query_by_label(&expected).is_some(),
+            "missing {expected}"
         );
     }
 
@@ -4621,7 +4642,7 @@ mod tests {
             executed_successfully: false,
         }])
         .expect("insert compatibility mirror");
-        let mut screen = DPNSScreen::new(&ctx, DPNSSubscreen::ScheduledVotes);
+        let mut screen = DPNSScreen::new(&ctx, VotesView::Scheduled);
         assert_eq!(screen.scheduled_votes.lock_recover().len(), 1);
 
         let outcomes = ctx

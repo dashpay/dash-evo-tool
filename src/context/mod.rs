@@ -1,7 +1,9 @@
 pub mod connection_status;
 mod contested_names_db;
 mod contract_token_db;
+mod dpns_vote_attention;
 mod dpns_vote_operations;
+mod dpns_vote_preferences;
 mod dpns_vote_state;
 pub(crate) use dpns_vote_state::DpnsVoteRefreshResults;
 pub mod feature_gate;
@@ -199,6 +201,20 @@ pub struct AppContext {
     /// Frame-safe pending DPNS names rebuilt after the contest cache changes.
     pending_dpns_usernames:
         RwLock<HashMap<Identifier, crate::model::contested_name::PendingUsername>>,
+    /// What needs the masternode operator's vote, recomputed on refresh and on
+    /// coordinator updates (never per frame). Read by the top-bar chip and nav badge.
+    dpns_vote_attention: RwLock<Arc<crate::model::dpns_voting::operator::AttentionSummary>>,
+    /// Current masternode-list membership (ProTxHash → is evonode); `None`
+    /// until the SPV masternode list is available.
+    masternode_list_membership: RwLock<Option<Arc<BTreeMap<Identifier, bool>>>>,
+    /// Journal operations as of the last attention recompute (progress drawer).
+    dpns_vote_progress: RwLock<Arc<[crate::model::dpns_voting::DpnsVoteOperation]>>,
+    /// A `Review again` request from the progress drawer for the voting panel.
+    dpns_vote_review_request: std::sync::Mutex<Option<crate::model::dpns_voting::DpnsVoteOutcome>>,
+    /// A request from outside the voting panel to show one contest by label.
+    dpns_votes_name_request: std::sync::Mutex<Option<String>>,
+    /// Unix ms of the last completed contest + vote-state refresh; 0 = never.
+    dpns_contests_refreshed_at_ms: std::sync::atomic::AtomicU64,
     /// Shared app-level k/v store at `<data_dir>/det-app.sqlite`.
     /// Cross-network, global-scoped slot used for `AppSettings` and other
     /// DET-owned application data that must outlive a single network's
@@ -567,6 +583,12 @@ impl AppContext {
             animations_disabled: AtomicBool::new(false),
             cached_settings: RwLock::new(None),
             pending_dpns_usernames: RwLock::new(HashMap::new()),
+            dpns_vote_attention: RwLock::new(Default::default()),
+            masternode_list_membership: RwLock::new(None),
+            dpns_contests_refreshed_at_ms: std::sync::atomic::AtomicU64::new(0),
+            dpns_vote_progress: RwLock::new(Arc::from(Vec::new())),
+            dpns_vote_review_request: std::sync::Mutex::new(None),
+            dpns_votes_name_request: std::sync::Mutex::new(None),
             app_kv,
             #[cfg(test)]
             det_kv_override: Mutex::new(None),

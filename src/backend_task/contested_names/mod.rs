@@ -9,6 +9,7 @@ use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::{DapiAddressAvailability, TaskError};
 use crate::context::{AppContext, MAX_CONCURRENT_DPNS_VOTERS};
+use crate::model::contested_name::ContestedName;
 use crate::model::dpns_voting::{
     DpnsCurrentVoteState, DpnsScheduleEditValidationError, DpnsVoteFailure, DpnsVoteOperation,
     DpnsVoteOperationId, DpnsVoteOutcome, DpnsVotePollAvailability, DpnsVoteTarget,
@@ -39,6 +40,9 @@ use crate::model::dpns_voting::SCHEDULED_VOTE_MAX_LATENESS_MS;
 #[derive(Debug, Clone, PartialEq)]
 pub enum ContestedResourceTask {
     QueryDPNSContests,
+    /// The same contest + vote-state refresh, run by the background timer:
+    /// partial failures are logged instead of reported to the user.
+    RefreshContestsInBackground,
     SubmitDpnsVoteOperation(
         DpnsVoteOperation,
         Vec<QualifiedIdentity>,
@@ -102,11 +106,33 @@ fn classify_vote_attempt(
     }
 }
 
+/// The outcome of a target whose contest closed before it was sent
+/// (VOTE-FR-087), or `None` while the contest may still accept votes.
+///
+/// Terminal for scheduled targets too: a closed poll can never accept the
+/// vote, so retrying it would only fail again.
+fn voting_ended_outcome(
+    contest: Option<&ContestedName>,
+    now_ms: u64,
+) -> Option<(DpnsVoteTargetStatus, Option<DpnsVoteFailure>)> {
+    (dpns_vote_poll_availability(contest, now_ms) == DpnsVotePollAvailability::ProvedClosed)
+        .then_some((
+            DpnsVoteTargetStatus::FailedBeforeSubmission,
+            Some(DpnsVoteFailure::VotingEnded),
+        ))
+}
+
+/// A missing voter keeps the pre-broadcast status rules but names the cause,
+/// so the UI can offer "Add voting key" (VOTE-FR-083).
 fn missing_voter_outcome(
     timing: VoteTiming,
 ) -> (DpnsVoteTargetStatus, Option<DpnsVoteFailure>, bool) {
-    let (status, failure) = failed_before_broadcast_outcome(timing);
-    (status, failure, matches!(timing, VoteTiming::Scheduled(_)))
+    let (status, _) = failed_before_broadcast_outcome(timing);
+    (
+        status,
+        Some(DpnsVoteFailure::VotingKeyMissing),
+        matches!(timing, VoteTiming::Scheduled(_)),
+    )
 }
 
 /// Decide whether one reconciliation observation is terminal.
@@ -192,12 +218,22 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let is_scheduled_sweep =
             matches!(&task, ContestedResourceTask::CastDueScheduledVotes { .. });
-        if !is_scheduled_sweep && !matches!(&task, ContestedResourceTask::QueryDPNSContests) {
+        if !is_scheduled_sweep
+            && !matches!(
+                &task,
+                ContestedResourceTask::QueryDPNSContests
+                    | ContestedResourceTask::RefreshContestsInBackground
+            )
+        {
             self.ensure_dpns_vote_recovery(sdk).await?;
         }
         match task {
             ContestedResourceTask::QueryDPNSContests => self
-                .query_dpns_contested_resources(sdk, sender)
+                .query_dpns_contested_resources(sdk, sender, false)
+                .await
+                .map(|_| BackendTaskSuccessResult::None),
+            ContestedResourceTask::RefreshContestsInBackground => self
+                .query_dpns_contested_resources(sdk, sender, true)
                 .await
                 .map(|_| BackendTaskSuccessResult::None),
             ContestedResourceTask::SubmitDpnsVoteOperation(
@@ -627,6 +663,21 @@ impl AppContext {
             .into_iter()
             .map(|voter| (voter.identity.id(), voter))
             .collect();
+        // An unreadable cache leaves every contest "may accept": Platform still
+        // rejects a vote on a closed poll, so this check only saves a broadcast.
+        let contests: Arc<BTreeMap<String, ContestedName>> = Arc::new(
+            self.all_contested_names()
+                .inspect_err(|error| {
+                    tracing::debug!(
+                        ?error,
+                        "Contest cache unreadable; skipping the voting-ended check"
+                    );
+                })
+                .unwrap_or_default()
+                .into_iter()
+                .map(|contest| (contest.normalized_contested_name.clone(), contest))
+                .collect(),
+        );
         let mut groups: BTreeMap<Identifier, Vec<_>> = BTreeMap::new();
         for outcome in operation
             .targets
@@ -645,6 +696,7 @@ impl AppContext {
                 let sdk = sdk.clone();
                 let voter = voters_by_id.get(&voter_id).cloned();
                 let operation_id = operation.id;
+                let contests = Arc::clone(&contests);
                 async move {
                     let Some(voter) = voter else {
                         let mut scheduled_voter_missing = false;
@@ -672,6 +724,25 @@ impl AppContext {
                     let _dispatch_guard = app_context.dpns_vote_dispatch.acquire(voter_id).await?;
                     for target in targets {
                         if !app_context.claim_dpns_vote_target(operation_id, &target.key)? {
+                            continue;
+                        }
+                        // TODO(DPN-005): re-read the proved current choice here and, when a
+                        // first vote has become a change, hand the batch back to the confirm
+                        // step with the change warning instead of submitting.
+                        if let Some((status, failure)) =
+                            voting_ended_outcome(contests.get(&target.contested_name), now_ms())
+                        {
+                            tracing::info!(
+                                voter_id = %target.key.voter_id,
+                                contested_name = %target.contested_name,
+                                "DPNS vote not sent because voting on the name has ended"
+                            );
+                            app_context.update_dpns_vote_target(
+                                operation_id,
+                                &target.key,
+                                status,
+                                failure,
+                            )?;
                             continue;
                         }
                         let attempt = app_context
@@ -2279,14 +2350,44 @@ mod tests {
         );
     }
 
+    /// VOTE-TC-103 (executor half): a target whose contest closed before it
+    /// was sent fails before submission with `VotingEnded`, even when scheduled.
+    #[test]
+    fn a_closed_contest_fails_its_unsent_targets_as_voting_ended() {
+        let (_temp, context) = vote_context();
+        assert_eq!(
+            voting_ended_outcome(None, 5_000),
+            None,
+            "uncached is not closed"
+        );
+        context.seed_dpns_contest_for_test("dominguez", Some(5_000), false);
+        let contests = context.all_contested_names().expect("cached contests");
+        assert_eq!(voting_ended_outcome(contests.first(), 4_999), None);
+        assert_eq!(
+            voting_ended_outcome(contests.first(), 5_000),
+            Some((
+                DpnsVoteTargetStatus::FailedBeforeSubmission,
+                Some(DpnsVoteFailure::VotingEnded)
+            ))
+        );
+    }
+
     #[test]
     fn scheduled_missing_voter_remains_retryable() {
         assert_eq!(
             missing_voter_outcome(VoteTiming::Scheduled(42)),
             (
                 DpnsVoteTargetStatus::Scheduled,
-                Some(DpnsVoteFailure::SubmissionFailed),
+                Some(DpnsVoteFailure::VotingKeyMissing),
                 true,
+            )
+        );
+        assert_eq!(
+            missing_voter_outcome(VoteTiming::Now),
+            (
+                DpnsVoteTargetStatus::FailedBeforeSubmission,
+                Some(DpnsVoteFailure::VotingKeyMissing),
+                false,
             )
         );
     }

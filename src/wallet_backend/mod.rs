@@ -2455,6 +2455,28 @@ impl WalletBackend {
             })
     }
 
+    /// ProTxHashes in the current deterministic masternode list, each mapped
+    /// to whether it is an evonode. `None` until the list has synced.
+    ///
+    /// Keys are the masternode identity ids: Platform derives them from the
+    /// wire-order `pro_tx_hash` bytes unchanged (`to_byte_array`).
+    pub async fn masternode_list_membership(
+        &self,
+    ) -> Option<std::collections::BTreeMap<dash_sdk::platform::Identifier, bool>> {
+        let summaries = self.inner.pwm.spv().masternode_list_summaries().await?;
+        Some(
+            summaries
+                .into_iter()
+                .map(|summary| {
+                    (
+                        dash_sdk::platform::Identifier::from(summary.pro_tx_hash),
+                        summary.is_evonode,
+                    )
+                })
+                .collect(),
+        )
+    }
+
     /// Whether chain sync has not yet reached the tip.
     pub async fn is_syncing(&self) -> bool {
         match self.inner.pwm.spv().sync_progress().await {

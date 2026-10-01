@@ -344,6 +344,9 @@ pub enum BackendTaskContext {
     UpdateBackupRetention,
     /// A scheduled-vote sweep for one network.
     ScheduledVoteSweep { network: Network },
+    /// The background contest + vote-state refresh; its failures are logged,
+    /// never bannered.
+    DpnsBackgroundRefresh { network: Network },
     /// A single schedule action, before its journal operation is resolved.
     DpnsScheduledVote { key: DpnsScheduledVoteKey },
     /// An optimistic edit of one durable scheduled target.

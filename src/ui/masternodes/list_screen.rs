@@ -18,6 +18,9 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::context::identity_load_registry::{IdentityLoadPhase, IdentityLoadToken};
 use crate::model::contested_name::MasternodeContestSummary;
+use crate::model::dpns_voting::operator::{
+    MasternodesSegment, background_refresh_due, opening_masternodes_segment,
+};
 use crate::model::masternode_input::decode_identity_id;
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, MasternodeKeyPresence};
 use crate::model::user_role::UserRole;
@@ -28,6 +31,8 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::legacy_recovery_section::completion_message;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel_with_global_nav_capturing;
+use crate::ui::dpns::VotesView;
+use crate::ui::dpns::dpns_contested_names_screen::DPNSScreen;
 use crate::ui::identity::identity_pill::shorten_id;
 use crate::ui::identity::picker::compute_column_count;
 use crate::ui::masternodes::card::{MasternodeCard, card_heading};
@@ -37,6 +42,9 @@ use crate::ui::state::global_nav::PageNavSpec;
 use crate::ui::state::masternodes_view::{masternodes_page_nav_spec, node_pill_item};
 use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
+
+/// Arriving on Votes refreshes contests unless one completed this recently.
+const VOTES_ARRIVAL_REFRESH_MIN_GAP: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Minimum horizontal gap between cards in the grid (matches the identity
 /// picker grid).
@@ -105,6 +113,14 @@ pub struct MasternodesScreen {
     pending_load: Option<PendingLoad>,
     /// Identity removals dispatched by this screen whose results have not arrived.
     pending_removals: BTreeSet<Identifier>,
+    /// The visible half of the page: Votes or Nodes.
+    segment: MasternodesSegment,
+    /// The single voting workspace (Masternodes ▸ Votes). Receives every vote
+    /// result whether or not its segment is showing.
+    votes: DPNSScreen,
+    /// Set when Votes comes into view; the next frame refreshes contests and
+    /// vote state unless a refresh completed moments ago (VOTE-FR-074).
+    votes_arrival_refresh: bool,
 }
 
 #[cfg(test)]
@@ -137,9 +153,71 @@ impl MasternodesScreen {
             view: MasternodesView::List,
             pending_load: None,
             pending_removals: BTreeSet::new(),
+            segment: opening_masternodes_segment(
+                0,
+                app_context.masternodes_last_segment().unwrap_or_default(),
+            ),
+            votes: DPNSScreen::new(app_context, VotesView::ToDecide),
+            votes_arrival_refresh: false,
         };
         screen.reload();
         screen
+    }
+
+    /// The visible segment.
+    pub fn segment(&self) -> MasternodesSegment {
+        self.segment
+    }
+
+    /// The voting workspace, for routing vote results while this screen is hidden.
+    pub fn votes_mut(&mut self) -> &mut DPNSScreen {
+        &mut self.votes
+    }
+
+    /// Show `segment` and remember it as the last-used one on this network.
+    pub fn select_segment(&mut self, segment: MasternodesSegment) {
+        self.votes_arrival_refresh |=
+            segment == MasternodesSegment::Votes && self.segment != segment;
+        self.segment = segment;
+        if let Err(error) = self.app_context.set_masternodes_last_segment(segment) {
+            tracing::debug!(?error, "Could not remember the Masternodes segment");
+        }
+    }
+
+    /// Open Masternodes ▸ Votes on `view`.
+    pub fn open_votes(&mut self, view: VotesView) {
+        self.select_segment(MasternodesSegment::Votes);
+        self.votes.view = view;
+    }
+
+    /// Contests needing a decision plus unresolved targets, for the nav badge
+    /// and the opening segment.
+    fn attention_count(&self) -> usize {
+        self.app_context.dpns_vote_attention().badge_count()
+    }
+
+    fn render_segment_header(&mut self, ui: &mut egui::Ui) {
+        let attention = self.attention_count();
+        ui.horizontal(|ui| {
+            let votes_label = if attention > 0 {
+                format!("Votes ({attention})")
+            } else {
+                "Votes".to_owned()
+            };
+            for (segment, label) in [
+                (MasternodesSegment::Votes, votes_label),
+                (MasternodesSegment::Nodes, "Nodes".to_owned()),
+            ] {
+                if ui
+                    .selectable_label(self.segment == segment, label)
+                    .clicked()
+                    && self.segment != segment
+                {
+                    self.select_segment(segment);
+                }
+            }
+        });
+        ui.add_space(8.0);
     }
 
     /// Re-read the loaded masternode/evonode identities and their DPNS contest
@@ -246,6 +324,14 @@ impl MasternodesScreen {
         self.view = MasternodesView::List;
         self.pending_load = None;
         self.pending_removals.clear();
+        self.votes.app_context = self.app_context.clone();
+        self.votes.reset_for_network_switch();
+        self.segment = opening_masternodes_segment(
+            0,
+            self.app_context
+                .masternodes_last_segment()
+                .unwrap_or_default(),
+        );
         self.reload();
     }
 
@@ -452,6 +538,12 @@ impl MasternodesScreen {
                 AppAction::None
             }
             DetailOutcome::Forward(action) => *action,
+            DetailOutcome::VoteWithNode(node) => {
+                self.view = MasternodesView::List;
+                self.votes.vote_with_node(node);
+                self.select_segment(MasternodesSegment::Votes);
+                AppAction::None
+            }
         };
         self.capture_removal_dispatch(&action);
         action
@@ -594,6 +686,7 @@ impl ScreenLike for MasternodesScreen {
     }
     fn refresh(&mut self) {
         self.reload();
+        self.votes.refresh();
     }
 
     fn refresh_on_arrival(&mut self) {
@@ -602,12 +695,34 @@ impl ScreenLike for MasternodesScreen {
         if let MasternodesView::Detail(detail) = &mut self.view {
             detail.refresh_on_arrival();
         }
+        self.votes.refresh_on_arrival();
     }
 
     fn reset_to_root_view(&mut self) {
         if !matches!(self.view, MasternodesView::Load(_)) {
             self.view = MasternodesView::List;
         }
+        self.segment = opening_masternodes_segment(
+            self.attention_count(),
+            self.app_context
+                .masternodes_last_segment()
+                .unwrap_or_default(),
+        );
+        self.votes_arrival_refresh |= self.segment == MasternodesSegment::Votes;
+    }
+
+    fn display_message(&mut self, message: &str, message_type: MessageType) {
+        self.votes.display_message(message, message_type);
+    }
+
+    fn display_backend_task_result(
+        &mut self,
+        context: &crate::backend_task::BackendTaskContext,
+        result: BackendTaskSuccessResult,
+    ) {
+        self.votes
+            .display_backend_task_result(context, result.clone());
+        self.apply_node_result(result);
     }
 
     /// Drop every secret the open view holds — the load form's keys and
@@ -630,6 +745,94 @@ impl ScreenLike for MasternodesScreen {
     }
 
     fn display_task_result(&mut self, result: crate::backend_task::BackendTaskSuccessResult) {
+        self.votes.display_task_result(result.clone());
+        self.apply_node_result(result);
+    }
+
+    fn display_task_error(&mut self, error: &crate::backend_task::error::TaskError) -> bool {
+        // A failing load reports `Failed` before its error reaches the UI, so
+        // settling here re-enables the still-open form's submit button (the Load
+        // view is untouched, so every entered field survives for correction).
+        // An error from some other task — a detail-view vote, a refresh — leaves
+        // this load's phase outstanding and the gate held. The voting panel
+        // decides whether the global banner is suppressed.
+        self.reconcile_pending_load();
+        self.votes.display_task_error(error)
+    }
+
+    /// End the open detail view's recovery operation only when the failure is
+    /// that operation's own. A failed restore returns to its offer so the user
+    /// can correct a mistyped identity password and press Restore again; any
+    /// other task's error — which reaches this screen simply because it is
+    /// visible — must leave a running restore in flight.
+    fn display_backend_task_error(
+        &mut self,
+        context: &crate::backend_task::BackendTaskContext,
+        error: &crate::backend_task::error::TaskError,
+    ) {
+        self.votes.display_backend_task_error(context, error);
+        if let MasternodesView::Detail(detail) = &mut self.view {
+            detail.absorb_recovery_error(context);
+        }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let (mut action, effect) =
+            add_top_panel_with_global_nav_capturing(ui, &self.app_context, self.nav_spec(), vec![]);
+        self.apply_nav_effect(effect);
+
+        action |= add_left_panel(ui, &self.app_context, RootScreenType::RootScreenMasternodes);
+
+        let network_accent =
+            DashColors::network_accent(self.app_context.network, ui.style().visuals.dark_mode);
+
+        action |= island_central_panel(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            self.render_segment_header(ui);
+            if self.segment == MasternodesSegment::Votes {
+                return self.votes.ui(ui);
+            }
+            let mut action = AppAction::None;
+            match self.view {
+                MasternodesView::Load(_) => action |= self.render_load_view(ui),
+                MasternodesView::Detail(_) => action |= self.render_detail_view(ui, network_accent),
+                MasternodesView::List => action |= self.render_list_view(ui, network_accent),
+            }
+            action
+        });
+        // Never displace a user action; a refresh deferred here runs next frame.
+        if action == AppAction::None
+            && std::mem::take(&mut self.votes_arrival_refresh)
+            && self.segment == MasternodesSegment::Votes
+            && background_refresh_due(
+                self.app_context.dpns_contests_refreshed_at_ms(),
+                None,
+                crate::utils::time::now_ms(),
+                VOTES_ARRIVAL_REFRESH_MIN_GAP,
+            )
+        {
+            let network = self.app_context.network;
+            action = AppAction::BackendTaskWithContext {
+                task: BackendTask::ContestedResourceTask(
+                    ContestedResourceTask::RefreshContestsInBackground,
+                ),
+                context: crate::backend_task::BackendTaskContext::DpnsBackgroundRefresh { network },
+            };
+        }
+        if self.votes.take_load_node_request() {
+            self.select_segment(MasternodesSegment::Nodes);
+            if self.pending_load.is_none() {
+                self.view = MasternodesView::Load(self.new_load_form());
+            }
+        }
+
+        action
+    }
+}
+
+impl MasternodesScreen {
+    /// Apply a task result to the node list and the open detail view.
+    fn apply_node_result(&mut self, result: BackendTaskSuccessResult) {
         match result {
             // A recovery preview changed nothing in the store, so it is routed
             // into the open detail view instead of reloading and re-opening it.
@@ -705,56 +908,6 @@ impl ScreenLike for MasternodesScreen {
         if let MasternodesView::Detail(detail) = &mut self.view {
             detail.refresh_from_store();
         }
-    }
-
-    fn display_task_error(&mut self, _error: &crate::backend_task::error::TaskError) -> bool {
-        // A failing load reports `Failed` before its error reaches the UI, so
-        // settling here re-enables the still-open form's submit button (the Load
-        // view is untouched, so every entered field survives for correction).
-        // An error from some other task — a detail-view vote, a refresh — leaves
-        // this load's phase outstanding and the gate held. Let the global banner
-        // render the error (return false).
-        self.reconcile_pending_load();
-        false
-    }
-
-    /// End the open detail view's recovery operation only when the failure is
-    /// that operation's own. A failed restore returns to its offer so the user
-    /// can correct a mistyped identity password and press Restore again; any
-    /// other task's error — which reaches this screen simply because it is
-    /// visible — must leave a running restore in flight.
-    fn display_backend_task_error(
-        &mut self,
-        context: &crate::backend_task::BackendTaskContext,
-        _error: &crate::backend_task::error::TaskError,
-    ) {
-        if let MasternodesView::Detail(detail) = &mut self.view {
-            detail.absorb_recovery_error(context);
-        }
-    }
-
-    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
-        let (mut action, effect) =
-            add_top_panel_with_global_nav_capturing(ui, &self.app_context, self.nav_spec(), vec![]);
-        self.apply_nav_effect(effect);
-
-        action |= add_left_panel(ui, &self.app_context, RootScreenType::RootScreenMasternodes);
-
-        let network_accent =
-            DashColors::network_accent(self.app_context.network, ui.style().visuals.dark_mode);
-
-        action |= island_central_panel(ui, |ui| {
-            ui.set_min_width(ui.available_width());
-            let mut action = AppAction::None;
-            match self.view {
-                MasternodesView::Load(_) => action |= self.render_load_view(ui),
-                MasternodesView::Detail(_) => action |= self.render_detail_view(ui, network_accent),
-                MasternodesView::List => action |= self.render_list_view(ui, network_accent),
-            }
-            action
-        });
-
-        action
     }
 }
 

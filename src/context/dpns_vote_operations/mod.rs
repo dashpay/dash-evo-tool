@@ -1,5 +1,6 @@
 //! Durable DPNS vote operation journal and exact-target lock registry.
 
+mod counts;
 mod keys;
 mod retention;
 mod transitions;
@@ -223,10 +224,21 @@ fn persist_operation(
         return Err(TaskError::DpnsVoteJournalNetworkMismatch);
     }
     let complete = operation.is_complete();
-    let newly_complete = complete
-        && kv
-            .get::<DpnsVoteOperation>(DetScope::Global, &operation_key(network, operation.id))
+    // The stored record is read only when this write can complete the
+    // operation or confirm a target; other transitions use the lock index alone.
+    let confirms_a_target = operation
+        .targets
+        .iter()
+        .any(|outcome| outcome.status == DpnsVoteTargetStatus::Confirmed);
+    let previous = if complete || confirms_a_target {
+        kv.get::<DpnsVoteOperation>(DetScope::Global, &operation_key(network, operation.id))
             .map_err(unreadable_operation_err)?
+    } else {
+        None
+    };
+    let newly_complete = complete
+        && previous
+            .as_ref()
             .is_none_or(|previous| !previous.is_complete());
     let mut locks = load_or_rebuild_lock_index(kv, network)?;
     let previous_locks = locks.clone();
@@ -243,6 +255,10 @@ fn persist_operation(
             return Err(TaskError::DpnsVoteTargetBusy);
         }
         locks.insert(outcome.target.key.clone(), operation.id);
+    }
+
+    for key in counts::newly_spent_targets(previous.as_ref(), operation) {
+        counts::bump_vote_count(kv, key)?;
     }
 
     let mut ids = load_operation_ids(kv, network)?;
@@ -625,6 +641,26 @@ impl AppContext {
             operations.push(operation);
         }
         Ok(())
+    }
+
+    /// Votes this device saw Platform apply for one node × poll; `None`
+    /// when it holds no record.
+    pub fn dpns_vote_count(
+        &self,
+        voter_id: dash_sdk::platform::Identifier,
+        vote_poll_id: dash_sdk::platform::Identifier,
+    ) -> Result<Option<u8>, TaskError> {
+        let _guard = self.journal_guard();
+        counts::vote_count(&self.det_kv()?, self.network, voter_id, vote_poll_id)
+    }
+
+    /// Drop the vote counts of polls proven closed.
+    pub(crate) fn forget_dpns_vote_counts(
+        &self,
+        closed_polls: &BTreeSet<dash_sdk::platform::Identifier>,
+    ) -> Result<usize, TaskError> {
+        let (_guard, kv) = self.journal()?;
+        counts::forget_vote_counts(&kv, self.network, closed_polls)
     }
 
     /// Load one operation by its stable ID.
@@ -1897,6 +1933,50 @@ mod tests {
                 .unwrap_or_default(),
             Vec::<[u8; 16]>::new(),
             "a terminal row for another network must not be scanned again"
+        );
+    }
+
+    /// VOTE-FR-078: the durable count advances once per vote Platform applied,
+    /// and survives pruning of the operation that spent it.
+    #[test]
+    fn confirming_a_broadcast_target_counts_one_vote_that_outlives_the_record() {
+        let kv = kv();
+        let mut operation = operation(DpnsVoteTargetStatus::Confirming);
+        let key = operation.targets[0].target.key.clone();
+        persist_operation(&kv, Network::Testnet, &operation).unwrap();
+        operation.targets[0].status = DpnsVoteTargetStatus::Confirmed;
+        persist_operation(&kv, Network::Testnet, &operation).unwrap();
+        persist_operation(&kv, Network::Testnet, &operation).unwrap();
+
+        let count =
+            || counts::vote_count(&kv, Network::Testnet, key.voter_id, key.vote_poll_id).unwrap();
+        assert_eq!(
+            count(),
+            Some(1),
+            "rewriting a confirmed target is not a new vote"
+        );
+        kv.delete(
+            DetScope::Global,
+            &operation_key(Network::Testnet, operation.id),
+        )
+        .unwrap();
+        assert_eq!(count(), Some(1));
+
+        let mut no_op = super::tests::operation(DpnsVoteTargetStatus::Queued);
+        no_op.targets[0].target.key.vote_poll_id = Identifier::from([9; 32]);
+        persist_operation(&kv, Network::Testnet, &no_op).unwrap();
+        no_op.targets[0].status = DpnsVoteTargetStatus::Confirmed;
+        persist_operation(&kv, Network::Testnet, &no_op).unwrap();
+        assert_eq!(
+            counts::vote_count(
+                &kv,
+                Network::Testnet,
+                key.voter_id,
+                Identifier::from([9; 32])
+            )
+            .unwrap(),
+            None,
+            "a queued target confirmed as a no-op spent no vote"
         );
     }
 

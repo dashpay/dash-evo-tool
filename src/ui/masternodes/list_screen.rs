@@ -812,13 +812,11 @@ impl ScreenLike for MasternodesScreen {
                 VOTES_ARRIVAL_REFRESH_MIN_GAP,
             )
         {
-            let network = self.app_context.network;
-            action = AppAction::BackendTaskWithContext {
-                task: BackendTask::ContestedResourceTask(
-                    ContestedResourceTask::RefreshContestsInBackground,
-                ),
-                context: crate::backend_task::BackendTaskContext::DpnsBackgroundRefresh { network },
-            };
+            // A user-visible refresh (VOTE-FR-074): failures reach the banner,
+            // unlike the timer's background refresh.
+            action = AppAction::BackendTask(BackendTask::ContestedResourceTask(
+                ContestedResourceTask::QueryDPNSContests,
+            ));
         }
         if self.votes.take_load_node_request() {
             self.select_segment(MasternodesSegment::Nodes);

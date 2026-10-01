@@ -407,6 +407,7 @@ pub fn confirm_button_label(transactions: usize, all_now: bool) -> String {
 pub fn before_end_phrase(preset: std::time::Duration) -> String {
     let minutes = preset.as_secs() / 60;
     match (minutes / 60, minutes % 60) {
+        (0, 0) => "Less than a minute before the end".to_owned(),
         (0, 1) => "1 minute before the end".to_owned(),
         (0, minutes) => format!("{minutes} minutes before the end"),
         (1, 0) => "1 hour before the end".to_owned(),
@@ -451,6 +452,10 @@ mod tests {
         assert_eq!(went_to_label(None, "AbC1…"), "Went to AbC1…");
         assert_eq!(voting_weight_label(4), "Voting weight: 4 votes");
         assert_eq!(voting_weight_label(1), "Voting weight: 1 vote");
+        assert_eq!(
+            before_end_phrase(std::time::Duration::from_secs(30)),
+            "Less than a minute before the end"
+        );
         assert_eq!(
             nodes_voted_part("Vote for Zed", 24, 51),
             "Vote for Zed (24 nodes, 51 votes)"

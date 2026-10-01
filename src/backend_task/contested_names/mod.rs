@@ -264,6 +264,7 @@ impl AppContext {
                 &task,
                 ContestedResourceTask::QueryDPNSContests
                     | ContestedResourceTask::RefreshContestsInBackground
+                    | ContestedResourceTask::SaveDpnsVotingPreference(_)
             )
         {
             self.ensure_dpns_vote_recovery(sdk).await?;
@@ -1608,6 +1609,32 @@ mod tests {
         }
     }
 
+    /// Preference saves run offline: they skip vote recovery and persist.
+    #[tokio::test]
+    async fn voting_preferences_save_through_the_backend() {
+        use crate::model::dpns_voting::operator::NodeSet;
+        let (_temp, context) = vote_context();
+        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, context.egui_ctx().clone());
+        let result = context
+            .run_contested_resource_task(
+                ContestedResourceTask::SaveDpnsVotingPreference(DpnsVotingPreference::NodeSet(
+                    NodeSet::EvonodesOnly,
+                )),
+                &Sdk::new_mock(),
+                sender,
+            )
+            .await;
+        assert!(
+            matches!(result, Ok(BackendTaskSuccessResult::None)),
+            "{result:?}"
+        );
+        assert_eq!(
+            context.saved_dpns_node_set().unwrap(),
+            NodeSet::EvonodesOnly
+        );
+    }
+
     /// VOTE-FR-081: the backend records the relative preset only for the
     /// listed targets that were actually scheduled.
     #[test]
@@ -2453,6 +2480,89 @@ mod tests {
                 Some(DpnsVoteFailure::VotingEnded)
             ))
         );
+    }
+
+    /// VOTE-TC-103 (executor half): a queued target on a contest that closed
+    /// after review is claimed and failed as `VotingEnded`; nothing is sent
+    /// (the mock SDK has no broadcast expectation, so a submit would fail).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn executor_fails_a_closed_contest_target_without_sending() {
+        use crate::context::connection_status::ConnectionStatus;
+        use crate::database::test_helpers::create_database_at_path;
+        use crate::utils::tasks::TaskManager;
+        use dash_sdk::query_types::ResourceVotesByIdentity;
+        // Loading a local masternode needs the wallet backend wired offline.
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path().to_path_buf();
+        crate::app_dir::ensure_env_file(&data_dir);
+        let context = AppContext::new(
+            data_dir.clone(),
+            Network::Testnet,
+            Arc::new(create_database_at_path(&data_dir.join("data.db")).unwrap()),
+            Arc::new(TaskManager::new()),
+            Arc::new(ConnectionStatus::new()),
+            egui::Context::default(),
+            AppContext::open_app_kv(&data_dir).unwrap(),
+            AppContext::open_secret_store(&data_dir).unwrap(),
+            crate::model::user_role::UserRoleCell::default(),
+        )
+        .unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        context
+            .ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+                tx,
+                context.egui_ctx().clone(),
+            ))
+            .await
+            .unwrap();
+        let mut voter = qualified_identity(1);
+        voter.identity_type = IdentityType::Masternode;
+        context
+            .insert_local_qualified_identity(&voter, &None)
+            .unwrap();
+        context.seed_dpns_contest_for_test("alice", Some(1), false);
+        let mut sdk = Sdk::new_mock();
+        sdk.mock()
+            .expect_fetch_many::<Identifier, ResourceVote, _, ResourceVotesByIdentity>(
+                ContestedResourceVotesGivenByIdentityQuery {
+                    identity_id: voter.identity.id(),
+                    offset: None,
+                    limit: Some(100),
+                    start_at: None,
+                    order_ascending: true,
+                },
+                Some(ResourceVotesByIdentity::default()),
+            )
+            .await
+            .unwrap();
+        let operation = DpnsVoteOperation::new(vec![
+            context
+                .dpns_vote_target(
+                    &voter,
+                    "alice",
+                    ResourceVoteChoice::Lock,
+                    VoteTiming::Now,
+                    false,
+                )
+                .unwrap(),
+        ]);
+        let operation_id = operation.id;
+        let result = context
+            .execute_dpns_vote_operation(operation, vec![voter], None, &sdk)
+            .await;
+        let stored = context
+            .dpns_vote_operation(operation_id)
+            .unwrap()
+            .expect("the operation is journaled");
+        assert_eq!(
+            (stored.targets[0].status, stored.targets[0].failure),
+            (
+                DpnsVoteTargetStatus::FailedBeforeSubmission,
+                Some(DpnsVoteFailure::VotingEnded)
+            ),
+            "executor result: {result:?}"
+        );
+        context.wallet_backend().unwrap().shutdown().await;
     }
 
     #[test]

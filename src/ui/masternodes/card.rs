@@ -61,6 +61,8 @@ pub fn dpns_status_line(summary: MasternodeContestSummary) -> String {
     if summary.vote_state == MasternodeVoteStateSummary::Unavailable {
         if summary.open_contest_count == 0 {
             "DPNS voting status unavailable".to_owned()
+        } else if summary.open_contest_count == 1 {
+            "Vote state unavailable for 1 active contest".to_owned()
         } else {
             format!(
                 "Vote state unavailable for {} active contests",
@@ -68,18 +70,27 @@ pub fn dpns_status_line(summary: MasternodeContestSummary) -> String {
             )
         }
     } else if summary.open_contest_count > 0 {
+        let single = summary.open_contest_count == 1;
         if summary.vote_state == MasternodeVoteStateSummary::Checking {
-            format!(
-                "Checking votes for {} active contests",
-                summary.open_contest_count
-            )
+            if single {
+                "Checking votes for 1 active contest".to_owned()
+            } else {
+                format!(
+                    "Checking votes for {} active contests",
+                    summary.open_contest_count
+                )
+            }
         } else if summary.needs_vote_count == 0 {
             "Votes cast in all active contests".to_owned()
         } else if summary.needs_vote_count == 1 {
-            format!(
-                "{} active contests · 1 needs a vote",
-                summary.open_contest_count
-            )
+            if single {
+                "1 active contest · 1 needs a vote".to_owned()
+            } else {
+                format!(
+                    "{} active contests · 1 needs a vote",
+                    summary.open_contest_count
+                )
+            }
         } else {
             format!(
                 "{} active contests · {} need votes",
@@ -404,6 +415,36 @@ mod tests {
             dpns_status_line(summary),
             "3 active contests · 1 needs a vote"
         );
+    }
+
+    /// A single active contest reads in the singular in every state.
+    #[test]
+    fn dpns_status_line_is_singular_for_one_active_contest() {
+        for (vote_state, needs_vote_count, expected) in [
+            (
+                MasternodeVoteStateSummary::Unavailable,
+                0,
+                "Vote state unavailable for 1 active contest",
+            ),
+            (
+                MasternodeVoteStateSummary::Checking,
+                0,
+                "Checking votes for 1 active contest",
+            ),
+            (
+                MasternodeVoteStateSummary::Ready,
+                1,
+                "1 active contest · 1 needs a vote",
+            ),
+        ] {
+            let summary = MasternodeContestSummary {
+                open_contest_count: 1,
+                needs_vote_count,
+                vote_state,
+                ..Default::default()
+            };
+            assert_eq!(dpns_status_line(summary), expected, "{vote_state:?}");
+        }
     }
 
     #[test]

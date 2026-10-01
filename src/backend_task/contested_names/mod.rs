@@ -40,14 +40,19 @@ use crate::model::dpns_voting::SCHEDULED_VOTE_MAX_LATENESS_MS;
 #[derive(Debug, Clone, PartialEq)]
 pub enum ContestedResourceTask {
     QueryDPNSContests,
+    /// Persist a voting preference chosen in the UI.
+    SaveDpnsVotingPreference(DpnsVotingPreference),
     /// The same contest + vote-state refresh, run by the background timer:
     /// partial failures are logged instead of reported to the user.
     RefreshContestsInBackground,
+    /// The last field records the relative preset of "before the end"
+    /// targets for display (VOTE-FR-081).
     SubmitDpnsVoteOperation(
         DpnsVoteOperation,
         Vec<QualifiedIdentity>,
         Option<DpnsVoteTargetKey>,
         Network,
+        Option<RelativeScheduleLabels>,
     ),
     ReconcileDpnsVoteOperation(DpnsVoteOperationId, Network),
     CastScheduledVote(ScheduledDPNSVote, Box<QualifiedIdentity>),
@@ -111,6 +116,42 @@ fn classify_vote_attempt(
 ///
 /// Terminal for scheduled targets too: a closed poll can never accept the
 /// vote, so retrying it would only fail again.
+/// A voting preference the UI asks the backend to persist.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DpnsVotingPreference {
+    /// Save as the default node set on this network.
+    NodeSet(crate::model::dpns_voting::operator::NodeSet),
+    /// The last-used Masternodes segment on this network.
+    MasternodesSegment(crate::model::dpns_voting::operator::MasternodesSegment),
+}
+
+/// "Before the end" targets of a submitted batch and the preset they used.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RelativeScheduleLabels {
+    pub preset: std::time::Duration,
+    pub targets: std::collections::BTreeSet<DpnsVoteTargetKey>,
+}
+
+impl AppContext {
+    /// Record the relative preset of each listed scheduled target. Display
+    /// only, so failures are logged and never block the vote.
+    fn save_relative_schedule_labels(
+        &self,
+        operation: &DpnsVoteOperation,
+        labels: &RelativeScheduleLabels,
+    ) {
+        for outcome in &operation.targets {
+            if let VoteTiming::Scheduled(at) = outcome.target.timing
+                && labels.targets.contains(&outcome.target.key)
+                && let Err(error) =
+                    self.save_dpns_relative_schedule_label(&outcome.target.key, at, labels.preset)
+            {
+                tracing::debug!(?error, "Could not save a relative schedule label");
+            }
+        }
+    }
+}
+
 fn voting_ended_outcome(
     contest: Option<&ContestedName>,
     now_ms: u64,
@@ -223,6 +264,7 @@ impl AppContext {
                 &task,
                 ContestedResourceTask::QueryDPNSContests
                     | ContestedResourceTask::RefreshContestsInBackground
+                    | ContestedResourceTask::SaveDpnsVotingPreference(_)
             )
         {
             self.ensure_dpns_vote_recovery(sdk).await?;
@@ -236,12 +278,28 @@ impl AppContext {
                 .query_dpns_contested_resources(sdk, sender, true)
                 .await
                 .map(|_| BackendTaskSuccessResult::None),
+            ContestedResourceTask::SaveDpnsVotingPreference(preference) => {
+                match preference {
+                    DpnsVotingPreference::NodeSet(node_set) => {
+                        self.save_dpns_node_set(&node_set)?;
+                        self.recompute_dpns_vote_attention();
+                    }
+                    DpnsVotingPreference::MasternodesSegment(segment) => {
+                        self.set_masternodes_last_segment(segment)?;
+                    }
+                }
+                Ok(BackendTaskSuccessResult::None)
+            }
             ContestedResourceTask::SubmitDpnsVoteOperation(
                 operation,
                 voters,
                 replacing_scheduled_key,
                 _,
+                labels,
             ) => {
+                if let Some(labels) = labels {
+                    self.save_relative_schedule_labels(&operation, &labels);
+                }
                 self.execute_dpns_vote_operation_with_recovery(
                     operation,
                     voters,
@@ -726,9 +784,6 @@ impl AppContext {
                         if !app_context.claim_dpns_vote_target(operation_id, &target.key)? {
                             continue;
                         }
-                        // TODO(DPN-005): re-read the proved current choice here and, when a
-                        // first vote has become a change, hand the batch back to the confirm
-                        // step with the change warning instead of submitting.
                         if let Some((status, failure)) =
                             voting_ended_outcome(contests.get(&target.contested_name), now_ms())
                         {
@@ -1554,6 +1609,61 @@ mod tests {
         }
     }
 
+    /// Preference saves run offline: they skip vote recovery and persist.
+    #[tokio::test]
+    async fn voting_preferences_save_through_the_backend() {
+        use crate::model::dpns_voting::operator::NodeSet;
+        let (_temp, context) = vote_context();
+        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, context.egui_ctx().clone());
+        let result = context
+            .run_contested_resource_task(
+                ContestedResourceTask::SaveDpnsVotingPreference(DpnsVotingPreference::NodeSet(
+                    NodeSet::EvonodesOnly,
+                )),
+                &Sdk::new_mock(),
+                sender,
+            )
+            .await;
+        assert!(
+            matches!(result, Ok(BackendTaskSuccessResult::None)),
+            "{result:?}"
+        );
+        assert_eq!(
+            context.saved_dpns_node_set().unwrap(),
+            NodeSet::EvonodesOnly
+        );
+    }
+
+    /// VOTE-FR-081: the backend records the relative preset only for the
+    /// listed targets that were actually scheduled.
+    #[test]
+    fn relative_labels_are_saved_for_listed_scheduled_targets() {
+        let (_temp, context) = vote_context();
+        let scheduled = scheduled_operation_for(&context, "alice", 9_000);
+        let mut immediate = scheduled_operation_for(&context, "bob", 9_000);
+        immediate.targets[0].target.timing = VoteTiming::Now;
+        let mut operation = scheduled.clone();
+        operation.targets.push(immediate.targets[0].clone());
+        let preset = std::time::Duration::from_secs(600);
+        let labels = RelativeScheduleLabels {
+            preset,
+            targets: operation
+                .targets
+                .iter()
+                .map(|outcome| outcome.target.key.clone())
+                .collect(),
+        };
+        context.save_relative_schedule_labels(&operation, &labels);
+        let alice = &operation.targets[0].target.key;
+        let bob = &operation.targets[1].target.key;
+        assert_eq!(
+            context.dpns_relative_schedule_label(alice, 9_000),
+            Some(preset)
+        );
+        assert_eq!(context.dpns_relative_schedule_label(bob, 9_000), None);
+    }
+
     #[tokio::test]
     async fn new_schedule_rejects_past_time_before_persistence() {
         let (_temp, context) = vote_context();
@@ -2370,6 +2480,89 @@ mod tests {
                 Some(DpnsVoteFailure::VotingEnded)
             ))
         );
+    }
+
+    /// VOTE-TC-103 (executor half): a queued target on a contest that closed
+    /// after review is claimed and failed as `VotingEnded`; nothing is sent
+    /// (the mock SDK has no broadcast expectation, so a submit would fail).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn executor_fails_a_closed_contest_target_without_sending() {
+        use crate::context::connection_status::ConnectionStatus;
+        use crate::database::test_helpers::create_database_at_path;
+        use crate::utils::tasks::TaskManager;
+        use dash_sdk::query_types::ResourceVotesByIdentity;
+        // Loading a local masternode needs the wallet backend wired offline.
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path().to_path_buf();
+        crate::app_dir::ensure_env_file(&data_dir);
+        let context = AppContext::new(
+            data_dir.clone(),
+            Network::Testnet,
+            Arc::new(create_database_at_path(&data_dir.join("data.db")).unwrap()),
+            Arc::new(TaskManager::new()),
+            Arc::new(ConnectionStatus::new()),
+            egui::Context::default(),
+            AppContext::open_app_kv(&data_dir).unwrap(),
+            AppContext::open_secret_store(&data_dir).unwrap(),
+            crate::model::user_role::UserRoleCell::default(),
+        )
+        .unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        context
+            .ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+                tx,
+                context.egui_ctx().clone(),
+            ))
+            .await
+            .unwrap();
+        let mut voter = qualified_identity(1);
+        voter.identity_type = IdentityType::Masternode;
+        context
+            .insert_local_qualified_identity(&voter, &None)
+            .unwrap();
+        context.seed_dpns_contest_for_test("alice", Some(1), false);
+        let mut sdk = Sdk::new_mock();
+        sdk.mock()
+            .expect_fetch_many::<Identifier, ResourceVote, _, ResourceVotesByIdentity>(
+                ContestedResourceVotesGivenByIdentityQuery {
+                    identity_id: voter.identity.id(),
+                    offset: None,
+                    limit: Some(100),
+                    start_at: None,
+                    order_ascending: true,
+                },
+                Some(ResourceVotesByIdentity::default()),
+            )
+            .await
+            .unwrap();
+        let operation = DpnsVoteOperation::new(vec![
+            context
+                .dpns_vote_target(
+                    &voter,
+                    "alice",
+                    ResourceVoteChoice::Lock,
+                    VoteTiming::Now,
+                    false,
+                )
+                .unwrap(),
+        ]);
+        let operation_id = operation.id;
+        let result = context
+            .execute_dpns_vote_operation(operation, vec![voter], None, &sdk)
+            .await;
+        let stored = context
+            .dpns_vote_operation(operation_id)
+            .unwrap()
+            .expect("the operation is journaled");
+        assert_eq!(
+            (stored.targets[0].status, stored.targets[0].failure),
+            (
+                DpnsVoteTargetStatus::FailedBeforeSubmission,
+                Some(DpnsVoteFailure::VotingEnded)
+            ),
+            "executor result: {result:?}"
+        );
+        context.wallet_backend().unwrap().shutdown().await;
     }
 
     #[test]

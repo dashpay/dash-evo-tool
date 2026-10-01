@@ -8,33 +8,27 @@ use crate::context::AppContext;
 use crate::model::dpns_voting::progress::{
     ProgressCounts, ProgressPhase, drawer_operations, progress_counts, progress_phase,
 };
-use crate::model::dpns_voting::{
-    DpnsVoteFailure, DpnsVoteOperationId, DpnsVoteOutcome, DpnsVoteTargetStatus,
-};
+use crate::model::dpns_voting::{DpnsVoteFailure, DpnsVoteOutcome, DpnsVoteTargetStatus};
 use crate::ui::RootScreenType;
 use crate::ui::dpns::copy::{drawer_header, progress_row_status};
 use crate::ui::theme::DashColors;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use eframe::egui::{self, Align2, Id, RichText, Sense, Ui};
-use std::collections::BTreeSet;
 
 const OPEN_ID: &str = "dpns_vote_progress_drawer_open";
 
-/// AppState-owned drawer state; survives navigation.
+/// AppState-owned drawer state; survives navigation. Dismissed operations
+/// live in `AppContext` so the `Needs attention` row honours them too.
 #[derive(Debug, Clone)]
 pub struct DrawerState {
     /// Settled operations created before this time are not listed.
     since_ms: u64,
-    dismissed: BTreeSet<DpnsVoteOperationId>,
 }
 
 impl DrawerState {
     pub fn new(since_ms: u64) -> Self {
-        Self {
-            since_ms,
-            dismissed: BTreeSet::new(),
-        }
+        Self { since_ms }
     }
 
     /// Settled operations created before this moment are not listed.
@@ -121,7 +115,8 @@ fn paint_segments(ui: &mut Ui, counts: ProgressCounts) {
 /// Render the drawer when there is something to show.
 pub fn show(ctx: &egui::Context, app_context: &AppContext, state: &mut DrawerState) -> AppAction {
     let operations = app_context.dpns_vote_progress();
-    let shown = drawer_operations(&operations, state.since_ms, &state.dismissed);
+    let dismissed = app_context.dismissed_dpns_vote_operations();
+    let shown = drawer_operations(&operations, state.since_ms, &dismissed);
     if shown.is_empty() {
         return AppAction::None;
     }
@@ -144,9 +139,9 @@ pub fn show(ctx: &egui::Context, app_context: &AppContext, state: &mut DrawerSta
                             open = !open;
                         }
                         if !counts.in_flight() && ui.small_button("Dismiss").clicked() {
-                            state
-                                .dismissed
-                                .extend(shown.iter().map(|operation| operation.id));
+                            app_context.dismiss_dpns_vote_operations(
+                                shown.iter().map(|operation| operation.id),
+                            );
                         }
                     });
                 });

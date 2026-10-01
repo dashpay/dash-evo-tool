@@ -16,6 +16,7 @@ use egui_extras::{Column, TableBuilder};
 
 use crate::app::{AppAction, scheduled_vote_sweep_is_quiet};
 use crate::backend_task::contested_names::ContestedResourceTask;
+use crate::backend_task::contested_names::{DpnsVotingPreference, RelativeScheduleLabels};
 use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskContext};
 use crate::context::AppContext;
@@ -45,7 +46,6 @@ use crate::ui::components::utc_schedule_input::UtcScheduleInput;
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::dpns::contest_card::node_label;
 use crate::ui::dpns::contest_card::{CardEvent, CardView};
-use crate::ui::dpns::copy::excluded_nodes_line;
 use crate::ui::dpns::copy::needs_attention_line;
 use crate::ui::dpns::copy::tray_label;
 use crate::ui::dpns::copy::{
@@ -54,6 +54,7 @@ use crate::ui::dpns::copy::{
     decision_row, ends_in_label, nodes_voted_part, relative_schedule_label, scheduled_nodes_label,
     skipped_header, skipped_reason_line, went_to_label,
 };
+use crate::ui::dpns::copy::{ends_soon_now_line, excluded_nodes_line};
 use crate::ui::dpns::node_set_picker;
 use crate::ui::dpns::progress_drawer;
 use crate::ui::state::dpns_contests::ActiveDpnsContestSnapshot;
@@ -464,6 +465,8 @@ pub struct DPNSScreen {
     pub selected_votes: Vec<SelectedVote>,
     pub app_context: Arc<AppContext>,
     pending_backend_task: Option<BackendTask>,
+    /// A preference to persist through the backend once no user action is out.
+    pending_preference: Option<DpnsVotingPreference>,
     vote_operations: DpnsVoteOperationSnapshot,
     vote_state: DpnsVoteStateSnapshot,
     pending_vote_operation: Option<DpnsVoteOperationId>,
@@ -583,6 +586,7 @@ impl DPNSScreen {
             active_filter_term: String::new(),
             past_filter_term: String::new(),
             pending_backend_task: None,
+            pending_preference: None,
             vote_operations,
             vote_state,
             pending_vote_operation: None,
@@ -651,6 +655,7 @@ impl DPNSScreen {
         self.confirm_timing = ConfirmTiming::Now;
         self.relative_preset = relative_schedule_preset(self.app_context.network());
         self.pending_backend_task = None;
+        self.pending_preference = None;
         self.pending_vote_operation = None;
         self.pending_scheduled_actions.clear();
         self.release_pending_on_error = false;
@@ -1000,6 +1005,11 @@ impl DPNSScreen {
         self.list_focused = true;
     }
 
+    /// Give up list keyboard focus, e.g. when the Votes segment is left.
+    pub(crate) fn release_list_focus(&mut self) {
+        self.list_focused = false;
+    }
+
     /// Vote with one node for this session (VOTE-FR-076): To decide opens with
     /// that node as the node set and no staged decisions carried over.
     pub fn vote_with_node(&mut self, node: Identifier) {
@@ -1024,15 +1034,7 @@ impl DPNSScreen {
         let picked =
             node_set_picker::show(ui, &self.node_set, &self.resolved_nodes, &self.voting_nodes);
         if picked.save_default {
-            match self.app_context.save_dpns_node_set(&self.node_set) {
-                Ok(()) => {
-                    self.app_context.recompute_dpns_vote_attention();
-                }
-                Err(error) => {
-                    MessageBanner::set_global(ui.ctx(), error.to_string(), MessageType::Error)
-                        .with_details(&error);
-                }
-            }
+            self.pending_preference = Some(DpnsVotingPreference::NodeSet(self.node_set.clone()));
         }
         if let Some(node_set) = picked.changed {
             self.apply_node_set(node_set);
@@ -1427,6 +1429,7 @@ impl DPNSScreen {
         let attention = needs_attention(
             self.vote_operations.operations(),
             self.session_started_ms,
+            &self.app_context.dismissed_dpns_vote_operations(),
             now_ms(),
         );
         if attention.is_empty() {
@@ -2036,6 +2039,9 @@ impl DPNSScreen {
                         confirm_change_warning(changes),
                     );
                 }
+                if plan.aggregate.ends_soon_now > 0 {
+                    ui.label(ends_soon_now_line(plan.aggregate.ends_soon_now));
+                }
                 let skipped = plan.aggregate.skipped_by_reason();
                 if !skipped.is_empty() {
                     ui.label(RichText::new(skipped_header(plan.aggregate.skipped.len())).strong());
@@ -2425,23 +2431,17 @@ impl DPNSScreen {
             return AppAction::None;
         }
         let operation = DpnsVoteOperation::new(plan.aggregate.targets);
-        if self.confirm_timing == ConfirmTiming::BeforeEnd {
-            for outcome in &operation.targets {
-                if let VoteTiming::Scheduled(at) = outcome.target.timing
-                    && !self
-                        .node_overrides
-                        .contains_key(&outcome.target.key.voter_id)
-                    && let Err(error) = self.app_context.save_dpns_relative_schedule_label(
-                        &outcome.target.key,
-                        at,
-                        self.relative_preset,
-                    )
-                {
-                    // Display only: the row falls back to the absolute time.
-                    tracing::debug!(?error, "Could not save a relative schedule label");
-                }
-            }
-        }
+        let labels =
+            (self.confirm_timing == ConfirmTiming::BeforeEnd).then(|| RelativeScheduleLabels {
+                preset: self.relative_preset,
+                targets: operation
+                    .targets
+                    .iter()
+                    .map(|outcome| &outcome.target.key)
+                    .filter(|key| !self.node_overrides.contains_key(&key.voter_id))
+                    .cloned()
+                    .collect(),
+            });
         self.submission_error_banner.take_and_clear();
         self.bulk_vote_handling_status = if has_immediate {
             VoteHandlingStatus::CastingVotes
@@ -2456,6 +2456,7 @@ impl DPNSScreen {
                 plan.voters,
                 None,
                 self.app_context.network(),
+                labels,
             ),
         ))
     }
@@ -2556,7 +2557,12 @@ impl ScreenLike for DPNSScreen {
             // submission is in flight, so a failed submission must leave that
             // state here. Otherwise the window stays on "Submitting votes…"
             // with no way to retry or close it.
-            if matches!(
+            if matches!(error, TaskError::DpnsVoteReviewRequired) {
+                // A first vote became a change during preflight: reopen the
+                // confirm on fresh vote state so it shows the change warning.
+                self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
+                self.show_bulk_schedule_popup = !self.selected_votes.is_empty();
+            } else if matches!(
                 self.bulk_vote_handling_status,
                 VoteHandlingStatus::CastingVotes | VoteHandlingStatus::SchedulingVotes
             ) {
@@ -2845,6 +2851,13 @@ impl ScreenLike for DPNSScreen {
             && let Some(task) = self.pending_backend_task.take()
         {
             action = AppAction::BackendTask(task);
+        }
+        if action == AppAction::None
+            && let Some(preference) = self.pending_preference.take()
+        {
+            action = AppAction::BackendTask(BackendTask::ContestedResourceTask(
+                ContestedResourceTask::SaveDpnsVotingPreference(preference),
+            ));
         }
         action
     }
@@ -3392,6 +3405,50 @@ mod tests {
         assert_eq!(screen.voting_identities.len(), 1);
     }
 
+    /// VOTE-FR-080: with Cancel focused, Enter activates Cancel only and
+    /// casts nothing (any focused widget turns the window's Enter shortcut
+    /// off); with nothing focused, Enter casts.
+    #[test]
+    fn enter_in_the_confirm_never_casts_while_cancel_has_focus() {
+        use egui_kittest::kittest::Queryable;
+        let render = |screen: &Arc<Mutex<DPNSScreen>>| {
+            let rendering = screen.clone();
+            egui_kittest::Harness::builder()
+                .with_size(egui::vec2(1000.0, 800.0))
+                .build_ui(move |ui| {
+                    rendering.lock_recover().show_review_and_cast_window(ui);
+                })
+        };
+        let (mut screen, _dir) = voting_ui_review_fixture();
+        screen.show_bulk_schedule_popup = true;
+        let screen = Arc::new(Mutex::new(screen));
+
+        let mut harness = render(&screen);
+        harness.run();
+        harness.get_by_label("Cancel").focus();
+        harness.run();
+        harness.key_press(egui::Key::Enter);
+        harness.run();
+        {
+            let screen = screen.lock_recover();
+            assert!(
+                screen.pending_vote_operation.is_none(),
+                "Enter on Cancel must not cast"
+            );
+            assert!(!screen.show_bulk_schedule_popup, "Enter on Cancel cancels");
+        }
+
+        screen.lock_recover().show_bulk_schedule_popup = true;
+        let mut harness = render(&screen);
+        harness.run();
+        harness.key_press(egui::Key::Enter);
+        harness.run_steps(2); // casting shows a spinner, which keeps repainting
+        assert!(
+            screen.lock_recover().pending_vote_operation.is_some(),
+            "Enter with nothing focused casts"
+        );
+    }
+
     fn voting_ui_review_fixture() -> (DPNSScreen, tempfile::TempDir) {
         let (ctx, temp_dir) = kv_ctx();
         let voter = masternode_identity(1, "node-one", true, ctx.network());
@@ -3663,9 +3720,14 @@ mod tests {
         screen.relative_preset = std::time::Duration::from_secs(10 * 60);
         let now_ms = now.timestamp_millis() as u64;
         screen.selected_votes[0].end_time = Some(now_ms + 5 * 60_000);
-        assert!(
-            screen.build_review_plan_at(now).is_err(),
-            "ten minutes before an end five minutes away is in the past"
+        let plan = screen.build_review_plan_at(now).unwrap();
+        assert_eq!(
+            (
+                plan.aggregate.targets[0].timing,
+                plan.aggregate.ends_soon_now
+            ),
+            (VoteTiming::Now, 1),
+            "ten minutes before an end five minutes away has passed, so it votes now"
         );
         let end = now_ms + 60 * 60_000;
         screen.selected_votes[0].end_time = Some(end);
@@ -3850,8 +3912,12 @@ mod tests {
         assert!(screen.pending_vote_operation.is_none());
         assert!(matches!(
             screen.bulk_vote_handling_status,
-            VoteHandlingStatus::Failed(_)
+            VoteHandlingStatus::NotStarted
         ));
+        assert!(
+            screen.show_bulk_schedule_popup,
+            "DPN-005: the confirm reopens with the change warning"
+        );
         assert_eq!(
             screen.build_review_plan().unwrap().aggregate.targets[0].current_choice,
             Some(ResourceVoteChoice::Lock)

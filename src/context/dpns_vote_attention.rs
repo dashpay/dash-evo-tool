@@ -86,6 +86,28 @@ impl AppContext {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(normalized_label);
     }
 
+    /// Dismiss settled operations from the progress drawer and the
+    /// `Needs attention` row for this session.
+    pub fn dismiss_dpns_vote_operations(
+        &self,
+        ids: impl IntoIterator<Item = crate::model::dpns_voting::DpnsVoteOperationId>,
+    ) {
+        self.dpns_dismissed_vote_operations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend(ids);
+    }
+
+    /// Operations dismissed in the progress drawer this session.
+    pub fn dismissed_dpns_vote_operations(
+        &self,
+    ) -> std::collections::BTreeSet<crate::model::dpns_voting::DpnsVoteOperationId> {
+        self.dpns_dismissed_vote_operations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
     /// Take a pending show-one-contest request, if any.
     pub fn take_dpns_votes_name_request(&self) -> Option<String> {
         self.dpns_votes_name_request

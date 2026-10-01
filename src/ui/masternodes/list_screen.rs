@@ -12,7 +12,7 @@ use dash_sdk::platform::Identifier;
 use eframe::egui::{self, RichText};
 
 use crate::app::{AppAction, BackendTasksExecutionMode};
-use crate::backend_task::contested_names::ContestedResourceTask;
+use crate::backend_task::contested_names::{ContestedResourceTask, DpnsVotingPreference};
 use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
@@ -121,6 +121,8 @@ pub struct MasternodesScreen {
     /// Set when Votes comes into view; the next frame refreshes contests and
     /// vote state unless a refresh completed moments ago (VOTE-FR-074).
     votes_arrival_refresh: bool,
+    /// The segment to persist through the backend once no user action is out.
+    pending_segment_save: Option<MasternodesSegment>,
 }
 
 #[cfg(test)]
@@ -159,6 +161,7 @@ impl MasternodesScreen {
             ),
             votes: DPNSScreen::new(app_context, VotesView::ToDecide),
             votes_arrival_refresh: false,
+            pending_segment_save: None,
         };
         screen.reload();
         screen
@@ -178,10 +181,11 @@ impl MasternodesScreen {
     pub fn select_segment(&mut self, segment: MasternodesSegment) {
         self.votes_arrival_refresh |=
             segment == MasternodesSegment::Votes && self.segment != segment;
-        self.segment = segment;
-        if let Err(error) = self.app_context.set_masternodes_last_segment(segment) {
-            tracing::debug!(?error, "Could not remember the Masternodes segment");
+        if segment != self.segment {
+            self.votes.release_list_focus();
         }
+        self.segment = segment;
+        self.pending_segment_save = Some(segment);
     }
 
     /// Open Masternodes ▸ Votes on `view`.
@@ -811,19 +815,26 @@ impl ScreenLike for MasternodesScreen {
                 VOTES_ARRIVAL_REFRESH_MIN_GAP,
             )
         {
-            let network = self.app_context.network;
-            action = AppAction::BackendTaskWithContext {
-                task: BackendTask::ContestedResourceTask(
-                    ContestedResourceTask::RefreshContestsInBackground,
-                ),
-                context: crate::backend_task::BackendTaskContext::DpnsBackgroundRefresh { network },
-            };
+            // A user-visible refresh (VOTE-FR-074): failures reach the banner,
+            // unlike the timer's background refresh.
+            action = AppAction::BackendTask(BackendTask::ContestedResourceTask(
+                ContestedResourceTask::QueryDPNSContests,
+            ));
         }
         if self.votes.take_load_node_request() {
             self.select_segment(MasternodesSegment::Nodes);
             if self.pending_load.is_none() {
                 self.view = MasternodesView::Load(self.new_load_form());
             }
+        }
+        if action == AppAction::None
+            && let Some(segment) = self.pending_segment_save.take()
+        {
+            action = AppAction::BackendTask(BackendTask::ContestedResourceTask(
+                ContestedResourceTask::SaveDpnsVotingPreference(
+                    DpnsVotingPreference::MasternodesSegment(segment),
+                ),
+            ));
         }
 
         action
@@ -1038,6 +1049,24 @@ mod tests {
             "the card must report the vote this node cast, not stay on \"Checking\"",
         );
 
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    /// Picking a segment never writes storage from the UI: the choice is
+    /// persisted through a backend task once no user action is pending.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn segment_choice_is_saved_through_a_backend_task() {
+        let (ctx, _tmp) = offline_ctx().await;
+        let mut screen = MasternodesScreen::new(&ctx);
+        let before = ctx.masternodes_last_segment().unwrap();
+        let other = if before == Some(MasternodesSegment::Votes) {
+            MasternodesSegment::Nodes
+        } else {
+            MasternodesSegment::Votes
+        };
+        screen.select_segment(other);
+        assert_eq!(ctx.masternodes_last_segment().unwrap(), before);
+        assert_eq!(screen.pending_segment_save, Some(other));
         ctx.wallet_backend().expect("backend").shutdown().await;
     }
 

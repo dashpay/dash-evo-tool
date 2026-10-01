@@ -210,6 +210,10 @@ pub struct AppContext {
     dpns_vote_progress: RwLock<Arc<[crate::model::dpns_voting::DpnsVoteOperation]>>,
     /// A `Review again` request from the progress drawer for the voting panel.
     dpns_vote_review_request: std::sync::Mutex<Option<crate::model::dpns_voting::DpnsVoteOutcome>>,
+    /// Vote operations dismissed in the progress drawer this session.
+    dpns_dismissed_vote_operations: std::sync::Mutex<
+        std::collections::BTreeSet<crate::model::dpns_voting::DpnsVoteOperationId>,
+    >,
     /// A request from outside the voting panel to show one contest by label.
     dpns_votes_name_request: std::sync::Mutex<Option<String>>,
     /// Unix ms of the last completed contest + vote-state refresh; 0 = never.
@@ -588,6 +592,7 @@ impl AppContext {
             dpns_vote_progress: RwLock::new(Arc::from(Vec::new())),
             dpns_vote_review_request: std::sync::Mutex::new(None),
             dpns_votes_name_request: std::sync::Mutex::new(None),
+            dpns_dismissed_vote_operations: std::sync::Mutex::new(Default::default()),
             app_kv,
             #[cfg(test)]
             det_kv_override: Mutex::new(None),

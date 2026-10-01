@@ -276,7 +276,11 @@ Validation floor: 24 nodes on one voting key, 6 open contests, 2 ending today.
 - **VOTE-FR-081** **[New]** — `When voting is about to end` resolves to
   end_time − preset (default 6 h on mainnet, 10 min on testnet/devnet, editable).
   Store the absolute UTC time as today, and display both: `6 hours before the end
-  · {abs UTC}`. Times at or after the deadline are rejected (existing rule).
+  · {abs UTC}`. A contest already inside the lead time is voted now instead of
+  rejecting the batch; the confirm step says so with a count: `{n} of these
+  votes will be sent now because voting ends soon.` Every other contest is
+  scheduled as above. Absolute times (`At a specific time`) at or after the
+  deadline are still rejected (existing rule).
 - **VOTE-FR-088** **[New]** — The Scheduled view groups rows by decision (name ×
   choice × time) with an expandable node list (`24 nodes ▾`). Per-node status
   shows inside the expansion.

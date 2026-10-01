@@ -2,10 +2,10 @@
 //! (VOTE-FR-083/084). Pure: callers pass journal operations and the clock.
 
 use super::{
-    DpnsVoteOperation, DpnsVoteOperationId, DpnsVoteOutcome, DpnsVoteTargetStatus, VoteTiming,
-    dpns_schedule_is_overdue,
+    DpnsVoteOperation, DpnsVoteOperationId, DpnsVoteOutcome, DpnsVoteTargetKey,
+    DpnsVoteTargetStatus, VoteTiming, dpns_schedule_is_overdue,
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Where one sent target stands, as the drawer groups it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,14 +114,23 @@ impl NeedsAttention {
 
 /// Targets that need the operator: unconfirmed, failed, or schedules missed.
 ///
-/// Failed targets count only from operations created since `since_ms`, so a
-/// stale failure from an earlier session does not nag forever; unconfirmed
-/// and missed targets still hold their lock and always count.
+/// A failure counts only while it is the latest outcome for its target, its
+/// operation was created since `since_ms` and the operator has not dismissed
+/// it in the progress drawer. Unconfirmed and missed targets still hold their
+/// lock and always count.
 pub fn needs_attention(
     operations: &[DpnsVoteOperation],
     since_ms: u64,
+    dismissed: &BTreeSet<DpnsVoteOperationId>,
     now_ms: u64,
 ) -> NeedsAttention {
+    let mut latest: BTreeMap<&DpnsVoteTargetKey, u64> = BTreeMap::new();
+    for operation in operations {
+        for outcome in &operation.targets {
+            let at = latest.entry(&outcome.target.key).or_default();
+            *at = (*at).max(operation.created_at);
+        }
+    }
     let mut attention = NeedsAttention::default();
     for operation in operations {
         for outcome in &operation.targets {
@@ -133,6 +142,8 @@ pub fn needs_attention(
                     attention.missed_schedules += 1;
                 }
                 _ if operation.created_at >= since_ms
+                    && !dismissed.contains(&operation.id)
+                    && latest.get(&outcome.target.key) == Some(&operation.created_at)
                     && progress_phase(outcome) == Some(ProgressPhase::Failed) =>
                 {
                     attention.failed += 1;
@@ -253,7 +264,7 @@ mod tests {
             ),
             operation(1, &[(S::Rejected, NOW)]),
         ];
-        let attention = needs_attention(&operations, 50, 1_000 + 121_000);
+        let attention = needs_attention(&operations, 50, &BTreeSet::new(), 1_000 + 121_000);
         assert_eq!(
             attention,
             NeedsAttention {
@@ -262,6 +273,25 @@ mod tests {
                 missed_schedules: 1,
             }
         );
-        assert!(needs_attention(&[], 0, 0).is_empty());
+        assert!(needs_attention(&[], 0, &BTreeSet::new(), 0).is_empty());
+    }
+
+    /// A failure stops needing attention once the same target is recast
+    /// successfully, or once its operation is dismissed in the drawer.
+    #[test]
+    fn failures_clear_after_a_recast_or_dismiss() {
+        let failed = operation(100, &[(S::FailedBeforeSubmission, NOW)]);
+        let recast = operation(200, &[(S::Confirmed, NOW)]);
+        let none = BTreeSet::new();
+        assert_eq!(
+            needs_attention(std::slice::from_ref(&failed), 0, &none, 300).failed,
+            1
+        );
+        assert_eq!(
+            needs_attention(&[failed.clone(), recast], 0, &none, 300).failed,
+            0
+        );
+        let dismissed = BTreeSet::from([failed.id]);
+        assert_eq!(needs_attention(&[failed], 0, &dismissed, 300).failed, 0);
     }
 }

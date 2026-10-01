@@ -94,7 +94,8 @@ Popover per VOTE-FR-080. Timing segmented control: `Now` | `When voting is about
 to end` | `At a specific time`.
 - Helper for the relative option: `"When voting is about to end" casts each vote
   6 hours before its name's deadline. Keep Dash Evo Tool open and connected
-  until then.`
+  until then.` Names already closer to their deadline are voted now, and the
+  confirm reads `{n} of these votes will be sent now because voting ends soon.`
 - `Adjust nodes` table: Node · Name · Current → new · Changes left · Timing
   (Now / Before the end / Don't use this node).
 

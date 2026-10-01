@@ -309,7 +309,7 @@ impl AppContext {
     }
 
     /// Persist `requests` as the full request list of `identity_id`.
-    pub(crate) fn store_username_requests(
+    pub fn store_username_requests(
         &self,
         identity_id: &Identifier,
         requests: Vec<UsernameRequest>,

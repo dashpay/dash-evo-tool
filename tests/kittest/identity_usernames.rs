@@ -5,18 +5,25 @@ use dash_evo_tool::backend_task::BackendTaskSuccessResult;
 use dash_evo_tool::backend_task::error::TaskError;
 use dash_evo_tool::context::AppContext;
 use dash_evo_tool::context::connection_status::OverallConnectionState;
-use dash_evo_tool::model::dpns_usernames::UsernameAvailability;
+use dash_evo_tool::model::dpns::normalize_dpns_label;
+use dash_evo_tool::model::dpns_usernames::{
+    RequestPhase, RequestTally, UsernameAvailability, UsernameRequest,
+};
 use dash_evo_tool::model::fee_estimation::{contest_fee_credits, format_credits_as_dash};
 use dash_evo_tool::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
 use dash_evo_tool::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use dash_evo_tool::model::qualified_identity::{
     DPNSNameInfo, IdentityStatus, IdentityType, PrivateKeyTarget, QualifiedIdentity,
 };
+use dash_evo_tool::model::user_role::UserRole;
 use dash_evo_tool::ui::ScreenLike;
 use dash_evo_tool::ui::components::ProgressOverlay;
+use dash_evo_tool::ui::identity::profile_cache::ProfileCache;
 use dash_evo_tool::ui::identity::register_dpns_name_screen::{
     RegisterDpnsNameScreen, RegisterDpnsNameSource,
 };
+use dash_evo_tool::ui::identity::settings::SettingsTab;
+use dash_evo_tool::ui::identity::username_request_screen::UsernameRequestScreen;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::{
     IdentityPublicKeyGettersV0, IdentityPublicKeySettersV0,
@@ -248,6 +255,225 @@ fn view_only_identity_is_told_to_add_a_key() {
         assert!(
             harness
                 .query_by_label_contains("Add a key to this identity to register usernames.")
+                .is_some()
+        );
+    });
+}
+
+fn request(label: &str, phase: RequestPhase) -> UsernameRequest {
+    let mut request = UsernameRequest::submitted(
+        label,
+        1_700_000_000_000,
+        dash_evo_tool::model::dpns::ContestDurations {
+            total: std::time::Duration::from_secs(14 * 86_400),
+            join: std::time::Duration::from_secs(7 * 86_400),
+        },
+    );
+    request.phase = phase;
+    request
+}
+
+fn mount_settings(app_context: Arc<AppContext>) -> Harness<'static, SettingsTab> {
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1400.0, 1200.0))
+        .build_ui_state(
+            move |ui, tab: &mut SettingsTab| {
+                tab.render(ui, &app_context, &mut ProfileCache::default());
+            },
+            SettingsTab::new(),
+        );
+    harness.run();
+    harness
+}
+
+/// USR-TC-020 / 022: every row state renders and no alias stubs remain.
+#[test]
+fn usernames_card_lists_all_states_without_alias_stubs() {
+    with_isolated_data_dir(|| {
+        let (_rt, app_context) = fresh_app_context();
+        let id = seed_username_identity(
+            &app_context,
+            0x20,
+            "Alice Novak",
+            &["alice", "alice-design"],
+            0,
+            true,
+        );
+        app_context
+            .store_username_requests(
+                &id,
+                vec![
+                    request("ali", RequestPhase::Voting),
+                    request("novak", RequestPhase::Joinable),
+                    request("al", RequestPhase::Lost),
+                    request("aa", RequestPhase::Locked),
+                ],
+            )
+            .expect("store requests");
+        let harness = mount_settings(app_context);
+        for label in [
+            "@alice",
+            "@alice-design",
+            "Main",
+            "@ali",
+            "@novak",
+            "@al",
+            "@aa",
+            "Get another username",
+        ] {
+            assert!(harness.query_by_label(label).is_some(), "missing {label}");
+        }
+        for text in [
+            "Waiting for vote",
+            "Open for other requests",
+            "Went to someone else",
+            "Locked for good",
+        ] {
+            assert!(
+                harness.query_by_label_contains(text).is_some(),
+                "missing {text}"
+            );
+        }
+        for stub in [
+            "Aliases",
+            "Make primary",
+            "Remove",
+            "Add an alias",
+            "View all usernames",
+        ] {
+            assert!(
+                harness.query_by_label(stub).is_none(),
+                "stub {stub} remains"
+            );
+        }
+    });
+}
+
+/// USR-TC-023: an identity with no username sees the value line and the CTA.
+#[test]
+fn usernames_card_empty_state() {
+    with_isolated_data_dir(|| {
+        let (_rt, app_context) = fresh_app_context();
+        seed_username_identity(&app_context, 0x23, "Alex", &[], 0, true);
+        let harness = mount_settings(app_context);
+        assert!(
+            harness
+                .query_by_label_contains("This identity has no username yet.")
+                .is_some()
+        );
+        assert!(harness.query_by_label("Get a username").is_some());
+        assert!(harness.query_by_label("Add a key").is_none());
+    });
+}
+
+/// USR-TC-024: a view-only identity gets the reason and an `Add a key` link.
+#[test]
+fn usernames_card_view_only_offers_add_a_key() {
+    with_isolated_data_dir(|| {
+        let (_rt, app_context) = fresh_app_context();
+        seed_username_identity(&app_context, 0x24, "Viewer", &[], 0, false);
+        let harness = mount_settings(app_context);
+        assert!(harness.query_by_label("Add a key").is_some());
+        assert!(
+            harness
+                .query_by_label("Add a key to this identity to register usernames.")
+                .is_some()
+        );
+    });
+}
+
+fn mount_request(
+    app_context: &Arc<AppContext>,
+    id: Identifier,
+    label: &str,
+) -> Harness<'static, UsernameRequestScreen> {
+    let screen = UsernameRequestScreen::new(app_context, id, label.to_owned());
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1280.0, 1200.0))
+        .build_ui_state(
+            |ui, screen: &mut UsernameRequestScreen| {
+                screen.ui(ui);
+            },
+            screen,
+        );
+    harness.run();
+    harness
+}
+
+/// USR-TC-029 / 030: timeline, tally, the four rules, and no voter link for Alex.
+#[test]
+fn request_status_page_explains_the_vote() {
+    with_isolated_data_dir(|| {
+        let (_rt, app_context) = fresh_app_context();
+        let id = seed_username_identity(&app_context, 0x29, "Alice Novak", &[], 0, true);
+        let mut pending = request("ali", RequestPhase::Voting);
+        pending.tally = RequestTally {
+            you: 31,
+            others: vec![(Identifier::from([7; 32]), 18)],
+            lock: 8,
+            abstain: 3,
+        };
+        app_context
+            .store_username_requests(&id, vec![pending])
+            .expect("store request");
+        let harness = mount_request(&app_context, id, &normalize_dpns_label("ali"));
+        for text in [
+            "Your request for @ali",
+            "Requested ",
+            "Community vote. Ends around",
+            "Result: Not decided yet.",
+            "Leading",
+            "Other request (",
+            "Lock, so no one gets it",
+            "Evonodes count as 4 votes.",
+            "becomes yours automatically.",
+            "the most recent request wins.",
+            "no one can ever register @ali.",
+            "The community vote fee isn't returned in any case.",
+        ] {
+            assert!(
+                harness.query_by_label_contains(text).is_some(),
+                "missing {text}"
+            );
+        }
+        assert!(
+            harness
+                .query_by_label("Your nodes can vote on this name")
+                .is_none()
+        );
+    });
+}
+
+/// USR-TC-030: a Power user with a voting node sees the link to vote.
+#[test]
+fn request_status_page_links_voters() {
+    with_isolated_data_dir(|| {
+        let (_rt, app_context) = fresh_app_context();
+        let id = seed_username_identity(&app_context, 0x30, "Alice Novak", &[], 0, true);
+        app_context
+            .store_username_requests(&id, vec![request("ali", RequestPhase::Voting)])
+            .expect("store request");
+        let mut node = app_context
+            .load_local_user_identities()
+            .expect("identities")
+            .into_iter()
+            .find(|qi| qi.identity.id() == id)
+            .expect("seeded");
+        let voter = Identity::create_basic_identity(
+            Identifier::from([0x31; 32]),
+            PlatformVersion::latest(),
+        )
+        .expect("voter");
+        let key = IdentityPublicKey::random_key(9, Some(9), PlatformVersion::latest());
+        node.associated_voter_identity = Some((voter, key));
+        app_context
+            .update_local_qualified_identity(&node)
+            .expect("store node");
+        app_context.set_user_role(UserRole::Power);
+        let harness = mount_request(&app_context, id, &normalize_dpns_label("ali"));
+        assert!(
+            harness
+                .query_by_label("Your nodes can vote on this name")
                 .is_some()
         );
     });

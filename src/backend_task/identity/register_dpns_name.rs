@@ -240,7 +240,7 @@ impl AppContext {
 
         qualified_identity.dpns_names = owned_dpns_names;
 
-        qualified_identity.set_default_node_alias(Some(&input.name_input));
+        qualified_identity.initialize_node_alias(None, Some(&input.name_input));
 
         let refreshed_identity = dash_sdk::platform::Identity::fetch_by_identifier(
             sdk,

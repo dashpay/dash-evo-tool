@@ -73,7 +73,7 @@ impl AppContext {
 
             qualified_identity.dpns_names = owned_dpns_names;
 
-            qualified_identity.set_default_node_alias(None);
+            qualified_identity.initialize_node_alias(None, None);
 
             self.update_local_qualified_identity(&qualified_identity)?;
         }

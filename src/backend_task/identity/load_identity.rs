@@ -455,8 +455,7 @@ impl AppContext {
             associated_operator_identity: None,
             associated_owner_key_id: None,
             identity_type,
-            alias: (identity_type != IdentityType::User && !alias_input.is_empty())
-                .then_some(alias_input),
+            alias: None,
             private_keys: encrypted_private_keys.into(),
             dpns_names: maybe_owned_dpns_names,
             associated_wallets: wallets
@@ -472,7 +471,7 @@ impl AppContext {
             status: IdentityStatus::Active,
             network: self.network,
         };
-        qualified_identity.set_default_node_alias(None);
+        qualified_identity.initialize_node_alias(Some(&alias_input), None);
         let wallet_info =
             if load_mode == IdentityLoadMode::MergeIntoExisting && encryption_password.is_none() {
                 self.persist_merged_identity(&mut qualified_identity, merge_seal_password.as_ref())?

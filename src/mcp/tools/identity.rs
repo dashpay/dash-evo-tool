@@ -102,10 +102,7 @@ impl AsyncTool<DashMcpService> for ListIdentitiesTool {
                     status: qi.status.to_string(),
                     balance_credits: qi.identity.balance(),
                     display_name: ctx.identity_display_name(qi.identity.id()),
-                    alias: (qi.identity_type
-                        != crate::model::qualified_identity::IdentityType::User)
-                        .then(|| qi.alias.clone())
-                        .flatten(),
+                    alias: qi.administrative_alias().map(str::to_owned),
                     dpns_names: qi.dpns_names.into_iter().map(|name| name.name).collect(),
                     wallet_index: link.map(|(_, index)| index),
                     wallet_seed_hashes: link

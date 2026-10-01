@@ -949,14 +949,30 @@ impl QualifiedIdentity {
             .map_err(|e| ProtocolError::Generic(format!("HASH160 recovery scan failed: {e}")))
     }
 
-    /// Default an unnamed node to the preferred DPNS name, or its first owned name.
-    pub fn set_default_node_alias(&mut self, preferred_dpns_name: Option<&str>) {
+    /// Initialize an unnamed node from explicit input, then preferred or first owned DPNS name.
+    pub fn initialize_node_alias(
+        &mut self,
+        explicit_alias: Option<&str>,
+        preferred_dpns_name: Option<&str>,
+    ) {
         if self.identity_type == IdentityType::User || self.alias.is_some() {
             return;
         }
-        self.alias = preferred_dpns_name
-            .or_else(|| self.dpns_names.first().map(|name| name.name.as_str()))
-            .map(|name| format!("{name}.dash"));
+        self.alias = explicit_alias
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned)
+            .or_else(|| {
+                preferred_dpns_name
+                    .or_else(|| self.dpns_names.first().map(|name| name.name.as_str()))
+                    .map(|name| format!("{name}.dash"))
+            });
+    }
+
+    /// Return the administrative node alias; legacy User aliases are never exposed.
+    pub fn administrative_alias(&self) -> Option<&str> {
+        (self.identity_type != IdentityType::User)
+            .then_some(self.alias.as_deref())
+            .flatten()
     }
 
     pub fn display_string(&self) -> String {
@@ -965,11 +981,7 @@ impl QualifiedIdentity {
 
     /// Resolve the profile name with username and identifier fallbacks.
     pub fn display_name_label(&self, display_name: Option<&str>) -> String {
-        let preferred = if self.identity_type == IdentityType::User {
-            display_name
-        } else {
-            self.alias.as_deref().or(display_name)
-        };
+        let preferred = self.administrative_alias().or(display_name);
         crate::model::identity_name::display_label(
             preferred,
             self.dpns_names.first().map(|name| name.name.as_str()),
@@ -2710,7 +2722,7 @@ mod identity_display_name_tests {
     }
 
     #[test]
-    fn default_node_alias_preserves_explicit_names_and_excludes_users() {
+    fn node_alias_initialization_preserves_explicit_names_and_excludes_users() {
         for identity_type in [
             IdentityType::User,
             IdentityType::Masternode,
@@ -2724,7 +2736,7 @@ mod identity_display_name_tests {
                     name: "first".into(),
                     acquired_at: 0,
                 }];
-                identity.set_default_node_alias(None);
+                identity.initialize_node_alias(None, None);
                 let expected = if identity_type == IdentityType::User {
                     existing
                 } else {
@@ -2735,8 +2747,16 @@ mod identity_display_name_tests {
                     expected,
                     "{identity_type:?}/{existing:?}"
                 );
-                identity.set_default_node_alias(Some("newly-registered"));
+                identity.initialize_node_alias(Some("replacement"), Some("newly-registered"));
                 assert_eq!(identity.alias.as_deref(), expected);
+                assert_eq!(
+                    identity.administrative_alias(),
+                    if identity_type == IdentityType::User {
+                        None
+                    } else {
+                        expected
+                    }
+                );
                 if identity_type == IdentityType::User {
                     assert_eq!(identity.display_name_label(Some("Profile")), "Profile");
                 }
@@ -2745,17 +2765,36 @@ mod identity_display_name_tests {
     }
 
     #[test]
-    fn default_node_alias_prefers_registered_name_and_handles_no_dpns_names() {
+    fn node_alias_initialization_uses_explicit_then_dpns_names() {
         for identity_type in [
             IdentityType::User,
             IdentityType::Masternode,
             IdentityType::Evonode,
         ] {
-            for (first_name, preferred, node_alias) in [
-                (None, None, None),
-                (Some("older"), None, Some("older.dash")),
-                (None, Some("submitted"), Some("submitted.dash")),
-                (Some("older"), Some("submitted"), Some("submitted.dash")),
+            for (explicit, first_name, preferred, node_alias) in [
+                (None, None, None, None),
+                (None, Some("older"), None, Some("older.dash")),
+                (None, None, Some("submitted"), Some("submitted.dash")),
+                (
+                    None,
+                    Some("older"),
+                    Some("submitted"),
+                    Some("submitted.dash"),
+                ),
+                (Some(""), Some("older"), None, Some("older.dash")),
+                (
+                    Some(""),
+                    Some("older"),
+                    Some("submitted"),
+                    Some("submitted.dash"),
+                ),
+                (
+                    Some("Operator label"),
+                    Some("older"),
+                    Some("submitted"),
+                    Some("Operator label"),
+                ),
+                (Some(" "), Some("older"), Some("submitted"), Some(" ")),
             ] {
                 let mut identity = identity();
                 identity.identity_type = identity_type;
@@ -2767,7 +2806,7 @@ mod identity_display_name_tests {
                         acquired_at: 0,
                     })
                     .collect();
-                identity.set_default_node_alias(preferred);
+                identity.initialize_node_alias(explicit, preferred);
                 let expected = if identity_type == IdentityType::User {
                     None
                 } else {
@@ -2776,7 +2815,7 @@ mod identity_display_name_tests {
                 assert_eq!(
                     identity.alias.as_deref(),
                     expected,
-                    "{identity_type:?}/{preferred:?}/{first_name:?}"
+                    "{identity_type:?}/{explicit:?}/{preferred:?}/{first_name:?}"
                 );
             }
         }

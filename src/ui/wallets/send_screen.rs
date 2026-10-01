@@ -2217,10 +2217,9 @@ impl WalletSendScreen {
                             .selected_identity
                             .as_ref()
                             .map(|qi| {
-                                let name = qi
-                                    .dpns_names
-                                    .first()
-                                    .map(|n| n.name.clone())
+                                let name = self
+                                    .app_context
+                                    .main_username(qi)
                                     .or_else(|| qi.alias.clone())
                                     .unwrap_or_else(|| {
                                         let id_str = qi.identity.id().to_string(
@@ -2236,16 +2235,15 @@ impl WalletSendScreen {
                             })
                             .unwrap_or_else(|| "Select identity".to_string());
 
+                        let app_context = self.app_context.clone();
                         egui::ComboBox::from_id_salt("identity_source_selector")
                             .selected_text(&current_label)
                             .width(ui.available_width() - 20.0)
                             .show_ui(ui, |ui| {
                                 for identity in &identities {
                                     let label = {
-                                        let name = identity
-                                            .dpns_names
-                                            .first()
-                                            .map(|n| n.name.clone())
+                                        let name = app_context
+                                            .main_username(identity)
                                             .or_else(|| identity.alias.clone())
                                             .unwrap_or_else(|| {
                                                 let id_str = identity.identity.id().to_string(

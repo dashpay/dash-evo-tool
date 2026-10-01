@@ -1510,6 +1510,7 @@ impl AppContext {
         qi.associated_wallets = wallets.clone();
         qi.secret_access = self.wallet_backend().ok().map(|b| b.secret_access());
         qi.top_ups = BTreeMap::new();
+        self.order_main_username_first(&mut qi);
         Ok(qi)
     }
 

@@ -883,3 +883,31 @@ impl ScreenLike for RegisterDpnsNameScreen {
         action
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// USR-TC-035: on a protocol 14 network the confirm step charges the
+    /// 0.1 DASH community vote fee and adds it to the registration fee.
+    #[test]
+    fn confirm_fees_follow_the_network_protocol_version() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let pv14 = dash_sdk::dpp::version::PlatformVersion::get(14).expect("PV14");
+        ctx.sdk.store(Arc::new(
+            dash_sdk::SdkBuilder::new_mock()
+                .with_version(pv14)
+                .build()
+                .expect("mock sdk"),
+        ));
+        let screen = RegisterDpnsNameScreen::new(&ctx, RegisterDpnsNameSource::Identities);
+        assert_eq!(screen.contest_fee(), 10_000_000_000);
+        assert_eq!(format_credits_as_dash(screen.contest_fee()), "0.1 DASH");
+        assert_eq!(
+            screen.total_fee(true),
+            screen.registration_fee() + 10_000_000_000
+        );
+        assert_eq!(screen.total_fee(false), screen.registration_fee());
+    }
+}

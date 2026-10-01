@@ -844,3 +844,134 @@ fn top_up_returns_with_name_kept() {
         );
     });
 }
+
+/// USR-TC-038: the result page tells a registered name from a request in a vote.
+#[test]
+fn result_page_distinguishes_registered_from_requested() {
+    use dash_evo_tool::backend_task::FeeResult;
+    use dash_evo_tool::model::dpns::DpnsRegistrationOutcome;
+    with_isolated_data_dir(|| {
+        let (_rt, app_context) = fresh_app_context();
+        let id = seed_username_identity(&app_context, 0x38, "Alex", &[], 0, true);
+        let done = |label: &str, outcome| {
+            let mut screen = answered(&app_context, label, UsernameAvailability::NeedsVote);
+            screen.open_confirm_for_test();
+            screen.display_task_result(BackendTaskSuccessResult::RegisteredDpnsName {
+                outcome,
+                fee_result: FeeResult::estimated_only(1),
+            });
+            mount(screen)
+        };
+
+        let registered = done("alex-novak", DpnsRegistrationOutcome::Registered);
+        assert!(registered.query_by_label("You're @alex-novak").is_some());
+        assert!(
+            registered
+                .query_by_label("People can now find and pay you by this name.")
+                .is_some()
+        );
+        assert!(registered.query_by_label_contains("is in").is_none());
+
+        let mut submitted = request("ali", RequestPhase::Joinable);
+        submitted.label = "ali".to_owned();
+        app_context
+            .store_username_requests(&id, vec![submitted])
+            .expect("store request");
+        let requested = done("ali", DpnsRegistrationOutcome::PendingCommunityVote);
+        assert!(
+            requested
+                .query_by_label("Your request for @ali is in")
+                .is_some()
+        );
+        assert!(
+            requested
+                .query_by_label_contains("Others can still ask for this name until")
+                .is_some()
+        );
+        assert!(
+            requested
+                .query_by_label(
+                    "If no one else asks and no one votes to lock it, @ali becomes yours then."
+                )
+                .is_some()
+        );
+        assert!(requested.query_by_label("View request status").is_some());
+        assert!(requested.query_by_label_contains("You're @").is_none());
+    });
+}
+
+/// QA regression: when the hub replaces the Home frame's action (e.g. with a
+/// profile load), the "seen" mark is sent again on the next frame instead of
+/// being lost, so the outcome banner does not return on the next start.
+#[test]
+fn seen_mark_survives_a_replaced_action() {
+    with_isolated_data_dir(|| {
+        let (rt, app_context) = fresh_app_context();
+        let id = seed_username_identity(&app_context, 0x51, "Alex", &[], 0, true);
+        app_context
+            .store_username_requests(&id, vec![request("ali", RequestPhase::Won)])
+            .expect("store request");
+        let banner = "You're @ali. People can now find and pay you by this name.";
+        let is_mark = |action: &Option<AppAction>| {
+            matches!(
+                action,
+                Some(AppAction::BackendTask(BackendTask::IdentityTask(
+                    IdentityTask::MarkUsernameOutcomesSeen { .. }
+                )))
+            )
+        };
+        let mut home = mount_home(app_context.clone());
+        let replaced = home.state_mut().2.take();
+        assert!(
+            is_mark(&replaced),
+            "precondition: first frame marks, got {replaced:?}"
+        );
+
+        // The hub dropped that action; the next frame must send it again.
+        home.step();
+        let retried = home.state_mut().2.take();
+        assert!(is_mark(&retried), "the seen mark was lost, got {retried:?}");
+        run_action(&rt, &app_context, retried);
+
+        home.step();
+        assert!(
+            home.state_mut().2.take().is_none(),
+            "no more marks once stored"
+        );
+        assert!(
+            home.query_by_label_contains(banner).is_some(),
+            "the banner stays up this session until dismissed"
+        );
+        drop(home);
+        let next_start = mount_home(app_context);
+        assert!(next_start.query_by_label_contains(banner).is_none());
+    });
+}
+
+/// QA regression: identities load with the main username first, so labels that
+/// show the first name (identity text, send screen, address picker) show it.
+#[test]
+fn loaded_identities_list_the_main_username_first() {
+    with_isolated_data_dir(|| {
+        let (_rt, app_context) = fresh_app_context();
+        let id = seed_username_identity(
+            &app_context,
+            0x52,
+            "a-name.dash",
+            &["a-name", "b-name"],
+            0,
+            true,
+        );
+        app_context
+            .set_main_username(&id, "b-name")
+            .expect("set main");
+        let identity = app_context
+            .load_local_user_identities()
+            .expect("identities")
+            .into_iter()
+            .find(|qi| qi.identity.id() == id)
+            .expect("seeded");
+        assert_eq!(identity.dpns_names[0].name, "b-name");
+        assert_eq!(identity.to_string(), "b-name");
+    });
+}

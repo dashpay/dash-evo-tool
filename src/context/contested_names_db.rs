@@ -401,6 +401,21 @@ impl AppContext {
         first.map(str::to_owned)
     }
 
+    /// Move the identity's main username to the front of `dpns_names`, so every
+    /// surface that shows the first registered name shows the chosen one.
+    pub(crate) fn order_main_username_first(&self, identity: &mut QualifiedIdentity) {
+        let Some(main) = self.main_username(identity) else {
+            return;
+        };
+        if let Some(index) = identity
+            .dpns_names
+            .iter()
+            .position(|n| n.name.trim() == main)
+        {
+            identity.dpns_names[..=index].rotate_right(1);
+        }
+    }
+
     /// Show `name` as the main username of `identity_id` on this device.
     pub fn set_main_username(&self, identity_id: &Identifier, name: &str) -> Result<(), TaskError> {
         let kv = self.det_kv()?;

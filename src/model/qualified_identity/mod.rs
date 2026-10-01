@@ -343,7 +343,7 @@ impl<C> Decode<C> for QualifiedIdentity {
 
 impl Display for QualifiedIdentity {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        if let Some(alias) = &self.alias {
+        if let Some(alias) = crate::model::dpns_usernames::user_alias(self) {
             write!(f, "{}", alias)
         } else if !self.dpns_names.is_empty() {
             write!(f, "{}", self.dpns_names[0].name)

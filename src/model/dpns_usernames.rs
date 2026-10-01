@@ -93,13 +93,13 @@ pub fn can_register_usernames(
 }
 
 /// The device-only name the user chose, ignoring a legacy automatic copy of a
-/// username (`{name}.dash`), which would otherwise hide the chosen main username.
+/// username. Earlier versions wrote `{name}.dash` into the alias at registration,
+/// including for requests later lost, so any alias of that exact form is treated
+/// as automatic and never hides the chosen main username.
 pub fn user_alias(identity: &QualifiedIdentity) -> Option<&str> {
     let alias = identity.alias.as_deref()?.trim();
-    let automatic = identity.dpns_names.iter().any(|name| {
-        alias
-            .strip_suffix(".dash")
-            .is_some_and(|stem| stem.eq_ignore_ascii_case(name.name.trim()))
+    let automatic = alias.strip_suffix(".dash").is_some_and(|stem| {
+        super::dpns::validate_dpns_name(stem) == super::dpns::DpnsNameValidationResult::Valid
     });
     (!alias.is_empty() && !automatic).then_some(alias)
 }
@@ -721,6 +721,45 @@ mod tests {
         assert_eq!(request.end, Some(1_000 + 90 * MINUTE));
         let opened = UsernameRequest::submitted("alice", 5_000, durations(), None);
         assert_eq!(opened.join_end, Some(5_000 + 45 * MINUTE));
+    }
+
+    #[test]
+    fn legacy_automatic_alias_never_labels_the_identity() {
+        // QA regression: earlier versions wrote `{name}.dash` at registration,
+        // also for requests later lost; such an alias must not hide the main name.
+        use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
+        use crate::model::qualified_identity::{
+            DPNSNameInfo, IdentityStatus, IdentityType, QualifiedIdentity,
+        };
+        let mut identity = QualifiedIdentity {
+            identity: dash_sdk::dpp::identity::Identity::create_basic_identity(
+                id(1),
+                dash_sdk::dpp::version::PlatformVersion::latest(),
+            )
+            .expect("identity"),
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: Some("alice.dash".to_owned()),
+            private_keys: KeyStorage::default(),
+            dpns_names: vec![DPNSNameInfo {
+                name: "bob".to_owned(),
+                acquired_at: 0,
+            }],
+            associated_wallets: Default::default(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: Default::default(),
+            status: IdentityStatus::Active,
+            network: dash_sdk::dpp::dashcore::Network::Testnet,
+        };
+        assert_eq!(user_alias(&identity), None);
+        assert_eq!(identity.to_string(), "bob");
+        identity.alias = Some("Alice Novak".to_owned());
+        assert_eq!(user_alias(&identity), Some("Alice Novak"));
+        identity.alias = Some("  ".to_owned());
+        assert_eq!(user_alias(&identity), None);
     }
 
     #[test]

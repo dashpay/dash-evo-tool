@@ -23,6 +23,15 @@ use crate::ui::theme::{ComponentStyles, DashColors};
 /// Outcome banners shown in this session, so a banner marked seen stays up until dismissed.
 const SESSION_BANNERS_ID: &str = "identity_username_outcome_banners";
 
+/// Per-session banner state, kept in egui temp data.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct SessionBanners {
+    /// Shown this session; stays up after being recorded as seen.
+    shown: BTreeSet<String>,
+    /// Dismissed this session; hidden even before the seen flag is stored.
+    dismissed: BTreeSet<String>,
+}
+
 /// Text of the one-time banner for a finished request, if it gets one.
 pub fn outcome_banner_text(request: &UsernameRequest) -> Option<String> {
     let name = &request.label;
@@ -61,26 +70,29 @@ pub fn render(
     let identity_id = identity.identity.id();
     let requests = app_context.username_requests_for(&identity_id);
     let session_id = Id::new(SESSION_BANNERS_ID);
-    let mut session: BTreeSet<String> = ui
+    let mut session: SessionBanners = ui
         .ctx()
         .data(|data| data.get_temp(session_id))
         .unwrap_or_default();
-    let mut session_changed = false;
-    // Outcomes shown for the first time this frame; recorded as seen through a
-    // backend task so each banner appears once, across restarts too.
-    let mut newly_shown: Vec<UsernameRequest> = Vec::new();
+    let before = session.clone();
+    // Outcomes not yet recorded as seen. The mark is re-sent on every frame
+    // until the store confirms it, so a frame whose action is replaced by
+    // another dispatch (e.g. a profile load) cannot lose it; the task is idempotent.
+    let mut unrecorded: Vec<UsernameRequest> = Vec::new();
 
     for request in &requests {
         let Some(text) = outcome_banner_text(request) else {
             continue;
         };
         let key = banner_key(&identity_id, request);
-        if !session.contains(&key) {
-            if app_context.username_outcome_seen(&identity_id, request) {
-                continue;
-            }
-            newly_shown.push(request.clone());
+        let recorded = app_context.username_outcome_seen(&identity_id, request);
+        if !recorded {
+            unrecorded.push(request.clone());
         }
+        if session.dismissed.contains(&key) || (recorded && !session.shown.contains(&key)) {
+            continue;
+        }
+        session.shown.insert(key.clone());
         let tone = if request.phase == RequestPhase::Won {
             Tone::Positive
         } else {
@@ -95,22 +107,16 @@ pub fn render(
                     action = register_action_for(app_context, identity_id);
                 }
                 if ui.button("Dismiss").clicked() {
-                    session.remove(&key);
-                    session_changed = true;
-                    if newly_shown.last() == Some(request) {
-                        newly_shown.pop();
-                        action = mark_seen_action(identity_id, vec![request.clone()]);
-                    }
+                    session.shown.remove(&key);
+                    session.dismissed.insert(key.clone());
                 }
             });
         });
     }
-    if !newly_shown.is_empty() && matches!(action, AppAction::None) {
-        session.extend(newly_shown.iter().map(|r| banner_key(&identity_id, r)));
-        session_changed = true;
-        action = mark_seen_action(identity_id, newly_shown);
+    if !unrecorded.is_empty() && matches!(action, AppAction::None) {
+        action = mark_seen_action(identity_id, unrecorded);
     }
-    if session_changed {
+    if session != before {
         ui.ctx()
             .data_mut(|data| data.insert_temp(session_id, session));
     }

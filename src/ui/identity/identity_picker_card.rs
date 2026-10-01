@@ -71,10 +71,12 @@ pub fn card_sub_line(
     identity_type: IdentityType,
 ) -> String {
     let has_display_name = display_name
-        .map(str::trim)
+        .map(crate::model::identity_name::clean_display_text)
         .filter(|s| !s.is_empty())
         .is_some();
-    let handle = dpns_handle.map(str::trim).filter(|s| !s.is_empty());
+    let handle = dpns_handle
+        .map(crate::model::identity_name::clean_display_text)
+        .filter(|s| !s.is_empty());
 
     if has_display_name && let Some(h) = handle {
         return format!("@{h}");
@@ -458,6 +460,18 @@ pub(crate) fn draw_type_badge(ui: &mut Ui, label: &str, dark_mode: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn picker_card_text_filters_controls() {
+        assert_eq!(
+            card_sub_line(Some("Profile"), Some("al\u{202e}ice"), IdentityType::User),
+            "@alice"
+        );
+        assert_eq!(
+            card_sub_line(Some("\u{2066}"), Some("alice"), IdentityType::User),
+            "User identity"
+        );
+    }
 
     #[test]
     fn ut_picker_01_heading_and_sub_line_with_display_name_and_dpns() {

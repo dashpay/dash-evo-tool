@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- Avatar decoding rejects images wider or taller than 2048 pixels, including cached images,
+  and applies a decoder allocation budget. Rejected images show the existing fallback.
+- Identity labels strip control and bidirectional formatting characters while retaining
+  display name, username, and identity ID priority.
+
 - Avatar downloads reject private and internal destinations, including DNS answers
   and redirects, and cannot bypass destination checks through system proxies.
 
@@ -149,6 +154,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   follow-up.
 
 ### Fixed
+
+- Token detail headers sort rows by identity name, identity ID, or numeric balance;
+  unchecked balances stay last in either direction.
 
 - Profile saves confirm their exact submitted fields even after leaving the hub.
   Delayed profile loads and saves cannot replace newer data; drafts survive a

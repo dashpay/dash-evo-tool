@@ -988,6 +988,7 @@ As a user, I want to cancel a contact request I sent so that it stops sitting in
 As a user, I want to see all tokens I hold and their balances so that I can manage my token portfolio.
 
 - "My Tokens" screen lists all held tokens with balances.
+- Token detail rows sort by displayed identity name, identity ID, or numeric balance in either direction; unchecked balances remain last.
 
 ### TOK-002: Search and discover tokens [Implemented]
 **Persona:** Alex, Priya, Jordan

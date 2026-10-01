@@ -1,5 +1,16 @@
-//! Destination policy for externally supplied avatar URLs.
+//! Safety policy for externally supplied avatar URLs and images.
 use std::net::IpAddr;
+
+/// Decode an avatar with strict 2048-pixel dimensions and a best-effort 32 MiB allocation budget.
+pub fn decode_avatar(bytes: &[u8]) -> image::ImageResult<image::DynamicImage> {
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(2048);
+    limits.max_image_height = Some(2048);
+    limits.max_alloc = Some(32 * 1024 * 1024);
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format()?;
+    reader.limits(limits);
+    reader.decode()
+}
 
 /// Permit public unicast destinations only, including IPv4-mapped IPv6 checks.
 /// Special-purpose and transition ranges are excluded even if some addresses

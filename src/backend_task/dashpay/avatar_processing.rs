@@ -80,7 +80,7 @@ pub fn calculate_avatar_hash(image_bytes: &[u8]) -> [u8; 32] {
 /// 4. Generate 64-bit hash based on comparisons
 pub fn calculate_dhash_fingerprint(image_bytes: &[u8]) -> Result<[u8; 8], AvatarProcessingError> {
     // Load the image from bytes
-    let img = image::load_from_memory(image_bytes)?;
+    let img = crate::model::avatar::decode_avatar(image_bytes)?;
 
     // Convert to grayscale and resize to 9x8
     let grayscale = img.grayscale();
@@ -333,7 +333,7 @@ async fn validate_image_response(
     }
 
     // Try to validate it's actually an image by attempting to load it
-    image::load_from_memory(&bytes)?;
+    crate::model::avatar::decode_avatar(&bytes)?;
 
     Ok(bytes)
 }
@@ -357,6 +357,37 @@ pub async fn process_avatar(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn avatar_dimension_limits_cover_download_validation_and_fingerprint() {
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        image::RgbImage::new(2049, 1)
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
+        let bytes = encoded.into_inner();
+        let (response, server) = chunked_image_response(bytes.clone(), true).await;
+        let result = validate_image_response(response).await;
+        server.await.unwrap();
+        assert!(matches!(
+            result,
+            Err(AvatarProcessingError::InvalidImage(
+                image::ImageError::Limits(_)
+            ))
+        ));
+        assert!(matches!(
+            calculate_dhash_fingerprint(&bytes),
+            Err(AvatarProcessingError::InvalidImage(
+                image::ImageError::Limits(_)
+            ))
+        ));
+        // The PNG header alone must trigger the limit, before any pixel payload is read.
+        assert!(matches!(
+            calculate_dhash_fingerprint(&bytes[..33]),
+            Err(AvatarProcessingError::InvalidImage(
+                image::ImageError::Limits(_)
+            ))
+        ));
+    }
 
     #[tokio::test]
     async fn avatar_private_literal_is_rejected_before_connecting() {

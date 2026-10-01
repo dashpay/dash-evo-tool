@@ -172,6 +172,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   declined as skipped, with a note to run the restore again, instead of as a
   failure.
 
+- When an identity key cannot be used for signing, the message now names the
+  cause in a fixed, plain sentence — wallet not on this device, wallet locked,
+  password prompt closed, password needed in the app window, or key missing —
+  with what to do next. The identity, key and wallet involved are kept in the
+  technical details.
+
 - Token detail headers sort rows by identity name, identity ID, or numeric balance;
   unchecked balances stay last in either direction.
 

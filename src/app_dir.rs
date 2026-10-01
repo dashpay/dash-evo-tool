@@ -152,10 +152,13 @@ pub fn copy_env_file_if_not_exists() {
     ensure_env_file(&app_data_dir);
 }
 
+/// File name of the environment config in the data directory.
+pub const ENV_FILE: &str = ".env";
+
 /// If .env file does not exist in the given data directory,
 /// copy the bundled `.env.example` file there.
 pub fn ensure_env_file(data_dir: &Path) {
-    let env_file_in_app_dir = data_dir.join(".env");
+    let env_file_in_app_dir = data_dir.join(ENV_FILE);
     BundledResource::DotEnvExample
         .write_to_file(&env_file_in_app_dir, false)
         .expect("Failed to write bundled .env.example file");

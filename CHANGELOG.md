@@ -48,6 +48,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Upgrade backup retention setting**: Settings → Upgrade Backups controls how
+  long the backup copies taken before a storage upgrade are kept. By default,
+  backups older than 90 days are now deleted automatically; choose another
+  period (1 to 3650 days) or keep them forever. The newest complete backup of
+  each database is always kept (or the newest backup, if none is complete), and
+  a shorter period asks for confirmation because it deletes backups at once.
+
 - **Add wallet-created identity keys**: for identities loaded from a wallet on
   this device, the Add Key screen defaults to "Create from wallet", which
   creates an ECDSA_SECP256K1 or ECDSA_HASH160 key from that wallet so it can be
@@ -146,6 +153,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   follow-up.
 
 ### Fixed
+
+- **Safer guidance for wallet data this version cannot open**: the message no
+  longer tells you to remove your local wallet data, which could have deleted
+  the `secrets` folder along with keys no recovery phrase can restore. It asks
+  you to write down your recovery phrases and imported keys in the version you
+  used before, close every running instance, and set aside the `.sqlite` files
+  while keeping the `secrets` folder. A database held by another session asks
+  you to close that session and try again.
+
+- **Upgrade backups no longer pile up**: repeated failed upgrades no longer
+  leave an identical backup on every attempt, and a failed upgrade that can
+  never succeed shows its message instead of retrying silently. Clearing a
+  network's data removes that network's upgrade backups; backups of the shared
+  app data are left to the retention setting. Removing a wallet or an identity
+  keeps upgrade backups.
+
+- **Clearing a network's data works with moved chain data**: chain-sync data
+  that was moved to another disk and linked back no longer stops the clear.
+
+- **Clearer identity funding errors**: when the wallet cannot save the data a
+  payment needs, the message now distinguishes a busy or full store from other
+  failures and says how to retry.
 
 - **Identity keys added by hand no longer disappear**: unlocking a wallet,
   starting the app or loading an identity from a wallet refreshed the identity

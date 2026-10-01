@@ -60,10 +60,36 @@ typed identity rows remain in the backup, while their opaque local metadata is
 preserved. An ambiguous or malformed saved identity roster fails closed.
 The encrypted seed vault is not migrated or rewritten.
 
-Keep the retained backups. Downgrading does not automatically reverse the
-database conversion; recovery requires the corresponding backup and the prior
-application version. Validation uses synthetic upstream fixtures, not a user's
-real profile.
+The bridge takes its backup only after the converted copy validates, just before
+the rebuild. Opening a database never deletes a published backup except an exact
+duplicate of a newer backup of the same migration (each failed attempt copies the
+unchanged original again); it also removes unfinished `.pending` copies left by a
+crash. Upstream `backups/auto/pre-migration-<database>-*.db` snapshots are covered
+too. Housekeeping is best-effort: an error is logged and retried on the next open,
+and never blocks opening. Backup candidates must have the exact database-specific
+name format and be regular files; symbolic links and directories are skipped, and
+the deletion chokepoint refuses hard links and live databases.
+
+Backups older than a user-configurable retention period (default 90 days, or
+never) are deleted by one global policy covering every database in the data
+directory: bridge, upstream pre-migration, and legacy `data.db` backups. The
+newest usable backup of each database is always kept, whatever its age: an empty or
+truncated file never counts, and the upstream snapshot of the latest migration is
+kept as well. If no backup is usable, the newest file is kept anyway. A backup
+dated in the future does not displace one dated in the past, but only until real
+time reaches that date; the migration order is the only clock-proof signal. A copy
+that cannot be read, or has a non-empty rollback journal beside it, is never
+deleted automatically. This version never writes new legacy `data.db` copies: it
+opens an existing `data.db` read-only, so only copies earlier versions left behind
+are expired.
+Clearing a network's data deletes that network's wallet database backups, because
+they copy its wallet and identity history; backups of the shared `det-app.sqlite`
+also hold other networks' data and stay under retention. Removing a single wallet
+or identity deletes no backups.
+
+Downgrading does not automatically reverse the database conversion; recovery
+requires the corresponding backup and the prior application version. Validation
+uses synthetic upstream fixtures, not a user's real profile.
 
 ## Validation and limits
 

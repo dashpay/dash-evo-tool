@@ -4,6 +4,7 @@
 //! `Debug` → variant name + fields (logged and shown in collapsible details).
 
 use crate::model::fee_estimation::format_credits_as_dash;
+use crate::wallet_backend::platform_compatibility::StorageFailure;
 use dash_sdk::Error as SdkError;
 use dash_sdk::dapi_client::DapiClientError;
 use dash_sdk::dapi_client::transport::TransportError;
@@ -108,6 +109,12 @@ impl std::error::Error for BackendTaskJoinError {}
 /// Dash Core RPC error code: wallet file not specified (multi-wallet node).
 const RPC_WALLET_NOT_SPECIFIED: i32 = -19;
 
+/// Some expired upgrade backups remain after a retention setting save.
+pub(crate) const BACKUP_RETENTION_SAVED_CLEANUP_INCOMPLETE: &str = "Your backup retention setting was saved, but some old upgrade backups could not be deleted. The app tries again the next time it opens your wallet data.";
+
+/// Shown whenever another window or session holds the wallet database.
+pub(crate) const WALLET_DATA_IN_USE: &str = "Your wallet data is open in another Dash Evo Tool window or command-line session. Close it and try again.";
+
 /// App-level error envelope for backend tasks.
 #[derive(Debug, Error)]
 pub enum TaskError {
@@ -188,11 +195,23 @@ pub enum TaskError {
     /// An identity-funding account was derived but could not be saved. Saving
     /// it is what lets a restart find the account again, so the operation is
     /// stopped rather than left able to strand a funding lock the app could no
-    /// longer spend. The technical cause lives in `Debug` and the logs.
+    /// longer spend. Covers non-retryable store failures (constraint, fatal);
+    /// retryable ones use [`Self::IdentityFundingAccountPersistBusy`].
     #[error(
-        "Your wallet could not save the account this payment needs. Check that your disk is not full, then try again."
+        "Your wallet could not save the information it needs for this payment. Restart the application and try again."
     )]
     IdentityFundingAccountPersistFailed {
+        #[source]
+        source: Box<platform_wallet::changeset::PersistenceError>,
+    },
+
+    /// Like [`Self::IdentityFundingAccountPersistFailed`], but the store kept
+    /// reporting a retryable condition until the retry budget ran out. Upstream
+    /// classifies a busy database and a full disk alike, so the copy names both.
+    #[error(
+        "Your wallet could not save the information it needs for this payment because its data is busy or the disk is full. Close any other copy of Dash Evo Tool, make sure there is free disk space, and try again."
+    )]
+    IdentityFundingAccountPersistBusy {
         #[source]
         source: Box<platform_wallet::changeset::PersistenceError>,
     },
@@ -423,6 +442,13 @@ pub enum TaskError {
         source: platform_wallet_storage::WalletStorageError,
     },
 
+    /// Another process currently owns the wallet database write lock.
+    #[error("{}", WALLET_DATA_IN_USE)]
+    WalletStorageInUse {
+        #[source]
+        source: platform_wallet_storage::WalletStorageError,
+    },
+
     /// A pinned-PR wallet database could not be upgraded without losing data.
     #[error(transparent)]
     PlatformDatabaseUpgrade {
@@ -473,11 +499,11 @@ pub enum TaskError {
     ///
     /// The migration diagnostic is preserved through the `#[source]` chain for
     /// logs and the `Debug` view; it is kept out of the user-facing `Display`
-    /// copy. On the active development branch the storage layout changed in an
-    /// incompatible way, so the practical action is to remove the local wallet
-    /// data and let the app recreate it (see `docs/kv-keys.md`).
+    /// copy. The copy names only the rebuildable `.sqlite` stores and tells the
+    /// user to keep the `secrets` folder: the vault holds imported and
+    /// masternode keys that no recovery phrase can re-derive.
     #[error(
-        "Your wallet data is not compatible with this version of the app and cannot be opened. Remove the local wallet data so the app can create it fresh, then restart."
+        "Your wallet data was saved by an app version that this version cannot open, so it was left unchanged. Your recovery phrases and keys are still stored on this device. First open the app version you used before and write down the recovery phrase of every wallet. Separately, write down each imported private key. Close all Dash Evo Tool windows and command-line sessions. Then move each .sqlite file together with its matching .sqlite-wal and .sqlite-shm files, if present, out of the app data folder, leave the secrets folder where it is, and start this app again."
     )]
     WalletDataIncompatible {
         #[source]
@@ -1163,6 +1189,25 @@ pub enum TaskError {
         "Could not unlock a saved wallet. Re-enter your password; if it persists, restore the wallet from its recovery phrase."
     )]
     WalletSeedDecryptFailed,
+
+    /// The upgrade-backup retention setting could not be read, so no backup was
+    /// deleted.
+    #[error(
+        "Your backup retention setting could not be read, so no old upgrade backups were deleted. Open Settings, choose a backup retention setting and save it."
+    )]
+    BackupRetentionRead {
+        #[source]
+        source: crate::wallet_backend::KvAdapterError,
+    },
+
+    /// Expired upgrade backups could not all be deleted.
+    #[error(
+        "Some old upgrade backups could not be deleted. The app tries again the next time it opens your wallet data."
+    )]
+    UpgradeBackupCleanup {
+        #[source]
+        source: std::io::Error,
+    },
 
     /// A local filesystem operation failed (e.g. creating a data directory).
     #[error(
@@ -2976,18 +3021,23 @@ impl TaskError {
     /// - A divergent migration history (e.g. a database written under an
     ///   earlier, incompatible storage layout that this build's migrations
     ///   cannot reconcile) is surfaced as [`Self::WalletDataIncompatible`] so
-    ///   the banner tells the user to remove the local wallet data — freeing
-    ///   disk space or restarting never resolves a structural mismatch.
+    ///   the banner tells the user to back up keys and set the databases aside
+    ///   while keeping the vault — freeing disk space or restarting never
+    ///   resolves a structural mismatch.
+    /// - A migration blocked by another SQLite writer is surfaced as
+    ///   [`Self::WalletStorageInUse`] so the user can close the competing
+    ///   process and retry instead of following incompatible-data recovery.
     /// - A folder on the database path that other accounts can modify is
     ///   surfaced as [`Self::WalletDataFolderInsecure`] so the banner tells the
     ///   user to tighten folder permissions.
-    /// - Every other storage failure keeps the generic disk/IO copy via
-    ///   [`Self::WalletStorage`].
+    /// - A migration that failed on a recoverable resource (disk full, OS I/O
+    ///   failure, out of memory) and every other storage failure keep the
+    ///   generic, retryable disk/IO copy via [`Self::WalletStorage`].
     ///
     /// Discrimination is on the typed upstream variant
     /// (`WalletStorageError::SchemaVersionUnsupported` /
-    /// `WalletStorageError::Migration` / `WalletStorageError::InsecureParentDir`),
-    /// never on its `Display` text.
+    /// `WalletStorageError::Migration` / `WalletStorageError::InsecureParentDir`)
+    /// and the typed migration source chain, never on `Display` text.
     pub fn from_wallet_storage_open_error(
         source: platform_wallet_storage::WalletStorageError,
     ) -> Self {
@@ -2999,6 +3049,16 @@ impl TaskError {
                 found,
                 max_supported,
             },
+            other @ platform_wallet_storage::WalletStorageError::Migration(_)
+                if Self::wallet_storage_error_is_in_use(&other) =>
+            {
+                Self::WalletStorageInUse { source: other }
+            }
+            other @ platform_wallet_storage::WalletStorageError::Migration(_)
+                if Self::wallet_storage_error_is_resource_exhausted(&other) =>
+            {
+                Self::WalletStorage { source: other }
+            }
             other @ platform_wallet_storage::WalletStorageError::Migration(_) => {
                 Self::WalletDataIncompatible { source: other }
             }
@@ -3007,6 +3067,22 @@ impl TaskError {
             }
             other => Self::WalletStorage { source: other },
         }
+    }
+
+    fn wallet_storage_error_is_in_use(
+        source: &platform_wallet_storage::WalletStorageError,
+    ) -> bool {
+        StorageFailure::in_chain(source) == Some(StorageFailure::InUse)
+    }
+
+    /// A migration that ran out of disk space, hit an OS I/O failure or ran
+    /// out of memory is recoverable by freeing the resource and retrying, so
+    /// it must not get the terminal incompatible-data guidance.
+    fn wallet_storage_error_is_resource_exhausted(
+        source: &platform_wallet_storage::WalletStorageError,
+    ) -> bool {
+        StorageFailure::in_chain(source)
+            .is_some_and(|failure| failure.is_retryable() && failure != StorageFailure::InUse)
     }
 
     /// Returns `true` when this is a [`Self::SecretStore`] open failure caused
@@ -6024,10 +6100,81 @@ mod tests {
             .expect_err("divergent checksum must abort")
     }
 
+    fn busy_migration_error() -> refinery::Error {
+        use refinery::{Migration, Runner};
+
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let path = dir.path().join("wallet.sqlite");
+        let writer = rusqlite::Connection::open(&path).expect("writer connection");
+        writer
+            .execute_batch("BEGIN IMMEDIATE; CREATE TABLE held (id INTEGER);")
+            .expect("hold write lock");
+        let mut contender = rusqlite::Connection::open(&path).expect("contender connection");
+        contender
+            .busy_timeout(std::time::Duration::from_millis(1))
+            .expect("short deterministic timeout");
+        let migration = Migration::unapplied("V1__init", "CREATE TABLE data (id INTEGER);")
+            .expect("valid migration");
+        Runner::new(&[migration])
+            .run(&mut contender)
+            .expect_err("held writer must make the migration busy")
+    }
+
+    #[test]
+    fn busy_migration_error_maps_to_retryable_wallet_storage_message() {
+        let upstream =
+            platform_wallet_storage::WalletStorageError::Migration(busy_migration_error());
+        let err = TaskError::from_wallet_storage_open_error(upstream);
+        assert!(
+            matches!(err, TaskError::WalletStorageInUse { .. }),
+            "Expected WalletStorageInUse, got: {err:?}"
+        );
+        let message = err.to_string();
+        assert!(message.contains("Close") && message.contains("try again"));
+        assert!(!message.contains("incompatible"));
+        assert!(std::error::Error::source(&err).is_some());
+    }
+
+    /// Wraps a SQLite failure with `code` in a refinery migration error the
+    /// same way refinery's rusqlite driver does, so the source chain matches
+    /// what `SqlitePersister::open` returns for a migration that ran out of a
+    /// resource.
+    fn resource_migration_error(code: std::ffi::c_int) -> refinery::Error {
+        use refinery::error::WrapMigrationError;
+
+        Err::<(), _>(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(code),
+            None,
+        ))
+        .migration_err("error applying migration", None)
+        .expect_err("wrapped SQLite failure")
+    }
+
+    /// A migration that ran out of a resource (disk, OS I/O, memory) keeps the generic,
+    /// retryable storage copy instead of the terminal incompatible-data guidance.
+    #[test]
+    fn resource_migration_errors_map_to_retryable_wallet_storage() {
+        use rusqlite::ffi;
+        for code in [ffi::SQLITE_FULL, ffi::SQLITE_IOERR, ffi::SQLITE_NOMEM] {
+            let upstream = platform_wallet_storage::WalletStorageError::Migration(
+                resource_migration_error(code),
+            );
+            let err = TaskError::from_wallet_storage_open_error(upstream);
+            assert!(
+                matches!(err, TaskError::WalletStorage { .. }),
+                "SQLite code {code}: {err:?}"
+            );
+            assert!(
+                !crate::backend_task::is_terminal_storage_open_error(&err),
+                "SQLite code {code} must stay retryable"
+            );
+        }
+    }
+
     /// A divergent migration history (database written under an
     /// incompatible storage layout) maps to the dedicated
-    /// `WalletDataIncompatible` variant. Its `Display` tells the user to
-    /// remove the local wallet data, NOT the misleading "free disk space" copy.
+    /// `WalletDataIncompatible` variant. Its `Display` must never lead the user
+    /// to destroy the secrets vault, and must not blame disk space.
     #[test]
     fn migration_error_maps_to_wallet_data_incompatible() {
         let upstream =
@@ -6039,9 +6186,18 @@ mod tests {
         );
 
         let msg = err.to_string();
+        assert!(msg.contains(".sqlite-wal") && msg.contains(".sqlite-shm"));
+        assert!(msg.contains("Close all") && msg.contains("write down each imported private key"));
         assert!(
-            msg.contains("not compatible") && msg.contains("Remove"),
-            "Expected incompatibility guidance, got: {msg}"
+            msg.contains("write down the recovery phrase")
+                && msg.contains(".sqlite")
+                && msg.contains("leave the secrets folder where it is"),
+            "Expected scoped, vault-preserving guidance, got: {msg}"
+        );
+        let lower = msg.to_lowercase();
+        assert!(
+            !lower.contains("remove") && !lower.contains("delete"),
+            "Incompatible-data guidance must not tell the user to delete anything, got: {msg}"
         );
         assert!(
             !msg.contains("disk space"),

@@ -283,7 +283,10 @@ mod tests {
         let failed = operation(100, &[(S::FailedBeforeSubmission, NOW)]);
         let recast = operation(200, &[(S::Confirmed, NOW)]);
         let none = BTreeSet::new();
-        assert_eq!(needs_attention(&[failed.clone()], 0, &none, 300).failed, 1);
+        assert_eq!(
+            needs_attention(std::slice::from_ref(&failed), 0, &none, 300).failed,
+            1
+        );
         assert_eq!(
             needs_attention(&[failed.clone(), recast], 0, &none, 300).failed,
             0

@@ -45,7 +45,6 @@ use crate::ui::components::utc_schedule_input::UtcScheduleInput;
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::dpns::contest_card::node_label;
 use crate::ui::dpns::contest_card::{CardEvent, CardView};
-use crate::ui::dpns::copy::excluded_nodes_line;
 use crate::ui::dpns::copy::needs_attention_line;
 use crate::ui::dpns::copy::tray_label;
 use crate::ui::dpns::copy::{
@@ -54,6 +53,7 @@ use crate::ui::dpns::copy::{
     decision_row, ends_in_label, nodes_voted_part, relative_schedule_label, scheduled_nodes_label,
     skipped_header, skipped_reason_line, went_to_label,
 };
+use crate::ui::dpns::copy::{ends_soon_now_line, excluded_nodes_line};
 use crate::ui::dpns::node_set_picker;
 use crate::ui::dpns::progress_drawer;
 use crate::ui::state::dpns_contests::ActiveDpnsContestSnapshot;
@@ -2037,6 +2037,9 @@ impl DPNSScreen {
                         confirm_change_warning(changes),
                     );
                 }
+                if plan.aggregate.ends_soon_now > 0 {
+                    ui.label(ends_soon_now_line(plan.aggregate.ends_soon_now));
+                }
                 let skipped = plan.aggregate.skipped_by_reason();
                 if !skipped.is_empty() {
                     ui.label(RichText::new(skipped_header(plan.aggregate.skipped.len())).strong());
@@ -3664,9 +3667,14 @@ mod tests {
         screen.relative_preset = std::time::Duration::from_secs(10 * 60);
         let now_ms = now.timestamp_millis() as u64;
         screen.selected_votes[0].end_time = Some(now_ms + 5 * 60_000);
-        assert!(
-            screen.build_review_plan_at(now).is_err(),
-            "ten minutes before an end five minutes away is in the past"
+        let plan = screen.build_review_plan_at(now).unwrap();
+        assert_eq!(
+            (
+                plan.aggregate.targets[0].timing,
+                plan.aggregate.ends_soon_now
+            ),
+            (VoteTiming::Now, 1),
+            "ten minutes before an end five minutes away has passed, so it votes now"
         );
         let end = now_ms + 60 * 60_000;
         screen.selected_votes[0].end_time = Some(end);

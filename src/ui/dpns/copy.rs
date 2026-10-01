@@ -350,6 +350,12 @@ pub fn skipped_header(count: usize) -> String {
     }
 }
 
+/// Confirm line for "when voting is about to end" votes whose contest is
+/// already inside the lead time (VOTE-FR-081).
+pub fn ends_soon_now_line(count: usize) -> String {
+    format!("{count} of these votes will be sent now because voting ends soon.")
+}
+
 /// Confirm line for nodes in the set that cannot vote at all (VOTE-FR-080).
 pub fn excluded_nodes_line(count: usize, exclusion: NodeExclusion) -> String {
     match (count, exclusion) {

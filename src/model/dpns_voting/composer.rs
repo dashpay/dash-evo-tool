@@ -6,8 +6,8 @@
 
 use super::operator::{ChangesLeft, relative_schedule};
 use super::{
-    DpnsCurrentVoteState, DpnsScheduleEditValidationError, DpnsVoteTarget, DpnsVoteTargetKey,
-    VoteTiming, validate_dpns_schedule_time,
+    DpnsCurrentVoteState, DpnsVoteTarget, DpnsVoteTargetKey, VoteTiming,
+    validate_dpns_schedule_time,
 };
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::TimestampMillis;
@@ -95,6 +95,9 @@ pub enum ComposeError {
 pub struct AggregatePlan {
     pub targets: Vec<DpnsVoteTarget>,
     pub skipped: Vec<SkippedTarget>,
+    /// Targets asked to vote "when voting is about to end" whose contest is
+    /// already inside the lead time, so they are sent now.
+    pub ends_soon_now: usize,
 }
 
 impl AggregatePlan {
@@ -132,24 +135,27 @@ impl AggregatePlan {
     }
 }
 
+/// Resolve a timing for one decision. "Before the end" on a contest already
+/// inside the lead time votes now; the flag reports that fallback.
 fn resolve_timing(
     timing: BatchTiming,
     decision: &Decision,
     now_ms: u64,
-) -> Result<VoteTiming, ComposeError> {
+) -> Result<(VoteTiming, bool), ComposeError> {
     let outlasts = || ComposeError::ScheduleOutlastsContest {
         contested_name: decision.contested_name.clone(),
     };
     match timing {
-        BatchTiming::Now => Ok(VoteTiming::Now),
+        BatchTiming::Now => Ok((VoteTiming::Now, false)),
         BatchTiming::BeforeEnd(preset) => {
             let end = decision.end_time.ok_or_else(outlasts)?;
-            relative_schedule(end, preset, now_ms)
-                .map(VoteTiming::Scheduled)
-                .map_err(|_: DpnsScheduleEditValidationError| outlasts())
+            Ok(match relative_schedule(end, preset, now_ms) {
+                Ok(at) => (VoteTiming::Scheduled(at), false),
+                Err(_) => (VoteTiming::Now, true),
+            })
         }
         BatchTiming::At(at) => validate_dpns_schedule_time(at, now_ms, decision.end_time)
-            .map(|()| VoteTiming::Scheduled(at))
+            .map(|()| (VoteTiming::Scheduled(at), false))
             .map_err(|_| outlasts()),
     }
 }
@@ -222,9 +228,13 @@ pub fn compose(
                 contested_name: decision.contested_name.clone(),
                 requested_choice: decision.choice,
                 current_choice: current,
-                timing: match timing {
-                    Some(timing) => resolve_timing(timing, decision, now_ms)?,
-                    None => batch_timing,
+                timing: {
+                    let (timing, ends_soon) = match timing {
+                        Some(timing) => resolve_timing(timing, decision, now_ms)?,
+                        None => batch_timing,
+                    };
+                    plan.ends_soon_now += usize::from(ends_soon);
+                    timing
                 },
             });
         }
@@ -424,10 +434,6 @@ mod tests {
         let outlasts = Err(ComposeError::ScheduleOutlastsContest {
             contested_name: "alice".to_owned(),
         });
-        assert_eq!(
-            compose_at(BatchTiming::BeforeEnd(Duration::from_secs(600))),
-            outlasts
-        );
         assert_eq!(compose_at(BatchTiming::At(5 * MIN)), outlasts);
         assert!(compose_at(BatchTiming::At(4 * MIN)).is_ok());
 
@@ -447,6 +453,37 @@ mod tests {
             all_skipped, outlasts,
             "the batch time is checked even when every node is skipped"
         );
+    }
+
+    /// VOTE-FR-081: "before the end" votes now on contests already inside the
+    /// lead time and schedules the rest; the plan counts the early votes.
+    #[test]
+    fn before_end_votes_now_inside_the_lead_time() {
+        let lock = ResourceVoteChoice::Lock;
+        let hour = 60 * MIN;
+        let plan = compose(
+            Network::Mainnet,
+            &[
+                decision("far", 10, lock, 240 * hour),
+                decision("urgent", 11, lock, 3 * hour),
+            ],
+            &nodes(&[1, 2]),
+            |_, _| available(None),
+            BatchTiming::BeforeEnd(Duration::from_secs(6 * 3600)),
+            &BTreeMap::new(),
+            0,
+        )
+        .expect("the urgent contest no longer blocks the batch");
+        let timing = |name: &str| {
+            plan.targets
+                .iter()
+                .filter(|target| target.contested_name == name)
+                .map(|target| target.timing)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(timing("far"), vec![VoteTiming::Scheduled(234 * hour); 2]);
+        assert_eq!(timing("urgent"), vec![VoteTiming::Now; 2]);
+        assert_eq!(plan.ends_soon_now, 2);
     }
 
     /// VOTE-TC-103 (compose half): a decision whose voting ended is refused.

@@ -168,6 +168,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   users who already updated without their wallets can bring them back with
   "Restore from Previous Version".
 
+- "Restore from Previous Version" reports an identity whose password prompt was
+  declined as skipped, with a note to run the restore again, instead of as a
+  failure.
+
 - Token detail headers sort rows by identity name, identity ID, or numeric balance;
   unchecked balances stay last in either direction.
 

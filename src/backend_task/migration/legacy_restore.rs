@@ -155,7 +155,8 @@ async fn restore_wallets(
 }
 
 /// Restore every missing key the legacy copy of each local identity still
-/// holds. Failures are counted per identity, never fatal for the run.
+/// holds. Failures and declined password prompts are counted per identity,
+/// never fatal for the run.
 async fn restore_identity_keys(app_context: &Arc<AppContext>, summary: &mut LegacyRestoreSummary) {
     let identity_ids = match app_context.local_identity_ids() {
         Ok(ids) => ids,
@@ -199,6 +200,10 @@ async fn restore_identity_keys(app_context: &Arc<AppContext>, summary: &mut Lega
                     .saturating_add(u32::try_from(keys).unwrap_or(u32::MAX));
             }
             Ok(_) => {}
+            Err(TaskError::SecretPromptCancelled) => {
+                tracing::info!(target = LOG_TARGET, identity = %identity_id, "Skipped restoring an identity's keys because its password prompt was declined");
+                summary.identities_skipped = summary.identities_skipped.saturating_add(1);
+            }
             Err(error) => {
                 tracing::warn!(target = LOG_TARGET, identity = %identity_id, ?error, "Could not restore keys saved by the earlier version into an identity");
                 summary.identities_failed = summary.identities_failed.saturating_add(1);

@@ -22,6 +22,8 @@ pub struct LegacyRestoreSummary {
     pub identity_keys_restored: u32,
     /// Identities whose saved copy could not be read or restored.
     pub identities_failed: u32,
+    /// Identities skipped because the user declined their password prompt.
+    pub identities_skipped: u32,
 }
 
 impl LegacyRestoreSummary {
@@ -40,7 +42,7 @@ impl LegacyRestoreSummary {
         if !self.legacy_database_found {
             return "No data from an earlier version of Dash Evo Tool was found for this network. Nothing was restored.".to_string();
         }
-        if !self.restored_anything() && !self.has_problems() {
+        if !self.restored_anything() && !self.has_problems() && self.identities_skipped == 0 {
             return "Everything saved by the earlier version is already available. Nothing needed to be restored.".to_string();
         }
 
@@ -90,6 +92,13 @@ impl LegacyRestoreSummary {
                 count = self.identities_failed
             ));
             sentences.push("Try again, or import the keys of those identities again.".to_string());
+        }
+        if self.identities_skipped > 0 {
+            sentences.push(format!(
+                "Identities skipped because their password was not entered: {count}.",
+                count = self.identities_skipped
+            ));
+            sentences.push("Run the restore again to include them.".to_string());
         }
         sentences.join(" ")
     }
@@ -159,6 +168,28 @@ mod tests {
         assert!(message.contains("Identities updated: 1."), "{message}");
         assert!(!message.contains("restored: 0"), "{message}");
         assert!(!message.contains("Nothing new was restored."), "{message}");
+    }
+
+    /// Declining a password prompt is the user's choice, not a failure: it is
+    /// reported calmly, with how to include the identity later.
+    #[test]
+    fn declined_identities_are_reported_as_skipped_not_failed() {
+        let summary = LegacyRestoreSummary {
+            identities_skipped: 2,
+            ..found()
+        };
+        let message = summary.user_message();
+        assert!(!summary.has_problems(), "{message}");
+        assert!(
+            message.contains("Identities skipped because their password was not entered: 2."),
+            "{message}"
+        );
+        assert!(message.contains("Run the restore again"), "{message}");
+        assert!(!message.contains("could not be restored"), "{message}");
+        assert!(
+            !message.contains("Nothing needed to be restored"),
+            "{message}"
+        );
     }
 
     #[test]

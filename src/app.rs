@@ -423,12 +423,14 @@ fn dpns_vote_feedback(operation: &DpnsVoteOperation) -> (String, MessageType, bo
             checking > 0,
         );
     }
+    let single = target_count == 1;
     if counts.scheduled == target_count {
-        return (
-            format!("{target_count} votes were scheduled."),
-            MessageType::Success,
-            false,
-        );
+        let message = if single {
+            "Vote scheduled successfully.".to_owned()
+        } else {
+            format!("{target_count} votes were scheduled.")
+        };
+        return (message, MessageType::Success, false);
     }
     if counts.confirmed + counts.scheduled == target_count {
         return (
@@ -449,32 +451,36 @@ fn dpns_vote_feedback(operation: &DpnsVoteOperation) -> (String, MessageType, bo
         );
     }
     if counts.rejected == target_count {
-        return (
-            "The vote was rejected. Review the vote and try again.".to_owned(),
-            MessageType::Error,
-            false,
-        );
+        let message = if single {
+            "The vote was rejected. Review the vote and try again."
+        } else {
+            "The votes were rejected. Review the votes and try again."
+        };
+        return (message.to_owned(), MessageType::Error, false);
     }
     if counts.failed_before_submission == target_count {
-        return (
-            "This vote was not submitted. Check your connection and try again.".to_owned(),
-            MessageType::Error,
-            false,
-        );
+        let message = if single {
+            "This vote was not submitted. Check your connection and try again."
+        } else {
+            "These votes were not submitted. Check your connection and try again."
+        };
+        return (message.to_owned(), MessageType::Error, false);
     }
     if counts.not_applied == target_count {
-        return (
-            "The submitted vote was not applied. Review the vote and try again.".to_owned(),
-            MessageType::Error,
-            false,
-        );
+        let message = if single {
+            "The submitted vote was not applied. Review the vote and try again."
+        } else {
+            "The submitted votes were not applied. Review the votes and try again."
+        };
+        return (message.to_owned(), MessageType::Error, false);
     }
     if counts.cancelled == target_count {
-        return (
-            "The scheduled vote was cancelled. Nothing was submitted.".to_owned(),
-            MessageType::Info,
-            false,
-        );
+        let message = if single {
+            "The scheduled vote was cancelled. Nothing was submitted."
+        } else {
+            "The scheduled votes were cancelled. Nothing was submitted."
+        };
+        return (message.to_owned(), MessageType::Info, false);
     }
     if counts.in_progress == target_count {
         return (
@@ -4256,6 +4262,41 @@ mod migration_banner_tests {
                     expected_visibility
                 )
             );
+        }
+    }
+
+    /// Single and batch outcomes each get a complete sentence with matching
+    /// number, never a count spliced into singular or plural copy.
+    #[test]
+    fn vote_feedback_matches_singular_and_plural_copy_to_the_count() {
+        use DpnsVoteTargetStatus as S;
+        let cases = [
+            (S::Scheduled, 1, "Vote scheduled successfully."),
+            (S::Scheduled, 3, "3 votes were scheduled."),
+            (
+                S::Rejected,
+                2,
+                "The votes were rejected. Review the votes and try again.",
+            ),
+            (
+                S::FailedBeforeSubmission,
+                2,
+                "These votes were not submitted. Check your connection and try again.",
+            ),
+            (
+                S::NotApplied,
+                2,
+                "The submitted votes were not applied. Review the votes and try again.",
+            ),
+            (
+                S::Cancelled,
+                2,
+                "The scheduled votes were cancelled. Nothing was submitted.",
+            ),
+        ];
+        for (status, count, expected) in cases {
+            let (message, _, _) = dpns_vote_feedback(&feedback_operation(&vec![status; count]));
+            assert_eq!(message, expected, "{count} × {status:?}");
         }
     }
 

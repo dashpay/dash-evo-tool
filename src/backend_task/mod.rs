@@ -192,6 +192,7 @@ fn is_wallet_touching(task: &BackendTask) -> bool {
             | BackendTask::IdentityTask(_)
             | BackendTask::DashPayTask(_)
             | BackendTask::ShieldedTask(_)
+            | BackendTask::MigrationTask(MigrationTask::RestoreFromPreviousVersion)
     )
 }
 
@@ -333,6 +334,8 @@ pub enum BackendTaskContext {
     TokenRewardEstimate(IdentityTokenIdentifier),
     /// The destructive per-network database clear.
     ClearNetworkDatabase,
+    /// The Settings "Restore from Previous Version" run.
+    RestoreFromPreviousVersion,
     /// Saving the upgrade-backup retention policy.
     UpdateBackupRetention,
     /// A scheduled-vote sweep for one network.
@@ -579,6 +582,9 @@ impl From<&BackendTask> for BackendTaskContext {
                 identity_index: *identity_index,
             },
             BackendTask::SystemTask(SystemTask::ClearNetworkDatabase) => Self::ClearNetworkDatabase,
+            BackendTask::MigrationTask(MigrationTask::RestoreFromPreviousVersion) => {
+                Self::RestoreFromPreviousVersion
+            }
             BackendTask::SystemTask(SystemTask::UpdateBackupRetention(_)) => {
                 Self::UpdateBackupRetention
             }
@@ -619,6 +625,8 @@ pub enum BackendTaskSuccessResult {
     NetworkDatabaseCleared {
         network: Network,
     },
+    /// Outcome of the Settings "Restore from Previous Version" run.
+    PreviousVersionRestored(crate::model::legacy_restore::LegacyRestoreSummary),
     Message(String), // Used for: placeholder messages for
     // not-yet-implemented functionality, and DashPay operations that would need their own typed variants.
     /// Progress updates during long-running operations (e.g. batch identity search).

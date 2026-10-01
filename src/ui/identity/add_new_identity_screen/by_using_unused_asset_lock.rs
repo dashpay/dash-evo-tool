@@ -119,8 +119,6 @@ impl AddNewIdentityScreen {
             });
         ui.add_space(10.0);
 
-        self.render_alias_input(ui, step_number + 1);
-
         let can_create = self.funding_asset_lock.is_some();
         let button = egui::Button::new(RichText::new("Create Identity").color(Color32::WHITE))
             .fill(if can_create {

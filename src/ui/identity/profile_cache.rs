@@ -1,15 +1,8 @@
-//! Best-effort, async-populated DashPay profile cache for the Identities hub.
-//!
-//! The local SQLite DashPay-profile cache was removed in the platform-wallet
-//! migration; profiles now live in the upstream `DashpayView` and are only
-//! reachable through the async [`DashPayTask::LoadProfile`] task. Hub tabs
-//! render synchronously, so they read this cache (empty until the first load
-//! completes) and queue a load on a miss. The hub dispatches the queued load
-//! after rendering and feeds the result back in via [`ProfileCache::record_result`].
+//! Cached profile fields with correlated background refreshes for the Identities hub.
 
 use crate::app::AppAction;
 use crate::backend_task::dashpay::DashPayTask;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
+use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
@@ -40,14 +33,35 @@ pub struct ProfileCache {
     loaded: HashMap<Identifier, Option<ProfileFields>>,
     /// Identities a load has already been dispatched for (debounce).
     requested: HashSet<Identifier>,
-    /// Identity of the in-flight load. The result variant carries no owner id,
-    /// so it is associated with this id on arrival.
-    in_flight: Option<Identifier>,
+    /// The owner and exact dispatch whose completion this cache accepts.
+    in_flight: Option<(Identifier, BackendTaskContext)>,
     /// Identities a tab asked for this frame that still need a load dispatched.
     wanted: Vec<QualifiedIdentity>,
 }
 
 impl ProfileCache {
+    /// Seed a missing entry from wallet memory while queuing an authoritative refresh.
+    pub(crate) fn seed_cached(
+        &mut self,
+        app_context: &crate::context::AppContext,
+        identity: &QualifiedIdentity,
+    ) {
+        let id = identity.identity.id();
+        if !self.loaded.contains_key(&id)
+            && let Some(profile) = app_context.cached_identity_profile(id)
+        {
+            self.get_or_request(identity);
+            self.loaded.insert(
+                id,
+                Some(ProfileFields {
+                    display_name: profile.display_name.unwrap_or_default(),
+                    bio: profile.bio.unwrap_or_default(),
+                    avatar_url: profile.avatar_url.unwrap_or_default(),
+                }),
+            );
+        }
+    }
+
     /// Loaded profile state for `identity`, queuing a load on a miss.
     ///
     /// `Some(Some(_))` = profile present, `Some(None)` = loaded with none
@@ -77,22 +91,38 @@ impl ProfileCache {
         };
         let id = identity.identity.id();
         self.requested.insert(id);
-        self.in_flight = Some(id);
-        AppAction::BackendTask(BackendTask::DashPayTask(Box::new(
-            DashPayTask::LoadProfile { identity },
-        )))
+        let task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadProfile { identity }));
+        let context = BackendTaskContext::for_dispatch(&task);
+        self.in_flight = Some((id, context.clone()));
+        AppAction::BackendTaskWithContext { task, context }
     }
 
     /// Record a `LoadProfile` result against the in-flight identity. Returns
-    /// `true` when the result was consumed (a load was in flight).
-    pub fn record_result(&mut self, result: &BackendTaskSuccessResult) -> bool {
+    /// `true` only when a correlated, current profile replaced the cache.
+    pub fn record_result(
+        &mut self,
+        app_context: &crate::context::AppContext,
+        context: &BackendTaskContext,
+        result: &BackendTaskSuccessResult,
+    ) -> bool {
         let BackendTaskSuccessResult::DashPayProfile(data) = result else {
             return false;
         };
-        let Some(id) = self.in_flight.take() else {
+        let Some((id, expected)) = self.in_flight.as_ref() else {
             return false;
         };
+        if expected != context {
+            return false;
+        }
+        let id = *id;
+        self.in_flight = None;
+        if data.owner != id || !app_context.profile_snapshot_is_current(data) {
+            self.requested.remove(&id);
+            self.loaded.remove(&id);
+            return false;
+        }
         let fields = data
+            .profile
             .clone()
             .map(|(display_name, bio, avatar_url)| ProfileFields {
                 display_name,
@@ -103,18 +133,32 @@ impl ProfileCache {
         true
     }
 
-    /// Optimistically record a just-saved profile so every tab reflects it
-    /// immediately, without waiting for a re-fetch.
-    ///
-    /// `record_result` only consumes `LoadProfile` results; a save arrives as
-    /// `DashPayProfileUpdated(id)`, which carries no fields, so without this the
-    /// cache keeps the pre-save profile and the save appears lost across the
-    /// app. Clears the debounce bookkeeping for `id` so a later explicit refresh
-    /// can still re-resolve the authoritative state from the network.
+    /// Release a failed load so other identities can load; retry it on refresh.
+    pub fn record_error(&mut self, context: &BackendTaskContext) {
+        if self
+            .in_flight
+            .as_ref()
+            .is_some_and(|(_, expected)| expected == context)
+        {
+            self.in_flight = None;
+        }
+    }
+
+    /// Record the normalized fields confirmed by the backend.
     pub fn record_saved(&mut self, id: Identifier, fields: ProfileFields) {
+        self.invalidate(id);
         self.loaded.insert(id, Some(fields));
+    }
+
+    /// Make this owner's next read refresh authoritative fields.
+    pub(crate) fn invalidate(&mut self, id: Identifier) {
+        self.loaded.remove(&id);
         self.requested.remove(&id);
-        if self.in_flight == Some(id) {
+        if self
+            .in_flight
+            .as_ref()
+            .is_some_and(|(loading, _)| *loading == id)
+        {
             self.in_flight = None;
         }
         self.wanted.retain(|q| q.identity.id() != id);
@@ -126,5 +170,54 @@ impl ProfileCache {
         self.requested.clear();
         self.in_flight = None;
         self.wanted.clear();
+    }
+}
+
+#[cfg(test)]
+mod race_tests {
+    use super::*;
+
+    #[test]
+    fn completed_save_rejects_queued_present_and_absent_profile_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = crate::context::test_support::test_app_context(dir.path());
+        let id = Identifier::from([71; 32]);
+        for accepted_before_save in [true, false] {
+            for data in [Some(("Old".into(), String::new(), String::new())), None] {
+                let revision = app.begin_identity_profile_load(id);
+                if accepted_before_save {
+                    assert!(app.record_identity_profile_name(id, revision, Some("Old")));
+                }
+                let context = BackendTaskContext::Other;
+                let mut cache = ProfileCache {
+                    in_flight: Some((id, context.clone())),
+                    ..Default::default()
+                };
+                app.save_identity_profile_name(id, Some("Saved"));
+                if !accepted_before_save {
+                    assert!(!app.record_identity_profile_name(id, revision, Some("Old")));
+                }
+                cache.record_result(
+                    &app,
+                    &context,
+                    &BackendTaskSuccessResult::DashPayProfile(
+                        crate::model::dashpay::ProfileSnapshot {
+                            network: app.network,
+                            owner: id,
+                            revision,
+                            profile: data,
+                        },
+                    ),
+                );
+                assert!(
+                    !cache.loaded.contains_key(&id),
+                    "a queued load must not undo a completed save"
+                );
+                assert!(
+                    cache.in_flight.is_none(),
+                    "stale results must terminate the load"
+                );
+            }
+        }
     }
 }

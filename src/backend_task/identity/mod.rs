@@ -417,7 +417,6 @@ pub enum TopUpIdentityFundingMethod {
 
 #[derive(Debug, Clone)]
 pub struct IdentityRegistrationInfo {
-    pub alias_input: String,
     pub keys: IdentityKeySpecs,
     pub wallet: Arc<RwLock<Wallet>>,
     pub wallet_identity_index: u32,
@@ -426,9 +425,7 @@ pub struct IdentityRegistrationInfo {
 
 impl PartialEq for IdentityRegistrationInfo {
     fn eq(&self, other: &Self) -> bool {
-        self.alias_input == other.alias_input
-            && self.identity_funding_method == other.identity_funding_method
-            && self.keys == other.keys
+        self.identity_funding_method == other.identity_funding_method && self.keys == other.keys
     }
 }
 
@@ -660,7 +657,6 @@ pub fn build_identity_registration_with_seed(
     drop(wallet);
 
     Ok(IdentityRegistrationInfo {
-        alias_input: String::new(),
         keys: IdentityKeySpecs::new(Some(master), others),
         wallet: wallet_arc.clone(),
         wallet_identity_index: identity_index,

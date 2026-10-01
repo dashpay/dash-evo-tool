@@ -1184,7 +1184,8 @@ fn go_to_main_screen_from_key_info_preserves_masternode_detail() {
         ));
 
         harness
-            .query_all_by_role_and_label(Role::Button, "Identities")
+            .query_all_by_role_and_label(Role::Button, "Masternodes")
+            .filter(|node| node.rect().top() < 120.0)
             .min_by(|left, right| left.rect().top().total_cmp(&right.rect().top()))
             .expect("Key Info breadcrumb")
             .click();

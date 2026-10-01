@@ -401,10 +401,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
                 ("Register Name", AppAction::None),
             ],
             RegisterDpnsNameSource::Identities => vec![
-                (
-                    "Identities",
-                    AppAction::SetMainScreen(crate::ui::RootScreenType::RootScreenIdentityHub),
-                ),
+                ("Identities", AppAction::OpenIdentityPicker),
                 ("Register Name", AppAction::None),
             ],
         };

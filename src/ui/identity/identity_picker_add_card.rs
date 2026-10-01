@@ -77,6 +77,7 @@ impl ComponentResponse for IdentityPickerAddCardResponse {
 /// and styling are fixed by the design-spec.
 #[derive(Clone, Debug, Default)]
 pub struct IdentityPickerAddCard {
+    width: Option<f32>,
     tooltip: Option<String>,
 }
 
@@ -112,6 +113,12 @@ impl IdentityPickerAddCard {
         "Create a new identity or load one you already own."
     }
 
+    /// Set the card's outer width, including its frame.
+    pub fn with_width(mut self, width: f32) -> Self {
+        self.width = Some(width);
+        self
+    }
+
     /// Render and return the response.
     pub fn show(&self, ui: &mut Ui) -> IdentityPickerAddCardResponse {
         let dark_mode = ui.ctx().global_style().visuals.dark_mode;
@@ -120,14 +127,22 @@ impl IdentityPickerAddCard {
         // dashed strokes. Pass 1: allocate the card rect + content (no outer
         // stroke). Pass 2: paint either a dashed or solid outline on top of
         // the allocated rect, based on hover state.
-        let desired_size = Vec2::new(CARD_MIN_WIDTH, CARD_HEIGHT);
 
         let frame = Frame::new()
             .fill(DashColors::surface(dark_mode))
             .corner_radius(CornerRadius::same(16))
             .inner_margin(Margin::symmetric(16, 16));
 
+        let outer_width = self
+            .width
+            .unwrap_or(CARD_MIN_WIDTH)
+            .min(ui.available_width());
+        let desired_size = Vec2::new(
+            (outer_width - frame.total_margin().sum().x).max(0.0),
+            CARD_HEIGHT,
+        );
         let inner = frame.show(ui, |ui| {
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
             ui.set_min_size(desired_size);
             ui.set_max_width(desired_size.x);
             ui.vertical_centered(|ui| {
@@ -151,7 +166,9 @@ impl IdentityPickerAddCard {
 
         let rect = inner.response.rect;
         let id = ui.id().with("identity-picker-add-card");
-        let response: Response = ui.interact(rect, id, Sense::click());
+        let response: Response = ui
+            .interact(rect, id, Sense::click())
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
 
         let tooltip_text = self
             .tooltip

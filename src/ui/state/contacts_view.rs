@@ -8,7 +8,7 @@
 
 use crate::backend_task::dashpay::ContactData;
 use crate::model::dashpay::contact_request_recipient;
-use crate::ui::identity::identity_pill::display_label;
+use crate::model::identity_name::display_label as profile_display_label;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Document, Identifier};
@@ -300,10 +300,19 @@ pub fn matches_contact_search(fields: ContactSearchFields<'_>, query: &str) -> b
             .contains(&needle)
 }
 
-/// Best label for a contact row. Delegates to [`display_label`], the one
-/// resolver for the hub-wide priority rule (local nickname → DashPay display
-/// name → DPNS username → shortened identity ID), so a contact row and an
-/// identity pill can never disagree on what to call the same identity.
+fn display_label(
+    nickname: Option<&str>,
+    display_name: Option<&str>,
+    username: Option<&str>,
+    id: &str,
+) -> String {
+    let name = nickname
+        .filter(|name| !name.trim().is_empty())
+        .or(display_name);
+    profile_display_label(name, username, id)
+}
+
+/// Best contact label, preserving the contact's personal nickname.
 pub fn contact_label(contact: &ContactData) -> String {
     display_label(
         contact.nickname.as_deref(),

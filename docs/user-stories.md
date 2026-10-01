@@ -562,7 +562,7 @@ As a developer, I want a one-click "fund this identity with X credits" button so
 
 As a user, I want to register a new identity on Dash Platform so that I can use Platform features like DPNS and DashPay.
 
-- Fund-first wizard: choose a funding method — from your wallet (recommended, pre-selected by default when available), recover an unfinished funding, or use a Platform address — then optionally set a local alias before creating.
+- Fund-first wizard: choose a funding method — from your wallet (recommended, pre-selected by default when available), recover an unfinished funding, or use a Platform address — then create the identity.
 - Multi-stage confirmation flow.
 
 ### IDN-002: Load existing identity by ID [Implemented]
@@ -725,7 +725,7 @@ As a user, I want my wallet's identities to be found and loaded automatically on
 
 - After the network is ready, every unlocked wallet is searched automatically once per session.
 - The search uses a rolling five-index lookahead, going deeper each time an identity is found, so identities at non-contiguous indices are discovered.
-- Already-loaded identities are refreshed (new keys, new DPNS names) while any alias the user assigned is preserved.
+- Already-loaded identities are refreshed with new keys and DPNS names.
 - Locked, password-protected wallets are skipped without prompting; they are searched after the user unlocks them.
 
 ### IDN-016: Identities and their keys preserved across an app upgrade [Implemented]
@@ -837,13 +837,14 @@ As a masternode operator, I want to apply voting choices across multiple contest
 
 - "Set all" option for batch vote assignment.
 
-### DPN-008: Set an alias for an owned username [Implemented]
+### DPN-008: Recognise an identity by its profile name [Implemented]
 **Persona:** Alex, Priya
 
-As a user, I want to assign a friendly alias to an identity behind a username I own so that I can recognise it more easily in lists.
+As a user, I want my identity's Display name to identify it throughout the app so that I recognise it consistently.
 
-- Alias set from the "My usernames" table.
-- Alias persists and is applied to the underlying identity.
+- Change Display name in the identity profile.
+- Lists and navigation use Display name, then a registered username, then a shortened identity ID.
+- My usernames lists registered names without assigning local identity aliases.
 
 ### DPN-009: Scheduled votes preserved across an app upgrade [Implemented]
 **Persona:** Priya
@@ -1000,6 +1001,7 @@ As a user, I want to cancel a contact request I sent so that it stops sitting in
 As a user, I want to see all tokens I hold and their balances so that I can manage my token portfolio.
 
 - "My Tokens" screen lists all held tokens with balances.
+- Token detail rows sort by displayed identity name, identity ID, or numeric balance in either direction; unchecked balances remain last.
 
 ### TOK-002: Search and discover tokens [Implemented]
 **Persona:** Alex, Priya, Jordan
@@ -1586,7 +1588,7 @@ As Alex, when I have one identity, opening Identities shows me my balance, usern
 
 As Priya, with multiple wallets and identities, I can switch between them from the breadcrumb pill on any tab in under two clicks, and every screen I then open operates as the identity I picked.
 
-- Reusable `BreadcrumbPill` and `IdentityPill` components shipped, including the label priority rule (Local nickname → DPNS handle → shortened Identity ID).
+- Reusable `BreadcrumbPill` and `IdentityPill` components shipped, including the label priority rule (DashPay Display name → DPNS handle → shortened Identity ID).
 - Identity picker grid lands with `IdentityPickerCard` + `IdentityPickerAddCard`, so a multi-identity account sees a picker landing.
 - The three-segment breadcrumb switcher (Identities link › wallet pill › identity pill, each with a dropdown) composes the full top-of-hub switcher.
 - The selected identity is app-scoped and persisted per network: every operate-as screen (contracts, documents, DPNS registration, the token creator, and DashPay) defaults to it and writes a change back, so switching once changes who I operate as everywhere. Recipient and target pickers (sending, freezing, transferring to someone else) deliberately leave my active identity unchanged.
@@ -1597,7 +1599,8 @@ As Priya, with multiple wallets and identities, I can switch between them from t
 As Alex, setting up a social profile to unlock DashPay contacts is clearly optional and I can keep using payments and usernames without doing it.
 
 - Contacts tab shows `SocialProfileGateCard` when the active identity has no DashPay profile; the primary CTA deep-links to Settings via `AppAction::SwitchIdentityHubTab(Settings)`.
-- Settings tab hosts the social-profile block where display name and avatar can be edited; identities without a profile continue to use payments and usernames untouched.
+- Settings tab hosts the social-profile block where Display name and avatar can be edited. Display name is used on identity cards, navigation, and identity selectors; without it, a username or shortened identity ID is shown. Local identity names are not offered in profile, create, or load screens. Masternode administrative names and contact nicknames remain available.
+- Existing identity records remain readable, including records with a saved local name. The saved local name never affects a User identity label. Profile changes update names across the app; identities without a profile continue to use payments and usernames.
 - Home tab renders a `Set up your social profile` entry in the onboarding checklist with a skip affordance — opting in is never forced.
 
 ### IDH-005: Bulk identity creation [Gap]
@@ -1626,15 +1629,6 @@ As a user, I want to handle my contacts entirely from the Identities hub — ans
 - Established contacts are listed with a search box that filters them by nickname, display name, username, or identity ID.
 - Each contact row offers Pay, which opens the existing send-payment flow for that contact.
 - Contacts the user has hidden do not appear in the list.
-
-### IDH-008: Name an identity on this device [Implemented]
-**Persona:** Alex, Priya
-
-As a user with more than one identity, I want to give an identity a name only I see so that I can tell my identities apart without registering a username.
-
-- Settings tab hosts the name field; the copy states that the name stays on the device and is never published.
-- Saving is only offered when the name actually changed, and clearing the field removes the name.
-- The saved name is what the breadcrumb and identity pills show, in preference to the username or the raw identity ID.
 
 ## Masternodes (MN)
 

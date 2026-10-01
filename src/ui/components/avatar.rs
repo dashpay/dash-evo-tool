@@ -178,7 +178,7 @@ impl<'a> Avatar<'a> {
 /// side when the source is not already square. Returns `None` when the bytes are
 /// not a decodable image.
 fn decode_square_avatar(bytes: &[u8]) -> Option<ColorImage> {
-    let image = image::load_from_memory(bytes).ok()?;
+    let image = crate::model::avatar::decode_avatar(bytes).ok()?;
     let rgba = image.to_rgba8();
     let (width, height) = (rgba.width(), rgba.height());
 
@@ -196,4 +196,41 @@ fn decode_square_avatar(bytes: &[u8]) -> Option<ColorImage> {
         size,
         &cropped.into_raw(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn avatar_decode_rejects_excessive_dimensions_and_keeps_supported_images() {
+        for format in [image::ImageFormat::Png, image::ImageFormat::Jpeg] {
+            for (width, height) in [(2049, 1), (1, 2049), (2048, 1), (4, 2)] {
+                let mut encoded = std::io::Cursor::new(Vec::new());
+                image::RgbImage::new(width, height)
+                    .write_to(&mut encoded, format)
+                    .unwrap();
+                let bytes = encoded.into_inner();
+                assert!(bytes.len() < 5 * 1024 * 1024);
+                let decoded = decode_square_avatar(&bytes);
+                if width > 2048 || height > 2048 {
+                    assert!(
+                        decoded.is_none(),
+                        "reject {width}×{height} {format:?} before decoding"
+                    );
+                    let hero = crate::ui::identity::identity_hero_card::IdentityHeroCard::new(
+                        crate::ui::identity::identity_hero_card::HeroIdentityKind::User,
+                        "0",
+                    )
+                    .with_display_name("Profile")
+                    .with_avatar_bytes(bytes.clone());
+                    assert!(hero.avatar_uses_initials_fallback());
+                } else {
+                    assert_eq!(decoded.unwrap().size, [width.min(height) as usize; 2]);
+                }
+                assert!(decode_square_avatar(&bytes[..bytes.len() / 2]).is_none());
+            }
+        }
+        assert!(decode_square_avatar(b"not an image").is_none());
+    }
 }

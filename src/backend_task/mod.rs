@@ -694,8 +694,8 @@ pub enum BackendTaskSuccessResult {
     PlatformInfo(PlatformInfoTaskResult),
 
     // DashPay related results
-    DashPayProfile(Option<(String, String, String)>), // (display_name, bio, avatar_url)
-    DashPayContactProfile(Option<Document>),          // Contact's public profile document
+    DashPayProfile(crate::model::dashpay::ProfileSnapshot),
+    DashPayContactProfile(Option<Document>), // Contact's public profile document
     DashPayProfileSearchResults(Vec<(Identifier, Option<Document>, String)>), // Search results: (identity_id, profile_document, username)
     DashPayContactRequests {
         /// The identity the requests were loaded for. An identity switch cannot
@@ -713,7 +713,7 @@ pub enum BackendTaskSuccessResult {
         contacts: Vec<ContactData>,
     },
     DashPayPaymentHistory(Vec<(String, String, u64, bool, String)>), // (tx_id, contact_name, amount, is_incoming, memo)
-    DashPayProfileUpdated(Identifier), // Identity ID of updated profile
+    DashPayProfileUpdated(crate::model::dashpay::ProfileSnapshot),
     DashPayContactRequestSent(String), // Username or ID of recipient
     DashPayContactRequestAccepted(Identifier), // Request ID that was accepted
     DashPayContactRequestRejected(Identifier), // Request ID that was rejected

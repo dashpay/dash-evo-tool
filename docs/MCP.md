@@ -129,7 +129,7 @@ Set these in the app's `.env` file (see `.env.example`) or as environment variab
 | `platform_addresses_list` | `wallet_id`, `network`? | `det-cli platform-addresses-list` | Fetch platform address balances (credits and nonces) |
 | `core_funds_send` | `wallet_id`, `address`, `amount_duffs`, `network` | `det-cli core-funds-send` | Send DASH from a wallet to an address (amount in duffs) |
 | `platform_withdrawals_get` | `status`?, `limit`?, `start_after`?, `network`? | `det-cli platform-withdrawals-get` | Query Platform withdrawal documents (`"queued"` or `"completed"`); returns structured entries with a `next_cursor` for pagination |
-| `identity_list` | `network`? | `det-cli identity-list` | List identities saved for the active network (id, alias, type, status, balance, DPNS names, wallet binding). Prepares local storage as needed, then reads saved identities without refreshing them from Platform |
+| `identity_list` | `network`? | `det-cli identity-list` | List identities saved for the active network (id, cached profile display name, administrative node alias, type, status, balance, DPNS names, wallet binding). Prepares local storage as needed, then reads saved identities without refreshing them from Platform |
 | `identity_credits_topup` | `wallet_id`, `identity_id`, `amount_duffs`, `network` | `det-cli identity-credits-topup` | Top up an identity with DASH from wallet (via asset lock) |
 | `identity_credits_topup_from_platform` | `wallet_id`, `identity_id`, `amount_credits`, `network` | `det-cli identity-credits-topup-from-platform` | Top up an identity from Platform address balances |
 | `identity_credits_transfer` | `wallet_id`, `from_identity_id`, `to_identity_id`, `amount_credits`, `network` | `det-cli identity-credits-transfer` | Transfer credits between identities |
@@ -155,7 +155,7 @@ Parameters marked `?` are optional. The `det-cli` column shows the equivalent CL
 `app_storage_status` opens existing databases read-only when used standalone. It
 does not create a profile, open the secret vault, or apply storage migrations.
 Missing databases or migration history are reported as `null`; unreadable or
-corrupt storage returns an error. `identity_list` reports the persisted owning
+corrupt storage returns an error. `identity_list` omits `alias` for User identities and preserves it for named administrative nodes. It reports the persisted owning
 wallet only, or an empty wallet list for an identity with no saved wallet link.
 
 ### SPV requirements

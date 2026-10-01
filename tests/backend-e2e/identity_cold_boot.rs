@@ -102,7 +102,7 @@ async fn cd_cold_boot_identity_register_and_topup() {
     // provisioning `IdentityRegistration` + `IdentityTopUp{0}`.
     // Pre-fix: `add_account(IdentityTopUp{0}, None)` → "Watch-only wallet has
     // no private key" when the upstream wallet is watch-only.
-    let reg_info = build_identity_registration(&ctx.app_context, &wallet_arc, seed_hash).await;
+    let reg_info = build_identity_registration(&ctx.app_context, &wallet_arc).await;
 
     tracing::info!("CD scenario C: registering identity funded from wallet balance...");
     let reg_result = run_task_with_nonce_retry(

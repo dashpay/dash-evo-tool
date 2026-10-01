@@ -234,8 +234,8 @@ async fn step_transfer_credits(
 ) {
     tracing::info!("=== Step 4: Transfer credits to another identity ===");
 
-    let (seed_hash_b, wallet_b) = ctx.create_funded_test_wallet(30_000_000).await;
-    let reg_info = build_identity_registration(&ctx.app_context, &wallet_b, seed_hash_b).await;
+    let (_, wallet_b) = ctx.create_funded_test_wallet(30_000_000).await;
+    let reg_info = build_identity_registration(&ctx.app_context, &wallet_b).await;
     let reg_result = run_task_with_nonce_retry(
         &ctx.app_context,
         BackendTask::IdentityTask(IdentityTask::RegisterIdentity(reg_info)),

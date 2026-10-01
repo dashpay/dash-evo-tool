@@ -19,7 +19,9 @@ use crate::framework::task_runner::{run_task, run_task_with_nonce_retry};
 use dash_evo_tool::backend_task::dashpay::DashPayTask;
 use dash_evo_tool::backend_task::identity::IdentityTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
-use dash_evo_tool::model::dashpay::{ContactInfoUpdate, UnreadableContactInfoPolicy};
+use dash_evo_tool::model::dashpay::{
+    ContactInfoUpdate, ProfileSnapshot, UnreadableContactInfoPolicy,
+};
 use dash_evo_tool::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
@@ -74,7 +76,7 @@ async fn tc_032_update_profile() {
         .expect("UpdateProfile should succeed");
 
     match result {
-        BackendTaskSuccessResult::DashPayProfileUpdated(id) => {
+        BackendTaskSuccessResult::DashPayProfileUpdated(ProfileSnapshot { owner: id, .. }) => {
             assert_eq!(
                 id, identity_a_id,
                 "Updated profile ID should match identity A"
@@ -96,14 +98,17 @@ async fn tc_032_update_profile() {
         .expect("LoadProfile verification should succeed");
 
     match verify_result {
-        BackendTaskSuccessResult::DashPayProfile(Some((display_name, _bio, _url))) => {
+        BackendTaskSuccessResult::DashPayProfile(ProfileSnapshot {
+            profile: Some((display_name, _bio, _url)),
+            ..
+        }) => {
             assert_eq!(
                 display_name, "E2E Test User",
                 "Display name should match what was set"
             );
             tracing::info!("TC-032: verified display_name = '{}'", display_name);
         }
-        BackendTaskSuccessResult::DashPayProfile(None) => {
+        BackendTaskSuccessResult::DashPayProfile(ProfileSnapshot { profile: None, .. }) => {
             panic!(
                 "TC-032: profile not visible after update — DAPI propagation delay. \
                  The profile should be queryable shortly after UpdateProfile succeeds."
@@ -979,7 +984,7 @@ async fn tc_043_reject_contact_request() {
     tracing::info!("TC-043: creating third DashPay identity (C)...");
     let (seed_hash_c, wallet_c) = ctx.create_funded_test_wallet(30_000_000).await;
     let qi_c =
-        dashpay_helpers::create_dashpay_identity(&ctx.app_context, &wallet_c, seed_hash_c).await;
+        dashpay_helpers::create_dashpay_identity(&ctx.app_context, &wallet_c).await;
 
     // Register a DPNS name for C so A can send a contact request
     // >= 20 chars to avoid DPNS contest voting period

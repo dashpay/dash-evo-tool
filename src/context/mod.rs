@@ -3,6 +3,7 @@ mod contested_names_db;
 mod contract_token_db;
 pub mod feature_gate;
 mod identity_db;
+mod identity_names;
 #[cfg(test)]
 pub(crate) mod lock_probe;
 #[cfg(test)]
@@ -126,6 +127,7 @@ pub struct AppContext {
     /// Per-identity guards covering every whole-record mutation of one stored
     /// identity. See [`AppContext::identity_record_lock`].
     identity_record_locks: Mutex<HashMap<Identifier, Arc<Mutex<()>>>>,
+    identity_profile_names: Mutex<HashMap<Identifier, identity_names::ProfileName>>,
     /// Hard override that keeps this context's UI still whatever the role — set by
     /// automated tests through [`AppState::with_animations`](crate::app::AppState::with_animations).
     ///
@@ -490,6 +492,7 @@ impl AppContext {
             identity_loads: Default::default(),
             wallet_context: Arc::new(WalletContext::default()),
             identity_record_locks: Mutex::new(HashMap::new()),
+            identity_profile_names: Mutex::default(),
             animations_disabled: AtomicBool::new(false),
             cached_settings: RwLock::new(None),
             pending_dpns_usernames: RwLock::new(HashMap::new()),
@@ -1323,11 +1326,11 @@ impl AppContext {
         self.selected_single_key_hash.lock().ok().and_then(|g| *g)
     }
 
-    /// Owning HD wallet of an identity, derived from its signing-key
-    /// derivation path (the reliable owner — never
-    /// `associated_wallets.keys().next()`). Best-effort: `None` when the
-    /// identity is unknown or has no wallet-derived signing key.
+    /// Stored owner, falling back to the signing-key wallet for legacy records.
     fn owning_wallet_hash(&self, id: Identifier) -> Option<WalletSeedHash> {
+        if let Ok(Some((hash, _))) = self.stored_identity_wallet_link(&id) {
+            return Some(hash);
+        }
         let identities = self.load_local_qualified_identities().ok()?;
         let qi = identities.into_iter().find(|qi| qi.identity.id() == id)?;
         let wallet = crate::ui::identity::get_selected_wallet(&qi, Some(self), None).ok()??;

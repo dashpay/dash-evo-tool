@@ -264,7 +264,6 @@ struct ReviewPlan {
     aggregate: AggregatePlan,
     /// One line per staged decision: name, choice, and the nodes casting it.
     decisions: Vec<(Decision, usize)>,
-    voters: Vec<QualifiedIdentity>,
 }
 
 impl ReviewPlan {
@@ -2375,17 +2374,6 @@ impl DPNSScreen {
             &self.node_overrides,
             now_ms,
         )?;
-        let casting: BTreeSet<Identifier> = aggregate
-            .targets
-            .iter()
-            .map(|target| target.key.voter_id)
-            .collect();
-        let voters = self
-            .voting_identities
-            .iter()
-            .filter(|identity| casting.contains(&identity.identity.id()))
-            .cloned()
-            .collect();
         let decisions = decisions
             .into_iter()
             .map(|decision| {
@@ -2400,8 +2388,24 @@ impl DPNSScreen {
         Ok(ReviewPlan {
             aggregate,
             decisions,
-            voters,
         })
+    }
+
+    /// Clone the signing identities of the nodes casting in `plan`.
+    ///
+    /// Kept out of [`ReviewPlan`], which the review sheet rebuilds every frame:
+    /// only the submit click needs owned identities.
+    fn casting_voters(&self, plan: &ReviewPlan) -> Vec<QualifiedIdentity> {
+        let casting: BTreeSet<Identifier> = plan
+            .targets()
+            .iter()
+            .map(|target| target.key.voter_id)
+            .collect();
+        self.voting_identities
+            .iter()
+            .filter(|identity| casting.contains(&identity.identity.id()))
+            .cloned()
+            .collect()
     }
 
     fn bulk_apply_votes(&mut self) -> AppAction {
@@ -2427,6 +2431,7 @@ impl DPNSScreen {
             });
             return AppAction::None;
         }
+        let voters = self.casting_voters(&plan);
         let operation = DpnsVoteOperation::new(plan.aggregate.targets);
         let labels =
             (self.confirm_timing == ConfirmTiming::BeforeEnd).then(|| RelativeScheduleLabels {
@@ -2450,7 +2455,7 @@ impl DPNSScreen {
         AppAction::BackendTask(BackendTask::ContestedResourceTask(
             ContestedResourceTask::SubmitDpnsVoteOperation {
                 operation,
-                voters: plan.voters,
+                voters,
                 replacing_scheduled_key: None,
                 network: self.app_context.network(),
                 relative_labels: labels,

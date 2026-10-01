@@ -76,6 +76,24 @@ impl AppContext {
             .take()
     }
 
+    /// Ask the voting panel to show one contest, filtered to its normalized
+    /// label. Pair with
+    /// `AppAction::SetMainScreenThenGoToMainScreen(RootScreenDPNSActiveContests)`.
+    pub fn request_dpns_votes_for_name(&self, normalized_label: String) {
+        *self
+            .dpns_votes_name_request
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(normalized_label);
+    }
+
+    /// Take a pending show-one-contest request, if any.
+    pub fn take_dpns_votes_name_request(&self) -> Option<String> {
+        self.dpns_votes_name_request
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    }
+
     /// Record that a contest + vote-state refresh just completed.
     pub(crate) fn mark_dpns_contests_refreshed(&self) {
         self.dpns_contests_refreshed_at_ms

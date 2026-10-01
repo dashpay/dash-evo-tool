@@ -210,6 +210,8 @@ pub struct AppContext {
     dpns_vote_progress: RwLock<Arc<[crate::model::dpns_voting::DpnsVoteOperation]>>,
     /// A `Review again` request from the progress drawer for the voting panel.
     dpns_vote_review_request: std::sync::Mutex<Option<crate::model::dpns_voting::DpnsVoteOutcome>>,
+    /// A request from outside the voting panel to show one contest by label.
+    dpns_votes_name_request: std::sync::Mutex<Option<String>>,
     /// Unix ms of the last completed contest + vote-state refresh; 0 = never.
     dpns_contests_refreshed_at_ms: std::sync::atomic::AtomicU64,
     /// Shared app-level k/v store at `<data_dir>/det-app.sqlite`.
@@ -585,6 +587,7 @@ impl AppContext {
             dpns_contests_refreshed_at_ms: std::sync::atomic::AtomicU64::new(0),
             dpns_vote_progress: RwLock::new(Arc::from(Vec::new())),
             dpns_vote_review_request: std::sync::Mutex::new(None),
+            dpns_votes_name_request: std::sync::Mutex::new(None),
             app_kv,
             #[cfg(test)]
             det_kv_override: Mutex::new(None),

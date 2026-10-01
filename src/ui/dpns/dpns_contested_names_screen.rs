@@ -983,6 +983,23 @@ impl DPNSScreen {
             .sum()
     }
 
+    /// Show one contest by normalized label: the view holding its card, the
+    /// filter set to the label and the card focused.
+    pub(crate) fn show_contest(&mut self, label: String) {
+        self.view = match self
+            .cards
+            .iter()
+            .find(|card| card.name() == label)
+            .map(|card| card.placement)
+        {
+            Some(CardPlacement::Voted) => VotesView::Voted,
+            _ => VotesView::ToDecide,
+        };
+        self.active_filter_term = label.clone();
+        self.focused_card = Some(label);
+        self.list_focused = true;
+    }
+
     /// Vote with one node for this session (VOTE-FR-076): To decide opens with
     /// that node as the node set and no staged decisions carried over.
     pub fn vote_with_node(&mut self, node: Identifier) {
@@ -2645,6 +2662,9 @@ impl ScreenLike for DPNSScreen {
             self.view = VotesView::ToDecide;
             self.review_failed_target(&outcome);
         }
+        if let Some(label) = self.app_context.take_dpns_votes_name_request() {
+            self.show_contest(label);
+        }
 
         ui.horizontal(|ui| {
             for view in VotesView::ALL {
@@ -3935,6 +3955,27 @@ mod tests {
         );
         assert_eq!(screen.history_votes_cell("skipped"), NODES_DID_NOT_VOTE);
         assert_eq!(screen.history_votes_cell("absent"), "");
+    }
+
+    /// A request from another screen opens the contest's card, filtered and
+    /// focused, once.
+    #[tokio::test]
+    async fn name_request_shows_that_contest() {
+        let (screen, _dir) = two_contest_screen().await;
+        let ctx = screen.lock_recover().app_context.clone();
+        ctx.request_dpns_votes_for_name("beta".to_owned());
+        let rendering = screen.clone();
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1400.0, 1200.0))
+            .build_ui(move |ui| {
+                rendering.lock_recover().ui(ui);
+            });
+        harness.run();
+        let screen = screen.lock_recover();
+        assert_eq!(screen.view, VotesView::ToDecide);
+        assert_eq!(screen.active_filter_term, "beta");
+        assert_eq!(screen.focused_card.as_deref(), Some("beta"));
+        assert!(ctx.take_dpns_votes_name_request().is_none());
     }
 
     /// Two open contests a single voting node has not voted on yet.

@@ -11,6 +11,7 @@ pub mod avatar_cache;
 pub mod contacts_view;
 pub mod derived_key_chooser;
 pub mod dpns_contests;
+pub mod dpns_vote_cards;
 pub mod dpns_vote_operations;
 pub mod dpns_vote_state;
 pub mod global_nav;

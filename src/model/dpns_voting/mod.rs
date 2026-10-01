@@ -13,6 +13,7 @@ use dash_sdk::platform::Identifier;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+pub mod composer;
 pub mod contest_timing;
 pub mod operator;
 

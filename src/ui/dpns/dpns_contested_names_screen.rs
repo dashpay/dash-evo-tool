@@ -21,18 +21,27 @@ use crate::backend_task::{BackendTask, BackendTaskContext};
 use crate::context::AppContext;
 use crate::model::contested_name::{ContestState, ContestedName};
 use crate::model::dpns::normalize_dpns_label;
+use crate::model::dpns_voting::contest_timing::{contest_durations, urgency_window};
+use crate::model::dpns_voting::operator::{NodeSet, ResolvedNodeSet, VotingNode, VotingNodeKind};
 use crate::model::dpns_voting::{
     DpnsCurrentVoteState, DpnsScheduledVoteKey, DpnsVoteFailure, DpnsVoteOperation,
     DpnsVoteOperationId, DpnsVoteTarget, DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming,
     dpns_schedule_is_overdue, validate_dpns_schedule_time,
 };
+use crate::model::qualified_identity::IdentityType;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::progress_overlay::{OptionOverlayExt, OverlayConfig, OverlayHandle};
 use crate::ui::components::utc_schedule_input::UtcScheduleInput;
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
-use crate::ui::state::dpns_contests::{ActiveDpnsContestSnapshot, ActiveDpnsContestView};
+use crate::ui::dpns::contest_card::{CardEvent, CardView};
+use crate::ui::dpns::copy::tray_label;
+use crate::ui::dpns::node_set_picker;
+use crate::ui::state::dpns_contests::ActiveDpnsContestSnapshot;
+use crate::ui::state::dpns_vote_cards::{
+    CantVoteReason, CardPlacement, NodeContestState, NodeContestStatus, VoteCard, sort_by_time_left,
+};
 use crate::ui::state::dpns_vote_operations::{DpnsVoteOperationSnapshot, ScheduledDpnsVoteRow};
 use crate::ui::state::dpns_vote_state::DpnsVoteStateSnapshot;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
@@ -40,82 +49,9 @@ use crate::ui::{BackendTaskSuccessResult, MessageType, ScreenLike};
 
 pub use super::VotesView;
 
-/// Active contests bucketed by what the loaded nodes can do with them.
-///
-/// Declaration order is display order: the derived `Ord` keys the render map.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum ActiveContestGroup {
-    NeedsVote,
-    Voted,
-    VoteStateUnavailable,
-    NotVotable,
-}
-
-/// How one contest group renders. Named fields so a callsite cannot transpose
-/// "this group is expanded" with "this group accepts votes".
-#[derive(Clone, Copy)]
-struct ContestGroupPresentation {
-    default_open: bool,
-    voting_enabled: bool,
-    show_current_vote: bool,
-}
-
-impl ActiveContestGroup {
-    /// Every group, in the order the screen stacks them.
-    const ALL: [Self; 4] = [
-        Self::NeedsVote,
-        Self::Voted,
-        Self::VoteStateUnavailable,
-        Self::NotVotable,
-    ];
-
-    fn title(self) -> &'static str {
-        match self {
-            Self::NeedsVote => "Needs your vote",
-            Self::Voted => "Voted",
-            Self::VoteStateUnavailable => "Vote state unavailable",
-            Self::NotVotable => "Can't vote with your nodes",
-        }
-    }
-
-    /// The Votes sub-view that lists this group.
-    fn view(self) -> VotesView {
-        match self {
-            Self::Voted => VotesView::Voted,
-            Self::NeedsVote | Self::VoteStateUnavailable | Self::NotVotable => VotesView::ToDecide,
-        }
-    }
-
-    /// `no_voting_nodes` opens the un-votable group only when it is all the
-    /// operator has to look at.
-    fn presentation(self, no_voting_nodes: bool) -> ContestGroupPresentation {
-        match self {
-            Self::NeedsVote => ContestGroupPresentation {
-                default_open: true,
-                voting_enabled: true,
-                show_current_vote: false,
-            },
-            Self::Voted => ContestGroupPresentation {
-                default_open: false,
-                voting_enabled: true,
-                show_current_vote: true,
-            },
-            Self::VoteStateUnavailable => ContestGroupPresentation {
-                default_open: true,
-                voting_enabled: false,
-                show_current_vote: false,
-            },
-            Self::NotVotable => ContestGroupPresentation {
-                default_open: no_voting_nodes,
-                voting_enabled: false,
-                show_current_vote: false,
-            },
-        }
-    }
-}
-
 const NO_OPEN_CONTESTS_MESSAGE: &str =
     "There are no open name contests right now. New contests appear here automatically.";
+const CANT_VOTE_REASON: &str = "None of the nodes you vote with has a voting key that is in the masternode list. Load a voting key or change the nodes you vote with.";
 const NO_VOTING_NODES_MESSAGE: &str = "None of your loaded nodes has a voting key.";
 const NO_VOTING_NODES_DETAIL: &str = "Load a masternode with its voting key to cast votes.";
 const JOURNAL_UNAVAILABLE_MESSAGE: &str = "Saved voting progress could not be read. The displayed history may be incomplete or out of date. Retry loading before managing votes.";
@@ -146,39 +82,6 @@ fn schedule_is_missed(status: DpnsVoteTargetStatus, timing: VoteTiming, now_ms: 
 
 fn candidate_choice_label(candidate_name: &str) -> String {
     format!("Vote for {candidate_name}")
-}
-
-fn classify_vote_states(
-    states: impl IntoIterator<Item = DpnsCurrentVoteState>,
-) -> ActiveContestGroup {
-    let mut has_vote = false;
-    let mut has_unavailable_state = false;
-    for state in states {
-        match state {
-            DpnsCurrentVoteState::Available(None) => return ActiveContestGroup::NeedsVote,
-            DpnsCurrentVoteState::Available(Some(_)) => has_vote = true,
-            DpnsCurrentVoteState::Checking | DpnsCurrentVoteState::Unavailable => {
-                has_unavailable_state = true;
-            }
-        }
-    }
-    if has_vote {
-        ActiveContestGroup::Voted
-    } else if has_unavailable_state {
-        ActiveContestGroup::VoteStateUnavailable
-    } else {
-        ActiveContestGroup::NotVotable
-    }
-}
-
-fn tally_chip(ui: &mut Ui, votes: u32, dark_mode: bool) {
-    egui::Frame::new()
-        .fill(DashColors::surface(dark_mode))
-        .corner_radius(egui::CornerRadius::same(255))
-        .inner_margin(egui::Margin::symmetric(8, 2))
-        .show(ui, |ui| {
-            ui.label(format!("{votes} votes"));
-        });
 }
 
 fn short_identifier(identifier: Identifier) -> String {
@@ -235,29 +138,6 @@ fn candidate_name_index(
         }
     }
     index
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ProvedVoteSummary {
-    None,
-    Choice(ResourceVoteChoice),
-    Mixed,
-}
-
-fn proved_vote_summary(
-    states: impl IntoIterator<Item = DpnsCurrentVoteState>,
-) -> ProvedVoteSummary {
-    let mut proved_choice = None;
-    for state in states {
-        let DpnsCurrentVoteState::Available(Some(choice)) = state else {
-            continue;
-        };
-        if proved_choice.is_some_and(|current| current != choice) {
-            return ProvedVoteSummary::Mixed;
-        }
-        proved_choice = Some(choice);
-    }
-    proved_choice.map_or(ProvedVoteSummary::None, ProvedVoteSummary::Choice)
 }
 
 fn target_status_label(status: DpnsVoteTargetStatus) -> &'static str {
@@ -591,6 +471,19 @@ pub struct DPNSScreen {
     /// Set when the operator asks to load a node; the hosting Masternodes
     /// screen consumes it and opens its load form.
     load_node_requested: bool,
+
+    /// Node set for this session; starts from the saved default (VOTE-FR-075).
+    node_set: NodeSet,
+    /// Network `node_set` was loaded for; `None` forces a reload.
+    node_set_network: Option<dash_sdk::dpp::dashcore::Network>,
+    voting_nodes: Vec<VotingNode>,
+    resolved_nodes: ResolvedNodeSet,
+    node_labels: BTreeMap<Identifier, String>,
+    /// Open contests as cards, sorted by time left. Rebuilt by `rebuild_cards`.
+    cards: Vec<VoteCard>,
+    /// Cards ticked for a bulk decision, by contest name.
+    selected_cards: BTreeSet<String>,
+    focused_card: Option<String>,
 }
 
 impl DPNSScreen {
@@ -636,7 +529,7 @@ impl DPNSScreen {
         let bulk_identity_options = vec![VoteOption::CastNow; identity_count];
         let default_schedule_time = Utc::now() + chrono::Duration::days(1);
 
-        Self {
+        let mut screen = Self {
             voting_identities,
             voting_identity_load_error,
             contested_names,
@@ -671,7 +564,17 @@ impl DPNSScreen {
             set_all_option: VoteOption::CastNow,
             simple_schedule: UtcScheduleInput::new().with_time(default_schedule_time),
             load_node_requested: false,
-        }
+            node_set: NodeSet::All,
+            node_set_network: None,
+            voting_nodes: Vec::new(),
+            resolved_nodes: ResolvedNodeSet::default(),
+            node_labels: BTreeMap::new(),
+            cards: Vec::new(),
+            selected_cards: BTreeSet::new(),
+            focused_card: None,
+        };
+        screen.rebuild_cards();
+        screen
     }
 
     /// Consume a pending "load a masternode" request from this panel.
@@ -721,6 +624,12 @@ impl DPNSScreen {
         self.candidate_names.clear();
         self.contested_names.lock_recover().clear();
         self.scheduled_votes.lock_recover().clear();
+        self.node_set_network = None;
+        self.voting_nodes.clear();
+        self.resolved_nodes = ResolvedNodeSet::default();
+        self.cards.clear();
+        self.selected_cards.clear();
+        self.focused_card = None;
     }
 
     // ---------------------------
@@ -830,330 +739,334 @@ impl DPNSScreen {
     // Rendering: To decide, Voted, Scheduled, History
     // ---------------------------
 
-    /// Render active contests as decision cards grouped by what the loaded nodes can do.
+    /// The loaded voting nodes plus key-less ones, as the node-set picker sees them.
+    fn collect_voting_nodes(&self) -> Vec<VotingNode> {
+        let mut nodes: Vec<VotingNode> = self
+            .voting_identities
+            .iter()
+            .map(|identity| {
+                let id = identity.identity.id();
+                VotingNode {
+                    id,
+                    kind: if identity.identity_type == IdentityType::Evonode {
+                        VotingNodeKind::Evonode
+                    } else {
+                        VotingNodeKind::Masternode
+                    },
+                    has_voting_key: true,
+                    membership: self.app_context.masternode_list_membership(id),
+                    alias: identity.alias.clone(),
+                }
+            })
+            .collect();
+        match self.app_context.dpns_voting_nodes() {
+            Ok(all) => {
+                let known: BTreeSet<Identifier> = nodes.iter().map(|node| node.id).collect();
+                nodes.extend(
+                    all.into_iter()
+                        .filter(|node| !node.has_voting_key && !known.contains(&node.id)),
+                );
+            }
+            Err(error) => tracing::debug!(?error, "Could not list key-less nodes for the node set"),
+        }
+        nodes
+    }
+
+    /// Rebuild the card view-model from contests, proved state, the journal and
+    /// the node set. Call after any of them changes; rendering only reads it.
+    pub(crate) fn rebuild_cards(&mut self) {
+        let network = self.app_context.network();
+        if self.node_set_network != Some(network) {
+            self.node_set = self
+                .app_context
+                .saved_dpns_node_set()
+                .unwrap_or_else(|error| {
+                    tracing::debug!(
+                        ?error,
+                        "Could not read the saved node set; voting with all nodes"
+                    );
+                    NodeSet::All
+                });
+            self.node_set_network = Some(network);
+        }
+        self.voting_nodes = self.collect_voting_nodes();
+        self.resolved_nodes = self.node_set.resolve(&self.voting_nodes);
+        self.node_labels = self
+            .voting_nodes
+            .iter()
+            .filter_map(|node| node.alias.clone().map(|alias| (node.id, alias)))
+            .collect();
+        let mut cards: Vec<VoteCard> = self
+            .active_contests
+            .contests()
+            .iter()
+            .map(|view| {
+                let nodes = view.vote_poll_id.map_or_else(Vec::new, |poll| {
+                    self.resolved_nodes
+                        .included
+                        .iter()
+                        .map(|voter| {
+                            let state = self.vote_state.state(*voter, poll);
+                            let lock = self.vote_operations.target_status(&DpnsVoteTargetKey {
+                                network,
+                                voter_id: *voter,
+                                vote_poll_id: poll,
+                            });
+                            let changes = self.app_context.dpns_changes_left(*voter, poll, state);
+                            NodeContestState {
+                                node: *voter,
+                                status: NodeContestStatus::classify(state, lock, changes),
+                                current: match state {
+                                    DpnsCurrentVoteState::Available(current) => current,
+                                    _ => None,
+                                },
+                                changes,
+                            }
+                        })
+                        .collect()
+                });
+                VoteCard::new(view.contest.clone(), view.vote_poll_id, nodes)
+            })
+            .collect();
+        sort_by_time_left(&mut cards);
+        self.cards = cards;
+        let names: BTreeSet<&str> = self.cards.iter().map(VoteCard::name).collect();
+        self.selected_cards
+            .retain(|name| names.contains(name.as_str()));
+    }
+
+    /// Votes a staged decision would send: submittable nodes not already on it.
+    fn transaction_count(&self) -> usize {
+        self.selected_votes
+            .iter()
+            .filter_map(|vote| {
+                let card = self
+                    .cards
+                    .iter()
+                    .find(|card| card.name() == vote.contested_name)?;
+                Some(
+                    card.nodes
+                        .iter()
+                        .filter(|node| node.status.can_submit())
+                        .filter(|node| node.current != Some(vote.vote_choice))
+                        .count(),
+                )
+            })
+            .sum()
+    }
+
+    fn apply_node_set(&mut self, node_set: NodeSet) {
+        self.node_set = node_set;
+        self.rebuild_cards();
+    }
+
+    /// Render To decide or Voted: node-set chip, filter, cards and the tray.
     fn render_active_contests(&mut self, ui: &mut Ui) {
         let dark_mode = ui.style().visuals.dark_mode;
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Filter by name:").color(DashColors::text_primary(dark_mode)));
-            ui.text_edit_singleline(&mut self.active_filter_term)
+            if !self.voting_nodes.is_empty() {
+                let picked = node_set_picker::show(
+                    ui,
+                    &self.node_set,
+                    &self.resolved_nodes,
+                    &self.voting_nodes,
+                );
+                if picked.save_default {
+                    match self.app_context.save_dpns_node_set(&self.node_set) {
+                        Ok(()) => {
+                            self.app_context.recompute_dpns_vote_attention();
+                        }
+                        Err(error) => {
+                            MessageBanner::set_global(
+                                ui.ctx(),
+                                error.to_string(),
+                                MessageType::Error,
+                            )
+                            .with_details(&error);
+                        }
+                    }
+                }
+                if let Some(node_set) = picked.changed {
+                    self.apply_node_set(node_set);
+                }
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.active_filter_term)
+                        .hint_text("Filter by name")
+                        .desired_width(180.0),
+                )
                 .on_hover_text(
                     "The letters i and l match the digit 1, and the letter o matches 0.",
                 );
+            });
         });
-        ui.label(
-            RichText::new("Each node can change its vote up to four times after its initial vote.")
-                .color(DashColors::text_secondary(dark_mode)),
-        );
         ui.add_space(8.0);
 
         let filter = normalize_dpns_label(&self.active_filter_term);
-        let contests = self.active_contests.contests();
-        let mut groups = BTreeMap::<ActiveContestGroup, Vec<&ActiveDpnsContestView>>::new();
-        for contest in contests.iter() {
-            groups
-                .entry(self.contest_group(contest.vote_poll_id))
-                .or_default()
-                .push(contest);
-        }
-
-        // Counted before the filter is applied: the summary describes the whole
-        // set of names still open to the operator, not the current search.
-        let still_open = groups
-            .get(&ActiveContestGroup::NeedsVote)
-            .map_or(&[][..], Vec::as_slice);
-        let available = still_open.len();
-        let closing = still_open
-            .iter()
-            .filter(|contest| {
-                contest.contest.end_time.is_some_and(|end_time| {
-                    let remaining = end_time as i64 - Utc::now().timestamp_millis();
-                    remaining > 0 && remaining <= chrono::Duration::days(1).num_milliseconds()
-                })
-            })
-            .count();
-        egui::Frame::group(ui.style()).show(ui, |ui| {
-            ui.label(format!(
-                "Names still available to your nodes: {available}. Names closing within 24 hours: {closing}.",
-            ));
-        });
-        ui.add_space(8.0);
-
-        if !filter.is_empty() {
-            for group in groups.values_mut() {
-                group.retain(|contest| {
-                    contest
-                        .contest
-                        .normalized_contested_name
-                        .to_lowercase()
-                        .contains(&filter)
-                });
-            }
-        }
-
-        let no_voting_nodes = self.voting_identities.is_empty();
         let view = self.view;
+        let now = crate::utils::time::now_ms();
+        let network = self.app_context.network();
+        let durations = contest_durations(network, self.app_context.platform_version());
+        let urgency = urgency_window(network);
+        let has_voting_nodes = !self.resolved_nodes.included.is_empty();
+        let matches_filter =
+            |card: &VoteCard| filter.is_empty() || card.name().to_lowercase().contains(&filter);
+        let listed: Vec<usize> = self
+            .cards
+            .iter()
+            .enumerate()
+            .filter(|(_, card)| matches_filter(card))
+            .filter(|(_, card)| match view {
+                VotesView::Voted => card.placement == CardPlacement::Voted,
+                // Unproved state is temporary and fixed by a refresh, so those
+                // cards stay in view rather than in the collapsed group.
+                _ => matches!(
+                    card.placement,
+                    CardPlacement::ToDecide
+                        | CardPlacement::CantVote(CantVoteReason::VoteStateUnavailable)
+                ),
+            })
+            .map(|(index, _)| index)
+            .collect();
+        let cant_vote: Vec<usize> = if view == VotesView::ToDecide {
+            self.cards
+                .iter()
+                .enumerate()
+                .filter(|(_, card)| matches_filter(card))
+                .filter(|(_, card)| {
+                    card.placement == CardPlacement::CantVote(CantVoteReason::NoVotingNodes)
+                })
+                .map(|(index, _)| index)
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        let mut events: Vec<(usize, CardEvent)> = Vec::new();
         egui::ScrollArea::vertical()
             .id_salt("active_contest_cards")
+            .max_height(ui.available_height() - 48.0)
             .show(ui, |ui| {
-                for group in ActiveContestGroup::ALL
-                    .into_iter()
-                    .filter(|group| group.view() == view)
-                {
-                    let contests = groups.get(&group).map_or(&[][..], Vec::as_slice);
-                    if group == ActiveContestGroup::VoteStateUnavailable {
-                        if contests.is_empty() {
-                            continue;
-                        }
-                        ui.label("Current votes are unavailable or out of date. Refresh voting to check these nodes.");
-                        if ui.button("Refresh voting").clicked() {
-                            self.pending_backend_task = Some(BackendTask::ContestedResourceTask(
-                                ContestedResourceTask::QueryDPNSContests,
-                            ));
-                        }
+                if listed.is_empty() {
+                    let empty = match view {
+                        VotesView::Voted => "Your nodes haven't voted on any open contest yet.",
+                        _ => "Nothing needs your vote right now.",
+                    };
+                    ui.label(RichText::new(empty).color(DashColors::text_secondary(dark_mode)));
+                }
+                let render = |ui: &mut Ui, index: usize, events: &mut Vec<(usize, CardEvent)>| {
+                    let card = &self.cards[index];
+                    let staged = self
+                        .selected_votes
+                        .iter()
+                        .find(|vote| vote.contested_name == card.name())
+                        .map(|vote| vote.vote_choice);
+                    let card_events = CardView {
+                        card,
+                        staged,
+                        selected: self.selected_cards.contains(card.name()),
+                        focused: self.focused_card.as_deref() == Some(card.name()),
+                        node_labels: &self.node_labels,
+                        node_set_weight: self.resolved_nodes.weight,
+                        now_ms: now,
+                        urgency,
+                        durations,
+                        has_voting_nodes,
                     }
-                    self.render_contest_group(
-                        ui,
-                        group.title(),
-                        contests,
-                        group.presentation(no_voting_nodes),
-                    );
+                    .show(ui);
+                    events.extend(card_events.into_iter().map(|event| (index, event)));
+                    ui.add_space(8.0);
+                };
+                for index in &listed {
+                    render(ui, *index, &mut events);
+                }
+                if !cant_vote.is_empty() {
+                    egui::CollapsingHeader::new(format!(
+                        "Can't vote with your nodes ({count})",
+                        count = cant_vote.len()
+                    ))
+                    .default_open(!has_voting_nodes)
+                    .show(ui, |ui| {
+                        ui.label(
+                            RichText::new(CANT_VOTE_REASON)
+                                .color(DashColors::text_secondary(dark_mode)),
+                        );
+                        for index in &cant_vote {
+                            render(ui, *index, &mut events);
+                        }
+                    });
                 }
                 self.render_voting_activity(ui);
             });
 
+        for (index, event) in events {
+            let name = self.cards[index].name().to_owned();
+            match event {
+                CardEvent::Choose(choice) => {
+                    let contest = Arc::clone(&self.cards[index].contest);
+                    self.set_selected_vote(&contest, choice);
+                }
+                CardEvent::ToggleSelected => {
+                    if !self.selected_cards.remove(&name) {
+                        self.selected_cards.insert(name.clone());
+                    }
+                }
+                CardEvent::RefreshVoting => {
+                    self.pending_backend_task = Some(BackendTask::ContestedResourceTask(
+                        ContestedResourceTask::QueryDPNSContests,
+                    ));
+                }
+            }
+            self.focused_card = Some(name);
+        }
+
+        self.render_tray(ui);
+    }
+
+    /// The tray under the list: what is staged and the Cast action (VOTE-FR-086).
+    fn render_tray(&mut self, ui: &mut Ui) {
+        let decisions = self.selected_votes.len();
+        if decisions == 0 {
+            return;
+        }
+        let transactions = self.transaction_count();
         ui.separator();
         ui.horizontal(|ui| {
-            let count = self.selected_votes.len();
-            ui.label(
-                RichText::new(format!("Votes ready to cast: {count}"))
-                    .strong()
-                    .color(DashColors::text_primary(dark_mode)),
-            );
+            ui.label(RichText::new(tray_label(decisions, transactions)).strong());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ComponentStyles::add_primary_button_enabled(ui, count > 0, "Review and cast")
-                    .disabled_tooltip("Choose a vote on at least one contest before reviewing it.")
+                if ComponentStyles::add_primary_button_enabled(ui, transactions > 0, "Cast")
+                    .disabled_tooltip(
+                        "Your nodes already hold these choices. Pick a different decision.",
+                    )
                     .clicked()
                 {
-                    self.show_bulk_schedule_popup = true;
+                    self.open_review_for_node_set();
+                }
+                if ui.button("Clear").clicked() {
+                    self.selected_votes.clear();
                 }
             });
         });
     }
 
-    fn contest_group(&self, vote_poll_id: Option<Identifier>) -> ActiveContestGroup {
-        let Some(poll_id) = vote_poll_id else {
-            return ActiveContestGroup::NotVotable;
-        };
-        classify_vote_states(
-            self.voting_identities
-                .iter()
-                .map(|identity| self.vote_state.state(identity.identity.id(), poll_id)),
-        )
-    }
-
-    fn render_contest_group(
-        &mut self,
-        ui: &mut Ui,
-        title: &str,
-        contests: &[&ActiveDpnsContestView],
-        presentation: ContestGroupPresentation,
-    ) {
-        egui::CollapsingHeader::new(format!("{title} ({count})", count = contests.len()))
-            .default_open(presentation.default_open)
-            .show(ui, |ui| {
-                if contests.is_empty() {
-                    ui.label("There are no contests in this group.");
-                }
-                for contest in contests {
-                    let mut card = presentation;
-                    card.voting_enabled = presentation.voting_enabled
-                        && self.contest_has_available_target(contest.vote_poll_id);
-                    ui.add_enabled_ui(card.voting_enabled, |ui| {
-                        self.render_contest_card(
-                            ui,
-                            contest.contest.as_ref(),
-                            contest.vote_poll_id,
-                            card,
-                        );
-                    });
-                    ui.add_space(8.0);
-                }
-            });
-    }
-
-    fn contest_has_available_target(&self, vote_poll_id: Option<Identifier>) -> bool {
-        let Some(vote_poll_id) = vote_poll_id else {
-            return false;
-        };
-        self.voting_identities.iter().any(|identity| {
-            let voter_id = identity.identity.id();
-            matches!(
-                self.vote_state.state(voter_id, vote_poll_id),
-                DpnsCurrentVoteState::Available(_)
-            ) && self
-                .vote_operations
-                .target_status(&DpnsVoteTargetKey {
-                    network: self.app_context.network(),
-                    voter_id,
-                    vote_poll_id,
-                })
-                .is_none()
-        })
-    }
-
-    fn proved_vote_for_contest(&self, vote_poll_id: Option<Identifier>) -> ProvedVoteSummary {
-        let Some(poll_id) = vote_poll_id else {
-            return ProvedVoteSummary::None;
-        };
-        proved_vote_summary(
-            self.voting_identities
-                .iter()
-                .map(|identity| self.vote_state.state(identity.identity.id(), poll_id)),
-        )
-    }
-
-    fn candidate_name_in_contest(
-        contest: &ContestedName,
-        choice: ResourceVoteChoice,
-    ) -> Option<&str> {
-        let ResourceVoteChoice::TowardsIdentity(candidate_id) = choice else {
-            return None;
-        };
-        contest
-            .contestants
-            .as_ref()?
+    /// Open the review with exactly the node-set nodes selected.
+    fn open_review_for_node_set(&mut self) {
+        let included: BTreeSet<Identifier> = self.resolved_nodes.included.iter().copied().collect();
+        self.bulk_identity_options = self
+            .voting_identities
             .iter()
-            .find(|candidate| candidate.id == candidate_id)
-            .map(|candidate| candidate.name.as_str())
-    }
-
-    fn render_contest_card(
-        &mut self,
-        ui: &mut Ui,
-        contest: &ContestedName,
-        vote_poll_id: Option<Identifier>,
-        presentation: ContestGroupPresentation,
-    ) {
-        let ContestGroupPresentation {
-            voting_enabled,
-            show_current_vote,
-            ..
-        } = presentation;
-        let dark_mode = ui.style().visuals.dark_mode;
-        let staged = self
-            .selected_votes
-            .iter()
-            .find(|vote| vote.contested_name == contest.normalized_contested_name)
-            .map(|vote| vote.vote_choice);
-        let proved = if show_current_vote {
-            self.proved_vote_for_contest(vote_poll_id)
-        } else {
-            ProvedVoteSummary::None
-        };
-        let selected = staged.or(match proved {
-            ProvedVoteSummary::Choice(choice) => Some(choice),
-            ProvedVoteSummary::None | ProvedVoteSummary::Mixed => None,
-        });
-        let locked_votes = contest.locked_votes.unwrap_or_default();
-        let abstain_votes = contest.abstain_votes.unwrap_or_default();
-
-        egui::Frame::group(ui.style()).show(ui, |ui| {
-            ui.set_min_width(ui.available_width());
-            ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new(format!(
-                        "{name}.dash",
-                        name = contest.normalized_contested_name
-                    ))
-                    .heading()
-                    .strong()
-                    .color(DashColors::text_primary(dark_mode)),
-                );
-                if let Some(end_time) = contest.end_time
-                    && let LocalResult::Single(date_time) =
-                        Utc.timestamp_millis_opt(end_time as i64)
-                {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(
-                            RichText::new(format!(
-                                "Voting ends {when}.",
-                                when = HumanTime::from(date_time)
-                            ))
-                            .color(DashColors::text_secondary(dark_mode)),
-                        );
-                    });
+            .map(|identity| {
+                if included.contains(&identity.identity.id()) {
+                    VoteOption::CastNow
+                } else {
+                    VoteOption::NoVote
                 }
-            });
-            ui.add_space(6.0);
-
-            match proved {
-                ProvedVoteSummary::Choice(choice) => {
-                    let candidate_name = Self::candidate_name_in_contest(contest, choice);
-                    ui.label(
-                        RichText::new(format!(
-                            "You voted: {}.",
-                            vote_choice_label(choice, candidate_name)
-                        ))
-                        .strong()
-                        .color(DashColors::text_primary(dark_mode)),
-                    );
-                    ui.add_space(4.0);
-                }
-                ProvedVoteSummary::Mixed => {
-                    ui.label(
-                        RichText::new("Your loaded nodes have different current votes.")
-                            .strong()
-                            .color(DashColors::text_primary(dark_mode)),
-                    );
-                    ui.add_space(4.0);
-                }
-                ProvedVoteSummary::None => {}
-            }
-
-            ui.horizontal_wrapped(|ui| {
-                let clicked = ui
-                    .selectable_label(selected == Some(ResourceVoteChoice::Lock), "Lock name")
-                    .on_disabled_hover_text(
-                        "None of your loaded nodes can vote on this contest right now.",
-                    )
-                    .clicked();
-                tally_chip(ui, locked_votes, dark_mode);
-                if clicked && voting_enabled {
-                    self.set_selected_vote(contest, ResourceVoteChoice::Lock);
-                }
-
-                let clicked = ui
-                    .selectable_label(selected == Some(ResourceVoteChoice::Abstain), "Abstain")
-                    .clicked();
-                tally_chip(ui, abstain_votes, dark_mode);
-                if clicked && voting_enabled {
-                    self.set_selected_vote(contest, ResourceVoteChoice::Abstain);
-                }
-            });
-
-            if let Some(contestants) = &contest.contestants {
-                for contestant in contestants {
-                    ui.horizontal_wrapped(|ui| {
-                        let choice = ResourceVoteChoice::TowardsIdentity(contestant.id);
-                        let clicked = ui
-                            .selectable_label(
-                                selected == Some(choice),
-                                candidate_choice_label(&contestant.name),
-                            )
-                            .clicked();
-                        tally_chip(ui, contestant.votes, dark_mode);
-                        ui.label(
-                            RichText::new(short_identifier(contestant.id))
-                                .monospace()
-                                .color(DashColors::text_secondary(dark_mode)),
-                        );
-                        if clicked && voting_enabled {
-                            self.set_selected_vote(contest, choice);
-                        }
-                    });
-                }
-            }
-        });
+            })
+            .collect();
+        self.set_all_option = VoteOption::CastNow;
+        self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
+        self.show_bulk_schedule_popup = true;
     }
 
     fn set_selected_vote(&mut self, contest: &ContestedName, choice: ResourceVoteChoice) {
@@ -2380,6 +2293,7 @@ impl ScreenLike for DPNSScreen {
         {
             tracing::warn!(?error, "Could not refresh cached DPNS vote state");
         }
+        self.rebuild_cards();
         self.app_context.recompute_dpns_vote_attention();
     }
 
@@ -2468,6 +2382,7 @@ impl ScreenLike for DPNSScreen {
             );
         }
         self.rebuild_scheduled_vote_rows();
+        self.rebuild_cards();
         scheduled_vote_sweep_is_quiet(error)
     }
 
@@ -2510,6 +2425,7 @@ impl ScreenLike for DPNSScreen {
                     );
                 }
                 self.rebuild_scheduled_vote_rows();
+                self.rebuild_cards();
                 self.app_context.recompute_dpns_vote_attention();
             }
             BackendTaskSuccessResult::ScheduledVoteSweepCompleted { network, .. }
@@ -2924,34 +2840,6 @@ mod tests {
     }
 
     #[test]
-    fn active_contest_groups_prioritize_nodes_that_still_need_a_vote() {
-        assert!(matches!(
-            classify_vote_states([
-                DpnsCurrentVoteState::Available(Some(ResourceVoteChoice::Lock)),
-                DpnsCurrentVoteState::Available(None),
-            ]),
-            ActiveContestGroup::NeedsVote
-        ));
-        assert!(matches!(
-            classify_vote_states([DpnsCurrentVoteState::Available(Some(
-                ResourceVoteChoice::Abstain,
-            ))]),
-            ActiveContestGroup::Voted
-        ));
-        assert!(matches!(
-            classify_vote_states([
-                DpnsCurrentVoteState::Checking,
-                DpnsCurrentVoteState::Unavailable,
-            ]),
-            ActiveContestGroup::VoteStateUnavailable
-        ));
-    }
-
-    /// The review sheet is the last surface an operator reads before a
-    /// masternode vote is submitted, and a vote change is budgeted, so the sheet
-    /// must always disclose which identity the vote goes to — by name when one
-    /// is cached, by its copyable handle when none is.
-    #[test]
     fn review_choice_names_the_candidate_or_falls_back_to_its_identifier() {
         let candidate_id = Identifier::from([42; 32]);
         let encoded = candidate_id.to_string(Encoding::Base58);
@@ -3046,24 +2934,6 @@ mod tests {
 
         assert_eq!(label, "Vote for alice");
         assert!(!label.contains(&candidate_id.to_string(Encoding::Base58)));
-    }
-
-    #[test]
-    fn proved_choice_is_highlighted_only_when_loaded_nodes_agree() {
-        assert_eq!(
-            proved_vote_summary([
-                DpnsCurrentVoteState::Available(Some(ResourceVoteChoice::Abstain)),
-                DpnsCurrentVoteState::Checking,
-            ]),
-            ProvedVoteSummary::Choice(ResourceVoteChoice::Abstain)
-        );
-        assert_eq!(
-            proved_vote_summary([
-                DpnsCurrentVoteState::Available(Some(ResourceVoteChoice::Abstain)),
-                DpnsCurrentVoteState::Available(Some(ResourceVoteChoice::Lock)),
-            ]),
-            ProvedVoteSummary::Mixed
-        );
     }
 
     #[test]
@@ -3714,6 +3584,7 @@ mod tests {
             .seed_dpns_contest_for_test("alpha", None, false);
         screen.refresh();
         screen.vote_state = DpnsVoteStateSnapshot::default();
+        screen.rebuild_cards();
         let refreshed = Arc::new(AtomicBool::new(false));
         let received_refresh = refreshed.clone();
         let mut harness = egui_kittest::Harness::builder()
@@ -3734,9 +3605,11 @@ mod tests {
             "unavailable state must not hide the contest"
         );
         assert!(harness.query_by_label("Refresh voting").is_some());
-        assert!(harness.query_by_label(
-            "Current votes are unavailable or out of date. Refresh voting to check these nodes."
-        ).is_some());
+        assert!(
+            harness
+                .query_by_label("Vote state is unavailable for 1 node; it's left out.")
+                .is_some()
+        );
         harness.get_by_label("Refresh voting").click();
         harness.run();
         assert!(refreshed.load(Ordering::Relaxed));
@@ -3798,6 +3671,47 @@ mod tests {
         );
     }
 
+    /// VOTE-TC-089: a contest only some node-set nodes voted on stays in To
+    /// decide and says how many voted; the Voted view does not list it.
+    #[tokio::test]
+    async fn partly_voted_contest_stays_in_to_decide() {
+        use egui_kittest::kittest::Queryable;
+        let (ctx, _dir) = kv_ctx();
+        ctx.seed_dpns_contest_for_test("alpha", None, false);
+        let voted = masternode_identity(1, "node-one", true, ctx.network());
+        let pending = masternode_identity(2, "node-two", true, ctx.network());
+        let poll = ctx.dpns_vote_poll_id("alpha").unwrap();
+        ctx.seed_proved_dpns_votes_for_test(pending.identity.id(), BTreeMap::new())
+            .await
+            .unwrap();
+        ctx.cache_confirmed_dpns_vote(voted.identity.id(), poll, ResourceVoteChoice::Lock)
+            .unwrap();
+        let mut screen = DPNSScreen::new(&ctx, VotesView::ToDecide);
+        screen.voting_identities = vec![voted.clone(), pending.clone()];
+        screen.vote_state = DpnsVoteStateSnapshot::load(
+            &ctx,
+            &[voted.identity.id(), pending.identity.id()],
+            &[poll],
+        )
+        .unwrap();
+        screen.rebuild_cards();
+        assert_eq!(screen.cards[0].placement, CardPlacement::ToDecide);
+
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1200.0, 1200.0))
+            .build_ui(move |ui| {
+                screen.ui(ui);
+            });
+        harness.run();
+        assert!(harness.query_by_label("alpha.dash").is_some());
+        assert!(harness.query_by_label("Voted with 1 of 2 nodes").is_some());
+        assert!(
+            harness
+                .query_by_label("Your nodes: 1 not voted · 1 voted Lock")
+                .is_some()
+        );
+    }
+
     #[test]
     fn voting_ui_keyless_users_can_read_cached_active_contests() {
         use egui_kittest::kittest::Queryable;
@@ -3817,6 +3731,7 @@ mod tests {
                 my_votes: BTreeMap::new(),
             }],
         );
+        screen.rebuild_cards();
         let mut harness = egui_kittest::Harness::builder()
             .with_size(egui::vec2(1000.0, 1200.0))
             .build_ui(move |ui| {

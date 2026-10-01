@@ -1,8 +1,10 @@
 //! Masternode voting on contested DPNS names (Masternodes ▸ Votes).
 
 pub mod attention_chip;
+pub mod contest_card;
 pub mod copy;
 pub mod dpns_contested_names_screen;
+pub mod node_set_picker;
 
 /// Sub-view of the Masternodes ▸ Votes segment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

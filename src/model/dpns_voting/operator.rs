@@ -76,6 +76,8 @@ pub struct VotingNode {
     pub kind: VotingNodeKind,
     pub has_voting_key: bool,
     pub membership: ListMembership,
+    /// The operator's name for the node, if set.
+    pub alias: Option<String>,
 }
 
 /// The operator's persistent choice of which nodes vote.
@@ -381,6 +383,7 @@ mod tests {
             kind,
             has_voting_key: key,
             membership,
+            alias: None,
         }
     }
 

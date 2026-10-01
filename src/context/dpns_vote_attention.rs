@@ -141,6 +141,7 @@ impl AppContext {
                     },
                     has_voting_key: identity.can_cast_masternode_vote(),
                     membership: self.masternode_list_membership(id),
+                    alias: identity.alias.clone(),
                 }
             })
             .collect())

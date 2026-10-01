@@ -576,9 +576,35 @@ pub enum TaskError {
     /// (never a silent miss that would drop a key). The user must restore the
     /// wallet from its recovery phrase or re-import the key.
     #[error(
-        "This wallet's secret could not be found on this device. Restore the wallet from its recovery phrase to keep using it."
+        "This wallet's secret could not be found on this device. Import the wallet again from its recovery phrase, on the same network, to keep using it. If you updated from an earlier version of Dash Evo Tool, you can instead use Restore from Previous Version in Settings."
     )]
     SecretSeamMissing,
+
+    /// "Restore from Previous Version" could not open or read the earlier
+    /// version's database. Nothing was changed.
+    #[error(
+        "Data saved by the earlier version could not be read. Nothing was changed. Restart Dash Evo Tool and try again."
+    )]
+    LegacyRestoreFailed {
+        #[source]
+        source: Box<crate::backend_task::migration::MigrationError>,
+    },
+
+    /// Signing with an identity key failed because its private half could not
+    /// be resolved (missing wallet seed, missing vault key, locked wallet, or a
+    /// declined password prompt). Carries which identity and key were involved
+    /// for the details panel; the banner shows the underlying cause's message.
+    #[error("{source}")]
+    IdentitySigningKeyUnavailable {
+        /// Base58 identity ID.
+        identity_id: String,
+        key_id: dash_sdk::dpp::identity::KeyID,
+        purpose: dash_sdk::dpp::identity::Purpose,
+        /// Hex seed hashes of the wallets the key derives from, if any.
+        wallet_seed_hashes: Vec<String>,
+        #[source]
+        source: Box<TaskError>,
+    },
 
     /// An identity private key could not be stored in or read from the secret
     /// vault through the seam. Distinct from [`Self::SecretSeam`] so the banner
@@ -3341,6 +3367,14 @@ impl From<dashcore_rpc::Error> for TaskError {
 
 impl From<SdkError> for TaskError {
     fn from(error: SdkError) -> Self {
+        // A DET signer flattens its typed failure into `ProtocolError::Generic`
+        // (the upstream `Signer` contract); recover the typed cause it recorded.
+        if matches!(error, SdkError::Protocol(ProtocolError::Generic(_)))
+            && let Some(signing_failure) = super::signing_failure::take()
+        {
+            return signing_failure;
+        }
+
         if sdk_error_is_masternode_list_not_ready(&error) {
             return TaskError::MasternodeListNotReady {
                 source_error: Box::new(error),
@@ -3709,6 +3743,32 @@ mod tests {
 
     const DAPI_EXHAUSTED_MESSAGE: &str =
         "All Dash network servers are temporarily unreachable. Please wait a minute and retry.";
+
+    /// The missing-wallet message offers both self-service paths: re-import
+    /// from the recovery phrase on the same network, or the Settings restore.
+    #[test]
+    fn missing_wallet_secret_message_offers_both_recovery_paths() {
+        let message = TaskError::SecretSeamMissing.to_string();
+        assert!(message.contains("recovery phrase"), "{message}");
+        assert!(message.contains("same network"), "{message}");
+        assert!(
+            message.contains("Restore from Previous Version in Settings"),
+            "{message}"
+        );
+        assert!(!message.to_lowercase().contains("details"), "{message}");
+        assert!(!message.to_lowercase().contains("support"), "{message}");
+    }
+
+    /// A generic protocol error with no recorded signing failure keeps mapping
+    /// to the generic SDK variant, even inside a task scope.
+    #[tokio::test]
+    async fn generic_protocol_error_without_a_recorded_signing_failure_is_unchanged() {
+        let error = super::super::signing_failure::scope(async {
+            TaskError::from(SdkError::Protocol(ProtocolError::Generic("x".into())))
+        })
+        .await;
+        assert!(matches!(error, TaskError::SdkError { .. }), "{error:?}");
+    }
 
     fn dapi_connection_refused_error() -> TaskError {
         let status = dash_sdk::dapi_grpc::tonic::Status::unavailable("tcp connect error");

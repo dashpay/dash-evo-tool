@@ -60,6 +60,7 @@ pub mod migration;
 pub mod platform_info;
 pub mod register_contract;
 pub mod shielded;
+pub(crate) mod signing_failure;
 pub mod system_task;
 pub mod tokens;
 pub mod update_data_contract;
@@ -192,6 +193,7 @@ fn is_wallet_touching(task: &BackendTask) -> bool {
             | BackendTask::IdentityTask(_)
             | BackendTask::DashPayTask(_)
             | BackendTask::ShieldedTask(_)
+            | BackendTask::MigrationTask(MigrationTask::RestoreFromPreviousVersion)
     )
 }
 
@@ -330,6 +332,8 @@ pub enum BackendTaskContext {
     TokenRewardEstimate(IdentityTokenIdentifier),
     /// The destructive per-network database clear.
     ClearNetworkDatabase,
+    /// The Settings "Restore from Previous Version" run.
+    RestoreFromPreviousVersion,
     /// A scheduled-vote sweep for one network.
     ScheduledVoteSweep { network: Network },
     /// Receive-address derivation for one wallet's deposit flow.
@@ -574,6 +578,9 @@ impl From<&BackendTask> for BackendTaskContext {
                 identity_index: *identity_index,
             },
             BackendTask::SystemTask(SystemTask::ClearNetworkDatabase) => Self::ClearNetworkDatabase,
+            BackendTask::MigrationTask(MigrationTask::RestoreFromPreviousVersion) => {
+                Self::RestoreFromPreviousVersion
+            }
             BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { seed_hash }) => {
                 Self::GenerateReceiveAddress {
                     seed_hash: *seed_hash,
@@ -611,6 +618,8 @@ pub enum BackendTaskSuccessResult {
     NetworkDatabaseCleared {
         network: Network,
     },
+    /// Outcome of the Settings "Restore from Previous Version" run.
+    PreviousVersionRestored(crate::model::legacy_restore::LegacyRestoreSummary),
     Message(String), // Used for: placeholder messages for
     // not-yet-implemented functionality, and DashPay operations that would need their own typed variants.
     /// Progress updates during long-running operations (e.g. batch identity search).
@@ -1134,9 +1143,9 @@ impl AppContext {
             BackendTask::WalletTask(_) | BackendTask::ShieldedTask(_)
         );
         let task_sdk = self.sdk.load_full();
-        let result = self
-            .run_backend_task_inner(task, sender, task_sdk.as_ref())
-            .await;
+        let result =
+            signing_failure::scope(self.run_backend_task_inner(task, sender, task_sdk.as_ref()))
+                .await;
 
         if uses_wallet_backend_sdk {
             result

@@ -2955,6 +2955,23 @@ impl App for AppState {
                                 );
                             }
                         }
+                        BackendTaskSuccessResult::PreviousVersionRestored(summary) => {
+                            let message_type = if summary.has_problems() {
+                                MessageType::Warning
+                            } else {
+                                MessageType::Success
+                            };
+                            MessageBanner::set_global(ctx, summary.user_message(), message_type);
+                            if let Some(screen) = self
+                                .main_screens
+                                .get_mut(&RootScreenType::RootScreenNetworkChooser)
+                            {
+                                screen.display_backend_task_result(
+                                    &context,
+                                    BackendTaskSuccessResult::PreviousVersionRestored(summary),
+                                );
+                            }
+                        }
                         BackendTaskSuccessResult::DashPayIncomingDetected(outputs) => {
                             // The EventBridge surfaced received outputs on a
                             // freshly-seen wallet transaction. Run the owner-
@@ -3184,13 +3201,19 @@ impl App for AppState {
                         &err,
                     );
                     self.route_contact_request_error_to_hidden_hub(&err);
-                    let is_database_clear = context == BackendTaskContext::ClearNetworkDatabase;
-                    let suppress_stale_error = !is_database_clear
+                    // Settings-owned operations report back to the Settings root even when
+                    // another screen is visible, so its in-progress state always clears.
+                    let routes_to_settings = matches!(
+                        context,
+                        BackendTaskContext::ClearNetworkDatabase
+                            | BackendTaskContext::RestoreFromPreviousVersion
+                    );
+                    let suppress_stale_error = !routes_to_settings
                         && !recovery_delivered
                         && self
                             .visible_screen_mut()
                             .should_suppress_backend_task_error(&context, &err);
-                    if is_database_clear {
+                    if routes_to_settings {
                         if let Some(screen) = self
                             .main_screens
                             .get_mut(&RootScreenType::RootScreenNetworkChooser)
@@ -3204,7 +3227,7 @@ impl App for AppState {
                     // Let the screen handle specific error types first.
                     // If handled, skip the generic error banner.
                     let handled = suppress_stale_error
-                        || (!is_database_clear
+                        || (!routes_to_settings
                             && !recovery_delivered
                             && self.visible_screen_mut().display_task_error(&err));
 
@@ -3241,7 +3264,7 @@ impl App for AppState {
                             }
                             _ => {}
                         }
-                        if !is_database_clear && !recovery_delivered {
+                        if !routes_to_settings && !recovery_delivered {
                             self.visible_screen_mut()
                                 .display_message(&msg, MessageType::Error);
                         }

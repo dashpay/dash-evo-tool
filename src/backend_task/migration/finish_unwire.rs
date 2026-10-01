@@ -348,7 +348,7 @@ impl MigrationError {
 
 /// Open the pre-update SQLite file with write operations disabled by SQLite,
 /// naming the file in a migration-typed error when it will not open.
-fn open_legacy_read_only(path: &std::path::Path) -> Result<Connection, MigrationError> {
+pub(super) fn open_legacy_read_only(path: &std::path::Path) -> Result<Connection, MigrationError> {
     crate::database::open_legacy_connection_read_only(path).map_err(|source| {
         MigrationError::LegacyDbOpen {
             path: path.to_string_lossy().to_string(),
@@ -2310,14 +2310,14 @@ fn legacy_table_exists_named(
 /// the counter is meaningful even when the sidecar already holds the
 /// same value.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-struct WalletMetaMigrationOutcome {
+pub(super) struct WalletMetaMigrationOutcome {
     /// Rows for `app_context.network` written into the wallet-meta
     /// sidecar. A re-run with the same legacy rows lands here again —
     /// `set` upserts.
-    imported: u32,
+    pub(super) imported: u32,
     /// Rows that could not be decoded (seed-hash wrong length).
     /// Triggers the error path — sentinel stays unwritten.
-    failed: u32,
+    pub(super) failed: u32,
 }
 
 /// Copies legacy `wallet` rows (alias / `is_main` / `core_wallet_name`)
@@ -2364,7 +2364,7 @@ fn migrate_wallet_meta_rows(app_context: &Arc<AppContext>) -> Result<(), TaskErr
 /// Pure migration body (testable without an `AppContext`). Forwards each
 /// `(seed_hash, meta)` row at `conn` to `set`; returns counters. A missing
 /// table or missing `core_wallet_name` column is not an error.
-fn migrate_wallet_meta_rows_from_conn<F>(
+pub(super) fn migrate_wallet_meta_rows_from_conn<F>(
     conn: &Connection,
     mut set: F,
     network: dash_sdk::dpp::dashcore::Network,
@@ -2513,17 +2513,17 @@ fn wallet_table_has_core_wallet_name(conn: &Connection) -> Result<bool, Migratio
 
 /// Outcome counters from one [`migrate_wallet_seeds_rows`] pass.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-struct WalletSeedsMigrationOutcome {
+pub(super) struct WalletSeedsMigrationOutcome {
     /// Rows whose full envelope was written to the upstream vault.
-    imported: u32,
+    pub(super) imported: u32,
     /// Rows that would not survive cold-boot hydration (see
     /// [`hd_seed_row_is_hydratable`]); non-fatal, logged and counted rather
     /// than silently copied. The seed stays in legacy `data.db` — this is
     /// exclusion, not data loss.
-    skipped_malformed: u32,
+    pub(super) skipped_malformed: u32,
     /// Rows that could not be decoded (seed_hash wrong size, blob
     /// length wrong, etc.). Triggers the error path.
-    failed: u32,
+    pub(super) failed: u32,
 }
 
 /// Copies each legacy `wallet` row's full encrypted envelope (ciphertext +
@@ -2578,7 +2578,7 @@ fn migrate_wallet_seeds_rows(app_context: &Arc<AppContext>) -> Result<(), TaskEr
 ///
 /// **Missing table is not an error** — a freshly-installed `data.db`
 /// (no legacy rows at all) returns the zero outcome.
-fn migrate_wallet_seeds_rows_from_conn<F>(
+pub(super) fn migrate_wallet_seeds_rows_from_conn<F>(
     conn: &Connection,
     mut set: F,
     network: dash_sdk::dpp::dashcore::Network,

@@ -2,6 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::core::CoreTask;
 use crate::backend_task::dapi_discovery::persist_dapi_addresses;
 use crate::backend_task::error::TaskError;
+use crate::backend_task::migration::MigrationTask;
 use crate::backend_task::system_task::SystemTask;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
@@ -78,6 +79,7 @@ pub struct NetworkChooserScreen {
     spv_clear_message: Option<SpvClearMessage>,
     db_clear_dialog: Option<ConfirmationDialog>,
     db_clear_in_progress: bool,
+    legacy_restore_in_progress: bool,
     wipe_platform_data_dialog: Option<ConfirmationDialog>,
     auto_start_spv: bool,
     discovery_in_progress: bool,
@@ -118,6 +120,7 @@ impl NetworkChooserScreen {
             spv_clear_message: None,
             db_clear_dialog: None,
             db_clear_in_progress: false,
+            legacy_restore_in_progress: false,
             wipe_platform_data_dialog: None,
             auto_start_spv,
             discovery_in_progress: false,
@@ -702,6 +705,29 @@ impl NetworkChooserScreen {
                 );
                 ui.add_space(6.0);
                 ui.label(
+                    egui::RichText::new("If you updated from an earlier version of Dash Evo Tool, you can bring back wallets and identity keys that are missing on this device. Nothing that is already here is changed.")
+                        .color(DashColors::text_secondary(dark_mode)),
+                );
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let restore_enabled =
+                        !self.legacy_restore_in_progress && !self.db_clear_in_progress;
+                    if ui
+                        .add_enabled(restore_enabled, egui::Button::new("Restore from Previous Version"))
+                        .clicked()
+                    {
+                        self.legacy_restore_in_progress = true;
+                        app_action |= AppAction::BackendTask(BackendTask::MigrationTask(
+                            MigrationTask::RestoreFromPreviousVersion,
+                        ));
+                    }
+                    if self.legacy_restore_in_progress {
+                        ui.spinner();
+                    }
+                });
+                ui.add_space(12.0);
+
+                ui.label(
                     egui::RichText::new("Remove all local data for the current network (wallets, contacts, identities, tokens, etc.).")
                         .color(DashColors::text_secondary(dark_mode)),
                 );
@@ -717,7 +743,10 @@ impl NetworkChooserScreen {
                 .min_size(egui::vec2(0.0, 36.0));
 
                 if ui
-                    .add_enabled(!self.db_clear_in_progress, clear_button)
+                    .add_enabled(
+                        !self.db_clear_in_progress && !self.legacy_restore_in_progress,
+                        clear_button,
+                    )
                     .clicked()
                 {
                     let message = format!(
@@ -1447,7 +1476,9 @@ impl ScreenLike for NetworkChooserScreen {
         // refresh ("Updated to N node addresses.").
 
         // Handle DapiNodesDiscovered (from "Refresh DAPI endpoints" button)
-        if let BackendTaskSuccessResult::NetworkDatabaseCleared { .. } =
+        if let BackendTaskSuccessResult::PreviousVersionRestored(_) = &backend_task_success_result {
+            self.legacy_restore_in_progress = false;
+        } else if let BackendTaskSuccessResult::NetworkDatabaseCleared { .. } =
             &backend_task_success_result
         {
             self.db_clear_in_progress = false;
@@ -1488,8 +1519,12 @@ impl ScreenLike for NetworkChooserScreen {
     }
 
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
-        if matches!(context, BackendTaskContext::ClearNetworkDatabase) {
-            self.db_clear_in_progress = false;
+        match context {
+            BackendTaskContext::ClearNetworkDatabase => self.db_clear_in_progress = false,
+            BackendTaskContext::RestoreFromPreviousVersion => {
+                self.legacy_restore_in_progress = false;
+            }
+            _ => {}
         }
     }
 

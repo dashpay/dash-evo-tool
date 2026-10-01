@@ -376,7 +376,15 @@ impl Signer<IdentityPublicKey> for QualifiedIdentity {
         let resolved = self
             .resolve_private_key_bytes(identity_public_key)
             .await
-            .map_err(|e| ProtocolError::Generic(e.to_string()))?;
+            .map_err(|e| {
+                let message = e.to_string();
+                // `ProtocolError` cannot carry the typed cause; park it for the
+                // `From<SdkError>` conversion (see `backend_task::signing_failure`).
+                crate::backend_task::signing_failure::record(
+                    self.signing_key_unavailable(identity_public_key, e),
+                );
+                ProtocolError::Generic(message)
+            })?;
 
         let (_, private_key) = resolved.ok_or_else(|| {
             tracing::error!(
@@ -756,6 +764,25 @@ impl QualifiedIdentity {
         match first_failure {
             Some(failure) => Err(failure),
             None => Ok(None),
+        }
+    }
+
+    /// Wrap a key-resolution failure with which identity, key and wallet(s) it
+    /// concerned, for the details panel and logs.
+    fn signing_key_unavailable(&self, key: &IdentityPublicKey, source: TaskError) -> TaskError {
+        let mut wallet_seed_hashes: Vec<String> = self
+            .private_keys
+            .candidates(key)
+            .filter_map(|placement| self.private_keys.wallet_seed_hash_for(&placement))
+            .map(hex::encode)
+            .collect();
+        wallet_seed_hashes.dedup();
+        TaskError::IdentitySigningKeyUnavailable {
+            identity_id: self.identity.id().to_string(Encoding::Base58),
+            key_id: key.id(),
+            purpose: key.purpose(),
+            wallet_seed_hashes,
+            source: Box::new(source),
         }
     }
 
@@ -2056,6 +2083,97 @@ mod key_resolution_tests {
                 .is_none()
         );
         assert!(!identity.can_sign_with(&key));
+    }
+
+    /// A wallet-derived key whose wallet seed is gone from this device, wired
+    /// to a real (empty) vault — the shape a removed or never-migrated wallet
+    /// leaves behind.
+    fn identity_with_orphaned_wallet_key(
+        key: &IdentityPublicKey,
+        seed_hash: WalletSeedHash,
+        dir: &std::path::Path,
+    ) -> QualifiedIdentity {
+        use crate::model::qualified_identity::encrypted_key_storage::WalletDerivationPath;
+        use crate::wallet_backend::SecretAccess;
+        use crate::wallet_backend::secret_prompt::test_support::TestPrompt;
+        use crate::wallet_backend::single_key::open_secret_store;
+
+        let mut identity = masternode_with(
+            key,
+            &[(
+                MAIN,
+                PrivateKeyData::AtWalletDerivationPath(WalletDerivationPath {
+                    wallet_seed_hash: seed_hash,
+                    derivation_path: Default::default(),
+                }),
+            )],
+        );
+        let store = Arc::new(open_secret_store(&dir.join("secrets.pwsvault")).expect("vault"));
+        identity.secret_access = Some(SecretAccess::new(
+            store,
+            Arc::new(TestPrompt::never()),
+            Network::Testnet,
+        ));
+        identity
+    }
+
+    /// Signing with a key whose wallet seed is missing must reach the caller as
+    /// the dedicated typed error — carrying the identity, key and wallet — not
+    /// as a generic SDK error wrapping a stringified message.
+    #[tokio::test]
+    async fn signing_with_a_missing_wallet_seed_surfaces_the_typed_error() {
+        let key = voting_key(4);
+        let seed_hash = [0x7D; 32];
+        let dir = tempfile::tempdir().expect("tempdir");
+        let identity = identity_with_orphaned_wallet_key(&key, seed_hash, dir.path());
+
+        let error = crate::backend_task::signing_failure::scope(async {
+            let protocol_error = identity
+                .sign(&key, b"payload")
+                .await
+                .expect_err("no seed, no signature");
+            TaskError::from(dash_sdk::Error::Protocol(protocol_error))
+        })
+        .await;
+
+        let TaskError::IdentitySigningKeyUnavailable {
+            identity_id,
+            key_id,
+            purpose,
+            wallet_seed_hashes,
+            source,
+        } = &error
+        else {
+            panic!("expected IdentitySigningKeyUnavailable, got {error:?}");
+        };
+        assert_eq!(
+            identity_id,
+            &Identifier::from([1u8; 32]).to_string(Encoding::Base58)
+        );
+        assert_eq!(*key_id, 4);
+        assert_eq!(*purpose, Purpose::VOTING);
+        assert_eq!(wallet_seed_hashes, &vec![hex::encode(seed_hash)]);
+        assert!(
+            matches!(**source, TaskError::SecretSeamMissing),
+            "cause preserved, got {source:?}"
+        );
+        assert_eq!(
+            error.to_string(),
+            TaskError::SecretSeamMissing.to_string(),
+            "the banner shows the missing-wallet message"
+        );
+    }
+
+    /// Outside a backend-task scope the conversion keeps its previous shape.
+    #[tokio::test]
+    async fn signing_failure_outside_a_task_scope_stays_an_sdk_error() {
+        let key = voting_key(4);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let identity = identity_with_orphaned_wallet_key(&key, [0x7D; 32], dir.path());
+
+        let protocol_error = identity.sign(&key, b"payload").await.expect_err("no seed");
+        let error = TaskError::from(dash_sdk::Error::Protocol(protocol_error));
+        assert!(matches!(error, TaskError::SdkError { .. }), "got {error:?}");
     }
 }
 

@@ -22,6 +22,13 @@ impl ContestState {
     pub fn state_is_votable(&self) -> bool {
         matches!(self, ContestState::Joinable | ContestState::Ongoing)
     }
+
+    /// Whether the contest is positively known to be decided — won or locked.
+    ///
+    /// `Unknown` is not decided: it only means DET lacks the data to tell.
+    pub fn is_decided(&self) -> bool {
+        matches!(self, ContestState::WonBy(_) | ContestState::Locked)
+    }
 }
 
 #[derive(Debug, Encode, Decode, Clone)]
@@ -172,6 +179,19 @@ mod tests {
             (ContestState::Locked, false),
         ] {
             assert_eq!(contest(state).is_votable(), expected);
+        }
+    }
+
+    #[test]
+    fn contest_is_decided_only_when_won_or_locked() {
+        for (state, expected) in [
+            (ContestState::Unknown, false),
+            (ContestState::Joinable, false),
+            (ContestState::Ongoing, false),
+            (ContestState::WonBy(Identifier::from([9u8; 32])), true),
+            (ContestState::Locked, true),
+        ] {
+            assert_eq!(state.is_decided(), expected, "{state:?}");
         }
     }
 

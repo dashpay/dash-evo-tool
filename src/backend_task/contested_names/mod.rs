@@ -2482,6 +2482,38 @@ mod tests {
         );
     }
 
+    /// A contest skeleton whose contenders never loaded is `Unknown`, which
+    /// is no evidence of closure: the target must neither fail as
+    /// `VotingEnded` nor lose its lock on a nonmatching reconciliation.
+    #[test]
+    fn an_unknown_contest_is_not_treated_as_closed() {
+        let (_temp, context) = vote_context();
+        context
+            .insert_name_contests_as_normalized_names(vec!["dominguez".to_owned()])
+            .expect("store contest skeleton");
+        let contests = context.all_contested_names().expect("cached contests");
+        let skeleton = contests.first().expect("skeleton is cached");
+        assert_eq!(
+            skeleton.state,
+            crate::model::contested_name::ContestState::Unknown
+        );
+
+        let availability = dpns_vote_poll_availability(Some(skeleton), 5_000);
+        assert_eq!(availability, DpnsVotePollAvailability::MayAccept);
+        assert_eq!(
+            voting_ended_outcome(Some(skeleton), 5_000),
+            None,
+            "an unknown contest must not fail a vote as VotingEnded"
+        );
+        for observed in [None, Some(ResourceVoteChoice::Abstain)] {
+            assert_eq!(
+                classify_reconciled_vote(observed, ResourceVoteChoice::Lock, availability),
+                None,
+                "observed {observed:?}: the unresolved target stays locked"
+            );
+        }
+    }
+
     /// VOTE-TC-103 (executor half): a queued target on a contest that closed
     /// after review is claimed and failed as `VotingEnded`; nothing is sent
     /// (the mock SDK has no broadcast expectation, so a submit would fail).

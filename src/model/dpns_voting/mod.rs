@@ -52,7 +52,7 @@ pub enum DpnsVotePollAvailability {
 ///
 /// `now_ms` is the current wall clock in Unix milliseconds, matched against the
 /// contest deadline. Returns [`DpnsVotePollAvailability::MayAccept`] for a
-/// contest DET has never cached.
+/// contest DET has never cached or whose state is still unknown.
 pub fn dpns_vote_poll_availability(
     contest: Option<&crate::model::contested_name::ContestedName>,
     now_ms: u64,
@@ -60,7 +60,7 @@ pub fn dpns_vote_poll_availability(
     let Some(contest) = contest else {
         return DpnsVotePollAvailability::MayAccept;
     };
-    let decided = !contest.is_votable();
+    let decided = contest.state.is_decided();
     let expired = contest.end_time.is_some_and(|end| end <= now_ms);
     if decided || expired {
         DpnsVotePollAvailability::ProvedClosed

@@ -49,7 +49,7 @@ use crate::ui::dpns::copy::tray_label;
 use crate::ui::dpns::copy::{
     before_end_phrase, changes_left_label, confirm_button_label, confirm_change_warning,
     confirm_title, confirm_transactions_line, decision_row, ends_in_label, relative_schedule_label,
-    skipped_header, skipped_reason_line,
+    scheduled_nodes_label, skipped_header, skipped_reason_line,
 };
 use crate::ui::dpns::node_set_picker;
 use crate::ui::dpns::progress_drawer;
@@ -58,7 +58,9 @@ use crate::ui::state::dpns_vote_cards::{
     CantVoteReason, CardPlacement, NodeContestState, NodeContestStatus, SHORTCUT_HELP, Shortcut,
     VoteCard, move_focus, shortcut_for, sort_by_time_left,
 };
-use crate::ui::state::dpns_vote_operations::{DpnsVoteOperationSnapshot, ScheduledDpnsVoteRow};
+use crate::ui::state::dpns_vote_operations::{
+    DpnsVoteOperationSnapshot, ScheduledDpnsVoteRow, group_scheduled_rows,
+};
 use crate::ui::state::dpns_vote_state::DpnsVoteStateSnapshot;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{BackendTaskSuccessResult, MessageType, ScreenLike};
@@ -1538,197 +1540,212 @@ impl DPNSScreen {
     }
 
     /// Show the Scheduled Votes table
+    /// Scheduled view grouped by decision (VOTE-FR-088): one row per name ×
+    /// choice × time with an expandable node list carrying per-node status
+    /// and actions.
     fn render_table_scheduled_votes(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
-        let mut show_cast_overlay = false;
-        let mut sorted_votes = {
-            let guard = self.scheduled_votes.lock_recover();
-            guard.clone()
-        };
-        sorted_votes.sort_by(|a, b| {
-            let order = a.vote.contested_name.cmp(&b.vote.contested_name);
-            if self.sort_order == SortOrder::Descending {
-                order.reverse()
-            } else {
-                order
+        let mut show_cast_progress = false;
+        let rows = self.scheduled_votes.lock_recover().clone();
+        let mut groups = group_scheduled_rows(rows);
+        if self.sort_order == SortOrder::Descending {
+            groups.reverse();
+        }
+        let now = Utc::now().timestamp_millis().max(0) as u64;
+        egui::ScrollArea::both().show(ui, |ui| {
+            for (index, group) in groups.iter().enumerate() {
+                let dark_mode = ui.visuals().dark_mode;
+                let choice = vote_choice_label(
+                    group.choice,
+                    self.candidate_name(&group.contested_name, group.choice),
+                );
+                let preset = group.rows.iter().find_map(|row| {
+                    let (_, key) = row.journal_target.as_ref()?;
+                    self.relative_schedule_labels
+                        .get(&(key.clone(), group.unix_timestamp))
+                });
+                let when = match preset {
+                    Some(preset) => {
+                        relative_schedule_label(*preset, &utc_minute(group.unix_timestamp))
+                    }
+                    None => match Utc.timestamp_millis_opt(group.unix_timestamp as i64) {
+                        LocalResult::Single(date) => timestamp_with_relative(date),
+                        _ => "Invalid timestamp".to_owned(),
+                    },
+                };
+                let needs_attention = group.rows.iter().any(|row| {
+                    schedule_is_missed(
+                        row.status,
+                        VoteTiming::Scheduled(row.vote.unix_timestamp),
+                        now,
+                    ) || scheduled_failure_guidance(row.status, row.failure).is_some()
+                });
+                egui::Frame::group(ui.style()).show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
+                    ui.label(
+                        RichText::new(format!(
+                            "{name}.dash · {choice}",
+                            name = group.contested_name
+                        ))
+                        .strong()
+                        .color(DashColors::text_primary(dark_mode)),
+                    );
+                    ui.label(RichText::new(when).color(DashColors::text_secondary(dark_mode)));
+                    egui::CollapsingHeader::new(scheduled_nodes_label(group.rows.len()))
+                        .id_salt(("scheduled_group", index))
+                        .default_open(group.rows.len() <= 3 || needs_attention)
+                        .show(ui, |ui| {
+                            self.render_scheduled_group_rows(
+                                ui,
+                                index,
+                                &group.rows,
+                                &mut action,
+                                &mut show_cast_progress,
+                            );
+                        });
+                });
+                ui.add_space(6.0);
             }
         });
+        if show_cast_progress {
+            self.show_vote_progress(ui.ctx());
+        }
+        action
+    }
 
-        egui::ScrollArea::both().show(ui, |ui| {
-            TableBuilder::new(ui)
-                .striped(false)
-                .resizable(true)
-                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                .column(Column::auto().resizable(true)) // ContestedName
-                .column(Column::auto().resizable(true)) // Voter
-                .column(Column::auto().resizable(true)) // Choice
-                .column(Column::auto().resizable(true)) // Time
-                .column(Column::initial(280.0).resizable(true)) // Status
-                .column(Column::auto().resizable(true)) // Actions
-                .header(30.0, |mut header| {
-                    header.col(|ui| {
-                        if ui.button("Name").clicked() {
-                            self.toggle_sort(SortColumn::ContestedName);
-                        }
-                    });
-                    header.col(|ui| {
-                        let dark_mode = ui.style().visuals.dark_mode;
-                        ui.heading(
-                            RichText::new("Voter").color(DashColors::text_primary(dark_mode)),
-                        );
-                    });
-                    header.col(|ui| {
-                        let dark_mode = ui.style().visuals.dark_mode;
-                        ui.heading(
-                            RichText::new("Vote Choice").color(DashColors::text_primary(dark_mode)),
-                        );
-                    });
-                    header.col(|ui| {
-                        if ui.button("Scheduled Time").clicked() {
-                            self.toggle_sort(SortColumn::EndingTime);
-                        }
-                    });
-                    header.col(|ui| {
-                        let dark_mode = ui.style().visuals.dark_mode;
-                        ui.heading(
-                            RichText::new("Status").color(DashColors::text_primary(dark_mode)),
-                        );
-                    });
-                    header.col(|ui| {
-                        let dark_mode = ui.style().visuals.dark_mode;
-                        ui.heading(
-                            RichText::new("Actions").color(DashColors::text_primary(dark_mode)),
-                        );
-                    });
-                })
-                .body(|mut body| {
-                    for scheduled_row in &sorted_votes {
-                        let vote = &scheduled_row.vote;
-                        let pending_key = DpnsScheduledVoteKey {
-                            network: scheduled_row
-                                .journal_target
-                                .as_ref()
-                                .map_or(self.app_context.network(), |(_, key)| key.network),
-                            voter_id: vote.voter_id,
-                            contested_name: vote.contested_name.clone(),
-                        };
-                        let missed = schedule_is_missed(scheduled_row.status, VoteTiming::Scheduled(vote.unix_timestamp), Utc::now().timestamp_millis().max(0) as u64);
-                        let failure_guidance = if missed { Some(MISSED_SCHEDULE_GUIDANCE) } else { scheduled_failure_guidance(scheduled_row.status, scheduled_row.failure) };
-                        body.row(if failure_guidance.is_some() { 95.0 } else { 25.0 }, |mut row| {
-                            row.col(|ui| {
-                                ui.add(Label::new(format!(
-                                    "{name}.dash",
-                                    name = vote.contested_name
-                                )));
-                            });
-                            row.col(|ui| {
-                                let voter = self
-                                    .voting_identities
-                                    .iter()
-                                    .find(|identity| identity.identity.id() == vote.voter_id)
-                                    .and_then(|identity| identity.alias.clone())
-                                    .unwrap_or_else(|| short_identifier(vote.voter_id));
-                                ui.add(Label::new(voter));
-                            });
-                            row.col(|ui| {
-                                let candidate_name =
-                                    self.candidate_name(&vote.contested_name, vote.choice);
-                                ui.add(Label::new(vote_choice_label(vote.choice, candidate_name)));
-                            });
-                            row.col(|ui| {
-                                let dark_mode = ui.style().visuals.dark_mode;
-                                let preset = scheduled_row.journal_target.as_ref().and_then(|(_, key)| {
-                                    self.relative_schedule_labels
-                                        .get(&(key.clone(), vote.unix_timestamp))
-                                });
-                                if let Some(preset) = preset {
-                                    ui.label(
-                                        RichText::new(relative_schedule_label(
-                                            *preset,
-                                            &utc_minute(vote.unix_timestamp),
-                                        ))
-                                        .color(DashColors::text_primary(dark_mode)),
-                                    );
-                                } else if let LocalResult::Single(dt) =
-                                    Utc.timestamp_millis_opt(vote.unix_timestamp as i64)
-                                {
-                                    ui.label(
-                                        RichText::new(timestamp_with_relative(dt))
-                                            .color(DashColors::text_primary(dark_mode)),
-                                    );
+    /// The node list inside one scheduled decision: status, guidance and the
+    /// per-node Remove / Edit / Cast now actions.
+    fn render_scheduled_group_rows(
+        &mut self,
+        ui: &mut Ui,
+        group_index: usize,
+        rows: &[ScheduledDpnsVoteRow],
+        action: &mut AppAction,
+        show_cast_progress: &mut bool,
+    ) {
+        let now = Utc::now().timestamp_millis().max(0) as u64;
+        TableBuilder::new(ui)
+            .id_salt(("scheduled_group_rows", group_index))
+            .striped(false)
+            .resizable(true)
+            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+            .column(Column::auto().resizable(true)) // Voter
+            .column(Column::initial(280.0).resizable(true)) // Status
+            .column(Column::auto().resizable(true)) // Actions
+            .body(|mut body| {
+                for scheduled_row in rows {
+                    let vote = &scheduled_row.vote;
+                    let pending_key = DpnsScheduledVoteKey {
+                        network: scheduled_row
+                            .journal_target
+                            .as_ref()
+                            .map_or(self.app_context.network(), |(_, key)| key.network),
+                        voter_id: vote.voter_id,
+                        contested_name: vote.contested_name.clone(),
+                    };
+                    let missed = schedule_is_missed(
+                        scheduled_row.status,
+                        VoteTiming::Scheduled(vote.unix_timestamp),
+                        now,
+                    );
+                    let failure_guidance = if missed {
+                        Some(MISSED_SCHEDULE_GUIDANCE)
+                    } else {
+                        scheduled_failure_guidance(scheduled_row.status, scheduled_row.failure)
+                    };
+                    let height = if failure_guidance.is_some() { 95.0 } else { 25.0 };
+                    body.row(height, |mut row| {
+                        row.col(|ui| {
+                            let voter = self
+                                .voting_identities
+                                .iter()
+                                .find(|identity| identity.identity.id() == vote.voter_id)
+                                .and_then(|identity| identity.alias.clone())
+                                .unwrap_or_else(|| short_identifier(vote.voter_id));
+                            ui.add(Label::new(voter));
+                        });
+                        row.col(|ui| {
+                            let dark_mode = ui.style().visuals.dark_mode;
+                            ui.vertical(|ui| {
+                                let status = if missed {
+                                    "Missed automatic vote"
                                 } else {
-                                    ui.label(
-                                        RichText::new("Invalid timestamp")
-                                            .color(DashColors::text_primary(dark_mode)),
-                                    );
-                                }
-                            });
-                            row.col(|ui| {
-                                let dark_mode = ui.style().visuals.dark_mode;
-                                ui.vertical(|ui| {
-                                    ui.label(RichText::new(if missed { "Missed automatic vote" } else { target_outcome_label(scheduled_row.status, scheduled_row.failure) })
-                                        .color(DashColors::text_primary(dark_mode)));
-                                    if let Some(guidance) = failure_guidance {
-                                        ui.add(Label::new(guidance).wrap());
-                                    }
-                                });
-                            });
-                            row.col(|ui| {
-                                let remove_enabled =
-                                    scheduled_vote_remove_enabled(scheduled_row.status);
-                                if ui
-                                    .add_enabled(remove_enabled, Button::new("Remove"))
-                                    .disabled_tooltip(
-                                        "This scheduled vote cannot be removed while its result is being checked.",
-                                    )
-                                    .clicked()
-                                {
-                                    action = AppAction::BackendTask(
-                                        BackendTask::ContestedResourceTask(
-                                            scheduled_vote_removal_task(scheduled_row),
-                                        ),
-                                    );
-                                }
-                                if ui.add_enabled(scheduled_row.status == DpnsVoteTargetStatus::Scheduled
-                                    && !self.pending_scheduled_actions.contains_key(&pending_key), Button::new("Edit"))
-                                    .disabled_tooltip("Only scheduled votes that have not started can be edited.")
-                                    .clicked() {
-                                    self.open_schedule_editor(scheduled_row);
-                                }
-                                let cast_button_enabled = scheduled_vote_cast_enabled(
-                                    scheduled_row.status,
-                                    self.pending_scheduled_actions.contains_key(&pending_key),
-                                ) && self.voting_identities.iter().any(|identity| identity.identity.id() == vote.voter_id);
-                                if ui
-                                    .add_enabled(cast_button_enabled, Button::new("Cast now"))
-                                    .disabled_tooltip("Load this node's voting key and wait for any pending submission to finish before casting.")
-                                    .clicked()
-                                    && let Some(found) = self
-                                        .voting_identities
-                                        .iter()
-                                        .find(|identity| {
-                                            identity.identity.id() == vote.voter_id
-                                        })
-                                        .cloned()
-                                {
-                                    let task = BackendTask::ContestedResourceTask(
-                                        ContestedResourceTask::CastScheduledVote(vote.clone(), Box::new(found)));
-                                    let context = BackendTaskContext::for_dispatch_on(&task, self.app_context.network());
-                                    self.pending_scheduled_actions.insert(pending_key.clone(), context.clone());
-                                    action = AppAction::BackendTaskWithContext { task, context };
-                                    show_cast_overlay = true;
+                                    target_outcome_label(scheduled_row.status, scheduled_row.failure)
+                                };
+                                ui.label(
+                                    RichText::new(status)
+                                        .color(DashColors::text_primary(dark_mode)),
+                                );
+                                if let Some(guidance) = failure_guidance {
+                                    ui.add(Label::new(guidance).wrap());
                                 }
                             });
                         });
-                    }
-                });
-        });
-
-        if show_cast_overlay {
-            self.show_vote_progress(ui.ctx());
-        }
-
-        action
+                        row.col(|ui| {
+                            if ui
+                                .add_enabled(
+                                    scheduled_vote_remove_enabled(scheduled_row.status),
+                                    Button::new("Remove"),
+                                )
+                                .disabled_tooltip(
+                                    "This scheduled vote cannot be removed while its result is being checked.",
+                                )
+                                .clicked()
+                            {
+                                *action = AppAction::BackendTask(BackendTask::ContestedResourceTask(
+                                    scheduled_vote_removal_task(scheduled_row),
+                                ));
+                            }
+                            let dispatch_pending =
+                                self.pending_scheduled_actions.contains_key(&pending_key);
+                            if ui
+                                .add_enabled(
+                                    scheduled_row.status == DpnsVoteTargetStatus::Scheduled
+                                        && !dispatch_pending,
+                                    Button::new("Edit"),
+                                )
+                                .disabled_tooltip(
+                                    "Only scheduled votes that have not started can be edited.",
+                                )
+                                .clicked()
+                            {
+                                self.open_schedule_editor(scheduled_row);
+                            }
+                            let voter = self
+                                .voting_identities
+                                .iter()
+                                .find(|identity| identity.identity.id() == vote.voter_id)
+                                .cloned();
+                            let cast_enabled =
+                                scheduled_vote_cast_enabled(scheduled_row.status, dispatch_pending)
+                                    && voter.is_some();
+                            if ui
+                                .add_enabled(cast_enabled, Button::new("Cast now"))
+                                .disabled_tooltip(
+                                    "Load this node's voting key and wait for any pending submission to finish before casting.",
+                                )
+                                .clicked()
+                                && let Some(found) = voter
+                            {
+                                let task = BackendTask::ContestedResourceTask(
+                                    ContestedResourceTask::CastScheduledVote(
+                                        vote.clone(),
+                                        Box::new(found),
+                                    ),
+                                );
+                                let context = BackendTaskContext::for_dispatch_on(
+                                    &task,
+                                    self.app_context.network(),
+                                );
+                                self.pending_scheduled_actions
+                                    .insert(pending_key.clone(), context.clone());
+                                *action = AppAction::BackendTaskWithContext { task, context };
+                                *show_cast_progress = true;
+                            }
+                        });
+                    });
+                }
+            });
     }
 
     fn open_schedule_editor(&mut self, row: &ScheduledDpnsVoteRow) {

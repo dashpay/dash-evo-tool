@@ -19,6 +19,42 @@ pub(crate) struct ScheduledDpnsVoteRow {
     pub failure: Option<DpnsVoteFailure>,
 }
 
+/// Scheduled rows sharing one decision: name × choice × time (VOTE-FR-088).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ScheduledDecisionGroup {
+    pub contested_name: String,
+    pub choice: dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice,
+    pub unix_timestamp: u64,
+    pub rows: Vec<ScheduledDpnsVoteRow>,
+}
+
+/// Group scheduled rows by decision, ordered by name then time; rows keep
+/// their input order inside a group.
+pub(crate) fn group_scheduled_rows(rows: Vec<ScheduledDpnsVoteRow>) -> Vec<ScheduledDecisionGroup> {
+    let mut groups: Vec<ScheduledDecisionGroup> = Vec::new();
+    for row in rows {
+        match groups.iter_mut().find(|group| {
+            group.contested_name == row.vote.contested_name
+                && group.choice == row.vote.choice
+                && group.unix_timestamp == row.vote.unix_timestamp
+        }) {
+            Some(group) => group.rows.push(row),
+            None => groups.push(ScheduledDecisionGroup {
+                contested_name: row.vote.contested_name.clone(),
+                choice: row.vote.choice,
+                unix_timestamp: row.vote.unix_timestamp,
+                rows: vec![row],
+            }),
+        }
+    }
+    groups.sort_by(|a, b| {
+        a.contested_name
+            .cmp(&b.contested_name)
+            .then(a.unix_timestamp.cmp(&b.unix_timestamp))
+    });
+    groups
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct DpnsVoteOperationSnapshot {
     operations: Vec<DpnsVoteOperation>,
@@ -239,6 +275,45 @@ mod tests {
         assert_eq!(snapshot.operation(live.id), Some(&live));
         assert_eq!(snapshot.operations(), &[live, terminal]);
         assert!(snapshot.is_loaded());
+    }
+
+    /// VOTE-TC-069: one decision on many nodes is one group.
+    #[test]
+    fn scheduled_rows_group_by_decision() {
+        let row = |voter: u8, name: &str, choice, timestamp| ScheduledDpnsVoteRow {
+            vote: legacy_vote(
+                Identifier::from([voter; 32]),
+                name,
+                choice,
+                timestamp,
+                false,
+            ),
+            journal_target: None,
+            status: DpnsVoteTargetStatus::Scheduled,
+            failure: None,
+        };
+        let lock = ResourceVoteChoice::Lock;
+        let mut rows: Vec<_> = (0..24).map(|voter| row(voter, "bob", lock, 50)).collect();
+        rows.push(row(1, "alice", lock, 90));
+        rows.push(row(2, "alice", ResourceVoteChoice::Abstain, 90));
+        rows.push(row(3, "alice", lock, 10));
+        let groups = group_scheduled_rows(rows);
+        assert_eq!(
+            groups
+                .iter()
+                .map(|group| (
+                    group.contested_name.as_str(),
+                    group.unix_timestamp,
+                    group.rows.len()
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("alice", 10, 1),
+                ("alice", 90, 1),
+                ("alice", 90, 1),
+                ("bob", 50, 24)
+            ]
+        );
     }
 
     fn scheduled_operation(

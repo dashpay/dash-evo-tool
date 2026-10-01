@@ -267,6 +267,14 @@ pub fn needs_attention_line(attention: NeedsAttention) -> String {
     format!("Needs attention: {parts}.", parts = parts.join(" · "))
 }
 
+/// Expander label of a scheduled decision's node list (VOTE-FR-088).
+pub fn scheduled_nodes_label(nodes: usize) -> String {
+    match nodes {
+        1 => "1 node".to_owned(),
+        nodes => format!("{nodes} nodes"),
+    }
+}
+
 /// Confirm title (VOTE-FR-080).
 pub fn confirm_title(decisions: usize, nodes: usize) -> String {
     match (decisions, nodes) {

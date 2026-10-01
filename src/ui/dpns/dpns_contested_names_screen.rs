@@ -1427,6 +1427,7 @@ impl DPNSScreen {
         let attention = needs_attention(
             self.vote_operations.operations(),
             self.session_started_ms,
+            &self.app_context.dismissed_dpns_vote_operations(),
             now_ms(),
         );
         if attention.is_empty() {

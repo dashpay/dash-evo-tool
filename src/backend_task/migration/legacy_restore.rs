@@ -414,6 +414,10 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test fixture setup outside any production deletion path"
+    )]
     async fn no_legacy_database_reports_nothing_found() {
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = app_context(dir.path());

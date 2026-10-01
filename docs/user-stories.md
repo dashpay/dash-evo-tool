@@ -100,6 +100,7 @@ As a user, I want to remove a wallet I no longer need so that it does not clutte
 
 - Confirmation prompt before removal.
 - Current wallet data is deleted from local storage. If an older recovery database exists, it remains untouched.
+- Upgrade backups are not deleted with the wallet, since they also hold other wallets' data; they expire through backup retention (WAL-034).
 
 ### WAL-008: View wallet balances [Implemented]
 **Persona:** Alex, Priya, Jordan
@@ -336,7 +337,19 @@ As a user updating from any earlier version I still have installed, I want every
 - Starting the updated app a second time changes nothing further, and a user whose data was already current keeps an untouched database rather than a needlessly rewritten one.
 - Currently a gap: each migration mechanism is unit-tested on synthetic data, but no automated check upgrades a data directory a *released* build actually wrote and confirms the result. The design for closing it is `docs/ai-design/2026-09-10-migration-matrix/design.md`; related implemented behaviour is covered by WAL-032, IDN-016 and IDN-020.
 
-### WAL-034: Restore missing wallets and identity keys from the previous version [Implemented]
+### WAL-034: Control how long upgrade backups are kept [Implemented]
+**Persona:** Alex, Priya, Jordan
+
+As a user whose wallet data was copied before a storage upgrade, I want old upgrade backups to be deleted after a while so that copies of my wallet data do not stay on this device forever.
+
+- Upgrade backups older than 90 days are deleted automatically by default, covering app, wallet, upstream pre-migration and legacy `data.db` backups.
+- Settings → Upgrade Backups lets the user change the period (1 to 3650 days) or keep backups forever. Turning automatic deletion on lets the user choose the period before applying it, and any stricter setting asks for confirmation first, because it deletes backups immediately. A period outside the range is shown with an error and never saved.
+- The setting is one policy for every backup in the data directory, whichever network is open; a saved change applies to every network's backups as soon as the wallet data has opened.
+- The newest complete backup of each database is always kept, whatever its age, so the last recovery copy is never deleted automatically. A backup dated in the future because the system clock ran ahead is not treated as the newest until that date arrives. An empty or cut-off copy never counts as that backup; if no complete copy exists, the newest copy is kept anyway. A copy that cannot be read is never deleted automatically.
+- With "keep forever", no published backup is deleted automatically. Opening the data removes only unfinished copies left by a crash and exact duplicates of a newer backup.
+- Removing a wallet or an identity does not delete upgrade backups. Clearing a network's data deletes that network's wallet backups; backups of the shared app data stay under the retention setting.
+
+### WAL-035: Restore missing wallets and identity keys from the previous version [Implemented]
 **Persona:** Alex, Priya, Jordan
 
 As a user who updated from an earlier version and finds a wallet or identity key missing, I want one button that brings back what the previous version still has saved, so that I can sign again without re-importing everything by hand.

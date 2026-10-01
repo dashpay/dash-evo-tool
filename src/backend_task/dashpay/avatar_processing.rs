@@ -11,6 +11,8 @@ const MAX_IMAGE_SIZE: usize = 5 * 1024 * 1024;
 pub enum AvatarProcessingError {
     #[error("The picture URL must use HTTPS. Enter an HTTPS URL and try again.")]
     HttpsRequired,
+    #[error("The picture URL must point to a public server. Choose a different picture URL.")]
+    PrivateDestination,
     #[error("The picture URL is too long. Use a URL with at most 2048 characters.")]
     UrlTooLong,
     #[error("The picture could not be downloaded. Check its URL and try again.")]
@@ -236,14 +238,66 @@ pub async fn fetch_image_bytes(url: &str) -> Result<Vec<u8>, AvatarProcessingErr
     let client = avatar_client_builder().build()?;
 
     // Send GET request
-    let response = client.get(url).send().await?.error_for_status()?;
+    let request = client.get(url).build()?;
+    validate_avatar_destination(request.url())?;
+    let response = client.execute(request).await?.error_for_status()?;
     validate_image_response(response).await
 }
 
 fn avatar_client_builder() -> reqwest::ClientBuilder {
     reqwest::Client::builder()
         .https_only(true)
+        // A proxy could resolve the destination itself and bypass the checked resolver.
+        .no_proxy()
+        .dns_resolver(Arc::new(PublicAvatarResolver))
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if let Err(error) = validate_avatar_destination(attempt.url()) {
+                attempt.error(error)
+            } else {
+                reqwest::redirect::Policy::limited(10).redirect(attempt)
+            }
+        }))
         .timeout(std::time::Duration::from_secs(30))
+}
+
+fn validate_avatar_destination(url: &reqwest::Url) -> Result<(), AvatarProcessingError> {
+    if url.scheme() != "https" {
+        return Err(AvatarProcessingError::HttpsRequired);
+    }
+    // Literal IPs bypass reqwest's DNS resolver, including canonicalized numeric IPv4 URLs.
+    if let Some(host) = url.host_str()
+        && let Ok(ip) = host.trim_matches(['[', ']']).parse::<std::net::IpAddr>()
+        && !crate::model::avatar::is_public_avatar_address(ip)
+    {
+        return Err(AvatarProcessingError::PrivateDestination);
+    }
+    Ok(())
+}
+
+struct PublicAvatarResolver;
+
+impl reqwest::dns::Resolve for PublicAvatarResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        Box::pin(async move {
+            let addresses = tokio::net::lookup_host((name.as_str(), 0)).await?.collect();
+            public_avatar_addresses(addresses).map_err(Into::into)
+        })
+    }
+}
+
+fn public_avatar_addresses(
+    addresses: Vec<std::net::SocketAddr>,
+) -> Result<reqwest::dns::Addrs, AvatarProcessingError> {
+    if addresses.is_empty()
+        || addresses
+            .iter()
+            .any(|address| !crate::model::avatar::is_public_avatar_address(address.ip()))
+    {
+        return Err(AvatarProcessingError::PrivateDestination);
+    }
+    // Return exactly the checked addresses to the connector: no second DNS lookup
+    // that could rebind a previously public name to an internal destination.
+    Ok(Box::new(addresses.into_iter()))
 }
 
 async fn validate_image_response(
@@ -305,6 +359,28 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn avatar_private_literal_is_rejected_before_connecting() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            fetch_image_bytes(&format!(
+                "https://{}/avatar.png",
+                listener.local_addr().unwrap()
+            )),
+        )
+        .await;
+        assert!(
+            result.is_ok_and(|result| result.is_err()),
+            "private destinations must fail before opening a connection"
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), listener.accept())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
     async fn avatar_client_rejects_http_before_connecting() {
         let error = avatar_client_builder()
             .no_proxy()
@@ -318,6 +394,78 @@ mod tests {
             error.is_builder(),
             "insecure URLs must be rejected before connecting: {error:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn avatar_dns_rejects_localhost_and_rebinding_answers() {
+        use reqwest::dns::Resolve;
+        assert!(
+            PublicAvatarResolver
+                .resolve("localhost".parse().unwrap())
+                .await
+                .is_err()
+        );
+        let public = "93.184.216.34:0".parse().unwrap();
+        let private = "127.0.0.1:0".parse().unwrap();
+        assert_eq!(
+            public_avatar_addresses(vec![public])
+                .unwrap()
+                .collect::<Vec<_>>(),
+            vec![public]
+        );
+        assert!(public_avatar_addresses(vec![public, private]).is_err());
+        assert!(
+            public_avatar_addresses(vec![private]).is_err(),
+            "a subsequent private answer must fail closed"
+        );
+    }
+
+    #[tokio::test]
+    async fn avatar_redirects_reject_private_literals_dns_and_http() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        for destination in [
+            "https://127.0.0.1:1/avatar",
+            "https://localhost:1/avatar",
+            "http://example.com/avatar",
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0; 4096];
+                stream.read(&mut request).await.unwrap();
+                stream.write_all(format!("HTTP/1.1 302 Found\r\nLocation: {destination}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+            });
+            // Only the synthetic origin uses HTTP; exercise the production redirect
+            // policy and checked DNS resolver without a test TLS dependency or keys.
+            let error = avatar_client_builder()
+                .https_only(false)
+                .build()
+                .unwrap()
+                .get(format!("http://{address}/redirect"))
+                .send()
+                .await
+                .unwrap_err();
+            let mut source: Option<&(dyn std::error::Error + 'static)> = Some(&error);
+            let mut denied = false;
+            while let Some(error) = source {
+                denied |= error
+                    .downcast_ref::<AvatarProcessingError>()
+                    .is_some_and(|error| {
+                        matches!(
+                            error,
+                            AvatarProcessingError::PrivateDestination
+                                | AvatarProcessingError::HttpsRequired
+                        )
+                    });
+                source = error.source();
+            }
+            assert!(
+                denied,
+                "redirect must fail at destination policy, not connection: {error:?}"
+            );
+            server.await.unwrap();
+        }
     }
 
     async fn chunked_image_response(

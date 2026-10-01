@@ -1085,12 +1085,12 @@ impl ProfileScreen {
                 self.loading = false;
                 self.profile_load_attempted = true;
             }
-            BackendTaskSuccessResult::DashPayProfileUpdated(owner)
+            BackendTaskSuccessResult::DashPayProfileUpdated(snapshot)
                 if self.owns_request(&self.pending_save, context)
                     && self
                         .selected_identity
                         .as_ref()
-                        .is_some_and(|identity| identity.identity.id() == *owner) =>
+                        .is_some_and(|identity| identity.identity.id() == snapshot.owner) =>
             {
                 self.pending_save = None;
                 self.pending_load = None;
@@ -1098,6 +1098,18 @@ impl ProfileScreen {
                 self.saving = false;
             }
             _ => return,
+        }
+        if let BackendTaskSuccessResult::DashPayProfile(snapshot)
+        | BackendTaskSuccessResult::DashPayProfileUpdated(snapshot) = &result
+            && !self.app_context.profile_snapshot_is_current(snapshot)
+        {
+            self.profile_load_attempted = false;
+            if matches!(result, BackendTaskSuccessResult::DashPayProfileUpdated(_)) {
+                self.editing = true;
+                self.has_unsaved_changes = true;
+                self.pending_action = Some(Box::new(self.trigger_load_profile()));
+            }
+            return;
         }
         self.apply_profile_result(result);
     }
@@ -1121,8 +1133,8 @@ impl ProfileScreen {
         }
 
         match result {
-            BackendTaskSuccessResult::DashPayProfile(profile_data) => {
-                if let Some((display_name, bio, avatar_url)) = profile_data {
+            BackendTaskSuccessResult::DashPayProfile(snapshot) => {
+                if let Some((display_name, bio, avatar_url)) = snapshot.profile {
                     // Check if avatar URL changed - if so, we need to re-fetch the avatar
                     let old_avatar_url = self.profile.as_ref().map(|p| p.avatar_url.clone());
                     let avatar_url_changed = old_avatar_url.as_ref() != Some(&avatar_url);
@@ -1158,8 +1170,25 @@ impl ProfileScreen {
                     // DashPayProfile bound to the owner.
                     // Don't show a message - let the UI show "Create Profile" button
                 }
+                if self.editing {
+                    self.original_display_name = self
+                        .profile
+                        .as_ref()
+                        .map_or_else(String::new, |profile| profile.display_name.clone());
+                    self.original_bio = self
+                        .profile
+                        .as_ref()
+                        .map_or_else(String::new, |profile| profile.bio.clone());
+                    self.original_avatar_url = self
+                        .profile
+                        .as_ref()
+                        .map_or_else(String::new, |profile| profile.avatar_url.clone());
+                    self.has_unsaved_changes = self.edit_display_name != self.original_display_name
+                        || self.edit_bio != self.original_bio
+                        || self.edit_avatar_url != self.original_avatar_url;
+                }
             }
-            BackendTaskSuccessResult::DashPayProfileUpdated(_identity_id) => {
+            BackendTaskSuccessResult::DashPayProfileUpdated(snapshot) => {
                 // Profile was successfully created/updated; the upstream
                 // mirror (`update_profile` → `dashpay_set_profile`) is the
                 // authoritative write, so we only refresh local in-memory
@@ -1168,9 +1197,9 @@ impl ProfileScreen {
                     use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
                     let identity_id = identity.identity.id();
 
-                    let display_name = self.edit_display_name.trim();
-                    let bio = self.edit_bio.trim();
-                    let avatar_url = self.edit_avatar_url.trim();
+                    let Some((display_name, bio, avatar_url)) = snapshot.profile else {
+                        return;
+                    };
 
                     tracing::debug!(
                         identity = %identity_id,
@@ -1200,5 +1229,127 @@ impl ProfileScreen {
                 // Ignore other results - profile screen only handles DashPayProfile and DashPayProfileUpdated
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod profile_race_tests {
+    use super::*;
+    use crate::model::dashpay::ProfileSnapshot;
+    use dash_sdk::platform::Identifier;
+
+    fn screen(context: Arc<AppContext>) -> ProfileScreen {
+        let identity = QualifiedIdentity {
+            identity: dash_sdk::dpp::identity::Identity::create_basic_identity(
+                Identifier::from([74; 32]),
+                dash_sdk::dpp::version::PlatformVersion::latest(),
+            )
+            .unwrap(),
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: crate::model::qualified_identity::IdentityType::User,
+            alias: None,
+            private_keys: Default::default(),
+            dpns_names: vec![],
+            associated_wallets: Default::default(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: Default::default(),
+            status: crate::model::qualified_identity::IdentityStatus::Active,
+            network: dash_sdk::dpp::dashcore::Network::Testnet,
+        };
+        let mut screen = ProfileScreen::new(context);
+        screen.selected_identity = Some(identity);
+        screen.profile = Some(DashPayProfile {
+            display_name: "Current".into(),
+            bio: String::new(),
+            avatar_url: String::new(),
+            avatar_bytes: None,
+        });
+        screen
+    }
+
+    #[test]
+    fn legacy_profile_rejects_queued_present_absent_and_saved_snapshots() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = crate::context::test_support::test_app_context(dir.path());
+        let mut screen = screen(app.clone());
+        let owner = screen.selected_identity.as_ref().unwrap().identity.id();
+        for profile in [Some(("Old".into(), String::new(), String::new())), None] {
+            let AppAction::BackendTaskWithContext { context, .. } = screen.trigger_load_profile()
+            else {
+                panic!("load")
+            };
+            let revision = app.begin_identity_profile_load(owner);
+            assert!(app.record_identity_profile_name(owner, revision, Some("Old")));
+            app.save_identity_profile_name(owner, Some("Current"));
+            screen.display_backend_task_result(
+                &context,
+                BackendTaskSuccessResult::DashPayProfile(ProfileSnapshot {
+                    network: app.network,
+                    owner,
+                    revision,
+                    profile,
+                }),
+            );
+            assert_eq!(screen.profile.as_ref().unwrap().display_name, "Current");
+            assert!(!screen.loading && screen.pending_load.is_none());
+            assert!(!screen.profile_load_attempted, "stale loads can be retried");
+        }
+        screen.edit_display_name = "Submitted".into();
+        let AppAction::BackendTaskWithContext { context, .. } = screen.save_profile() else {
+            panic!("save")
+        };
+        let revision = app.save_identity_profile_name(owner, Some("Submitted"));
+        app.save_identity_profile_name(owner, Some("Newer consumer"));
+        screen.display_backend_task_result(
+            &context,
+            BackendTaskSuccessResult::DashPayProfileUpdated(ProfileSnapshot {
+                network: app.network,
+                owner,
+                revision,
+                profile: Some(("Submitted".into(), String::new(), String::new())),
+            }),
+        );
+        assert_eq!(screen.profile.as_ref().unwrap().display_name, "Current");
+        assert!(!screen.saving && screen.pending_save.is_none());
+        assert!(
+            screen.pending_action.is_some() && screen.loading && screen.editing,
+            "reload current fields while retaining the draft"
+        );
+        assert!(
+            !screen.show_success,
+            "an obsolete save must not confirm the baseline"
+        );
+        assert_eq!(
+            screen.edit_display_name, "Submitted",
+            "keep the user's draft"
+        );
+    }
+
+    #[test]
+    fn legacy_profile_save_uses_confirmed_fields_instead_of_live_edits() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = crate::context::test_support::test_app_context(dir.path());
+        let mut screen = screen(app.clone());
+        let owner = screen.selected_identity.as_ref().unwrap().identity.id();
+        screen.edit_display_name = "Submitted".into();
+        let AppAction::BackendTaskWithContext { context, .. } = screen.save_profile() else {
+            panic!("save")
+        };
+        screen.edit_display_name = "Unsubmitted".into();
+        let revision = app.save_identity_profile_name(owner, Some("Submitted"));
+        screen.display_backend_task_result(
+            &context,
+            BackendTaskSuccessResult::DashPayProfileUpdated(ProfileSnapshot {
+                network: app.network,
+                owner,
+                revision,
+                profile: Some(("Submitted".into(), String::new(), String::new())),
+            }),
+        );
+        assert_eq!(screen.profile.as_ref().unwrap().display_name, "Submitted");
+        assert!(screen.show_success);
     }
 }

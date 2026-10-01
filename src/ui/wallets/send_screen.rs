@@ -2380,7 +2380,7 @@ impl WalletSendScreen {
 
         // Add identities for autocomplete by profile name or username.
         if !loaded_identities.is_empty() {
-            builder = builder.with_identities(Some(&self.app_context), loaded_identities);
+            builder = builder.with_identities(&self.app_context, loaded_identities);
         }
 
         builder
@@ -2490,7 +2490,7 @@ impl WalletSendScreen {
         let signature = signature.finish();
         if self.address_input_identity_signature != Some(signature) {
             if let Some(address_input) = &mut self.address_input {
-                address_input.set_identities(Some(&self.app_context), identities);
+                address_input.set_identities(&self.app_context, identities);
             }
             self.address_input_identity_signature = Some(signature);
         }

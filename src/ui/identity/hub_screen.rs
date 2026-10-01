@@ -211,6 +211,7 @@ impl IdentityHubScreen {
     /// remain guarded, and stale guards are pruned during the contacts reset.
     pub(crate) fn reset_for_context_change(&mut self) {
         self.reset_contacts_for_identity_change();
+        self.settings_tab = SettingsTab::new();
         self.profile_cache.reset();
         self.selection.clear_picker_override();
         self.selection.clear_searches();
@@ -602,7 +603,18 @@ impl ScreenLike for IdentityHubScreen {
         context: &BackendTaskContext,
         result: BackendTaskSuccessResult,
     ) {
-        self.profile_cache.record_result(context, &result);
+        self.profile_cache
+            .record_result(&self.app_context, context, &result);
+        if let BackendTaskSuccessResult::DashPayProfileUpdated(snapshot) = &result {
+            handle_profile_updated(
+                &self.app_context,
+                &mut self.settings_tab,
+                &mut self.profile_cache,
+                context,
+                snapshot,
+            );
+            return;
+        }
         self.display_task_result(result);
     }
 
@@ -622,17 +634,6 @@ impl ScreenLike for IdentityHubScreen {
         }
 
         match &result {
-            // A confirmed profile-save success: commit the edit baseline on the
-            // Settings tab so the Save button re-enables only after the next
-            // edit. Guard by identity ID to reject stale results.
-            BackendTaskSuccessResult::DashPayProfileUpdated(saved_id) => {
-                handle_profile_updated(
-                    &mut self.settings_tab,
-                    &mut self.profile_cache,
-                    self.app_context.egui_ctx(),
-                    *saved_id,
-                );
-            }
             // Populate the Received/Sent request caches so the Contacts tab
             // can render real RequestCard rows instead of hardcoded empties.
             // The result arrives from LoadContactRequests,
@@ -720,10 +721,7 @@ impl ScreenLike for IdentityHubScreen {
 
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
         self.profile_cache.record_error(context);
-        if let Some(identity_id) = context.dashpay_profile_update_identity() {
-            self.settings_tab
-                .clear_pending_save_for_identity(&identity_id);
-        }
+        self.settings_tab.clear_pending_save(context);
     }
 
     fn display_task_error(&mut self, error: &TaskError) -> bool {
@@ -949,19 +947,34 @@ fn removal_invalidates_identity_caches(
     })
 }
 
-fn handle_profile_updated(
+pub(super) fn handle_profile_updated(
+    app_context: &AppContext,
     settings: &mut SettingsTab,
     profiles: &mut super::profile_cache::ProfileCache,
-    ctx: &egui::Context,
-    saved_id: Identifier,
+    context: &BackendTaskContext,
+    snapshot: &crate::model::dashpay::ProfileSnapshot,
 ) {
-    let matches = settings
-        .selected_identity()
-        .is_some_and(|identity| identity.identity.id() == saved_id);
-    if matches && let Some(fields) = settings.on_profile_saved() {
-        profiles.record_saved(saved_id, fields);
+    if snapshot.network != app_context.network {
+        return;
+    }
+    if !app_context.profile_snapshot_is_current(snapshot) {
+        settings.retry_stale_profile_save(context);
+        profiles.invalidate(snapshot.owner);
+        return;
+    }
+    if let Some((display_name, bio, avatar_url)) = &snapshot.profile {
+        profiles.record_saved(
+            snapshot.owner,
+            super::profile_cache::ProfileFields {
+                display_name: display_name.clone(),
+                bio: bio.clone(),
+                avatar_url: avatar_url.clone(),
+            },
+        );
+    }
+    if settings.owns_profile_save(context) && settings.on_profile_saved().is_some() {
         MessageBanner::set_global(
-            ctx,
+            app_context.egui_ctx(),
             crate::ui::identity::settings::PROFILE_SAVED,
             MessageType::Success,
         );
@@ -1025,11 +1038,24 @@ mod tests {
 
     #[test]
     fn stale_profile_success_does_not_show_confirmation() {
-        let ctx = egui::Context::default();
+        let dir = tempfile::tempdir().unwrap();
+        let app = crate::context::test_support::test_app_context(dir.path());
+        let ctx = app.egui_ctx();
         let mut settings = SettingsTab::new();
         let mut profiles = crate::ui::identity::profile_cache::ProfileCache::default();
 
-        handle_profile_updated(&mut settings, &mut profiles, &ctx, id(1));
+        handle_profile_updated(
+            &app,
+            &mut settings,
+            &mut profiles,
+            &BackendTaskContext::Other,
+            &crate::model::dashpay::ProfileSnapshot {
+                network: app.network,
+                owner: id(1),
+                revision: 0,
+                profile: None,
+            },
+        );
 
         assert!(
             !MessageBanner::has_global(&ctx),
@@ -1155,7 +1181,16 @@ mod tests {
         else {
             panic!("profile load")
         };
-        assert!(cache.record_result(&load, &BackendTaskSuccessResult::DashPayProfile(None)));
+        assert!(cache.record_result(
+            &context,
+            &load,
+            &BackendTaskSuccessResult::DashPayProfile(crate::model::dashpay::ProfileSnapshot {
+                network: context.network,
+                owner: id,
+                revision: context.identity_profile_revision(id),
+                profile: None
+            })
+        ));
         harness.run();
         assert!(
             harness

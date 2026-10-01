@@ -101,6 +101,7 @@ impl ProfileCache {
     /// `true` when the result was consumed (a load was in flight).
     pub fn record_result(
         &mut self,
+        app_context: &crate::context::AppContext,
         context: &BackendTaskContext,
         result: &BackendTaskSuccessResult,
     ) -> bool {
@@ -115,7 +116,13 @@ impl ProfileCache {
         }
         let id = *id;
         self.in_flight = None;
+        if data.owner != id || !app_context.profile_snapshot_is_current(data) {
+            self.requested.remove(&id);
+            self.loaded.remove(&id);
+            return true;
+        }
         let fields = data
+            .profile
             .clone()
             .map(|(display_name, bio, avatar_url)| ProfileFields {
                 display_name,
@@ -137,16 +144,15 @@ impl ProfileCache {
         }
     }
 
-    /// Optimistically record a just-saved profile so every tab reflects it
-    /// immediately, without waiting for a re-fetch.
-    ///
-    /// `record_result` only consumes `LoadProfile` results; a save arrives as
-    /// `DashPayProfileUpdated(id)`, which carries no fields, so without this the
-    /// cache keeps the pre-save profile and the save appears lost across the
-    /// app. Clears the debounce bookkeeping for `id` so a later explicit refresh
-    /// can still re-resolve the authoritative state from the network.
+    /// Record the normalized fields confirmed by the backend.
     pub fn record_saved(&mut self, id: Identifier, fields: ProfileFields) {
+        self.invalidate(id);
         self.loaded.insert(id, Some(fields));
+    }
+
+    /// Make this owner's next read refresh authoritative fields.
+    pub(crate) fn invalidate(&mut self, id: Identifier) {
+        self.loaded.remove(&id);
         self.requested.remove(&id);
         if self
             .in_flight
@@ -164,5 +170,52 @@ impl ProfileCache {
         self.requested.clear();
         self.in_flight = None;
         self.wanted.clear();
+    }
+}
+
+#[cfg(test)]
+mod race_tests {
+    use super::*;
+
+    #[test]
+    fn completed_save_rejects_queued_present_and_absent_profile_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = crate::context::test_support::test_app_context(dir.path());
+        let id = Identifier::from([71; 32]);
+        for accepted_before_save in [true, false] {
+            for data in [Some(("Old".into(), String::new(), String::new())), None] {
+                let revision = app.begin_identity_profile_load(id);
+                if accepted_before_save {
+                    assert!(app.record_identity_profile_name(id, revision, Some("Old")));
+                }
+                let context = BackendTaskContext::Other;
+                let mut cache = ProfileCache::default();
+                cache.in_flight = Some((id, context.clone()));
+                app.save_identity_profile_name(id, Some("Saved"));
+                if !accepted_before_save {
+                    assert!(!app.record_identity_profile_name(id, revision, Some("Old")));
+                }
+                cache.record_result(
+                    &app,
+                    &context,
+                    &BackendTaskSuccessResult::DashPayProfile(
+                        crate::model::dashpay::ProfileSnapshot {
+                            network: app.network,
+                            owner: id,
+                            revision,
+                            profile: data,
+                        },
+                    ),
+                );
+                assert!(
+                    !cache.loaded.contains_key(&id),
+                    "a queued load must not undo a completed save"
+                );
+                assert!(
+                    cache.in_flight.is_none(),
+                    "stale results must terminate the load"
+                );
+            }
+        }
     }
 }

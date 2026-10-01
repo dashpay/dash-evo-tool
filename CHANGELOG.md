@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- Avatar downloads reject private and internal destinations, including DNS answers
+  and redirects, and cannot bypass destination checks through system proxies.
+
 - Identity imports with a password now encrypt private keys before their first
   storage write. Interrupted new imports retain protected entries, and retries
   preserve existing keys when a supplied password or key conflicts. A durable
@@ -146,6 +149,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   follow-up.
 
 ### Fixed
+
+- Profile saves confirm their exact submitted fields even after leaving the hub.
+  Delayed profile loads and saves cannot replace newer data; drafts survive a
+  refresh after an obsolete completion.
 
 - Refresh identity recipient names without clearing typed searches, show cached profile avatars while refreshing, and keep delayed profile results tied to their owning screen request.
 

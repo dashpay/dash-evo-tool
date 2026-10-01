@@ -173,6 +173,7 @@ pub struct SettingsTab {
     /// current edit-field state (which may have changed while the round-trip
     /// was in-flight). Cleared on identity switch or when committed. (T21)
     pending_save: Option<(String, String, String)>,
+    pending_save_context: Option<crate::backend_task::BackendTaskContext>,
     /// `Advanced` expander state. Defaults closed per §B.8; callers (tests)
     /// may flip this via `open_advanced_for_test` to assert the section
     /// renders without a click.
@@ -355,7 +356,7 @@ impl SettingsTab {
         // Save / Delete buttons row.
         let invalid = self.validation_error().is_some();
         let dirty = self.has_changes();
-        let can_save = !invalid && dirty;
+        let can_save = !invalid && dirty && self.pending_save.is_none();
         let save_tooltip = if !dirty {
             TIP_SAVE_NO_CHANGES.to_string()
         } else if invalid {
@@ -386,14 +387,15 @@ impl SettingsTab {
                 // take minutes. Keep the banner up (no auto-dismiss) until the
                 // task finishes. Its attributed result clears this banner.
                 show_profile_saving_banner(ui.ctx(), identity.identity.id());
-                action = AppAction::BackendTask(BackendTask::DashPayTask(Box::new(
-                    DashPayTask::UpdateProfile {
-                        identity: identity.clone(),
-                        display_name: string_if_set(&self.edit_display_name),
-                        bio: string_if_set(&self.edit_bio),
-                        avatar_url: string_if_set(&self.edit_avatar_url),
-                    },
-                )));
+                let task = BackendTask::DashPayTask(Box::new(DashPayTask::UpdateProfile {
+                    identity: identity.clone(),
+                    display_name: string_if_set(&self.edit_display_name),
+                    bio: string_if_set(&self.edit_bio),
+                    avatar_url: string_if_set(&self.edit_avatar_url),
+                }));
+                let context = crate::backend_task::BackendTaskContext::for_dispatch(&task);
+                self.pending_save_context = Some(context.clone());
+                action = AppAction::BackendTaskWithContext { task, context };
             }
 
             ui.add_space(12.0);
@@ -833,6 +835,7 @@ impl SettingsTab {
             // A pending save for the old identity must not be committed for
             // the new one — clear it on switch (T21).
             self.pending_save = None;
+            self.pending_save_context = None;
         }
 
         if self.selected_identity.is_some() && !self.profile_loaded {
@@ -868,22 +871,19 @@ impl SettingsTab {
             // Not loaded yet — a load is queued; retry on the next frame.
             None => return,
         };
-        if self.has_changes() {
-            // The async load landed after the user started editing; keep their
-            // input and stop trying to repopulate.
-            self.profile_loaded = true;
-            return;
-        }
+        let preserve_draft = self.has_changes();
         let (display_name, bio, avatar_url) = match fields {
             Some(f) => (f.display_name, f.bio, f.avatar_url),
             None => (String::new(), String::new(), String::new()),
         };
-        self.edit_display_name = display_name;
-        self.edit_bio = bio;
-        self.edit_avatar_url = avatar_url;
-        self.original_display_name = self.edit_display_name.clone();
-        self.original_bio = self.edit_bio.clone();
-        self.original_avatar_url = self.edit_avatar_url.clone();
+        if !preserve_draft {
+            self.edit_display_name = display_name.clone();
+            self.edit_bio = bio.clone();
+            self.edit_avatar_url = avatar_url.clone();
+        }
+        self.original_display_name = display_name;
+        self.original_bio = bio;
+        self.original_avatar_url = avatar_url;
         self.profile_loaded = true;
     }
 
@@ -912,6 +912,7 @@ impl SettingsTab {
     /// after an identity switch cleared it).
     pub fn on_profile_saved(&mut self) -> Option<super::profile_cache::ProfileFields> {
         let (dn, bio, url) = self.pending_save.take()?;
+        self.pending_save_context = None;
         self.original_display_name = dn.clone();
         self.original_bio = bio.clone();
         self.original_avatar_url = url.clone();
@@ -922,14 +923,28 @@ impl SettingsTab {
         })
     }
 
-    /// Clear the pending snapshot only when the failed save belongs to this identity.
-    pub fn clear_pending_save_for_identity(&mut self, identity_id: &Identifier) {
-        if self
-            .selected_identity
-            .as_ref()
-            .is_some_and(|identity| identity.identity.id() == *identity_id)
-        {
+    pub(crate) fn owns_profile_save(
+        &self,
+        context: &crate::backend_task::BackendTaskContext,
+    ) -> bool {
+        self.pending_save_context.as_ref() == Some(context)
+    }
+
+    pub(crate) fn retry_stale_profile_save(
+        &mut self,
+        context: &crate::backend_task::BackendTaskContext,
+    ) {
+        if self.owns_profile_save(context) {
+            self.clear_pending_save(context);
+            self.profile_loaded = false;
+        }
+    }
+
+    /// Release only the matching dispatch, including obsolete completions.
+    pub(crate) fn clear_pending_save(&mut self, context: &crate::backend_task::BackendTaskContext) {
+        if self.owns_profile_save(context) {
             self.pending_save = None;
+            self.pending_save_context = None;
         }
     }
 
@@ -1169,6 +1184,142 @@ mod tests {
     }
 
     #[test]
+    fn profile_save_disables_duplicate_dispatch_while_edits_continue() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let identity = qualified_identity();
+        let mut tab = SettingsTab::new();
+        tab.edit_display_name = "Submitted".into();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(900.0, 900.0))
+            .build_ui_state(
+                |ui, state: &mut (SettingsTab, Option<crate::backend_task::BackendTaskContext>)| {
+                    if let AppAction::BackendTaskWithContext { context, .. } =
+                        state.0.render_social_profile(ui, &context, &identity)
+                    {
+                        state.1 = Some(context);
+                    }
+                },
+                (tab, None),
+            );
+        harness.get_by_label("Save social profile").click();
+        harness.run();
+        let dispatched = harness
+            .state()
+            .1
+            .clone()
+            .expect("save uses an exact dispatch context");
+        harness.state_mut().0.edit_display_name = "Next draft".into();
+        harness.run();
+        harness.state_mut().1 = None;
+        harness.get_by_label("Save social profile").click();
+        harness.run();
+        assert!(
+            harness.state().1.is_none(),
+            "a second click must not dispatch or replace the submitted snapshot"
+        );
+        assert!(harness.state().0.owns_profile_save(&dispatched));
+        let saved = harness.state_mut().0.on_profile_saved().unwrap();
+        assert_eq!(saved.display_name, "Submitted");
+        assert_eq!(harness.state().0.edit_display_name, "Next draft");
+        harness.run();
+        harness.get_by_label("Save social profile").click();
+        harness.run();
+        assert!(
+            harness.state().1.is_some(),
+            "the next draft can save after completion"
+        );
+    }
+
+    #[test]
+    fn profile_save_completion_requires_current_revision_and_exact_dispatch() {
+        use super::super::{hub_screen::handle_profile_updated, profile_cache::ProfileCache};
+        use crate::backend_task::BackendTaskContext;
+        use crate::model::dashpay::ProfileSnapshot;
+        let dir = tempfile::tempdir().unwrap();
+        let app = crate::context::test_support::test_app_context(dir.path());
+        let identity = qualified_identity();
+        let owner = identity.identity.id();
+        let task = BackendTask::DashPayTask(Box::new(DashPayTask::UpdateProfile {
+            identity: identity.clone(),
+            display_name: None,
+            bio: None,
+            avatar_url: None,
+        }));
+        let own = BackendTaskContext::for_dispatch(&task);
+        let foreign = BackendTaskContext::for_dispatch(&task);
+        let mut tab = SettingsTab::new();
+        tab.selected_identity = Some(identity.clone());
+        tab.edit_display_name = "Own submitted".into();
+        tab.pending_save = Some(("Own submitted".into(), String::new(), String::new()));
+        tab.pending_save_context = Some(own.clone());
+        let mut cache = ProfileCache::default();
+        let revision = app.save_identity_profile_name(owner, Some("Other consumer"));
+        let mut snapshot = ProfileSnapshot {
+            network: app.network,
+            owner,
+            revision,
+            profile: Some(("Other consumer".into(), String::new(), String::new())),
+        };
+        let mut wrong_network = snapshot.clone();
+        wrong_network.network = dash_sdk::dpp::dashcore::Network::Mainnet;
+        handle_profile_updated(&app, &mut tab, &mut cache, &own, &wrong_network);
+        assert!(
+            tab.owns_profile_save(&own),
+            "another network cannot finish this save"
+        );
+        handle_profile_updated(&app, &mut tab, &mut cache, &foreign, &snapshot);
+        assert!(
+            tab.owns_profile_save(&own),
+            "another consumer cannot consume this pending save"
+        );
+        assert!(tab.original_display_name.is_empty());
+        assert!(!MessageBanner::has_global(app.egui_ctx()));
+        app.save_identity_profile_name(owner, Some("Latest"));
+        handle_profile_updated(&app, &mut tab, &mut cache, &own, &snapshot);
+        assert!(
+            tab.pending_save.is_none(),
+            "obsolete completion terminates its pending save"
+        );
+        assert!(tab.original_display_name.is_empty());
+        assert!(
+            cache.get_or_request(&identity).is_none(),
+            "obsolete cache is refreshed"
+        );
+        cache.record_saved(
+            owner,
+            super::super::profile_cache::ProfileFields {
+                display_name: "Latest".into(),
+                ..Default::default()
+            },
+        );
+        tab.load_cached_profile(&mut cache);
+        assert_eq!(tab.original_display_name, "Latest");
+        assert_eq!(
+            tab.edit_display_name, "Own submitted",
+            "refresh keeps the draft"
+        );
+        assert!(!MessageBanner::has_global(app.egui_ctx()));
+        tab.pending_save = Some(("Own submitted".into(), String::new(), String::new()));
+        tab.pending_save_context = Some(own.clone());
+        snapshot.revision = app.save_identity_profile_name(owner, Some("Own submitted"));
+        snapshot.profile = Some(("Own submitted".into(), String::new(), String::new()));
+        handle_profile_updated(&app, &mut tab, &mut cache, &own, &snapshot);
+        assert_eq!(tab.original_display_name, "Own submitted");
+        assert!(tab.pending_save.is_none());
+        assert_eq!(
+            cache
+                .get_or_request(&identity)
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .display_name,
+            "Own submitted"
+        );
+    }
+
+    #[test]
     fn has_changes_tracks_baseline() {
         let mut tab = SettingsTab::new();
         tab.edit_display_name = "alex".into();
@@ -1354,18 +1505,27 @@ mod tests {
     }
 
     #[test]
-    fn pending_save_is_cleared_only_for_its_identity_error() {
+    fn pending_save_is_cleared_only_for_its_dispatch_error() {
         let mut tab = SettingsTab::new();
         tab.selected_identity = Some(qualified_identity());
         tab.pending_save = Some(("Alicia".into(), String::new(), String::new()));
 
-        tab.clear_pending_save_for_identity(&Identifier::from([8; 32]));
+        let task = BackendTask::DashPayTask(Box::new(DashPayTask::UpdateProfile {
+            identity: qualified_identity(),
+            display_name: None,
+            bio: None,
+            avatar_url: None,
+        }));
+        let older = crate::backend_task::BackendTaskContext::for_dispatch(&task);
+        let current = crate::backend_task::BackendTaskContext::for_dispatch(&task);
+        tab.pending_save_context = Some(current.clone());
+        tab.clear_pending_save(&older);
         assert!(
             tab.pending_save.is_some(),
-            "another identity's failure must preserve the selected identity's snapshot"
+            "an older dispatch for the same identity must preserve the current snapshot"
         );
 
-        tab.clear_pending_save_for_identity(&Identifier::from([7; 32]));
+        tab.clear_pending_save(&current);
         assert!(
             tab.pending_save.is_none(),
             "the selected identity's failure must clear its stale snapshot"

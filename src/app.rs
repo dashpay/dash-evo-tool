@@ -295,10 +295,10 @@ fn clear_profile_saving_banner_after_success(
     context: &BackendTaskContext,
     result: &BackendTaskSuccessResult,
 ) {
-    if let BackendTaskSuccessResult::DashPayProfileUpdated(saved_id) = result
-        && context.dashpay_profile_update_identity() == Some(*saved_id)
+    if let BackendTaskSuccessResult::DashPayProfileUpdated(snapshot) = result
+        && context.dashpay_profile_update_identity() == Some(snapshot.owner)
     {
-        crate::ui::identity::settings::clear_profile_saving_banner(ctx, saved_id);
+        crate::ui::identity::settings::clear_profile_saving_banner(ctx, &snapshot.owner);
     }
 }
 
@@ -458,7 +458,14 @@ mod backend_task_join_tests {
         clear_profile_saving_banner_after_success(
             &ctx,
             &profile_update_context(1, 1),
-            &BackendTaskSuccessResult::DashPayProfileUpdated(identity_id),
+            &BackendTaskSuccessResult::DashPayProfileUpdated(
+                crate::model::dashpay::ProfileSnapshot {
+                    network: Network::Testnet,
+                    owner: identity_id,
+                    revision: 0,
+                    profile: None,
+                },
+            ),
         );
 
         assert!(
@@ -525,7 +532,14 @@ mod backend_task_join_tests {
         clear_profile_saving_banner_after_success(
             &ctx,
             &identity_a,
-            &BackendTaskSuccessResult::DashPayProfileUpdated(Identifier::from([1; 32])),
+            &BackendTaskSuccessResult::DashPayProfileUpdated(
+                crate::model::dashpay::ProfileSnapshot {
+                    network: Network::Testnet,
+                    owner: Identifier::from([1; 32]),
+                    revision: 0,
+                    profile: None,
+                },
+            ),
         );
 
         assert!(
@@ -536,7 +550,14 @@ mod backend_task_join_tests {
         clear_profile_saving_banner_after_success(
             &ctx,
             &identity_b,
-            &BackendTaskSuccessResult::DashPayProfileUpdated(Identifier::from([2; 32])),
+            &BackendTaskSuccessResult::DashPayProfileUpdated(
+                crate::model::dashpay::ProfileSnapshot {
+                    network: Network::Testnet,
+                    owner: Identifier::from([2; 32]),
+                    revision: 0,
+                    profile: None,
+                },
+            ),
         );
         assert!(
             saving.elapsed().is_none(),
@@ -2532,6 +2553,7 @@ impl AppState {
             if matches!(
                 result,
                 BackendTaskSuccessResult::DashPayProfile(_)
+                    | BackendTaskSuccessResult::DashPayProfileUpdated(_)
                     | BackendTaskSuccessResult::DashPayAvatar { .. }
             ) {
                 hub.display_backend_task_result(context, result.clone());

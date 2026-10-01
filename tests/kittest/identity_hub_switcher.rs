@@ -807,11 +807,14 @@ fn ui_polish_picker_uses_profile_avatar_and_keeps_missing_avatar_fallback() {
         let url = "https://example.invalid/synthetic-avatar.png";
         harness.state_mut().0.display_backend_task_result(
             &context,
-            BackendTaskSuccessResult::DashPayProfile(Some((
-                "Profile name".into(),
-                String::new(),
-                url.into(),
-            ))),
+            BackendTaskSuccessResult::DashPayProfile(
+                dash_evo_tool::model::dashpay::ProfileSnapshot {
+                    network: app_context.network(),
+                    owner: avatar_id,
+                    revision: app_context.identity_profile_revision(avatar_id),
+                    profile: Some(("Profile name".into(), String::new(), url.into())),
+                },
+            ),
         );
         let mut bytes = std::io::Cursor::new(Vec::new());
         image::RgbaImage::from_pixel(2, 2, image::Rgba([0, 128, 255, 255]))
@@ -850,7 +853,14 @@ fn ui_polish_picker_uses_profile_avatar_and_keeps_missing_avatar_fallback() {
         let context = harness.state().1.clone().expect("profile reload");
         harness.state_mut().0.display_backend_task_result(
             &context,
-            BackendTaskSuccessResult::DashPayProfile(Some(("".into(), String::new(), url.into()))),
+            BackendTaskSuccessResult::DashPayProfile(
+                dash_evo_tool::model::dashpay::ProfileSnapshot {
+                    network: app_context.network(),
+                    owner: avatar_id,
+                    revision: app_context.identity_profile_revision(avatar_id),
+                    profile: Some(("".into(), String::new(), url.into())),
+                },
+            ),
         );
         harness
             .state_mut()
@@ -896,13 +906,20 @@ fn ui_polish_profile_completion_matches_dispatch_and_errors_release_queue() {
         else {
             panic!("profile dispatch");
         };
-        let result = BackendTaskSuccessResult::DashPayProfile(Some((
-            "Beta".into(),
-            String::new(),
-            "https://example.invalid/beta.png".into(),
-        )));
+        let result = BackendTaskSuccessResult::DashPayProfile(
+            dash_evo_tool::model::dashpay::ProfileSnapshot {
+                network: app_context.network(),
+                owner: identities[1].identity.id(),
+                revision: app_context.identity_profile_revision(identities[1].identity.id()),
+                profile: Some((
+                    "Beta".into(),
+                    String::new(),
+                    "https://example.invalid/beta.png".into(),
+                )),
+            },
+        );
         assert!(
-            !profiles.record_result(&old, &result),
+            !profiles.record_result(&app_context, &old, &result),
             "late completion after reset must not populate another identity"
         );
         profiles.record_error(&old);
@@ -910,7 +927,7 @@ fn ui_polish_profile_completion_matches_dispatch_and_errors_release_queue() {
             matches!(profiles.dispatch_pending(), AppAction::None),
             "late error must not clear the current request"
         );
-        assert!(profiles.record_result(&current, &result));
+        assert!(profiles.record_result(&app_context, &current, &result));
         assert_eq!(
             profiles
                 .get_or_request(&identities[1])
@@ -933,6 +950,113 @@ fn ui_polish_profile_completion_matches_dispatch_and_errors_release_queue() {
                 AppAction::BackendTaskWithContext { .. }
             ),
             "one failed profile must not block other avatars"
+        );
+    });
+}
+
+#[test]
+fn hidden_hub_receives_its_profile_save_and_releases_the_next_draft() {
+    use dash_evo_tool::app::{AppAction, TaskResult};
+    use dash_evo_tool::backend_task::{
+        BackendTask, BackendTaskContext, BackendTaskSuccessResult, dashpay::DashPayTask,
+    };
+    use dash_evo_tool::model::dashpay::ProfileSnapshot;
+    use dash_evo_tool::ui::{
+        Screen, ScreenLike,
+        identity::{IdentityHubScreen, IdentityHubTab},
+    };
+    with_isolated_data_dir(|| {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _guard = runtime.enter();
+        let mut app = mount_app(RootScreenType::RootScreenWalletsBalances);
+        let context = app.state().current_app_context().clone();
+        let owner = seed_identity(&context, 81, "Profile owner");
+        context.set_selected_identity(Some(owner));
+        let mut hub = IdentityHubScreen::new(&context);
+        hub.select_tab(IdentityHubTab::Settings);
+        let mut editor = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 1000.0))
+            .build_ui_state(
+                |ui, state: &mut (IdentityHubScreen, Option<BackendTaskContext>)| {
+                    if let AppAction::BackendTaskWithContext {
+                        task: BackendTask::DashPayTask(task),
+                        context,
+                    } = state.0.ui(ui)
+                        && matches!(*task, DashPayTask::UpdateProfile { .. })
+                    {
+                        state.1 = Some(context);
+                    }
+                },
+                (hub, None),
+            );
+        editor.run();
+        editor
+            .query_all_by_role(egui::accesskit::Role::TextInput)
+            .next()
+            .unwrap()
+            .focus();
+        editor.run();
+        editor
+            .query_all_by_role(egui::accesskit::Role::TextInput)
+            .next()
+            .unwrap()
+            .type_text("Saved name");
+        editor.run();
+        editor.get_by_label("Save social profile").click();
+        editor.run();
+        let dispatch = editor.state_mut().1.take().expect("save dispatch");
+        let hub = std::mem::replace(&mut editor.state_mut().0, IdentityHubScreen::new(&context));
+        app.state_mut().main_screens.insert(
+            RootScreenType::RootScreenIdentityHub,
+            Screen::IdentityHubScreen(hub),
+        );
+        runtime
+            .block_on(app.state().task_result_sender.send(TaskResult::Success {
+                context: dispatch,
+                result: Box::new(BackendTaskSuccessResult::DashPayProfileUpdated(
+                    ProfileSnapshot {
+                        network: context.network(),
+                        owner,
+                        revision: context.identity_profile_revision(owner),
+                        profile: Some(("Saved name".into(), String::new(), String::new())),
+                    },
+                )),
+            }))
+            .unwrap();
+        app.run_steps(3);
+        let Screen::IdentityHubScreen(hub) = app
+            .state_mut()
+            .main_screens
+            .remove(&RootScreenType::RootScreenIdentityHub)
+            .unwrap()
+        else {
+            panic!("hub")
+        };
+        editor.state_mut().0 = hub;
+        editor.run();
+        editor.get_by_label("Save social profile").click();
+        editor.run();
+        assert!(
+            editor.state().1.is_none(),
+            "confirmed fields must be the clean baseline"
+        );
+        editor
+            .query_all_by_role(egui::accesskit::Role::TextInput)
+            .next()
+            .unwrap()
+            .focus();
+        editor.run();
+        editor
+            .query_all_by_role(egui::accesskit::Role::TextInput)
+            .next()
+            .unwrap()
+            .type_text(" next");
+        editor.run();
+        editor.get_by_label("Save social profile").click();
+        editor.run();
+        assert!(
+            editor.state().1.is_some(),
+            "hidden completion must release its pending save"
         );
     });
 }

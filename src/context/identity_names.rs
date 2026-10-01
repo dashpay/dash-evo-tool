@@ -7,6 +7,8 @@ use dash_sdk::platform::Identifier;
 #[derive(Debug, Default)]
 pub(super) struct ProfileName {
     revision: u64,
+    accepted_revision: u64,
+    operation: std::sync::Arc<tokio::sync::Mutex<()>>,
     accepted: Option<Option<String>>,
 }
 
@@ -70,6 +72,39 @@ impl AppContext {
         )
     }
 
+    /// Serialize profile fetch/mirror/write operations for this owner and network.
+    pub(crate) async fn lock_identity_profile(
+        &self,
+        id: Identifier,
+    ) -> tokio::sync::OwnedMutexGuard<()> {
+        let operation = self
+            .identity_profile_names
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(id)
+            .or_default()
+            .operation
+            .clone();
+        operation.lock_owned().await
+    }
+
+    /// Revision used to reject results queued before a newer operation completed.
+    pub fn identity_profile_revision(&self, id: Identifier) -> u64 {
+        self.identity_profile_names
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&id)
+            .map_or(0, |entry| entry.accepted_revision)
+    }
+
+    pub(crate) fn profile_snapshot_is_current(
+        &self,
+        snapshot: &crate::model::dashpay::ProfileSnapshot,
+    ) -> bool {
+        self.network == snapshot.network
+            && self.identity_profile_revision(snapshot.owner) == snapshot.revision
+    }
+
     pub(crate) fn begin_identity_profile_load(&self, id: Identifier) -> u64 {
         let mut names = self
             .identity_profile_names
@@ -97,10 +132,11 @@ impl AppContext {
             return false;
         };
         entry.accept(name);
+        entry.accepted_revision = revision;
         true
     }
 
-    pub(crate) fn save_identity_profile_name(&self, id: Identifier, name: Option<&str>) {
+    pub(crate) fn save_identity_profile_name(&self, id: Identifier, name: Option<&str>) -> u64 {
         let mut names = self
             .identity_profile_names
             .lock()
@@ -108,6 +144,8 @@ impl AppContext {
         let entry = names.entry(id).or_default();
         entry.revision += 1;
         entry.accept(name);
+        entry.accepted_revision = entry.revision;
+        entry.revision
     }
 }
 
@@ -115,6 +153,45 @@ impl AppContext {
 mod tests {
     use super::*;
     use crate::context::test_support::test_app_context;
+
+    #[tokio::test]
+    async fn profile_operation_lock_orders_mirror_and_save_per_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = test_app_context(dir.path());
+        let id = Identifier::from([43; 32]);
+        let mirror = context.lock_identity_profile(id).await;
+        let load_revision = context.begin_identity_profile_load(id);
+        let (started, waiting) = tokio::sync::oneshot::channel();
+        let writer_context = context.clone();
+        let writer = tokio::spawn(async move {
+            started.send(()).unwrap();
+            let _guard = writer_context.lock_identity_profile(id).await;
+            writer_context.save_identity_profile_name(id, Some("Saved"))
+        });
+        waiting.await.unwrap();
+        tokio::task::yield_now().await;
+        assert!(
+            !writer.is_finished(),
+            "save cannot overtake an awaiting mirror"
+        );
+        let other = context
+            .lock_identity_profile(Identifier::from([44; 32]))
+            .await;
+        assert!(context.record_identity_profile_name(id, load_revision, Some("Fetched")));
+        drop(other);
+        drop(mirror);
+        let save_revision = writer.await.unwrap();
+        assert!(save_revision > load_revision);
+        assert_eq!(context.identity_display_name(id).as_deref(), Some("Saved"));
+        assert!(
+            !context.profile_snapshot_is_current(&crate::model::dashpay::ProfileSnapshot {
+                network: context.network,
+                owner: id,
+                revision: load_revision,
+                profile: None
+            })
+        );
+    }
 
     #[test]
     fn identity_display_name_updates_reject_stale_loads_and_isolate_networks() {

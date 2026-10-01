@@ -89,6 +89,13 @@ fn identity(alias: &str) -> QualifiedIdentity {
     }
 }
 
+fn identity_input(name: &str) -> AddressInput {
+    crate::support::with_isolated_data_dir(|| {
+        let (_runtime, context) = crate::support::fresh_app_context();
+        AddressInput::new(Network::Testnet).with_identities(&context, &[identity(name)])
+    })
+}
+
 /// Render `input` in a headless harness, focus its field to open (and paint) the
 /// autocomplete popup, then run `assert` against the component's public state.
 fn with_rendered(input: AddressInput, assert: impl FnOnce(&AddressInput)) {
@@ -178,9 +185,8 @@ fn hint_trims_wallets_above_five() {
 
 #[test]
 fn wallet_pill_only_on_wallet_scoped_rows() {
-    let input = AddressInput::new(Network::Testnet)
+    let input = identity_input("alice")
         .with_wallets(&[wallet(1, "main")])
-        .with_identities(None, &[identity("alice")])
         .with_shielded_balance("tdash1zexampleshieldedaddress".to_string(), 0);
 
     with_rendered(input, |input| {
@@ -220,9 +226,8 @@ fn wallet_pill_only_on_wallet_scoped_rows() {
 
 #[test]
 fn tag_query_narrows_rows() {
-    let input = AddressInput::new(Network::Testnet)
+    let input = identity_input("carol")
         .with_wallets(&[wallet(1, "alpha"), wallet(2, "beta")])
-        .with_identities(None, &[identity("carol")])
         .with_initial_value("type:core wallet:alpha");
 
     with_rendered(input, |input| {

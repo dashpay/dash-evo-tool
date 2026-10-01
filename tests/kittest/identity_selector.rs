@@ -195,11 +195,18 @@ fn profile_screen_rejects_late_picker_profile_for_other_identity() {
         };
         screen.display_backend_task_result(
             &own_context,
-            BackendTaskSuccessResult::DashPayProfile(Some((
-                "Bob correct profile".into(),
-                "Bob biography".into(),
-                String::new(),
-            ))),
+            BackendTaskSuccessResult::DashPayProfile(
+                dash_evo_tool::model::dashpay::ProfileSnapshot {
+                    network: ctx.network(),
+                    owner: second.identity.id(),
+                    revision: ctx.identity_profile_revision(second.identity.id()),
+                    profile: Some((
+                        "Bob correct profile".into(),
+                        "Bob biography".into(),
+                        String::new(),
+                    )),
+                },
+            ),
         );
         let mut picker_load = ProfileCache::default();
         picker_load.get_or_request(&first);
@@ -230,11 +237,18 @@ fn profile_screen_rejects_late_picker_profile_for_other_identity() {
             .block_on(harness.state().task_result_sender.send(
                 dash_evo_tool::app::TaskResult::Success {
                     context: picker_context,
-                    result: Box::new(BackendTaskSuccessResult::DashPayProfile(Some((
-                        "Alice late picker profile".into(),
-                        "Alice biography".into(),
-                        String::new(),
-                    )))),
+                    result: Box::new(BackendTaskSuccessResult::DashPayProfile(
+                        dash_evo_tool::model::dashpay::ProfileSnapshot {
+                            network: ctx.network(),
+                            owner: first.identity.id(),
+                            revision: ctx.identity_profile_revision(first.identity.id()),
+                            profile: Some((
+                                "Alice late picker profile".into(),
+                                "Alice biography".into(),
+                                String::new(),
+                            )),
+                        },
+                    )),
                 },
             ))
             .unwrap();
@@ -268,11 +282,14 @@ fn profile_screen_rejects_late_picker_profile_for_other_identity() {
         for result in [
             dash_evo_tool::app::TaskResult::Success {
                 context: old_load.clone(),
-                result: Box::new(BackendTaskSuccessResult::DashPayProfile(Some((
-                    "Bob stale profile".into(),
-                    String::new(),
-                    String::new(),
-                )))),
+                result: Box::new(BackendTaskSuccessResult::DashPayProfile(
+                    dash_evo_tool::model::dashpay::ProfileSnapshot {
+                        network: ctx.network(),
+                        owner: second.identity.id(),
+                        revision: ctx.identity_profile_revision(second.identity.id()),
+                        profile: Some(("Bob stale profile".into(), String::new(), String::new())),
+                    },
+                )),
             },
             dash_evo_tool::app::TaskResult::Error {
                 context: old_load,
@@ -297,11 +314,18 @@ fn profile_screen_rejects_late_picker_profile_for_other_identity() {
             .block_on(harness.state().task_result_sender.send(
                 dash_evo_tool::app::TaskResult::Success {
                     context: current_load,
-                    result: Box::new(BackendTaskSuccessResult::DashPayProfile(Some((
-                        "Bob current profile".into(),
-                        String::new(),
-                        String::new(),
-                    )))),
+                    result: Box::new(BackendTaskSuccessResult::DashPayProfile(
+                        dash_evo_tool::model::dashpay::ProfileSnapshot {
+                            network: ctx.network(),
+                            owner: second.identity.id(),
+                            revision: ctx.identity_profile_revision(second.identity.id()),
+                            profile: Some((
+                                "Bob current profile".into(),
+                                String::new(),
+                                String::new(),
+                            )),
+                        },
+                    )),
                 },
             ))
             .unwrap();

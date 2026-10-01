@@ -276,6 +276,21 @@ impl DpnsVoteTargetStatus {
                 | Self::Unconfirmed
         )
     }
+
+    /// Whether the vote ended without taking effect, so the user may review
+    /// and submit it again.
+    pub fn is_reviewable_failure(self) -> bool {
+        match self {
+            Self::Rejected | Self::FailedBeforeSubmission | Self::NotApplied => true,
+            Self::Scheduled
+            | Self::Queued
+            | Self::Submitting
+            | Self::Confirming
+            | Self::Confirmed
+            | Self::Unconfirmed
+            | Self::Cancelled => false,
+        }
+    }
 }
 
 /// Durable result and progress for one operation target.
@@ -583,6 +598,29 @@ mod tests {
     }
 
     /// VOTE-TC-073: the durable operation shape contains no signing material.
+    #[test]
+    fn only_terminal_unapplied_statuses_are_reviewable_failures() {
+        use DpnsVoteTargetStatus as S;
+        for (status, expected) in [
+            (S::Scheduled, false),
+            (S::Queued, false),
+            (S::Submitting, false),
+            (S::Confirming, false),
+            (S::Confirmed, false),
+            (S::Unconfirmed, false),
+            (S::Rejected, true),
+            (S::FailedBeforeSubmission, true),
+            (S::NotApplied, true),
+            (S::Cancelled, false),
+        ] {
+            assert_eq!(status.is_reviewable_failure(), expected, "{status:?}");
+            assert!(
+                !(status.is_reviewable_failure() && status.holds_lock()),
+                "{status:?}: a reviewable failure never holds the target lock"
+            );
+        }
+    }
+
     #[test]
     fn serialized_operation_contains_identifiers_and_choices_only() {
         fn collect_keys(value: &serde_json::Value, keys: &mut std::collections::BTreeSet<String>) {

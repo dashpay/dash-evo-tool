@@ -70,12 +70,7 @@ pub fn row_action(outcome: &DpnsVoteOutcome) -> Option<RowAction> {
         (DpnsVoteTargetStatus::Unconfirmed, _) => Some(RowAction::CheckAgain),
         (_, Some(DpnsVoteFailure::VotingKeyMissing)) => Some(RowAction::AddVotingKey),
         (_, Some(DpnsVoteFailure::VotingEnded)) => None,
-        (
-            DpnsVoteTargetStatus::Rejected
-            | DpnsVoteTargetStatus::FailedBeforeSubmission
-            | DpnsVoteTargetStatus::NotApplied,
-            _,
-        ) => Some(RowAction::ReviewAgain),
+        (status, _) if status.is_reviewable_failure() => Some(RowAction::ReviewAgain),
         _ => None,
     }
 }

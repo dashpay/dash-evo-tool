@@ -224,14 +224,11 @@ fn scheduled_vote_remove_enabled(status: DpnsVoteTargetStatus) -> bool {
 
 fn scheduled_vote_cast_enabled(status: DpnsVoteTargetStatus, dispatch_pending: bool) -> bool {
     !dispatch_pending
-        && matches!(
-            status,
-            DpnsVoteTargetStatus::Scheduled
-                | DpnsVoteTargetStatus::Rejected
-                | DpnsVoteTargetStatus::FailedBeforeSubmission
-                | DpnsVoteTargetStatus::Cancelled
-                | DpnsVoteTargetStatus::NotApplied
-        )
+        && (status.is_reviewable_failure()
+            || matches!(
+                status,
+                DpnsVoteTargetStatus::Scheduled | DpnsVoteTargetStatus::Cancelled
+            ))
 }
 
 fn scheduled_vote_removal_task(row: &ScheduledDpnsVoteRow) -> ContestedResourceTask {

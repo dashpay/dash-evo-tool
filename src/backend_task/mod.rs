@@ -1049,6 +1049,8 @@ pub enum BackendTaskSuccessResult {
     },
     /// Every loaded identity's username requests were refreshed and stored.
     MyUsernameRequestsRefreshed,
+    /// A device-only username preference (main name, dismissal, seen banner) was saved.
+    UsernamePreferencesSaved,
 
     // Broadcast results
     BroadcastedStateTransition,

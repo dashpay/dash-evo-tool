@@ -1973,6 +1973,15 @@ pub enum TaskError {
         availability: crate::model::dpns_usernames::UsernameAvailability,
     },
 
+    /// Username requests or preferences could not be read or written on this device.
+    #[error(
+        "Your username settings could not be saved on this device. Check available disk space and try again."
+    )]
+    UsernameStorage {
+        #[source]
+        source: crate::wallet_backend::KvAdapterError,
+    },
+
     /// The status of username requests could not be read from the network.
     #[error(
         "Username request status can't be updated right now. Check your internet connection and try again."

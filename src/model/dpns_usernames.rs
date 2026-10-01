@@ -50,15 +50,58 @@ pub fn username_refresh_due(
         || (any_pending && elapsed >= duration_ms(pending_refresh_interval(network)))
 }
 
-/// Whether this device holds a key that can sign username registrations for `identity`.
-pub fn can_register_usernames(identity: &QualifiedIdentity) -> bool {
-    use dash_sdk::dpp::identity::Purpose;
+/// Whether `key` may sign documents that require `required` security: an enabled
+/// authentication key at least as strong as required, and never a master key.
+pub fn key_can_sign_documents(
+    key: &dash_sdk::platform::IdentityPublicKey,
+    required: dash_sdk::dpp::identity::SecurityLevel,
+) -> bool {
     use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+    use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
+    key.purpose() == Purpose::AUTHENTICATION
+        && !key.is_disabled()
+        && key.security_level() != SecurityLevel::MASTER
+        && key.security_level() <= required
+}
+
+/// The weakest key security level that may sign both DPNS documents a registration
+/// creates (preorder and domain); falls back to `HIGH` if the contract lacks them.
+pub fn dpns_signing_requirement(
+    contract: &dash_sdk::platform::DataContract,
+) -> dash_sdk::dpp::identity::SecurityLevel {
+    use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+    use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
+    ["preorder", "domain"]
+        .into_iter()
+        .filter_map(|name| contract.document_type_for_name(name).ok())
+        .map(|document_type| document_type.security_level_requirement())
+        .min()
+        .unwrap_or(dash_sdk::dpp::identity::SecurityLevel::HIGH)
+}
+
+/// Whether this device holds a private key that can sign username registrations
+/// (documents requiring `required` security) for `identity`.
+pub fn can_register_usernames(
+    identity: &QualifiedIdentity,
+    required: dash_sdk::dpp::identity::SecurityLevel,
+) -> bool {
     identity
         .private_keys
         .identity_public_keys()
         .iter()
-        .any(|(_, key)| key.identity_public_key.purpose() == Purpose::AUTHENTICATION)
+        .any(|(_, key)| key_can_sign_documents(&key.identity_public_key, required))
+}
+
+/// The device-only name the user chose, ignoring a legacy automatic copy of a
+/// username (`{name}.dash`), which would otherwise hide the chosen main username.
+pub fn user_alias(identity: &QualifiedIdentity) -> Option<&str> {
+    let alias = identity.alias.as_deref()?.trim();
+    let automatic = identity.dpns_names.iter().any(|name| {
+        alias
+            .strip_suffix(".dash")
+            .is_some_and(|stem| stem.eq_ignore_ascii_case(name.name.trim()))
+    });
+    (!alias.is_empty() && !automatic).then_some(alias)
 }
 
 /// Whether a username can be requested right now, and on what terms.
@@ -81,6 +124,8 @@ pub enum UsernameAvailability {
     Taken,
     /// A community vote locked the name; no one can register it.
     Locked,
+    /// This identity already asked for the name; the request is in the vote.
+    AlreadyRequested,
 }
 
 impl UsernameAvailability {
@@ -144,12 +189,14 @@ impl ContestSnapshot {
     }
 }
 
-/// Decide whether `label` can be requested.
+/// Decide whether `requester` can ask for `label`.
 ///
 /// `awarded` says whether a registered name already exists; `contest` is the
 /// proved contest for the label, if one was fetched. A contested label with no
-/// contest is never reported as `Available`.
+/// contest is never reported as `Available`, and a contest the requester is
+/// already in is `AlreadyRequested` (Platform rejects a second request).
 pub fn classify_availability(
+    requester: Identifier,
     label: &str,
     awarded: bool,
     contest: Option<&ContestSnapshot>,
@@ -160,6 +207,14 @@ pub fn classify_availability(
         return UsernameAvailability::Taken;
     }
     if let Some(contest) = contest {
+        if contest.winner.is_none()
+            && contest
+                .contenders
+                .iter()
+                .any(|c| c.identity_id == requester)
+        {
+            return UsernameAvailability::AlreadyRequested;
+        }
         match contest.winner {
             Some(ContestWinner::Locked) => return UsernameAvailability::Locked,
             Some(ContestWinner::Identity(_)) => return UsernameAvailability::Taken,
@@ -205,6 +260,8 @@ pub enum RequestPhase {
     Lost,
     /// The vote locked the name for everyone.
     Locked,
+    /// The vote ended and no one got the name.
+    NoWinner,
 }
 
 impl RequestPhase {
@@ -227,31 +284,35 @@ pub struct RequestTally {
     pub abstain: u32,
 }
 
-/// Whether the requester leads the tally.
+/// What would happen to the requester if the vote ended now (PF §3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TallyStanding {
-    /// More votes than any other request and than lock.
+    /// The requester would get the name: more votes than every other request,
+    /// or no other request at all, and lock is not ahead.
     Leading,
-    /// Level with the strongest other choice.
+    /// Level with the strongest other request; ties go to the most recent request.
     Tied,
-    /// Another request or lock has more votes.
+    /// Another request has more votes.
     Trailing,
+    /// More votes to lock than to any request: no one would get the name.
+    LockAhead,
 }
 
 impl RequestTally {
-    /// The requester's standing against the strongest other request or lock.
+    /// The requester's standing under Platform's resolution rules.
     pub fn standing(&self) -> TallyStanding {
-        let best_other = self
-            .others
-            .iter()
-            .map(|(_, votes)| *votes)
-            .chain(std::iter::once(self.lock))
-            .max()
-            .unwrap_or(0);
-        match self.you.cmp(&best_other) {
-            std::cmp::Ordering::Greater => TallyStanding::Leading,
-            std::cmp::Ordering::Equal => TallyStanding::Tied,
-            std::cmp::Ordering::Less => TallyStanding::Trailing,
+        let best_other = self.others.iter().map(|(_, votes)| *votes).max();
+        let top_request = best_other.map_or(self.you, |other| other.max(self.you));
+        if self.lock > top_request {
+            return TallyStanding::LockAhead;
+        }
+        match best_other {
+            None => TallyStanding::Leading,
+            Some(other) => match self.you.cmp(&other) {
+                std::cmp::Ordering::Greater => TallyStanding::Leading,
+                std::cmp::Ordering::Equal => TallyStanding::Tied,
+                std::cmp::Ordering::Less => TallyStanding::Trailing,
+            },
         }
     }
 }
@@ -281,14 +342,25 @@ pub struct UsernameRequest {
 
 impl UsernameRequest {
     /// A request just submitted at `now`, before the network reports its contest.
-    pub fn submitted(label: &str, now: TimestampMillis, durations: ContestDurations) -> Self {
+    ///
+    /// `joined_until` is the join deadline of an existing contest the request
+    /// joined; the contest's dates are derived from it instead of from `now`.
+    pub fn submitted(
+        label: &str,
+        now: TimestampMillis,
+        durations: ContestDurations,
+        joined_until: Option<TimestampMillis>,
+    ) -> Self {
+        let start = joined_until.map_or(now, |join_end| {
+            join_end.saturating_sub(duration_ms(durations.join))
+        });
         Self {
             label: label.to_owned(),
             normalized_label: super::dpns::normalize_dpns_label(label),
             phase: RequestPhase::Joinable,
             requested_at: Some(now),
-            join_end: Some(now.saturating_add(duration_ms(durations.join))),
-            end: Some(now.saturating_add(duration_ms(durations.total))),
+            join_end: Some(start.saturating_add(duration_ms(durations.join))),
+            end: Some(start.saturating_add(duration_ms(durations.total))),
             decided_at: None,
             tally: RequestTally::default(),
             last_updated: now,
@@ -316,7 +388,8 @@ pub fn username_request_from_contest(
     let phase = match contest.winner {
         Some(ContestWinner::Identity(winner)) if winner == identity_id => RequestPhase::Won,
         Some(ContestWinner::Locked) => RequestPhase::Locked,
-        Some(_) => RequestPhase::Lost,
+        Some(ContestWinner::NoWinner) => RequestPhase::NoWinner,
+        Some(ContestWinner::Identity(_)) => RequestPhase::Lost,
         None => {
             mine?;
             let start = contest.started_at();
@@ -512,7 +585,7 @@ mod tests {
     fn available_when_nothing_exists_and_label_is_uncontested() {
         // USR-TC-010
         assert_eq!(
-            classify_availability("alice2", false, None, 0, durations()),
+            classify_availability(id(9), "alice2", false, None, 0, durations()),
             UsernameAvailability::Available
         );
     }
@@ -521,11 +594,12 @@ mod tests {
     fn contested_label_without_contest_needs_vote() {
         // USR-TC-011
         assert_eq!(
-            classify_availability("alice", false, None, 0, durations()),
+            classify_availability(id(9), "alice", false, None, 0, durations()),
             UsernameAvailability::NeedsVote
         );
         assert_eq!(
             classify_availability(
+                id(9),
                 "alice",
                 false,
                 Some(&ContestSnapshot::default()),
@@ -542,6 +616,7 @@ mod tests {
         let contest = running(vec![contender(1, 0, 1_000), contender(2, 0, 5_000)]);
         assert_eq!(
             classify_availability(
+                id(9),
                 "alice",
                 false,
                 Some(&contest),
@@ -561,6 +636,7 @@ mod tests {
         let contest = running(vec![contender(1, 0, 1_000)]);
         assert_eq!(
             classify_availability(
+                id(9),
                 "alice",
                 false,
                 Some(&contest),
@@ -575,13 +651,113 @@ mod tests {
     fn awarded_name_is_taken() {
         // USR-TC-014
         assert_eq!(
-            classify_availability("alice", true, None, 0, durations()),
+            classify_availability(id(9), "alice", true, None, 0, durations()),
             UsernameAvailability::Taken
         );
         assert_eq!(
-            classify_availability("alice2", true, None, 0, durations()),
+            classify_availability(id(9), "alice2", true, None, 0, durations()),
             UsernameAvailability::Taken
         );
+    }
+
+    #[test]
+    fn own_running_request_is_already_requested() {
+        // QA regression: the requester must not be told to join its own contest,
+        // because Platform rejects a second request after the preorder is paid.
+        let contest = running(vec![contender(9, 0, 1_000)]);
+        let availability =
+            classify_availability(id(9), "alice", false, Some(&contest), 1_000, durations());
+        assert_eq!(availability, UsernameAvailability::AlreadyRequested);
+        assert!(!availability.allows_registration());
+        assert_eq!(
+            classify_availability(id(8), "alice", false, Some(&contest), 1_000, durations()),
+            UsernameAvailability::Joinable {
+                contenders: 1,
+                join_end: 1_000 + 45 * MINUTE
+            }
+        );
+    }
+
+    #[test]
+    fn one_identity_gets_a_request_per_contest_it_is_in() {
+        // USR-TC-016: contender in two of three running contests → two requests.
+        let snapshots = [
+            (
+                "b",
+                running(vec![contender(9, 0, 1_000), contender(8, 0, 1_100)]),
+            ),
+            ("c", running(vec![contender(9, 4, 2_000)])),
+            ("d", running(vec![contender(7, 1, 3_000)])),
+        ];
+        let requests: Vec<_> = snapshots
+            .iter()
+            .filter_map(|(name, snapshot)| {
+                username_request_from_contest(
+                    id(9),
+                    name,
+                    snapshot,
+                    Some(9_000),
+                    5_000,
+                    durations(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            requests
+                .iter()
+                .map(|r| r.normalized_label.as_str())
+                .collect::<Vec<_>>(),
+            ["b", "c"]
+        );
+        assert_eq!(requests[1].tally.you, 4);
+    }
+
+    #[test]
+    fn joined_request_uses_the_contest_dates() {
+        // QA regression: joining a running contest must not push its deadlines out.
+        let join_end = 1_000 + 45 * MINUTE;
+        let request = UsernameRequest::submitted("alice", 30 * MINUTE, durations(), Some(join_end));
+        assert_eq!(request.join_end, Some(join_end));
+        assert_eq!(request.end, Some(1_000 + 90 * MINUTE));
+        let opened = UsernameRequest::submitted("alice", 5_000, durations(), None);
+        assert_eq!(opened.join_end, Some(5_000 + 45 * MINUTE));
+    }
+
+    #[test]
+    fn signing_gate_matches_platform_key_rules() {
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+        use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
+        let key = |purpose, level| {
+            let mut key = dash_sdk::platform::IdentityPublicKey::random_key(
+                1,
+                Some(1),
+                dash_sdk::dpp::version::PlatformVersion::latest(),
+            );
+            key.set_purpose(purpose);
+            key.set_security_level(level);
+            key
+        };
+        let high = SecurityLevel::HIGH;
+        assert!(key_can_sign_documents(
+            &key(Purpose::AUTHENTICATION, SecurityLevel::CRITICAL),
+            high
+        ));
+        assert!(key_can_sign_documents(
+            &key(Purpose::AUTHENTICATION, high),
+            high
+        ));
+        assert!(!key_can_sign_documents(
+            &key(Purpose::AUTHENTICATION, SecurityLevel::MEDIUM),
+            high
+        ));
+        assert!(!key_can_sign_documents(
+            &key(Purpose::AUTHENTICATION, SecurityLevel::MASTER),
+            high
+        ));
+        assert!(!key_can_sign_documents(
+            &key(Purpose::TRANSFER, SecurityLevel::CRITICAL),
+            high
+        ));
     }
 
     #[test]
@@ -592,7 +768,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            classify_availability("alice", false, Some(&contest), 0, durations()),
+            classify_availability(id(9), "alice", false, Some(&contest), 0, durations()),
             UsernameAvailability::Locked
         );
     }
@@ -679,6 +855,10 @@ mod tests {
             phase(ContestWinner::Locked),
             Some((RequestPhase::Locked, Some(7_000)))
         );
+        assert_eq!(
+            phase(ContestWinner::NoWinner),
+            Some((RequestPhase::NoWinner, Some(7_000)))
+        );
     }
 
     #[test]
@@ -689,9 +869,23 @@ mod tests {
             lock,
             abstain: 0,
         };
-        assert_eq!(tally(0, vec![], 0).standing(), TallyStanding::Tied);
+        // A lone request wins at the end even with no votes.
+        let lone = RequestTally::default();
+        assert_eq!(lone.standing(), TallyStanding::Leading);
         assert_eq!(tally(5, vec![5], 0).standing(), TallyStanding::Tied);
-        assert_eq!(tally(5, vec![1], 6).standing(), TallyStanding::Trailing);
+        assert_eq!(tally(5, vec![9], 0).standing(), TallyStanding::Trailing);
+        // Lock ahead of every request means no one gets the name; a lock tie does not.
+        assert_eq!(tally(5, vec![1], 6).standing(), TallyStanding::LockAhead);
+        assert_eq!(
+            RequestTally {
+                you: 0,
+                lock: 3,
+                ..Default::default()
+            }
+            .standing(),
+            TallyStanding::LockAhead
+        );
+        assert_eq!(tally(6, vec![1], 6).standing(), TallyStanding::Leading);
     }
 
     fn stored(label: &str, phase: RequestPhase, decided_at: Option<u64>) -> UsernameRequest {

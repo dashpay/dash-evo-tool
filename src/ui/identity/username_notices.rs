@@ -9,12 +9,15 @@ use dash_sdk::platform::Identifier;
 use egui::{Frame, Id, Margin, RichText, Ui};
 
 use crate::app::AppAction;
+use crate::backend_task::BackendTask;
+use crate::backend_task::identity::IdentityTask;
 use crate::context::AppContext;
 use crate::model::dpns_usernames::{RequestPhase, UsernameRequest};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::ScreenType;
-use crate::ui::identity::register_dpns_name_screen::{RegisterDpnsNameSource, status_line};
+use crate::ui::identity::register_dpns_name_screen::status_line;
 use crate::ui::identity::username_copy::{Tone, format_date, phase_label, standing_line};
+use crate::ui::identity::usernames_card::register_action_for;
 use crate::ui::theme::{ComponentStyles, DashColors};
 
 /// Outcome banners shown in this session, so a banner marked seen stays up until dismissed.
@@ -32,6 +35,9 @@ pub fn outcome_banner_text(request: &UsernameRequest) -> Option<String> {
         )),
         RequestPhase::Locked => Some(format!(
             "No one can register @{name} anymore. The community vote locked it."
+        )),
+        RequestPhase::NoWinner => Some(format!(
+            "The vote for @{name} ended without a winner. You can choose a different username."
         )),
         RequestPhase::Joinable | RequestPhase::Voting => None,
     }
@@ -60,6 +66,9 @@ pub fn render(
         .data(|data| data.get_temp(session_id))
         .unwrap_or_default();
     let mut session_changed = false;
+    // Outcomes shown for the first time this frame; recorded as seen through a
+    // backend task so each banner appears once, across restarts too.
+    let mut newly_shown: Vec<UsernameRequest> = Vec::new();
 
     for request in &requests {
         let Some(text) = outcome_banner_text(request) else {
@@ -70,14 +79,7 @@ pub fn render(
             if app_context.username_outcome_seen(&identity_id, request) {
                 continue;
             }
-            if let Err(error) = app_context.mark_username_outcome_seen(&identity_id, request) {
-                tracing::debug!(
-                    ?error,
-                    "Username outcome banner could not be marked as seen"
-                );
-            }
-            session.insert(key.clone());
-            session_changed = true;
+            newly_shown.push(request.clone());
         }
         let tone = if request.phase == RequestPhase::Won {
             Tone::Positive
@@ -87,20 +89,26 @@ pub fn render(
         notice_frame(ui, dark_mode, |ui| {
             ui.horizontal_wrapped(|ui| {
                 status_line(ui, tone, &text, dark_mode);
-                if request.phase == RequestPhase::Lost
+                if matches!(request.phase, RequestPhase::Lost | RequestPhase::NoWinner)
                     && ui.button("Choose another username").clicked()
                 {
-                    action = AppAction::AddScreen(
-                        ScreenType::RegisterDpnsName(RegisterDpnsNameSource::Identities)
-                            .create_screen(app_context),
-                    );
+                    action = register_action_for(app_context, identity_id);
                 }
                 if ui.button("Dismiss").clicked() {
                     session.remove(&key);
                     session_changed = true;
+                    if newly_shown.last() == Some(request) {
+                        newly_shown.pop();
+                        action = mark_seen_action(identity_id, vec![request.clone()]);
+                    }
                 }
             });
         });
+    }
+    if !newly_shown.is_empty() && matches!(action, AppAction::None) {
+        session.extend(newly_shown.iter().map(|r| banner_key(&identity_id, r)));
+        session_changed = true;
+        action = mark_seen_action(identity_id, newly_shown);
     }
     if session_changed {
         ui.ctx()
@@ -137,6 +145,15 @@ pub fn render(
     action
 }
 
+fn mark_seen_action(identity_id: Identifier, requests: Vec<UsernameRequest>) -> AppAction {
+    AppAction::BackendTask(BackendTask::IdentityTask(
+        IdentityTask::MarkUsernameOutcomesSeen {
+            identity_id,
+            requests,
+        },
+    ))
+}
+
 fn notice_frame(ui: &mut Ui, dark_mode: bool, add: impl FnOnce(&mut Ui)) {
     Frame::new()
         .fill(DashColors::surface(dark_mode))
@@ -161,6 +178,7 @@ mod tests {
                 total: Duration::ZERO,
                 join: Duration::ZERO,
             },
+            None,
         );
         assert!(outcome_banner_text(&request).is_none());
         request.phase = RequestPhase::Won;

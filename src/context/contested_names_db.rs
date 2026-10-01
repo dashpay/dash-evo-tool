@@ -186,6 +186,10 @@ fn contest_err(source: KvAdapterError) -> TaskError {
     TaskError::ContestStorage { source }
 }
 
+fn username_err(source: KvAdapterError) -> TaskError {
+    TaskError::UsernameStorage { source }
+}
+
 impl AppContext {
     /// Protocol version the SDK currently speaks; it sets the community vote fee charged at registration.
     pub fn sdk_platform_version(&self) -> &'static dash_sdk::dpp::version::PlatformVersion {
@@ -248,7 +252,7 @@ impl AppContext {
         let mut cache = UsernameCache::default();
         for key in kv
             .list(DetScope::Global, Some(USERNAME_REQUESTS_KEY_PREFIX))
-            .map_err(contest_err)?
+            .map_err(username_err)?
         {
             let Some(id) = identity_from_key(&key, USERNAME_REQUESTS_KEY_PREFIX) else {
                 continue;
@@ -265,7 +269,7 @@ impl AppContext {
         }
         for key in kv
             .list(DetScope::Global, Some(MAIN_USERNAME_KEY_PREFIX))
-            .map_err(contest_err)?
+            .map_err(username_err)?
         {
             if let Some(id) = identity_from_key(&key, MAIN_USERNAME_KEY_PREFIX)
                 && let Ok(Some(name)) = kv.get::<String>(DetScope::Global, &key)
@@ -275,7 +279,7 @@ impl AppContext {
         }
         for key in kv
             .list(DetScope::Global, Some(SEEN_OUTCOMES_KEY_PREFIX))
-            .map_err(contest_err)?
+            .map_err(username_err)?
         {
             if let Some(id) = identity_from_key(&key, SEEN_OUTCOMES_KEY_PREFIX)
                 && let Ok(Some(seen)) = kv.get::<BTreeSet<String>>(DetScope::Global, &key)
@@ -293,6 +297,8 @@ impl AppContext {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// Write guard over the username snapshot. Every username write holds it
+    /// across its read-modify-write and store update, so writers never interleave.
     fn username_cache_mut(&self) -> std::sync::RwLockWriteGuard<'_, UsernameCache> {
         self.pending_dpns_usernames
             .write()
@@ -323,17 +329,33 @@ impl AppContext {
         identity_id: &Identifier,
         requests: Vec<UsernameRequest>,
     ) -> Result<(), TaskError> {
-        let key = identity_key(USERNAME_REQUESTS_KEY_PREFIX, identity_id);
+        self.update_username_requests(identity_id, |_| requests)
+    }
+
+    /// Replace the request list of `identity_id` with `update(current list)`.
+    ///
+    /// The read, the store write and the snapshot update run under one guard,
+    /// so a request recorded by a concurrent registration is never lost.
+    pub(crate) fn update_username_requests(
+        &self,
+        identity_id: &Identifier,
+        update: impl FnOnce(&[UsernameRequest]) -> Vec<UsernameRequest>,
+    ) -> Result<(), TaskError> {
         let kv = self.det_kv()?;
+        let key = identity_key(USERNAME_REQUESTS_KEY_PREFIX, identity_id);
+        let mut cache = self.username_cache_mut();
+        let current = cache.requests.get(identity_id).cloned().unwrap_or_default();
+        let requests = update(&current);
+        if requests == current {
+            return Ok(());
+        }
         if requests.is_empty() {
-            kv.delete(DetScope::Global, &key).map_err(contest_err)?;
-            self.username_cache_mut().requests.remove(identity_id);
+            kv.delete(DetScope::Global, &key).map_err(username_err)?;
+            cache.requests.remove(identity_id);
         } else {
             kv.put(DetScope::Global, &key, &requests)
-                .map_err(contest_err)?;
-            self.username_cache_mut()
-                .requests
-                .insert(*identity_id, requests);
+                .map_err(username_err)?;
+            cache.requests.insert(*identity_id, requests);
         }
         Ok(())
     }
@@ -381,16 +403,15 @@ impl AppContext {
 
     /// Show `name` as the main username of `identity_id` on this device.
     pub fn set_main_username(&self, identity_id: &Identifier, name: &str) -> Result<(), TaskError> {
-        self.det_kv()?
-            .put(
-                DetScope::Global,
-                &identity_key(MAIN_USERNAME_KEY_PREFIX, identity_id),
-                &name.to_owned(),
-            )
-            .map_err(contest_err)?;
-        self.username_cache_mut()
-            .main
-            .insert(*identity_id, name.to_owned());
+        let kv = self.det_kv()?;
+        let mut cache = self.username_cache_mut();
+        kv.put(
+            DetScope::Global,
+            &identity_key(MAIN_USERNAME_KEY_PREFIX, identity_id),
+            &name.to_owned(),
+        )
+        .map_err(username_err)?;
+        cache.main.insert(*identity_id, name.to_owned());
         Ok(())
     }
 
@@ -406,29 +427,27 @@ impl AppContext {
             .is_some_and(|seen| seen.contains(&outcome_key(request)))
     }
 
-    /// Record that the outcome banner for `request` was shown.
-    pub fn mark_username_outcome_seen(
+    /// Record that the outcome banners for `requests` were shown.
+    pub fn mark_username_outcomes_seen(
         &self,
         identity_id: &Identifier,
-        request: &UsernameRequest,
+        requests: &[UsernameRequest],
     ) -> Result<(), TaskError> {
-        let mut seen = self
-            .username_cache()
-            .seen
-            .get(identity_id)
-            .cloned()
-            .unwrap_or_default();
-        if !seen.insert(outcome_key(request)) {
+        let kv = self.det_kv()?;
+        let mut cache = self.username_cache_mut();
+        let mut seen = cache.seen.get(identity_id).cloned().unwrap_or_default();
+        let before = seen.len();
+        seen.extend(requests.iter().map(outcome_key));
+        if seen.len() == before {
             return Ok(());
         }
-        self.det_kv()?
-            .put(
-                DetScope::Global,
-                &identity_key(SEEN_OUTCOMES_KEY_PREFIX, identity_id),
-                &seen,
-            )
-            .map_err(contest_err)?;
-        self.username_cache_mut().seen.insert(*identity_id, seen);
+        kv.put(
+            DetScope::Global,
+            &identity_key(SEEN_OUTCOMES_KEY_PREFIX, identity_id),
+            &seen,
+        )
+        .map_err(username_err)?;
+        cache.seen.insert(*identity_id, seen);
         Ok(())
     }
 
@@ -438,9 +457,35 @@ impl AppContext {
         identity_id: &Identifier,
         normalized_label: &str,
     ) -> Result<(), TaskError> {
-        let mut requests = self.username_requests_for(identity_id);
-        requests.retain(|r| r.phase.is_pending() || r.normalized_label != normalized_label);
-        self.store_username_requests(identity_id, requests)
+        self.update_username_requests(identity_id, |requests| {
+            requests
+                .iter()
+                .filter(|r| r.phase.is_pending() || r.normalized_label != normalized_label)
+                .cloned()
+                .collect()
+        })
+    }
+
+    /// Drop every username record of a removed identity, so its requests stop
+    /// driving refreshes and its main-name choice does not return on re-import.
+    pub(crate) fn forget_identity_usernames(
+        &self,
+        kv: &crate::wallet_backend::DetKv,
+        identity_id: &Identifier,
+    ) -> Result<(), TaskError> {
+        let mut cache = self.username_cache_mut();
+        for prefix in [
+            USERNAME_REQUESTS_KEY_PREFIX,
+            MAIN_USERNAME_KEY_PREFIX,
+            SEEN_OUTCOMES_KEY_PREFIX,
+        ] {
+            kv.delete(DetScope::Global, &identity_key(prefix, identity_id))
+                .map_err(username_err)?;
+        }
+        cache.requests.remove(identity_id);
+        cache.main.remove(identity_id);
+        cache.seen.remove(identity_id);
+        Ok(())
     }
 
     /// Seed a current contest through the persisted shape for backend contract tests.
@@ -907,7 +952,9 @@ mod tests {
         context
             .store_username_requests(&id, vec![won.clone()])
             .expect("store");
-        context.mark_username_outcome_seen(&id, &won).expect("seen");
+        context
+            .mark_username_outcomes_seen(&id, std::slice::from_ref(&won))
+            .expect("seen");
 
         *context.username_cache_mut() = UsernameCache::default();
         context.refresh_pending_dpns_usernames().expect("reload");
@@ -920,6 +967,28 @@ mod tests {
             .dismiss_username_request(&id, "carol")
             .expect("dismiss");
         assert!(context.username_requests_for(&id).is_empty());
+    }
+
+    #[test]
+    fn forgetting_an_identity_drops_its_username_records() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let context = test_app_context(temp_dir.path());
+        let kv = empty_kv();
+        context.set_det_kv_override_for_test(kv.clone());
+        let id = qualified_identity(1, "alice").identity.id();
+        let pending = request("carol", RequestPhase::Voting);
+        context
+            .store_username_requests(&id, vec![pending.clone()])
+            .expect("store");
+        context.set_main_username(&id, "alice").expect("main");
+        assert!(context.any_pending_username_request());
+
+        context.forget_identity_usernames(&kv, &id).expect("forget");
+        context.refresh_pending_dpns_usernames().expect("reload");
+
+        assert!(!context.any_pending_username_request());
+        assert!(context.username_requests_for(&id).is_empty());
+        assert!(!context.username_cache().main.contains_key(&id));
     }
 
     #[test]

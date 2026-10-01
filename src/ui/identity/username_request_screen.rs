@@ -17,12 +17,13 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::identity::identity_pill::{display_label, shorten_id};
-use crate::ui::identity::register_dpns_name_screen::{RegisterDpnsNameSource, status_line};
+use crate::ui::identity::register_dpns_name_screen::status_line;
 use crate::ui::identity::username_copy::{
     Tone, format_date, format_date_time, phase_label, what_happens_next,
 };
+use crate::ui::identity::usernames_card::register_action_for;
 use crate::ui::theme::{ComponentStyles, DashColors};
-use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
+use crate::ui::{MessageType, RootScreenType, ScreenLike};
 
 /// Pushed page showing the status of one of an identity's username requests.
 pub struct UsernameRequestScreen {
@@ -80,7 +81,7 @@ impl UsernameRequestScreen {
             .find(|qi| qi.identity.id() == self.identity_id);
         match identity {
             Some(qi) => display_label(
-                qi.alias.as_deref(),
+                crate::model::dpns_usernames::user_alias(&qi),
                 None,
                 self.app_context.main_username(&qi).as_deref(),
                 &qi.identity.id().to_string(Encoding::Base58),
@@ -145,6 +146,7 @@ impl UsernameRequestScreen {
             RequestPhase::Won => (Tone::Positive, "Result: The name is yours."),
             RequestPhase::Lost => (Tone::Negative, "Result: The name went to someone else."),
             RequestPhase::Locked => (Tone::Negative, "Result: The name is locked for good."),
+            RequestPhase::NoWinner => (Tone::Negative, "Result: No one got the name."),
         };
         status_line(ui, tone, result, dark_mode);
     }
@@ -154,7 +156,12 @@ impl UsernameRequestScreen {
         let standing = match tally.standing() {
             TallyStanding::Leading => "Leading",
             TallyStanding::Tied => "Tied",
-            TallyStanding::Trailing => "",
+            TallyStanding::Trailing | TallyStanding::LockAhead => "",
+        };
+        let lock_standing = if tally.standing() == TallyStanding::LockAhead {
+            "Leading"
+        } else {
+            ""
         };
         egui::Grid::new("username_request_tally")
             .num_columns(3)
@@ -174,7 +181,7 @@ impl UsernameRequestScreen {
                     ui.end_row();
                 }
                 ui.label("Lock, so no one gets it");
-                ui.label("");
+                ui.label(lock_standing);
                 ui.label(tally.lock.to_string());
                 ui.end_row();
                 ui.label("Abstain");
@@ -250,10 +257,7 @@ impl UsernameRequestScreen {
             if ComponentStyles::add_secondary_button(ui, "Get a username without a vote", dark_mode)
                 .clicked()
             {
-                action = AppAction::AddScreen(
-                    ScreenType::RegisterDpnsName(RegisterDpnsNameSource::Identities)
-                        .create_screen(&self.app_context),
-                );
+                action = register_action_for(&self.app_context, self.identity_id);
             }
             if self.can_vote && ui.link("Your nodes can vote on this name").clicked() {
                 // TODO(stream-v): open Masternodes ▸ Votes filtered to this name once Stream V exposes the route.

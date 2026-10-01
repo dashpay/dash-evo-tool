@@ -179,7 +179,7 @@ fn build_card(app_context: &AppContext, identity: &QualifiedIdentity) -> Identit
             );
 
     // Heading priority: local alias → DPNS → shortened id.
-    if let Some(alias) = identity.alias.as_deref().filter(|s| !s.trim().is_empty()) {
+    if let Some(alias) = crate::model::dpns_usernames::user_alias(identity) {
         card = card.with_display_name(alias);
     }
     if let Some(dpns) = app_context.main_username(identity) {

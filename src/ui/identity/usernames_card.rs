@@ -7,8 +7,13 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use egui::{ColorImage, RichText, TextureHandle, Ui};
 
 use crate::app::AppAction;
+use crate::backend_task::BackendTask;
+use crate::backend_task::identity::IdentityTask;
 use crate::context::AppContext;
-use crate::model::dpns_usernames::{RequestPhase, UsernameRequest, can_register_usernames};
+use crate::model::dpns::normalize_dpns_label;
+use crate::model::dpns_usernames::{
+    RequestPhase, UsernameRequest, can_register_usernames, dpns_signing_requirement,
+};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::MessageType;
 use crate::ui::ScreenType;
@@ -36,36 +41,48 @@ pub enum UsernameRow {
     Outcome(UsernameRequest),
 }
 
+fn same_name(a: &str, b: &str) -> bool {
+    normalize_dpns_label(a) == normalize_dpns_label(b)
+}
+
 /// Build the rows: main name, other names, pending requests, then finished outcomes.
 pub fn username_rows(
     identity: &QualifiedIdentity,
     main: Option<&str>,
     requests: &[UsernameRequest],
 ) -> Vec<UsernameRow> {
-    let names: Vec<_> = identity
+    // Registered names, plus names won in a vote that the identity's stored
+    // names do not list yet (they are re-read in the background).
+    let mut names: Vec<(String, TimestampMillis)> = identity
         .dpns_names
         .iter()
         .filter(|n| !n.name.trim().is_empty())
+        .map(|n| (n.name.clone(), n.acquired_at))
         .collect();
+    for won in requests.iter().filter(|r| r.phase == RequestPhase::Won) {
+        if !names.iter().any(|(name, _)| same_name(name, &won.label)) {
+            names.push((won.label.clone(), won.decided_at.unwrap_or(0)));
+        }
+    }
     let show_main_badge = names.len() > 1;
     let mut rows: Vec<UsernameRow> = Vec::new();
     let main_index = main
-        .and_then(|main| names.iter().position(|n| n.name == main))
+        .and_then(|main| names.iter().position(|(name, _)| name == main))
         .unwrap_or(0);
-    for (index, name) in names
+    for (index, (name, acquired_at)) in names
         .iter()
         .enumerate()
         .filter(|(i, _)| *i == main_index)
         .chain(names.iter().enumerate().filter(|(i, _)| *i != main_index))
     {
         rows.push(UsernameRow::Active {
-            name: name.name.clone(),
+            name: name.clone(),
             is_main: index == main_index,
             show_main_badge,
-            acquired_at: name.acquired_at,
+            acquired_at: *acquired_at,
         });
     }
-    let owned = |label: &str| names.iter().any(|n| n.name == label);
+    let owned = |label: &str| names.iter().any(|(name, _)| same_name(name, label));
     rows.extend(
         requests
             .iter()
@@ -76,7 +93,12 @@ pub fn username_rows(
     rows.extend(
         requests
             .iter()
-            .filter(|r| matches!(r.phase, RequestPhase::Lost | RequestPhase::Locked))
+            .filter(|r| {
+                matches!(
+                    r.phase,
+                    RequestPhase::Lost | RequestPhase::Locked | RequestPhase::NoWinner
+                )
+            })
             .cloned()
             .map(UsernameRow::Outcome),
     );
@@ -103,7 +125,10 @@ impl UsernamesCard {
         let main = app_context.main_username(identity);
         let requests = app_context.username_requests_for(&identity_id);
         let rows = username_rows(identity, main.as_deref(), &requests);
-        let can_register = can_register_usernames(identity);
+        let can_register = can_register_usernames(
+            identity,
+            dpns_signing_requirement(&app_context.dpns_contract),
+        );
 
         if rows.is_empty() {
             ui.label(
@@ -144,14 +169,12 @@ impl UsernamesCard {
                                 ui.close();
                             }
                             if !is_main && ui.button("Show as main").clicked() {
-                                if let Err(error) = app_context.set_main_username(&identity_id, &name) {
-                                    MessageBanner::set_global(
-                                        ui.ctx(),
-                                        "This choice could not be saved on your device. Try again in a moment.",
-                                        MessageType::Error,
-                                    )
-                                    .with_details(error);
-                                }
+                                action = AppAction::BackendTask(BackendTask::IdentityTask(
+                                    IdentityTask::SetMainUsername {
+                                        identity_id,
+                                        name: name.clone(),
+                                    },
+                                ));
                                 ui.close();
                             }
                         })
@@ -176,7 +199,7 @@ impl UsernamesCard {
                     });
                     let detail = match (request.phase, request.join_end, request.end) {
                         (RequestPhase::Joinable, Some(join_end), _) => format!(
-                            "Others can ask for this name until {}. Voting starts after that.",
+                            "Others can ask for this name until {}. Masternodes can already vote.",
                             format_date(join_end)
                         ),
                         (_, _, Some(end)) => {
@@ -202,6 +225,9 @@ impl UsernamesCard {
                             "More votes went to locking this name, so no one can register it."
                                 .to_owned()
                         }
+                        RequestPhase::NoWinner => {
+                            "The community vote ended without giving the name to anyone.".to_owned()
+                        }
                         _ => request.decided_at.map_or_else(
                             || "The community vote ended.".to_owned(),
                             |at| format!("The community vote ended on {}.", format_date(at)),
@@ -213,21 +239,18 @@ impl UsernamesCard {
                             .color(DashColors::text_secondary(dark_mode)),
                     );
                     ui.horizontal(|ui| {
-                        if request.phase == RequestPhase::Lost
+                        if matches!(request.phase, RequestPhase::Lost | RequestPhase::NoWinner)
                             && ui.button("Choose another username").clicked()
                         {
                             action = register_action(app_context, identity);
                         }
-                        if ui.button("Dismiss").clicked()
-                            && let Err(error) = app_context
-                                .dismiss_username_request(&identity_id, &request.normalized_label)
-                        {
-                            MessageBanner::set_global(
-                                ui.ctx(),
-                                "This row could not be dismissed. Try again in a moment.",
-                                MessageType::Error,
-                            )
-                            .with_details(error);
+                        if ui.button("Dismiss").clicked() {
+                            action = AppAction::BackendTask(BackendTask::IdentityTask(
+                                IdentityTask::DismissUsernameRequest {
+                                    identity_id,
+                                    normalized_label: request.normalized_label.clone(),
+                                },
+                            ));
                         }
                     });
                 }
@@ -291,11 +314,19 @@ impl UsernamesCard {
     }
 }
 
-fn register_action(app_context: &Arc<AppContext>, identity: &QualifiedIdentity) -> AppAction {
-    app_context.set_selected_identity(Some(identity.identity.id()));
+/// Open "Get a username" for `identity_id`, making it the selected identity.
+pub(crate) fn register_action_for(
+    app_context: &Arc<AppContext>,
+    identity_id: dash_sdk::platform::Identifier,
+) -> AppAction {
+    app_context.set_selected_identity(Some(identity_id));
     AppAction::AddScreen(
         ScreenType::RegisterDpnsName(RegisterDpnsNameSource::Identities).create_screen(app_context),
     )
+}
+
+fn register_action(app_context: &Arc<AppContext>, identity: &QualifiedIdentity) -> AppAction {
+    register_action_for(app_context, identity.identity.id())
 }
 
 fn request_status_action(
@@ -387,6 +418,7 @@ mod tests {
                 total: Duration::ZERO,
                 join: Duration::ZERO,
             },
+            None,
         );
         request.phase = phase;
         request

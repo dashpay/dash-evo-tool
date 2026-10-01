@@ -133,6 +133,12 @@ pub fn availability_line(name: &str, row: &AvailabilityRow) -> (Tone, String) {
                 Tone::Negative,
                 format!("Others can no longer join the vote for @{name}. Try another name."),
             ),
+            UsernameAvailability::AlreadyRequested => (
+                Tone::Caution,
+                format!(
+                    "You already asked for @{name}. Its status is on your identity's Usernames list."
+                ),
+            ),
         },
     }
 }
@@ -207,18 +213,22 @@ pub fn phase_label(phase: RequestPhase) -> &'static str {
         RequestPhase::Won => "Registered",
         RequestPhase::Lost => "Went to someone else",
         RequestPhase::Locked => "Locked for good",
+        RequestPhase::NoWinner => "No one got it",
     }
 }
 
 /// Second sentence of the Home request card.
 pub fn standing_line(standing: TallyStanding, others: usize) -> &'static str {
-    if others == 0 {
-        "No one else has asked so far."
-    } else {
-        match standing {
-            TallyStanding::Leading => "You're leading right now.",
-            TallyStanding::Tied | TallyStanding::Trailing => "Another request is leading.",
+    match standing {
+        TallyStanding::LockAhead => {
+            "More votes are for locking this name right now. If that holds, no one gets it."
         }
+        _ if others == 0 => "No one else has asked so far.",
+        TallyStanding::Leading => "You're leading right now.",
+        TallyStanding::Tied => {
+            "You're tied with another request. Ties go to the most recent request."
+        }
+        TallyStanding::Trailing => "Another request is leading.",
     }
 }
 
@@ -353,12 +363,20 @@ mod tests {
             "You're leading right now."
         );
         assert_eq!(
-            standing_line(TallyStanding::Tied, 0),
+            standing_line(TallyStanding::Leading, 0),
             "No one else has asked so far."
         );
         assert_eq!(
             standing_line(TallyStanding::Trailing, 2),
             "Another request is leading."
+        );
+        assert_eq!(
+            standing_line(TallyStanding::Tied, 1),
+            "You're tied with another request. Ties go to the most recent request."
+        );
+        assert_eq!(
+            standing_line(TallyStanding::LockAhead, 0),
+            "More votes are for locking this name right now. If that holds, no one gets it."
         );
     }
 

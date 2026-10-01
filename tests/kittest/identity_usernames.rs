@@ -1,8 +1,10 @@
-//! Kittest coverage for identity usernames (USR-TC-018, 031–038).
+//! Kittest coverage for identity usernames (USR-TC-018, 020–027, 029–038).
 
 use crate::support::{fresh_app_context, with_isolated_data_dir};
-use dash_evo_tool::backend_task::BackendTaskSuccessResult;
+use dash_evo_tool::app::AppAction;
 use dash_evo_tool::backend_task::error::TaskError;
+use dash_evo_tool::backend_task::identity::IdentityTask;
+use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_evo_tool::context::AppContext;
 use dash_evo_tool::context::connection_status::OverallConnectionState;
 use dash_evo_tool::model::dpns::normalize_dpns_label;
@@ -25,6 +27,7 @@ use dash_evo_tool::ui::identity::register_dpns_name_screen::{
 };
 use dash_evo_tool::ui::identity::settings::SettingsTab;
 use dash_evo_tool::ui::identity::username_request_screen::UsernameRequestScreen;
+use dash_evo_tool::utils::egui_mpsc::SenderAsync;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::{
     IdentityPublicKeyGettersV0, IdentityPublicKeySettersV0,
@@ -218,6 +221,15 @@ fn confirm_step_shows_fees_low_balance_and_sync_gate() {
                 .is_some()
         );
         assert!(harness.query_by_label(&contest_fee).is_some());
+        let total = format_credits_as_dash(
+            app_context.fee_estimator().estimate_document_batch(2)
+                + contest_fee_credits(app_context.sdk_platform_version()),
+        );
+        assert!(harness.query_by_label("Total").is_some());
+        assert!(
+            harness.query_by_label(&total).is_some(),
+            "total must be registration plus community vote fee ({total})"
+        );
         assert!(harness.query_by_label("Community vote").is_some());
         assert!(
             harness
@@ -269,22 +281,46 @@ fn request(label: &str, phase: RequestPhase) -> UsernameRequest {
             total: std::time::Duration::from_secs(14 * 86_400),
             join: std::time::Duration::from_secs(7 * 86_400),
         },
+        None,
     );
     request.phase = phase;
     request
 }
 
-fn mount_settings(app_context: Arc<AppContext>) -> Harness<'static, SettingsTab> {
+/// Settings tab plus the last non-empty action it returned.
+type SettingsState = (SettingsTab, Option<AppAction>);
+
+fn mount_settings(app_context: Arc<AppContext>) -> Harness<'static, SettingsState> {
     let mut harness = Harness::builder()
         .with_size(egui::vec2(1400.0, 1200.0))
         .build_ui_state(
-            move |ui, tab: &mut SettingsTab| {
-                tab.render(ui, &app_context, &mut ProfileCache::default());
+            move |ui, state: &mut SettingsState| {
+                let action = state
+                    .0
+                    .render(ui, &app_context, &mut ProfileCache::default());
+                if !matches!(action, AppAction::None) {
+                    state.1 = Some(action);
+                }
             },
-            SettingsTab::new(),
+            (SettingsTab::new(), None),
         );
     harness.run();
     harness
+}
+
+/// Run the backend task an action carries, as AppState would.
+fn run_action(
+    rt: &tokio::runtime::Runtime,
+    app_context: &Arc<AppContext>,
+    action: Option<AppAction>,
+) -> BackendTaskSuccessResult {
+    let Some(AppAction::BackendTask(task)) = action else {
+        panic!("expected a backend task, got {action:?}");
+    };
+    let (tx, _rx) = tokio::sync::mpsc::channel(8);
+    let sender = SenderAsync::new(tx, egui::Context::default());
+    rt.block_on(app_context.run_backend_task(task, sender))
+        .expect("task succeeds")
 }
 
 /// USR-TC-020 / 022: every row state renders and no alias stubs remain.
@@ -480,28 +516,61 @@ fn request_status_page_links_voters() {
     });
 }
 
-fn mount_home(app_context: Arc<AppContext>) -> Harness<'static, (HomeState, ProfileCache)> {
+/// Home tab state plus the last non-empty action it returned.
+type HomeHarnessState = (HomeState, ProfileCache, Option<AppAction>);
+
+fn mount_home(app_context: Arc<AppContext>) -> Harness<'static, HomeHarnessState> {
     let mut harness = Harness::builder()
         .with_size(egui::vec2(1280.0, 1200.0))
         .build_ui_state(
-            move |ui, state: &mut (HomeState, ProfileCache)| {
-                let _ = home::render(ui, &app_context, &state.0, &mut state.1);
+            move |ui, state: &mut HomeHarnessState| {
+                let (action, _) = home::render(ui, &app_context, &state.0, &mut state.1);
+                if !matches!(action, AppAction::None) {
+                    state.2 = Some(action);
+                }
             },
-            (HomeState::default(), ProfileCache::default()),
+            (HomeState::default(), ProfileCache::default(), None),
         );
     harness.run();
     harness
 }
 
-/// USR-TC-021: "Show as main" changes the shown name locally, with no backend task.
+/// USR-TC-021: "Show as main" from the row menu saves the choice on this device
+/// (no network call) and every label shows it, even over a legacy automatic
+/// `{name}.dash` alias written by earlier registrations.
 #[test]
 fn show_as_main_changes_the_hero_name() {
     with_isolated_data_dir(|| {
-        let (_rt, app_context) = fresh_app_context();
-        let id = seed_username_identity(&app_context, 0x21, "", &["a-name", "b-name"], 0, true);
-        app_context
-            .set_main_username(&id, "b-name")
-            .expect("set main");
+        let (rt, app_context) = fresh_app_context();
+        let id = seed_username_identity(
+            &app_context,
+            0x21,
+            "a-name.dash",
+            &["a-name", "b-name"],
+            0,
+            true,
+        );
+        let mut settings = mount_settings(app_context.clone());
+        settings
+            .get_all_by_label("•••")
+            .nth(1)
+            .expect("menu for @b-name")
+            .click();
+        settings.run();
+        settings.get_by_label("Show as main").click();
+        settings.run();
+        let action = settings.state_mut().1.take();
+        assert!(
+            matches!(
+                &action,
+                Some(AppAction::BackendTask(BackendTask::IdentityTask(
+                    IdentityTask::SetMainUsername { identity_id, name }
+                ))) if *identity_id == id && name == "b-name"
+            ),
+            "expected a local-only SetMainUsername task, got {action:?}"
+        );
+        run_action(&rt, &app_context, action);
+
         let identity = app_context
             .load_local_user_identities()
             .expect("identities")
@@ -523,7 +592,8 @@ fn show_as_main_changes_the_hero_name() {
             harness
                 .query_all_by_label_contains("a-name")
                 .next()
-                .is_none()
+                .is_none(),
+            "the legacy automatic alias must not hide the chosen main name"
         );
     });
 }
@@ -571,16 +641,206 @@ fn home_shows_pending_request_header_and_card() {
 #[test]
 fn outcome_banner_shows_once() {
     with_isolated_data_dir(|| {
-        let (_rt, app_context) = fresh_app_context();
+        let (rt, app_context) = fresh_app_context();
         let id = seed_username_identity(&app_context, 0x27, "Alex", &[], 0, true);
         app_context
             .store_username_requests(&id, vec![request("ali", RequestPhase::Won)])
             .expect("store request");
         let banner = "You're @ali. People can now find and pay you by this name.";
-        let first = mount_home(app_context.clone());
+        let mut first = mount_home(app_context.clone());
         assert!(first.query_by_label_contains(banner).is_some());
+        let mark_seen = first.state_mut().2.take();
+        assert!(matches!(
+            &mark_seen,
+            Some(AppAction::BackendTask(BackendTask::IdentityTask(
+                IdentityTask::MarkUsernameOutcomesSeen { .. }
+            )))
+        ));
+        run_action(&rt, &app_context, mark_seen);
         drop(first);
         let second = mount_home(app_context);
         assert!(second.query_by_label_contains(banner).is_none());
+    });
+}
+
+/// QA regression (USR-FR-037/038): a network failure during the pay-time
+/// re-check lifts the blocking overlay and returns to the confirm step, with
+/// the error shown as a banner.
+#[test]
+fn pay_recheck_network_failure_unblocks_confirm() {
+    with_isolated_data_dir(|| {
+        let (_rt, app_context) = fresh_app_context();
+        seed_username_identity(&app_context, 0x42, "Alex", &[], 0, true);
+        let mut screen = answered(&app_context, "alice", UsernameAvailability::NeedsVote);
+        screen.open_confirm_for_test();
+        let ctx = egui::Context::default();
+        screen.begin_registration_for_test(&ctx);
+        assert!(
+            ProgressOverlay::has_global(&ctx),
+            "precondition: overlay up"
+        );
+        let handled = screen.display_task_error(&TaskError::UsernameAvailabilityCheckFailed {
+            source: Box::new(dash_sdk::Error::Generic("timeout".into())),
+        });
+        assert!(!handled, "the banner must tell the user to retry");
+        assert!(
+            !ProgressOverlay::has_global(&ctx),
+            "the Registering overlay must not stay up after the re-check failed"
+        );
+        assert!(screen.is_confirming_for_test());
+    });
+}
+
+/// QA regression (USR-FR-001): a request won in the vote is listed as an active
+/// name before the identity's registered names are re-read.
+#[test]
+fn won_request_is_listed_on_card() {
+    with_isolated_data_dir(|| {
+        let (_rt, app_context) = fresh_app_context();
+        let id = seed_username_identity(&app_context, 0x41, "Alex", &[], 0, true);
+        app_context
+            .store_username_requests(&id, vec![request("ali", RequestPhase::Won)])
+            .expect("store request");
+        let harness = mount_settings(app_context);
+        assert!(harness.query_by_label("@ali").is_some());
+        assert!(
+            harness
+                .query_by_label_contains("This identity has no username yet.")
+                .is_none()
+        );
+    });
+}
+
+/// QA regression: asking again for a name this identity already requested is
+/// blocked before any fee, with a clear row instead of "1 other person asked".
+#[test]
+fn own_request_blocks_a_second_request() {
+    with_isolated_data_dir(|| {
+        let (_rt, app_context) = fresh_app_context();
+        seed_username_identity(&app_context, 0x43, "Alex", &[], 0, true);
+        let harness = mount(answered(
+            &app_context,
+            "alice",
+            UsernameAvailability::AlreadyRequested,
+        ));
+        assert!(
+            harness
+                .query_by_label_contains("You already asked for @alice.")
+                .is_some()
+        );
+        assert!(harness.query_by_label_contains("other person").is_none());
+        assert!(!UsernameAvailability::AlreadyRequested.allows_registration());
+    });
+}
+
+/// QA regression: removing an identity drops its requests, so they stop
+/// driving the periodic status refresh.
+#[test]
+fn removed_identity_requests_stop_counting() {
+    with_isolated_data_dir(|| {
+        let (_rt, app_context) = fresh_app_context();
+        let id = seed_username_identity(&app_context, 0x44, "Gone", &["gone"], 0, true);
+        app_context
+            .store_username_requests(&id, vec![request("ali", RequestPhase::Voting)])
+            .expect("store request");
+        assert!(app_context.any_pending_username_request());
+        app_context
+            .delete_local_qualified_identity(&id)
+            .expect("delete identity");
+        assert!(!app_context.any_pending_username_request());
+        assert!(app_context.username_requests_for(&id).is_empty());
+    });
+}
+
+/// QA regression (PF §3): a lone request wins at the end, so it is "Leading",
+/// never "Tied".
+#[test]
+fn lone_request_is_leading_not_tied() {
+    with_isolated_data_dir(|| {
+        let (_rt, app_context) = fresh_app_context();
+        let id = seed_username_identity(&app_context, 0x45, "Alex", &[], 0, true);
+        app_context
+            .store_username_requests(&id, vec![request("ali", RequestPhase::Voting)])
+            .expect("store request");
+        let harness = mount_request(&app_context, id, &normalize_dpns_label("ali"));
+        assert!(harness.query_by_label("Your request for @ali").is_some());
+        assert!(harness.query_by_label("Tied").is_none());
+        assert!(harness.query_by_label("Leading").is_some());
+    });
+}
+
+/// QA regression (AGENTS.md layering): dismissing an outcome goes through a
+/// backend task, which removes the row.
+#[test]
+fn dismissing_an_outcome_runs_through_the_backend() {
+    with_isolated_data_dir(|| {
+        let (rt, app_context) = fresh_app_context();
+        let id = seed_username_identity(&app_context, 0x46, "Alex", &[], 0, true);
+        app_context
+            .store_username_requests(&id, vec![request("al", RequestPhase::Lost)])
+            .expect("store request");
+        let mut settings = mount_settings(app_context.clone());
+        assert!(
+            app_context.username_requests_for(&id).len() == 1,
+            "precondition: outcome stored"
+        );
+        settings.get_by_label("Dismiss").click();
+        settings.run();
+        assert_eq!(
+            app_context.username_requests_for(&id).len(),
+            1,
+            "the UI must not write storage itself"
+        );
+        let action = settings.state_mut().1.take();
+        run_action(&rt, &app_context, action);
+        assert!(app_context.username_requests_for(&id).is_empty());
+    });
+}
+
+/// USR-TC-037: with enough balance, only the sync gate holds Pay, and it says so.
+#[test]
+fn sync_gate_alone_blocks_pay() {
+    with_isolated_data_dir(|| {
+        let (_rt, app_context) = fresh_app_context();
+        seed_username_identity(&app_context, 0x37, "Alex", &[], 1_000_000_000_000_000, true);
+        let mut screen = answered(&app_context, "nova", UsernameAvailability::NeedsVote);
+        screen.open_confirm_for_test();
+        let mut harness = mount(screen);
+        assert!(
+            harness.query_by_label("Top up").is_none(),
+            "precondition: balance covers the total"
+        );
+        harness.get_by_label_contains("and request @nova").hover();
+        harness.run();
+        assert!(
+            harness
+                .query_by_label_contains("Available after sync finishes.")
+                .is_some()
+        );
+        harness.get_by_label_contains("and request @nova").click();
+        harness.run();
+        assert!(harness.state().is_confirming_for_test());
+    });
+}
+
+/// USR-TC-036: Top up and back keeps the chosen name on the confirm step.
+#[test]
+fn top_up_returns_with_name_kept() {
+    with_isolated_data_dir(|| {
+        let (_rt, app_context) = fresh_app_context();
+        seed_username_identity(&app_context, 0x36, "Alex", &[], 0, true);
+        let mut screen = answered(&app_context, "nova", UsernameAvailability::NeedsVote);
+        screen.open_confirm_for_test();
+        let mut harness = mount(screen);
+        harness.get_by_label("Top up").click();
+        harness.run();
+        harness.state_mut().refresh_on_arrival();
+        harness.run();
+        assert!(harness.state().is_confirming_for_test());
+        assert!(
+            harness
+                .query_by_label_contains("and request @nova")
+                .is_some()
+        );
     });
 }

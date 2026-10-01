@@ -20,9 +20,10 @@ use crate::model::dpns::{
     normalize_dpns_label, validate_dpns_name,
 };
 use crate::model::dpns_usernames::{
-    ContenderTally, ContestSnapshot, ContestWinner, UsernameAvailability, UsernameRequest,
-    classify_availability, merge_requests, username_request_from_contest,
+    ContenderTally, ContestSnapshot, ContestWinner, RequestPhase, UsernameAvailability,
+    UsernameRequest, classify_availability, merge_requests, username_request_from_contest,
 };
+use crate::model::qualified_identity::QualifiedIdentity;
 use crate::utils::time::now_ms;
 
 fn availability_error(source: SdkError) -> TaskError {
@@ -39,9 +40,13 @@ impl AppContext {
     /// Whether `label` can be requested now, combining the registered-name
     /// lookup with the proved contest state. Never trusts
     /// `Sdk::is_dpns_name_available`, which reports contested and locked names as free.
+    ///
+    /// `requester` is the identity asking; its own running request reports
+    /// `AlreadyRequested`, because Platform rejects a second request.
     pub(crate) async fn username_availability(
         &self,
         sdk: &Sdk,
+        requester: Identifier,
         label: &str,
     ) -> Result<UsernameAvailability, TaskError> {
         let validation = validate_dpns_name(label);
@@ -60,6 +65,7 @@ impl AppContext {
             None
         };
         Ok(classify_availability(
+            requester,
             label,
             awarded,
             contest.as_ref(),
@@ -71,9 +77,10 @@ impl AppContext {
     pub(super) async fn check_username_availability(
         &self,
         sdk: &Sdk,
+        identity_id: Identifier,
         label: String,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        let availability = self.username_availability(sdk, &label).await?;
+        let availability = self.username_availability(sdk, identity_id, &label).await?;
         Ok(BackendTaskSuccessResult::UsernameAvailability {
             label,
             availability,
@@ -169,20 +176,29 @@ impl AppContext {
 
     /// Refresh the username requests of every loaded identity.
     ///
-    /// One scan of running contests serves all identities. Requests that left
-    /// the running set are re-read individually to learn their outcome.
+    /// One scan of running contests serves all identities. Requests missing
+    /// from the scan are re-read individually, for their outcome or running
+    /// tally. Only the network scan fails the task; local storage problems are
+    /// logged so a background refresh never raises a banner.
     pub(super) async fn refresh_my_username_requests(
         &self,
         sdk: &Sdk,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        let identity_ids: Vec<Identifier> = self
-            .load_local_user_identities()?
-            .iter()
-            .map(|identity| identity.identity.id())
-            .collect();
-        if identity_ids.is_empty() {
+        let identities = match self.load_local_user_identities() {
+            Ok(identities) => identities,
+            Err(error) => {
+                tracing::debug!(
+                    ?error,
+                    "Username requests not refreshed: identities unavailable"
+                );
+                return Ok(BackendTaskSuccessResult::MyUsernameRequestsRefreshed);
+            }
+        };
+        if identities.is_empty() {
             return Ok(BackendTaskSuccessResult::MyUsernameRequestsRefreshed);
         }
+        // TODO(usernames): the SDK scan pages only while a timestamp group holds 100 polls and drops
+        // names whose vote state fails; requests made on another device can be missed past that cap.
         let running = sdk
             .get_contested_non_resolved_usernames(None)
             .await
@@ -201,7 +217,8 @@ impl AppContext {
             })
             .collect();
 
-        for identity_id in identity_ids {
+        for mut identity in identities {
+            let identity_id = identity.identity.id();
             let previous = self.username_requests_for(&identity_id);
             let mut fresh: Vec<UsernameRequest> = snapshots
                 .iter()
@@ -223,21 +240,14 @@ impl AppContext {
                     .get_contested_dpns_vote_state(&old.normalized_label, None)
                     .await
                 {
-                    Ok(contenders) => {
-                        let snapshot = self.contest_snapshot(sdk, &contenders);
-                        if snapshot.winner.is_some()
-                            && let Some(outcome) = username_request_from_contest(
-                                identity_id,
-                                &old.normalized_label,
-                                &snapshot,
-                                old.end,
-                                now,
-                                durations,
-                            )
-                        {
-                            fresh.push(outcome);
-                        }
-                    }
+                    Ok(contenders) => fresh.extend(username_request_from_contest(
+                        identity_id,
+                        &old.normalized_label,
+                        &self.contest_snapshot(sdk, &contenders),
+                        old.end,
+                        now,
+                        durations,
+                    )),
                     Err(error) => tracing::debug!(
                         name = %old.normalized_label,
                         ?error,
@@ -245,26 +255,96 @@ impl AppContext {
                     ),
                 }
             }
-            let merged = merge_requests(&previous, fresh, now);
-            if merged != previous {
-                self.store_username_requests(&identity_id, merged)?;
+            let newly_won = fresh.iter().any(|request| {
+                request.phase == RequestPhase::Won
+                    && !previous.iter().any(|old| {
+                        old.normalized_label == request.normalized_label
+                            && old.phase == RequestPhase::Won
+                    })
+            });
+            if let Err(error) = self.update_username_requests(&identity_id, |current| {
+                merge_requests(current, fresh, now)
+            }) {
+                tracing::warn!(?error, %identity_id, "Username requests could not be stored");
+            }
+            if newly_won {
+                self.record_won_usernames(sdk, &mut identity).await;
             }
         }
         Ok(BackendTaskSuccessResult::MyUsernameRequestsRefreshed)
     }
 
+    /// Re-read the registered names of an identity that just won a vote, so the
+    /// won name is listed and shown at once.
+    async fn record_won_usernames(&self, sdk: &Sdk, identity: &mut QualifiedIdentity) {
+        match self
+            .fetch_owned_dpns_names(sdk, identity.identity.id())
+            .await
+        {
+            Ok(names) => {
+                identity.dpns_names = names;
+                if let Err(error) = self.update_local_qualified_identity(identity) {
+                    tracing::warn!(?error, "Won username could not be saved on the identity");
+                }
+            }
+            Err(error) => {
+                tracing::debug!(
+                    ?error,
+                    "Registered names could not be re-read after a won vote"
+                )
+            }
+        }
+    }
+
     /// Record a just-submitted contested request so the hub shows it at once.
+    ///
+    /// `joined_until` is the join deadline when the request joined a running contest.
     pub(super) fn record_submitted_username_request(
         &self,
         sdk: &Sdk,
         identity_id: &Identifier,
         label: &str,
+        joined_until: Option<u64>,
     ) -> Result<(), TaskError> {
         let now = now_ms();
-        let submitted =
-            UsernameRequest::submitted(label, now, self.username_contest_durations(sdk));
-        let previous = self.username_requests_for(identity_id);
-        let merged = merge_requests(&previous, vec![submitted], now);
-        self.store_username_requests(identity_id, merged)
+        let submitted = UsernameRequest::submitted(
+            label,
+            now,
+            self.username_contest_durations(sdk),
+            joined_until,
+        );
+        self.update_username_requests(identity_id, |current| {
+            merge_requests(current, vec![submitted], now)
+        })
+    }
+
+    /// Show `name` as the main username of `identity_id` on this device.
+    pub(super) fn save_main_username(
+        &self,
+        identity_id: Identifier,
+        name: String,
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
+        self.set_main_username(&identity_id, &name)?;
+        Ok(BackendTaskSuccessResult::UsernamePreferencesSaved)
+    }
+
+    /// Remove a finished request from the identity's list.
+    pub(super) fn dismiss_username_outcome(
+        &self,
+        identity_id: Identifier,
+        normalized_label: String,
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
+        self.dismiss_username_request(&identity_id, &normalized_label)?;
+        Ok(BackendTaskSuccessResult::UsernamePreferencesSaved)
+    }
+
+    /// Record that outcome banners were shown, so each appears only once.
+    pub(super) fn save_username_outcomes_seen(
+        &self,
+        identity_id: Identifier,
+        requests: Vec<UsernameRequest>,
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
+        self.mark_username_outcomes_seen(&identity_id, &requests)?;
+        Ok(BackendTaskSuccessResult::UsernamePreferencesSaved)
     }
 }

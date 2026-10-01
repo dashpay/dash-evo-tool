@@ -93,6 +93,7 @@ mod tests {
                 total: std::time::Duration::ZERO,
                 join: std::time::Duration::ZERO,
             },
+            None,
         );
         request.end = end;
         request

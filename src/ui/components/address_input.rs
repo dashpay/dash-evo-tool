@@ -604,6 +604,7 @@ impl AddressInput {
         for qi in identities {
             let id = qi.identity.id();
             let id_str = id.to_string(Encoding::Base58);
+            // TODO(usernames): use AppContext::main_username once this component can reach the context.
             let dpns_name = qi.dpns_names.first().map(|n| n.name.clone());
             let name_label = dpns_name.clone().or_else(|| qi.alias.clone());
             self.all_entries.push(AddressEntry {

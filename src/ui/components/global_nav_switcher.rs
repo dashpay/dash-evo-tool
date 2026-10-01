@@ -125,7 +125,7 @@ fn gather_wallets(app_context: &Arc<AppContext>) -> Vec<(WalletSeedHash, String)
 fn identity_label(app_context: &AppContext, qi: &QualifiedIdentity) -> String {
     let dpns = app_context.main_username(qi);
     display_label(
-        qi.alias.as_deref(),
+        crate::model::dpns_usernames::user_alias(qi),
         None,
         dpns.as_deref(),
         &qi.identity.id().to_string(Encoding::Base58),
@@ -517,18 +517,26 @@ fn render_app_global_identity_pill(
 
     if let PillConsumption::Unwired { tooltip } = consumption {
         // Subdued, non-interactive: the value shows dimmed with no caret.
-        IdentityPill::new(active_qi.alias.as_deref(), dpns.as_deref(), &id_b58)
-            .with_avatar(kind, monogram_initial(&label))
-            .with_mode(BreadcrumbPillMode::Subdued)
-            .with_tooltip(tooltip.clone())
-            .show(ui);
+        IdentityPill::new(
+            crate::model::dpns_usernames::user_alias(active_qi),
+            dpns.as_deref(),
+            &id_b58,
+        )
+        .with_avatar(kind, monogram_initial(&label))
+        .with_mode(BreadcrumbPillMode::Subdued)
+        .with_tooltip(tooltip.clone())
+        .show(ui);
         return;
     }
 
-    let resp = IdentityPill::new(active_qi.alias.as_deref(), dpns.as_deref(), &id_b58)
-        .with_avatar(kind, monogram_initial(&label))
-        .with_tooltip(tt_identity(&data.active_wallet_name))
-        .show(ui);
+    let resp = IdentityPill::new(
+        crate::model::dpns_usernames::user_alias(active_qi),
+        dpns.as_deref(),
+        &id_b58,
+    )
+    .with_avatar(kind, monogram_initial(&label))
+    .with_tooltip(tt_identity(&data.active_wallet_name))
+    .show(ui);
 
     if let Some(anchor) = resp.response.clone() {
         let popup_id = ui.make_persistent_id("global_nav_identity_switcher");

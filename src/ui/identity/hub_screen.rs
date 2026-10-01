@@ -58,10 +58,9 @@ pub struct IdentityHubScreen {
     /// Settings-tab state. Held on the hub so edit fields, unsaved drafts,
     /// and modal state persist across frames.
     settings_tab: SettingsTab,
-    /// When username request status was last refreshed (Unix ms).
+    /// When a username status refresh was last dispatched (Unix ms). The cadence
+    /// keys off dispatch time, so a result routed elsewhere never stalls it.
     usernames_refreshed_at: Option<u64>,
-    /// A username refresh is in flight.
-    usernames_refreshing: bool,
     /// The hub was just shown; the next frame applies the arrival refresh rule.
     usernames_arriving: bool,
     /// Identities this screen dispatched an unload for, each retained until its
@@ -116,9 +115,6 @@ impl IdentityHubScreen {
     /// Refresh username request status when due (USR-FR-021); schedules the next check.
     fn username_refresh_action(&mut self, ctx: &egui::Context) -> AppAction {
         let arriving = std::mem::take(&mut self.usernames_arriving);
-        if self.usernames_refreshing {
-            return AppAction::None;
-        }
         let network = self.app_context.network;
         let any_pending = self.app_context.any_pending_username_request();
         let now = crate::utils::time::now_ms();
@@ -137,7 +133,6 @@ impl IdentityHubScreen {
             return AppAction::None;
         }
         self.usernames_refreshed_at = Some(now);
-        self.usernames_refreshing = true;
         AppAction::BackendTask(BackendTask::IdentityTask(
             IdentityTask::RefreshMyUsernameRequests,
         ))
@@ -155,7 +150,6 @@ impl IdentityHubScreen {
             home_state: HomeState::default(),
             settings_tab: SettingsTab::new(),
             usernames_refreshed_at: None,
-            usernames_refreshing: false,
             usernames_arriving: true,
             pending_unloads: BTreeSet::new(),
             contacts_state: super::contacts::ContactsState::default(),
@@ -596,10 +590,7 @@ impl ScreenLike for IdentityHubScreen {
         action
     }
 
-    fn display_message(&mut self, _message: &str, message_type: MessageType) {
-        if matches!(message_type, MessageType::Error | MessageType::Warning) {
-            self.usernames_refreshing = false;
-        }
+    fn display_message(&mut self, _message: &str, _message_type: MessageType) {
         // AppState sets the global banner centrally; the hub itself owns no
         // in-flight task banners. Sub-tab content overrides its own lifecycle.
     }
@@ -608,8 +599,8 @@ impl ScreenLike for IdentityHubScreen {
         if matches!(
             result,
             BackendTaskSuccessResult::MyUsernameRequestsRefreshed
+                | BackendTaskSuccessResult::UsernamePreferencesSaved
         ) {
-            self.usernames_refreshing = false;
             return;
         }
         // Feed an async DashPay profile load back into the cache the tabs read.
@@ -727,7 +718,6 @@ impl ScreenLike for IdentityHubScreen {
         // The status refresh runs in the background; a failure keeps the stored
         // status and retries on the next cadence tick instead of raising a banner.
         if matches!(error, TaskError::UsernameRequestRefreshFailed { .. }) {
-            self.usernames_refreshing = false;
             return true;
         }
         if self.handle_contact_request_error(error) {

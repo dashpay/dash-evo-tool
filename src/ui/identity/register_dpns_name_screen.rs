@@ -11,7 +11,9 @@ use crate::model::dpns::{
     DpnsNameValidationResult, DpnsRegistrationOutcome, contest_durations, suggest_uncontested,
     validate_dpns_name,
 };
-use crate::model::dpns_usernames::{UsernameAvailability, can_register_usernames};
+use crate::model::dpns_usernames::{
+    UsernameAvailability, can_register_usernames, dpns_signing_requirement,
+};
 use crate::model::fee_estimation::{contest_fee_credits, format_credits_as_dash};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::user_role::UserRole;
@@ -95,6 +97,9 @@ pub struct RegisterDpnsNameScreen {
     pub source: RegisterDpnsNameSource,
     /// Full-window block while the registration runs; torn down on every terminal result.
     op_overlay: Option<OverlayHandle>,
+    /// Label of the availability check in flight. One check runs at a time, so a
+    /// failure always belongs to this label.
+    check_in_flight: Option<String>,
 }
 
 impl RegisterDpnsNameScreen {
@@ -113,6 +118,7 @@ impl RegisterDpnsNameScreen {
             completed_fee_result: None,
             source,
             op_overlay: None,
+            check_in_flight: None,
         };
         screen.reload_identity();
         screen
@@ -162,7 +168,7 @@ impl RegisterDpnsNameScreen {
             .as_ref()
             .map(|qi| {
                 display_label(
-                    qi.alias.as_deref(),
+                    crate::model::dpns_usernames::user_alias(qi),
                     None,
                     self.app_context.main_username(qi).as_deref(),
                     &qi.identity.id().to_string(Encoding::Base58),
@@ -217,8 +223,8 @@ impl RegisterDpnsNameScreen {
             return AppAction::None;
         };
         let remaining = AVAILABILITY_DEBOUNCE.saturating_sub(since.elapsed());
-        if !remaining.is_zero() {
-            ctx.request_repaint_after(remaining);
+        if !remaining.is_zero() || self.check_in_flight.is_some() {
+            ctx.request_repaint_after(remaining.max(AVAILABILITY_DEBOUNCE / 4));
             return AppAction::None;
         }
         let label = label.clone();
@@ -226,12 +232,20 @@ impl RegisterDpnsNameScreen {
     }
 
     fn check_availability(&mut self, label: String) -> AppAction {
+        let Some(identity_id) = self
+            .selected_qualified_identity
+            .as_ref()
+            .map(|identity| identity.identity.id())
+        else {
+            return AppAction::None;
+        };
         self.availability = Availability::Row {
             label: label.clone(),
             row: AvailabilityRow::Checking,
         };
+        self.check_in_flight = Some(label.clone());
         AppAction::BackendTask(BackendTask::IdentityTask(
-            IdentityTask::CheckUsernameAvailability { label },
+            IdentityTask::CheckUsernameAvailability { identity_id, label },
         ))
     }
 
@@ -292,6 +306,12 @@ impl RegisterDpnsNameScreen {
     #[doc(hidden)]
     pub fn raise_progress_overlay_for_test(&mut self, ctx: &Context) {
         self.raise_progress_overlay(ctx);
+    }
+
+    /// Test seam: press Pay, dispatching the registration and raising the overlay.
+    #[doc(hidden)]
+    pub fn begin_registration_for_test(&mut self, ctx: &Context) -> AppAction {
+        self.begin_registration(ctx)
     }
 
     /// Test seam: type `label` as if the user had entered it.
@@ -696,6 +716,12 @@ impl ScreenLike for RegisterDpnsNameScreen {
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banners are shown by AppState; this only unblocks the flow after a failure.
         if matches!(message_type, MessageType::Error | MessageType::Warning) {
+            if self.check_in_flight.take().is_some()
+                && let Availability::Row { row, .. } = &mut self.availability
+                && *row == AvailabilityRow::Checking
+            {
+                *row = AvailabilityRow::CantCheck;
+            }
             self.op_overlay.take_and_clear();
             if self.step == Step::Submitting {
                 self.step = Step::Confirm;
@@ -705,9 +731,18 @@ impl ScreenLike for RegisterDpnsNameScreen {
 
     fn display_task_error(&mut self, error: &TaskError) -> bool {
         match error {
+            TaskError::UsernameAvailabilityCheckFailed { .. } if self.step == Step::Submitting => {
+                // The pay-time re-check failed before anything was spent: unblock
+                // the confirm step and let the banner ask the user to retry.
+                self.op_overlay.take_and_clear();
+                self.step = Step::Confirm;
+                false
+            }
             TaskError::UsernameAvailabilityCheckFailed { .. } => {
-                if let Availability::Row { row, .. } = &mut self.availability
+                let failed = self.check_in_flight.take();
+                if let Availability::Row { label, row } = &mut self.availability
                     && *row == AvailabilityRow::Checking
+                    && failed.as_ref() == Some(label)
                 {
                     *row = AvailabilityRow::CantCheck;
                 }
@@ -741,6 +776,9 @@ impl ScreenLike for RegisterDpnsNameScreen {
                 label,
                 availability,
             } => {
+                if self.check_in_flight.as_ref() == Some(&label) {
+                    self.check_in_flight = None;
+                }
                 if matches!(&self.availability, Availability::Row { label: current, .. } if *current == label)
                 {
                     self.availability = Availability::Row {
@@ -803,7 +841,10 @@ impl ScreenLike for RegisterDpnsNameScreen {
                         );
                         return;
                     };
-                    if !can_register_usernames(identity) {
+                    if !can_register_usernames(
+                        identity,
+                        dpns_signing_requirement(&self.app_context.dpns_contract),
+                    ) {
                         status_line(
                             ui,
                             Tone::Negative,

@@ -783,7 +783,9 @@ fn ui_polish_wallet_dropdown_opens_scoped_picker() {
 fn ui_polish_picker_uses_profile_avatar_and_keeps_missing_avatar_fallback() {
     with_isolated_data_dir(|| {
         use dash_evo_tool::app::AppAction;
-        use dash_evo_tool::backend_task::{BackendTaskContext, BackendTaskSuccessResult};
+        use dash_evo_tool::backend_task::{
+            BackendTask, BackendTaskContext, BackendTaskSuccessResult, dashpay::DashPayTask,
+        };
         use dash_evo_tool::ui::ScreenLike;
         use dash_evo_tool::ui::identity::IdentityHubScreen;
         let (runtime, app_context) = crate::support::fresh_app_context();
@@ -795,15 +797,38 @@ fn ui_polish_picker_uses_profile_avatar_and_keeps_missing_avatar_fallback() {
         let mut harness = egui_kittest::Harness::builder()
             .with_size(egui::vec2(1280.0, 800.0))
             .build_ui_state(
-                |ui, state: &mut (IdentityHubScreen, Option<BackendTaskContext>)| {
-                    if let AppAction::BackendTaskWithContext { context, .. } = state.0.ui(ui) {
-                        state.1 = Some(context);
+                |ui,
+                 state: &mut (
+                    IdentityHubScreen,
+                    Option<(Identifier, BackendTaskContext)>,
+                    Vec<String>,
+                )| {
+                    let tasks = match state.0.ui(ui) {
+                        AppAction::BackendTaskWithContext { task, context } => {
+                            if let BackendTask::DashPayTask(profile_task) = &task
+                                && let DashPayTask::LoadProfile { identity } = profile_task.as_ref()
+                            {
+                                state.1 = Some((identity.identity.id(), context));
+                            }
+                            vec![task]
+                        }
+                        AppAction::BackendTask(task) => vec![task],
+                        AppAction::BackendTasks(tasks, _) => tasks,
+                        _ => Vec::new(),
+                    };
+                    for task in tasks {
+                        if let BackendTask::DashPayTask(task) = task
+                            && let DashPayTask::FetchAvatar { url } = *task
+                        {
+                            state.2.push(url);
+                        }
                     }
                 },
-                (screen, None),
+                (screen, None, Vec::new()),
             );
         harness.run_steps(5);
-        let context = harness.state().1.clone().expect("profile dispatch");
+        let (owner, context) = harness.state_mut().1.take().expect("profile dispatch");
+        assert_eq!(owner, avatar_id);
         let url = "https://example.invalid/synthetic-avatar.png";
         harness.state_mut().0.display_backend_task_result(
             &context,
@@ -816,6 +841,12 @@ fn ui_polish_picker_uses_profile_avatar_and_keeps_missing_avatar_fallback() {
                 },
             ),
         );
+        open_picker(&mut harness);
+        assert_eq!(
+            harness.state().2,
+            [url],
+            "picker must request the avatar before completion"
+        );
         let mut bytes = std::io::Cursor::new(Vec::new());
         image::RgbaImage::from_pixel(2, 2, image::Rgba([0, 128, 255, 255]))
             .write_to(&mut bytes, image::ImageFormat::Png)
@@ -827,7 +858,12 @@ fn ui_polish_picker_uses_profile_avatar_and_keeps_missing_avatar_fallback() {
                 url: url.into(),
                 bytes: Some(bytes.into_inner()),
             });
-        open_picker(&mut harness);
+        harness.run_steps(5);
+        assert_eq!(
+            harness.state().2,
+            [url],
+            "a loaded avatar must not be fetched again"
+        );
         let card = harness.get_by_label("Open Profile name").rect();
         assert!(harness.query_by_label("Open Avatar identity").is_none());
         assert_eq!(
@@ -848,9 +884,28 @@ fn ui_polish_picker_uses_profile_avatar_and_keeps_missing_avatar_fallback() {
             "identity without avatar retains monogram"
         );
 
+        harness.state_mut().1 = None;
+        harness.state_mut().2.clear();
         harness.state_mut().0.refresh();
         harness.run_steps(3);
-        let context = harness.state().1.clone().expect("profile reload");
+        let (owner, mut context) = harness.state_mut().1.take().expect("profile reload");
+        if owner != avatar_id {
+            harness.state_mut().0.display_backend_task_result(
+                &context,
+                BackendTaskSuccessResult::DashPayProfile(
+                    dash_evo_tool::model::dashpay::ProfileSnapshot {
+                        network: app_context.network(),
+                        owner,
+                        revision: app_context.identity_profile_revision(owner),
+                        profile: None,
+                    },
+                ),
+            );
+            harness.run_steps(3);
+            let (owner, next) = harness.state_mut().1.take().expect("avatar owner's reload");
+            assert_eq!(owner, avatar_id);
+            context = next;
+        }
         harness.state_mut().0.display_backend_task_result(
             &context,
             BackendTaskSuccessResult::DashPayProfile(
@@ -862,6 +917,12 @@ fn ui_polish_picker_uses_profile_avatar_and_keeps_missing_avatar_fallback() {
                 },
             ),
         );
+        harness.run_steps(5);
+        assert_eq!(
+            harness.state().2,
+            [url],
+            "refresh must request a new avatar before failure"
+        );
         harness
             .state_mut()
             .0
@@ -870,6 +931,11 @@ fn ui_polish_picker_uses_profile_avatar_and_keeps_missing_avatar_fallback() {
                 bytes: None,
             });
         harness.run_steps(5);
+        assert_eq!(
+            harness.state().2,
+            [url],
+            "a failed avatar must not trigger repeated fetches"
+        );
         assert_eq!(
             harness
                 .query_all_by_role(egui::accesskit::Role::Image)

@@ -15,6 +15,41 @@ use super::qualified_identity::QualifiedIdentity;
 /// How long a finished request stays listed on the identity.
 pub const OUTCOME_RETENTION: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
+/// Re-read request status on hub arrival only when the last read is older than this.
+pub const ARRIVAL_REFRESH_AFTER: Duration = Duration::from_secs(5 * 60);
+/// Periodic refresh while a request is pending on mainnet.
+const MAINNET_PENDING_REFRESH: Duration = Duration::from_secs(15 * 60);
+/// Periodic refresh while a request is pending on testing networks (90-minute contests).
+const TESTING_PENDING_REFRESH: Duration = Duration::from_secs(2 * 60);
+
+/// How often to re-read status while at least one request is pending.
+pub fn pending_refresh_interval(network: dash_sdk::dpp::dashcore::Network) -> Duration {
+    if network == dash_sdk::dpp::dashcore::Network::Mainnet {
+        MAINNET_PENDING_REFRESH
+    } else {
+        TESTING_PENDING_REFRESH
+    }
+}
+
+/// Whether the hub should refresh username requests now.
+///
+/// `arriving` is true on the first frame after the hub is shown; `last` is the
+/// time of the previous refresh, if any.
+pub fn username_refresh_due(
+    now: TimestampMillis,
+    last: Option<TimestampMillis>,
+    arriving: bool,
+    any_pending: bool,
+    network: dash_sdk::dpp::dashcore::Network,
+) -> bool {
+    let Some(last) = last else {
+        return true;
+    };
+    let elapsed = now.saturating_sub(last);
+    (arriving && elapsed > duration_ms(ARRIVAL_REFRESH_AFTER))
+        || (any_pending && elapsed >= duration_ms(pending_refresh_interval(network)))
+}
+
 /// Whether this device holds a key that can sign username registrations for `identity`.
 pub fn can_register_usernames(identity: &QualifiedIdentity) -> bool {
     use dash_sdk::dpp::identity::Purpose;
@@ -415,6 +450,62 @@ mod tests {
             contenders,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn refresh_cadence_follows_arrival_and_pending_rules() {
+        // USR-TC-028
+        use dash_sdk::dpp::dashcore::Network;
+        let min = |m: u64| m * MINUTE;
+        assert!(username_refresh_due(
+            min(1),
+            None,
+            true,
+            false,
+            Network::Mainnet
+        ));
+        assert!(!username_refresh_due(
+            min(2),
+            Some(0),
+            true,
+            false,
+            Network::Mainnet
+        ));
+        assert!(username_refresh_due(
+            min(6),
+            Some(0),
+            true,
+            false,
+            Network::Mainnet
+        ));
+        assert!(!username_refresh_due(
+            min(14),
+            Some(0),
+            false,
+            true,
+            Network::Mainnet
+        ));
+        assert!(username_refresh_due(
+            min(15),
+            Some(0),
+            false,
+            true,
+            Network::Mainnet
+        ));
+        assert!(username_refresh_due(
+            min(2),
+            Some(0),
+            false,
+            true,
+            Network::Testnet
+        ));
+        assert!(!username_refresh_due(
+            min(60),
+            Some(0),
+            false,
+            false,
+            Network::Testnet
+        ));
     }
 
     #[test]

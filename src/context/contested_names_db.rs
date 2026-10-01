@@ -308,6 +308,15 @@ impl AppContext {
             .unwrap_or_default()
     }
 
+    /// Whether any identity has a request still in its community vote. Frame-safe.
+    pub fn any_pending_username_request(&self) -> bool {
+        self.username_cache()
+            .requests
+            .values()
+            .flatten()
+            .any(|request| request.phase.is_pending())
+    }
+
     /// Persist `requests` as the full request list of `identity_id`.
     pub fn store_username_requests(
         &self,

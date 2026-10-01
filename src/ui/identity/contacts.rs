@@ -315,7 +315,7 @@ impl ContactsTabState {
             return ContactsTabState::Gated { handle: None };
         };
 
-        let handle = primary_dpns_handle(&active);
+        let handle = app_context.main_username(&active);
         if has_social_profile(profiles, &active) {
             ContactsTabState::Populated {
                 identity: Box::new(active),
@@ -743,16 +743,6 @@ fn section_card(ui: &mut Ui, dark_mode: bool, heading: &str, body: impl FnOnce(&
         ui.add_space(8.0);
         body(ui);
     });
-}
-
-/// Primary DPNS handle for an identity: the first registered DPNS name, when
-/// available. Returns the bare handle without the leading `@`.
-fn primary_dpns_handle(identity: &QualifiedIdentity) -> Option<String> {
-    identity
-        .dpns_names
-        .first()
-        .map(|n| n.name.trim().to_string())
-        .filter(|s| !s.is_empty())
 }
 
 /// Detect whether the identity has a DashPay social profile. Reads the hub's

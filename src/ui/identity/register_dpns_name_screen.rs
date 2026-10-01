@@ -611,11 +611,18 @@ impl RegisterDpnsNameScreen {
             ui.add_space(16.0);
             ui.horizontal(|ui| {
                 if outcome == DpnsRegistrationOutcome::PendingCommunityVote
+                    && let Some(identity) = &self.selected_qualified_identity
                     && ComponentStyles::add_secondary_button(ui, "View request status", dark_mode)
                         .clicked()
                 {
-                    action = AppAction::SetMainScreenThenPopScreen(
+                    let status = ScreenType::UsernameRequestStatus {
+                        identity_id: identity.identity.id(),
+                        normalized_label: crate::model::dpns::normalize_dpns_label(&name),
+                    }
+                    .create_screen(&self.app_context);
+                    action = AppAction::PopThenAddScreenToMainScreen(
                         RootScreenType::RootScreenIdentityHub,
+                        status,
                     );
                 }
                 if ComponentStyles::add_primary_button(ui, "Go to my identity").clicked() {

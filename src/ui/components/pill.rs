@@ -14,7 +14,7 @@ use eframe::egui::{
 };
 
 /// Label shown on the DPNS pending-registration pill.
-pub const PENDING_USERNAME_PILL_LABEL: &str = "Pending";
+pub const PENDING_USERNAME_PILL_LABEL: &str = "Waiting for vote";
 
 /// Paint an inline pill: `label` in `accent`, on a 12%-accent fill with a 1px
 /// accent ring. `tooltip`, when present, is attached on hover. Returns the

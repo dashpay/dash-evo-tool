@@ -180,6 +180,9 @@ impl AppContext {
             .iter()
             .map(|identity| identity.identity.id())
             .collect();
+        if identity_ids.is_empty() {
+            return Ok(BackendTaskSuccessResult::MyUsernameRequestsRefreshed);
+        }
         let running = sdk
             .get_contested_non_resolved_usernames(None)
             .await

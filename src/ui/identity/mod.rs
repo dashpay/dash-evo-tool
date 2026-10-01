@@ -57,6 +57,7 @@ pub mod tabs;
 pub mod top_up_identity_screen;
 pub mod transfer_screen;
 pub mod username_copy;
+pub mod username_notices;
 pub mod username_request_screen;
 pub mod usernames_card;
 pub mod withdraw_screen;

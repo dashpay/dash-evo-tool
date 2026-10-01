@@ -97,7 +97,7 @@ pub fn render(
                     }
                     match cell {
                         PickerCell::Identity(identity) => {
-                            let card = build_card(identity);
+                            let card = build_card(app_context, identity);
                             let response = card.show(ui);
                             if response.clicked {
                                 captured_selection = Some(response.identity_id.clone());
@@ -155,7 +155,7 @@ enum PickerCell<'a> {
 /// display-name so users who have labelled their identities still see a
 /// familiar heading. When a real social-profile display name becomes
 /// available upstream, wiring it into this function is a one-line change.
-fn build_card(identity: &QualifiedIdentity) -> IdentityPickerCard {
+fn build_card(app_context: &AppContext, identity: &QualifiedIdentity) -> IdentityPickerCard {
     let id_base58 = identity.identity.id().to_string(Encoding::Base58);
 
     // Balance formatting: design-spec §B.14 uses `{amount} DASH` with tabular
@@ -182,10 +182,8 @@ fn build_card(identity: &QualifiedIdentity) -> IdentityPickerCard {
     if let Some(alias) = identity.alias.as_deref().filter(|s| !s.trim().is_empty()) {
         card = card.with_display_name(alias);
     }
-    if let Some(dpns) = identity.dpns_names.first().map(|n| n.name.as_str())
-        && !dpns.is_empty()
-    {
-        card = card.with_dpns_handle(dpns);
+    if let Some(dpns) = app_context.main_username(identity) {
+        card = card.with_dpns_handle(&dpns);
     }
 
     card

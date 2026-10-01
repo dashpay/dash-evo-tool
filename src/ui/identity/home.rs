@@ -302,6 +302,10 @@ pub fn render(
         apply(HomeButton::PickUsernameHero);
     }
 
+    // --- Username requests: pending cards and one-time outcome banners -
+    ui.add_space(Spacing::SM);
+    let notices_action = super::username_notices::render(ui, app_context, &identity);
+
     // --- Inline "Set up your social profile" card (no-profile variant) -
     //
     // Per wireframe §B.3 this prompt belongs immediately below the compact hero,
@@ -378,11 +382,7 @@ pub fn render(
     if !state.dismissed_checklist {
         // Extract the primary DPNS handle for the done-subtext ("You are
         // @{handle}.") — passed into the checklist as optional context.
-        let primary_handle = identity
-            .dpns_names
-            .first()
-            .map(|n| n.name.trim().to_string())
-            .filter(|s| !s.is_empty());
+        let primary_handle = app_context.main_username(&identity);
 
         let mut checklist = OnboardingChecklist::new();
         if let Some(h) = &primary_handle {
@@ -534,6 +534,7 @@ pub fn render(
         });
     }
 
+    action |= notices_action;
     (action, outcome)
 }
 
@@ -574,11 +575,7 @@ fn build_hero(
 ) -> IdentityHeroCard {
     let kind: HeroIdentityKind = qi.identity_type.into();
     let balance_dash = format_credits_short(qi.identity.balance());
-    let handle = qi
-        .dpns_names
-        .first()
-        .map(|n| n.name.clone())
-        .filter(|n| !n.trim().is_empty());
+    let handle = app_context.main_username(qi);
 
     // Best-effort DashPay display name. The local profile cache was removed in
     // the platform-wallet migration; the hub loads profiles asynchronously, so

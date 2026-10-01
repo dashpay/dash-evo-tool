@@ -18,6 +18,7 @@ use dash_evo_tool::model::qualified_identity::{
 use dash_evo_tool::model::user_role::UserRole;
 use dash_evo_tool::ui::ScreenLike;
 use dash_evo_tool::ui::components::ProgressOverlay;
+use dash_evo_tool::ui::identity::home::{self, HomeState};
 use dash_evo_tool::ui::identity::profile_cache::ProfileCache;
 use dash_evo_tool::ui::identity::register_dpns_name_screen::{
     RegisterDpnsNameScreen, RegisterDpnsNameSource,
@@ -476,5 +477,110 @@ fn request_status_page_links_voters() {
                 .query_by_label("Your nodes can vote on this name")
                 .is_some()
         );
+    });
+}
+
+fn mount_home(app_context: Arc<AppContext>) -> Harness<'static, (HomeState, ProfileCache)> {
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1280.0, 1200.0))
+        .build_ui_state(
+            move |ui, state: &mut (HomeState, ProfileCache)| {
+                let _ = home::render(ui, &app_context, &state.0, &mut state.1);
+            },
+            (HomeState::default(), ProfileCache::default()),
+        );
+    harness.run();
+    harness
+}
+
+/// USR-TC-021: "Show as main" changes the shown name locally, with no backend task.
+#[test]
+fn show_as_main_changes_the_hero_name() {
+    with_isolated_data_dir(|| {
+        let (_rt, app_context) = fresh_app_context();
+        let id = seed_username_identity(&app_context, 0x21, "", &["a-name", "b-name"], 0, true);
+        app_context
+            .set_main_username(&id, "b-name")
+            .expect("set main");
+        let identity = app_context
+            .load_local_user_identities()
+            .expect("identities")
+            .into_iter()
+            .find(|qi| qi.identity.id() == id)
+            .expect("seeded");
+        assert_eq!(
+            app_context.main_username(&identity).as_deref(),
+            Some("b-name")
+        );
+        let harness = mount_home(app_context);
+        assert!(
+            harness
+                .query_all_by_label_contains("b-name")
+                .next()
+                .is_some()
+        );
+        assert!(
+            harness
+                .query_all_by_label_contains("a-name")
+                .next()
+                .is_none()
+        );
+    });
+}
+
+/// USR-TC-025 / 026: with no registered name, the pending request shows in the
+/// header and as a Home card with the standing sentence.
+#[test]
+fn home_shows_pending_request_header_and_card() {
+    with_isolated_data_dir(|| {
+        let (_rt, app_context) = fresh_app_context();
+        let id = seed_username_identity(&app_context, 0x25, "Alex", &[], 0, true);
+        let mut pending = request("ali", RequestPhase::Voting);
+        pending.tally = RequestTally {
+            you: 5,
+            others: vec![(Identifier::from([9; 32]), 2)],
+            lock: 0,
+            abstain: 0,
+        };
+        app_context
+            .store_username_requests(&id, vec![pending])
+            .expect("store request");
+        let harness = mount_home(app_context);
+        assert!(harness.query_by_label("@ali").is_some());
+        assert!(
+            harness
+                .query_all_by_label_contains("Waiting for vote")
+                .next()
+                .is_some()
+        );
+        assert!(
+            harness
+                .query_by_label_contains("@ali is waiting for a community vote. It ends around")
+                .is_some()
+        );
+        assert!(
+            harness
+                .query_by_label("You're leading right now.")
+                .is_some()
+        );
+        assert!(harness.query_by_label("View status").is_some());
+    });
+}
+
+/// USR-TC-027: an outcome banner shows the first time only.
+#[test]
+fn outcome_banner_shows_once() {
+    with_isolated_data_dir(|| {
+        let (_rt, app_context) = fresh_app_context();
+        let id = seed_username_identity(&app_context, 0x27, "Alex", &[], 0, true);
+        app_context
+            .store_username_requests(&id, vec![request("ali", RequestPhase::Won)])
+            .expect("store request");
+        let banner = "You're @ali. People can now find and pay you by this name.";
+        let first = mount_home(app_context.clone());
+        assert!(first.query_by_label_contains(banner).is_some());
+        drop(first);
+        let second = mount_home(app_context);
+        assert!(second.query_by_label_contains(banner).is_none());
     });
 }

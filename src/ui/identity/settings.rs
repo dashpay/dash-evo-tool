@@ -163,8 +163,8 @@ pub struct SettingsTab {
     edit_bio: String,
     edit_avatar_url: String,
 
-    /// Copy of the originals for `has_changes` comparison. Updated only
-    /// after a CONFIRMED backend success via `on_profile_saved()`.
+    /// Baseline for `has_changes`, initialized from cache and rebased on
+    /// accepted profile refreshes or confirmed saves.
     original_display_name: String,
     original_bio: String,
     original_avatar_url: String,
@@ -862,6 +862,9 @@ impl SettingsTab {
     /// reads the cache (queuing a load on a miss) and fills the fields once the
     /// profile arrives — without clobbering edits the user has already made.
     fn load_cached_profile(&mut self, profiles: &mut super::profile_cache::ProfileCache) {
+        if self.pending_save.is_some() {
+            return;
+        }
         let Some(identity) = self.selected_identity.clone() else {
             self.profile_loaded = true;
             return;
@@ -871,20 +874,40 @@ impl SettingsTab {
             // Not loaded yet — a load is queued; retry on the next frame.
             None => return,
         };
-        let preserve_draft = self.has_changes();
         let (display_name, bio, avatar_url) = match fields {
             Some(f) => (f.display_name, f.bio, f.avatar_url),
             None => (String::new(), String::new(), String::new()),
         };
-        if !preserve_draft {
-            self.edit_display_name = display_name.clone();
-            self.edit_bio = bio.clone();
-            self.edit_avatar_url = avatar_url.clone();
+        for (draft, baseline, current) in [
+            (
+                &mut self.edit_display_name,
+                &mut self.original_display_name,
+                display_name,
+            ),
+            (&mut self.edit_bio, &mut self.original_bio, bio),
+            (
+                &mut self.edit_avatar_url,
+                &mut self.original_avatar_url,
+                avatar_url,
+            ),
+        ] {
+            if draft == baseline {
+                *draft = current.clone();
+            }
+            *baseline = current;
         }
-        self.original_display_name = display_name;
-        self.original_bio = bio;
-        self.original_avatar_url = avatar_url;
         self.profile_loaded = true;
+    }
+
+    /// Reconcile an accepted refresh on the next render, preserving any draft edits.
+    pub(crate) fn profile_refreshed(&mut self, owner: Identifier) {
+        if self
+            .selected_identity
+            .as_ref()
+            .is_some_and(|q| q.identity.id() == owner)
+        {
+            self.profile_loaded = false;
+        }
     }
 
     fn has_changes(&self) -> bool {
@@ -913,6 +936,7 @@ impl SettingsTab {
     pub fn on_profile_saved(&mut self) -> Option<super::profile_cache::ProfileFields> {
         let (dn, bio, url) = self.pending_save.take()?;
         self.pending_save_context = None;
+        self.profile_loaded = true;
         self.original_display_name = dn.clone();
         self.original_bio = bio.clone();
         self.original_avatar_url = url.clone();
@@ -1317,6 +1341,56 @@ mod tests {
                 .display_name,
             "Own submitted"
         );
+    }
+
+    #[test]
+    fn profile_refresh_preserves_explicit_clears_and_pending_submission() {
+        use super::super::profile_cache::{ProfileCache, ProfileFields};
+        let identity = qualified_identity();
+        let owner = identity.identity.id();
+        let mut tab = SettingsTab::new();
+        tab.selected_identity = Some(identity);
+        let mut cache = ProfileCache::default();
+        cache.record_saved(
+            owner,
+            ProfileFields {
+                display_name: "Original".into(),
+                bio: "Original bio".into(),
+                avatar_url: "https://example.com/old.png".into(),
+            },
+        );
+        tab.load_cached_profile(&mut cache);
+        tab.edit_bio.clear();
+        tab.pending_save = Some((
+            "Submitted".into(),
+            String::new(),
+            tab.edit_avatar_url.clone(),
+        ));
+        let submitted = tab.pending_save.clone();
+        cache.record_saved(
+            owner,
+            ProfileFields {
+                display_name: "New".into(),
+                bio: "Remote bio".into(),
+                avatar_url: "https://example.com/new.png".into(),
+            },
+        );
+        tab.load_cached_profile(&mut cache);
+        assert_eq!(tab.pending_save, submitted);
+        assert_eq!(
+            tab.original_display_name, "Original",
+            "pending save baseline stays unchanged"
+        );
+        tab.pending_save = None;
+        tab.load_cached_profile(&mut cache);
+        assert_eq!(tab.edit_display_name, "New");
+        assert!(
+            tab.edit_bio.is_empty(),
+            "an explicit clear is a real draft edit"
+        );
+        assert_eq!(tab.original_bio, "Remote bio");
+        assert_eq!(tab.edit_avatar_url, "https://example.com/new.png");
+        assert!(tab.has_changes());
     }
 
     #[test]

@@ -98,7 +98,7 @@ impl ProfileCache {
     }
 
     /// Record a `LoadProfile` result against the in-flight identity. Returns
-    /// `true` when the result was consumed (a load was in flight).
+    /// `true` only when a correlated, current profile replaced the cache.
     pub fn record_result(
         &mut self,
         app_context: &crate::context::AppContext,
@@ -119,7 +119,7 @@ impl ProfileCache {
         if data.owner != id || !app_context.profile_snapshot_is_current(data) {
             self.requested.remove(&id);
             self.loaded.remove(&id);
-            return true;
+            return false;
         }
         let fields = data
             .profile

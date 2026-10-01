@@ -109,6 +109,11 @@ enum ContactInfoTaskKey {
 }
 
 impl IdentityHubScreen {
+    /// Whether an avatar result still belongs to an outstanding hub request.
+    pub(crate) fn is_waiting_for_avatar(&self, url: &str) -> bool {
+        self.avatar_cache.is_loading(url)
+    }
+
     /// Construct a new hub screen. Follows the project convention: constructors
     /// handle errors internally via `MessageBanner` and return `Self`. The
     /// scaffold has nothing to fail on yet.
@@ -603,8 +608,13 @@ impl ScreenLike for IdentityHubScreen {
         context: &BackendTaskContext,
         result: BackendTaskSuccessResult,
     ) {
-        self.profile_cache
-            .record_result(&self.app_context, context, &result);
+        if self
+            .profile_cache
+            .record_result(&self.app_context, context, &result)
+            && let BackendTaskSuccessResult::DashPayProfile(snapshot) = &result
+        {
+            self.settings_tab.profile_refreshed(snapshot.owner);
+        }
         if let BackendTaskSuccessResult::DashPayProfileUpdated(snapshot) = &result {
             handle_profile_updated(
                 &self.app_context,
@@ -625,7 +635,9 @@ impl ScreenLike for IdentityHubScreen {
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         if let BackendTaskSuccessResult::DashPayAvatar { url, bytes } = result {
-            self.avatar_cache.store(url, bytes);
+            if self.is_waiting_for_avatar(&url) {
+                self.avatar_cache.store(url, bytes);
+            }
             return;
         }
 
@@ -1102,9 +1114,167 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn cached_profile_primes_avatar_without_overwriting_saved_or_absent_profile() {
+    async fn authoritative_profile_refresh_rebases_seeded_settings_before_save() {
+        use crate::model::dashpay::ProfileSnapshot;
+        use egui_kittest::{Harness, kittest::Queryable};
         let (_dir, context) = wired_test_context().await;
-        let id = seed_user_identity(&context, 42);
+        let identity = seed_cached_profile(&context).await;
+        let owner = identity.identity.id();
+        for absent in [false, true] {
+            for dirty in [false, true] {
+                let mut hub = IdentityHubScreen::new(&context);
+                hub.profile_cache.seed_cached(&context, &identity);
+                let AppAction::BackendTaskWithContext { context: load, .. } =
+                    hub.profile_cache.dispatch_pending()
+                else {
+                    panic!("load dispatch")
+                };
+                let mut editor = Harness::builder()
+                    .with_size(egui::vec2(1100.0, 1100.0))
+                    .build_ui_state(
+                        |ui, state: &mut (IdentityHubScreen, Option<BackendTask>)| {
+                            let hub = &mut state.0;
+                            if let AppAction::BackendTaskWithContext { task, .. } = hub
+                                .settings_tab
+                                .render(ui, &hub.app_context, &mut hub.profile_cache)
+                            {
+                                state.1 = Some(task);
+                            }
+                        },
+                        (hub, None),
+                    );
+                editor.run();
+                if dirty {
+                    editor
+                        .query_all_by_role(egui::accesskit::Role::TextInput)
+                        .next()
+                        .unwrap()
+                        .focus();
+                    editor.run();
+                    editor
+                        .query_all_by_role(egui::accesskit::Role::TextInput)
+                        .next()
+                        .unwrap()
+                        .type_text(" draft");
+                    editor.run();
+                }
+                let profile = (!absent).then(|| {
+                    (
+                        "Authoritative name".into(),
+                        "New biography".into(),
+                        "https://example.com/new.png".into(),
+                    )
+                });
+                let result = BackendTaskSuccessResult::DashPayProfile(ProfileSnapshot {
+                    network: context.network,
+                    owner,
+                    revision: context.identity_profile_revision(owner),
+                    profile,
+                });
+                editor
+                    .state_mut()
+                    .0
+                    .display_backend_task_result(&load, result);
+                editor.run();
+                if !dirty {
+                    editor.get_by_label("Save social profile").click();
+                    editor.run();
+                    assert!(
+                        editor.state().1.is_none(),
+                        "refreshed fields must be a clean baseline"
+                    );
+                    editor
+                        .query_all_by_role(egui::accesskit::Role::TextInput)
+                        .next()
+                        .unwrap()
+                        .focus();
+                    editor.run();
+                    editor
+                        .query_all_by_role(egui::accesskit::Role::TextInput)
+                        .next()
+                        .unwrap()
+                        .type_text(" draft");
+                    editor.run();
+                }
+                editor.get_by_label("Save social profile").click();
+                editor.run();
+                let Some(BackendTask::DashPayTask(task)) = editor.state_mut().1.take() else {
+                    panic!("save dispatch")
+                };
+                let DashPayTask::UpdateProfile {
+                    display_name,
+                    bio,
+                    avatar_url,
+                    ..
+                } = *task
+                else {
+                    panic!("profile save")
+                };
+                let expected_name = if dirty {
+                    "Cached profile draft"
+                } else if absent {
+                    "draft"
+                } else {
+                    "Authoritative name draft"
+                };
+                assert_eq!(display_name.as_deref(), Some(expected_name));
+                assert_eq!(bio.as_deref(), (!absent).then_some("New biography"));
+                assert_eq!(
+                    avatar_url.as_deref(),
+                    (!absent).then_some("https://example.com/new.png")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn hub_avatar_completions_only_retain_requested_urls() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let mut hub = IdentityHubScreen::new(&context);
+        let url = "https://example.com/requested.png";
+        let unrelated = "https://example.com/contact.png";
+        hub.avatar_cache.ensure_requested(url);
+        assert!(hub.is_waiting_for_avatar(url));
+        assert!(!hub.is_waiting_for_avatar(unrelated));
+        for current in [unrelated, url] {
+            hub.display_backend_task_result(
+                &BackendTaskContext::Other,
+                BackendTaskSuccessResult::DashPayAvatar {
+                    url: current.into(),
+                    bytes: Some(vec![1, 2]),
+                },
+            );
+        }
+        assert!(
+            hub.avatar_cache.fetched_bytes(unrelated).is_none(),
+            "unrelated contact bytes must not be retained"
+        );
+        assert_eq!(hub.avatar_cache.fetched_bytes(url), Some(&[1, 2][..]));
+        assert!(hub.avatar_cache.ensure_requested(url).is_none());
+        assert!(!hub.is_waiting_for_avatar(url));
+        hub.display_task_result(BackendTaskSuccessResult::DashPayAvatar {
+            url: url.into(),
+            bytes: Some(vec![3]),
+        });
+        assert_eq!(
+            hub.avatar_cache.fetched_bytes(url),
+            Some(&[1, 2][..]),
+            "duplicate completion keeps the first result"
+        );
+        hub.avatar_cache.invalidate();
+        hub.display_task_result(BackendTaskSuccessResult::DashPayAvatar {
+            url: url.into(),
+            bytes: Some(vec![4]),
+        });
+        assert!(
+            hub.avatar_cache.fetched_bytes(url).is_none(),
+            "obsolete completion stays discarded"
+        );
+    }
+
+    async fn seed_cached_profile(context: &Arc<AppContext>) -> QualifiedIdentity {
+        let id = seed_user_identity(context, 42);
         let identity = context.load_local_user_identities().unwrap().remove(0);
         let backend = context.wallet_backend().unwrap();
         let wallet =
@@ -1141,6 +1311,14 @@ mod tests {
             )
             .await
             .unwrap();
+        identity
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cached_profile_primes_avatar_without_overwriting_saved_or_absent_profile() {
+        let (_dir, context) = wired_test_context().await;
+        let identity = seed_cached_profile(&context).await;
+        let id = identity.identity.id();
         let mut harness = egui_kittest::Harness::builder().build_ui_state(
             |ui, screen: &mut IdentityHubScreen| {
                 screen.ui(ui);

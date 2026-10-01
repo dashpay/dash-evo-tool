@@ -2550,12 +2550,15 @@ impl AppState {
             .main_screens
             .get_mut(&RootScreenType::RootScreenIdentityHub)
         {
-            if matches!(
-                result,
+            let needs_completion = match result {
                 BackendTaskSuccessResult::DashPayProfile(_)
-                    | BackendTaskSuccessResult::DashPayProfileUpdated(_)
-                    | BackendTaskSuccessResult::DashPayAvatar { .. }
-            ) {
+                | BackendTaskSuccessResult::DashPayProfileUpdated(_) => true,
+                BackendTaskSuccessResult::DashPayAvatar { url, .. } => {
+                    hub.is_waiting_for_avatar(url)
+                }
+                _ => false,
+            };
+            if needs_completion {
                 hub.display_backend_task_result(context, result.clone());
             } else {
                 hub.handle_contact_request_result(result);

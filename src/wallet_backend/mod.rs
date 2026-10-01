@@ -529,6 +529,28 @@ impl std::fmt::Debug for WalletBackend {
     }
 }
 
+/// File name of the cross-network app database in the data directory.
+pub(crate) const APP_DATABASE_FILE: &str = "det-app.sqlite";
+
+/// The cross-network app k/v database: `<data_dir>/det-app.sqlite`.
+pub(crate) fn app_database_path(data_dir: &Path) -> std::path::PathBuf {
+    data_dir.join(APP_DATABASE_FILE)
+}
+
+/// Every network, via an exhaustive match: a new [`Network`] variant fails to
+/// compile here until each caller (e.g. the deletion deny-list) is reviewed.
+pub(crate) fn all_networks() -> [Network; 4] {
+    let _exhaustive = |network: Network| match network {
+        Network::Mainnet | Network::Testnet | Network::Devnet | Network::Regtest => (),
+    };
+    [
+        Network::Mainnet,
+        Network::Testnet,
+        Network::Devnet,
+        Network::Regtest,
+    ]
+}
+
 /// The durable per-network wallet database: `<data_dir>/det-<network>.sqlite`.
 ///
 /// A sibling of `det-app.sqlite`, deliberately outside `<data_dir>/spv/<network>/`
@@ -537,6 +559,20 @@ impl std::fmt::Debug for WalletBackend {
 /// created and locked down at boot, so no directory work happens here.
 pub(crate) fn wallet_database_path(data_dir: &Path, network: Network) -> std::path::PathBuf {
     data_dir.join(format!("det-{}.sqlite", network_prefix(network)))
+}
+
+/// Parent of every network's [`spv_storage_dir`], `<data_dir>/spv/`.
+pub(crate) fn spv_root_dir(data_dir: &Path) -> std::path::PathBuf {
+    data_dir.join("spv")
+}
+
+/// The per-network chain-sync (SPV) cache directory, `<data_dir>/spv/<network>/`.
+///
+/// The single definition shared by the backend (which creates it), the network
+/// clear (which empties it) and the deletion chokepoint (which confines that clear
+/// to it).
+pub(crate) fn spv_storage_dir(data_dir: &Path, network: Network) -> std::path::PathBuf {
+    spv_root_dir(data_dir).join(network_prefix(network))
 }
 
 /// The upstream shielded coordinator's store,
@@ -3051,12 +3087,12 @@ impl WalletBackend {
         app_data_dir: &Path,
         network: Network,
     ) -> Result<std::path::PathBuf, TaskError> {
-        let mut dir = app_data_dir.join("spv");
-        crate::app_dir::ensure_data_dir_exists(&dir)
-            .map_err(|source| TaskError::FileSystem { source })?;
-        dir.push(kv::network_prefix(network));
-        crate::app_dir::ensure_data_dir_exists(&dir)
-            .map_err(|source| TaskError::FileSystem { source })?;
+        let dir = spv_storage_dir(app_data_dir, network);
+        // Create (and lock down) the shared `spv` root before the network directory.
+        for directory in [spv_root_dir(app_data_dir), dir.clone()] {
+            crate::app_dir::ensure_data_dir_exists(&directory)
+                .map_err(|source| TaskError::FileSystem { source })?;
+        }
         Ok(dir)
     }
 }

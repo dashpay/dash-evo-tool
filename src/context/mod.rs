@@ -14,6 +14,7 @@ mod settings_db;
 #[cfg(test)]
 pub(crate) mod test_support;
 mod wallet_lifecycle;
+pub use wallet_lifecycle::BackupPruneReport;
 pub use wallet_lifecycle::PrepareGateGuard;
 
 pub use wallet_lifecycle::WalletUnlockRetention;
@@ -620,7 +621,7 @@ impl AppContext {
         use platform_wallet_storage::SqlitePersisterConfig;
         crate::app_dir::ensure_data_dir_exists(data_dir)
             .map_err(|source| TaskError::FileSystem { source })?;
-        let path = data_dir.join("det-app.sqlite");
+        let path = crate::wallet_backend::app_database_path(data_dir);
         let config = SqlitePersisterConfig::new(path);
         let persister = Arc::new(crate::wallet_backend::platform_compatibility::open(config)?);
         Ok(Arc::new(DetKv::new(persister)))
@@ -670,7 +671,7 @@ impl AppContext {
     }
 
     /// Absolute path of the shared seed vault: `<data_dir>/secrets/det-secrets.pwsvault`.
-    fn secret_store_path(data_dir: &std::path::Path) -> std::path::PathBuf {
+    pub(crate) fn secret_store_path(data_dir: &std::path::Path) -> std::path::PathBuf {
         let mut path = data_dir.to_path_buf();
         path.push("secrets");
         path.push("det-secrets.pwsvault");
@@ -1162,6 +1163,9 @@ impl AppContext {
         .await?;
         self.wallet_backend.store(Some(Arc::new(backend)));
         drop(_build_guard);
+        // Wallet storage is up: apply the retention policy to every database's
+        // backups (the newest usable backup of each is always kept).
+        self.prune_expired_upgrade_backups_best_effort();
         if let Err(error) = self.refresh_pending_dpns_usernames() {
             tracing::warn!(
                 ?error,

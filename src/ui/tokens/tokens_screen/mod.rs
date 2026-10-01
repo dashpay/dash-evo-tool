@@ -3245,6 +3245,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test fixture setup/teardown outside any production deletion path"
+    )]
     fn test_token_creator_ui_builds_correct_contract() {
         let db_file_path = "test_db_token_creator";
         let _ = std::fs::remove_file(db_file_path); // Clean up from previous runs
@@ -3547,6 +3551,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test fixture setup/teardown outside any production deletion path"
+    )]
     fn test_distribution_function_random() {
         let db_file_path = "test_db_distribution_random";
         let _ = std::fs::remove_file(db_file_path); // Clean up from previous runs
@@ -3663,6 +3671,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test fixture setup/teardown outside any production deletion path"
+    )]
     fn test_parse_token_build_args_fails_with_empty_token_name() {
         let db_file_path = "test_db_empty_token_name";
         let _ = std::fs::remove_file(db_file_path); // Clean up from previous runs

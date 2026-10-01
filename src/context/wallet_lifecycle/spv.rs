@@ -16,8 +16,7 @@ impl AppContext {
     /// `DiskStorageManager` has released its file lock and the deletes do not
     /// race a live writer. A missing directory (never synced) is success.
     pub fn clear_spv_data(&self) -> Result<(), TaskError> {
-        let spv_dir = spv_storage_dir(&self.data_dir, self.network);
-        clear_spv_chain_storage(&spv_dir)
+        clear_spv_chain_storage(&self.data_dir, self.network)
     }
 
     pub async fn clear_network_database(self: &Arc<Self>) -> Result<(), TaskError> {
@@ -107,10 +106,20 @@ impl AppContext {
         // empties the per-network store) and unlink DET's two retired legacy
         // shielded files. The legacy-file unlinks are synchronous and scoped
         // strictly to THIS network's spv directory.
-        cleanup_legacy_shielded_files(backend.spv_storage_dir())?;
+        // A failure here must not skip the steps below: upgrade backups hold the
+        // wallet data being cleared, so record it and keep going.
+        if let Err(error) = cleanup_legacy_shielded_files(&self.data_dir, self.network) {
+            tracing::warn!(?error, "Legacy shielded file removal failed during clear");
+            failures.push(error);
+        }
 
         if let Err(error) = backend.clear_shielded().await {
             tracing::warn!(%error, "Shielded coordinator reset failed during clear");
+            failures.push(error);
+        }
+
+        if let Err(error) = self.remove_upgrade_backups() {
+            tracing::warn!(?error, "Upgrade backup removal failed during clear");
             failures.push(error);
         }
 

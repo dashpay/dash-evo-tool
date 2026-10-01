@@ -3125,6 +3125,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test fixture setup/teardown outside any production deletion path"
+    )]
     async fn dapi_config_persistence_reports_save_failure() {
         let _env_guard = CONFIG_ENV_LOCK.lock().await;
         let tmp = tempfile::tempdir().expect("tempdir");

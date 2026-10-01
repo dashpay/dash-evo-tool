@@ -189,8 +189,10 @@ mod race_tests {
                     assert!(app.record_identity_profile_name(id, revision, Some("Old")));
                 }
                 let context = BackendTaskContext::Other;
-                let mut cache = ProfileCache::default();
-                cache.in_flight = Some((id, context.clone()));
+                let mut cache = ProfileCache {
+                    in_flight: Some((id, context.clone())),
+                    ..Default::default()
+                };
                 app.save_identity_profile_name(id, Some("Saved"));
                 if !accepted_before_save {
                     assert!(!app.record_identity_profile_name(id, revision, Some("Old")));

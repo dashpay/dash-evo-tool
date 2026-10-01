@@ -1058,7 +1058,7 @@ mod tests {
         );
 
         assert!(
-            !MessageBanner::has_global(&ctx),
+            !MessageBanner::has_global(ctx),
             "a stale result has no pending save to confirm"
         );
     }

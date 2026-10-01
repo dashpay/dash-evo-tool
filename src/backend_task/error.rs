@@ -3363,7 +3363,7 @@ impl From<dashcore_rpc::Error> for TaskError {
 /// Marker the DET identity signer puts in front of the `ProtocolError::Generic`
 /// text it returns when a signing key cannot be resolved.
 ///
-/// Deliberate, documented exception to the "never parse error strings" rule:
+/// Intentional, sanctioned exception to the no-string-parsing rule (see AGENTS.md):
 /// the upstream `Signer` trait can only return `ProtocolError`, which has no
 /// variant carrying a typed source, so this DET-owned marker is the only way to
 /// recognise DET's own signing failure once the SDK hands it back.
@@ -3389,8 +3389,8 @@ fn signing_key_unavailable_message(error: &SdkError) -> &str {
 
 impl From<SdkError> for TaskError {
     fn from(error: SdkError) -> Self {
-        // DET's own signer failure, tagged by `QualifiedIdentity::sign`; see
-        // `SIGNING_KEY_UNAVAILABLE_PREFIX` for why this matches on text.
+        // DET's own signer failure, tagged by `QualifiedIdentity::sign`.
+        // Intentional, sanctioned exception to the no-string-parsing rule (see AGENTS.md).
         // TODO(upstream): replace with a typed ProtocolError source variant in dashpay/platform
         if signing_key_unavailable_text(&error).is_some() {
             return TaskError::IdentitySigningFailed {

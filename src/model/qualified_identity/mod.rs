@@ -765,6 +765,8 @@ impl QualifiedIdentity {
     /// [`SIGNING_KEY_UNAVAILABLE_PREFIX`] for `From<SdkError>` to recognise; the
     /// rest is the cause's user-facing message plus the identity, key and
     /// wallet involved. The typed error is logged here in full.
+    ///
+    /// Intentional, sanctioned exception to the no-string-parsing rule (see AGENTS.md).
     // TODO(upstream): replace with a typed ProtocolError source variant in dashpay/platform
     fn signing_key_unavailable(&self, key: &IdentityPublicKey, cause: &TaskError) -> ProtocolError {
         let identity_id = self.identity.id().to_string(Encoding::Base58);

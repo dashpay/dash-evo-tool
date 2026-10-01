@@ -2347,7 +2347,7 @@ mod tests {
         );
     }
 
-    /// VOTE-TC-104 (executor half): a target whose contest closed before it
+    /// VOTE-TC-103 (executor half): a target whose contest closed before it
     /// was sent fails before submission with `VotingEnded`, even when scheduled.
     #[test]
     fn a_closed_contest_fails_its_unsent_targets_as_voting_ended() {

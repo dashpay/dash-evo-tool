@@ -4187,7 +4187,7 @@ mod migration_banner_tests {
 
     /// Counts drive which sentence is built, so no single template has to carry
     /// a verb that is only correct for one of them.
-    /// VOTE-TC-101: confirmed plus still-checking targets read as nodes × names
+    /// VOTE-FR-061: confirmed plus still-checking targets read as nodes × names
     /// and keep the banner up with the do-not-resubmit guidance.
     #[test]
     fn batch_feedback_counts_nodes_names_and_checking() {

@@ -137,7 +137,7 @@ mod tests {
         }
     }
 
-    /// VOTE-TC-096/097: disabled rows carry their reason; unknown membership
+    /// VOTE-TC-097: disabled rows carry their reason; unknown membership
     /// is a note, never an exclusion (fail open).
     #[test]
     fn rows_explain_exclusions_and_unknown_membership() {

@@ -115,7 +115,7 @@ mod tests {
     use dash_sdk::platform::Identifier;
     use std::collections::BTreeSet;
 
-    /// VOTE-TC-094 (label half): the label is bound to the exact time; a
+    /// VOTE-TC-067 (label half): the label is bound to the exact time; a
     /// different time reads no label, so the row shows the absolute time only.
     #[test]
     fn relative_label_is_bound_to_its_absolute_time() {

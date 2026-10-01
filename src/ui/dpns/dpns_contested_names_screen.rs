@@ -55,7 +55,8 @@ use crate::ui::dpns::node_set_picker;
 use crate::ui::dpns::progress_drawer;
 use crate::ui::state::dpns_contests::ActiveDpnsContestSnapshot;
 use crate::ui::state::dpns_vote_cards::{
-    CantVoteReason, CardPlacement, NodeContestState, NodeContestStatus, VoteCard, sort_by_time_left,
+    CantVoteReason, CardPlacement, NodeContestState, NodeContestStatus, SHORTCUT_HELP, Shortcut,
+    VoteCard, move_focus, shortcut_for, sort_by_time_left,
 };
 use crate::ui::state::dpns_vote_operations::{DpnsVoteOperationSnapshot, ScheduledDpnsVoteRow};
 use crate::ui::state::dpns_vote_state::DpnsVoteStateSnapshot;
@@ -515,6 +516,8 @@ pub struct DPNSScreen {
     /// Cards ticked for a bulk decision, by contest name.
     selected_cards: BTreeSet<String>,
     focused_card: Option<String>,
+    /// Whether the contest list has keyboard focus for shortcuts.
+    list_focused: bool,
 }
 
 impl DPNSScreen {
@@ -604,6 +607,7 @@ impl DPNSScreen {
             relative_schedule_labels: BTreeMap::new(),
             selected_cards: BTreeSet::new(),
             focused_card: None,
+            list_focused: false,
         };
         screen.rebuild_cards();
         screen.rebuild_scheduled_vote_rows();
@@ -922,14 +926,34 @@ impl DPNSScreen {
                 }
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.active_filter_term)
-                        .hint_text("Filter by name")
-                        .desired_width(180.0),
-                )
-                .on_hover_text(
-                    "The letters i and l match the digit 1, and the letter o matches 0.",
-                );
+                let shortcuts = ui.button("Shortcuts");
+                egui::Popup::from_toggle_button_response(&shortcuts)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                    .show(|ui| {
+                        ui.label(
+                            RichText::new("Shortcuts work while the list of names has focus.")
+                                .strong(),
+                        );
+                        egui::Grid::new("dpns_vote_shortcuts").show(ui, |ui| {
+                            for (keys, action) in SHORTCUT_HELP {
+                                ui.label(RichText::new(keys).monospace());
+                                ui.label(action);
+                                ui.end_row();
+                            }
+                        });
+                    });
+                let filter = ui
+                    .add(
+                        egui::TextEdit::singleline(&mut self.active_filter_term)
+                            .hint_text("Filter by name")
+                            .desired_width(180.0),
+                    )
+                    .on_hover_text(
+                        "The letters i and l match the digit 1, and the letter o matches 0.",
+                    );
+                if filter.has_focus() {
+                    self.list_focused = false;
+                }
             });
         });
         ui.add_space(8.0);
@@ -974,8 +998,11 @@ impl DPNSScreen {
             Vec::new()
         };
 
+        let scroll_to = self.handle_shortcuts(ui, &listed);
+        self.render_bulk_bar(ui);
+
         let mut events: Vec<(usize, CardEvent)> = Vec::new();
-        egui::ScrollArea::vertical()
+        let list = egui::ScrollArea::vertical()
             .id_salt("active_contest_cards")
             .max_height(ui.available_height() - 48.0)
             .show(ui, |ui| {
@@ -998,6 +1025,7 @@ impl DPNSScreen {
                         staged,
                         selected: self.selected_cards.contains(card.name()),
                         focused: self.focused_card.as_deref() == Some(card.name()),
+                        scroll_into_view: scroll_to.as_deref() == Some(card.name()),
                         node_labels: &self.node_labels,
                         node_set_weight: self.resolved_nodes.weight,
                         now_ms: now,
@@ -1030,6 +1058,19 @@ impl DPNSScreen {
                 }
             });
 
+        // The list owns keyboard focus after a click inside it (VOTE-NFR-010).
+        if let Some(pos) = ui.input(|input| {
+            input
+                .pointer
+                .any_pressed()
+                .then(|| input.pointer.interact_pos())
+                .flatten()
+        }) {
+            self.list_focused = list.inner_rect.contains(pos);
+        }
+        if !events.is_empty() {
+            self.list_focused = true;
+        }
         for (index, event) in events {
             let name = self.cards[index].name().to_owned();
             match event {
@@ -1052,6 +1093,149 @@ impl DPNSScreen {
         }
 
         self.render_tray(ui);
+    }
+
+    /// Stage `choice` for a contest (never toggles it off).
+    fn stage_choice(&mut self, contest: &ContestedName, choice: ResourceVoteChoice) {
+        match self
+            .selected_votes
+            .iter_mut()
+            .find(|vote| vote.contested_name == contest.normalized_contested_name)
+        {
+            Some(vote) => vote.vote_choice = choice,
+            None => self.selected_votes.push(SelectedVote {
+                contested_name: contest.normalized_contested_name.clone(),
+                vote_choice: choice,
+                end_time: contest.end_time,
+            }),
+        }
+    }
+
+    fn clear_choice(&mut self, contested_name: &str) {
+        self.selected_votes
+            .retain(|vote| vote.contested_name != contested_name);
+    }
+
+    /// Apply this frame's list shortcuts (VOTE-FR-082). Active only while the
+    /// list has focus and no text field wants the keyboard (VOTE-NFR-010).
+    /// Returns the card to scroll into view when focus moved.
+    fn handle_shortcuts(&mut self, ui: &Ui, listed: &[usize]) -> Option<String> {
+        if !self.list_focused
+            || self.show_bulk_schedule_popup
+            || ui.ctx().egui_wants_keyboard_input()
+        {
+            return None;
+        }
+        let shortcuts: Vec<Shortcut> = ui.input(|input| {
+            input
+                .events
+                .iter()
+                .filter_map(|event| match event {
+                    egui::Event::Key {
+                        key,
+                        pressed: true,
+                        modifiers,
+                        ..
+                    } if modifiers.is_none() => shortcut_for(*key),
+                    _ => None,
+                })
+                .collect()
+        });
+        let mut scroll_to = None;
+        for shortcut in shortcuts {
+            let position = listed
+                .iter()
+                .position(|index| Some(self.cards[*index].name()) == self.focused_card.as_deref());
+            let focused = position.map(|position| listed[position]);
+            match shortcut {
+                Shortcut::Next | Shortcut::Previous => {
+                    if let Some(next) = move_focus(position, listed.len(), shortcut) {
+                        let name = self.cards[listed[next]].name().to_owned();
+                        scroll_to = Some(name.clone());
+                        self.focused_card = Some(name);
+                    }
+                }
+                Shortcut::Contender(_) | Shortcut::Lock | Shortcut::Abstain => {
+                    let Some(index) = focused else { continue };
+                    let card = &self.cards[index];
+                    if !card.accepts_decision() {
+                        continue;
+                    }
+                    let choice = match shortcut {
+                        Shortcut::Lock => Some(ResourceVoteChoice::Lock),
+                        Shortcut::Abstain => Some(ResourceVoteChoice::Abstain),
+                        Shortcut::Contender(n) => card
+                            .contest
+                            .contestants
+                            .as_ref()
+                            .and_then(|contenders| contenders.get(n))
+                            .map(|contender| ResourceVoteChoice::TowardsIdentity(contender.id)),
+                        _ => None,
+                    };
+                    if let Some(choice) = choice {
+                        let contest = Arc::clone(&card.contest);
+                        self.stage_choice(&contest, choice);
+                    }
+                }
+                Shortcut::Clear => {
+                    if let Some(index) = focused {
+                        let name = self.cards[index].name().to_owned();
+                        self.clear_choice(&name);
+                    }
+                }
+                Shortcut::ToggleSelected => {
+                    if let Some(index) = focused {
+                        let name = self.cards[index].name().to_owned();
+                        if !self.selected_cards.remove(&name) {
+                            self.selected_cards.insert(name);
+                        }
+                    }
+                }
+                Shortcut::Confirm => {
+                    if !self.selected_votes.is_empty() {
+                        self.open_review_for_node_set();
+                    }
+                }
+            }
+        }
+        scroll_to
+    }
+
+    /// Bulk bar for two or more selected names (VOTE-FR-082).
+    fn render_bulk_bar(&mut self, ui: &mut Ui) {
+        let selected = self.selected_cards.len();
+        if selected < 2 {
+            return;
+        }
+        let mut apply: Option<Option<ResourceVoteChoice>> = None;
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(format!("{selected} names selected")).strong());
+            if ui.button("Lock name").clicked() {
+                apply = Some(Some(ResourceVoteChoice::Lock));
+            }
+            if ui.button("Abstain").clicked() {
+                apply = Some(Some(ResourceVoteChoice::Abstain));
+            }
+            if ui.button("Clear").clicked() {
+                apply = Some(None);
+            }
+        });
+        let Some(apply) = apply else {
+            return;
+        };
+        let targets: Vec<Arc<ContestedName>> = self
+            .cards
+            .iter()
+            .filter(|card| self.selected_cards.contains(card.name()))
+            .filter(|card| apply.is_none() || card.accepts_decision())
+            .map(|card| Arc::clone(&card.contest))
+            .collect();
+        for contest in targets {
+            match apply {
+                Some(choice) => self.stage_choice(&contest, choice),
+                None => self.clear_choice(&contest.normalized_contested_name),
+            }
+        }
     }
 
     /// The tray under the list: what is staged and the Cast action (VOTE-FR-086).
@@ -2612,7 +2796,7 @@ mod tests {
         }
     }
 
-    /// VOTE-FR-035: no window overlay; staged decisions clear only when this
+    /// VOTE-TC-100: no window overlay; staged decisions clear only when this
     /// panel's own operation reports, never on another operation's update.
     #[test]
     fn own_operation_result_clears_staged_decisions_without_an_overlay() {
@@ -3078,7 +3262,7 @@ mod tests {
                 reopened.ui(ui);
             });
         harness.run();
-        // VOTE-TC-099: the Needs attention row leads to the drawer's Check again.
+        // VOTE-TC-102: the Needs attention row leads to the drawer's Check again.
         assert!(
             harness
                 .query_by_label("Needs attention: 1 vote is still being checked.")
@@ -3289,7 +3473,7 @@ mod tests {
         );
     }
 
-    /// VOTE-TC-095: absolute and relative schedules must fall strictly
+    /// VOTE-FR-081: absolute and relative schedules must fall strictly
     /// before each contest's end and after now.
     #[test]
     fn voting_ui_review_rejects_absolute_and_relative_schedules_at_contest_deadline() {
@@ -3560,6 +3744,131 @@ mod tests {
         );
     }
 
+    /// Two open contests a single voting node has not voted on yet.
+    async fn two_contest_screen() -> (Arc<Mutex<DPNSScreen>>, tempfile::TempDir) {
+        let (ctx, dir) = kv_ctx();
+        ctx.seed_dpns_contest_for_test("alpha", None, false);
+        ctx.seed_dpns_contest_for_test("beta", None, false);
+        let node = masternode_identity(1, "node-one", true, ctx.network());
+        ctx.seed_proved_dpns_votes_for_test(node.identity.id(), BTreeMap::new())
+            .await
+            .unwrap();
+        let polls = [
+            ctx.dpns_vote_poll_id("alpha").unwrap(),
+            ctx.dpns_vote_poll_id("beta").unwrap(),
+        ];
+        let mut screen = DPNSScreen::new(&ctx, VotesView::ToDecide);
+        screen.voting_identities = vec![node.clone()];
+        screen.vote_state =
+            DpnsVoteStateSnapshot::load(&ctx, &[node.identity.id()], &polls).unwrap();
+        screen.rebuild_cards();
+        assert_eq!(screen.cards.len(), 2);
+        (Arc::new(Mutex::new(screen)), dir)
+    }
+
+    fn staged(screen: &Arc<Mutex<DPNSScreen>>) -> Vec<(String, ResourceVoteChoice)> {
+        screen
+            .lock_recover()
+            .selected_votes
+            .iter()
+            .map(|vote| (vote.contested_name.clone(), vote.vote_choice))
+            .collect()
+    }
+
+    /// VOTE-TC-098: J, 1, J, L, Enter stages both decisions and opens the
+    /// confirm step; keys do nothing without list focus or in the filter field.
+    #[tokio::test]
+    async fn keyboard_flow_stages_decisions_and_opens_confirm() {
+        use egui_kittest::kittest::Queryable;
+        let (screen, _dir) = two_contest_screen().await;
+        let rendering = screen.clone();
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1400.0, 1200.0))
+            .build_ui(move |ui| {
+                rendering.lock_recover().ui(ui);
+            });
+        harness.run();
+
+        harness.key_press(egui::Key::J);
+        harness.run();
+        assert!(staged(&screen).is_empty(), "no list focus, no shortcut");
+
+        screen.lock_recover().list_focused = true;
+        for key in [egui::Key::J, egui::Key::Num1, egui::Key::J, egui::Key::L] {
+            harness.key_press(key);
+            harness.run();
+        }
+        let contender = ResourceVoteChoice::TowardsIdentity(Identifier::from([3; 32]));
+        assert_eq!(
+            staged(&screen),
+            vec![
+                ("alpha".to_owned(), contender),
+                ("beta".to_owned(), ResourceVoteChoice::Lock),
+            ]
+        );
+
+        harness
+            .get_by_role(egui::accesskit::Role::TextInput)
+            .click();
+        harness.run();
+        harness.key_press(egui::Key::A);
+        harness.run();
+        assert_eq!(
+            staged(&screen)[1],
+            ("beta".to_owned(), ResourceVoteChoice::Lock),
+            "a focused text field swallows shortcuts"
+        );
+
+        screen.lock_recover().list_focused = true;
+        harness.key_press(egui::Key::Escape);
+        harness.run();
+        screen.lock_recover().list_focused = true;
+        harness.key_press(egui::Key::Enter);
+        harness.run();
+        assert!(screen.lock_recover().show_bulk_schedule_popup);
+        assert!(
+            harness
+                .query_by_label("Cast 2 decisions with 1 node")
+                .is_some()
+        );
+    }
+
+    /// VOTE-TC-099: with several names selected, the bulk bar stages one
+    /// decision on each.
+    #[tokio::test]
+    async fn bulk_bar_applies_a_decision_to_every_selected_name() {
+        use egui_kittest::kittest::Queryable;
+        let (screen, _dir) = two_contest_screen().await;
+        screen.lock_recover().selected_cards =
+            BTreeSet::from(["alpha".to_owned(), "beta".to_owned()]);
+        let rendering = screen.clone();
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1400.0, 1200.0))
+            .build_ui(move |ui| {
+                rendering.lock_recover().ui(ui);
+            });
+        harness.run();
+        assert!(harness.query_by_label("2 names selected").is_some());
+        harness
+            .get_by_role_and_label(egui::accesskit::Role::Button, "Abstain")
+            .click();
+        harness.run();
+        assert_eq!(
+            staged(&screen),
+            vec![
+                ("alpha".to_owned(), ResourceVoteChoice::Abstain),
+                ("beta".to_owned(), ResourceVoteChoice::Abstain),
+            ]
+        );
+        harness
+            .get_all_by_role_and_label(egui::accesskit::Role::Button, "Clear")
+            .next()
+            .expect("the bulk bar's Clear")
+            .click();
+        harness.run();
+        assert!(staged(&screen).is_empty());
+    }
+
     #[test]
     fn voting_ui_keyless_users_can_read_cached_active_contests() {
         use egui_kittest::kittest::Queryable;
@@ -3718,7 +4027,7 @@ mod tests {
         );
     }
 
-    /// VOTE-TC-098: the drawer names each node and its typed status, and
+    /// VOTE-TC-101: the drawer names each node and its typed status, and
     /// offers only the valid action.
     #[test]
     fn progress_drawer_identifies_each_node_and_status() {
@@ -4033,7 +4342,7 @@ mod tests {
         );
     }
 
-    /// VOTE-TC-094: a "before the end" schedule shows its preset next to the
+    /// VOTE-TC-067: a "before the end" schedule shows its preset next to the
     /// absolute UTC time; without a stored label only the absolute time shows.
     #[test]
     fn relative_schedule_shows_its_preset_and_absolute_time() {

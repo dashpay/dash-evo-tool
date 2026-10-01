@@ -269,7 +269,7 @@ mod tests {
         }
     }
 
-    /// VOTE-TC-090: two decisions × three nodes give six targets, one per node and name.
+    /// VOTE-FR-080: two decisions × three nodes give six targets, one per node and name.
     #[test]
     fn one_target_per_node_and_name() {
         let lock = ResourceVoteChoice::Lock;
@@ -293,7 +293,7 @@ mod tests {
         assert!(plan.skipped.is_empty());
     }
 
-    /// VOTE-TC-091/093/007/041: every exclusion becomes a typed skip.
+    /// VOTE-TC-003/007/041/096: every exclusion becomes a typed skip.
     #[test]
     fn exclusions_are_skipped_with_reasons() {
         let lock = ResourceVoteChoice::Lock;
@@ -365,7 +365,7 @@ mod tests {
         assert_eq!(plan.targets.len(), 1);
     }
 
-    /// VOTE-TC-094/095: "about to end" resolves per contest; per-node overrides win.
+    /// VOTE-TC-067/068: "about to end" resolves per contest; per-node overrides win.
     #[test]
     fn before_end_resolves_per_contest_and_overrides_apply() {
         let lock = ResourceVoteChoice::Lock;
@@ -406,7 +406,7 @@ mod tests {
         assert!(!plan.all_now());
     }
 
-    /// VOTE-TC-095 (rejection half): a time at or after the deadline is refused.
+    /// VOTE-FR-081: a time at or after the deadline is refused.
     #[test]
     fn schedules_outside_the_window_are_rejected() {
         let lock = ResourceVoteChoice::Lock;
@@ -449,7 +449,7 @@ mod tests {
         );
     }
 
-    /// VOTE-TC-104 (compose half): a decision whose voting ended is refused.
+    /// VOTE-TC-103 (compose half): a decision whose voting ended is refused.
     #[test]
     fn ended_contests_are_refused() {
         let result = compose(

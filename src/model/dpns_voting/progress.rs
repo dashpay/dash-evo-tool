@@ -184,7 +184,7 @@ mod tests {
     use DpnsVoteTargetStatus as S;
     const NOW: VoteTiming = VoteTiming::Now;
 
-    /// VOTE-TC-098: the drawer header counts done, sending and checking.
+    /// VOTE-TC-101: the drawer header counts done, sending and checking.
     #[test]
     fn counts_group_targets_by_phase_and_skip_schedules() {
         let op = operation(
@@ -238,7 +238,7 @@ mod tests {
         assert_eq!(shown, vec![old_in_flight.id, recent_settled.id]);
     }
 
-    /// VOTE-TC-099: unconfirmed, failed and missed targets need attention.
+    /// VOTE-TC-102: unconfirmed, failed and missed targets need attention.
     #[test]
     fn needs_attention_counts_each_kind() {
         let operations = vec![

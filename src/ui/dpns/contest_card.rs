@@ -154,6 +154,8 @@ pub struct CardView<'a> {
     pub staged: Option<ResourceVoteChoice>,
     pub selected: bool,
     pub focused: bool,
+    /// Scroll the card into view this frame (keyboard focus moved to it).
+    pub scroll_into_view: bool,
     pub node_labels: &'a BTreeMap<Identifier, String>,
     pub node_set_weight: u32,
     pub now_ms: u64,
@@ -172,7 +174,7 @@ impl CardView<'_> {
         } else {
             egui::Stroke::new(1.0, DashColors::border_light(dark_mode))
         };
-        egui::Frame::group(ui.style())
+        let frame = egui::Frame::group(ui.style())
             .stroke(stroke)
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
@@ -181,6 +183,9 @@ impl CardView<'_> {
                     self.show_decision(&mut columns[1], &mut events);
                 });
             });
+        if self.scroll_into_view {
+            ui.scroll_to_rect(frame.response.rect, None);
+        }
         events
     }
 

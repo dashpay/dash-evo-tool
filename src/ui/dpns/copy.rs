@@ -365,8 +365,7 @@ pub fn decision_row(name: &str, choice: &str, nodes: usize) -> String {
 /// Changes-left cell under `Adjust nodes` (VOTE-FR-078).
 pub fn changes_left_label(changes: ChangesLeft) -> String {
     match changes {
-        ChangesLeft::Known(1) => "1 change left, counted on this device".to_owned(),
-        ChangesLeft::Known(left) => format!("{left} changes left, counted on this device"),
+        ChangesLeft::Known(left) => format!("{left} of 4 changes left, counted on this device"),
         ChangesLeft::Unknown => {
             "Changes left unknown. This node voted outside Dash Evo Tool.".to_owned()
         }
@@ -432,7 +431,7 @@ mod tests {
         );
     }
 
-    /// VOTE-TC-090/091 (copy half): the confirm lines follow VOTE-FR-080.
+    /// VOTE-TC-006/094/095/096 (copy half): the confirm lines follow VOTE-FR-080.
     #[test]
     fn confirm_copy_follows_the_spec() {
         assert_eq!(confirm_title(3, 24), "Cast 3 decisions with 24 nodes");
@@ -461,7 +460,7 @@ mod tests {
         );
         assert_eq!(
             changes_left_label(ChangesLeft::Known(3)),
-            "3 changes left, counted on this device"
+            "3 of 4 changes left, counted on this device"
         );
         assert_eq!(
             changes_left_label(ChangesLeft::Unknown),
@@ -469,7 +468,7 @@ mod tests {
         );
     }
 
-    /// VOTE-TC-101: the batch banner counts nodes and names.
+    /// VOTE-FR-061: the batch banner counts nodes and names.
     #[test]
     fn batch_banner_counts_nodes_and_names() {
         assert_eq!(batch_voted_line(24, 3, 0), "24 nodes voted on 3 names.");
@@ -479,7 +478,7 @@ mod tests {
         );
     }
 
-    /// VOTE-TC-098/099/104 (copy half).
+    /// VOTE-TC-101/102/103 (copy half).
     #[test]
     fn drawer_and_attention_copy() {
         assert_eq!(

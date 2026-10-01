@@ -20,6 +20,7 @@ mod fetch_contract;
 mod identity_create;
 mod identity_masternode_withdraw;
 mod identity_withdraw;
+mod platform_info;
 mod register_dpns;
 mod send_funds;
 mod spv_wallet;

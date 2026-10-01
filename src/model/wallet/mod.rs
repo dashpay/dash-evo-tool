@@ -1,3 +1,4 @@
+pub mod alias;
 pub mod auth_pubkey_cache;
 pub mod birth_height;
 pub mod encryption;
@@ -8,7 +9,6 @@ pub mod single_key;
 
 use crate::database::WalletError;
 use crate::model::secret::Secret;
-use crate::model::validation::{TextLengthError, validate_char_count};
 use crate::model::wallet::auth_pubkey_cache::AuthPubkeyCache;
 use crate::wallet_backend::poison::RwLockRecover;
 use dash_sdk::dpp::address_funds::PlatformAddress;
@@ -31,14 +31,6 @@ use std::fmt::Debug;
 use std::ops::Range;
 use std::sync::{Arc, RwLock};
 use thiserror::Error;
-
-/// Maximum number of characters in a wallet alias.
-pub const MAX_WALLET_ALIAS_CHARS: usize = 64;
-
-/// Validate a wallet alias before it is persisted.
-pub fn validate_wallet_alias(alias: &str) -> Result<(), TextLengthError> {
-    validate_char_count(alias, 0, MAX_WALLET_ALIAS_CHARS)
-}
 
 /// Why a set of payment recipients was rejected.
 ///
@@ -428,7 +420,8 @@ pub struct Wallet {
     pub platform_payment_account_xpub: Option<ExtendedPubKey>,
     pub known_addresses: BTreeMap<Address, DerivationPath>,
     pub watched_addresses: BTreeMap<DerivationPath, AddressInfo>,
-    pub alias: Option<String>,
+    /// Construction/legacy snapshot only; live labels come from WalletContext.
+    pub(crate) initial_alias: Option<String>,
     pub identities: HashMap<u32, Identity>,
     pub is_main: bool,
     /// DIP-17: Platform address balances and nonces (keyed by Core Address for lookup)
@@ -535,7 +528,7 @@ impl Wallet {
             platform_payment_account_xpub,
             known_addresses,
             watched_addresses,
-            alias,
+            initial_alias: alias,
             identities: Default::default(),
             is_main: true,
             platform_address_info: Default::default(),
@@ -2390,7 +2383,7 @@ pub(crate) mod test_support {
             platform_payment_account_xpub: None,
             known_addresses: BTreeMap::new(),
             watched_addresses: BTreeMap::new(),
-            alias: Some("Test Wallet".to_string()),
+            initial_alias: Some("Test Wallet".to_string()),
             identities: HashMap::new(),
             is_main: true,
             platform_address_info: BTreeMap::new(),
@@ -4036,11 +4029,5 @@ mod tests {
 
         assert!(!wallet.reconcile_platform_address(&foreign, network));
         assert!(!wallet.known_addresses.contains_key(&foreign));
-    }
-
-    #[test]
-    fn wallet_alias_limit_counts_characters() {
-        assert!(validate_wallet_alias(&"é".repeat(64)).is_ok());
-        assert!(validate_wallet_alias(&"w".repeat(65)).is_err());
     }
 }

@@ -1,4 +1,5 @@
 pub mod address_input;
+pub mod alias_input;
 pub mod amount_input;
 pub mod avatar;
 pub mod breadcrumb_pill;

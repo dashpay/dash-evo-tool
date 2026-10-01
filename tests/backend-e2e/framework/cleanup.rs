@@ -24,7 +24,7 @@ pub async fn cleanup_test_wallets(
 ) {
     // Collect non-framework wallet hashes
     let wallet_hashes: Vec<WalletSeedHash> = {
-        let wallets = app_context.wallets().read().expect("wallets lock");
+        let wallets = app_context.wallet_context().wallets();
         wallets
             .keys()
             .filter(|h| **h != framework_wallet_hash)
@@ -46,7 +46,7 @@ pub async fn cleanup_test_wallets(
 
     for hash in wallet_hashes {
         let wallet_arc = {
-            let wallets = app_context.wallets().read().expect("wallets lock");
+            let wallets = app_context.wallet_context().wallets();
             match wallets.get(&hash) {
                 Some(w) => w.clone(),
                 None => continue,
@@ -55,13 +55,10 @@ pub async fn cleanup_test_wallets(
 
         // Derive a fresh receive address for each sweep to distribute UTXOs
         // across multiple addresses instead of concentrating on a single one.
-        let framework_wallet = {
-            let wallets = app_context.wallets().read().expect("wallets lock");
-            wallets
-                .get(&framework_wallet_hash)
-                .expect("framework wallet must exist")
-                .clone()
-        };
+        let framework_wallet = app_context
+            .wallet_context()
+            .hd_wallet(&framework_wallet_hash)
+            .expect("framework wallet must exist");
         let framework_address = get_receive_address(app_context, &framework_wallet).await;
 
         // Wait briefly for SPV to sync this wallet's balance.

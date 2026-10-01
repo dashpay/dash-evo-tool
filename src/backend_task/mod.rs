@@ -232,13 +232,16 @@ fn identity_load_ticket(task: &BackendTask) -> Option<(Identifier, IdentityLoadT
 }
 
 /// Whether a wallet-backend build error is terminal (storage written by a
-/// newer/incompatible app build). These must surface their actionable
-/// message instead of being logged-and-discarded as a transient deferral
-/// (F50); every other init error is retried by the cold-boot bridge.
+/// newer/incompatible app build, or a data folder other accounts can modify).
+/// These must surface their actionable message instead of being
+/// logged-and-discarded as a transient deferral (F50); retrying cannot fix
+/// them. Every other init error is retried by the cold-boot bridge.
 pub(crate) fn is_terminal_storage_open_error(error: &TaskError) -> bool {
     matches!(
         error,
-        TaskError::WalletDataTooNew { .. } | TaskError::WalletDataIncompatible { .. }
+        TaskError::WalletDataTooNew { .. }
+            | TaskError::WalletDataIncompatible { .. }
+            | TaskError::WalletDataFolderInsecure { .. }
     )
 }
 
@@ -358,6 +361,23 @@ pub enum BackendTaskContext {
     LegacyRecoveryCheck(Identifier),
     /// The restore of one identity's approved legacy-recovery items.
     LegacyRecoveryRestore(Identifier),
+    /// Warming the identity-auth public-key cache for one wallet identity
+    /// index, so a screen can tell its own failed warm from other errors.
+    IdentityAuthPubkeyWarm {
+        seed_hash: WalletSeedHash,
+        identity_index: u32,
+    },
+    /// A network refresh of one identity.
+    IdentityRefresh(Identifier),
+    /// Adding a key (entered or wallet-derived) to one identity. The Add Key
+    /// screen wraps it in a dispatch, since another screen's add of the same
+    /// identity yields the same operation.
+    IdentityKeyAdd(Identifier),
+    /// Recovery outcomes stay bound to their dispatch network during navigation.
+    LegacyRecoveryOnNetwork {
+        network: Network,
+        operation: Box<BackendTaskContext>,
+    },
     /// A known backend task that needs no finer UI correlation.
     Other,
     /// An error emitted without an originating backend task.
@@ -366,9 +386,17 @@ pub enum BackendTaskContext {
 
 impl BackendTaskContext {
     /// Bind tasks whose payload omits a network to their originating network,
-    /// so late wallet and scheduled-vote results cannot affect another context.
+    /// so late wallet, recovery and scheduled-vote results cannot affect
+    /// another context.
     pub(crate) fn for_task_on(task: &BackendTask, network: Network) -> Self {
         match task {
+            BackendTask::IdentityTask(
+                IdentityTask::CheckLegacyRecovery { .. }
+                | IdentityTask::RecoverLegacyIdentityData { .. },
+            ) => Self::LegacyRecoveryOnNetwork {
+                network,
+                operation: Box::new(Self::from(task)),
+            },
             BackendTask::ContestedResourceTask(ContestedResourceTask::EditScheduledDpnsVote {
                 key,
                 ..
@@ -433,7 +461,8 @@ impl BackendTaskContext {
 
     fn operation(&self) -> &Self {
         match self {
-            Self::Dispatched { operation, .. } => operation,
+            Self::Dispatched { operation, .. }
+            | Self::LegacyRecoveryOnNetwork { operation, .. } => operation.operation(),
             operation => operation,
         }
     }
@@ -501,6 +530,36 @@ impl BackendTaskContext {
             _ => None,
         }
     }
+
+    /// The `(wallet, identity index)` whose auth public keys this operation
+    /// warms, or `None` for anything else.
+    pub(crate) fn identity_auth_pubkey_warm(&self) -> Option<(WalletSeedHash, u32)> {
+        match self.operation() {
+            Self::IdentityAuthPubkeyWarm {
+                seed_hash,
+                identity_index,
+            } => Some((*seed_hash, *identity_index)),
+            _ => None,
+        }
+    }
+
+    /// The identity this operation refreshes from the network, or `None` for
+    /// anything else.
+    pub(crate) fn refreshed_identity(&self) -> Option<Identifier> {
+        match self.operation() {
+            Self::IdentityRefresh(identity_id) => Some(*identity_id),
+            _ => None,
+        }
+    }
+
+    /// The dispatch network for a recovery task, including explicitly wrapped dispatches.
+    pub(crate) fn legacy_recovery_network(&self) -> Option<Network> {
+        match self {
+            Self::LegacyRecoveryOnNetwork { network, .. } => Some(*network),
+            Self::Dispatched { operation, .. } => operation.legacy_recovery_network(),
+            _ => None,
+        }
+    }
 }
 
 impl From<&BackendTask> for BackendTaskContext {
@@ -543,6 +602,21 @@ impl From<&BackendTask> for BackendTaskContext {
                 identity_id,
                 ..
             }) => Self::LegacyRecoveryRestore(*identity_id),
+            BackendTask::IdentityTask(IdentityTask::RefreshIdentity(identity)) => {
+                Self::IdentityRefresh(identity.identity.id())
+            }
+            BackendTask::IdentityTask(
+                IdentityTask::AddKeyToIdentity(identity, ..)
+                | IdentityTask::AddDerivedKeyToIdentity { identity, .. },
+            ) => Self::IdentityKeyAdd(identity.identity.id()),
+            BackendTask::WalletTask(WalletTask::WarmIdentityAuthPubkeys {
+                seed_hash,
+                identity_index,
+                ..
+            }) => Self::IdentityAuthPubkeyWarm {
+                seed_hash: *seed_hash,
+                identity_index: *identity_index,
+            },
             BackendTask::SystemTask(SystemTask::ClearNetworkDatabase) => Self::ClearNetworkDatabase,
             BackendTask::ContestedResourceTask(ContestedResourceTask::SubmitDpnsVoteOperation(
                 operation,
@@ -1165,10 +1239,11 @@ impl AppContext {
             && let Err(e) = self.ensure_wallet_backend(sender.clone()).await
         {
             // A storage-open failure (data written by a newer/incompatible app
-            // build) is terminal — restarting won't help and the generic
-            // "deferred" banner is misleading. Surface those variants so the
-            // user sees the actionable message; every other init error is a
-            // transient deferral the cold-boot bridge retries.
+            // build, or an insecure data folder) is terminal — retrying won't
+            // help and the generic "deferred" banner is misleading. Surface
+            // those variants so the user sees the actionable message; every
+            // other init error is a transient deferral the cold-boot bridge
+            // retries.
             if is_terminal_storage_open_error(&e) {
                 return Err(e);
             }
@@ -2349,7 +2424,8 @@ mod tests {
     }
 
     /// Only the storage-open variants (data from a newer/incompatible
-    /// build) are terminal; every other init error is a transient deferral.
+    /// build, or an insecure data folder) are terminal; every other init
+    /// error is a transient deferral.
     #[test]
     fn terminal_storage_open_errors_are_classified() {
         assert!(is_terminal_storage_open_error(
@@ -2363,6 +2439,16 @@ mod tests {
                 source: platform_wallet_storage::WalletStorageError::Io(std::io::Error::other(
                     "incompatible test fixture",
                 )),
+            }
+        ));
+        assert!(is_terminal_storage_open_error(
+            &TaskError::WalletDataFolderInsecure {
+                source: platform_wallet_storage::WalletStorageError::InsecureParentDir {
+                    ancestor: std::path::PathBuf::from("/shared"),
+                    reason: platform_wallet_storage::InsecureAncestor::WritableWithoutSticky {
+                        mode: 0o777,
+                    },
+                },
             }
         ));
         // A transient pre-wire state must NOT be treated as terminal.

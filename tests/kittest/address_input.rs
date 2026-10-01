@@ -59,6 +59,7 @@ fn wallet(seed: u8, alias: &str) -> WalletWithSnapshot {
         Arc::new(RwLock::new(wallet)),
         BTreeMap::new(),
         BTreeMap::from([(address, path)]),
+        Some(alias.to_owned()),
     )
 }
 

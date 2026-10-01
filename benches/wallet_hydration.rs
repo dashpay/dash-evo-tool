@@ -140,8 +140,13 @@ fn seed_single_key_wallets(view: &SingleKeyView<'_>, count: usize) {
         let priv_key =
             PrivateKey::from_byte_array(&bytes, BENCH_NETWORK).expect("valid secp256k1 secret");
         let wif = priv_key.to_wif();
-        view.import_wif(&wif, Some(format!("bench-sk-{i}")))
-            .expect("import wif");
+        view.import_wif(
+            &wif,
+            dash_evo_tool::model::wallet::alias::AliasSource::Preserved(Some(format!(
+                "bench-sk-{i}"
+            ))),
+        )
+        .expect("import wif");
     }
 }
 
@@ -196,7 +201,9 @@ fn bench_hydrate_single_key_wallets(c: &mut Criterion) {
                     let dir = tempfile::tempdir().expect("tempdir");
                     let kv = open_kv(dir.path());
                     let store = open_store(dir.path());
-                    let index = std::sync::RwLock::new(std::collections::BTreeMap::new());
+                    let index =
+                        dash_evo_tool::wallet_backend::wallet_context::WalletContext::default();
+
                     {
                         let view =
                             SingleKeyView::from_views(&store, &index, BENCH_NETWORK, Some(&kv));
@@ -208,7 +215,8 @@ fn bench_hydrate_single_key_wallets(c: &mut Criterion) {
                     // Cold reopen of vault + k/v, with an empty index.
                     let kv = open_kv(dir.path());
                     let store = open_store(dir.path());
-                    let cold_index = std::sync::RwLock::new(std::collections::BTreeMap::new());
+                    let cold_index =
+                        dash_evo_tool::wallet_backend::wallet_context::WalletContext::default();
                     let view =
                         SingleKeyView::from_views(&store, &cold_index, BENCH_NETWORK, Some(&kv));
 

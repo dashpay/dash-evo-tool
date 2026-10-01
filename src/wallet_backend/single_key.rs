@@ -26,11 +26,11 @@ use zeroize::Zeroizing;
 
 use crate::backend_task::error::TaskError;
 use crate::model::single_key::ImportedKey;
+use crate::model::wallet::alias::{AliasError, AliasSource, validate_stored_alias};
 use crate::model::wallet::single_key::{
     ClosedSingleKey, OpenSingleKey, SingleKeyData, SingleKeyHash, SingleKeyWallet,
 };
 use crate::wallet_backend::kv::network_prefix;
-use crate::wallet_backend::poison::{read_recover, write_recover};
 use crate::wallet_backend::secret_seam::{SecretScheme, SecretSeam};
 use crate::wallet_backend::single_key_entry::SingleKeyEntry;
 use crate::wallet_backend::{DetKv, DetScope};
@@ -92,7 +92,7 @@ pub(crate) fn single_key_namespace_id() -> SecretWalletId {
 /// [`WalletBackend::single_key`](super::WalletBackend::single_key).
 pub struct SingleKeyView<'a> {
     pub(crate) secret_store: &'a Arc<SecretStore>,
-    pub(crate) index: &'a std::sync::RwLock<std::collections::BTreeMap<String, ImportedKey>>,
+    pub(crate) context: &'a crate::wallet_backend::wallet_context::WalletContext,
     pub(crate) network: Network,
     /// Enumerable cross-network sidecar holding the imported-key
     /// metadata blobs. `None` ⇒ a transient view that does not persist
@@ -134,16 +134,17 @@ impl std::fmt::Debug for ImportPassphrase {
 impl<'a> SingleKeyView<'a> {
     /// Borrow the moving parts of a [`SingleKeyView`] without going
     /// through [`WalletBackend::single_key`]. Kept `pub` so benches and
-    /// downstream tooling can build the view from owned `Arc`s.
+    /// downstream tooling can build the view from owned `Arc`s. All views
+    /// sharing a live wallet registry must share the same context.
     pub fn from_views(
         secret_store: &'a Arc<SecretStore>,
-        index: &'a std::sync::RwLock<std::collections::BTreeMap<String, ImportedKey>>,
+        context: &'a crate::wallet_backend::wallet_context::WalletContext,
         network: Network,
         app_kv: Option<&'a Arc<DetKv>>,
     ) -> Self {
         Self {
             secret_store,
-            index,
+            context,
             network,
             app_kv,
         }
@@ -157,7 +158,7 @@ impl<'a> SingleKeyView<'a> {
     ///
     /// Equivalent to
     /// [`Self::import_wif_with_passphrase`] with `ImportPassphrase::default()`.
-    pub fn import_wif(&self, wif: &str, alias: Option<String>) -> Result<ImportedKey, TaskError> {
+    pub fn import_wif(&self, wif: &str, alias: AliasSource) -> Result<ImportedKey, TaskError> {
         self.import_wif_with_passphrase(wif, alias, ImportPassphrase::default())
     }
 
@@ -168,15 +169,38 @@ impl<'a> SingleKeyView<'a> {
     /// `has_passphrase = true` so the unlock UI can prompt later. An
     /// empty / `None` passphrase falls back to the legacy
     /// unprotected-but-vault-encrypted shape.
+    ///
+    /// User-entered aliases are cleaned, defaulted, and checked for uniqueness.
+    /// Preserved aliases keep their stored form unless another key uses the
+    /// name, in which case the smallest free `_1`, `_2`, … suffix is added.
+    /// A preserved alias over the length limit is logged and kept, matching
+    /// HD `WalletMetaView::set_migrated`: legacy aliases predate the limit.
+    /// The alias writer lock spans resolution through persistence and indexing;
+    /// index readers remain available during encryption and storage writes.
     pub fn import_wif_with_passphrase(
         &self,
         wif: &str,
-        alias: Option<String>,
+        alias: AliasSource,
         passphrase: ImportPassphrase,
     ) -> Result<ImportedKey, TaskError> {
-        if let Some(alias) = alias.as_deref() {
-            crate::model::wallet::validate_wallet_alias(alias)
-                .map_err(|source| TaskError::InvalidWalletAliasLength { source })?;
+        self.import_with_wallet(wif, alias, passphrase)
+            .map(|(meta, _)| meta)
+    }
+
+    pub(crate) fn import_with_wallet(
+        &self,
+        wif: &str,
+        alias: AliasSource,
+        passphrase: ImportPassphrase,
+    ) -> Result<(ImportedKey, Arc<std::sync::RwLock<SingleKeyWallet>>), TaskError> {
+        if let AliasSource::Preserved(Some(alias)) = &alias
+            && let Err(AliasError::TooLong { length }) = validate_stored_alias(alias)
+        {
+            tracing::warn!(
+                alias_chars = length.actual,
+                max_alias_chars = length.max,
+                "Preserving an overlong legacy single-key alias during migration"
+            );
         }
         let priv_key = PrivateKey::from_wif(wif).map_err(|source| TaskError::InvalidWif {
             source: Box::new(source),
@@ -196,70 +220,75 @@ impl<'a> SingleKeyView<'a> {
         let address = Address::p2pkh(&pub_key, self.network);
         let address_str = address.to_string();
 
-        // Extracted WIF bytes wrapped in `Zeroizing` so the stack copy wipes
-        // on drop instead of lingering after the entry is built.
-        let raw: Zeroizing<[u8; 32]> = Zeroizing::new(
-            priv_key.inner[..]
-                .try_into()
-                .map_err(|_| TaskError::SingleKeyCryptoFailure)?,
-        );
+        self.context
+            .import_single_key(&address_str, alias, |alias| {
+                // Extracted WIF bytes wrapped in `Zeroizing` so the stack copy wipes
+                // on drop instead of lingering after the entry is built.
+                let raw: Zeroizing<[u8; 32]> = Zeroizing::new(
+                    priv_key.inner[..]
+                        .try_into()
+                        .map_err(|_| TaskError::SingleKeyCryptoFailure)?,
+                );
 
-        let pub_bytes = pub_key.inner.serialize().to_vec();
-        let label = label_for_address(&address_str);
+                let pub_bytes = pub_key.inner.serialize().to_vec();
+                let label = label_for_address(&address_str);
 
-        // Both tiers route through the secret seam under the same label — no
-        // DET-side `SingleKeyEntry` framing for new imports. An unprotected key
-        // is stored as RAW 32 bytes (Tier-1); a protected key is sealed Tier-2
-        // under the user's passphrase (Argon2id + XChaCha20-Poly1305) at import
-        // time, so the storage chokepoint is a single shape from import onward
-        // with no lazy first-unlock migration. The locked-render pubkey lives in
-        // the `ImportedKey` sidecar either way.
-        let (has_passphrase, passphrase_hint) =
-            match passphrase.passphrase.as_ref().map(|p| p.as_str()) {
-                Some(p) if !p.is_empty() => {
-                    // Authoritative re-check via the model validator (`p`
-                    // stands in as its own confirmation; matching is a UI
-                    // concern) — floor and byte ceiling, so no caller can seal
-                    // a key the vault would later refuse to unseal.
-                    validate_single_key_passphrase(p, p)?;
-                    let pw = SecretString::new(p);
-                    SecretSeam::new(self.secret_store).put_secret_protected(
-                        &single_key_namespace_id(),
-                        &label,
-                        &SecretBytes::from_slice(&*raw),
-                        &pw,
-                    )?;
-                    (true, passphrase.hint.clone())
+                // Both tiers route through the secret seam under the same label — no
+                // DET-side `SingleKeyEntry` framing for new imports. An unprotected key
+                // is stored as RAW 32 bytes (Tier-1); a protected key is sealed Tier-2
+                // under the user's passphrase (Argon2id + XChaCha20-Poly1305) at import
+                // time, so the storage chokepoint is a single shape from import onward
+                // with no lazy first-unlock migration. The locked-render pubkey lives in
+                // the `ImportedKey` sidecar either way.
+                let (has_passphrase, passphrase_hint) =
+                    match passphrase.passphrase.as_ref().map(|p| p.as_str()) {
+                        Some(p) if !p.is_empty() => {
+                            // Authoritative re-check via the model validator (`p`
+                            // stands in as its own confirmation; matching is a UI
+                            // concern) — floor and byte ceiling, so no caller can seal
+                            // a key the vault would later refuse to unseal.
+                            validate_single_key_passphrase(p, p)?;
+                            let pw = SecretString::new(p);
+                            SecretSeam::new(self.secret_store).put_secret_protected(
+                                &single_key_namespace_id(),
+                                &label,
+                                &SecretBytes::from_slice(&*raw),
+                                &pw,
+                            )?;
+                            (true, passphrase.hint.clone())
+                        }
+                        _ => {
+                            SecretSeam::new(self.secret_store).put_secret(
+                                &single_key_namespace_id(),
+                                &label,
+                                &SecretBytes::from_slice(&*raw),
+                            )?;
+                            (false, None)
+                        }
+                    };
+
+                let imported = ImportedKey {
+                    address: address_str.clone(),
+                    alias,
+                    network: self.network,
+                    has_passphrase,
+                    passphrase_hint,
+                    public_key_bytes: pub_bytes,
+                };
+
+                if let Some(kv) = self.app_kv {
+                    let key = meta_key_for(self.network, &address_str);
+                    kv.put(DetScope::Global, &key, &imported)
+                        .map_err(|source| TaskError::SingleKeyMetaStorage {
+                            source: Box::new(source),
+                        })?;
                 }
-                _ => {
-                    SecretSeam::new(self.secret_store).put_secret(
-                        &single_key_namespace_id(),
-                        &label,
-                        &SecretBytes::from_slice(&*raw),
-                    )?;
-                    (false, None)
-                }
-            };
 
-        let imported = ImportedKey {
-            address: address_str.clone(),
-            alias,
-            network: self.network,
-            has_passphrase,
-            passphrase_hint,
-            public_key_bytes: pub_bytes,
-        };
-
-        if let Some(kv) = self.app_kv {
-            let key = meta_key_for(self.network, &address_str);
-            kv.put(DetScope::Global, &key, &imported)
-                .map_err(|source| TaskError::SingleKeyMetaStorage {
-                    source: Box::new(source),
-                })?;
-        }
-
-        write_recover(self.index).insert(address_str, imported.clone());
-        Ok(imported)
+                let wallet = self
+                    .rebuild_display_wallet(&imported)?
+                    .ok_or(TaskError::ImportedKeyNotFound)?;
+                Ok((imported, wallet))
+            })
     }
 
     /// Persist a new alias for the imported key at `address` to the
@@ -267,33 +296,32 @@ impl<'a> SingleKeyView<'a> {
     /// single source of truth for single-key renames — it mirrors the
     /// HD-wallet rename path through `WalletMetaView::set`, so the new
     /// name survives a cold boot without touching the legacy
-    /// `single_key_wallet` table. An empty `alias` clears the nickname.
+    /// `single_key_wallet` table.
     ///
-    /// The index write guard spans persistence so same-address renames serialize.
-    /// With a sidecar, the index changes only after a successful write. Without
-    /// one, the transient in-memory index is updated directly.
-    pub fn set_alias(&self, address: &str, alias: Option<String>) -> Result<(), TaskError> {
-        if let Some(alias) = alias.as_deref() {
-            crate::model::wallet::validate_wallet_alias(alias)
-                .map_err(|source| TaskError::InvalidWalletAliasLength { source })?;
-        }
-        let mut idx = write_recover(self.index);
-        let mut updated = idx
-            .get(address)
-            .cloned()
-            .ok_or(TaskError::ImportedKeyNotFound)?;
-        updated.alias = alias;
-
-        if let Some(kv) = self.app_kv {
-            let key = meta_key_for(self.network, address);
-            kv.put(DetScope::Global, &key, &updated).map_err(|source| {
-                TaskError::SingleKeyMetaStorage {
+    /// `alias` is raw user input, resolved like an import: cleaned, a blank
+    /// alias resets the key to the smallest unused "Key N", and a name another
+    /// imported key already uses is rejected. Returns the alias actually saved.
+    ///
+    /// [`WalletContext::rename_single_key`] holds its writer across alias
+    /// resolution and persistence, so renames serialize and the uniqueness
+    /// check cannot go stale. The new name is published only after the
+    /// sidecar write succeeds; without a sidecar it is published directly.
+    ///
+    /// [`WalletContext::rename_single_key`]: crate::wallet_backend::wallet_context::WalletContext::rename_single_key
+    pub fn set_alias(&self, address: &str, alias: &str) -> Result<String, TaskError> {
+        self.context.rename_single_key(address, alias, |updated| {
+            if let Some(kv) = self.app_kv {
+                kv.put(
+                    DetScope::Global,
+                    &meta_key_for(self.network, address),
+                    updated,
+                )
+                .map_err(|source| TaskError::SingleKeyMetaStorage {
                     source: Box::new(source),
-                }
-            })?;
-        }
-        idx.insert(address.to_string(), updated);
-        Ok(())
+                })?;
+            }
+            Ok(())
+        })
     }
 
     /// Confirm that `passphrase` unlocks the protected imported key at
@@ -363,25 +391,26 @@ impl<'a> SingleKeyView<'a> {
     /// address. Reads the in-memory index only — does not touch the
     /// secret vault.
     pub fn list(&self) -> Vec<ImportedKey> {
-        read_recover(self.index).values().cloned().collect()
+        self.context.imported_keys()
     }
 
     /// Forget the imported key at `address`: drop its index entry, delete
     /// its secret-store row, and remove the k/v sidecar entry. Idempotent
     /// — absent addresses are an `Ok(())`.
     pub fn forget(&self, address: &str) -> Result<(), TaskError> {
-        let label = label_for_address(address);
-        SecretSeam::new(self.secret_store).delete_secret(&single_key_namespace_id(), &label)?;
-        if let Some(kv) = self.app_kv {
-            let key = meta_key_for(self.network, address);
-            kv.delete(DetScope::Global, &key).map_err(|source| {
-                TaskError::SingleKeyMetaStorage {
-                    source: Box::new(source),
-                }
-            })?;
-        }
-        write_recover(self.index).remove(address);
-        Ok(())
+        self.context.remove_single_key(address, || {
+            let label = label_for_address(address);
+            SecretSeam::new(self.secret_store).delete_secret(&single_key_namespace_id(), &label)?;
+            if let Some(kv) = self.app_kv {
+                let key = meta_key_for(self.network, address);
+                kv.delete(DetScope::Global, &key).map_err(|source| {
+                    TaskError::SingleKeyMetaStorage {
+                        source: Box::new(source),
+                    }
+                })?;
+            }
+            Ok(())
+        })
     }
 
     /// Enumerate every imported-key metadata blob persisted for the view's
@@ -468,6 +497,11 @@ impl<'a> SingleKeyView<'a> {
     /// ([`TaskError::SingleKeyWalletsUnsupported`]), so this matches the
     /// pre-refresh state the legacy reader produced on launch.
     pub fn hydrate_wallets(&self) -> Vec<(SingleKeyHash, SingleKeyWallet)> {
+        self.context
+            .read_metadata(|| self.hydrate_wallets_from_storage())
+    }
+
+    pub(crate) fn hydrate_wallets_from_storage(&self) -> Vec<(SingleKeyHash, SingleKeyWallet)> {
         let metas = self.list_persisted();
         let mut out = Vec::with_capacity(metas.len());
         for meta in metas {
@@ -507,22 +541,20 @@ impl<'a> SingleKeyView<'a> {
         self.rebuild_wallet(meta)
     }
 
-    /// Seed the in-memory index from the k/v sidecar. Idempotent: re-runs
-    /// overwrite existing in-memory entries with the persisted view, so a
-    /// cold-boot hydration cannot lose entries created in the same
-    /// process before the backend was wired (mirrors the HD-wallet
-    /// `entry().or_insert` pattern in
-    /// [`hydrate_context_wallets`](super::WalletBackend::hydrate_context_wallets)).
+    /// Publish persisted imported-key metadata into the wallet context.
+    ///
+    /// Test and bench helper only: production hydration goes through
+    /// [`hydrate_context_wallets`](super::WalletBackend::hydrate_context_wallets).
+    /// Persisted metadata overwrites any in-memory entry for the same address;
+    /// wallet handles are not touched.
+    #[cfg(any(test, feature = "bench"))]
     pub fn rehydrate_index(&self) -> Result<(), TaskError> {
-        let metas = self.list_persisted();
-        if metas.is_empty() {
-            return Ok(());
-        }
-        let mut idx = write_recover(self.index);
-        for meta in metas {
-            idx.entry(meta.address.clone()).or_insert(meta);
-        }
-        Ok(())
+        self.context.hydrate(|| {
+            Ok(crate::wallet_backend::wallet_context::WalletHydration {
+                single: self.list_persisted(),
+                ..Default::default()
+            })
+        })
     }
 
     fn rebuild_wallet(&self, meta: &ImportedKey) -> Result<Option<SingleKeyWallet>, TaskError> {
@@ -621,7 +653,7 @@ impl<'a> SingleKeyView<'a> {
             uses_password: false,
             public_key,
             address,
-            alias: meta.alias.clone(),
+            initial_alias: meta.alias.clone(),
             key_hash,
             confirmed_balance: 0,
             unconfirmed_balance: 0,
@@ -667,7 +699,7 @@ impl<'a> SingleKeyView<'a> {
             uses_password: true,
             public_key,
             address,
-            alias: meta.alias.clone(),
+            initial_alias: meta.alias.clone(),
             key_hash,
             confirmed_balance: 0,
             unconfirmed_balance: 0,
@@ -703,7 +735,7 @@ impl<'a> SingleKeyView<'a> {
             uses_password: true,
             public_key,
             address,
-            alias: meta.alias.clone(),
+            initial_alias: meta.alias.clone(),
             key_hash,
             confirmed_balance: 0,
             unconfirmed_balance: 0,
@@ -1012,12 +1044,12 @@ mod tests {
         network: Network,
     ) -> (
         Arc<SecretStore>,
-        std::sync::RwLock<std::collections::BTreeMap<String, ImportedKey>>,
+        crate::wallet_backend::wallet_context::WalletContext,
         Network,
     ) {
         let path = dir.join("secrets.pwsvault");
         let store = Arc::new(open_secret_store(&path).expect("open vault"));
-        let index = std::sync::RwLock::new(std::collections::BTreeMap::new());
+        let index = crate::wallet_backend::wallet_context::WalletContext::default();
         (store, index, network)
     }
 
@@ -1034,17 +1066,43 @@ mod tests {
         let (store, index, network) = fresh_view(dir.path(), Network::Testnet);
         let view = SingleKeyView {
             secret_store: &store,
-            index: &index,
+            context: &index,
             network,
             app_kv: None,
         };
 
         let error = view
-            .import_wif(known_wif(), Some("w".repeat(65)))
+            .import_wif(known_wif(), AliasSource::UserEntered("w".repeat(65)))
             .expect_err("overlong alias must fail");
 
         assert!(matches!(error, TaskError::InvalidWalletAliasLength { .. }));
         assert!(view.list().is_empty());
+    }
+
+    /// Legacy single-key aliases predate the length limit (unbounded TEXT
+    /// column). Like HD `set_migrated`, a preserved overlong alias must be
+    /// kept verbatim instead of failing the migration row.
+    #[test]
+    fn import_wif_preserves_overlong_legacy_alias() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (store, index, network) = fresh_view(dir.path(), Network::Testnet);
+        let view = SingleKeyView {
+            secret_store: &store,
+            context: &index,
+            network,
+            app_kv: None,
+        };
+        let legacy_alias = "w".repeat(65);
+
+        let imported = view
+            .import_wif(
+                known_wif(),
+                AliasSource::Preserved(Some(legacy_alias.clone())),
+            )
+            .expect("overlong legacy alias must be preserved, not rejected");
+
+        assert_eq!(imported.alias.as_deref(), Some(legacy_alias.as_str()));
+        assert_eq!(view.list().len(), 1);
     }
 
     /// TC-SK-003: importing a WIF writes exactly one entry whose label
@@ -1056,13 +1114,16 @@ mod tests {
         let (store, index, network) = fresh_view(dir.path(), Network::Testnet);
         let view = SingleKeyView {
             secret_store: &store,
-            index: &index,
+            context: &index,
             network,
             app_kv: None,
         };
 
         let imported = view
-            .import_wif(known_wif(), Some("primary".to_string()))
+            .import_wif(
+                known_wif(),
+                AliasSource::Preserved(Some("primary".to_string())),
+            )
             .expect("import");
 
         // The label uses the dotted prefix (upstream allowlist rejects ':').
@@ -1114,11 +1175,13 @@ mod tests {
         let (store, index, network) = fresh_view(dir.path(), Network::Testnet);
         let view = SingleKeyView {
             secret_store: &store,
-            index: &index,
+            context: &index,
             network,
             app_kv: None,
         };
-        let imported = view.import_wif(known_wif(), None).expect("import");
+        let imported = view
+            .import_wif(known_wif(), AliasSource::Preserved(None))
+            .expect("import");
 
         let msg = [0x42u8; 32];
         let sig = view
@@ -1157,12 +1220,12 @@ mod tests {
         let (store, index, network) = fresh_view(dir.path(), Network::Testnet);
         let view = SingleKeyView {
             secret_store: &store,
-            index: &index,
+            context: &index,
             network,
             app_kv: None,
         };
         let err = view
-            .import_wif("not-a-valid-wif", None)
+            .import_wif("not-a-valid-wif", AliasSource::Preserved(None))
             .expect_err("invalid wif");
         assert!(
             matches!(err, TaskError::InvalidWif { .. }),
@@ -1188,12 +1251,12 @@ mod tests {
         let (store, index, network) = fresh_view(dir.path(), Network::Testnet);
         let view = SingleKeyView {
             secret_store: &store,
-            index: &index,
+            context: &index,
             network,
             app_kv: None,
         };
         let err = view
-            .import_wif(&uncompressed_wif(), None)
+            .import_wif(&uncompressed_wif(), AliasSource::Preserved(None))
             .expect_err("uncompressed wif must be rejected");
         assert!(
             matches!(err, TaskError::UncompressedWifUnsupported),
@@ -1216,14 +1279,16 @@ mod tests {
         } = fresh_view_with_kv(dir.path(), Network::Testnet);
         let view = SingleKeyView {
             secret_store: &store,
-            index: &index,
+            context: &index,
             network,
             app_kv: Some(&kv),
         };
-        let imported = view.import_wif(known_wif(), None).expect("import");
+        let imported = view
+            .import_wif(known_wif(), AliasSource::Preserved(None))
+            .expect("import");
 
         // Simulate a fresh process: drop the in-memory index, rebuild.
-        index.write().unwrap().clear();
+        index.clear();
         let rebuilt = view.hydrate_wallets();
         assert_eq!(rebuilt.len(), 1);
         assert_eq!(
@@ -1397,7 +1462,7 @@ mod tests {
     /// keep the constructor tuple-light (clippy `type_complexity`).
     struct ViewFixture {
         store: Arc<SecretStore>,
-        index: std::sync::RwLock<std::collections::BTreeMap<String, ImportedKey>>,
+        index: crate::wallet_backend::wallet_context::WalletContext,
         kv: Arc<DetKv>,
         network: Network,
     }
@@ -1405,7 +1470,7 @@ mod tests {
     fn fresh_view_with_kv(dir: &std::path::Path, network: Network) -> ViewFixture {
         let path = dir.join("secrets.pwsvault");
         let store = Arc::new(open_secret_store(&path).expect("open vault"));
-        let index = std::sync::RwLock::new(std::collections::BTreeMap::new());
+        let index = crate::wallet_backend::wallet_context::WalletContext::default();
         let kv = Arc::new(DetKv::from_store(Arc::new(InMemoryKv::default())));
         ViewFixture {
             store,
@@ -1429,13 +1494,13 @@ mod tests {
         } = fresh_view_with_kv(dir.path(), Network::Testnet);
         let view = SingleKeyView {
             secret_store: &store,
-            index: &index,
+            context: &index,
             network,
             app_kv: Some(&kv),
         };
 
         let imported = view
-            .import_wif(known_wif(), Some("primary".into()))
+            .import_wif(known_wif(), AliasSource::Preserved(Some("primary".into())))
             .expect("import");
         let prefix = meta_prefix_for(network);
         let keys = kv.list(DetScope::Global, Some(&prefix)).expect("list");
@@ -1463,12 +1528,14 @@ mod tests {
         } = fresh_view_with_kv(dir.path(), Network::Testnet);
         let view = SingleKeyView {
             secret_store: &store,
-            index: &index,
+            context: &index,
             network,
             app_kv: Some(&kv),
         };
 
-        let imported = view.import_wif(known_wif(), None).expect("import");
+        let imported = view
+            .import_wif(known_wif(), AliasSource::Preserved(None))
+            .expect("import");
         view.forget(&imported.address).expect("forget");
         view.forget(&imported.address).expect("forget twice");
 
@@ -1493,21 +1560,21 @@ mod tests {
         } = fresh_view_with_kv(dir.path(), Network::Testnet);
         let view = SingleKeyView {
             secret_store: &store,
-            index: &index,
+            context: &index,
             network,
             app_kv: Some(&kv),
         };
         let imported = view
-            .import_wif(known_wif(), Some("savings".into()))
+            .import_wif(known_wif(), AliasSource::Preserved(Some("savings".into())))
             .expect("import");
 
         // Drop the in-memory index to simulate a fresh process.
-        index.write().unwrap().clear();
+        index.clear();
         let rebuilt = view.hydrate_wallets();
         assert_eq!(rebuilt.len(), 1);
         let (_, wallet) = &rebuilt[0];
         assert_eq!(wallet.address.to_string(), imported.address);
-        assert_eq!(wallet.alias.as_deref(), Some("savings"));
+        assert_eq!(wallet.initial_alias.as_deref(), Some("savings"));
         assert!(wallet.is_open(), "rehydrated wallet must be open");
         assert!(
             !wallet.uses_password,
@@ -1538,13 +1605,14 @@ mod tests {
         } = fresh_view_with_kv(dir.path(), Network::Testnet);
         let view = SingleKeyView {
             secret_store: &store,
-            index: &index,
+            context: &index,
             network,
             app_kv: Some(&kv),
         };
 
         // Healthy entry.
-        view.import_wif(known_wif(), None).expect("import");
+        view.import_wif(known_wif(), AliasSource::Preserved(None))
+            .expect("import");
 
         // Orphan sidecar entry — sidecar row written, no vault row.
         let orphan = ImportedKey {
@@ -1591,7 +1659,7 @@ mod tests {
         } = fresh_view_with_kv(dir.path(), Network::Testnet);
         let view = SingleKeyView {
             secret_store: &store,
-            index: &index,
+            context: &index,
             network,
             app_kv: Some(&kv),
         };
@@ -1599,7 +1667,7 @@ mod tests {
         let imported = view
             .import_wif_with_passphrase(
                 known_wif(),
-                Some("secure".into()),
+                AliasSource::Preserved(Some("secure".into())),
                 crate::wallet_backend::single_key::ImportPassphrase {
                     passphrase: Some(Zeroizing::new("correcthorsebattery".into())),
                     hint: Some("xkcd 936".into()),
@@ -1649,7 +1717,7 @@ mod tests {
         } = fresh_view_with_kv(dir.path(), Network::Testnet);
         let view = SingleKeyView {
             secret_store: &store,
-            index: &index,
+            context: &index,
             network,
             app_kv: Some(&kv),
         };
@@ -1658,7 +1726,7 @@ mod tests {
         let imported = view
             .import_wif_with_passphrase(
                 known_wif(),
-                Some("savings".into()),
+                AliasSource::Preserved(Some("savings".into())),
                 crate::wallet_backend::single_key::ImportPassphrase {
                     passphrase: Some(Zeroizing::new(passphrase.into())),
                     hint: Some("xkcd 936".into()),
@@ -1720,14 +1788,14 @@ mod tests {
         } = fresh_view_with_kv(dir.path(), Network::Testnet);
         let view = SingleKeyView {
             secret_store: &store,
-            index: &index,
+            context: &index,
             network,
             app_kv: Some(&kv),
         };
         let imported = view
             .import_wif_with_passphrase(
                 known_wif(),
-                None,
+                AliasSource::Preserved(None),
                 crate::wallet_backend::single_key::ImportPassphrase {
                     passphrase: Some(Zeroizing::new("opensesame".into())),
                     hint: None,
@@ -1756,7 +1824,13 @@ mod tests {
             ScriptedAnswer::once("opensesame"),
         ]));
         let sa = SecretAccess::new(Arc::clone(&store), prompt.clone(), network);
-        sa.set_single_key_index(index.read().unwrap().clone());
+        sa.set_single_key_index(
+            index
+                .imported_keys()
+                .into_iter()
+                .map(|m| (m.address.clone(), m))
+                .collect(),
+        );
         let scope = SecretScope::SingleKey {
             address: imported.address.clone(),
         };
@@ -1793,14 +1867,14 @@ mod tests {
         } = fresh_view_with_kv(dir.path(), Network::Testnet);
         let view = SingleKeyView {
             secret_store: &store,
-            index: &index,
+            context: &index,
             network,
             app_kv: Some(&kv),
         };
         let err = view
             .import_wif_with_passphrase(
                 known_wif(),
-                None,
+                AliasSource::Preserved(None),
                 crate::wallet_backend::single_key::ImportPassphrase {
                     passphrase: Some(Zeroizing::new("short".into())),
                     hint: None,
@@ -1832,14 +1906,14 @@ mod tests {
         } = fresh_view_with_kv(dir.path(), Network::Testnet);
         let view = SingleKeyView {
             secret_store: &store,
-            index: &index,
+            context: &index,
             network,
             app_kv: Some(&kv),
         };
         let err = view
             .import_wif_with_passphrase(
                 known_wif(),
-                None,
+                AliasSource::Preserved(None),
                 crate::wallet_backend::single_key::ImportPassphrase {
                     passphrase: Some(Zeroizing::new("a".repeat(MAX_PASSPHRASE_LEN + 1))),
                     hint: None,
@@ -1869,16 +1943,16 @@ mod tests {
         } = fresh_view_with_kv(dir.path(), Network::Testnet);
         let view = SingleKeyView {
             secret_store: &store,
-            index: &index,
+            context: &index,
             network,
             app_kv: Some(&kv),
         };
 
         let imported = view
-            .import_wif(known_wif(), Some("old name".into()))
+            .import_wif(known_wif(), AliasSource::Preserved(Some("old name".into())))
             .expect("import");
 
-        view.set_alias(&imported.address, Some("new name".into()))
+        view.set_alias(&imported.address, "new name")
             .expect("rename");
 
         // In-memory index reflects the new alias immediately.
@@ -1890,7 +1964,7 @@ mod tests {
 
         // Cold-boot analogue: drop the index and rehydrate from the
         // sidecar — the persisted alias must be the new one.
-        index.write().unwrap().clear();
+        index.clear();
         view.rehydrate_index().expect("rehydrate");
         assert_eq!(
             view.list()[0].alias.as_deref(),
@@ -1912,12 +1986,12 @@ mod tests {
         } = fresh_view_with_kv(dir.path(), Network::Testnet);
         let view = SingleKeyView {
             secret_store: &store,
-            index: &index,
+            context: &index,
             network,
             app_kv: Some(&kv),
         };
         let err = view
-            .set_alias("yNeverImported", Some("x".into()))
+            .set_alias("yNeverImported", "x")
             .expect_err("unknown address must fail");
         assert!(matches!(err, TaskError::ImportedKeyNotFound), "got {err:?}");
     }
@@ -1933,20 +2007,359 @@ mod tests {
         } = fresh_view_with_kv(dir.path(), Network::Testnet);
         let view = SingleKeyView {
             secret_store: &store,
-            index: &index,
+            context: &index,
             network,
             app_kv: Some(&kv),
         };
         let imported = view
-            .import_wif(known_wif(), Some("old name".into()))
+            .import_wif(known_wif(), AliasSource::Preserved(Some("old name".into())))
             .expect("import");
 
         let error = view
-            .set_alias(&imported.address, Some("w".repeat(65)))
+            .set_alias(&imported.address, &"w".repeat(65))
             .expect_err("overlong alias must fail");
 
         assert!(matches!(error, TaskError::InvalidWalletAliasLength { .. }));
         assert_eq!(view.list()[0].alias.as_deref(), Some("old name"));
+    }
+
+    /// A deterministic throwaway testnet WIF distinct per `byte`.
+    fn wif_for_byte(byte: u8) -> String {
+        let secret = dash_sdk::dpp::dashcore::secp256k1::SecretKey::from_byte_array(&[byte; 32])
+            .expect("valid scalar");
+        PrivateKey::new(secret, Network::Testnet).to_wif()
+    }
+
+    fn transient_view<'a>(
+        store: &'a Arc<SecretStore>,
+        context: &'a crate::wallet_backend::wallet_context::WalletContext,
+    ) -> SingleKeyView<'a> {
+        SingleKeyView {
+            secret_store: store,
+            context,
+            network: Network::Testnet,
+            app_kv: None,
+        }
+    }
+
+    fn alias_of(view: &SingleKeyView<'_>, address: &str) -> Option<String> {
+        view.list()
+            .into_iter()
+            .find(|key| key.address == address)
+            .and_then(|key| key.alias)
+    }
+
+    #[test]
+    fn user_import_blank_alias_takes_smallest_unused_key_name() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (store, index, _) = fresh_view(dir.path(), Network::Testnet);
+
+        let view = transient_view(&store, &index);
+
+        let first = view
+            .import_wif(&wif_for_byte(0x11), AliasSource::UserEntered("  ".into()))
+            .expect("first import");
+        view.import_wif(
+            &wif_for_byte(0x12),
+            AliasSource::UserEntered("Key 3".into()),
+        )
+        .expect("second import");
+        let third = view
+            .import_wif(&wif_for_byte(0x13), AliasSource::UserEntered(String::new()))
+            .expect("third import");
+
+        assert_eq!(first.alias.as_deref(), Some("Key 1"));
+        assert_eq!(
+            third.alias.as_deref(),
+            Some("Key 2"),
+            "the gap before the explicit \"Key 3\" must be filled"
+        );
+    }
+
+    #[test]
+    fn user_import_cleans_the_alias() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (store, index, _) = fresh_view(dir.path(), Network::Testnet);
+
+        let view = transient_view(&store, &index);
+
+        let imported = view
+            .import_wif(
+                known_wif(),
+                AliasSource::UserEntered(" \u{202E}Savings\u{200B} ".into()),
+            )
+            .expect("import");
+
+        assert_eq!(imported.alias.as_deref(), Some("Savings"));
+    }
+
+    #[test]
+    fn user_import_duplicate_alias_is_rejected_before_writes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (store, index, _) = fresh_view(dir.path(), Network::Testnet);
+
+        let view = transient_view(&store, &index);
+        view.import_wif(
+            &wif_for_byte(0x11),
+            AliasSource::UserEntered("Savings".into()),
+        )
+        .expect("first import");
+
+        let duplicate_wif = wif_for_byte(0x12);
+        let duplicate_address =
+            crate::model::single_key::validate_wif(&duplicate_wif, Network::Testnet)
+                .expect("valid wif");
+        let error = view
+            .import_wif(&duplicate_wif, AliasSource::UserEntered("Savings ".into()))
+            .expect_err("a second key must not reuse the name");
+
+        assert!(
+            matches!(error, TaskError::WalletAliasAlreadyUsed { .. }),
+            "got {error:?}"
+        );
+        assert_eq!(view.list().len(), 1, "the rejected key must not be indexed");
+        assert!(
+            store
+                .get(
+                    &single_key_namespace_id(),
+                    &label_for_address(&duplicate_address)
+                )
+                .expect("read vault")
+                .is_none(),
+            "no secret may be written for a rejected import"
+        );
+    }
+
+    #[test]
+    fn user_reimport_may_keep_its_own_alias() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (store, index, _) = fresh_view(dir.path(), Network::Testnet);
+
+        let view = transient_view(&store, &index);
+        view.import_wif(known_wif(), AliasSource::UserEntered("Savings".into()))
+            .expect("first import");
+
+        let again = view
+            .import_wif(known_wif(), AliasSource::UserEntered("Savings".into()))
+            .expect("re-importing the same key under its own name succeeds");
+
+        assert_eq!(again.alias.as_deref(), Some("Savings"));
+        assert_eq!(view.list().len(), 1);
+    }
+
+    #[test]
+    fn alias_imports_serialize_without_blocking_index_readers() {
+        for first_alias in [
+            AliasSource::Preserved(Some("Savings".into())),
+            AliasSource::UserEntered("Savings".into()),
+        ] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let (store, index, _) = fresh_view(dir.path(), Network::Testnet);
+            let gated_store = Arc::new(FirstAliasPutGate::default());
+            let kv = Arc::new(DetKv::from_store(gated_store.clone()));
+            let view = SingleKeyView {
+                secret_store: &store,
+                context: &index,
+                network: Network::Testnet,
+                app_kv: Some(&kv),
+            };
+            gated_store.arm();
+            std::thread::scope(|scope| {
+                let first = scope.spawn(|| view.import_wif(&wif_for_byte(0x11), first_alias));
+                gated_store.wait_until_first_put();
+                let (read_tx, read_rx) = std::sync::mpsc::channel();
+                let reader_view = &view;
+                scope.spawn(move || read_tx.send(reader_view.list()).unwrap());
+                let readable = read_rx
+                    .recv_timeout(std::time::Duration::from_secs(1))
+                    .is_ok();
+                let (tx, rx) = std::sync::mpsc::channel();
+                let view = &view;
+                let second = scope.spawn(move || {
+                    let result = view.import_wif(
+                        &wif_for_byte(0x12),
+                        AliasSource::Preserved(Some("Savings".into())),
+                    );
+                    tx.send(()).expect("send completion");
+                    result
+                });
+                let completed_early = rx
+                    .recv_timeout(std::time::Duration::from_millis(200))
+                    .is_ok();
+                gated_store.release_first_put();
+                let first = first.join().expect("first thread").expect("first import");
+                let second = second
+                    .join()
+                    .expect("second thread")
+                    .expect("second import");
+                assert!(readable, "list readers must not wait for persistence");
+                assert!(
+                    !completed_early,
+                    "alias writers must wait for pending imports"
+                );
+                assert_eq!(first.alias.as_deref(), Some("Savings"));
+                assert_eq!(second.alias.as_deref(), Some("Savings_1"));
+                for imported in [first, second] {
+                    let persisted = kv
+                        .get::<ImportedKey>(
+                            DetScope::Global,
+                            &meta_key_for(Network::Testnet, &imported.address),
+                        )
+                        .expect("read")
+                        .expect("persisted");
+                    assert_eq!(persisted.alias, imported.alias);
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn preserved_reimports_keep_aliases_after_duplicate_migration() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fixture = fresh_view_with_kv(dir.path(), Network::Testnet);
+        let view = SingleKeyView {
+            secret_store: &fixture.store,
+            context: &fixture.index,
+            network: Network::Testnet,
+            app_kv: Some(&fixture.kv),
+        };
+        for _ in 0..3 {
+            for (byte, expected) in [(0x11, "Dup"), (0x12, "Dup_1"), (0x13, "Dup_2")] {
+                let imported = view
+                    .import_wif(
+                        &wif_for_byte(byte),
+                        AliasSource::Preserved(Some("Dup".into())),
+                    )
+                    .expect("import");
+                assert_eq!(imported.alias.as_deref(), Some(expected));
+                let persisted = fixture
+                    .kv
+                    .get::<ImportedKey>(
+                        DetScope::Global,
+                        &meta_key_for(Network::Testnet, &imported.address),
+                    )
+                    .expect("read")
+                    .expect("persisted");
+                assert_eq!(persisted.alias, imported.alias);
+            }
+        }
+        assert_eq!(view.list().len(), 3);
+    }
+
+    /// Legacy data keeps its shape: a missing alias stays missing (no
+    /// synthetic "Key N" is written), and legacy duplicates are never
+    /// rejected — but a colliding legacy alias is not kept as an exact
+    /// duplicate either; it is disambiguated with a `_1`, `_2`, … suffix by
+    /// [`dedupe_preserved_alias`].
+    #[test]
+    fn preserved_import_keeps_missing_alias_and_dedupes_legacy_duplicates() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (store, index, _) = fresh_view(dir.path(), Network::Testnet);
+
+        let view = transient_view(&store, &index);
+
+        let unnamed = view
+            .import_wif(&wif_for_byte(0x11), AliasSource::Preserved(None))
+            .expect("unnamed legacy import");
+        let first_dup = view
+            .import_wif(
+                &wif_for_byte(0x12),
+                AliasSource::Preserved(Some("Dup".into())),
+            )
+            .expect("first legacy duplicate");
+        let second_dup = view
+            .import_wif(
+                &wif_for_byte(0x13),
+                AliasSource::Preserved(Some("Dup".into())),
+            )
+            .expect("second legacy duplicate");
+        let third_dup = view
+            .import_wif(
+                &wif_for_byte(0x14),
+                AliasSource::Preserved(Some("Dup".into())),
+            )
+            .expect("third legacy duplicate");
+
+        assert_eq!(unnamed.alias, None);
+        assert_eq!(first_dup.alias.as_deref(), Some("Dup"));
+        assert_eq!(second_dup.alias.as_deref(), Some("Dup_1"));
+        assert_eq!(third_dup.alias.as_deref(), Some("Dup_2"));
+        assert_eq!(view.list().len(), 4);
+    }
+
+    #[test]
+    fn set_alias_blank_resets_to_default_key_name() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (store, index, _) = fresh_view(dir.path(), Network::Testnet);
+
+        let view = transient_view(&store, &index);
+        let renamed = view
+            .import_wif(
+                &wif_for_byte(0x11),
+                AliasSource::UserEntered("Custom".into()),
+            )
+            .expect("import renamed key");
+        view.import_wif(
+            &wif_for_byte(0x12),
+            AliasSource::UserEntered("Key 1".into()),
+        )
+        .expect("import other key");
+
+        let saved = view
+            .set_alias(&renamed.address, " \u{200B} ")
+            .expect("blank rename resets to the default name");
+
+        assert_eq!(saved, "Key 2");
+        assert_eq!(alias_of(&view, &renamed.address).as_deref(), Some("Key 2"));
+    }
+
+    #[test]
+    fn set_alias_to_its_own_alias_succeeds() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (store, index, _) = fresh_view(dir.path(), Network::Testnet);
+
+        let view = transient_view(&store, &index);
+        let imported = view
+            .import_wif(known_wif(), AliasSource::UserEntered("Savings".into()))
+            .expect("import");
+
+        let saved = view
+            .set_alias(&imported.address, "Savings")
+            .expect("a key never collides with itself");
+
+        assert_eq!(saved, "Savings");
+    }
+
+    #[test]
+    fn set_alias_to_another_keys_alias_is_rejected() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (store, index, _) = fresh_view(dir.path(), Network::Testnet);
+
+        let view = transient_view(&store, &index);
+        let renamed = view
+            .import_wif(
+                &wif_for_byte(0x11),
+                AliasSource::UserEntered("Spending".into()),
+            )
+            .expect("import renamed key");
+        view.import_wif(
+            &wif_for_byte(0x12),
+            AliasSource::UserEntered("Savings".into()),
+        )
+        .expect("import other key");
+
+        let error = view
+            .set_alias(&renamed.address, "Savings")
+            .expect_err("the name belongs to another key");
+
+        assert!(
+            matches!(error, TaskError::WalletAliasAlreadyUsed { .. }),
+            "got {error:?}"
+        );
+        assert_eq!(
+            alias_of(&view, &renamed.address).as_deref(),
+            Some("Spending")
+        );
     }
 
     #[test]
@@ -1954,17 +2367,18 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let store =
             Arc::new(open_secret_store(&dir.path().join("secrets.pwsvault")).expect("open vault"));
-        let index = Arc::new(std::sync::RwLock::new(std::collections::BTreeMap::new()));
+        let index = Arc::new(crate::wallet_backend::wallet_context::WalletContext::default());
+
         let gated_store = Arc::new(FirstAliasPutGate::default());
         let kv = Arc::new(DetKv::from_store(gated_store.clone()));
         let view = SingleKeyView {
             secret_store: &store,
-            index: &index,
+            context: &index,
             network: Network::Testnet,
             app_kv: Some(&kv),
         };
         let address = view
-            .import_wif(known_wif(), Some("original".into()))
+            .import_wif(known_wif(), AliasSource::Preserved(Some("original".into())))
             .expect("import")
             .address;
         gated_store.arm();
@@ -1973,14 +2387,15 @@ mod tests {
         let first_index = index.clone();
         let first_kv = kv.clone();
         let first_address = address.clone();
+
         let first = std::thread::spawn(move || {
             SingleKeyView {
                 secret_store: &first_store,
-                index: &first_index,
+                context: &first_index,
                 network: Network::Testnet,
                 app_kv: Some(&first_kv),
             }
-            .set_alias(&first_address, Some("first".into()))
+            .set_alias(&first_address, "first")
         });
         gated_store.wait_until_first_put();
 
@@ -1989,14 +2404,15 @@ mod tests {
         let later_kv = kv.clone();
         let later_address = address.clone();
         let (later_tx, later_rx) = std::sync::mpsc::channel();
+
         let later = std::thread::spawn(move || {
             let result = SingleKeyView {
                 secret_store: &later_store,
-                index: &later_index,
+                context: &later_index,
                 network: Network::Testnet,
                 app_kv: Some(&later_kv),
             }
-            .set_alias(&later_address, Some("later".into()));
+            .set_alias(&later_address, "later");
             later_tx.send(result).expect("send later result");
         });
 
@@ -2017,10 +2433,7 @@ mod tests {
         later_result.expect("later rename");
         later.join().expect("later rename thread");
 
-        let indexed_alias = read_recover(&index)
-            .get(&address)
-            .and_then(|entry| entry.alias.as_deref())
-            .map(str::to_owned);
+        let indexed_alias = index.single_alias(&address);
         let persisted_alias = kv
             .get::<ImportedKey>(DetScope::Global, &meta_key_for(Network::Testnet, &address))
             .expect("read persisted alias")
@@ -2048,7 +2461,7 @@ mod tests {
         } = fresh_view_with_kv(dir.path(), Network::Testnet);
         let view = SingleKeyView {
             secret_store: &store,
-            index: &index,
+            context: &index,
             network,
             app_kv: Some(&kv),
         };
@@ -2097,12 +2510,12 @@ mod tests {
         } = fresh_view_with_kv(dir.path(), Network::Testnet);
         let view = SingleKeyView {
             secret_store: &store,
-            index: &index,
+            context: &index,
             network,
             app_kv: Some(&kv),
         };
         let imported = view
-            .import_wif(known_wif(), Some("raw".into()))
+            .import_wif(known_wif(), AliasSource::Preserved(Some("raw".into())))
             .expect("import");
         assert!(!imported.has_passphrase);
         assert!(
@@ -2146,7 +2559,7 @@ mod tests {
         } = fresh_view_with_kv(dir.path(), Network::Testnet);
         let view = SingleKeyView {
             secret_store: &store,
-            index: &index,
+            context: &index,
             network,
             app_kv: Some(&kv),
         };

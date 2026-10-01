@@ -15,7 +15,7 @@ use crate::ui::components::styled::{
     ConfirmationDialog, ConfirmationStatus, StyledCard, StyledCheckbox, island_central_panel,
 };
 use crate::ui::components::top_panel::{add_top_panel_with_global_nav, subdued_everyday_spec};
-use crate::ui::theme::{DashColors, ResponseExt, Shape, ThemeMode};
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Shape, ThemeMode};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dash_spv::sync::{ProgressPercentage, SyncProgress as SpvSyncProgress, SyncState};
 use dash_sdk::dpp::dashcore::Network;
@@ -267,15 +267,14 @@ impl NetworkChooserScreen {
             ui.horizontal(|ui| {
                 if overall_state != OverallConnectionState::Disconnected {
                     let is_stopping = spv_status == SpvStatus::Stopping;
-                    let disconnect_button = egui::Button::new(
-                        egui::RichText::new("Disconnect").color(DashColors::WHITE),
-                    )
-                    .fill(DashColors::ERROR)
-                    .stroke(egui::Stroke::NONE)
-                    .corner_radius(Shape::RADIUS_MD)
-                    .min_size(egui::vec2(120.0, 36.0));
 
-                    if ui.add_enabled(!is_stopping, disconnect_button).clicked() {
+                    if ui
+                        .add_enabled_ui(!is_stopping, |ui| {
+                            ComponentStyles::add_danger_button(ui, "Disconnect")
+                        })
+                        .inner
+                        .clicked()
+                    {
                         // The update loop owns the async teardown (upstream
                         // shutdown is async), so dispatch it as an action rather
                         // than blocking the frame loop. The indicator flips to
@@ -317,24 +316,12 @@ impl NetworkChooserScreen {
                     }
                 } else {
                     // Chain sync is SPV-only.
-                    let show_connect_button = true;
-
-                    if show_connect_button {
-                        let connect_button = egui::Button::new(
-                            egui::RichText::new("Connect").color(DashColors::WHITE),
-                        )
-                        .fill(DashColors::DASH_BLUE)
-                        .stroke(egui::Stroke::NONE)
-                        .corner_radius(Shape::RADIUS_MD)
-                        .min_size(egui::vec2(120.0, 36.0));
-
-                        if ui.add(connect_button).clicked() {
-                            // The update loop owns the `TaskResult` sender the
-                            // backend-wiring step needs, so it lazily wires the
-                            // backend then starts chain sync. A click during the
-                            // brief not-yet-wired boot window no longer fast-fails.
-                            app_action = AppAction::StartSpv;
-                        }
+                    if ComponentStyles::add_primary_button(ui, "Connect").clicked() {
+                        // The update loop owns the `TaskResult` sender the
+                        // backend-wiring step needs, so it lazily wires the
+                        // backend then starts chain sync. A click during the
+                        // brief not-yet-wired boot window no longer fast-fails.
+                        app_action = AppAction::StartSpv;
                     }
                 }
             });

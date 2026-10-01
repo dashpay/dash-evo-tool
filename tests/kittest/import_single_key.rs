@@ -10,11 +10,15 @@
 //!   accessibility tree.
 
 use crate::support::with_isolated_data_dir;
+use dash_evo_tool::backend_task::error::TaskError;
+use dash_evo_tool::model::wallet::alias::AliasSource;
 use dash_evo_tool::ui::wallets::import_single_key::ImportSingleKeyDialog;
 use dash_evo_tool::ui::wallets::wallets_screen::WalletsBalancesScreen;
 use dash_sdk::dpp::dashcore::{Network, PrivateKey};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 const KNOWN_TESTNET_WIF: &str = "cMahea7zqjxrtgAbB7LSGbcQUr1uX1ojuat9jZodMN8rFTv2sfUK";
 
@@ -167,13 +171,101 @@ fn imported_single_key_is_visible_in_session() {
 
         let guard = imported.read().expect("read imported wallet");
         assert_eq!(
-            guard.alias.as_deref(),
+            app_context
+                .wallet_context()
+                .single_alias(&guard.address.to_string())
+                .as_deref(),
             Some("Imported in session"),
             "the in-session wallet should preserve the import alias"
         );
         assert_ne!(
             guard.key_hash, [0u8; 32],
             "the in-session wallet should have a derived key hash"
+        );
+    });
+}
+
+/// The nickname counter counts the cleaned name, and the confirmed request
+/// carries the text as typed — resolution is the backend's job.
+#[test]
+fn nickname_counter_counts_cleaned_characters_and_request_carries_raw_alias() {
+    let mut dialog = open_dialog(Network::Testnet);
+    dialog.force_input_for_test(KNOWN_TESTNET_WIF.to_string());
+    let confirmed_alias: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+    let captured = confirmed_alias.clone();
+
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(640.0, 600.0))
+        .build_ui_state(
+            move |ui, dialog: &mut ImportSingleKeyDialog| {
+                if let Some(request) = dialog.show_in_ui(ui).confirmed {
+                    *captured.borrow_mut() = Some(request.alias);
+                }
+            },
+            dialog,
+        );
+    harness.run();
+
+    harness.get_by_label("Nickname (optional)").focus();
+    harness.event(egui::Event::Text(" \u{200B}Savings ".to_string()));
+    harness.step();
+    assert!(
+        harness.query_by_label("7 of 64 characters used.").is_some(),
+        "the counter must count the cleaned nickname"
+    );
+
+    harness.get_by_label("Add to wallets").click();
+    harness.run();
+    assert_eq!(
+        confirmed_alias.borrow().as_deref(),
+        Some(" \u{200B}Savings "),
+        "the request must carry the nickname as typed"
+    );
+}
+
+/// A blank nickname imports under the smallest unused "Key N", and a second
+/// key cannot take a name another imported key already uses.
+#[test]
+fn blank_nickname_gets_default_key_name_and_duplicates_are_rejected() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
+            dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+                .expect("create AppState")
+                .with_animations(false)
+        });
+        let app_context = crate::support::wait_for_wallet_backend(&mut harness);
+        let network = app_context.network();
+        let wif_for = |byte: u8| {
+            PrivateKey::from_byte_array(&[byte; 32], network)
+                .expect("valid private key")
+                .to_wif()
+        };
+
+        let mut screen = WalletsBalancesScreen::new(&app_context);
+        let imported = screen
+            .import_single_key_for_test(&wif_for(0x21), Some("  ".to_string()))
+            .expect("blank nickname import succeeds");
+        assert_eq!(
+            app_context
+                .wallet_context()
+                .single_alias(&imported.read().unwrap().address.to_string())
+                .as_deref(),
+            Some("Key 1")
+        );
+
+        let error = app_context
+            .import_single_key_wif(
+                &wif_for(0x22),
+                AliasSource::UserEntered("Key 1".to_string()),
+                Default::default(),
+            )
+            .expect_err("a second key cannot reuse the name");
+        assert!(
+            matches!(error, TaskError::WalletAliasAlreadyUsed { .. }),
+            "got {error:?}"
         );
     });
 }

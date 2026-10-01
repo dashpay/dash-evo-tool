@@ -20,6 +20,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
+mod import_keys;
+mod migration;
+#[cfg(test)]
+use migration::{KeystoreMigration, migrate_keystore_to_vault};
+
 /// Identity blob slot, scoped to [`DetScope::Identity`]. One entry per
 /// identity; the identity id is carried by the scope, so the key is a
 /// fixed slot inside the upstream `meta_identity` table.
@@ -483,28 +488,6 @@ fn clear_vault_cleanup_manifest(kv: &DetKv, id: &[u8; 32]) {
     }
 }
 
-/// Delete every Identity-scoped child of `id` (blob, top-up history, all
-/// scheduled votes) and prune the scheduled-vote voter index. Does not
-/// touch the Global identity index — callers decide whether to drop the
-/// index entry (single delete) or rewrite it wholesale (devnet sweep).
-/// Outcome of [`migrate_keystore_to_vault`], so callers/tests can assert what
-/// happened without re-inspecting the blob.
-#[derive(Debug, PartialEq, Eq)]
-enum KeystoreMigration {
-    /// No plaintext keys to migrate — `qi` was untouched.
-    Nothing,
-    /// The vault write failed; `qi` was restored to its resident plaintext and
-    /// the blob was NOT persisted (next load retries — no key loss).
-    VaultWriteFailed,
-    /// `n` keys moved to the vault and `qi` rewritten to `InVault` placeholders.
-    Migrated(usize),
-    /// The identity is password-protected, so a resident plaintext key
-    /// was NOT migrated to a keyless vault entry. `qi` keeps its resident key (it
-    /// still signs this session) and nothing is persisted; the add-key path seals
-    /// new keys Tier-2 explicitly.
-    ProtectedSkipped,
-}
-
 /// Find an existing password-protected (Tier-2) key of this identity, as a
 /// [`SecretScope`](crate::wallet_backend::secret_prompt::SecretScope) suitable
 /// for verifying the identity's password when sealing a newly-added key.
@@ -514,105 +497,27 @@ fn find_protected_identity_key_scope(
     secret_store: &Arc<platform_wallet_storage::secrets::SecretStore>,
     id: &[u8; 32],
     qi: &QualifiedIdentity,
-) -> Option<crate::wallet_backend::secret_prompt::SecretScope> {
+    retained_keys: impl IntoIterator<Item = (PrivateKeyTarget, KeyID)>,
+) -> Result<Option<crate::wallet_backend::secret_prompt::SecretScope>, TaskError> {
     use crate::wallet_backend::secret_prompt::SecretScope;
     use crate::wallet_backend::secret_seam::SecretScheme;
     let view = crate::wallet_backend::IdentityKeyView::new(secret_store, *id);
-    qi.private_keys
-        .keys_set()
-        .into_iter()
-        .find_map(|(target, key_id)| match view.scheme(&target, key_id) {
-            Ok(SecretScheme::Protected) => Some(SecretScope::IdentityKey {
+    for (target, key_id) in qi.private_keys.keys_set().into_iter().chain(retained_keys) {
+        if view.scheme(&target, key_id)? == SecretScheme::Protected {
+            return Ok(Some(SecretScope::IdentityKey {
                 identity_id: *id,
                 target,
                 key_id,
-            }),
-            _ => None,
-        })
-}
-
-/// EAGER identity-key migration core (vault-first, crash-safe). Moves any
-/// plaintext `Clear`/`AlwaysClear` keys in `qi` into the vault as raw bytes,
-/// then asks `persist` to rewrite the blob with `InVault` placeholders.
-///
-/// Ordering is the funds-safety contract: vault `store_all` happens FIRST. On a
-/// vault-write failure `qi` is restored to its pre-migration resident plaintext
-/// (so this session can still sign) and `persist` is NOT called — the legacy
-/// blob stays for the next retry, and no key is lost on a mid-write fault. A
-/// `persist` failure after a successful vault write is recoverable: the legacy
-/// blob plus the now-redundant raw vault entries are re-detected next load and
-/// the migration re-runs idempotently.
-///
-/// Factored out of [`AppContext`] so it is unit-testable with a bare
-/// `SecretStore` and a controllable `persist` closure.
-fn migrate_keystore_to_vault(
-    secret_store: &Arc<platform_wallet_storage::secrets::SecretStore>,
-    id: &[u8; 32],
-    qi: &mut QualifiedIdentity,
-    persist: impl FnOnce(&QualifiedIdentity) -> std::result::Result<(), TaskError>,
-) -> KeystoreMigration {
-    // Probe before cloning: the steady-state (already all-`InVault`) case must
-    // not pay for a full `KeyStorage` clone — that clone exists only to restore
-    // the resident plaintext on a vault-write failure.
-    if !qi.private_keys.has_plaintext_for_vault() {
-        return KeystoreMigration::Nothing;
+            }));
+        }
     }
-    // Fail-closed: never migrate a protected identity's resident
-    // plaintext to a KEYLESS vault entry — that would silently strip protection
-    // off a new key. Leave it resident (it still signs this session) and persist
-    // nothing; the add-key path seals new keys Tier-2 under the identity password.
-    if find_protected_identity_key_scope(secret_store, id, qi).is_some() {
-        tracing::warn!(
-            target = "context::identity_db",
-            identity = %hex::encode(id),
-            "Skipped keyless migration of a resident key on a password-protected identity",
-        );
-        return KeystoreMigration::ProtectedSkipped;
-    }
-    let mut before = qi.private_keys.clone();
-    let taken = qi.private_keys.take_plaintext_for_vault();
-    let view = crate::wallet_backend::IdentityKeyView::new(secret_store, *id);
-    if let Err(e) = view.store_all(&taken) {
-        qi.private_keys = before;
-        tracing::warn!(
-            target = "context::identity_db",
-            identity = %hex::encode(id),
-            error = ?e,
-            "Identity-key vault migration deferred (vault write failed)",
-        );
-        return KeystoreMigration::VaultWriteFailed;
-    }
-    let migrated = taken.len();
-    // The migrated plaintext now lives only in the vault; drop the `taken` copy
-    // (it zeroizes on drop) so its key bytes do not linger across the DB write.
-    drop(taken);
-    // The vault write succeeded — the rollback clone is no longer
-    // needed. Zeroize its plaintext bytes (Clear/AlwaysClear) before it drops
-    // so no identity private key lingers in freed heap.
-    let _ = before.take_plaintext_for_vault();
-    if let Err(e) = persist(qi) {
-        tracing::warn!(
-            target = "context::identity_db",
-            identity = %hex::encode(id),
-            error = ?e,
-            "Identity-key blob rewrite deferred after vault migration",
-        );
-    } else {
-        tracing::info!(
-            target = "context::identity_db",
-            identity = %hex::encode(id),
-            migrated,
-            "Migrated identity keys to the secret vault",
-        );
-    }
-    KeystoreMigration::Migrated(migrated)
+    Ok(None)
 }
 
 /// Encode `qi` for at-rest storage with every resident plaintext private key
 /// moved into the secret vault FIRST, leaving `InVault` placeholders in the
-/// returned blob. This is the write-path twin of [`migrate_keystore_to_vault`]
-/// (the load-path migration): a freshly inserted or updated identity never
-/// writes `Clear` / `AlwaysClear` key bytes to `det-app.sqlite`.
+/// returned blob. A freshly inserted or updated identity never writes
+/// `Clear` / `AlwaysClear` key bytes to `det-app.sqlite`.
 ///
 /// Funds-safe ordering: the vault `store_all` happens BEFORE the bytes are
 /// produced. On a vault-write failure the error propagates and the caller
@@ -624,6 +529,7 @@ fn encode_identity_blob_vault_first(
     secret_store: &Arc<platform_wallet_storage::secrets::SecretStore>,
     id: &[u8; 32],
     qi: &QualifiedIdentity,
+    retained_keys: impl IntoIterator<Item = (PrivateKeyTarget, KeyID)>,
 ) -> std::result::Result<Vec<u8>, TaskError> {
     // No resident plaintext ⇒ nothing to vault and nothing to rewrite; encode
     // the borrow directly without a clone (the steady-state, already-`InVault`
@@ -641,7 +547,7 @@ fn encode_identity_blob_vault_first(
     // this same guard on a plain re-save — e.g. an alias edit — so the re-save
     // fails closed until "Finish protecting" reseals the remaining keys under
     // the identity password. This is intended secure behavior, not a regression.
-    if find_protected_identity_key_scope(secret_store, id, qi).is_some() {
+    if find_protected_identity_key_scope(secret_store, id, qi, retained_keys)?.is_some() {
         return Err(TaskError::IdentityKeyProtectionDowngrade);
     }
     let mut qi = qi.clone();
@@ -884,12 +790,15 @@ impl AppContext {
         let _guard = lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        self.import_local_qualified_identity_locked(qualified_identity, wallet_and_identity_id_info)
+        self.insert_local_qualified_identity_under_lock(
+            qualified_identity,
+            wallet_and_identity_id_info,
+        )
     }
 
-    /// Explicit import, including retirement of an unload marker. The caller
-    /// must hold this identity's record guard across authorization and this write.
-    pub(crate) fn import_local_qualified_identity_locked(
+    /// Deliberate import, including retirement of an unload marker. The caller
+    /// must hold this identity's record lock across authorization and this write.
+    pub(crate) fn insert_local_qualified_identity_under_lock(
         &self,
         qualified_identity: &QualifiedIdentity,
         wallet_and_identity_id_info: &Option<(WalletSeedHash, u32)>,
@@ -1022,8 +931,12 @@ impl AppContext {
         // Vault-first: move any plaintext keys into the vault before encoding, so
         // the at-rest blob carries only `InVault` placeholders. A vault-write
         // failure aborts the insert (nothing is persisted).
-        let qi_bytes =
-            encode_identity_blob_vault_first(&self.secret_store, &id, qualified_identity)?;
+        let qi_bytes = encode_identity_blob_vault_first(
+            &self.secret_store,
+            &id,
+            qualified_identity,
+            self.retained_identity_import_keys(&qualified_identity.identity.id())?,
+        )?;
         let (wallet_hash, wallet_index) = match wallet_link {
             Some((seed, idx)) => (Some(seed), Some(idx)),
             None => (None, None),
@@ -1065,8 +978,12 @@ impl AppContext {
     ) -> std::result::Result<(), TaskError> {
         let kv = self.det_kv()?;
         let id = qualified_identity.identity.id().to_buffer();
-        let qi_bytes =
-            encode_identity_blob_vault_first(&self.secret_store, &id, qualified_identity)?;
+        let qi_bytes = encode_identity_blob_vault_first(
+            &self.secret_store,
+            &id,
+            qualified_identity,
+            self.retained_identity_import_keys(&qualified_identity.identity.id())?,
+        )?;
         let stored = StoredQualifiedIdentity {
             qi_bytes,
             status: qualified_identity.status.as_u8(),
@@ -1234,8 +1151,12 @@ impl AppContext {
             .unwrap_or((None, None));
         // Vault-first: move any plaintext keys into the vault before encoding, so
         // an update never lands `Clear` / `AlwaysClear` key bytes on disk.
-        let qi_bytes =
-            encode_identity_blob_vault_first(&self.secret_store, &id, qualified_identity)?;
+        let qi_bytes = encode_identity_blob_vault_first(
+            &self.secret_store,
+            &id,
+            qualified_identity,
+            self.retained_identity_import_keys(&qualified_identity.identity.id())?,
+        )?;
         let stored = StoredQualifiedIdentity {
             qi_bytes,
             status: qualified_identity.status.as_u8(),
@@ -1277,7 +1198,12 @@ impl AppContext {
         qi.alias = new_alias.map(str::to_string);
         // Re-encode vault-first so an alias edit on a not-yet-migrated blob does
         // not rewrite resident plaintext keys back to disk.
-        stored.qi_bytes = encode_identity_blob_vault_first(&self.secret_store, &id, &qi)?;
+        stored.qi_bytes = encode_identity_blob_vault_first(
+            &self.secret_store,
+            &id,
+            &qi,
+            self.retained_identity_import_keys(&qi.identity.id())?,
+        )?;
         kv.put(scope, IDENTITY_KEY, &stored).map_err(identity_err)
     }
 
@@ -1307,7 +1233,7 @@ impl AppContext {
     pub fn load_local_qualified_identities(
         &self,
     ) -> std::result::Result<Vec<QualifiedIdentity>, TaskError> {
-        let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
+        let wallets = self.wallet_context().wallets();
         let mut identities = self.load_identities_filtered(&wallets, |_| true)?;
         for identity in &mut identities {
             self.hydrate_top_ups(identity);
@@ -1324,7 +1250,7 @@ impl AppContext {
         &self,
         seed_hash: &WalletSeedHash,
     ) -> std::result::Result<Vec<QualifiedIdentity>, TaskError> {
-        let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
+        let wallets = self.wallet_context().wallets();
         let target = Some(*seed_hash);
         self.load_identities_filtered(&wallets, |s| {
             s.wallet_index.is_some() && s.wallet_hash == target
@@ -1409,6 +1335,7 @@ impl AppContext {
     /// (status, wallet index, network, wallets, secret access). `None` when no
     /// identity with `id` is stored. Backs the load-path existence check
     /// (duplicate-ProTxHash rejection) and the in-place voter-key merge.
+    /// Does not migrate keys or modify storage.
     pub fn get_local_qualified_identity(
         &self,
         id: &Identifier,
@@ -1421,16 +1348,8 @@ impl AppContext {
         else {
             return Ok(None);
         };
-        let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
-        let mut qi = decode_stored_identity(&stored.qi_bytes, self.network)?;
-        qi.status = IdentityStatus::from_u8(stored.status);
-        qi.wallet_index = stored.wallet_index;
-        qi.network = self.network;
-        qi.associated_wallets = wallets.clone();
-        qi.secret_access = self.wallet_backend().ok().map(|b| b.secret_access());
-        qi.top_ups = BTreeMap::new();
-        self.migrate_identity_keys_to_vault(&kv, &id_buf, &mut qi);
-        Ok(Some(qi))
+        let wallets = self.wallet_context().wallets();
+        self.hydrate_stored_identity(&stored, &wallets).map(Some)
     }
 
     /// The encoded identity blob stored under `id`, exactly as it sits at
@@ -1565,7 +1484,7 @@ impl AppContext {
             if !keep(&stored) {
                 continue;
             }
-            out.push(self.hydrate_stored_identity(&kv, &id, &stored, wallets)?);
+            out.push(self.hydrate_stored_identity(&stored, wallets)?);
         }
         // Seed the JIT chokepoint's identity prompt-copy index (alias + hint)
         // so the sign-time prompt for an opted-in (Tier-2) identity shows the
@@ -1577,15 +1496,10 @@ impl AppContext {
         Ok(out)
     }
 
-    /// Decode a stored blob and rehydrate the runtime-only fields the encoder
-    /// skips — status, wallet index, network, wallet map, secret access — then
-    /// run the crash-safe vault migration. Shared by the bulk-load and
-    /// single-get paths so both reconstruct an identity identically. Top-up
-    /// history is left empty; callers hydrate it separately when needed.
+    /// Decode and hydrate runtime fields without writing keys or metadata.
+    /// Top-up history is loaded separately when needed.
     fn hydrate_stored_identity(
         &self,
-        kv: &DetKv,
-        id: &[u8; 32],
         stored: &StoredQualifiedIdentity,
         wallets: &BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>,
     ) -> std::result::Result<QualifiedIdentity, TaskError> {
@@ -1596,7 +1510,6 @@ impl AppContext {
         qi.associated_wallets = wallets.clone();
         qi.secret_access = self.wallet_backend().ok().map(|b| b.secret_access());
         qi.top_ups = BTreeMap::new();
-        self.migrate_identity_keys_to_vault(kv, id, &mut qi);
         Ok(qi)
     }
 
@@ -1636,20 +1549,9 @@ impl AppContext {
         &self,
         identity_id: &Identifier,
     ) -> std::result::Result<Option<QualifiedIdentity>, TaskError> {
-        let kv = self.det_kv()?;
-        let id = identity_id.to_buffer();
-        let Some(stored) = kv
-            .get::<StoredQualifiedIdentity>(DetScope::Identity(&id), IDENTITY_KEY)
-            .map_err(identity_err)?
-        else {
+        let Some(mut qi) = self.get_local_qualified_identity(identity_id)? else {
             return Ok(None);
         };
-        let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
-        // Shared with the bulk-load path: rehydrates the skipped fields and runs
-        // the crash-safe vault migration so single-get consumers (the identity
-        // key password tasks and others) see vault-backed schemes rather than
-        // re-persisting resident plaintext.
-        let mut qi = self.hydrate_stored_identity(&kv, &id, &stored, &wallets)?;
         self.hydrate_top_ups(&mut qi);
         Ok(Some(qi))
     }
@@ -1665,11 +1567,12 @@ impl AppContext {
     {
         let backend = self.wallet_backend()?;
         let id = qi.identity.id().to_buffer();
-        Ok(find_protected_identity_key_scope(
+        find_protected_identity_key_scope(
             backend.secret_store(),
             &id,
             qi,
-        ))
+            self.retained_identity_import_keys(&qi.identity.id())?,
+        )
     }
 
     /// Fetches every locally-stored identity whose `identity_type` is
@@ -1677,7 +1580,7 @@ impl AppContext {
     pub fn load_local_voting_identities(
         &self,
     ) -> std::result::Result<Vec<QualifiedIdentity>, TaskError> {
-        let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
+        let wallets = self.wallet_context().wallets();
         self.load_identities_filtered(&wallets, |s| {
             !matches!(
                 IdentityType::from_tag(&s.identity_type),
@@ -1692,7 +1595,7 @@ impl AppContext {
     pub fn load_local_user_identities(
         &self,
     ) -> std::result::Result<Vec<QualifiedIdentity>, TaskError> {
-        let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
+        let wallets = self.wallet_context().wallets();
         self.load_identities_filtered(&wallets, |s| {
             matches!(
                 IdentityType::from_tag(&s.identity_type),
@@ -1826,9 +1729,14 @@ impl AppContext {
         id: &[u8; 32],
         vault_keys: impl IntoIterator<Item = (PrivateKeyTarget, KeyID)>,
     ) -> std::result::Result<IdentitySidecarCleanup, TaskError> {
+        let identifier = Identifier::from(*id);
+        // Both callers hold the record lock through inventory retirement.
+        // Failed re-imports can add keys after the removal manifest was saved.
+        let mut vault_keys: std::collections::BTreeSet<_> = vault_keys.into_iter().collect();
+        vault_keys.extend(self.retained_identity_import_keys(&identifier)?);
         crate::wallet_backend::IdentityKeyView::new(&self.secret_store, *id)
             .delete_all(vault_keys)?;
-        let identifier = Identifier::from(*id);
+        self.forget_identity_import_keys(&identifier)?;
         // INTENTIONAL(late-owner-sidecar-writes): in-flight writers are not drained; coordinating
         // every backend task requires a wider owner-lifecycle protocol than this cleanup adds.
         let dashpay_cleanup = self
@@ -2039,64 +1947,6 @@ impl AppContext {
         index_remove_identity(&kv, &identifier.to_buffer())
     }
 
-    /// EAGER identity-key migration (dialog-free): move any plaintext
-    /// `Clear`/`AlwaysClear` identity keys into the vault as raw bytes and
-    /// rewrite the blob with `InVault` placeholders so the keys are never
-    /// resident.
-    ///
-    /// Crash-safe ordering: vault `store_all` FIRST, then blob rewrite. If the
-    /// vault write fails the blob is left untouched (the in-memory `qi` is
-    /// restored to its resident plaintext for this session) and the next load
-    /// retries — keys are never lost. Idempotent: a blob already all-`InVault`
-    /// has nothing to take and is skipped. Best-effort: a blob-rewrite failure
-    /// is logged; the next load re-detects the plaintext and retries.
-    fn migrate_identity_keys_to_vault(
-        &self,
-        kv: &DetKv,
-        id: &[u8; 32],
-        qi: &mut QualifiedIdentity,
-    ) {
-        let _ = migrate_keystore_to_vault(&self.secret_store, id, qi, |migrated| {
-            self.persist_identity_blob(kv, id, migrated)
-        });
-    }
-
-    /// Re-persist `qi`'s blob in place, preserving the stored wallet
-    /// association and status. Used by the eager identity-key migration.
-    ///
-    /// The one whole-record write that does NOT take
-    /// [`Self::identity_record_lock`]: it runs inside the *read* path
-    /// ([`Self::hydrate_stored_identity`]), which a caller already holding that
-    /// guard calls, so taking it here would self-deadlock. The write is
-    /// idempotent — it rewrites the blob this call just read, replacing
-    /// plaintext keys with vault placeholders — so a concurrent whole-record
-    /// writer loses only the placeholder rewrite, and the next read redoes it.
-    // TODO(#889 follow-up): fold this rewrite into the guarded write path (e.g.
-    // by having the read return the migration for the caller to persist) so
-    // every blob write is serialized, not merely every deliberate one.
-    fn persist_identity_blob(
-        &self,
-        kv: &DetKv,
-        id: &[u8; 32],
-        qi: &QualifiedIdentity,
-    ) -> std::result::Result<(), TaskError> {
-        let scope = DetScope::Identity(id);
-        let existing: Option<StoredQualifiedIdentity> =
-            kv.get(scope, IDENTITY_KEY).map_err(identity_err)?;
-        let (wallet_hash, wallet_index, status) = existing
-            .as_ref()
-            .map(|s| (s.wallet_hash, s.wallet_index, s.status))
-            .unwrap_or((None, None, qi.status.as_u8()));
-        let stored = StoredQualifiedIdentity {
-            qi_bytes: qi.to_bytes(),
-            status,
-            identity_type: qi.identity_type.as_tag().to_string(),
-            wallet_hash,
-            wallet_index,
-        };
-        kv.put(scope, IDENTITY_KEY, &stored).map_err(identity_err)
-    }
-
     /// The vault placements holding `id`'s identity-key secrets, as recorded in
     /// its stored blob. Empty when the identity is not stored.
     ///
@@ -2120,19 +1970,15 @@ impl AppContext {
             .keys_set())
     }
 
-    /// The full vault-key delete set for `id`: freshly-derived placements
-    /// from the still-live blob (empty once it is gone), unioned with any
-    /// manifest left behind by an earlier failed delete. The union — never a
-    /// choice of one source over the other — means a placement discovered
-    /// by either source is never dropped, whether this is a first attempt
-    /// (manifest empty, blob live) or a retry after the blob was already
-    /// purged (blob empty, manifest live).
+    /// Union the live blob, retained import placements and interrupted-removal
+    /// manifest so every key remains discoverable after the blob is gone.
     fn pending_vault_key_placements(
         &self,
         kv: &DetKv,
         id: &[u8; 32],
     ) -> std::result::Result<std::collections::BTreeSet<(PrivateKeyTarget, KeyID)>, TaskError> {
         let mut keys = self.identity_vault_key_placements(kv, id)?;
+        keys.extend(self.retained_identity_import_keys(&Identifier::from(*id))?);
         let manifest: Vec<(StoredPrivateKeyTarget, KeyID)> = kv
             .get(DetScope::Global, &vault_cleanup_pending_key(id))
             .map_err(identity_err)?
@@ -2225,9 +2071,9 @@ impl AppContext {
     /// it back afterwards, because its decision is re-taken here rather than
     /// carried in from the caller.
     ///
-    /// The alias carry-over lives here for the same reason. Reading it in the
-    /// caller and writing it here spans an unguarded gap, so a concurrent alias
-    /// edit would be written away.
+    /// The alias and key carry-over live here for the same reason. Reading
+    /// them in the caller and writing here spans an unguarded gap, so a
+    /// concurrent alias edit or key save would be written away.
     pub(crate) fn store_discovered_identity(
         &self,
         qualified_identity: &mut QualifiedIdentity,
@@ -2248,7 +2094,8 @@ impl AppContext {
 
         let kv = self.det_kv()?;
         let id = identity_id.to_buffer();
-        if self.is_identity_unloaded(&kv, &id)? {
+        let was_unloaded = self.is_identity_unloaded(&kv, &id)?;
+        if was_unloaded {
             if !intent.may_restore_unloaded() {
                 tracing::debug!(
                     identity_id = %identity_id,
@@ -2268,11 +2115,30 @@ impl AppContext {
             .map_err(identity_err)?;
         match existing {
             // A record on file: refresh it, keeping the user's own alias, which
-            // a freshly built identity never carries.
+            // a freshly built identity never carries, and every key the
+            // wallet-only rebuild did not recreate (SEC-102). A delisted
+            // record that was unloaded is a removal that stopped part-way — its
+            // vault keys may already be gone — so it is replaced, not merged.
+            // Delisted without the marker, no removal ran: its keys are live.
             Some(stored) => {
-                qualified_identity.alias =
-                    decode_stored_identity(&stored.qi_bytes, self.network)?.alias;
-                self.write_local_qualified_identity_locked(qualified_identity)?;
+                let stored = decode_stored_identity(&stored.qi_bytes, self.network)?;
+                qualified_identity.alias = stored.alias;
+                if !was_unloaded || identity_is_listed(&kv, &id)? {
+                    qualified_identity
+                        .private_keys
+                        .retain_local_keys_from(stored.private_keys);
+                }
+                // The merge carries the stored record's keys; on a partially
+                // protected record that includes resident plaintext the guard
+                // refuses to save keyless. The user asked for no change, so
+                // say what blocks the refresh rather than the change wording.
+                self.write_local_qualified_identity_locked(qualified_identity)
+                    .map_err(|error| match error {
+                        TaskError::IdentityKeyProtectionDowngrade => {
+                            TaskError::IdentityRefreshBlockedByPartialProtection { identity_id }
+                        }
+                        other => other,
+                    })?;
             }
             None => self.insert_local_qualified_identity_locked(qualified_identity, wallet)?,
         }
@@ -2301,8 +2167,10 @@ impl AppContext {
         kv: &DetKv,
         id: &[u8; 32],
     ) -> std::result::Result<(), TaskError> {
-        let placements = self.identity_vault_key_placements(kv, id)?;
-        crate::wallet_backend::IdentityKeyView::new(&self.secret_store, *id).delete_all(placements)
+        let placements = self.pending_vault_key_placements(kv, id)?;
+        crate::wallet_backend::IdentityKeyView::new(&self.secret_store, *id)
+            .delete_all(placements)?;
+        self.forget_identity_import_keys(&Identifier::from(*id))
     }
 
     /// Delete the vault secrets filed at `placements` for `identity_id`, leaving
@@ -2516,7 +2384,7 @@ impl AppContext {
     pub fn local_dpns_names(
         &self,
     ) -> std::result::Result<Vec<(Identifier, DPNSNameInfo)>, TaskError> {
-        let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
+        let wallets = self.wallet_context().wallets();
         let qualified_identities = self.load_identities_filtered(&wallets, |_| true)?;
 
         // Map each identity's DPNS names to (Identifier, DPNSNameInfo) tuples
@@ -2670,7 +2538,7 @@ pub(crate) mod test_staging {
         }
     }
 
-    /// A stored identity whose plaintext keys the read path has already moved
+    /// A stored identity whose legacy keys have been explicitly migrated
     /// into the vault — the state a real delete runs against. Holds the temp dir
     /// and the event receiver so neither is dropped while the test runs.
     pub(crate) struct StagedIdentity {
@@ -2685,7 +2553,7 @@ pub(crate) mod test_staging {
     }
 
     /// The two vault placements [`qi_with_plaintext_and_derived_at`] leaves
-    /// behind once the read path has migrated its plaintext keys.
+    /// behind once startup has migrated its plaintext keys.
     const STAGED_PLACEMENTS: [(PrivateKeyTarget, dash_sdk::dpp::identity::KeyID); 2] = [
         (PrivateKeyTarget::PrivateKeyOnMainIdentity, 1),
         (PrivateKeyTarget::PrivateKeyOnMainIdentity, 2),
@@ -2741,9 +2609,7 @@ pub(crate) mod test_staging {
         (ctx, store, dir, events)
     }
 
-    /// Write `qi`'s blob, list it on the roster, and read it back once so the
-    /// load path moves its plaintext keys into the vault. Asserts both keys
-    /// landed there, since every fixture below is only meaningful if they did.
+    /// Stage a legacy blob and explicitly migrate its keys before testing removal.
     fn stage_identity_record(
         ctx: &Arc<AppContext>,
         store: &Arc<platform_wallet_storage::secrets::SecretStore>,
@@ -2765,9 +2631,8 @@ pub(crate) mod test_staging {
         )
         .expect("stage the identity blob");
         index_add_identity(&kv, &id_buf).expect("index the identity");
-        ctx.get_local_qualified_identity(&id)
-            .expect("hydrate the staged identity")
-            .expect("identity present");
+        ctx.migrate_local_identity_keys_to_vault()
+            .expect("migrate staged keys explicitly");
 
         let view = IdentityKeyView::new(store, id_buf);
         for (target, key_id) in STAGED_PLACEMENTS {
@@ -3851,7 +3716,7 @@ mod tests {
         Arc::new(crate::wallet_backend::single_key::open_secret_store(&path).expect("open vault"))
     }
 
-    /// Load-path migration — `migrate_keystore_to_vault` content-detects Clear/AlwaysClear,
+    /// Startup migration — `migrate_keystore_to_vault` content-detects Clear/AlwaysClear,
     /// stores them in the vault FIRST, then rewrites the blob to InVault.
     /// Asserts: vault-first (the raw bytes are present), the wallet-derived key
     /// is untouched, zero plaintext remains, and the persist closure ran AFTER
@@ -3867,7 +3732,7 @@ mod tests {
 
         let view = IdentityKeyView::new(&store, id);
         let mut persisted = false;
-        let outcome = migrate_keystore_to_vault(&store, &id, &mut qi, |migrated| {
+        let outcome = migrate_keystore_to_vault(&store, &id, &mut qi, [], |migrated| {
             // Vault-FIRST: by the time persist runs, the raw keys are stored.
             assert!(
                 view.get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 1)
@@ -3887,7 +3752,7 @@ mod tests {
             Ok(())
         });
 
-        assert_eq!(outcome, KeystoreMigration::Migrated(2));
+        assert_eq!(outcome.unwrap(), KeystoreMigration::Migrated(2));
         assert!(persisted, "persist closure ran");
         // Both plaintext keys are in the vault and equal the originals.
         assert_eq!(
@@ -3926,18 +3791,151 @@ mod tests {
 
         // Idempotent: a second run finds nothing to migrate.
         assert_eq!(
-            migrate_keystore_to_vault(&store, &id, &mut qi, |_| Ok(())),
+            migrate_keystore_to_vault(&store, &id, &mut qi, [], |_| Ok(())).unwrap(),
             KeystoreMigration::Nothing
         );
     }
 
-    /// Regression: the single-get `get_identity_by_id` path
-    /// must run the SAME vault migration the bulk `load_identities_filtered`
-    /// path runs, so a legacy blob with resident `Clear`/`AlwaysClear` keys is
-    /// migrated to the vault on read instead of returning (and re-persisting)
-    /// resident plaintext. Before the fix this path called only `hydrate_top_ups`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn get_identity_by_id_migrates_legacy_resident_keys_to_vault() {
+    async fn identity_migration_write_failures_keep_preparation_retryable() {
+        use crate::wallet_backend::secret_seam::write_fault_test_support::WriteFault;
+        use std::sync::atomic::Ordering;
+
+        for fail_vault in [true, false] {
+            let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+            let ctx = &staged.ctx;
+            let qi = qi_with_plaintext_and_derived([0xAA; 32], [0xBB; 32]);
+            let kv = ctx.det_kv().unwrap();
+            let id = staged.id.to_buffer();
+            let mut stored: StoredQualifiedIdentity = kv
+                .get(DetScope::Identity(&id), IDENTITY_KEY)
+                .unwrap()
+                .unwrap();
+            stored.qi_bytes = qi.to_bytes();
+            kv.put(DetScope::Identity(&id), IDENTITY_KEY, &stored)
+                .unwrap();
+            let conn =
+                rusqlite::Connection::open(ctx.data_dir().join("det-testnet.sqlite")).unwrap();
+            let fault = if fail_vault {
+                Some(WriteFault::arm(1))
+            } else {
+                conn.execute_batch("CREATE TRIGGER fail_migration BEFORE INSERT ON meta_identity WHEN NEW.key = 'det:identity:v1' BEGIN SELECT RAISE(FAIL, 'injected migration write failure'); END;").unwrap();
+                None
+            };
+            let (tx, _rx) = tokio::sync::mpsc::channel(32);
+            let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, ctx.egui_ctx().clone());
+            assert!(
+                ctx.prepare_storage(sender.clone()).await.is_err(),
+                "failed migration must fail preparation (vault={fail_vault})"
+            );
+            assert!(!ctx.storage_prepared.load(Ordering::Acquire));
+            assert_eq!(
+                ctx.stored_identity_blob(&staged.id).unwrap().unwrap(),
+                stored.qi_bytes
+            );
+            drop(fault);
+            if !fail_vault {
+                conn.execute_batch("DROP TRIGGER fail_migration").unwrap();
+            }
+            ctx.prepare_storage(sender)
+                .await
+                .expect("retry migration after storage recovers");
+            assert!(ctx.storage_prepared.load(Ordering::Acquire));
+            assert!(
+                !ctx.get_local_qualified_identity(&staged.id)
+                    .unwrap()
+                    .unwrap()
+                    .private_keys
+                    .has_plaintext_for_vault()
+            );
+            ctx.wallet_backend().unwrap().shutdown().await;
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn identity_migration_skips_corrupt_blob_and_migrates_healthy_record() {
+        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let ctx = &staged.ctx;
+        let kv = ctx.det_kv().unwrap();
+        let id = staged.id.to_buffer();
+        let mut stored: StoredQualifiedIdentity = kv
+            .get(DetScope::Identity(&id), IDENTITY_KEY)
+            .unwrap()
+            .unwrap();
+        stored.qi_bytes = qi_with_plaintext_and_derived([0xAA; 32], [0xBB; 32]).to_bytes();
+        kv.put(DetScope::Identity(&id), IDENTITY_KEY, &stored)
+            .unwrap();
+        let corrupt_id = [0xFE; 32];
+        stored.qi_bytes = vec![0xFF];
+        kv.put(DetScope::Identity(&corrupt_id), IDENTITY_KEY, &stored)
+            .unwrap();
+        kv.put(DetScope::Global, IDENTITY_INDEX_KEY, &vec![corrupt_id, id])
+            .unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::channel(32);
+        ctx.prepare_storage(crate::utils::egui_mpsc::SenderAsync::new(
+            tx,
+            ctx.egui_ctx().clone(),
+        ))
+        .await
+        .expect("one corrupt blob must not block healthy records");
+        assert!(
+            !ctx.get_local_qualified_identity(&staged.id)
+                .unwrap()
+                .unwrap()
+                .private_keys
+                .has_plaintext_for_vault()
+        );
+        assert_eq!(
+            ctx.stored_identity_blob(&Identifier::from(corrupt_id))
+                .unwrap()
+                .unwrap(),
+            vec![0xFF]
+        );
+        ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn identity_migration_skips_corrupt_wrapper_and_migrates_healthy_record() {
+        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let ctx = &staged.ctx;
+        let kv = ctx.det_kv().unwrap();
+        let id = staged.id.to_buffer();
+        let mut stored: StoredQualifiedIdentity = kv
+            .get(DetScope::Identity(&id), IDENTITY_KEY)
+            .unwrap()
+            .unwrap();
+        stored.qi_bytes = qi_with_plaintext_and_derived([0xAA; 32], [0xBB; 32]).to_bytes();
+        kv.put(DetScope::Identity(&id), IDENTITY_KEY, &stored)
+            .unwrap();
+        let corrupt_id = [0xFE; 32];
+        kv.put(DetScope::Identity(&corrupt_id), IDENTITY_KEY, &1u8)
+            .unwrap();
+        kv.put(DetScope::Global, IDENTITY_INDEX_KEY, &vec![corrupt_id, id])
+            .unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::channel(32);
+        ctx.prepare_storage(crate::utils::egui_mpsc::SenderAsync::new(
+            tx,
+            ctx.egui_ctx().clone(),
+        ))
+        .await
+        .expect("one corrupt wrapper must not block healthy records");
+        assert!(
+            !ctx.get_local_qualified_identity(&staged.id)
+                .unwrap()
+                .unwrap()
+                .private_keys
+                .has_plaintext_for_vault()
+        );
+        assert_eq!(
+            kv.get::<u8>(DetScope::Identity(&corrupt_id), IDENTITY_KEY)
+                .unwrap(),
+            Some(1)
+        );
+        ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn identity_reads_are_pure_and_storage_preparation_migrates_legacy_keys() {
         use crate::app::TaskResult;
         use crate::app_dir::ensure_env_file;
         use crate::context::connection_status::ConnectionStatus;
@@ -3946,7 +3944,7 @@ mod tests {
         use crate::utils::tasks::TaskManager;
 
         // Offline wired AppContext (no network I/O) so `secret_store` is a real,
-        // writable vault and `get_identity_by_id` can migrate into it.
+        // writable vault for the explicit startup migration.
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let data_dir = temp_dir.path().to_path_buf();
         ensure_env_file(&data_dir);
@@ -3967,7 +3965,7 @@ mod tests {
         .expect("offline testnet AppContext::new");
         let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
         let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
-        ctx.ensure_wallet_backend(sender)
+        ctx.ensure_wallet_backend(sender.clone())
             .await
             .expect("wire wallet backend offline");
 
@@ -4000,10 +3998,33 @@ mod tests {
             view.get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 1)
                 .unwrap()
                 .is_none(),
-            "vault must be empty before the read-path migration"
+            "vault must be empty before storage preparation"
         );
 
-        // The single-get read MUST migrate the resident plaintext.
+        let before = ctx.stored_identity_blob(&identity_id).unwrap();
+        let fault =
+            crate::wallet_backend::secret_seam::write_fault_test_support::WriteFault::arm(0);
+        for loaded in [
+            ctx.get_local_qualified_identity(&identity_id)
+                .unwrap()
+                .unwrap(),
+            ctx.get_identity_by_id(&identity_id).unwrap().unwrap(),
+            ctx.load_local_qualified_identities().unwrap().remove(0),
+        ] {
+            assert!(loaded.private_keys.has_plaintext_for_vault());
+        }
+        assert_eq!(ctx.stored_identity_blob(&identity_id).unwrap(), before);
+        assert!(fault.schemes().is_empty(), "reads must not write secrets");
+        drop(fault);
+        assert!(
+            view.get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 1)
+                .unwrap()
+                .is_none()
+        );
+
+        ctx.prepare_storage(sender)
+            .await
+            .expect("explicit startup migration");
         let loaded = ctx
             .get_identity_by_id(&identity_id)
             .expect("load identity")
@@ -4114,7 +4135,7 @@ mod tests {
             )
             .expect("seal existing key");
 
-        let err = encode_identity_blob_vault_first(&store, &id, &qi)
+        let err = encode_identity_blob_vault_first(&store, &id, &qi, [])
             .expect_err("must refuse to keyless-store a new key on a protected identity");
         assert!(
             matches!(err, TaskError::IdentityKeyProtectionDowngrade),
@@ -4130,7 +4151,7 @@ mod tests {
         );
     }
 
-    /// The load-path migration likewise skips a protected identity's
+    /// The startup migration likewise skips a protected identity's
     /// resident plaintext rather than writing it keyless — fail closed, persist
     /// nothing, leave it resident for the session.
     #[test]
@@ -4151,11 +4172,11 @@ mod tests {
             .expect("seal existing key");
 
         let mut persisted = false;
-        let outcome = migrate_keystore_to_vault(&store, &id, &mut qi, |_| {
+        let outcome = migrate_keystore_to_vault(&store, &id, &mut qi, [], |_| {
             persisted = true;
             Ok(())
         });
-        assert_eq!(outcome, KeystoreMigration::ProtectedSkipped);
+        assert_eq!(outcome.unwrap(), KeystoreMigration::ProtectedSkipped);
         assert!(!persisted, "a protected-skip must persist nothing");
         // No keyless key written for the resident plaintext key.
         assert_eq!(
@@ -4171,7 +4192,7 @@ mod tests {
         );
     }
 
-    /// Write-path twin of the load-path migration: the insert/update encoder
+    /// The runtime insert/update encoder
     /// (`encode_identity_blob_vault_first`) moves plaintext keys into the vault
     /// FIRST and returns an `InVault`-only blob, so a freshly inserted or
     /// updated identity never lands `Clear` / `AlwaysClear` key bytes in
@@ -4188,7 +4209,7 @@ mod tests {
         let medium = [0xB2; 32];
         let qi = qi_with_plaintext_and_derived(high, medium);
 
-        let blob = encode_identity_blob_vault_first(&store, &id, &qi).expect("encode");
+        let blob = encode_identity_blob_vault_first(&store, &id, &qi, []).expect("encode");
 
         // The persisted blob carries neither plaintext key in any rendered form.
         let rendered = format!("{blob:?}");
@@ -4236,7 +4257,7 @@ mod tests {
 
     /// Write-fault no-loss ordering. With the vault made unwritable so
     /// `store_all` fails, the migration restores the resident plaintext, does
-    /// NOT call persist, and reports `VaultWriteFailed` — keys are never lost on
+    /// NOT call persist, and returns the typed storage error — keys are never lost on
     /// a mid-write fault (the write half CRASH-01's read half does not cover).
     #[cfg(unix)]
     #[test]
@@ -4257,7 +4278,7 @@ mod tests {
             .expect("chmod ro");
 
         let mut persisted = false;
-        let outcome = migrate_keystore_to_vault(&store, &id, &mut qi, |_| {
+        let outcome = migrate_keystore_to_vault(&store, &id, &mut qi, [], |_| {
             persisted = true;
             Ok(())
         });
@@ -4265,7 +4286,7 @@ mod tests {
         // Restore perms so tempdir cleanup works.
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).ok();
 
-        assert_eq!(outcome, KeystoreMigration::VaultWriteFailed);
+        assert!(outcome.is_err(), "vault failure must propagate");
         assert!(
             !persisted,
             "persist must NOT run when the vault write failed"
@@ -5482,6 +5503,181 @@ mod tests {
         );
     }
 
+    /// SEC-002 end to end: a stale plaintext key filed at the id the
+    /// on-chain key uses is never destroyed. The first refresh keeps it and
+    /// the save moves its bytes into the vault; the next refresh hands the
+    /// slot to the on-chain key while the vault still holds the stale secret.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stale_plaintext_key_survives_refreshes_and_yields_its_slot() {
+        use crate::model::qualified_identity::encrypted_key_storage::WalletDerivationPath;
+        use dash_sdk::dpp::identity::KeyID;
+        use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
+
+        const KEY_ID: KeyID = 9;
+        const STALE_SECRET: [u8; 32] = [0x77; 32];
+        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let id = staged.id.to_buffer();
+        let placement = (PrivateKeyTarget::PrivateKeyOnMainIdentity, KEY_ID);
+        let pv = PlatformVersion::latest();
+        let stale = IdentityPublicKey::random_key(KEY_ID, Some(91), pv);
+        let on_chain = IdentityPublicKey::random_key(KEY_ID, Some(92), pv);
+
+        // A legacy blob still carrying the stale key as resident plaintext.
+        let kv = staged.ctx.det_kv().expect("identity kv");
+        let mut record = kv
+            .get::<StoredQualifiedIdentity>(DetScope::Identity(&id), IDENTITY_KEY)
+            .expect("read the stored record")
+            .expect("record present");
+        let mut legacy = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read the staged identity")
+            .expect("identity present");
+        legacy.private_keys.insert_at(
+            placement.clone(),
+            (
+                QualifiedIdentityPublicKey::from(stale.clone()),
+                PrivateKeyData::Clear(STALE_SECRET),
+            ),
+        );
+        record.qi_bytes = legacy.to_bytes();
+        kv.put(DetScope::Identity(&id), IDENTITY_KEY, &record)
+            .expect("write the legacy blob");
+
+        let rebuild = || {
+            let mut rebuilt = legacy.clone();
+            let mut keys = KeyStorage::default();
+            keys.insert_at(
+                placement.clone(),
+                (
+                    QualifiedIdentityPublicKey::from(on_chain.clone()),
+                    PrivateKeyData::AtWalletDerivationPath(WalletDerivationPath {
+                        wallet_seed_hash: [0x02; 32],
+                        derivation_path: DerivationPath::from(vec![]),
+                    }),
+                ),
+            );
+            rebuilt.private_keys = keys;
+            rebuilt
+        };
+        let vault = IdentityKeyView::new(&staged.store, id);
+
+        staged
+            .ctx
+            .store_discovered_identity(&mut rebuild(), &None, DiscoveryIntent::Automatic)
+            .expect("first refresh");
+        let after_first = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read back")
+            .expect("identity present");
+        assert!(
+            matches!(
+                after_first.private_keys.entry_at(&placement),
+                Some((key, PrivateKeyData::InVault)) if key.identity_public_key == stale
+            ),
+            "the first refresh keeps the stale key and saves it to the vault"
+        );
+
+        staged
+            .ctx
+            .store_discovered_identity(&mut rebuild(), &None, DiscoveryIntent::Automatic)
+            .expect("second refresh");
+        let after_second = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read back")
+            .expect("identity present");
+        assert!(
+            after_second
+                .private_keys
+                .candidates(&on_chain)
+                .next()
+                .is_some(),
+            "the second refresh hands the slot to the on-chain key"
+        );
+        assert_eq!(
+            vault
+                .get(&placement.0, KEY_ID)
+                .expect("read the vault")
+                .map(|secret| *secret),
+            Some(STALE_SECRET),
+            "the stale secret is still recoverable from the vault"
+        );
+    }
+
+    /// A discovery merge that would leave a password-protected identity with
+    /// resident plaintext fails closed: the keyless vault write is refused
+    /// with the refresh-worded `IdentityRefreshBlockedByPartialProtection`
+    /// (SEC-003), the stored record is left
+    /// byte-for-byte untouched, and the plaintext key lands nowhere.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_discovery_merge_with_plaintext_on_a_protected_identity_is_refused() {
+        use crate::wallet_backend::secret_seam::SecretScheme;
+        use platform_wallet_storage::secrets::SecretString;
+
+        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let id = staged.id.to_buffer();
+        // Seal one stored key Tier-2, so the identity is password-protected.
+        IdentityKeyView::new(&staged.store, id)
+            .store_protected(
+                &PrivateKeyTarget::PrivateKeyOnMainIdentity,
+                1,
+                &[0xAA; 32],
+                &SecretString::new("identity-password-xx"),
+            )
+            .expect("seal a stored key Tier-2");
+        let kv = staged.ctx.det_kv().expect("identity kv");
+        let read_blob = || {
+            kv.get::<StoredQualifiedIdentity>(DetScope::Identity(&id), IDENTITY_KEY)
+                .expect("read the stored record")
+                .expect("record present")
+                .qi_bytes
+        };
+        let before = read_blob();
+
+        // The rebuild carries a resident plaintext key the merge keeps.
+        let mut rediscovered = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read the staged identity")
+            .expect("identity present");
+        let plaintext = IdentityPublicKey::random_key(9, Some(9), PlatformVersion::latest());
+        rediscovered.private_keys.insert_at(
+            (PrivateKeyTarget::PrivateKeyOnMainIdentity, plaintext.id()),
+            (
+                QualifiedIdentityPublicKey::from(plaintext.clone()),
+                PrivateKeyData::Clear([0x99; 32]),
+            ),
+        );
+
+        let err = staged
+            .ctx
+            .store_discovered_identity(&mut rediscovered, &None, DiscoveryIntent::Automatic)
+            .expect_err("a mixed-protection merge must fail closed");
+
+        assert!(
+            matches!(
+                err,
+                TaskError::IdentityRefreshBlockedByPartialProtection { identity_id }
+                    if identity_id == staged.id
+            ),
+            "expected IdentityRefreshBlockedByPartialProtection, got {err:?}"
+        );
+        assert_eq!(
+            read_blob(),
+            before,
+            "the refused merge must leave the stored record untouched"
+        );
+        assert_eq!(
+            IdentityKeyView::new(&staged.store, id)
+                .scheme(&PrivateKeyTarget::PrivateKeyOnMainIdentity, plaintext.id())
+                .expect("read the vault scheme"),
+            SecretScheme::Absent,
+            "the plaintext key must not land in the vault keyless",
+        );
+    }
+
     /// The chokepoint guard, reached through the ordinary update path rather
     /// than through discovery: every fund-moving task (top-up, transfer,
     /// withdrawal, add-key, DPNS registration) holds a `QualifiedIdentity` it
@@ -5559,6 +5755,44 @@ mod tests {
                 .expect("read the roster")
                 .contains(&staged.id),
             "with no unload marker, an update must still restore the record",
+        );
+    }
+
+    /// Off the roster but never unloaded — an insert that stopped between its
+    /// blob write and its roster add — is not a removal: its vault keys are
+    /// live, so a refresh must merge them, not replace them.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_refresh_keeps_the_keys_of_an_unlisted_identity_never_unloaded() {
+        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let stored = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read the staged identity")
+            .expect("identity present");
+        let stored_keys = stored.private_keys.keys_set();
+        assert!(!stored_keys.is_empty(), "fixture: the identity holds keys");
+
+        let kv = staged.ctx.det_kv().expect("identity kv");
+        index_remove_identity(&kv, &staged.id.to_buffer()).expect("delist the identity");
+
+        let mut rebuilt = stored.clone();
+        rebuilt.private_keys = KeyStorage::default();
+        assert!(
+            staged
+                .ctx
+                .store_discovered_identity(&mut rebuilt, &None, DiscoveryIntent::Automatic)
+                .expect("store"),
+        );
+
+        let after = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read back")
+            .expect("identity present");
+        assert_eq!(
+            after.private_keys.keys_set(),
+            stored_keys,
+            "every stored key survives the refresh, so no vault secret is orphaned"
         );
     }
 

@@ -1,0 +1,210 @@
+name: Migration Fixture Renewal
+
+on:
+  schedule:
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+    inputs:
+      base_branch:
+        description: Branch whose manifest should be renewed
+        default: v1.0-dev
+        type: string
+      dry_run:
+        description: Verify downloads without uploading archives or opening a PR
+        default: true
+        type: boolean
+      force:
+        description: Include archives more than 30 days from expiry
+        default: false
+        type: boolean
+  pull_request:
+    paths:
+      - .github/workflows/migration-fixture-renewal.yml
+      - scripts/migration-fixtures/**
+
+concurrency:
+  group: fixture-renewal-${{ inputs.base_branch || github.event.pull_request.number || 'v1.0-dev' }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Test renewal contracts
+        run: python3 -m unittest discover -s scripts/migration-fixtures -p test_renewal.py -v
+      - name: Test fixture scripts
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: bash scripts/migration-fixtures/test-scripts.sh
+
+  plan:
+    needs: tests
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      count: ${{ steps.plan.outputs.count }}
+      base: ${{ steps.plan.outputs.base }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: automation
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.base_branch || 'v1.0-dev' }}
+          path: source
+          persist-credentials: false
+      - name: Select archives due within 30 days
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_BRANCH: ${{ inputs.base_branch || 'v1.0-dev' }}
+          FORCE: ${{ inputs.force }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          git check-ref-format --branch "$BASE_BRANCH"
+          args=()
+          if [ "$FORCE" = true ]; then args+=(--force); fi
+          matrix=$(python3 automation/scripts/migration-fixtures/renewal.py plan \
+            --manifest source/tests/migration-fixtures/manifest.json "${args[@]}")
+          pending=$(gh pr list --repo "$GITHUB_REPOSITORY" --base "$BASE_BRANCH" \
+            --state open --limit 100 --json headRefName,url \
+            --jq '.[] | select(.headRefName | startswith("ci/migration-fixture-renewal-")) | .url')
+          if [ -n "$pending" ] && [ "$DRY_RUN" != true ]; then
+            echo "Review the existing renewal PR before publishing another: $pending" >> "$GITHUB_STEP_SUMMARY"
+            matrix='{"include":[]}'
+          fi
+          count=$(jq '.include | length' <<< "$matrix")
+          {
+            echo "matrix=$matrix"
+            echo "count=$count"
+            echo "base=$BASE_BRANCH"
+          } >> "$GITHUB_OUTPUT"
+          echo "Selected $count archive(s) for renewal on $BASE_BRANCH." >> "$GITHUB_STEP_SUMMARY"
+
+  renew:
+    needs: plan
+    if: needs.plan.outputs.count != '0'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download and verify original archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FIXTURE: ${{ toJSON(matrix.fixture) }}
+        run: |
+          set -euo pipefail
+          jq '{schema_version: 1, fixtures: [.]}' <<< "$FIXTURE" > "$RUNNER_TEMP/selected.json"
+          bash scripts/migration-fixtures/download-fixtures.sh \
+            --manifest "$RUNNER_TEMP/selected.json" --dest "$RUNNER_TEMP/archives" --strict
+          python3 scripts/migration-fixtures/renewal.py verify \
+            --manifest "$RUNNER_TEMP/selected.json" --archives "$RUNNER_TEMP/archives"
+      - name: Upload identical archive
+        if: github.event_name != 'workflow_dispatch' || !inputs.dry_run
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.fixture.artifact.artifact_name }}
+          path: ${{ runner.temp }}/archives/${{ matrix.fixture.artifact.archive_filename }}
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+          overwrite: true
+      - name: Record actual upload expiry
+        if: github.event_name != 'workflow_dispatch' || !inputs.dry_run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          FIXTURE: ${{ toJSON(matrix.fixture) }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID" > "$RUNNER_TEMP/upload.json"
+          mkdir -p "$RUNNER_TEMP/receipts"
+          jq --slurpfile uploaded "$RUNNER_TEMP/upload.json" \
+            '{fixture_id: .id, source_artifact: .artifact, uploaded: $uploaded[0]}' \
+            <<< "$FIXTURE" > "$RUNNER_TEMP/receipts/receipt.json"
+          python3 scripts/migration-fixtures/renewal.py apply \
+            --manifest "$RUNNER_TEMP/selected.json" --receipts "$RUNNER_TEMP/receipts"
+          mv "$RUNNER_TEMP/receipts/receipt.json" "$RUNNER_TEMP/receipts/$(jq -r .id <<< "$FIXTURE").json"
+      - name: Share verified renewal receipt
+        if: github.event_name != 'workflow_dispatch' || !inputs.dry_run
+        uses: actions/upload-artifact@v4
+        with:
+          name: fixture-renewal-record-${{ matrix.fixture.id }}
+          path: ${{ runner.temp }}/receipts/*.json
+          retention-days: 7
+          if-no-files-found: error
+          overwrite: true
+
+  propose:
+    needs: [plan, renew]
+    if: github.event_name != 'workflow_dispatch' || !inputs.dry_run
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: automation
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.base }}
+          path: source
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: fixture-renewal-record-*
+          path: ${{ runner.temp }}/receipts
+          merge-multiple: true
+      - name: Prepare manifest-only pull request
+        working-directory: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_BRANCH: ${{ needs.plan.outputs.base }}
+          EXPECTED_COUNT: ${{ needs.plan.outputs.count }}
+        run: |
+          set -euo pipefail
+          test "$(find "$RUNNER_TEMP/receipts" -name '*.json' | wc -l)" -eq "$EXPECTED_COUNT"
+          python3 ../automation/scripts/migration-fixtures/renewal.py apply \
+            --manifest tests/migration-fixtures/manifest.json --receipts "$RUNNER_TEMP/receipts"
+          branch="ci/migration-fixture-renewal-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          git switch -c "$branch"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tests/migration-fixtures/manifest.json
+          git commit -m 'ci: renew migration fixture artifact retention'
+          git push origin "HEAD:refs/heads/$branch"
+          cat > "$RUNNER_TEMP/pr-body.md" <<'EOF'
+          Historical migration archives are approaching expiry. This refresh preserves their exact bytes and extends their availability for migration tests.
+
+          Only artifact run pointers and retention metadata change. Archive sizes and SHA-256 digests were verified before upload; actual expiry was read back from GitHub. No wallet capture or migration was performed.
+
+          Review and merge this PR before the old artifacts expire. Run the migration matrix against this branch before merging. If GitHub requests approval for Actions on this bot-created PR, approve those checks.
+
+          <sub>🤖 Co-authored by [Claudius the Magnificent](https://github.com/lklimek/claudius) AI Agent</sub>
+          EOF
+          gh pr create --repo "$GITHUB_REPOSITORY" --base "$BASE_BRANCH" --head "$branch" \
+            --draft --title 'ci: renew migration fixture artifacts' --body-file "$RUNNER_TEMP/pr-body.md" \
+            | tee -a "$GITHUB_STEP_SUMMARY"

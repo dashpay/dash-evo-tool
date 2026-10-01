@@ -1,4 +1,6 @@
+mod add_new_wallet_screen;
 mod address_input;
+mod button_sizing;
 mod confirmation_dialog;
 mod contract_screen;
 mod create_asset_lock_screen;
@@ -12,6 +14,7 @@ mod identity_hub_onboarding;
 mod identity_hub_settings;
 mod identity_hub_switcher;
 mod identity_selector;
+mod import_mnemonic_screen;
 mod import_single_key;
 mod info_popup;
 mod key_info_screen;

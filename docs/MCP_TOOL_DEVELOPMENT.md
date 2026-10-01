@@ -140,7 +140,7 @@ Add the tool to the tool reference table with its name, parameters, and descript
 
 ## See Also
 
-- [CLAUDE.md](../CLAUDE.md) — project conventions, build commands, architecture overview (MCP section)
+- [AGENTS.md](../AGENTS.md) — project conventions, build commands, architecture overview (MCP section)
 - [CONTRIBUTING.md](../CONTRIBUTING.md) — development setup, feature flags, code quality, PR workflow
 - [docs/MCP.md](MCP.md) — server modes, configuration, client setup
 - [docs/CLI.md](CLI.md) — CLI binary usage and shell completion

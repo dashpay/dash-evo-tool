@@ -225,7 +225,7 @@ impl ScreenLike for CreateAssetLockScreen {
             .wallet
             .read()
             .ok()
-            .and_then(|w| w.alias.clone())
+            .and_then(|w| self.app_context.wallet_context().hd_alias(&w.seed_hash()))
             .unwrap_or_else(|| "Unknown Wallet".to_string());
 
         let mut action = add_top_panel(

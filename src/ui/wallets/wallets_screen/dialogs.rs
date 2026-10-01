@@ -704,16 +704,8 @@ impl WalletsBalancesScreen {
                         } else {
                             "Fund Address"
                         };
-                        let fund_button = ComponentStyles::primary_button(fund_label)
-                            .fill(if can_fund {
-                                ComponentStyles::primary_button_fill()
-                            } else {
-                                DashColors::text_secondary(dark_mode)
-                            });
 
-                        if ui
-                            .add_enabled(can_fund, fund_button)
-                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        if ComponentStyles::add_primary_button_enabled(ui, can_fund, fund_label)
                             .clicked()
                         {
                             // Check if wallet is locked
@@ -1143,7 +1135,12 @@ impl WalletsBalancesScreen {
         let address_input = AddressInput::new(self.app_context.network)
             .with_label("Mine to address:")
             .with_address_kinds(&[AddressKind::Core])
-            .with_wallets(&[(wallet, balances, paths)])
+            .with_wallets(&[(
+                wallet,
+                balances,
+                paths,
+                self.app_context.wallet_context().hd_alias(&seed_hash),
+            )])
             .with_selection_only(true)
             .with_full_addresses(true);
 

@@ -35,6 +35,7 @@ use crate::wallet_backend::kv::{KvAdapterError, map_kv_storage_error};
 #[cfg(test)]
 use crate::wallet_backend::sidecar::sidecar_key;
 use crate::wallet_backend::sidecar::{SidecarScope, SidecarValue, SidecarView};
+use crate::wallet_backend::wallet_context::WalletContext;
 
 /// Colon-separated namespace shared across networks. The full key is
 /// `<network>:wallet_meta:<seed_hash_base58>`.
@@ -91,32 +92,56 @@ impl SidecarValue for WalletMeta {
 /// unavailable and the seed hash is the stable DET-level key. Reads degrade to
 /// `None`/skip on a corrupt blob (with a legacy-format fallback, see
 /// [`SidecarValue::read`]) so the picker never blocks.
-pub struct WalletMetaView<'a>(SidecarView<'a, WalletMeta>);
+pub struct WalletMetaView<'a> {
+    sidecar: SidecarView<'a, WalletMeta>,
+    /// Context that publishes this view's writes, and the one network it owns.
+    owner: Option<(&'a WalletContext, Network)>,
+}
 
 impl<'a> WalletMetaView<'a> {
     /// Borrow a [`DetKv`] handle as a typed wallet-metadata view. Kept
     /// `pub` so benches and downstream tooling can build the view
     /// without going through [`WalletBackend::wallet_meta`].
     pub fn new(kv: &'a Arc<DetKv>) -> Self {
-        Self(SidecarView::new(
-            kv,
-            KEY_INFIX,
-            SidecarScope::Global,
-            map_kv_error_to_task_error,
-        ))
+        Self {
+            sidecar: SidecarView::new(
+                kv,
+                KEY_INFIX,
+                SidecarScope::Global,
+                map_kv_error_to_task_error,
+            ),
+            owner: None,
+        }
+    }
+
+    /// Construct a view whose mutations publish through the shared owner.
+    pub(crate) fn with_context(
+        kv: &'a Arc<DetKv>,
+        context: &'a WalletContext,
+        network: Network,
+    ) -> Self {
+        let mut view = Self::new(kv);
+        view.owner = Some((context, network));
+        view
     }
 
     /// All `(seed_hash, meta)` pairs persisted for `network`. A single corrupt
     /// row is logged and skipped so the wallet listing degrades to "name
     /// unknown" rather than refusing to open the app.
     pub fn list(&self, network: Network) -> Vec<(WalletSeedHash, WalletMeta)> {
-        self.0.list(network)
+        match self.owner {
+            Some((context, _)) => context.read_metadata(|| self.sidecar.list(network)),
+            None => self.sidecar.list(network),
+        }
     }
 
     /// Fetch the metadata for a single wallet. `None` when the key is
     /// absent or the blob fails to decode (logged).
     pub fn get(&self, network: Network, seed_hash: &WalletSeedHash) -> Option<WalletMeta> {
-        self.0.get(network, seed_hash)
+        match self.owner {
+            Some((context, _)) => context.read_metadata(|| self.sidecar.get(network, seed_hash)),
+            None => self.sidecar.get(network, seed_hash),
+        }
     }
 
     /// Fetch the metadata for a single wallet, surfacing a read failure instead
@@ -131,20 +156,29 @@ impl<'a> WalletMetaView<'a> {
         network: Network,
         seed_hash: &WalletSeedHash,
     ) -> Result<Option<WalletMeta>, TaskError> {
-        self.0.try_get(network, seed_hash)
+        match self.owner {
+            Some((context, _)) => {
+                context.read_metadata(|| self.sidecar.try_get(network, seed_hash))
+            }
+            None => self.sidecar.try_get(network, seed_hash),
+        }
     }
 
     /// Upsert the metadata for a single wallet. Re-writing the same value is an
     /// idempotent overwrite (DetKv upserts by key).
+    ///
+    /// Enforces only the alias length as stored: user-entered names are
+    /// cleaned, defaulted, and uniqueness-checked upstream (registration and
+    /// rename), while writes that carry an unchanged alias — including the
+    /// empty alias of an unnamed legacy wallet — must round-trip untouched.
     pub fn set(
         &self,
         network: Network,
         seed_hash: &WalletSeedHash,
         meta: &WalletMeta,
     ) -> Result<(), TaskError> {
-        crate::model::wallet::validate_wallet_alias(&meta.alias)
-            .map_err(|source| TaskError::InvalidWalletAliasLength { source })?;
-        self.0.set(network, seed_hash, meta)
+        crate::model::wallet::alias::validate_stored_alias(&meta.alias)?;
+        self.publish_set(network, seed_hash, meta)
     }
 
     /// Preserve metadata imported from legacy storage, including aliases that
@@ -155,20 +189,47 @@ impl<'a> WalletMetaView<'a> {
         seed_hash: &WalletSeedHash,
         meta: &WalletMeta,
     ) -> Result<(), TaskError> {
-        if let Err(error) = crate::model::wallet::validate_wallet_alias(&meta.alias) {
+        if let Err(crate::model::wallet::alias::AliasError::TooLong { length }) =
+            crate::model::wallet::alias::validate_stored_alias(&meta.alias)
+        {
             tracing::warn!(
-                alias_chars = error.actual,
-                max_alias_chars = error.max,
+                alias_chars = length.actual,
+                max_alias_chars = length.max,
                 "Preserving an overlong legacy wallet alias during migration"
             );
         }
-        self.0.set(network, seed_hash, meta)
+        self.publish_set(network, seed_hash, meta)
     }
 
     /// Delete the metadata for a single wallet. Idempotent — a
     /// missing key returns `Ok(())`.
     pub fn delete(&self, network: Network, seed_hash: &WalletSeedHash) -> Result<(), TaskError> {
-        self.0.delete(network, seed_hash)
+        if let Some((context, own_network)) = self.owner
+            && own_network == network
+        {
+            context.delete_hd_metadata(seed_hash, || self.sidecar.delete(network, seed_hash))
+        } else {
+            self.sidecar.delete(network, seed_hash)
+        }
+    }
+
+    /// Write `meta`, publishing it through the owning context when this view
+    /// is bound to `network`.
+    fn publish_set(
+        &self,
+        network: Network,
+        seed_hash: &WalletSeedHash,
+        meta: &WalletMeta,
+    ) -> Result<(), TaskError> {
+        if let Some((context, own_network)) = self.owner
+            && own_network == network
+        {
+            context.save_hd_metadata(*seed_hash, meta.clone(), || {
+                self.sidecar.set(network, seed_hash, meta)
+            })
+        } else {
+            self.sidecar.set(network, seed_hash, meta)
+        }
     }
 }
 
@@ -250,6 +311,21 @@ mod tests {
             .expect_err("overlong alias must fail");
         assert!(matches!(error, TaskError::InvalidWalletAliasLength { .. }));
         assert_eq!(view.get(Network::Mainnet, &seed), None);
+    }
+
+    /// An unnamed wallet (empty alias, e.g. legacy data) keeps its empty alias
+    /// through a metadata write that does not rename it — the write path never
+    /// substitutes a synthetic default name, so the wallet keeps rendering with
+    /// the seed-hash fallback label.
+    #[test]
+    fn set_keeps_empty_alias_of_unnamed_wallet() {
+        let kv = kv();
+        let view = WalletMetaView::new(&kv);
+        let seed: WalletSeedHash = [0x25; 32];
+        let unnamed = meta("", true, None);
+        view.set(Network::Mainnet, &seed, &unnamed)
+            .expect("an empty alias is a valid stored alias");
+        assert_eq!(view.get(Network::Mainnet, &seed), Some(unnamed));
     }
 
     #[test]

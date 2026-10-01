@@ -235,7 +235,7 @@ impl Database {
                     platform_payment_account_xpub: None,
                     known_addresses: BTreeMap::new(),
                     watched_addresses: BTreeMap::new(),
-                    alias,
+                    initial_alias: alias,
                     identities: HashMap::new(),
                     is_main,
                     platform_address_info: BTreeMap::new(),
@@ -430,7 +430,7 @@ impl Database {
 
                 tracing::trace!(
                     wallet_seed = hex::encode(wallet_seed_hash_array),
-                    wallet_alias = ?wallet.alias,
+                    wallet_alias = ?wallet.initial_alias,
                     identity = ?identity.identity.id().to_string(Encoding::Base58),
                     identity_alias = ?identity.alias,
                     wallet_index = wallet_index,

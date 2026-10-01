@@ -161,8 +161,14 @@ fi
 missing=()
 while IFS= read -r tag; do
     [ -n "$tag" ] || continue
-    newer="$(jq -L "$SCRIPT_DIR" -nr --arg tag "$tag" --arg baseline "$BASELINE" \
-        'include "semver"; ($tag | semver_key) > ($baseline | semver_key)')"
+    # Historical test/preview tags do not follow SemVer and have no ordering.
+    if ! key="$(jq -L "$SCRIPT_DIR" -en --arg tag "$tag" \
+        'include "semver"; $tag | semver_key' 2>/dev/null)"; then
+        warn "Skipping non-SemVer release tag: $tag"
+        continue
+    fi
+    newer="$(jq -L "$SCRIPT_DIR" -nr --argjson key "$key" --arg baseline "$BASELINE" \
+        'include "semver"; $key > ($baseline | semver_key)')"
     [ "$newer" = true ] || continue
     # Already covered?
     if printf '%s\n' "$FIXTURE_TAGS" | grep -Fxq "$tag"; then

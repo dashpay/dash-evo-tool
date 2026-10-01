@@ -100,7 +100,7 @@ pub struct AddExistingIdentityScreen {
 
 impl AddExistingIdentityScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
-        let selected_wallet = app_context.wallets.read_recover().values().next().cloned();
+        let selected_wallet = app_context.wallet_context().first_hd();
         Self {
             identity_id_input: String::new(),
             identity_type: IdentityType::User,
@@ -136,14 +136,14 @@ impl AddExistingIdentityScreen {
         let mut action = AppAction::None;
 
         let wallets_snapshot: Vec<(String, Arc<RwLock<Wallet>>)> = {
-            let wallets_guard = self.app_context.wallets.read_recover();
+            let wallets_guard = self.app_context.wallet_context().wallets();
             wallets_guard
                 .values()
                 .map(|wallet| {
-                    let alias = wallet
-                        .read_recover()
-                        .alias
-                        .clone()
+                    let alias = self
+                        .app_context
+                        .wallet_context()
+                        .hd_alias(&wallet.read_recover().seed_hash())
                         .unwrap_or_else(|| "Unnamed Wallet".to_string());
                     (alias, wallet.clone())
                 })
@@ -464,10 +464,11 @@ impl AddExistingIdentityScreen {
             if self.app_context.has_wallet.load(Ordering::Relaxed) {
                 let wallets: Vec<_> = self
                     .app_context
-                    .wallets
-                    .read()
-                    .map(|guard| guard.values().cloned().collect())
-                    .unwrap_or_default();
+                    .wallet_context()
+                    .wallets()
+                    .values()
+                    .cloned()
+                    .collect();
 
                 let clicked = wallet_selection_combo(
                     ui,
@@ -478,7 +479,9 @@ impl AddExistingIdentityScreen {
                         wallet
                             .read()
                             .ok()
-                            .and_then(|w| w.alias.clone())
+                            .and_then(|w| {
+                                self.app_context.wallet_context().hd_alias(&w.seed_hash())
+                            })
                             .unwrap_or_else(|| "Unnamed Wallet".to_string())
                     },
                     |_| true,
@@ -689,14 +692,14 @@ impl AddExistingIdentityScreen {
         ui.add_space(15.0);
 
         let wallets_snapshot: Vec<(String, Arc<RwLock<Wallet>>)> = {
-            let wallets_guard = self.app_context.wallets.read_recover();
+            let wallets_guard = self.app_context.wallet_context().wallets();
             wallets_guard
                 .values()
                 .map(|wallet| {
-                    let alias = wallet
-                        .read_recover()
-                        .alias
-                        .clone()
+                    let alias = self
+                        .app_context
+                        .wallet_context()
+                        .hd_alias(&wallet.read_recover().seed_hash())
                         .unwrap_or_else(|| "Unnamed Wallet".to_string());
                     (alias, wallet.clone())
                 })
@@ -1092,10 +1095,7 @@ impl ScreenLike for AddExistingIdentityScreen {
                             inner_action |= self.render_by_identity(ui);
                         }
                         LoadIdentityMode::Wallet => {
-                            let wallets_len = {
-                                let wallets = self.app_context.wallets.read_recover();
-                                wallets.len()
-                            };
+                            let wallets_len = self.app_context.wallet_context().hd_count();
                             inner_action |= self.render_by_wallet(ui, wallets_len);
                         }
                         LoadIdentityMode::DpnsName => {

@@ -311,7 +311,7 @@ pub enum MigrationError {
         source: Box<TaskError>,
     },
 
-    /// Post-migration re-hydration of `ctx.wallets` from the freshly
+    /// Post-migration re-hydration of the wallet context's HD registry from the freshly
     /// populated sidecars failed, so the migrated wallets were not
     /// reconstructed in memory and could not be registered upstream. The
     /// completion sentinel is withheld so the next cold boot — which
@@ -570,7 +570,7 @@ fn write_dapi_refresh_completion(
 ///    registration) — the pass that restores access to funds.
 /// 3. **Identities** (identity rows and the keys they hold) — last, because it
 ///    needs the drain's output: a wired backend, a reachable vault, and a
-///    hydrated `ctx.wallets` for wallet-derived identity keys to attach to.
+///    hydrated the wallet context's HD registry for wallet-derived identity keys to attach to.
 ///
 /// **Neither DET-owned pass gates the other.** The wallet drain runs regardless
 /// of the app-data outcome, and the identity import runs regardless of it too —
@@ -756,7 +756,7 @@ where
     // the two DET-owned passes must not gate each other.
     //
     // The identity pass needs the drain's output (backend wired, vault reachable,
-    // `ctx.wallets` hydrated) so a wallet-derived key lands against a wallet that
+    // the wallet context's HD registry hydrated) so a wallet-derived key lands against a wallet that
     // exists. It must NOT wait on the app-data result: a hard app-data failure —
     // one malformed vote-index blob is enough — is deterministic, so unwrapping
     // it first would skip the identity import on this launch *and every retry*
@@ -1069,7 +1069,7 @@ impl Drop for RunSeedLeases<'_> {
     }
 }
 
-/// Re-hydrates just-migrated wallets into `ctx.wallets`, registers open wallets,
+/// Re-hydrates just-migrated wallets into the wallet context's HD registry, registers open wallets,
 /// and waits for the UI to unlock or explicitly skip each protected wallet.
 /// [`run`] calls this immediately before [`write_sentinel`], so every open wallet
 /// is registered before completion; a skipped wallet remains closed in its
@@ -1109,7 +1109,7 @@ async fn register_migrated_wallets(
             source: Box::new(source),
         })?;
 
-    // Re-run the cold-boot W2 bridge now that `ctx.wallets` is populated, so the
+    // Re-run the cold-boot W2 bridge now that the wallet context's HD registry is populated, so the
     // just-migrated open wallets are registered upstream (`id_map` + persistor)
     // without a restart.
     app_context.bootstrap_loaded_wallets().await;
@@ -1729,7 +1729,7 @@ pub(crate) fn record_identity_deletion(
 /// the modern identity store.
 ///
 /// Runs after the wallet drain: the k/v store, the secret vault and a hydrated
-/// `ctx.wallets` all have to exist first. Idempotent — an identity already in
+/// the wallet context's HD registry all have to exist first. Idempotent — an identity already in
 /// the store is left alone, so a retry can never overwrite an alias the user has
 /// since edited with the stale legacy copy.
 ///
@@ -2077,7 +2077,7 @@ struct SingleKeyMigrationOutcome {
 /// `single_key_priv.<addr>` label. Idempotent. Password-protected rows
 /// are skipped and reported separately, not as failures.
 async fn migrate_single_key_rows(app_context: &Arc<AppContext>) -> Result<(), TaskError> {
-    let backend = app_context
+    app_context
         .wallet_backend()
         .map_err(|_| MigrationError::WalletBackendUnavailable)?;
 
@@ -2090,10 +2090,17 @@ async fn migrate_single_key_rows(app_context: &Arc<AppContext>) -> Result<(), Ta
     }
     let conn = open_legacy_read_only(&path)?;
 
-    let view = backend.single_key();
     let outcome = migrate_single_key_rows_from_conn(
         &conn,
-        |wif, alias| view.import_wif(wif, alias).map(|_| ()),
+        |wif, alias| {
+            app_context
+                .import_single_key_wif(
+                    wif,
+                    crate::model::wallet::alias::AliasSource::Preserved(alias),
+                    Default::default(),
+                )
+                .map(|_| ())
+        },
         app_context.network,
     )?;
     tracing::info!(
@@ -2771,6 +2778,7 @@ mod tests {
     use crate::config::{CONFIG_ENV_LOCK, Config, NetworkConfig};
     use crate::wallet_backend::DetKv;
     use crate::wallet_backend::kv_test_support::InMemoryKv;
+    use crate::wallet_backend::poison::RwLockRecover;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn kv() -> DetKv {
@@ -4111,16 +4119,14 @@ mod tests {
         network: dash_sdk::dpp::dashcore::Network,
     ) -> (
         Arc<platform_wallet_storage::secrets::SecretStore>,
-        std::sync::RwLock<
-            std::collections::BTreeMap<String, crate::model::single_key::ImportedKey>,
-        >,
+        crate::wallet_backend::wallet_context::WalletContext,
         dash_sdk::dpp::dashcore::Network,
     ) {
         let store = Arc::new(
             crate::wallet_backend::single_key::open_secret_store(&dir.join("secrets.pwsvault"))
                 .expect("open vault"),
         );
-        let index = std::sync::RwLock::new(std::collections::BTreeMap::new());
+        let index = crate::wallet_backend::wallet_context::WalletContext::default();
         (store, index, network)
     }
 
@@ -4168,14 +4174,20 @@ mod tests {
         let (store, index, network) = view_fixture(dir.path(), Network::Testnet);
         let view = SingleKeyView {
             secret_store: &store,
-            index: &index,
+            context: &index,
             network,
             app_kv: None,
         };
 
         let outcome = migrate_single_key_rows_from_conn(
             &conn,
-            |wif, alias| view.import_wif(wif, alias).map(|_| ()),
+            |wif, alias| {
+                view.import_wif(
+                    wif,
+                    crate::model::wallet::alias::AliasSource::Preserved(alias),
+                )
+                .map(|_| ())
+            },
             Network::Testnet,
         )
         .expect("migrate");
@@ -4241,20 +4253,32 @@ mod tests {
         let (store, index, network) = view_fixture(dir.path(), Network::Testnet);
         let view = SingleKeyView {
             secret_store: &store,
-            index: &index,
+            context: &index,
             network,
             app_kv: None,
         };
 
         let first = migrate_single_key_rows_from_conn(
             &conn,
-            |wif, alias| view.import_wif(wif, alias).map(|_| ()),
+            |wif, alias| {
+                view.import_wif(
+                    wif,
+                    crate::model::wallet::alias::AliasSource::Preserved(alias),
+                )
+                .map(|_| ())
+            },
             Network::Testnet,
         )
         .expect("first pass");
         let second = migrate_single_key_rows_from_conn(
             &conn,
-            |wif, alias| view.import_wif(wif, alias).map(|_| ()),
+            |wif, alias| {
+                view.import_wif(
+                    wif,
+                    crate::model::wallet::alias::AliasSource::Preserved(alias),
+                )
+                .map(|_| ())
+            },
             Network::Testnet,
         )
         .expect("second pass");
@@ -4332,14 +4356,20 @@ mod tests {
         let (store, index, network) = view_fixture(dir.path(), Network::Testnet);
         let view = SingleKeyView {
             secret_store: &store,
-            index: &index,
+            context: &index,
             network,
             app_kv: None,
         };
 
         let outcome = migrate_single_key_rows_from_conn(
             &conn,
-            |wif, alias| view.import_wif(wif, alias).map(|_| ()),
+            |wif, alias| {
+                view.import_wif(
+                    wif,
+                    crate::model::wallet::alias::AliasSource::Preserved(alias),
+                )
+                .map(|_| ())
+            },
             Network::Testnet,
         )
         .expect("partial failure must not abort the loop");
@@ -5851,6 +5881,74 @@ mod tests {
             .expect("wallet backend must wire offline");
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn migration_retry_refreshes_hydrated_duplicate_key_names() {
+        use crate::model::wallet::alias::AliasSource;
+        use dash_sdk::dpp::dashcore::PrivateKey;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = fresh_app_context(tmp.path());
+        wire_backend(&ctx).await;
+        let backend = ctx.wallet_backend().unwrap();
+        let conn = Connection::open(ctx.db.db_file_path().unwrap()).unwrap();
+        for byte in [0x31, 0x32] {
+            let raw = [byte; 32];
+            let key = PrivateKey::from_byte_array(&raw, ctx.network).unwrap();
+            let mut imported = backend
+                .single_key()
+                .import_wif(&key.to_wif(), AliasSource::Preserved(Some("Dup".into())))
+                .unwrap();
+            imported.alias = Some("Dup".into());
+            ctx.app_kv()
+                .put(
+                    DetScope::Global,
+                    &format!("{}:single_key_meta:{}", ctx.network, imported.address),
+                    &imported,
+                )
+                .unwrap();
+            seed_legacy_row(
+                &conn,
+                &[byte; 32],
+                &raw,
+                &[],
+                &[],
+                &imported.address,
+                Some("Dup"),
+                false,
+                ctx.network,
+            );
+        }
+        backend.hydrate_context_wallets(&ctx).unwrap();
+        assert!(
+            ctx.wallet_context()
+                .single_key_wallets()
+                .values()
+                .all(|wallet| ctx
+                    .wallet_context()
+                    .single_alias(&wallet.read().unwrap().address.to_string())
+                    .as_deref()
+                    == Some("Dup"))
+        );
+
+        migrate_single_key_rows(&ctx).await.unwrap();
+        backend.hydrate_context_wallets(&ctx).unwrap();
+        let listed = backend.single_key().list();
+        assert_eq!(listed.len(), 2);
+        assert_ne!(listed[0].alias, listed[1].alias);
+        for wallet in ctx.wallet_context().single_key_wallets().values() {
+            let wallet = wallet.read().unwrap();
+            let stored = listed
+                .iter()
+                .find(|key| key.address == wallet.address.to_string())
+                .unwrap();
+            assert_eq!(
+                ctx.wallet_context()
+                    .single_alias(&wallet.address.to_string()),
+                stored.alias
+            );
+        }
+    }
+
     /// Stage the v0.10-dev vote queue: the legacy table plus the rows given as
     /// `(contested_name, vote_choice)`. A `vote_choice` the reader cannot parse
     /// is the corrupt row an upgrade has to survive.
@@ -5936,7 +6034,6 @@ mod tests {
     async fn skipped_protected_wallet_completes_and_registers_on_later_ordinary_unlock() {
         use crate::context::WalletUnlockRetention;
         use crate::wallet_backend::SecretScope;
-        use crate::wallet_backend::poison::RwLockRecover;
         use dash_sdk::dpp::dashcore::Network;
 
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -6253,7 +6350,6 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn full_unlock_and_skip_run_leaves_legacy_database_unchanged() {
         use crate::context::WalletUnlockRetention;
-        use crate::wallet_backend::poison::RwLockRecover;
         use dash_sdk::dpp::dashcore::Network;
 
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -6366,7 +6462,6 @@ mod tests {
     /// and fatally, so this wallet stayed unreachable on every launch forever.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn run_completes_the_wallet_drain_despite_an_unreadable_vote_row() {
-        use crate::wallet_backend::poison::RwLockRecover;
         use dash_sdk::dpp::dashcore::Network;
 
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -6393,10 +6488,10 @@ mod tests {
             .await
             .expect("an unreadable vote row must not fail the wallet migration");
 
-        // Funds first: hydrated into `ctx.wallets`, registered in the same
+        // Funds first: hydrated into the wallet context's HD registry, registered in the same
         // `id_map` that `resolve_wallet` consults, and the drain recorded as done.
         assert!(
-            ctx.wallets.read_recover().contains_key(&seed_hash),
+            ctx.wallet_context().contains_hd(&seed_hash),
             "the migrated wallet must be visible after the migration",
         );
         assert!(
@@ -6560,7 +6655,6 @@ mod tests {
     /// neither DET-owned sentinel is written, so both retry on the next launch.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn both_app_data_and_identity_failures_surface_together() {
-        use crate::wallet_backend::poison::RwLockRecover;
         use dash_sdk::dpp::dashcore::Network;
 
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -6612,7 +6706,7 @@ mod tests {
 
         // Funds stay safe: the drain ran despite both DET-owned passes breaking.
         assert!(
-            ctx.wallets.read_recover().contains_key(&seed_hash),
+            ctx.wallet_context().contains_hd(&seed_hash),
             "the migrated wallet must be visible — neither DET-owned failure may block funds",
         );
         assert!(

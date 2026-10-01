@@ -2,6 +2,7 @@
 
 use dash_evo_tool::backend_task::error::TaskError;
 use dash_evo_tool::context::AppContext;
+use dash_evo_tool::model::spv_status::SpvStatus;
 use dash_evo_tool::model::wallet::WalletSeedHash;
 use std::sync::Arc;
 use std::time::Duration;
@@ -155,30 +156,214 @@ pub async fn wait_for_wallet_in_spv(
     })?
 }
 
+/// Longest the initial SPV sync may go without advancing its progress token
+/// before [`wait_for_spv_sync`] reports it stalled.
+pub const SPV_STALL_WINDOW: Duration = Duration::from_secs(180);
+
+/// Hard cap on the whole initial SPV sync wait, however steadily it advances.
+/// Equals the former worst case (3 init attempts × 600s), now spent on one
+/// runtime instead of restarting sync from genesis on a fresh slot.
+pub const SPV_SYNC_CAP: Duration = Duration::from_secs(1800);
+
+/// What [`wait_for_spv_sync`] does after a poll that did not see `Running`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpvWaitVerdict {
+    /// Keep waiting on the same runtime.
+    Continue,
+    /// No progress for the stall window.
+    Stalled,
+    /// The hard cap elapsed.
+    Exhausted,
+}
+
+/// Decide whether the initial SPV sync wait continues.
+///
+/// `since_progress` is the time since the progress token last advanced (or
+/// since the wait began, if it never has); `elapsed` is the total wait. The cap
+/// wins over the stall window so the wait is bounded even while progressing.
+pub fn spv_wait_verdict(
+    since_progress: Duration,
+    elapsed: Duration,
+    stall_window: Duration,
+    cap: Duration,
+) -> SpvWaitVerdict {
+    if elapsed >= cap {
+        SpvWaitVerdict::Exhausted
+    } else if since_progress >= stall_window {
+        SpvWaitVerdict::Stalled
+    } else {
+        SpvWaitVerdict::Continue
+    }
+}
+
+/// Whether the monotonic SPV progress token
+/// ([`spv_progress_token`](dash_evo_tool::context::connection_status::spv_progress_token))
+/// moved forward. `None` (no phase actively syncing) never counts as progress,
+/// and neither does a token that went back or stayed put.
+pub fn spv_progress_advanced(last: Option<u64>, now: Option<u64>) -> bool {
+    matches!((last, now), (_, Some(n)) if last.is_none_or(|l| n > l))
+}
+
+/// Why the initial SPV sync wait gave up.
+#[derive(Debug, thiserror::Error)]
+pub enum SpvSyncWaitError {
+    /// Sync stopped advancing while SPV was reporting an error.
+    ///
+    /// `SpvStatus::Error` is not terminal — the `EventBridge` recomputes the
+    /// status from every `on_progress`, so a manager error is cleared by the
+    /// next progress event — which is why this is not a fail-fast arm. It
+    /// reports the error only once the wait has actually given up, so the
+    /// operator sees the cause instead of a bare "no progress".
+    #[error(
+        "SPV sync made no progress for {stalled_for:?} while reporting an error: {}",
+        last_error.as_deref().unwrap_or("no error text recorded")
+    )]
+    ErroredAndStalled {
+        stalled_for: Duration,
+        elapsed: Duration,
+        last_token: Option<u64>,
+        last_error: Option<String>,
+    },
+
+    #[error(
+        "SPV sync made no progress for {stalled_for:?} (stall window {stall_window:?}, \
+         {elapsed:?} into the wait); last progress token {last_token:?}, status {status:?}"
+    )]
+    Stalled {
+        stalled_for: Duration,
+        stall_window: Duration,
+        elapsed: Duration,
+        last_token: Option<u64>,
+        status: SpvStatus,
+    },
+    #[error(
+        "SPV sync was still progressing but not complete after {elapsed:?} (cap {cap:?}); \
+         last progress token {last_token:?}, status {status:?}"
+    )]
+    Exhausted {
+        elapsed: Duration,
+        cap: Duration,
+        last_token: Option<u64>,
+        status: SpvStatus,
+    },
+}
+
+/// Build the failure for a wait that stopped advancing.
+///
+/// Splits on the status SPV reports at that moment: an errored SPV names its
+/// error, everything else is a plain stall. Pure, so the split is testable
+/// without a live runtime.
+fn stall_failure(
+    status: SpvStatus,
+    last_error: Option<String>,
+    stalled_for: Duration,
+    stall_window: Duration,
+    elapsed: Duration,
+    last_token: Option<u64>,
+) -> SpvSyncWaitError {
+    if status == SpvStatus::Error {
+        SpvSyncWaitError::ErroredAndStalled {
+            stalled_for,
+            elapsed,
+            last_token,
+            last_error,
+        }
+    } else {
+        SpvSyncWaitError::Stalled {
+            stalled_for,
+            stall_window,
+            elapsed,
+            last_token,
+            status,
+        }
+    }
+}
+
 /// Wait for SPV to complete initial sync (all managers including masternodes).
 ///
 /// `SpvStatus::Running` is set after `SyncComplete` fires, which means
 /// MempoolManager is activated and bloom filter is built.
-pub async fn wait_for_spv_running(
+///
+/// Progress-aware and bounded: the wait continues on the SAME runtime (and so
+/// the same workdir slot, with its stored headers and filters) while the
+/// progress token keeps advancing, fails once it stalls for `stall_window`, and
+/// never exceeds `cap`. A slow sync therefore resumes instead of panicking into
+/// an init retry, which would land on a fresh slot and restart from genesis.
+///
+/// `SpvStatus::Error` does not end the wait. The `EventBridge` recomputes the
+/// status on every `on_progress`, so a manager error (a peer dropping mid-sync)
+/// is cleared by the next progress event; failing fast on it would abandon a
+/// sync that recovers on its own. It is logged when first seen, and named in
+/// [`SpvSyncWaitError::ErroredAndStalled`] if the sync never resumes.
+pub async fn wait_for_spv_sync(
     app_context: &Arc<AppContext>,
-    wait_timeout: Duration,
-) -> Result<(), String> {
-    use dash_evo_tool::model::spv_status::SpvStatus;
-    timeout(wait_timeout, async {
-        loop {
-            if app_context.connection_status().spv_status() == SpvStatus::Running {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(500)).await;
+    stall_window: Duration,
+    cap: Duration,
+) -> Result<(), SpvSyncWaitError> {
+    use dash_evo_tool::context::connection_status::spv_progress_token;
+
+    let connection = app_context.connection_status();
+    let started = tokio::time::Instant::now();
+    let mut last_progress_at = started;
+    let mut last_token: Option<u64> = None;
+    let mut errored_since: Option<tokio::time::Instant> = None;
+    loop {
+        let spv_status = connection.spv_status();
+        if spv_status == SpvStatus::Running {
+            return Ok(());
         }
-    })
-    .await
-    .map_err(|_| {
-        format!(
-            "Timed out after {:?} waiting for SPV to reach Running state",
-            wait_timeout
-        )
-    })
+        // An errored SPV is logged as soon as it is seen, not only when the
+        // wait gives up: the status clears itself on the next progress event,
+        // so the log is the only record that it happened at all.
+        match (spv_status, errored_since) {
+            (SpvStatus::Error, None) => {
+                errored_since = Some(tokio::time::Instant::now());
+                tracing::warn!(
+                    error = connection.spv_last_error().unwrap_or_default(),
+                    "SPV reports an error; waiting to see whether sync recovers"
+                );
+            }
+            (SpvStatus::Error, Some(_)) => {}
+            (_, Some(since)) => {
+                tracing::info!("SPV recovered from its error after {:?}", since.elapsed());
+                errored_since = None;
+            }
+            (_, None) => {}
+        }
+        let token = connection
+            .spv_sync_progress()
+            .as_ref()
+            .and_then(spv_progress_token);
+        let now = tokio::time::Instant::now();
+        if spv_progress_advanced(last_token, token) {
+            last_token = token;
+            last_progress_at = now;
+        }
+        let since_progress = now - last_progress_at;
+        let elapsed = now - started;
+        match spv_wait_verdict(since_progress, elapsed, stall_window, cap) {
+            SpvWaitVerdict::Continue => {}
+            SpvWaitVerdict::Stalled => {
+                return Err(stall_failure(
+                    spv_status,
+                    connection.spv_last_error(),
+                    since_progress,
+                    stall_window,
+                    elapsed,
+                    last_token,
+                ));
+            }
+            SpvWaitVerdict::Exhausted => {
+                return Err(SpvSyncWaitError::Exhausted {
+                    elapsed,
+                    cap,
+                    last_token,
+                    status: spv_status,
+                });
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
 }
 
 /// Wait until the upstream `SpvRuntime` has connected to peers and begun
@@ -224,4 +409,103 @@ pub async fn wait_for_spv_peers(
             cs.spv_status()
         )
     })?
+}
+
+#[cfg(test)]
+mod spv_wait_tests {
+    use super::*;
+
+    const STALL: Duration = SPV_STALL_WINDOW;
+    const CAP: Duration = SPV_SYNC_CAP;
+    const fn secs(s: u64) -> Duration {
+        Duration::from_secs(s)
+    }
+
+    #[test]
+    fn keeps_waiting_while_progressing_past_the_old_600s_deadline() {
+        assert_eq!(
+            spv_wait_verdict(secs(5), secs(900), STALL, CAP),
+            SpvWaitVerdict::Continue
+        );
+    }
+
+    #[test]
+    fn stalls_after_the_stall_window_without_progress() {
+        assert_eq!(
+            spv_wait_verdict(STALL, secs(400), STALL, CAP),
+            SpvWaitVerdict::Stalled
+        );
+        assert_eq!(
+            spv_wait_verdict(STALL - secs(1), secs(400), STALL, CAP),
+            SpvWaitVerdict::Continue
+        );
+    }
+
+    #[test]
+    fn cap_bounds_the_wait_even_while_progressing() {
+        assert_eq!(
+            spv_wait_verdict(secs(0), CAP, STALL, CAP),
+            SpvWaitVerdict::Exhausted
+        );
+        // The cap wins when both limits are hit on the same poll.
+        assert_eq!(
+            spv_wait_verdict(STALL, CAP, STALL, CAP),
+            SpvWaitVerdict::Exhausted
+        );
+    }
+
+    #[test]
+    fn stall_window_is_shorter_than_the_cap() {
+        const { assert!(SPV_STALL_WINDOW.as_secs() < SPV_SYNC_CAP.as_secs()) };
+    }
+
+    #[test]
+    fn an_errored_stall_names_the_spv_error() {
+        let failure = stall_failure(
+            SpvStatus::Error,
+            Some("filter sync: peer disconnected".to_string()),
+            STALL,
+            STALL,
+            secs(400),
+            Some(7),
+        );
+        match &failure {
+            SpvSyncWaitError::ErroredAndStalled { last_error, .. } => assert_eq!(
+                last_error.as_deref(),
+                Some("filter sync: peer disconnected")
+            ),
+            other => panic!("expected ErroredAndStalled, got: {other:?}"),
+        }
+        assert!(
+            failure.to_string().contains("peer disconnected"),
+            "the SPV error must reach the message: {failure}"
+        );
+    }
+
+    /// A stall while SPV still reports itself as syncing is not an SPV error,
+    /// and must not claim one.
+    #[test]
+    fn a_plain_stall_reports_the_status_it_saw() {
+        let failure = stall_failure(SpvStatus::Syncing, None, STALL, STALL, secs(400), Some(7));
+        match failure {
+            SpvSyncWaitError::Stalled { status, .. } => assert_eq!(status, SpvStatus::Syncing),
+            other => panic!("expected Stalled, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn progress_token_advance_rules() {
+        let token = |step: u64, height: u64| Some((step << 32) | height);
+        // First token seen counts as progress.
+        assert!(spv_progress_advanced(None, token(1, 10)));
+        // Height climbing within a phase.
+        assert!(spv_progress_advanced(token(1, 10), token(1, 11)));
+        // A new phase restarts its height but the token still increases.
+        assert!(spv_progress_advanced(token(1, 1_500_000), token(2, 0)));
+        // No token yet, unchanged, or regressed: not progress.
+        assert!(!spv_progress_advanced(None, None));
+        assert!(!spv_progress_advanced(token(1, 10), None));
+        assert!(!spv_progress_advanced(token(1, 10), token(1, 10)));
+        assert!(!spv_progress_advanced(token(2, 0), token(1, 99)));
+    }
 }

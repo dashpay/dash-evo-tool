@@ -484,6 +484,23 @@ pub enum TaskError {
         source: platform_wallet_storage::WalletStorageError,
     },
 
+    /// The wallet database refused to open because a folder on its path can be
+    /// modified by another account on this computer (group/other-writable
+    /// without the sticky bit, or owned by another user). Distinct from
+    /// [`Self::WalletStorage`] because disk space and restarting are irrelevant:
+    /// only tightening the folder's permissions or ownership fixes it.
+    ///
+    /// The offending folder and the exact reason travel in `source` (the
+    /// upstream message names the folder and the command to run) for the
+    /// details panel and logs; the user-facing copy stays jargon-free.
+    #[error(
+        "Your wallet data folder, or a folder that contains it, can be changed by other accounts on this computer, so the app will not open your wallet data. Make these folders writable only by your own account, then restart the application."
+    )]
+    WalletDataFolderInsecure {
+        #[source]
+        source: platform_wallet_storage::WalletStorageError,
+    },
+
     /// A vault passphrase or a Tier-2 object password was longer than the
     /// vault's upstream ceiling.
     ///
@@ -614,6 +631,57 @@ pub enum TaskError {
     )]
     IdentityKeySlotOccupied,
 
+    /// A wallet-derived key was requested for an identity with no single,
+    /// unambiguous wallet path on this device (loaded by id, masternode or
+    /// evonode identity, or keys spanning several wallets). Fieldless: no
+    /// upstream error.
+    #[error(
+        "A single matching wallet could not be identified on this device. Turn off Create from wallet and enter a private key instead."
+    )]
+    DerivedKeyWalletRequired,
+
+    /// A wallet-derived key was requested for a key type the canonical ECDSA
+    /// identity-authentication path cannot produce (see
+    /// [`is_derivable_key_type`](crate::model::derived_identity_key::is_derivable_key_type)).
+    /// Fieldless: no upstream error.
+    #[error(
+        "This key type cannot be created from a wallet. Choose ECDSA_SECP256K1 or ECDSA_HASH160 as the key type, or enter a private key instead."
+    )]
+    DerivedKeyTypeUnsupported,
+
+    /// The selected wallet key slot cannot take a new key: it is outside the
+    /// seed-recovery window, already used by a key saved for this identity
+    /// (including disabled keys and secp256k1/HASH160 equivalents), or its key
+    /// is already on the identity's freshly fetched network record — for
+    /// example added on another device. Nothing was broadcast. Fieldless: no
+    /// upstream error.
+    #[error(
+        "This wallet key slot cannot take a new key. It is already used by a key on this identity, possibly one added on another device, or it is outside the range this wallet can recover. Choose a different slot and add the key again."
+    )]
+    DerivedKeyIndexUnavailable,
+
+    /// The identity's network record gained a key since the Add Key screen
+    /// loaded it, so the new wallet key would get a different key id than the
+    /// one its slot was chosen against. Nothing was broadcast. The screen
+    /// reloads the identity and selects the slot again. Fieldless: no
+    /// upstream error.
+    #[error(
+        "This identity changed on the network since you opened this screen, possibly because a key was added on another device. Check the selected wallet key slot and add the key again."
+    )]
+    DerivedKeyIdChanged,
+
+    /// The public key cached for the selected wallet key slot does not match
+    /// the key the wallet's recovery phrase derives there (a stale, corrupt or
+    /// tampered cache entry). Checked before broadcast because a HASH160 key
+    /// carries no proof of possession: registering the cached value could put
+    /// a key on-chain that the wallet cannot sign for. The cache entry is
+    /// repaired before this is returned, so adding again uses the verified
+    /// key. Nothing was broadcast. Fieldless: no upstream error.
+    #[error(
+        "The key from your wallet could not be confirmed, so nothing was added to your identity. Add the key again."
+    )]
+    DerivedKeySeedMismatch,
+
     /// An identity private key was found in the vault but its bytes are not a
     /// usable signing key (vault corruption or a truncated write). Distinct
     /// from [`Self::IdentityKeyMissing`] (genuinely absent) so the user gets
@@ -645,6 +713,14 @@ pub enum TaskError {
     #[error("That password is not correct. Try again.")]
     IdentityKeyPassphraseIncorrect,
 
+    /// Import would replace different private material already saved at the same placement.
+    #[error("A different private key is already saved for this identity. Check the keys you are importing and try again.")]
+    IdentityImportKeyConflict,
+
+    /// An unpublished import retained protected keys that need the original import password.
+    #[error("This import has password-protected keys saved from an earlier attempt. Retry the import with the password you chose for that attempt.")]
+    IdentityImportPasswordRequired,
+
     /// A keyless (unprotected) write was refused over a password-protected
     /// identity key, which would have silently stripped its protection. Raised
     /// by the protection-aware store guard so adding or changing a key on a
@@ -655,15 +731,35 @@ pub enum TaskError {
     )]
     IdentityKeyProtectionDowngrade,
 
-    /// A new key was accepted onto the identity ON-CHAIN, but sealing it into
-    /// the local secret vault afterward failed, so it is not yet saved on this
-    /// device. The on-chain broadcast and the local persist cannot be atomic, so
-    /// this is the unavoidable post-broadcast gap — surfaced as a loud, typed,
-    /// actionable error rather than a silent loss. It never falls back to a
-    /// keyless write (the protected invariant holds). The upstream seal
-    /// failure is preserved through `#[source]` for logs and the details panel.
+    /// A wallet refresh of an identity (discovery or "load from wallet") was
+    /// refused because only some of its keys are password-protected: the
+    /// stored record still holds unprotected keys next to protected ones, and
+    /// saving them again without that password would strip the protection.
+    /// [`Self::IdentityKeyProtectionDowngrade`] phrased for a refresh the user
+    /// did not start as a change. Removing the protection lets the next save
+    /// move the unprotected keys into the vault; protecting again seals all
+    /// of them. Carries the identity id (data, not a message) because the
+    /// automatic refresh reports it with no screen naming the identity; no
+    /// secret or raw error string is stored here.
     #[error(
-        "The new key was added to your identity on the network, but it could not be saved on this device. Your identity and its existing keys are safe. Check available disk space, then try adding a key again."
+        "Identity {identity_id} could not be updated from your wallet because only some of its keys are password-protected. Remove the password protection from this identity, load it from your wallet again, then add the protection again."
+    )]
+    IdentityRefreshBlockedByPartialProtection {
+        identity_id: dash_sdk::platform::Identifier,
+    },
+
+    /// A new key was accepted onto the identity ON-CHAIN, but saving it on this
+    /// device afterward failed — any post-broadcast step: the roster or record
+    /// read, an occupied slot, the vault seal or write, the record write, or a
+    /// protection-downgrade refusal. The on-chain broadcast and the local
+    /// persist cannot be atomic, so this is the unavoidable post-broadcast gap —
+    /// surfaced as a loud, typed, actionable error rather than a silent loss.
+    /// The add-key screen keeps the private key available to copy. It never
+    /// falls back to a keyless write (the protected invariant holds). The
+    /// upstream failure is preserved through `#[source]` for logs and the
+    /// details panel.
+    #[error(
+        "The new key was added to your identity on the network, but it could not be saved on this device. Your identity and its existing keys are safe. Copy the new private key now and keep it somewhere safe. Then refresh the identity, open the new key and enter its private key to save it here."
     )]
     IdentityKeyAddedButNotSaved {
         #[source]
@@ -677,38 +773,62 @@ pub enum TaskError {
     /// private key material on a device that reports it holds none, referenced
     /// by no record and reachable by no cleanup.
     ///
-    /// No loss beyond the on-chain slot: the private key was supplied by the
-    /// user on the add-key screen, so they still hold it.
+    /// The private key may have been generated on the add-key screen and exist
+    /// nowhere else, so that screen keeps it available to copy.
     #[error(
-        "The new key was added to your identity on the network, but this identity was removed from this device before the key could be saved here. Load the identity again, then add the key again."
+        "The new key was added to your identity on the network, but this identity was removed from this device before the key could be saved here. Copy the new private key now and keep it somewhere safe. To use this key here, load the identity again with that private key."
     )]
     IdentityKeyAddedButIdentityUnloaded,
 
-    /// Fail-closed guard at the opt-in protect boundary: the task found
-    /// keys still resident as plaintext on disk after the eager load-path vault
-    /// migration, so the identity cannot be reported as fully protected. The
-    /// migration only leaves resident plaintext when its vault write failed or
-    /// was skipped; proceeding would let the seal step silently skip those keys
-    /// and emit a false-protected result. Refusing here keeps the user from
-    /// believing the identity is sealed when it is not. Fieldless: the load-path
-    /// migration outcome is logged where it happens; no secret or raw error
-    /// string is stored here.
+    /// [`Self::IdentityKeyAddedButNotSaved`] when the save was refused by the
+    /// identity's password protection (a protection-downgrade refusal): the
+    /// generic "enter its private key" remedy would be refused the same way,
+    /// so the message adds the protection step. Fieldless: the cause is fully
+    /// named by the variant and the upstream refusal carries no diagnostic.
+    #[error(
+        "The new key was added to your identity on the network, but this identity's password protection kept it from being saved on this device. Your identity and its existing keys are safe. Copy the new private key now and keep it somewhere safe. To save it here, remove the password protection from this identity, refresh the identity, open the new key and enter its private key, then add the protection again."
+    )]
+    IdentityKeyAddedButNotSavedWhileProtected,
+
+    /// [`Self::IdentityKeyAddedButNotSaved`] when a different key already held
+    /// the new key's local slot: the generic "enter its private key" remedy
+    /// would hit the same occupied slot, so the message adds removing the
+    /// other key's saved private half (listed on the identity's Keys screen).
+    /// Fieldless, like [`Self::IdentityKeySlotOccupied`].
+    #[error(
+        "The new key was added to your identity on the network, but a different key is already saved on this device under the number the new key uses. Your identity and its existing keys are safe. Copy the new private key now and keep it somewhere safe. Open the other key in this identity's key list and remove its saved private key from this device. Then refresh the identity, open the new key and enter its private key."
+    )]
+    IdentityKeyAddedButSlotOccupied,
+
+    /// [`Self::IdentityKeyAddedButNotSaved`] for a wallet-derived key. No
+    /// private key exists to copy — the wallet derives it again — so the
+    /// message must not ask for one.
+    #[error(
+        "The new key was added to your identity on the network, but it could not be saved on this device. Your identity and its existing keys are safe. The key was created from your wallet, so there is nothing to copy. To save it here, load this identity from your wallet again."
+    )]
+    DerivedIdentityKeyAddedButNotSaved {
+        #[source]
+        source: Box<TaskError>,
+    },
+
+    /// [`Self::IdentityKeyAddedButIdentityUnloaded`] for a wallet-derived key:
+    /// nothing was saved, and no private key exists to copy.
+    #[error(
+        "The new key was added to your identity on the network, but this identity was removed from this device before the key could be saved here. The key was created from your wallet, so there is nothing to copy. To use this identity here, load it from your wallet again."
+    )]
+    DerivedIdentityKeyAddedButIdentityUnloaded,
+
+    /// Resident plaintext remains after startup migration was skipped or failed.
+    /// Protection must refuse it; storage preparation retries write failures,
+    /// while already-protected identities require explicit key recovery.
     #[error(
         "Some of this identity's keys are not fully protected yet. \
         Close and reopen the application, then try protecting this identity again."
     )]
     IdentityKeyProtectionIncomplete,
 
-    /// Fail-closed guard at the opt-in protect boundary: the identity
-    /// still carries one or more keys saved in the legacy on-disk format this
-    /// version can neither read nor migrate into the protected store. Unlike
-    /// resident plaintext — which the load-path migration finishes on the next
-    /// launch — there is NO automatic migration for these keys, so reopening the
-    /// application would loop on the same error. The only way forward is to add
-    /// the identity again from its recovery phrase or private key, which replaces
-    /// the legacy key entries with ones this version can protect. Fieldless: the
-    /// offending key's presence is logged at the guard; no secret or raw error
-    /// string is stored here.
+    /// Legacy encrypted keys cannot be converted by startup migration.
+    /// Reloading from recovery material is required; restarting cannot repair them.
     #[error(
         "Some of this identity's keys are saved in an older format that cannot be protected. \
         Load this identity again using its recovery phrase or private key, then try protecting it."
@@ -1543,11 +1663,18 @@ pub enum TaskError {
         source: crate::model::validation::TextLengthError,
     },
 
-    /// A wallet alias exceeded the shared character limit.
+    /// A wallet alias exceeded the shared character limit after cleaning.
     #[error("The wallet name is too long. Use 64 characters or fewer and try again.")]
     InvalidWalletAliasLength {
         #[source]
-        source: crate::model::validation::TextLengthError,
+        source: crate::model::wallet::alias::AliasError,
+    },
+
+    /// Another wallet of the same kind already uses the requested alias.
+    #[error("Another wallet already uses this name. Choose a different name and try again.")]
+    WalletAliasAlreadyUsed {
+        #[source]
+        source: crate::model::wallet::alias::AliasError,
     },
 
     /// A document's unique values conflict with an existing entry.
@@ -2312,9 +2439,10 @@ pub enum TaskError {
     // ──────────────────────────────────────────────────────────────────────────
     // Wallet creation / import errors
     // ──────────────────────────────────────────────────────────────────────────
-    /// The wallet has already been imported for this network.
-    #[error("This wallet has already been imported for this network.")]
-    WalletAlreadyImported,
+    /// The wallet has already been imported for this network. `alias` is the
+    /// existing wallet's local name, `None` when it was never named.
+    #[error("{}", wallet_already_imported_message(.alias.as_deref()))]
+    WalletAlreadyImported { alias: Option<String> },
 
     /// A new wallet password is shorter than the persistent secret store's
     /// minimum and therefore could not be migrated to Tier-2 protection.
@@ -2846,6 +2974,11 @@ impl TaskError {
             Self::IdentityKeyAddedButNotSaved { source } => Self::IdentityKeyAddedButNotSaved {
                 source: Box::new((*source).contextualize_dapi_availability(availability)),
             },
+            Self::DerivedIdentityKeyAddedButNotSaved { source } => {
+                Self::DerivedIdentityKeyAddedButNotSaved {
+                    source: Box::new((*source).contextualize_dapi_availability(availability)),
+                }
+            }
             Self::ScheduledVoteRejected { source } => {
                 Self::ScheduledVoteAllAddressesExhausted { source }
             }
@@ -2943,7 +3076,7 @@ impl TaskError {
 
     /// Map a wallet-storage open failure to the right user-facing variant.
     ///
-    /// Three storage failures get honest, distinct copy; everything else keeps
+    /// Four storage failures get honest, distinct copy; everything else keeps
     /// the generic disk/IO message:
     ///
     /// - A forward-version database (written by a newer build, schema beyond
@@ -2955,12 +3088,16 @@ impl TaskError {
     ///   cannot reconcile) is surfaced as [`Self::WalletDataIncompatible`] so
     ///   the banner tells the user to remove the local wallet data — freeing
     ///   disk space or restarting never resolves a structural mismatch.
+    /// - A folder on the database path that other accounts can modify is
+    ///   surfaced as [`Self::WalletDataFolderInsecure`] so the banner tells the
+    ///   user to tighten folder permissions.
     /// - Every other storage failure keeps the generic disk/IO copy via
     ///   [`Self::WalletStorage`].
     ///
     /// Discrimination is on the typed upstream variant
     /// (`WalletStorageError::SchemaVersionUnsupported` /
-    /// `WalletStorageError::Migration`), never on its `Display` text.
+    /// `WalletStorageError::Migration` / `WalletStorageError::InsecureParentDir`),
+    /// never on its `Display` text.
     pub fn from_wallet_storage_open_error(
         source: platform_wallet_storage::WalletStorageError,
     ) -> Self {
@@ -2974,6 +3111,9 @@ impl TaskError {
             },
             other @ platform_wallet_storage::WalletStorageError::Migration(_) => {
                 Self::WalletDataIncompatible { source: other }
+            }
+            other @ platform_wallet_storage::WalletStorageError::InsecureParentDir { .. } => {
+                Self::WalletDataFolderInsecure { source: other }
             }
             other => Self::WalletStorage { source: other },
         }
@@ -3252,6 +3392,16 @@ impl From<crate::model::wallet::passphrase::PassphraseError> for TaskError {
             PassphraseError::TooShort { min } => TaskError::SingleKeyPassphraseTooShort { min },
             PassphraseError::TooLong { max } => TaskError::SingleKeyPassphraseTooLong { max },
             PassphraseError::Mismatch => TaskError::SingleKeyPassphraseMismatch,
+        }
+    }
+}
+
+impl From<crate::model::wallet::alias::AliasError> for TaskError {
+    fn from(source: crate::model::wallet::alias::AliasError) -> Self {
+        use crate::model::wallet::alias::AliasError;
+        match source {
+            AliasError::TooLong { .. } => TaskError::InvalidWalletAliasLength { source },
+            AliasError::AlreadyUsed => TaskError::WalletAliasAlreadyUsed { source },
         }
     }
 }
@@ -3647,6 +3797,17 @@ fn sdk_error_is_dapi_reachability_failure(error: &SdkError) -> bool {
         | SdkError::DapiClientError(DapiClientError::NoAvailableAddressesToRetry(_))
         | SdkError::NoAvailableAddressesToRetry(_) => true,
         _ => false,
+    }
+}
+
+/// User-facing text for [`TaskError::WalletAlreadyImported`]: names the existing
+/// wallet so the user knows which one to open.
+fn wallet_already_imported_message(alias: Option<&str>) -> String {
+    match alias {
+        Some(alias) => format!(
+            "This wallet has already been imported for this network as \"{alias}\". Open it from the Wallets screen, or enter a different recovery phrase."
+        ),
+        None => "This wallet has already been imported for this network. Open it from the Wallets screen, or enter a different recovery phrase.".to_owned(),
     }
 }
 
@@ -5964,6 +6125,58 @@ mod tests {
             std::error::Error::source(&err).is_some(),
             "Expected source chain to be preserved"
         );
+    }
+
+    /// A group-writable (or foreign-owned) ancestor of the wallet database maps
+    /// to `WalletDataFolderInsecure`, whose copy names the folder-permission
+    /// problem instead of the misleading disk-space advice. The path and mode
+    /// stay in the source chain, out of the user-facing message.
+    #[test]
+    fn insecure_parent_dir_maps_to_wallet_data_folder_insecure() {
+        let ancestor = std::path::PathBuf::from("/data/tmp/shared-scratch");
+        for reason in [
+            platform_wallet_storage::InsecureAncestor::WritableWithoutSticky { mode: 0o775 },
+            platform_wallet_storage::InsecureAncestor::UntrustedOwner {
+                uid: 4242,
+                current_uid: 1000,
+            },
+        ] {
+            let upstream = platform_wallet_storage::WalletStorageError::InsecureParentDir {
+                ancestor: ancestor.clone(),
+                reason,
+            };
+            let err = TaskError::from_wallet_storage_open_error(upstream);
+            assert!(
+                matches!(
+                    &err,
+                    TaskError::WalletDataFolderInsecure {
+                        source: platform_wallet_storage::WalletStorageError::InsecureParentDir {
+                            ancestor: a,
+                            ..
+                        },
+                    } if *a == ancestor
+                ),
+                "Expected WalletDataFolderInsecure carrying the ancestor, got: {err:?}"
+            );
+
+            let msg = err.to_string();
+            assert!(
+                msg.contains("folder") && msg.contains("other accounts"),
+                "Expected folder-permission guidance, got: {msg}"
+            );
+            assert!(
+                !msg.contains("disk space"),
+                "Folder-permission message must not mention disk space, got: {msg}"
+            );
+            assert!(
+                !msg.contains("shared-scratch") && !msg.contains("775") && !msg.contains("chmod"),
+                "Path, mode and commands must stay out of the user message, got: {msg}"
+            );
+            assert!(
+                std::error::Error::source(&err).is_some(),
+                "Expected source chain to be preserved"
+            );
+        }
     }
 
     /// Builds a genuine divergent-version [`refinery::Error`] by applying a

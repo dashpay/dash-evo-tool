@@ -340,14 +340,19 @@ pub enum WalletTask {
     /// UI thread. Reads the existing metadata fallibly so a storage/read failure
     /// surfaces instead of silently clobbering the other sidecar fields
     /// (`is_main` / `core_wallet_name` / xpub / password fields); a genuinely
-    /// absent row is seeded fresh with the alias and the wallet's xpub. An empty
-    /// `alias` clears the name.
+    /// absent row is seeded fresh with the alias and the wallet's xpub. `alias`
+    /// is the raw typed name: it is cleaned, a blank name resets the wallet to
+    /// the smallest unused "Wallet N", and a name another HD wallet uses is
+    /// rejected. The success result carries the alias actually saved.
     RenameHdWallet {
         seed_hash: WalletSeedHash,
         alias: String,
     },
     /// Persist a new alias for an imported single-key wallet to the single-key
-    /// sidecar, off the UI thread. An empty `alias` clears the name.
+    /// sidecar, off the UI thread. `alias` is the raw typed name: it is
+    /// cleaned, a blank name resets the key to the smallest unused "Key N", and
+    /// a name another imported key uses is rejected. The success result
+    /// carries the alias actually saved.
     RenameSingleKeyWallet {
         address: String,
         alias: String,

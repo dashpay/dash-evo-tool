@@ -8,6 +8,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- Identity imports with a password now encrypt private keys before their first
+  storage write. Interrupted new imports retain protected entries, and retries
+  preserve existing keys when a supplied password or key conflicts. A durable
+  key inventory includes entries omitted on retry in password checks, protection
+  detection, and removal. Imports with a supplied password avoid a redundant
+  password prompt when merging. Resumed removal also deletes keys retained by
+  a later failed re-import before retiring their inventory. Merges revalidate the
+  current password and record new key placements under the identity record lock
+  before sealing. Protection indicators include retained keys, and unpublished
+  import retries explain that the original import password is required. Protection
+  indicators report unavailable status when the full key inventory cannot be read.
+  Identities without locally stored keys explain that a private key must be added
+  before password protection is available.
+
+- Identity reads no longer migrate or rewrite stored keys. Storage preparation
+  explicitly migrates legacy keys under each identity's record lock, propagates
+  write failures for retry, and skips undecodable records without changing them,
+  including malformed outer identity records that would otherwise block startup.
+
 - The CLI keeps MCP requests at the selected endpoint without following HTTP
   redirects or using system/environment proxies. Migration fixture packaging rejects configured credentials, and
   CI requires verified archive checksums and a runtime fixture password.
@@ -28,6 +47,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   in `Cargo.toml` marks the re-check.
 
 ### Added
+
+- **Add wallet-created identity keys**: for identities loaded from a wallet on
+  this device, the Add Key screen defaults to "Create from wallet", which
+  creates an ECDSA_SECP256K1 or ECDSA_HASH160 key from that wallet so it can be
+  restored with the wallet's recovery phrase. The slot matching the new key's
+  number is selected by default, so other wallet apps can restore the key too;
+  used slots cannot be chosen. Other identities open on manual private-key
+  entry, with an explanation. The wallet's key is verified before it is added.
+  If the identity gained a key on another device in the meantime, the add is
+  stopped before anything is sent and the screen reloads the identity so the
+  slot can be chosen again. Adding a wallet key does not ask for the identity's
+  password, because the key stays protected by the wallet.
+
+- A scheduled workflow renews expiring migration fixture archives without
+  changing their contents and proposes updated manifest pointers in a PR.
 
 - Migration tests also replay public user/DPNS and Evonode identities serialized
   by v0.9.3, checking their metadata and every public key after repeated startup.
@@ -140,6 +174,81 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - DPNS scheduled retries keep the selected choice, and simultaneous scheduled votes share fresh voting information without losing their due status. If a first vote becomes a vote change before submission, DET asks for another review. Unavailable voting information stays visible with a refresh action, successful mixed batches report both cast and scheduled votes, and contest refresh remains available when saved voting progress cannot be recovered.
 - DPNS voting now explains missed automatic schedules and unreadable saved progress, with manual recovery actions. Completed scheduled and mixed voting history is bounded without discarding unresolved votes or restoring removed schedules. Adding another node's voting key gives a key-specific error.
+
+- **Identity keys added by hand no longer disappear**: unlocking a wallet,
+  starting the app or loading an identity from a wallet refreshed the identity
+  with only the keys the wallet can recreate, so keys you had pasted or
+  generated — including password-protected ones — vanished from the identity
+  and could no longer be used here. Those refreshes now keep every key already
+  saved for the identity, with its password protection unchanged. A saved key
+  that no longer matches the identity's key with the same number gives way to
+  the identity's key once its private key is kept safely on this device, so the
+  identity can still sign with it and the old private key is not lost. When only some of
+  an identity's keys are password-protected, the refresh stops and a message
+  names the identity and explains how to finish, even when the refresh ran in
+  the background. Adding a key also no longer erases a key, name or protection
+  change saved for the same identity while the new key was being sent to the
+  network.
+
+- **A new key that could not be saved here is no longer lost**: when a key was
+  added to the identity on the network but saving it on this device failed,
+  most failures showed a generic storage message, and a randomly generated
+  private key could be lost for good. Every such failure now says the key is
+  already on the network, and the Add Key screen keeps its private key
+  available to copy, with a warning that other apps can read the clipboard. When
+  the key could not be saved because of the identity's password protection, or
+  because a different key is saved under the same number, the message says
+  what to do first. A key created from your wallet has no private key to
+  copy, so the screen says instead that it can be saved again by loading the
+  identity from your wallet. Another identity's key add finishing no longer
+  closes this screen's rescue view.
+
+- The Add Key screen ignores key-slot loading results from other wallets, so
+  concurrent loading cannot leave its wallet slots unavailable.
+
+- Switching networks closes open detail screens, such as Add Key, so an action
+  prepared on the previous network cannot be submitted on the new one.
+
+- On the Add Key screen, a key-slot loading error from another wallet no longer
+  marks the form as failed. The slot list reloads when the identity's wallet
+  changes while slots are loading, instead of staying in the loading state.
+
+- Removing a wallet deletes its cached identity public keys right away, and a
+  key-slot load that finishes after the removal no longer stores them again.
+- The dedicated migration CI workflow runs archived-profile checks without
+  repeating the helper tests and bundled migration covered by the main suite.
+
+- Migration fixture coverage skips historical non-SemVer release tags instead
+  of failing to parse them and blocking weekly builds. Missing fixtures for
+  newer versioned releases still block the build.
+
+- Migration fixtures can be advanced through released binaries, preserving
+  the original archives and recording each step's provenance. The September 15
+  weekly fixture is derived from the September 8 fixture.
+
+- Background task results preserve the masternode voting-key prompt, vote
+  selections, removal dialog, and key-recovery offer or operation in progress.
+  Completed votes clear only unchanged selections from the same cast.
+
+- Adding a voting key preserves the identity's wallet association when its only
+  wallet-linked key comes from the existing identity, including password-protected
+  imports.
+
+- A damaged legacy wallet no longer prevents healthy wallets and imported keys
+  from loading at startup.
+
+- Legacy wallet password hints survive hydration and renaming. Retried key
+  migrations refresh displayed names when duplicate names are disambiguated.
+  Legacy private keys with names over 64 characters migrate instead of failing,
+  matching legacy wallets.
+
+- Wallet and key renames immediately update displayed names and password prompts,
+  including after concurrent imports or delayed task results.
+
+- Re-importing legacy private keys preserves their names, including duplicate-name
+  suffixes. Concurrent imports and renames reserve names without blocking wallet-list
+  reads during storage writes. Wallet names also strip Unicode default-ignorable
+  characters, including variation selectors and Hangul fillers.
 
 - CLI builds no longer warn about an unused passphrase-limit import.
 
@@ -481,6 +590,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   says plainly that the rate shown is fixed rather than read from the network.
 
 ### Changed
+
+- Wallet registries and live names now share one WalletContext across the UI,
+  MCP tools and password prompts. Metadata writes are serialized while wallet
+  names and password prompts continue to use the last committed snapshot.
 
 - **Platform updated to `4.2.0-dev.8`** (`v4.2-dev`, `63cf57f`): existing
   databases from the previously pinned PR are upgraded automatically with a

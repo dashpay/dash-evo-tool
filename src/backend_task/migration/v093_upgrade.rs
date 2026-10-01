@@ -169,6 +169,7 @@ fn identity_public_key(id: KeyID, purpose: Purpose) -> IdentityPublicKey {
 /// bincode config. Used for the fixture rows whose exact bytes do not matter;
 /// row A uses the captured v0.9.3 template to pin the wire format.
 fn legacy_identity_blob(
+    network: Network,
     id: [u8; 32],
     identity_type: IdentityType,
     alias: &str,
@@ -206,7 +207,7 @@ fn legacy_identity_blob(
         // Never encoded — the legacy `status` column is the only source, which is
         // exactly what the import has to restore.
         status: IdentityStatus::Unknown,
-        network: USER_NETWORK,
+        network,
     }
     .to_bytes()
 }
@@ -229,6 +230,7 @@ struct Fixture {
 #[allow(clippy::too_many_arguments)]
 fn insert_identity(
     conn: &Connection,
+    network: Network,
     id: [u8; 32],
     data: Option<Vec<u8>>,
     status: IdentityStatus,
@@ -237,7 +239,7 @@ fn insert_identity(
     wallet: Option<(WalletSeedHash, u32)>,
     identity_type: &str,
 ) {
-    let mut row = LegacyIdentityFixture::new(id, data, USER_NETWORK.to_string())
+    let mut row = LegacyIdentityFixture::new(id, data, v093_network_label(network))
         .with_status(status)
         .with_is_local(is_local)
         .with_alias(alias)
@@ -248,8 +250,24 @@ fn insert_identity(
     row.insert(conn).expect("insert identity row");
 }
 
-/// Write a `data.db` in the exact shape v0.9.3 left on disk, then hand back the
-/// keys the assertions need.
+/// The `network` column value v0.9.3 wrote: its dashcore (v0.40) displayed
+/// mainnet as `dash`, and v0.9.3 bound `network.to_string()` everywhere.
+fn v093_network_label(network: Network) -> &'static str {
+    match network {
+        Network::Mainnet => "dash",
+        Network::Testnet => "testnet",
+        Network::Devnet => "devnet",
+        Network::Regtest => "regtest",
+    }
+}
+
+/// [`write_v093_database_on`] for the default fixture network.
+fn write_v093_database(dir: &std::path::Path) -> Fixture {
+    write_v093_database_on(dir, USER_NETWORK)
+}
+
+/// Write a `data.db` in the exact shape v0.9.3 left on disk for a user on
+/// `network`, then hand back the keys the assertions need.
 ///
 /// The DDL is copied from `git show v0.9.3:src/database/{initialization,
 /// scheduled_votes,top_ups,tokens,proof_log}.rs` — a v0.9.3 `create_tables()`
@@ -257,7 +275,7 @@ fn insert_identity(
 /// walked a migration. Deliberately absent: `single_key_wallet` (introduced by
 /// ladder arm 18 — the feature did not exist in v0.9.3) and
 /// `wallet.core_wallet_name` (arm 33).
-fn write_v093_database(dir: &std::path::Path) -> Fixture {
+fn write_v093_database_on(dir: &std::path::Path, network: Network) -> Fixture {
     let conn = Connection::open(dir.join("data.db")).expect("create legacy data.db");
     conn.execute_batch(
         "CREATE TABLE settings (
@@ -442,7 +460,7 @@ fn write_v093_database(dir: &std::path::Path) -> Fixture {
     )
     .expect("create v0.9.3 schema");
 
-    // A testnet user with a dark theme who parked on the scheduled-votes screen.
+    // A user with a dark theme who parked on the scheduled-votes screen.
     // `start_root_screen = 10` means the same screen in v0.9.3 and today, so it
     // is a value that genuinely round-trips rather than a coincidence.
     conn.execute(
@@ -451,7 +469,7 @@ fn write_v093_database(dir: &std::path::Path) -> Fixture {
              theme_preference, database_version)
          VALUES (1, ?1, ?2, '/opt/dash-qt', 0, 'Dark', ?3)",
         params![
-            USER_NETWORK.to_string(),
+            v093_network_label(network),
             RootScreenType::RootScreenDPNSScheduledVotes.to_int(),
             V093_DB_VERSION,
         ],
@@ -471,8 +489,8 @@ fn write_v093_database(dir: &std::path::Path) -> Fixture {
             secrets().unprotected_seed.as_slice(),
             Vec::<u8>::new(),
             Vec::<u8>::new(),
-            legacy_master_epk_bytes(&secrets().unprotected_seed, USER_NETWORK),
-            USER_NETWORK.to_string(),
+            legacy_master_epk_bytes(&secrets().unprotected_seed, network),
+            v093_network_label(network),
         ],
     )
     .expect("insert unprotected wallet row");
@@ -492,8 +510,8 @@ fn write_v093_database(dir: &std::path::Path) -> Fixture {
             envelope.ciphertext.as_slice(),
             envelope.salt.as_slice(),
             envelope.nonce.as_slice(),
-            legacy_master_epk_bytes(&secrets().protected_seed, USER_NETWORK),
-            USER_NETWORK.to_string(),
+            legacy_master_epk_bytes(&secrets().protected_seed, network),
+            v093_network_label(network),
         ],
     )
     .expect("insert protected wallet row");
@@ -503,6 +521,7 @@ fn write_v093_database(dir: &std::path::Path) -> Fixture {
     // this row also pins the cross-version bincode wire format.
     insert_identity(
         &conn,
+        network,
         IDENTITY_ID,
         Some(v093_masternode_blob()),
         IdentityStatus::Active,
@@ -516,8 +535,10 @@ fn write_v093_database(dir: &std::path::Path) -> Fixture {
     // the blob, but the wallet link must survive or the key cannot be derived.
     insert_identity(
         &conn,
+        network,
         USER_IDENTITY_ID,
         Some(legacy_identity_blob(
+            network,
             USER_IDENTITY_ID,
             IdentityType::User,
             "my-username",
@@ -539,8 +560,10 @@ fn write_v093_database(dir: &std::path::Path) -> Fixture {
     // holding a `Clear` key. A wallet-less identity must still import.
     insert_identity(
         &conn,
+        network,
         EVONODE_IDENTITY_ID,
         Some(legacy_identity_blob(
+            network,
             EVONODE_IDENTITY_ID,
             IdentityType::Evonode,
             "my-evonode",
@@ -562,8 +585,10 @@ fn write_v093_database(dir: &std::path::Path) -> Fixture {
     // Importing it would put a stranger's identity on the Identities screen.
     insert_identity(
         &conn,
+        network,
         OBSERVED_IDENTITY_ID,
         Some(legacy_identity_blob(
+            network,
             OBSERVED_IDENTITY_ID,
             IdentityType::User,
             "someone-else",
@@ -581,8 +606,10 @@ fn write_v093_database(dir: &std::path::Path) -> Fixture {
     // wallet does not cost the user the identity, nor its link to that wallet.
     insert_identity(
         &conn,
+        network,
         PROTECTED_IDENTITY_ID,
         Some(legacy_identity_blob(
+            network,
             PROTECTED_IDENTITY_ID,
             IdentityType::User,
             "cold-username",
@@ -604,6 +631,7 @@ fn write_v093_database(dir: &std::path::Path) -> Fixture {
     // be skipped silently, not counted as a failure.
     insert_identity(
         &conn,
+        network,
         NULL_BLOB_IDENTITY_ID,
         None,
         IdentityStatus::Active,
@@ -620,7 +648,7 @@ fn write_v093_database(dir: &std::path::Path) -> Fixture {
         params![
             IDENTITY_ID.as_slice(),
             CONTESTED_NAME,
-            USER_NETWORK.to_string()
+            v093_network_label(network)
         ],
     )
     .expect("insert scheduled vote row");
@@ -637,15 +665,20 @@ fn write_v093_database(dir: &std::path::Path) -> Fixture {
     }
 }
 
+/// [`boot_on`] for a fixture written on the default network.
+fn boot(dir: &std::path::Path) -> (Arc<AppContext>, AppSettings) {
+    boot_on(dir, USER_NETWORK)
+}
+
 /// Boot over `dir` exactly as `AppState` does: open the pre-update database
 /// read-only, import its preferences, then build the `AppContext` **on the
 /// network those preferences named**. Returns the context and imported settings.
 ///
 /// Taking the network from the import (rather than hard-coding testnet) is the
 /// point: it is what makes this a composition test. If the import lost the
-/// network, every downstream `WHERE network = ?1` filter in the wallet drain
+/// network, every downstream network filter in the wallet drain
 /// would silently target mainnet and find nothing.
-fn boot(dir: &std::path::Path) -> (Arc<AppContext>, AppSettings) {
+fn boot_on(dir: &std::path::Path, network: Network) -> (Arc<AppContext>, AppSettings) {
     crate::app_dir::ensure_env_file(dir);
     let db_file = dir.join("data.db");
 
@@ -655,9 +688,7 @@ fn boot(dir: &std::path::Path) -> (Arc<AppContext>, AppSettings) {
     let outcome = import_legacy_settings(&app_kv, &db).expect("import legacy settings");
     assert_eq!(
         outcome,
-        SettingsImport::Imported {
-            network: USER_NETWORK
-        },
+        SettingsImport::Imported { network },
         "the boot import must report the network it restored",
     );
 
@@ -813,8 +844,19 @@ fn top_up_history(ctx: &Arc<AppContext>) -> Option<std::collections::BTreeMap<u3
 /// its top-up history.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn v093_install_upgrades_with_wallets_settings_votes_and_history_intact() {
+    assert_v093_install_upgrades(USER_NETWORK).await;
+}
+
+/// The same upgrade for a mainnet user, whose v0.9.3 rows all say `dash`: every
+/// legacy reader must accept that spelling, or the wallets never come across.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v093_mainnet_install_with_dash_network_rows_upgrades_intact() {
+    assert_v093_install_upgrades(Network::Mainnet).await;
+}
+
+async fn assert_v093_install_upgrades(network: Network) {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let fixture = write_v093_database(tmp.path());
+    let fixture = write_v093_database_on(tmp.path(), network);
     assert_eq!(
         schema_version(tmp.path()),
         V093_DB_VERSION,
@@ -823,7 +865,7 @@ async fn v093_install_upgrades_with_wallets_settings_votes_and_history_intact() 
     let legacy_before = std::fs::read(tmp.path().join("data.db"))
         .expect("snapshot the v0.9.3 database before boot");
 
-    let (ctx, settings) = boot(tmp.path());
+    let (ctx, settings) = boot_on(tmp.path(), network);
     let backend = wire_backend(&ctx).await;
 
     assert!(
@@ -848,9 +890,8 @@ async fn v093_install_upgrades_with_wallets_settings_votes_and_history_intact() 
 
     // ── Settings: the safety-critical field ──────────────────────────
     assert_eq!(
-        settings.network,
-        Network::Testnet,
-        "a v0.9.3 testnet user must not be silently relaunched on mainnet",
+        settings.network, network,
+        "a v0.9.3 user must be relaunched on the network they used",
     );
     assert_eq!(
         settings.theme_mode,
@@ -927,7 +968,7 @@ async fn v093_install_upgrades_with_wallets_settings_votes_and_history_intact() 
     // ── Wallet metadata + registration ───────────────────────────────
     let meta_view = backend.wallet_meta();
     let meta = meta_view
-        .get(USER_NETWORK, &fixture.unprotected)
+        .get(network, &fixture.unprotected)
         .expect("the migrated wallet must have a metadata entry");
     assert_eq!(
         meta.alias, "Masternode Owner Wallet",
@@ -937,7 +978,7 @@ async fn v093_install_upgrades_with_wallets_settings_votes_and_history_intact() 
     assert!(!meta.uses_password);
     assert_eq!(
         meta.xpub_encoded,
-        legacy_master_epk_bytes(&secrets().unprotected_seed, USER_NETWORK),
+        legacy_master_epk_bytes(&secrets().unprotected_seed, network),
         "the master xpub must survive — the cold-boot picker renders addresses from it",
     );
     assert!(
@@ -946,7 +987,7 @@ async fn v093_install_upgrades_with_wallets_settings_votes_and_history_intact() 
     );
 
     let protected_meta = meta_view
-        .get(USER_NETWORK, &fixture.protected)
+        .get(network, &fixture.protected)
         .expect("the protected wallet must have a metadata entry");
     assert_eq!(protected_meta.alias, "Cold Storage");
     assert!(
@@ -986,7 +1027,7 @@ async fn v093_install_upgrades_with_wallets_settings_votes_and_history_intact() 
     // The precondition the import consumes: the ladder must not drop or orphan
     // the row it reads from.
     let conn = Connection::open(tmp.path().join("data.db")).expect("open data.db");
-    let (alias, wallet, wallet_index, identity_type, network): (
+    let (alias, wallet, wallet_index, identity_type, stored_network): (
         String,
         Vec<u8>,
         u32,
@@ -1009,8 +1050,9 @@ async fn v093_install_upgrades_with_wallets_settings_votes_and_history_intact() 
     assert_eq!(wallet_index, 0);
     assert_eq!(identity_type, "Masternode");
     assert_eq!(
-        network, "testnet",
-        "a testnet identity must not be swept into mainnet by the v33 network rename",
+        stored_network,
+        v093_network_label(network),
+        "the read-only legacy row keeps the spelling v0.9.3 wrote",
     );
 
     // ── Identity import: the user's identities and their keys ────────
@@ -1510,6 +1552,7 @@ async fn a_second_launch_after_an_unreadable_identity_preserves_user_edits_and_d
     let conn = Connection::open(tmp.path().join("data.db")).expect("open data.db");
     insert_identity(
         &conn,
+        USER_NETWORK,
         corrupt_id,
         Some(vec![0xFF; 16]),
         IdentityStatus::Active,

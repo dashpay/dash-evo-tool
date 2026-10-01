@@ -162,6 +162,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Updating from v0.9.x carries mainnet wallets and imported keys across, and
+  "Restore from Previous Version" finds mainnet data those versions saved.
+  They stored mainnet under an older name that both steps skipped. Mainnet
+  users who already updated without their wallets can bring them back with
+  "Restore from Previous Version".
+
 - Token detail headers sort rows by identity name, identity ID, or numeric balance;
   unchecked balances stay last in either direction.
 

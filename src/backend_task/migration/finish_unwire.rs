@@ -22,12 +22,13 @@ use crate::backend_task::error::TaskError;
 use crate::context::migration_status::{MigrationState, MigrationStep};
 use crate::context::{AppContext, WalletUnlockRetention};
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::settings::legacy_network_names;
 use crate::model::wallet::WalletSeedHash;
 use crate::wallet_backend::secret_access::is_wrong_passphrase;
 use crate::wallet_backend::{DetScope, KvAdapterError, network_prefix};
 
 /// Sentinel key format string. The migration body filters every
-/// legacy table by `WHERE network = ?1`, so the sentinel must mirror
+/// legacy table by network, so the sentinel must mirror
 /// that scope — otherwise an upgrade on mainnet writes the sentinel
 /// and a later switch to testnet skips the migration even though
 /// testnet wallets are still in the legacy file. Versioned (`:v1`) so
@@ -37,7 +38,7 @@ const SENTINEL_KEY_PREFIX: &str = "det:migration:finish_unwire";
 const SENTINEL_KEY_VERSION: &str = "v1";
 
 /// Per-network sentinel key. The migration filters legacy rows by
-/// `WHERE network = ?1`, so the sentinel scope must match. A previous
+/// network, so the sentinel scope must match. A previous
 /// global key let an upgrade on mainnet hide all testnet wallets after
 /// a network switch.
 pub fn sentinel_key_for(network: Network) -> String {
@@ -965,9 +966,9 @@ async fn drain_wallets(
 
     // Idempotency: if the sentinel for *this network* already exists,
     // this launch has nothing to do. The sentinel is per-network
-    // because every migration body filters legacy rows by `WHERE
-    // network = ?1` — a shared sentinel would let an upgrade on
-    // mainnet silently skip the testnet migration after a switch.
+    // because every migration body filters legacy rows by network — a
+    // shared sentinel would let an upgrade on mainnet silently skip the
+    // testnet migration after a switch.
     if let Some(completion) = read_sentinel(&app_kv, network)? {
         tracing::info!(
             target = "migration::finish_unwire",
@@ -2141,7 +2142,7 @@ where
         return Ok(SingleKeyMigrationOutcome::default());
     }
     let sql = "SELECT encrypted_private_key, alias, uses_password \
-               FROM single_key_wallet WHERE network = ?1";
+               FROM single_key_wallet WHERE network IN (?1, ?2)";
     let mut stmt = conn
         .prepare(sql)
         .map_err(|e| MigrationError::LegacyDbRead {
@@ -2150,7 +2151,7 @@ where
         })?;
 
     let rows = stmt
-        .query_map(rusqlite::params![network.to_string()], |row| {
+        .query_map(legacy_network_names(network), |row| {
             let encrypted: Vec<u8> = row.get(0)?;
             let alias: Option<String> = row.get(1)?;
             let uses_password: i32 = row.get(2)?;
@@ -2386,11 +2387,11 @@ where
     let sql = if core_wallet_name_present {
         "SELECT seed_hash, alias, is_main, core_wallet_name, master_ecdsa_bip44_account_0_epk, \
          uses_password, password_hint \
-         FROM wallet WHERE network = ?1"
+         FROM wallet WHERE network IN (?1, ?2)"
     } else {
         "SELECT seed_hash, alias, is_main, NULL AS core_wallet_name, \
          master_ecdsa_bip44_account_0_epk, uses_password, password_hint \
-         FROM wallet WHERE network = ?1"
+         FROM wallet WHERE network IN (?1, ?2)"
     };
 
     let mut stmt = conn
@@ -2401,7 +2402,7 @@ where
         })?;
 
     let rows = stmt
-        .query_map(rusqlite::params![network.to_string()], |row| {
+        .query_map(legacy_network_names(network), |row| {
             let seed_hash: Vec<u8> = row.get(0)?;
             let alias: Option<String> = row.get(1)?;
             let is_main: Option<bool> = row.get(2)?;
@@ -2594,7 +2595,7 @@ where
     }
     let sql = "SELECT seed_hash, encrypted_seed, salt, nonce, password_hint, \
                uses_password, master_ecdsa_bip44_account_0_epk \
-               FROM wallet WHERE network = ?1";
+               FROM wallet WHERE network IN (?1, ?2)";
 
     let mut stmt = conn
         .prepare(sql)
@@ -2604,7 +2605,7 @@ where
         })?;
 
     let rows = stmt
-        .query_map(rusqlite::params![network.to_string()], |row| {
+        .query_map(legacy_network_names(network), |row| {
             let seed_hash: Vec<u8> = row.get(0)?;
             let encrypted_seed: Vec<u8> = row.get(1)?;
             let salt: Vec<u8> = row.get(2)?;
@@ -4405,6 +4406,38 @@ mod tests {
                 .expect("missing table is benign");
 
         assert_eq!(outcome, SingleKeyMigrationOutcome::default());
+    }
+
+    /// A mainnet single key saved before schema 29 carries the `dash`
+    /// spelling; the mainnet drain must still copy it.
+    #[test]
+    fn mainnet_single_key_saved_with_the_dash_spelling_is_copied() {
+        use dash_sdk::dpp::dashcore::Network;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conn = Connection::open(dir.path().join("data.db")).expect("open legacy db");
+        create_legacy_table(&conn);
+        seed_legacy_row(
+            &conn,
+            &[4u8; 32],
+            &[0xCE; 32],
+            &[],
+            &[],
+            "XMainnetOnly",
+            None,
+            false,
+            Network::Mainnet,
+        );
+        conn.execute("UPDATE single_key_wallet SET network = 'dash'", [])
+            .expect("use the pre-v29 spelling");
+
+        let outcome =
+            migrate_single_key_rows_from_conn(&conn, |_wif, _alias| Ok(()), Network::Mainnet)
+                .expect("copy single-key rows");
+        assert_eq!(
+            outcome.imported, 1,
+            "the pre-v29 mainnet row must be copied"
+        );
     }
 
     /// Copying a legacy single key must not change its source table or rows.

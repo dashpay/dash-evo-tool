@@ -20,6 +20,7 @@ use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::legacy_recovery::{RecoveryItem, compute_recovery_plan};
 use crate::model::legacy_restore::LegacyRestoreSummary;
+use crate::model::settings::legacy_network_names;
 
 const LOG_TARGET: &str = "migration::legacy_restore";
 
@@ -236,8 +237,8 @@ fn legacy_rows_present(
         }
         let present: bool = conn
             .query_row(
-                &format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE network = ?1)"),
-                [network.to_string()],
+                &format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE network IN (?1, ?2))"),
+                legacy_network_names(network),
                 |row| row.get(0),
             )
             .map_err(read_error)?;
@@ -264,13 +265,17 @@ mod tests {
     use dash_sdk::dpp::dashcore::Network;
 
     fn app_context(dir: &Path) -> Arc<AppContext> {
+        app_context_on(dir, Network::Testnet)
+    }
+
+    fn app_context_on(dir: &Path, network: Network) -> Arc<AppContext> {
         crate::app_dir::ensure_env_file(dir);
         let db = Arc::new(crate::database::Database::new(dir.join("data.db")).expect("db"));
         db.create_tables(true).expect("create tables");
         db.set_default_version().expect("set version");
         AppContext::new(
             dir.to_path_buf(),
-            Network::Testnet,
+            network,
             db,
             Default::default(),
             Default::default(),
@@ -381,6 +386,41 @@ mod tests {
         );
         assert!(dir.path().join("data.db").exists(), "data.db is kept");
         backend.shutdown().await;
+    }
+
+    /// A mainnet wallet saved by v0.9.x carries the pre-v29 `dash` network
+    /// spelling; the restore must still find and restore it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn restores_a_mainnet_wallet_saved_with_the_dash_network_spelling() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = app_context_on(dir.path(), Network::Mainnet);
+        let seed = [0xA3; 64];
+        let seed_hash = ClosedKeyItem::compute_seed_hash(&seed);
+        seed_legacy_unprotected_hd_wallet_row(
+            &ctx.db,
+            &seed_hash,
+            &seed,
+            &legacy_master_epk_bytes(&seed, Network::Mainnet),
+            "Mainnet",
+            Network::Mainnet,
+        )
+        .expect("stage legacy wallet");
+        ctx.db
+            .execute("UPDATE wallet SET network = 'dash'", [])
+            .expect("use the v0.9.x spelling");
+        wire_backend(&ctx).await;
+
+        let summary = run(&ctx).await.expect("restore");
+
+        assert_eq!(
+            summary,
+            LegacyRestoreSummary {
+                legacy_database_found: true,
+                wallets_restored: 1,
+                ..Default::default()
+            }
+        );
+        ctx.wallet_backend().expect("backend").shutdown().await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

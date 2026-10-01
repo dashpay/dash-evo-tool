@@ -9,9 +9,9 @@
 use super::AppContext;
 use crate::backend_task::error::TaskError;
 use crate::model::contested_name::{
-    ContestState, Contestant, ContestedName, MasternodeVoteStateSummary, PendingUsername,
-    pending_usernames_in,
+    ContestState, Contestant, ContestedName, MasternodeVoteStateSummary,
 };
+use crate::model::dpns_usernames::UsernameRequest;
 use crate::model::dpns_voting::{
     DpnsCurrentVoteState, DpnsVoteOperation, DpnsVoteOperationId, DpnsVoteTargetKey,
     DpnsVoteTargetStatus, VoteTiming, dpns_vote_authority_rank,
@@ -114,21 +114,6 @@ struct StoredContestant {
     document_id: [u8; 32],
 }
 
-/// How long a DPNS name contest stays open before it locks or resolves.
-/// Mainnet runs the two-week production window; every other network uses a
-/// 90-minute fast-cycle window for testing. Mirrors platform's DPNS
-/// contested-name governance parameters (`ACTIVE_VOTE_DURATION`).
-const MAINNET_CONTEST_DURATION: Duration = Duration::from_secs(60 * 60 * 24 * 14);
-const NON_MAINNET_CONTEST_DURATION: Duration = Duration::from_secs(60 * 90);
-
-fn contest_duration_for_network(network: Network) -> Duration {
-    if network == Network::Mainnet {
-        MAINNET_CONTEST_DURATION
-    } else {
-        NON_MAINNET_CONTEST_DURATION
-    }
-}
-
 fn vote_state_summary(states: &[DpnsCurrentVoteState]) -> MasternodeVoteStateSummary {
     if states.contains(&DpnsCurrentVoteState::Checking) {
         MasternodeVoteStateSummary::Checking
@@ -141,7 +126,11 @@ fn vote_state_summary(states: &[DpnsCurrentVoteState]) -> MasternodeVoteStateSum
 
 impl StoredContestedName {
     fn to_contested_name(&self, network: Network) -> ContestedName {
-        let contest_duration = contest_duration_for_network(network);
+        let join_window = crate::model::dpns::contest_durations(
+            network,
+            crate::context::default_platform_version(&network),
+        )
+        .join;
         let awarded_to_id = self.awarded_to.map(Identifier::from);
 
         // Match pre-C6 semantics: state is computed from the latest
@@ -154,9 +143,7 @@ impl StoredContestedName {
             ContestState::WonBy(id)
         } else if let Some(created_at) = latest_created_at {
             let elapsed = Duration::from_millis(now_ms().saturating_sub(created_at));
-            // New contenders may join only during the first half of the
-            // contest window; the second half is vote-only.
-            if elapsed <= contest_duration / 2 {
+            if elapsed <= join_window {
                 ContestState::Joinable
             } else {
                 ContestState::Ongoing
@@ -199,7 +186,16 @@ fn contest_err(source: KvAdapterError) -> TaskError {
     TaskError::ContestStorage { source }
 }
 
+fn username_err(source: KvAdapterError) -> TaskError {
+    TaskError::UsernameStorage { source }
+}
+
 impl AppContext {
+    /// Protocol version the SDK currently speaks; it sets the community vote fee charged at registration.
+    pub fn sdk_platform_version(&self) -> &'static dash_sdk::dpp::version::PlatformVersion {
+        self.sdk.load().version()
+    }
+
     /// Fetches every DPNS contest cached in the per-network k/v store.
     pub fn all_contested_names(&self) -> std::result::Result<Vec<ContestedName>, TaskError> {
         let kv = self.det_kv()?;
@@ -247,87 +243,249 @@ impl AppContext {
         Ok(out)
     }
 
-    /// Rebuild the frame-safe pending-name snapshot from the contest store.
+    /// Reload the frame-safe username snapshot from the per-network store.
+    ///
+    /// Called at startup and after contest refreshes so the hub reads requests,
+    /// main-name choices and seen outcomes without touching storage per frame.
     pub(crate) fn refresh_pending_dpns_usernames(&self) -> Result<(), TaskError> {
-        let contests = self.ongoing_contested_names()?;
-        let pending = pending_usernames_in(&contests);
-        *self
-            .pending_dpns_usernames
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = pending;
+        let kv = self.det_kv()?;
+        let mut cache = UsernameCache::default();
+        for key in kv
+            .list(DetScope::Global, Some(USERNAME_REQUESTS_KEY_PREFIX))
+            .map_err(username_err)?
+        {
+            let Some(id) = identity_from_key(&key, USERNAME_REQUESTS_KEY_PREFIX) else {
+                continue;
+            };
+            match kv.get::<Vec<UsernameRequest>>(DetScope::Global, &key) {
+                Ok(Some(requests)) => {
+                    cache.requests.insert(id, requests);
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::warn!(key = %key, ?error, "Skipping unreadable username request list")
+                }
+            }
+        }
+        for key in kv
+            .list(DetScope::Global, Some(MAIN_USERNAME_KEY_PREFIX))
+            .map_err(username_err)?
+        {
+            if let Some(id) = identity_from_key(&key, MAIN_USERNAME_KEY_PREFIX)
+                && let Ok(Some(name)) = kv.get::<String>(DetScope::Global, &key)
+            {
+                cache.main.insert(id, name);
+            }
+        }
+        for key in kv
+            .list(DetScope::Global, Some(SEEN_OUTCOMES_KEY_PREFIX))
+            .map_err(username_err)?
+        {
+            if let Some(id) = identity_from_key(&key, SEEN_OUTCOMES_KEY_PREFIX)
+                && let Ok(Some(seen)) = kv.get::<BTreeSet<String>>(DetScope::Global, &key)
+            {
+                cache.seen.insert(id, seen);
+            }
+        }
+        *self.username_cache_mut() = cache;
         Ok(())
     }
 
-    /// The DPNS username `identity_id` has requested but not yet been awarded,
-    /// if any — read from the frame-safe snapshot.
-    ///
-    /// Read-only; returns `Ok(None)` when nothing is pending. Lets the UI tell
-    /// "requested but still being decided" apart from "no username requested".
-    pub fn pending_dpns_username_for(
-        &self,
-        identity_id: &Identifier,
-    ) -> std::result::Result<Option<PendingUsername>, TaskError> {
-        let now_ms = now_ms();
-        Ok(self
-            .pending_dpns_usernames
+    fn username_cache(&self) -> std::sync::RwLockReadGuard<'_, UsernameCache> {
+        self.pending_dpns_usernames
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Write guard over the username snapshot. Every username write holds it
+    /// across its read-modify-write and store update, so writers never interleave.
+    fn username_cache_mut(&self) -> std::sync::RwLockWriteGuard<'_, UsernameCache> {
+        self.pending_dpns_usernames
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Every stored username request of `identity_id`, pending first. Frame-safe.
+    pub fn username_requests_for(&self, identity_id: &Identifier) -> Vec<UsernameRequest> {
+        self.username_cache()
+            .requests
             .get(identity_id)
-            .filter(|pending| pending.decided_at.is_none_or(|end| end > now_ms))
-            .cloned())
+            .cloned()
+            .unwrap_or_default()
     }
 
-    /// Map each of `identity_ids` to its pending DPNS username request, if any.
-    ///
-    /// Reads only the frame-safe snapshot. Identities with nothing pending are
-    /// omitted.
-    pub fn pending_dpns_usernames(
+    /// Whether any identity has a request still in its community vote. Frame-safe.
+    pub fn any_pending_username_request(&self) -> bool {
+        self.username_cache()
+            .requests
+            .values()
+            .flatten()
+            .any(|request| request.phase.is_pending())
+    }
+
+    /// Persist `requests` as the full request list of `identity_id`.
+    pub fn store_username_requests(
         &self,
-        identity_ids: &[Identifier],
-    ) -> std::result::Result<HashMap<Identifier, PendingUsername>, TaskError> {
-        let now_ms = now_ms();
-        let pending = self
-            .pending_dpns_usernames
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        Ok(identity_ids
-            .iter()
-            .filter_map(|id| {
-                pending
-                    .get(id)
-                    .filter(|name| name.decided_at.is_none_or(|end| end > now_ms))
-                    .cloned()
-                    .map(|name| (*id, name))
-            })
-            .collect())
+        identity_id: &Identifier,
+        requests: Vec<UsernameRequest>,
+    ) -> Result<(), TaskError> {
+        self.update_username_requests(identity_id, |_| requests)
     }
 
-    /// Return a pending DPNS username only while `identity` owns no awarded name.
+    /// Replace the request list of `identity_id` with `update(current list)`.
+    ///
+    /// The read, the store write and the snapshot update run under one guard,
+    /// so a request recorded by a concurrent registration is never lost.
+    pub(crate) fn update_username_requests(
+        &self,
+        identity_id: &Identifier,
+        update: impl FnOnce(&[UsernameRequest]) -> Vec<UsernameRequest>,
+    ) -> Result<(), TaskError> {
+        let kv = self.det_kv()?;
+        let key = identity_key(USERNAME_REQUESTS_KEY_PREFIX, identity_id);
+        let mut cache = self.username_cache_mut();
+        let current = cache.requests.get(identity_id).cloned().unwrap_or_default();
+        let requests = update(&current);
+        if requests == current {
+            return Ok(());
+        }
+        if requests.is_empty() {
+            kv.delete(DetScope::Global, &key).map_err(username_err)?;
+            cache.requests.remove(identity_id);
+        } else {
+            kv.put(DetScope::Global, &key, &requests)
+                .map_err(username_err)?;
+            cache.requests.insert(*identity_id, requests);
+        }
+        Ok(())
+    }
+
+    /// The first pending request while `identity` owns no registered name. Frame-safe.
     pub fn pending_dpns_username_for_identity(
         &self,
         identity: &QualifiedIdentity,
-    ) -> Option<PendingUsername> {
+    ) -> Option<UsernameRequest> {
         if identity_owns_dpns_name(identity) {
-            None
-        } else {
-            self.pending_dpns_username_for(&identity.identity.id())
-                .ok()
-                .flatten()
+            return None;
         }
+        self.username_cache()
+            .requests
+            .get(&identity.identity.id())?
+            .iter()
+            .find(|request| request.phase.is_pending())
+            .cloned()
     }
 
-    /// Map identities without an awarded name to their pending DPNS usernames.
-    pub fn pending_dpns_usernames_for_identities(
-        &self,
-        identities: &[QualifiedIdentity],
-    ) -> HashMap<Identifier, PendingUsername> {
-        let identity_ids = identities
+    /// The registered name `identity` shows as its main one. Frame-safe.
+    ///
+    /// The local "Show as main" choice wins while the identity still owns that
+    /// name; otherwise the first registered name.
+    pub fn main_username(&self, identity: &QualifiedIdentity) -> Option<String> {
+        let owned = identity
+            .dpns_names
             .iter()
-            .filter(|identity| !identity_owns_dpns_name(identity))
-            .map(|identity| identity.identity.id())
-            .collect::<Vec<_>>();
-        self.pending_dpns_usernames(&identity_ids)
-            .unwrap_or_default()
+            .map(|name| name.name.trim())
+            .filter(|name| !name.is_empty());
+        let preferred = self
+            .username_cache()
+            .main
+            .get(&identity.identity.id())
+            .cloned();
+        let mut first = None;
+        for name in owned {
+            if preferred.as_deref() == Some(name) {
+                return Some(name.to_owned());
+            }
+            first.get_or_insert(name);
+        }
+        first.map(str::to_owned)
+    }
+
+    /// Show `name` as the main username of `identity_id` on this device.
+    pub fn set_main_username(&self, identity_id: &Identifier, name: &str) -> Result<(), TaskError> {
+        let kv = self.det_kv()?;
+        let mut cache = self.username_cache_mut();
+        kv.put(
+            DetScope::Global,
+            &identity_key(MAIN_USERNAME_KEY_PREFIX, identity_id),
+            &name.to_owned(),
+        )
+        .map_err(username_err)?;
+        cache.main.insert(*identity_id, name.to_owned());
+        Ok(())
+    }
+
+    /// Whether the one-time banner for `request`'s outcome was already shown. Frame-safe.
+    pub fn username_outcome_seen(
+        &self,
+        identity_id: &Identifier,
+        request: &UsernameRequest,
+    ) -> bool {
+        self.username_cache()
+            .seen
+            .get(identity_id)
+            .is_some_and(|seen| seen.contains(&outcome_key(request)))
+    }
+
+    /// Record that the outcome banners for `requests` were shown.
+    pub fn mark_username_outcomes_seen(
+        &self,
+        identity_id: &Identifier,
+        requests: &[UsernameRequest],
+    ) -> Result<(), TaskError> {
+        let kv = self.det_kv()?;
+        let mut cache = self.username_cache_mut();
+        let mut seen = cache.seen.get(identity_id).cloned().unwrap_or_default();
+        let before = seen.len();
+        seen.extend(requests.iter().map(outcome_key));
+        if seen.len() == before {
+            return Ok(());
+        }
+        kv.put(
+            DetScope::Global,
+            &identity_key(SEEN_OUTCOMES_KEY_PREFIX, identity_id),
+            &seen,
+        )
+        .map_err(username_err)?;
+        cache.seen.insert(*identity_id, seen);
+        Ok(())
+    }
+
+    /// Remove a finished request from the identity's list.
+    pub fn dismiss_username_request(
+        &self,
+        identity_id: &Identifier,
+        normalized_label: &str,
+    ) -> Result<(), TaskError> {
+        self.update_username_requests(identity_id, |requests| {
+            requests
+                .iter()
+                .filter(|r| r.phase.is_pending() || r.normalized_label != normalized_label)
+                .cloned()
+                .collect()
+        })
+    }
+
+    /// Drop every username record of a removed identity, so its requests stop
+    /// driving refreshes and its main-name choice does not return on re-import.
+    pub(crate) fn forget_identity_usernames(
+        &self,
+        kv: &crate::wallet_backend::DetKv,
+        identity_id: &Identifier,
+    ) -> Result<(), TaskError> {
+        let mut cache = self.username_cache_mut();
+        for prefix in [
+            USERNAME_REQUESTS_KEY_PREFIX,
+            MAIN_USERNAME_KEY_PREFIX,
+            SEEN_OUTCOMES_KEY_PREFIX,
+        ] {
+            kv.delete(DetScope::Global, &identity_key(prefix, identity_id))
+                .map_err(username_err)?;
+        }
+        cache.requests.remove(identity_id);
+        cache.main.remove(identity_id);
+        cache.seen.remove(identity_id);
+        Ok(())
     }
 
     /// Seed a current contest through the persisted shape for backend contract tests.
@@ -633,6 +791,40 @@ impl AppContext {
     }
 }
 
+/// Per-identity request lists, keyed `det:username_requests:<identity base58>`.
+const USERNAME_REQUESTS_KEY_PREFIX: &str = "det:username_requests:";
+/// Device-only main-name choice, keyed `det:main_username:<identity base58>`.
+const MAIN_USERNAME_KEY_PREFIX: &str = "det:main_username:";
+/// Outcome banners already shown, keyed `det:username_outcomes_seen:<identity base58>`.
+const SEEN_OUTCOMES_KEY_PREFIX: &str = "det:username_outcomes_seen:";
+
+/// Frame-safe copy of the identity-side username state.
+#[derive(Debug, Default)]
+pub(crate) struct UsernameCache {
+    requests: HashMap<Identifier, Vec<UsernameRequest>>,
+    main: HashMap<Identifier, String>,
+    seen: HashMap<Identifier, BTreeSet<String>>,
+}
+
+fn identity_key(prefix: &str, identity_id: &Identifier) -> String {
+    format!(
+        "{prefix}{}",
+        identity_id.to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58)
+    )
+}
+
+fn identity_from_key(key: &str, prefix: &str) -> Option<Identifier> {
+    Identifier::from_string(
+        key.strip_prefix(prefix)?,
+        dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
+    )
+    .ok()
+}
+
+fn outcome_key(request: &UsernameRequest) -> String {
+    format!("{}:{:?}", request.normalized_label, request.phase)
+}
+
 fn identity_owns_dpns_name(identity: &QualifiedIdentity) -> bool {
     identity
         .dpns_names
@@ -644,7 +836,7 @@ fn identity_owns_dpns_name(identity: &QualifiedIdentity) -> bool {
 mod tests {
     use super::*;
     use crate::context::test_support::test_app_context;
-    use crate::model::contested_name::pending_username_in;
+    use crate::model::dpns_usernames::RequestPhase;
     use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
     use crate::model::qualified_identity::{
         DPNSNameInfo, IdentityStatus, IdentityType, QualifiedIdentity,
@@ -699,46 +891,116 @@ mod tests {
         }
     }
 
+    fn request(label: &str, phase: RequestPhase) -> UsernameRequest {
+        UsernameRequest {
+            label: label.to_owned(),
+            normalized_label: label.to_owned(),
+            phase,
+            requested_at: None,
+            join_end: None,
+            end: None,
+            decided_at: None,
+            tally: Default::default(),
+            last_updated: 0,
+        }
+    }
+
     #[test]
-    fn pending_dpns_usernames_for_identities_omits_owned_identity() {
+    fn pending_username_is_suppressed_once_identity_owns_a_name() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let context = test_app_context(temp_dir.path());
+        context.set_det_kv_override_for_test(empty_kv());
         let owned = qualified_identity(1, "alice");
         let unowned = qualified_identity(2, "   ");
-        {
-            let mut pending = context
-                .pending_dpns_usernames
-                .write()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            pending.insert(
-                owned.identity.id(),
-                PendingUsername {
-                    name: "alice".to_string(),
-                    decided_at: None,
-                },
-            );
-            pending.insert(
-                unowned.identity.id(),
-                PendingUsername {
-                    name: "bob".to_string(),
-                    decided_at: None,
-                },
-            );
+        for identity in [&owned, &unowned] {
+            context
+                .store_username_requests(
+                    &identity.identity.id(),
+                    vec![
+                        request("lost", RequestPhase::Lost),
+                        request("b0b", RequestPhase::Voting),
+                    ],
+                )
+                .expect("store");
         }
-
-        let pending = context.pending_dpns_usernames_for_identities(&[owned, unowned]);
-
-        assert!(
-            !pending.contains_key(&Identifier::from([1; 32])),
-            "an awarded DPNS name must suppress the stale pending indicator"
-        );
+        assert!(context.pending_dpns_username_for_identity(&owned).is_none());
         assert_eq!(
-            pending
-                .get(&Identifier::from([2; 32]))
-                .map(|name| name.name.as_str()),
-            Some("bob"),
-            "a blank DPNS entry is not ownership and must keep the pending indicator"
+            context
+                .pending_dpns_username_for_identity(&unowned)
+                .map(|r| r.label),
+            Some("b0b".to_owned())
         );
+        // An owned name never hides the full request list.
+        assert_eq!(context.username_requests_for(&owned.identity.id()).len(), 2);
+    }
+
+    #[test]
+    fn username_state_survives_a_snapshot_reload() {
+        // USR-TC-021 persistence half: the main-name choice and seen flags reload.
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let context = test_app_context(temp_dir.path());
+        context.set_det_kv_override_for_test(empty_kv());
+        let mut identity = qualified_identity(1, "alice");
+        identity.dpns_names.push(DPNSNameInfo {
+            name: "bob".to_owned(),
+            acquired_at: 0,
+        });
+        let id = identity.identity.id();
+        assert_eq!(context.main_username(&identity).as_deref(), Some("alice"));
+        context.set_main_username(&id, "bob").expect("set main");
+        let won = request("carol", RequestPhase::Won);
+        context
+            .store_username_requests(&id, vec![won.clone()])
+            .expect("store");
+        context
+            .mark_username_outcomes_seen(&id, std::slice::from_ref(&won))
+            .expect("seen");
+
+        *context.username_cache_mut() = UsernameCache::default();
+        context.refresh_pending_dpns_usernames().expect("reload");
+
+        assert_eq!(context.main_username(&identity).as_deref(), Some("bob"));
+        assert!(context.username_outcome_seen(&id, &won));
+        assert_eq!(context.username_requests_for(&id), vec![won.clone()]);
+
+        context
+            .dismiss_username_request(&id, "carol")
+            .expect("dismiss");
+        assert!(context.username_requests_for(&id).is_empty());
+    }
+
+    #[test]
+    fn forgetting_an_identity_drops_its_username_records() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let context = test_app_context(temp_dir.path());
+        let kv = empty_kv();
+        context.set_det_kv_override_for_test(kv.clone());
+        let id = qualified_identity(1, "alice").identity.id();
+        let pending = request("carol", RequestPhase::Voting);
+        context
+            .store_username_requests(&id, vec![pending.clone()])
+            .expect("store");
+        context.set_main_username(&id, "alice").expect("main");
+        assert!(context.any_pending_username_request());
+
+        context.forget_identity_usernames(&kv, &id).expect("forget");
+        context.refresh_pending_dpns_usernames().expect("reload");
+
+        assert!(!context.any_pending_username_request());
+        assert!(context.username_requests_for(&id).is_empty());
+        assert!(!context.username_cache().main.contains_key(&id));
+    }
+
+    #[test]
+    fn main_username_falls_back_when_preferred_name_is_gone() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let context = test_app_context(temp_dir.path());
+        context.set_det_kv_override_for_test(empty_kv());
+        let identity = qualified_identity(1, "alice");
+        context
+            .set_main_username(&identity.identity.id(), "gone")
+            .expect("set main");
+        assert_eq!(context.main_username(&identity).as_deref(), Some("alice"));
     }
 
     // ----------------------------------------------------------------
@@ -1165,40 +1427,5 @@ mod tests {
              fleet, got {reads} for {} nodes",
             voters.len()
         );
-    }
-
-    // ----------------------------------------------------------------
-    // Bridge: a stored contest decodes into a detectable pending username.
-    // ----------------------------------------------------------------
-
-    #[test]
-    fn stored_undecided_contest_yields_pending_username() {
-        // A contestant with a timestamp and no winner resolves to an active
-        // (Ongoing) state, so the identity has a pending username request.
-        let stored = StoredContestedName {
-            normalized_contested_name: "det1".to_string(),
-            end_time: Some(9_999),
-            contestants: vec![contestant(5, Some(100))],
-            ..Default::default()
-        };
-        let cn = stored.to_contested_name(Network::Testnet);
-        let me = Identifier::from([5u8; 32]);
-        let pending = pending_username_in(std::slice::from_ref(&cn), &me)
-            .expect("undecided contender must surface a pending username");
-        assert_eq!(pending.name, "name-5");
-        assert_eq!(pending.decided_at, Some(9_999));
-    }
-
-    #[test]
-    fn stored_awarded_contest_yields_no_pending_username() {
-        let stored = StoredContestedName {
-            normalized_contested_name: "det1".to_string(),
-            awarded_to: Some([5u8; 32]),
-            contestants: vec![contestant(5, Some(100))],
-            ..Default::default()
-        };
-        let cn = stored.to_contested_name(Network::Testnet);
-        let me = Identifier::from([5u8; 32]);
-        assert!(pending_username_in(std::slice::from_ref(&cn), &me).is_none());
     }
 }

@@ -33,7 +33,6 @@ impl AddNewIdentityScreen {
                 RegisterDpnsNameScreen::new(&self.app_context, RegisterDpnsNameSource::Identities);
             if let Some(identity_id) = self.successful_qualified_identity_id {
                 screen.select_identity(identity_id);
-                screen.show_identity_selector = false;
             }
             return AppAction::PopThenAddScreenToMainScreen(
                 RootScreenType::RootScreenIdentityHub,

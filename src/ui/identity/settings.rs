@@ -1,7 +1,8 @@
 //! Identity Hub — Settings tab.
 //!
 //! Two-column layout inside the central island: social profile (left) and
-//! username + aliases (right), with a full-width `Advanced` expander below.
+//! usernames + the device-only name (right), with a full-width `Advanced`
+//! expander below.
 //! See design-spec §B.8 and dev-plan task T11.
 //!
 //! ## Backend integration
@@ -13,8 +14,6 @@
 //! `disabled_tooltip` explaining that the action is coming in a follow-up:
 //!
 //! - **Delete social profile** — no `DashPayTask::DeleteProfile` variant.
-//! - **Add / remove alias** and **Make primary** — no `IdentityTask::AddAlias`
-//!   / `RemoveAlias` / `MakePrimaryAlias` variants.
 //!
 //! These appear as `Gated(missing_task)` non-interactive rows with the copy
 //! from design-spec §D (tooltip catalog entry #49). A TODO comment marks each
@@ -27,15 +26,14 @@ use crate::backend_task::identity::IdentityTask;
 use crate::context::AppContext;
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::ui::MessageType;
+use crate::ui::ScreenType;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::message_banner::MessageBanner;
 use crate::ui::components::pill;
 use crate::ui::identity::IDENTITY_REMOVAL_BLOCKED_BY_STORAGE_UPDATE;
 use crate::ui::identity::identity_hero_card::HeroIdentityKind;
-use crate::ui::identity::register_dpns_name_screen::RegisterDpnsNameSource;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Spacing, Typography};
-use crate::ui::{RootScreenType, ScreenType};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
@@ -73,15 +71,9 @@ const TIP_SAVE_NO_CHANGES: &str = "There are no changes to save.";
 const TIP_SAVE_INVALID: &str = "Fix the highlighted fields before saving.";
 const TIP_DELETE_PROFILE: &str = "Remove the display name, bio, and avatar from DashPay. Your identity, usernames, and \
      balance stay.";
-const TIP_PRIMARY_PILL: &str = "Your primary username is what people see by default.";
-const TIP_MAKE_PRIMARY: &str =
-    "Use this username as your main one. Your old primary will become an alias.";
-const TIP_REMOVE_ALIAS: &str = "Remove this alias. You will keep your other usernames.";
-const TIP_ADD_ALIAS: &str = "Register another DPNS name that points to this identity.";
 const TIP_ADD_KEY: &str =
     "Register a new key for this identity. You will choose its purpose and type.";
 const TIP_MANAGE_KEYS: &str = "View this identity's keys and their security settings.";
-const TIP_VIEW_USERNAMES: &str = "Open the complete list of your registered usernames.";
 const TIP_REFRESH: &str = "Fetch the latest state of this identity from the network.";
 const TIP_UNLOAD: &str = "Remove this identity from this device and permanently delete the private keys \
      stored here. It remains on Dash Platform, but you will need your own backup to use it on this \
@@ -199,6 +191,8 @@ pub struct SettingsTab {
     /// Track whether we have loaded the cached profile for the current
     /// identity. Reset on identity change.
     profile_loaded: bool,
+    /// Usernames card renderer (holds the open QR code).
+    usernames_card: super::usernames_card::UsernamesCard,
 }
 
 impl SettingsTab {
@@ -242,8 +236,7 @@ impl SettingsTab {
                 // `set_max_width` on the text fields.
                 ui.columns(2, |cols| {
                     action |= self.render_social_profile(&mut cols[0], app_context, &identity);
-                    action |=
-                        self.render_username_and_aliases(&mut cols[1], app_context, &identity);
+                    action |= self.render_usernames(&mut cols[1], app_context, &identity);
                 });
 
                 ui.add_space(16.0);
@@ -451,149 +444,17 @@ impl SettingsTab {
         action
     }
 
-    fn render_username_and_aliases(
+    fn render_usernames(
         &mut self,
         ui: &mut Ui,
         app_context: &Arc<AppContext>,
         identity: &QualifiedIdentity,
     ) -> AppAction {
-        let mut action = AppAction::None;
         let dark_mode = ui.ctx().global_style().visuals.dark_mode;
-
         username_section_header(ui, identity.identity_type, dark_mode);
-
-        // A DPNS name requested but not yet awarded — surfaced only when the
-        // identity owns no name yet. Best-effort read; a failure omits it.
-        let pending_username = app_context.pending_dpns_username_for_identity(identity);
-
-        // Primary DPNS name. If none, show the pending indicator or the CTA card.
-        let primary = identity.dpns_names.first();
-        if let Some(name) = primary {
-            ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new(format!("@{}", name.name))
-                        .monospace()
-                        .color(DashColors::text_primary(dark_mode)),
-                );
-                ui.add_space(4.0);
-                // Primary pill.
-                let pill = egui::Button::new(RichText::new("Primary").small())
-                    .fill(DashColors::DASH_BLUE)
-                    .stroke(egui::Stroke::NONE);
-                ui.add(pill).info_tooltip(TIP_PRIMARY_PILL);
-
-                ui.add_space(4.0);
-                if ui
-                    .button("Copy")
-                    .clickable_tooltip(format!("Copy @{} to your clipboard.", name.name))
-                    .clicked()
-                {
-                    ui.ctx().copy_text(format!("@{}", name.name));
-                }
-            });
-        } else if let Some(pending) = &pending_username {
-            // Requested but not yet awarded — show the requested name with a
-            // "Pending" pill instead of the register CTA.
-            ui.horizontal(|ui| {
-                let name = crate::model::contested_name::sanitize_pending_username_for_display(
-                    &pending.name,
-                );
-                ui.label(
-                    RichText::new(format!("@{name}"))
-                        .monospace()
-                        .color(DashColors::text_secondary(dark_mode)),
-                );
-                ui.add_space(4.0);
-                pill::pending_username_pill(ui, pending);
-            });
-        } else {
-            // Pick-a-username CTA.
-            egui::Frame::group(ui.style())
-                .fill(DashColors::surface(dark_mode))
-                .inner_margin(Margin::same(10))
-                .corner_radius(egui::CornerRadius::same(6))
-                .show(ui, |ui| {
-                    ui.vertical(|ui| {
-                        ui.label(
-                            RichText::new("Pick a username")
-                                .strong()
-                                .color(DashColors::text_primary(dark_mode)),
-                        );
-                        ui.add_space(6.0);
-                        let reg = ComponentStyles::add_primary_button(ui, "Register a username")
-                            .clickable_tooltip(
-                                "Register a DPNS name and bind it to this identity.",
-                            );
-                        if reg.clicked() {
-                            action = AppAction::AddScreen(
-                                ScreenType::RegisterDpnsName(RegisterDpnsNameSource::Identities)
-                                    .create_screen(app_context),
-                            );
-                        }
-                    });
-                });
-        }
-
-        ui.add_space(6.0);
-        if ComponentStyles::add_secondary_button(ui, "View all usernames", dark_mode)
-            .clickable_tooltip(TIP_VIEW_USERNAMES)
-            .clicked()
-        {
-            action = usernames_screen_action();
-        }
-
+        let mut action = self.usernames_card.show(ui, app_context, identity);
         ui.add_space(12.0);
-
         action |= self.render_local_alias(ui, app_context, identity);
-
-        ui.add_space(12.0);
-
-        // Aliases block. Each secondary DPNS name appears with Make-primary +
-        // Remove actions; both are GATED because the backend variants do not
-        // exist yet.
-        section_heading(ui, "Aliases", dark_mode);
-        ui.label(
-            RichText::new("Extra usernames that also point to your identity.")
-                .small()
-                .color(DashColors::text_secondary(dark_mode)),
-        );
-        ui.add_space(4.0);
-
-        let aliases: Vec<_> = identity.dpns_names.iter().skip(1).cloned().collect();
-        if aliases.is_empty() {
-            ui.label(RichText::new("No aliases yet.").color(DashColors::text_secondary(dark_mode)));
-        } else {
-            for alias in &aliases {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new(format!("@{}", alias.name))
-                            .monospace()
-                            .color(DashColors::text_primary(dark_mode)),
-                    );
-                    // TODO(identity-hub): wire once IdentityTask::MakePrimaryAlias exists.
-                    let mp = ui
-                        .add_enabled(false, egui::Button::new("Make primary"))
-                        .disabled_tooltip(format!("{TIP_MAKE_PRIMARY} {GATED_COMING_SOON}"));
-                    let _ = mp;
-                    // TODO(identity-hub): wire once IdentityTask::RemoveAlias exists.
-                    let rm = ui
-                        .add_enabled(false, egui::Button::new("Remove"))
-                        .disabled_tooltip(format!("{TIP_REMOVE_ALIAS} {GATED_COMING_SOON}"));
-                    let _ = rm;
-                });
-            }
-        }
-
-        ui.add_space(6.0);
-
-        // TODO(identity-hub): "Add an alias" requires IdentityTask::AddAlias,
-        // which does not exist yet. Render as disabled so Alex sees the
-        // affordance and learns it is planned.
-        let add = ui
-            .add_enabled(false, egui::Button::new("Add an alias"))
-            .disabled_tooltip(format!("{TIP_ADD_ALIAS} {GATED_COMING_SOON}"));
-        let _ = add;
-
         action
     }
 
@@ -1066,10 +927,6 @@ fn keys_screen_type(identity: &QualifiedIdentity) -> ScreenType {
     ScreenType::Keys(identity.clone())
 }
 
-fn usernames_screen_action() -> AppAction {
-    AppAction::SetMainScreenThenGoToMainScreen(RootScreenType::RootScreenDPNSOwnedNames)
-}
-
 // ---------------------------------------------------------------------------
 // Small layout helpers
 // ---------------------------------------------------------------------------
@@ -1106,7 +963,7 @@ fn section_heading(ui: &mut Ui, text: &str, dark_mode: bool) {
 fn username_section_header(ui: &mut Ui, identity_type: IdentityType, dark_mode: bool) {
     let kind = HeroIdentityKind::from(identity_type);
     ui.horizontal(|ui| {
-        section_heading(ui, "Username", dark_mode);
+        section_heading(ui, "Usernames", dark_mode);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             pill::accent_pill(
                 ui,
@@ -1205,14 +1062,6 @@ mod tests {
             keys_screen_type(&identity),
             ScreenType::Keys(screen_identity)
                 if screen_identity.identity.id() == identity.identity.id()
-        ));
-    }
-
-    #[test]
-    fn usernames_action_opens_the_owned_names_screen() {
-        assert!(matches!(
-            usernames_screen_action(),
-            AppAction::SetMainScreenThenGoToMainScreen(RootScreenType::RootScreenDPNSOwnedNames)
         ));
     }
 
@@ -1340,7 +1189,7 @@ mod tests {
             });
         harness.run();
 
-        let heading = harness.get_by_label("Username").rect().center();
+        let heading = harness.get_by_label("Usernames").rect().center();
         let badge = harness.get_by_label("User identity").rect().center();
         assert!(
             (heading.y - badge.y).abs() <= 1.0,
@@ -1364,8 +1213,8 @@ mod tests {
             .build_ui(|ui| {
                 let dark = ui.ctx().global_style().visuals.dark_mode;
                 section_heading(ui, "Social profile", dark);
-                section_heading(ui, "Username", dark);
-                section_heading(ui, "Aliases", dark);
+                section_heading(ui, "Usernames", dark);
+                section_heading(ui, "Name on this device", dark);
                 sub_heading(ui, "Advanced", dark);
             });
         harness.run();
@@ -1374,12 +1223,12 @@ mod tests {
             "Social profile heading must render",
         );
         assert!(
-            harness.query_by_label("Username").is_some(),
+            harness.query_by_label("Usernames").is_some(),
             "Username heading must render",
         );
         assert!(
-            harness.query_by_label("Aliases").is_some(),
-            "Aliases heading must render",
+            harness.query_by_label("Name on this device").is_some(),
+            "device-name heading must render",
         );
         assert!(
             harness.query_by_label("Advanced").is_some(),

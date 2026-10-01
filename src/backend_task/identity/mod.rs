@@ -1,6 +1,7 @@
 mod add_key_to_identity;
 mod auth_pubkey_resolve;
 mod discover_identities;
+mod dpns_usernames;
 mod load_identity;
 mod load_identity_by_dpns_name;
 mod load_identity_from_wallet;
@@ -450,6 +451,8 @@ impl PartialEq for IdentityTopUpInfo {
 pub struct RegisterDpnsNameInput {
     pub qualified_identity: QualifiedIdentity,
     pub name_input: String,
+    /// Authentication key to sign with; `None` picks the identity's default document key.
+    pub signing_key_id: Option<KeyID>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -546,6 +549,30 @@ pub enum IdentityTask {
     },
     RefreshIdentity(QualifiedIdentity),
     RefreshLoadedIdentitiesOwnedDPNSNames,
+    /// Check whether a username label can be requested right now.
+    CheckUsernameAvailability {
+        /// The identity that would request it.
+        identity_id: Identifier,
+        /// The bare label, as typed.
+        label: String,
+    },
+    /// Refresh the community-vote requests of every loaded identity.
+    RefreshMyUsernameRequests,
+    /// Show `name` as the identity's main username on this device.
+    SetMainUsername {
+        identity_id: Identifier,
+        name: String,
+    },
+    /// Remove a finished username request from the identity's list.
+    DismissUsernameRequest {
+        identity_id: Identifier,
+        normalized_label: String,
+    },
+    /// Record that the outcome banners of `requests` were shown.
+    MarkUsernameOutcomesSeen {
+        identity_id: Identifier,
+        requests: Vec<crate::model::dpns_usernames::UsernameRequest>,
+    },
 }
 
 /// Returns the default key specifications for a new identity.
@@ -951,6 +978,22 @@ impl AppContext {
             IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames => {
                 Ok(self.refresh_loaded_identities_dpns_names(sender).await?)
             }
+            IdentityTask::CheckUsernameAvailability { identity_id, label } => {
+                self.check_username_availability(sdk, identity_id, label)
+                    .await
+            }
+            IdentityTask::RefreshMyUsernameRequests => self.refresh_my_username_requests(sdk).await,
+            IdentityTask::SetMainUsername { identity_id, name } => {
+                self.save_main_username(identity_id, name)
+            }
+            IdentityTask::DismissUsernameRequest {
+                identity_id,
+                normalized_label,
+            } => self.dismiss_username_outcome(identity_id, normalized_label),
+            IdentityTask::MarkUsernameOutcomesSeen {
+                identity_id,
+                requests,
+            } => self.save_username_outcomes_seen(identity_id, requests),
             IdentityTask::ProtectIdentityKeys {
                 identity_id,
                 password,

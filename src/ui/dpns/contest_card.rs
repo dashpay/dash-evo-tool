@@ -1,7 +1,7 @@
 //! One contest card in Masternodes ▸ Votes (frame V1): a read-only weighted
 //! tally on the left, the decision pills and node line on the right.
 
-use crate::model::dpns_voting::contest_timing::ContestDurations;
+use crate::model::dpns::ContestDurations;
 use crate::model::dpns_voting::operator::{Influence, influence, time_left};
 use crate::ui::dpns::copy;
 use crate::ui::state::dpns_vote_cards::{NodeContestStatus, VoteCard};

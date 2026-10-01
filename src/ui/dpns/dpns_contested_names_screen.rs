@@ -21,11 +21,11 @@ use crate::backend_task::{BackendTask, BackendTaskContext};
 use crate::context::AppContext;
 use crate::model::contested_name::{ContestState, ContestedName};
 use crate::model::dpns::normalize_dpns_label;
+use crate::model::dpns::{contest_durations, urgency_window};
 use crate::model::dpns_voting::composer::{
     AggregatePlan, BatchTiming, ComposeError, ComposerNode, Decision, NodeStanding, NodeTiming,
     SkipReason, compose,
 };
-use crate::model::dpns_voting::contest_timing::{contest_durations, urgency_window};
 use crate::model::dpns_voting::operator::NodeExclusion;
 use crate::model::dpns_voting::operator::{
     ChangesLeft, ChoiceTally, NodeSet, ResolvedNodeSet, VotingNode, VotingNodeKind,

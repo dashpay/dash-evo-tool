@@ -1062,6 +1062,17 @@ pub enum BackendTaskSuccessResult {
     RefreshedDpnsContests,
     RefreshedOwnedDpnsNames,
 
+    // Identity username results (Stream U)
+    /// Result of an availability check for `label`.
+    UsernameAvailability {
+        label: String,
+        availability: crate::model::dpns_usernames::UsernameAvailability,
+    },
+    /// Every loaded identity's username requests were refreshed and stored.
+    MyUsernameRequestsRefreshed,
+    /// A device-only username preference (main name, dismissal, seen banner) was saved.
+    UsernamePreferencesSaved,
+
     // Broadcast results
     BroadcastedStateTransition,
 

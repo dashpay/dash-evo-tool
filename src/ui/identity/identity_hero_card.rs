@@ -18,7 +18,7 @@
 //! This component follows `docs/COMPONENT_DESIGN_PATTERN.md`: private fields +
 //! builder methods + a response struct implementing [`ComponentResponse`].
 
-use crate::model::contested_name::PendingUsername;
+use crate::model::dpns_usernames::UsernameRequest;
 use crate::model::qualified_identity::IdentityType;
 use crate::ui::components::component_trait::ComponentResponse;
 use crate::ui::components::pill;
@@ -186,7 +186,7 @@ pub struct IdentityHeroCard {
     /// A DPNS username the identity has requested but not yet been awarded.
     /// When set and no owned `dpns_handle` exists, the hero shows the requested
     /// name with a "Pending" pill instead of the `No username yet` prompt.
-    pending_username: Option<PendingUsername>,
+    pending_username: Option<UsernameRequest>,
 }
 
 impl IdentityHeroCard {
@@ -229,8 +229,8 @@ impl IdentityHeroCard {
     /// Attach a pending DPNS username request (requested but not yet awarded).
     /// Shown only when the identity has no owned `dpns_handle` — an owned name
     /// always wins.
-    pub fn with_pending_username(mut self, pending: PendingUsername) -> Self {
-        if !pending.name.trim().is_empty() {
+    pub fn with_pending_username(mut self, pending: UsernameRequest) -> Self {
+        if !pending.label.trim().is_empty() {
             self.pending_username = Some(pending);
         }
         self
@@ -539,9 +539,9 @@ impl IdentityHeroCard {
     /// Paint the pending-username line: the requested `@name` (muted, italic to
     /// signal it is not yet final) followed by a shared `Pending` pill whose
     /// tooltip carries the estimated ready time.
-    fn paint_pending_username_line(&self, ui: &mut Ui, dark_mode: bool, pending: &PendingUsername) {
+    fn paint_pending_username_line(&self, ui: &mut Ui, dark_mode: bool, pending: &UsernameRequest) {
         let name =
-            crate::model::contested_name::sanitize_pending_username_for_display(&pending.name);
+            crate::model::contested_name::sanitize_pending_username_for_display(&pending.label);
         ui.horizontal(|ui| {
             ui.label(
                 RichText::new(format!("@{name}"))
@@ -724,11 +724,19 @@ mod tests {
 
     // ─── Pending DPNS username tests ─────────────────────────
 
-    fn pending(name: &str) -> PendingUsername {
-        PendingUsername {
-            name: name.to_string(),
-            decided_at: None,
-        }
+    fn pending(name: &str) -> UsernameRequest {
+        let mut request = UsernameRequest::submitted(
+            "x",
+            0,
+            crate::model::dpns::ContestDurations {
+                total: std::time::Duration::ZERO,
+                join: std::time::Duration::ZERO,
+            },
+            None,
+        );
+        request.label = name.to_string();
+        request.end = None;
+        request
     }
 
     #[test]

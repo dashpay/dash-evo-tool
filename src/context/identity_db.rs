@@ -1709,6 +1709,13 @@ impl AppContext {
         index_remove_identity(&kv, &id)?;
         self.invalidate_identity_load(*identifier);
         purge_identity_scope(&kv, &id)?;
+        if let Err(error) = self.forget_identity_usernames(&kv, identifier) {
+            tracing::warn!(
+                identity_id = %identifier,
+                ?error,
+                "Removed identity's username records could not be cleared"
+            );
+        }
         let sidecar_cleanup = self.finish_identity_removal_cleanup(&kv, &id, vault_keys)?;
         // Mirror removal into the upstream unowned scope; wallet-owned identities are unaffected.
         if let Ok(backend) = self.wallet_backend()

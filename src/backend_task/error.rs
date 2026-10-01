@@ -2025,6 +2025,39 @@ pub enum TaskError {
     #[error("The private key you entered is invalid. Please check the format and try again.")]
     InvalidPrivateKey,
 
+    /// The network could not be asked whether a username is free.
+    #[error(
+        "Availability can't be checked right now. Check your internet connection and try again."
+    )]
+    UsernameAvailabilityCheckFailed {
+        #[source]
+        source: Box<SdkError>,
+    },
+
+    /// The username stopped being available between choosing it and paying.
+    #[error("This username is no longer available. Nothing was spent. Choose another username.")]
+    UsernameNoLongerAvailable {
+        availability: crate::model::dpns_usernames::UsernameAvailability,
+    },
+
+    /// Username requests or preferences could not be read or written on this device.
+    #[error(
+        "Your username settings could not be saved on this device. Check available disk space and try again."
+    )]
+    UsernameStorage {
+        #[source]
+        source: crate::wallet_backend::KvAdapterError,
+    },
+
+    /// The status of username requests could not be read from the network.
+    #[error(
+        "Username request status can't be updated right now. Check your internet connection and try again."
+    )]
+    UsernameRequestRefreshFailed {
+        #[source]
+        source: Box<SdkError>,
+    },
+
     /// Fetching DPNS names for an identity failed.
     #[error("Could not look up names for this identity. Please check your connection and retry.")]
     DpnsFetchError {

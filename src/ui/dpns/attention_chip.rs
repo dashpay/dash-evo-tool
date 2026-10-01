@@ -4,7 +4,7 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::context::feature_gate::FeatureGate;
-use crate::model::dpns_voting::contest_timing::urgency_window;
+use crate::model::dpns::urgency_window;
 use crate::model::dpns_voting::operator::{AttentionSummary, TimeLeft, time_left};
 use crate::ui::RootScreenType;
 use crate::ui::components::pill::accent_pill;

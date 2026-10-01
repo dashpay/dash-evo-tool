@@ -53,6 +53,7 @@ use identity::IdentityHubScreen;
 use identity::add_existing_identity_screen::AddExistingIdentityScreen;
 use identity::add_new_identity_screen::AddNewIdentityScreen;
 use identity::register_dpns_name_screen::{RegisterDpnsNameScreen, RegisterDpnsNameSource};
+use identity::username_request_screen::UsernameRequestScreen;
 use masternodes::MasternodesScreen;
 use std::fmt;
 use std::sync::Arc;
@@ -217,6 +218,11 @@ pub enum ScreenType {
     DocumentQuery,
     NetworkChooser,
     RegisterDpnsName(RegisterDpnsNameSource),
+    /// Status of one of an identity's username requests.
+    UsernameRequestStatus {
+        identity_id: Identifier,
+        normalized_label: String,
+    },
     RegisterContract,
     UpdateContract,
     TopUpIdentity(QualifiedIdentity),
@@ -294,6 +300,16 @@ impl PartialEq for ScreenType {
             (KeyInfo(a1, a2, a3), KeyInfo(b1, b2, b3)) => a1 == b1 && a2 == b2 && a3 == b3,
             (Keys(a), Keys(b)) => a == b,
             (RegisterDpnsName(a), RegisterDpnsName(b)) => a == b,
+            (
+                UsernameRequestStatus {
+                    identity_id: a1,
+                    normalized_label: a2,
+                },
+                UsernameRequestStatus {
+                    identity_id: b1,
+                    normalized_label: b2,
+                },
+            ) => a1 == b1 && a2 == b2,
             (TopUpIdentity(a), TopUpIdentity(b)) => a == b,
             (TransferTokensScreen(a), TransferTokensScreen(b)) => a == b,
             (MintTokensScreen(a), MintTokensScreen(b)) => a == b,
@@ -352,6 +368,14 @@ impl ScreenType {
             ScreenType::RegisterDpnsName(source) => {
                 Screen::RegisterDpnsNameScreen(RegisterDpnsNameScreen::new(app_context, *source))
             }
+            ScreenType::UsernameRequestStatus {
+                identity_id,
+                normalized_label,
+            } => Screen::UsernameRequestScreen(UsernameRequestScreen::new(
+                app_context,
+                *identity_id,
+                normalized_label.clone(),
+            )),
             ScreenType::RegisterContract => {
                 Screen::RegisterDataContractScreen(RegisterDataContractScreen::new(app_context))
             }
@@ -576,6 +600,7 @@ pub enum Screen {
     KeyInfoScreen(KeyInfoScreen),
     KeysScreen(KeysScreen),
     RegisterDpnsNameScreen(RegisterDpnsNameScreen),
+    UsernameRequestScreen(UsernameRequestScreen),
     RegisterDataContractScreen(RegisterDataContractScreen),
     UpdateDataContractScreen(UpdateDataContractScreen),
     DocumentActionScreen(DocumentActionScreen),
@@ -757,6 +782,7 @@ impl Screen {
             AddKeyScreen,
             DocumentQueryScreen,
             RegisterDpnsNameScreen,
+            UsernameRequestScreen,
             RegisterDataContractScreen,
             UpdateDataContractScreen,
             DocumentActionScreen,
@@ -935,6 +961,10 @@ impl Screen {
                 ScreenType::TopUpIdentity(screen.identity.clone())
             }
             Screen::RegisterDpnsNameScreen(screen) => ScreenType::RegisterDpnsName(screen.source),
+            Screen::UsernameRequestScreen(screen) => ScreenType::UsernameRequestStatus {
+                identity_id: screen.identity_id(),
+                normalized_label: screen.normalized_label().to_owned(),
+            },
             Screen::RegisterDataContractScreen(_) => ScreenType::RegisterContract,
             Screen::UpdateDataContractScreen(_) => ScreenType::UpdateContract,
             Screen::DocumentActionScreen(screen) => match screen.action_type {
@@ -1076,6 +1106,7 @@ macro_rules! delegate_to_screen {
             Screen::KeyInfoScreen($screen) => $call,
             Screen::KeysScreen($screen) => $call,
             Screen::RegisterDpnsNameScreen($screen) => $call,
+            Screen::UsernameRequestScreen($screen) => $call,
             Screen::RegisterDataContractScreen($screen) => $call,
             Screen::UpdateDataContractScreen($screen) => $call,
             Screen::DocumentActionScreen($screen) => $call,

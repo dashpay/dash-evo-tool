@@ -100,7 +100,6 @@ fn assert_registration_outcome_copy(outcome: DpnsRegistrationOutcome, expected: 
         harness.run();
 
         assert!(harness.query_by_label(expected).is_some());
-        assert!(harness.query_by_label("DPNS Name Registered!").is_none());
         assert!(harness.query_by_label(wrong).is_none());
     });
 }
@@ -109,8 +108,8 @@ fn assert_registration_outcome_copy(outcome: DpnsRegistrationOutcome, expected: 
 fn dpns_registered_outcome_renders_finalized_copy() {
     assert_registration_outcome_copy(
         DpnsRegistrationOutcome::Registered,
-        "Your username is registered. You can use it now.",
-        "Your username request was submitted. Other people can also request this name, so the community will vote on who receives it. Check the Pending label on your identity for updates.",
+        "People can now find and pay you by this name.",
+        "We'll show the result on your identity's page. You don't need to keep this screen open.",
     );
 }
 
@@ -118,8 +117,8 @@ fn dpns_registered_outcome_renders_finalized_copy() {
 fn dpns_pending_outcome_renders_voting_copy() {
     assert_registration_outcome_copy(
         DpnsRegistrationOutcome::PendingCommunityVote,
-        "Your username request was submitted. Other people can also request this name, so the community will vote on who receives it. Check the Pending label on your identity for updates.",
-        "Your username is registered. You can use it now.",
+        "We'll show the result on your identity's page. You don't need to keep this screen open.",
+        "People can now find and pay you by this name.",
     );
 }
 

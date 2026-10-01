@@ -609,13 +609,17 @@ impl AppContext {
         {
             // A fresh proved snapshot is a submission precondition. This also
             // prevents a due schedule from replaying a vote already observed.
-            let refreshed = self.refresh_dpns_vote_states(sdk).await.map_err(Arc::new);
             let queued_keys = operation
                 .targets
                 .iter()
                 .filter(|outcome| outcome.status == DpnsVoteTargetStatus::Queued)
                 .map(|outcome| outcome.target.key.clone())
                 .collect::<Vec<_>>();
+            let queued_voters = queued_keys.iter().map(|key| key.voter_id).collect();
+            let refreshed = self
+                .refresh_dpns_vote_states_for(sdk, &queued_voters)
+                .await
+                .map_err(Arc::new);
             for key in queued_keys {
                 let snapshot = match &refreshed {
                     Ok(results) => results
@@ -2511,6 +2515,55 @@ mod tests {
                 "observed {observed:?}: the unresolved target stays locked"
             );
         }
+    }
+
+    /// Submission preflight refreshes only the operation's own voters, not
+    /// every loaded masternode.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn scoped_vote_state_refresh_queries_only_the_requested_voters() {
+        use dash_sdk::query_types::ResourceVotesByIdentity;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let context = crate::context::test_support::test_app_context(temp.path());
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(8);
+        context
+            .ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+                tx,
+                context.egui_ctx().clone(),
+            ))
+            .await
+            .expect("wire wallet backend offline");
+        let mut voters = Vec::new();
+        for byte in [1, 2] {
+            let mut voter = qualified_identity(byte);
+            voter.identity_type = IdentityType::Masternode;
+            context
+                .insert_local_qualified_identity(&voter, &None)
+                .expect("load masternode");
+            voters.push(voter.identity.id());
+        }
+        let mut sdk = Sdk::new_mock();
+        sdk.mock()
+            .expect_fetch_many::<Identifier, ResourceVote, _, ResourceVotesByIdentity>(
+                ContestedResourceVotesGivenByIdentityQuery {
+                    identity_id: voters[0],
+                    offset: None,
+                    limit: Some(100),
+                    start_at: None,
+                    order_ascending: true,
+                },
+                Some(ResourceVotesByIdentity::default()),
+            )
+            .await
+            .expect("mock vote query");
+
+        let results = context
+            .refresh_dpns_vote_states_for(&sdk, &std::collections::BTreeSet::from([voters[0]]))
+            .await
+            .expect("refresh");
+
+        assert_eq!(results.keys().copied().collect::<Vec<_>>(), vec![voters[0]]);
+        assert!(results[&voters[0]].is_ok(), "{results:?}");
+        context.wallet_backend().unwrap().shutdown().await;
     }
 
     /// VOTE-TC-103 (executor half): a queued target on a contest that closed

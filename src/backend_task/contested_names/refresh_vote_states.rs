@@ -10,7 +10,7 @@ use dash_sdk::dpp::voting::votes::resource_vote::accessors::v0::ResourceVoteGett
 use dash_sdk::drive::query::contested_resource_votes_given_by_identity_query::ContestedResourceVotesGivenByIdentityQuery;
 use dash_sdk::platform::{FetchMany, Identifier};
 use futures::{StreamExt, stream};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 const VOTE_QUERY_PAGE_SIZE: u16 = 100;
@@ -21,15 +21,45 @@ impl AppContext {
         &self,
         sdk: &Sdk,
     ) -> Result<DpnsVoteRefreshResults, TaskError> {
-        let voters = self.load_local_masternode_identities()?;
+        let voters = self
+            .load_local_masternode_identities()?
+            .into_iter()
+            .map(|voter| voter.identity.id())
+            .collect();
+        self.refresh_voter_states(sdk, voters).await
+    }
+
+    /// Refresh proved vote state for the loaded masternodes among `voter_ids`.
+    ///
+    /// Submission preflight uses this so one operation queries only its own
+    /// voters; ids that are not loaded masternodes are skipped and therefore
+    /// absent from the results.
+    pub(crate) async fn refresh_dpns_vote_states_for(
+        &self,
+        sdk: &Sdk,
+        voter_ids: &BTreeSet<Identifier>,
+    ) -> Result<DpnsVoteRefreshResults, TaskError> {
+        let voters = self
+            .load_local_masternode_identities()?
+            .into_iter()
+            .map(|voter| voter.identity.id())
+            .filter(|voter_id| voter_ids.contains(voter_id))
+            .collect();
+        self.refresh_voter_states(sdk, voters).await
+    }
+
+    async fn refresh_voter_states(
+        &self,
+        sdk: &Sdk,
+        voters: Vec<Identifier>,
+    ) -> Result<DpnsVoteRefreshResults, TaskError> {
         let kv = self.det_kv()?;
 
         Ok(stream::iter(voters)
-            .map(|voter| {
+            .map(|voter_id| {
                 let sdk = sdk.clone();
                 let kv = kv.clone();
                 async move {
-                    let voter_id = voter.identity.id();
                     let result = self.publish_dpns_vote_state(
                         &kv, voter_id, fetch_votes_for_voter(&sdk, voter_id),
                     ).await.map_err(Arc::new);

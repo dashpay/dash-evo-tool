@@ -629,13 +629,11 @@ impl From<&BackendTask> for BackendTaskContext {
                 identity_index: *identity_index,
             },
             BackendTask::SystemTask(SystemTask::ClearNetworkDatabase) => Self::ClearNetworkDatabase,
-            BackendTask::ContestedResourceTask(ContestedResourceTask::SubmitDpnsVoteOperation(
-                operation,
-                _,
-                _,
-                network,
-                _,
-            )) => Self::DpnsVoteOperation {
+            BackendTask::ContestedResourceTask(
+                ContestedResourceTask::SubmitDpnsVoteOperation {
+                    operation, network, ..
+                },
+            ) => Self::DpnsVoteOperation {
                 network: *network,
                 operation_id: operation.id,
             },

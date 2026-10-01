@@ -2451,13 +2451,13 @@ impl DPNSScreen {
         self.retry_voter = None;
         self.pending_vote_operation = Some(operation.id);
         AppAction::BackendTask(BackendTask::ContestedResourceTask(
-            ContestedResourceTask::SubmitDpnsVoteOperation(
+            ContestedResourceTask::SubmitDpnsVoteOperation {
                 operation,
-                plan.voters,
-                None,
-                self.app_context.network(),
-                labels,
-            ),
+                voters: plan.voters,
+                replacing_scheduled_key: None,
+                network: self.app_context.network(),
+                relative_labels: labels,
+            },
         ))
     }
 }

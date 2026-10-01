@@ -45,15 +45,17 @@ pub enum ContestedResourceTask {
     /// The same contest + vote-state refresh, run by the background timer:
     /// partial failures are logged instead of reported to the user.
     RefreshContestsInBackground,
-    /// The last field records the relative preset of "before the end"
-    /// targets for display (VOTE-FR-081).
-    SubmitDpnsVoteOperation(
-        DpnsVoteOperation,
-        Vec<QualifiedIdentity>,
-        Option<DpnsVoteTargetKey>,
-        Network,
-        Option<RelativeScheduleLabels>,
-    ),
+    /// Journal and submit a reviewed voting batch.
+    SubmitDpnsVoteOperation {
+        operation: DpnsVoteOperation,
+        voters: Vec<QualifiedIdentity>,
+        /// Scheduled target this submission replaces, if any.
+        replacing_scheduled_key: Option<DpnsVoteTargetKey>,
+        network: Network,
+        /// Relative preset of "before the end" targets, kept for display
+        /// (VOTE-FR-081).
+        relative_labels: Option<RelativeScheduleLabels>,
+    },
     ReconcileDpnsVoteOperation(DpnsVoteOperationId, Network),
     CastScheduledVote(ScheduledDPNSVote, Box<QualifiedIdentity>),
     /// Sweep the scheduled-vote table and cast every vote that is now due.
@@ -290,14 +292,14 @@ impl AppContext {
                 }
                 Ok(BackendTaskSuccessResult::None)
             }
-            ContestedResourceTask::SubmitDpnsVoteOperation(
+            ContestedResourceTask::SubmitDpnsVoteOperation {
                 operation,
                 voters,
                 replacing_scheduled_key,
-                _,
-                labels,
-            ) => {
-                if let Some(labels) = labels {
+                network: _,
+                relative_labels,
+            } => {
+                if let Some(labels) = relative_labels {
                     self.save_relative_schedule_labels(&operation, &labels);
                 }
                 self.execute_dpns_vote_operation_with_recovery(

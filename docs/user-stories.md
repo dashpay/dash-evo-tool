@@ -349,6 +349,19 @@ As a user whose wallet data was copied before a storage upgrade, I want old upgr
 - With "keep forever", no published backup is deleted automatically. Opening the data removes only unfinished copies left by a crash and exact duplicates of a newer backup.
 - Removing a wallet or an identity does not delete upgrade backups. Clearing a network's data deletes that network's wallet backups; backups of the shared app data stay under the retention setting.
 
+### WAL-035: Restore missing wallets and identity keys from the previous version [Implemented]
+**Persona:** Alex, Priya, Jordan
+
+As a user who updated from an earlier version and finds a wallet or identity key missing, I want one button that brings back what the previous version still has saved, so that I can sign again without re-importing everything by hand.
+
+- Settings → Database Maintenance offers "Restore from Previous Version". It is disabled while it runs and can be used again at any time.
+- Only wallets and identity keys that are missing on this device for the active network are restored. Nothing already present is overwritten, deleted identities are not brought back, and the previous version's database is never changed.
+- The button's description warns that wallets removed in this version may reappear if the previous version still has them.
+- With several password-protected identities the user is asked once per identity; declining one skips only that identity and is counted in the summary.
+- Password-protected wallets come back still protected and are unlocked the usual way. Restored wallets appear without restarting the app.
+- A summary reports how many wallets and identity keys were restored and how many saved records were damaged or could not be restored, and it says when no earlier data exists or nothing needed restoring.
+- When signing fails because a wallet's secret is missing, the message names both ways to recover: import the wallet again from its recovery phrase on the same network, or use this restore.
+
 ---
 
 ## Send and Receive (SND)

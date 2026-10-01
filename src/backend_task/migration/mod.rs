@@ -16,6 +16,7 @@ use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 
 pub mod finish_unwire;
+pub mod legacy_restore;
 pub mod legacy_settings;
 pub mod single_key_restore;
 
@@ -45,6 +46,10 @@ pub enum MigrationTask {
     /// Retire identity and app-data warnings together after acknowledging the
     /// single banner that names every affected data type.
     AcknowledgeUnreadableData,
+    /// Re-import wallet seeds and identity keys that the preserved legacy
+    /// `data.db` still holds but this version's stores lack. Never overwrites
+    /// and never modifies `data.db`; repeatable.
+    RestoreFromPreviousVersion,
 }
 
 impl AppContext {
@@ -79,6 +84,7 @@ impl AppContext {
                 finish_unwire::acknowledge_unreadable_identities(self)?;
                 Ok(BackendTaskSuccessResult::Refresh)
             }
+            MigrationTask::RestoreFromPreviousVersion => legacy_restore::run_task(self).await,
         }
     }
 }

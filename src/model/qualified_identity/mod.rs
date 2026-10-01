@@ -7,7 +7,7 @@ pub mod qualified_identity_public_key;
 // contract, whose closures must return `Result<_, TaskError>`. Removing it
 // requires making that secret-seam chokepoint generic over the closure error
 // type — a wallet_backend change out of scope here.
-use crate::backend_task::error::TaskError;
+use crate::backend_task::error::{SIGNING_KEY_UNAVAILABLE_PREFIX, TaskError};
 use crate::model::qualified_identity::encrypted_key_storage::{
     KeyStorage, ResolvedPrivateKey, same_key,
 };
@@ -342,6 +342,38 @@ impl<C> Decode<C> for QualifiedIdentity {
     }
 }
 
+/// The sentence naming the wallet a signing key comes from.
+///
+/// Named wallets are listed by alias. A wallet that is on this device but has no
+/// name is described as such, so the user is not told to re-import a wallet they
+/// still have. Only when no associated wallet is loaded does the sentence say the
+/// wallet is missing.
+fn signing_wallet_sentence(names: &[String], unnamed_on_device: bool) -> String {
+    if !names.is_empty() {
+        format!(
+            "The key comes from the wallet {wallet_names}.",
+            wallet_names = names.join(", ")
+        )
+    } else if unnamed_on_device {
+        "The key comes from an unnamed wallet on this device.".to_string()
+    } else {
+        "The key comes from a wallet that is not on this device.".to_string()
+    }
+}
+
+/// A plain-language name for a key purpose, for user-facing messages.
+fn purpose_label(purpose: Purpose) -> &'static str {
+    match purpose {
+        Purpose::AUTHENTICATION => "authentication",
+        Purpose::ENCRYPTION => "encryption",
+        Purpose::DECRYPTION => "decryption",
+        Purpose::TRANSFER => "transfer",
+        Purpose::SYSTEM => "system",
+        Purpose::VOTING => "voting",
+        Purpose::OWNER => "owner",
+    }
+}
+
 impl Display for QualifiedIdentity {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.display_string())
@@ -371,7 +403,7 @@ impl Signer<IdentityPublicKey> for QualifiedIdentity {
         let resolved = self
             .resolve_private_key_bytes(identity_public_key)
             .await
-            .map_err(|e| ProtocolError::Generic(e.to_string()))?;
+            .map_err(|e| self.signing_key_unavailable(identity_public_key, &e))?;
 
         let (_, private_key) = resolved.ok_or_else(|| {
             tracing::error!(
@@ -764,6 +796,63 @@ impl QualifiedIdentity {
             Some(failure) => Err(failure),
             None => Ok(None),
         }
+    }
+
+    /// The `ProtocolError` returned when `key` cannot be resolved for signing.
+    ///
+    /// `ProtocolError` cannot carry a typed source, so the text is tagged with
+    /// [`SIGNING_KEY_UNAVAILABLE_PREFIX`] for `From<SdkError>` to recognise; the
+    /// rest is the cause's user-facing message plus the identity, key and
+    /// wallet involved. The typed error is logged here in full.
+    ///
+    /// Intentional, sanctioned exception to the no-string-parsing rule (see AGENTS.md).
+    // TODO(upstream): replace with a typed ProtocolError source variant in dashpay/platform
+    fn signing_key_unavailable(&self, key: &IdentityPublicKey, cause: &TaskError) -> ProtocolError {
+        let identity_id = self.identity.id().to_string(Encoding::Base58);
+        let mut seed_hashes: Vec<WalletSeedHash> = self
+            .private_keys
+            .candidates(key)
+            .filter_map(|placement| self.private_keys.wallet_seed_hash_for(&placement))
+            .collect();
+        seed_hashes.sort_unstable();
+        seed_hashes.dedup();
+        tracing::warn!(
+            identity_id = %identity_id,
+            key_id = key.id(),
+            purpose = ?key.purpose(),
+            wallets = ?seed_hashes.iter().map(hex::encode).collect::<Vec<_>>(),
+            error = ?cause,
+            "Signing key could not be resolved"
+        );
+
+        let mut text = format!(
+            "{SIGNING_KEY_UNAVAILABLE_PREFIX}{cause} This concerns key {key_id} ({purpose}) of identity {identity_id}.",
+            key_id = key.id(),
+            purpose = purpose_label(key.purpose()),
+        );
+        if !seed_hashes.is_empty() {
+            let mut names: Vec<String> = Vec::new();
+            let mut unnamed_on_device = false;
+            for wallet in seed_hashes
+                .iter()
+                .filter_map(|hash| self.associated_wallets.get(hash))
+            {
+                let alias = wallet
+                    .read()
+                    .ok()
+                    .and_then(|wallet| wallet.initial_alias.clone())
+                    .filter(|alias| !alias.is_empty());
+                match alias {
+                    Some(alias) => names.push(alias),
+                    None => unnamed_on_device = true,
+                }
+            }
+            names.sort();
+            names.dedup();
+            text.push(' ');
+            text.push_str(&signing_wallet_sentence(&names, unnamed_on_device));
+        }
+        ProtocolError::Generic(text)
     }
 
     /// Resolve the private key filed at exactly `(target, key_id)`.
@@ -2113,6 +2202,101 @@ mod key_resolution_tests {
                 .is_none()
         );
         assert!(!identity.can_sign_with(&key));
+    }
+
+    /// A wallet-derived key whose wallet seed is gone from this device, wired
+    /// to a real (empty) vault — the shape a removed or never-migrated wallet
+    /// leaves behind.
+    fn identity_with_orphaned_wallet_key(
+        key: &IdentityPublicKey,
+        seed_hash: WalletSeedHash,
+        dir: &std::path::Path,
+    ) -> QualifiedIdentity {
+        use crate::model::qualified_identity::encrypted_key_storage::WalletDerivationPath;
+        use crate::wallet_backend::SecretAccess;
+        use crate::wallet_backend::secret_prompt::test_support::TestPrompt;
+        use crate::wallet_backend::single_key::open_secret_store;
+
+        let mut identity = masternode_with(
+            key,
+            &[(
+                MAIN,
+                PrivateKeyData::AtWalletDerivationPath(WalletDerivationPath {
+                    wallet_seed_hash: seed_hash,
+                    derivation_path: Default::default(),
+                }),
+            )],
+        );
+        let store = Arc::new(open_secret_store(&dir.join("secrets.pwsvault")).expect("vault"));
+        identity.secret_access = Some(SecretAccess::new(
+            store,
+            Arc::new(TestPrompt::never()),
+            Network::Testnet,
+        ));
+        identity
+    }
+
+    /// Signing with a key whose wallet seed is missing must reach the caller as
+    /// the dedicated error carrying the instructions and the identity, key and
+    /// wallet — not as a generic SDK error. No task scope is involved, so this
+    /// holds for any caller, spawned subtasks included.
+    #[tokio::test]
+    async fn signing_with_a_missing_wallet_seed_surfaces_the_typed_error() {
+        let key = voting_key(4);
+        let seed_hash = [0x7D; 32];
+        let dir = tempfile::tempdir().expect("tempdir");
+        let identity = identity_with_orphaned_wallet_key(&key, seed_hash, dir.path());
+
+        let protocol_error = identity
+            .sign(&key, b"payload")
+            .await
+            .expect_err("no seed, no signature");
+        let error = TaskError::from(dash_sdk::Error::Protocol(protocol_error));
+
+        assert!(
+            matches!(error, TaskError::IdentitySigningFailed { .. }),
+            "expected IdentitySigningFailed, got {error:?}"
+        );
+        let message = error.to_string();
+        assert!(
+            message.starts_with(&TaskError::SecretSeamMissing.to_string()),
+            "the banner leads with the missing-wallet instructions: {message}"
+        );
+        assert!(
+            !message.contains(SIGNING_KEY_UNAVAILABLE_PREFIX),
+            "{message}"
+        );
+        assert!(
+            message.contains(&Identifier::from([1u8; 32]).to_string(Encoding::Base58)),
+            "{message}"
+        );
+        assert!(message.contains("key 4 (voting)"), "{message}");
+        assert!(
+            message.contains("The key comes from a wallet that is not on this device."),
+            "{message}"
+        );
+        assert!(
+            !message.contains(&hex::encode(seed_hash)),
+            "the raw seed hash stays out of the banner: {message}"
+        );
+    }
+
+    /// An unnamed wallet that is loaded must not be reported as missing from
+    /// this device; only an absent wallet is.
+    #[test]
+    fn signing_wallet_sentence_distinguishes_unnamed_from_absent() {
+        assert_eq!(
+            signing_wallet_sentence(&[], true),
+            "The key comes from an unnamed wallet on this device."
+        );
+        assert_eq!(
+            signing_wallet_sentence(&[], false),
+            "The key comes from a wallet that is not on this device."
+        );
+        assert_eq!(
+            signing_wallet_sentence(&["Main".to_string()], true),
+            "The key comes from the wallet Main."
+        );
     }
 }
 

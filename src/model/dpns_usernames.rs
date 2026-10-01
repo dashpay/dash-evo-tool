@@ -10,9 +10,21 @@ use dash_sdk::platform::Identifier;
 use serde::{Deserialize, Serialize};
 
 use super::dpns::{ContestDurations, is_contested_label};
+use super::qualified_identity::QualifiedIdentity;
 
 /// How long a finished request stays listed on the identity.
 pub const OUTCOME_RETENTION: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+
+/// Whether this device holds a key that can sign username registrations for `identity`.
+pub fn can_register_usernames(identity: &QualifiedIdentity) -> bool {
+    use dash_sdk::dpp::identity::Purpose;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+    identity
+        .private_keys
+        .identity_public_keys()
+        .iter()
+        .any(|(_, key)| key.identity_public_key.purpose() == Purpose::AUTHENTICATION)
+}
 
 /// Whether a username can be requested right now, and on what terms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

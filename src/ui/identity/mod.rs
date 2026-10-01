@@ -56,6 +56,7 @@ pub mod social_profile_gate_card;
 pub mod tabs;
 pub mod top_up_identity_screen;
 pub mod transfer_screen;
+pub mod username_copy;
 pub mod withdraw_screen;
 
 pub use hub_screen::IdentityHubScreen;

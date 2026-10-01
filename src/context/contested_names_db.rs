@@ -114,21 +114,6 @@ struct StoredContestant {
     document_id: [u8; 32],
 }
 
-/// How long a DPNS name contest stays open before it locks or resolves.
-/// Mainnet runs the two-week production window; every other network uses a
-/// 90-minute fast-cycle window for testing. Mirrors platform's DPNS
-/// contested-name governance parameters (`ACTIVE_VOTE_DURATION`).
-const MAINNET_CONTEST_DURATION: Duration = Duration::from_secs(60 * 60 * 24 * 14);
-const NON_MAINNET_CONTEST_DURATION: Duration = Duration::from_secs(60 * 90);
-
-fn contest_duration_for_network(network: Network) -> Duration {
-    if network == Network::Mainnet {
-        MAINNET_CONTEST_DURATION
-    } else {
-        NON_MAINNET_CONTEST_DURATION
-    }
-}
-
 fn vote_state_summary(states: &[DpnsCurrentVoteState]) -> MasternodeVoteStateSummary {
     if states.contains(&DpnsCurrentVoteState::Checking) {
         MasternodeVoteStateSummary::Checking
@@ -141,7 +126,11 @@ fn vote_state_summary(states: &[DpnsCurrentVoteState]) -> MasternodeVoteStateSum
 
 impl StoredContestedName {
     fn to_contested_name(&self, network: Network) -> ContestedName {
-        let contest_duration = contest_duration_for_network(network);
+        let join_window = crate::model::dpns::contest_durations(
+            network,
+            crate::context::default_platform_version(&network),
+        )
+        .join;
         let awarded_to_id = self.awarded_to.map(Identifier::from);
 
         // Match pre-C6 semantics: state is computed from the latest
@@ -154,9 +143,7 @@ impl StoredContestedName {
             ContestState::WonBy(id)
         } else if let Some(created_at) = latest_created_at {
             let elapsed = Duration::from_millis(now_ms().saturating_sub(created_at));
-            // New contenders may join only during the first half of the
-            // contest window; the second half is vote-only.
-            if elapsed <= contest_duration / 2 {
+            if elapsed <= join_window {
                 ContestState::Joinable
             } else {
                 ContestState::Ongoing
@@ -200,6 +187,11 @@ fn contest_err(source: KvAdapterError) -> TaskError {
 }
 
 impl AppContext {
+    /// Protocol version the SDK currently speaks; it sets the community vote fee charged at registration.
+    pub fn sdk_platform_version(&self) -> &'static dash_sdk::dpp::version::PlatformVersion {
+        self.sdk.load().version()
+    }
+
     /// Fetches every DPNS contest cached in the per-network k/v store.
     pub fn all_contested_names(&self) -> std::result::Result<Vec<ContestedName>, TaskError> {
         let kv = self.det_kv()?;

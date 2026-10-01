@@ -528,15 +528,20 @@ impl ScreenLike for RegisterDpnsNameScreen {
                         );
 
                         // Show contested status and cost if valid
-                        if is_contested_name(&name.to_lowercase()) {
+                        if crate::model::dpns::is_contested_label(name) {
                             ui.colored_label(
                                 egui::Color32::DARK_RED,
                                 "This is a contested name.",
                             );
+                            let contest_fee = crate::model::fee_estimation::contest_fee_credits(
+                                self.app_context.sdk_platform_version(),
+                            );
                             ui.colored_label(
                                 egui::Color32::DARK_RED,
-                                // TODO(platform-4.2-dev-bump): derive from the active platform version's contested_document_vote_resolution_fund_required_amount once PV14 is live on a real network; see /data/artifacts/dash-evo-tool/2026-09-14/platform-4.2-dev-impact.md F4
-                                "Cost ≈ 0.2006 Dash",
+                                format!(
+                                    "Community vote fee: {fee} DASH",
+                                    fee = format_credits_as_dash(contest_fee)
+                                ),
                             );
                         } else {
                             ui.colored_label(
@@ -673,17 +678,4 @@ impl ScreenLike for RegisterDpnsNameScreen {
 
         action
     }
-}
-
-pub fn is_contested_name(name: &str) -> bool {
-    let length = name.len();
-    if length >= 20 {
-        return false;
-    }
-    for c in name.chars() {
-        if c.is_ascii_digit() && c != '0' && c != '1' {
-            return false;
-        }
-    }
-    true
 }

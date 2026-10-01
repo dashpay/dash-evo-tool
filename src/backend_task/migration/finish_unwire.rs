@@ -22,7 +22,7 @@ use crate::backend_task::error::TaskError;
 use crate::context::migration_status::{MigrationState, MigrationStep};
 use crate::context::{AppContext, WalletUnlockRetention};
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::model::settings::legacy_network_names;
+use crate::model::settings::{legacy_network_names, pre_v29_network_name};
 use crate::model::wallet::WalletSeedHash;
 use crate::wallet_backend::secret_access::is_wrong_passphrase;
 use crate::wallet_backend::{DetScope, KvAdapterError, network_prefix};
@@ -55,6 +55,17 @@ pub fn sentinel_key_for(network: Network) -> String {
 /// separate key lets discovery retry without rerunning or gating fund recovery.
 pub fn dapi_refresh_sentinel_key_for(network: Network) -> String {
     format!("det:migration:dapi_refresh:{}:v1", network_prefix(network))
+}
+
+/// Per-network marker of the one-time repair for wallet rows stored under the
+/// pre-v29 network spelling (see [`repair_pre_v29_rows`]). Separate from the
+/// drain sentinel so the drain itself never re-runs: that would bring back
+/// wallets the user removed after updating.
+pub fn legacy_alias_repair_key_for(network: Network) -> String {
+    format!(
+        "det:migration:legacy_alias_repair:{}:v1",
+        network_prefix(network)
+    )
 }
 
 /// Tables sniffed during detection. Any non-empty row count flips the
@@ -92,6 +103,39 @@ pub struct MigrationCompletion {
     /// in the payload so a forward-compatible reader can re-aggregate
     /// across networks without a schema bump.
     pub network_count: u32,
+}
+
+/// Which legacy rows a reader selects for one network: every spelling DET
+/// ever stored for it, or only the pre-v29 one the one-time repair targets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LegacyNetworkRows {
+    network: Network,
+    names: [&'static str; 2],
+}
+
+impl From<Network> for LegacyNetworkRows {
+    fn from(network: Network) -> Self {
+        Self {
+            network,
+            names: legacy_network_names(network),
+        }
+    }
+}
+
+impl LegacyNetworkRows {
+    /// The network these rows belong to.
+    pub(crate) fn network(self) -> Network {
+        self.network
+    }
+
+    /// Only the rows stored under `network`'s pre-v29 spelling; `None` when
+    /// the network was never spelled differently.
+    pub(crate) fn pre_v29_only(network: Network) -> Option<Self> {
+        pre_v29_network_name(network).map(|name| Self {
+            network,
+            names: [name, name],
+        })
+    }
 }
 
 /// Domain error envelope for the migration orchestrator.
@@ -738,8 +782,9 @@ where
     // is what restores access to funds, so nothing about DET's own rows may gate
     // it. Propagating here would let one bad vote row wedge the drain on every
     // launch, with no user-reachable way out.
-    let wallet_moved = match drain_wallets(app_context, wallet_password).await {
-        Ok(moved) => moved,
+    let (wallet_moved, wallets_recovered) = match drain_wallets(app_context, wallet_password).await
+    {
+        Ok(outcome) => (outcome.moved, outcome.recovered),
         Err(drain_error) => {
             if let Err(app_data_error) = &app_data {
                 tracing::warn!(
@@ -944,22 +989,23 @@ where
         return Ok(moved_data);
     }
 
-    status.set_state(terminal_state(moved_data));
-    Ok(moved_data)
+    status.set_state(terminal_state(moved_data, wallets_recovered));
+    Ok(moved_data || wallets_recovered > 0)
 }
 
 /// Drain the legacy wallet family — single-key rows, HD wallet seeds, wallet
 /// metadata — into the upstream store, register the migrated wallets, then
 /// record the per-network completion sentinel.
 ///
-/// Returns `true` when this launch drained wallet rows, `false` for the two
-/// no-op paths (sentinel already present, or no legacy rows at all). This is
+/// Reports whether this launch drained wallet rows (not on the two no-op
+/// paths: sentinel already present, or no legacy rows at all) and how many
+/// wallets the one-time pre-v29 repair brought back. This is
 /// the funds path: [`run`] keeps it free of every DET-owned concern so nothing
 /// but a genuine wallet-migration failure can withhold access to a seed.
 async fn drain_wallets(
     app_context: &Arc<AppContext>,
     wallet_password: Option<&SecretString>,
-) -> Result<bool, TaskError> {
+) -> Result<DrainOutcome, TaskError> {
     let status = app_context.migration_status();
     let app_kv = app_context.app_kv();
     let network = app_context.network;
@@ -978,7 +1024,11 @@ async fn drain_wallets(
             network_count = completion.network_count,
             "FinishUnwire already completed for this network — skipping",
         );
-        return Ok(false);
+        let recovered = repair_pre_v29_rows(app_context).await;
+        return Ok(DrainOutcome {
+            moved: false,
+            recovered,
+        });
     }
 
     status.set_state(MigrationState::Running {
@@ -993,7 +1043,8 @@ async fn drain_wallets(
             "No legacy data.db rows detected — writing sentinel without migration",
         );
         write_sentinel(&app_kv, network, 0)?;
-        return Ok(false);
+        write_completion_sentinel(&app_kv, &legacy_alias_repair_key_for(network), 0)?;
+        return Ok(DrainOutcome::default());
     }
 
     tracing::info!(
@@ -1037,21 +1088,162 @@ async fn drain_wallets(
     register_migrated_wallets(app_context, wallet_password).await?;
 
     write_sentinel(&app_kv, network, 1)?;
+    // This drain already read every spelling, so the one-time repair has
+    // nothing left to do — and must never run later, after the user may
+    // have removed a wallet.
+    write_completion_sentinel(&app_kv, &legacy_alias_repair_key_for(network), 0)?;
 
     tracing::info!(
         target = "migration::finish_unwire",
         network = ?network,
         "FinishUnwire wallet drain complete",
     );
-    Ok(true)
+    Ok(DrainOutcome {
+        moved: true,
+        recovered: 0,
+    })
+}
+
+/// What one [`drain_wallets`] launch did.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct DrainOutcome {
+    /// Wallet rows were drained on this launch.
+    moved: bool,
+    /// Wallets and imported keys the one-time pre-v29 repair brought back.
+    recovered: u32,
+}
+
+/// One-time, add-only import of the wallet rows stored under the pre-v29
+/// network spelling (mainnet's `dash`), which a drain from before the
+/// spelling fix skipped while still recording itself complete.
+///
+/// Never fails the launch: every problem is logged. Returns how many wallets
+/// and imported keys were brought back.
+async fn repair_pre_v29_rows(app_context: &Arc<AppContext>) -> u32 {
+    let key = legacy_alias_repair_key_for(app_context.network);
+    match app_context
+        .app_kv()
+        .get::<MigrationCompletion>(DetScope::Global, &key)
+    {
+        Ok(Some(_)) => return 0,
+        Ok(None) => {}
+        Err(error) => {
+            tracing::warn!(
+                target = "migration::finish_unwire",
+                ?error,
+                "Could not read the earlier-version wallet repair marker; the repair is retried on the next launch",
+            );
+            return 0;
+        }
+    }
+    match repair_pre_v29_rows_once(app_context, &key).await {
+        Ok(recovered) => recovered,
+        Err(error) => {
+            tracing::warn!(
+                target = "migration::finish_unwire",
+                ?error,
+                network = ?app_context.network,
+                "One-time repair of wallets saved by an earlier version did not finish",
+            );
+            0
+        }
+    }
+}
+
+/// The body of [`repair_pre_v29_rows`]. The marker is left unwritten only when
+/// the pass fails before it could write anything, so the next launch retries
+/// safely; once writing starts, the marker is recorded whatever the outcome, so
+/// a wallet the user later removes never returns. Rows a failed pass skipped
+/// stay recoverable through Restore from Previous Version.
+async fn repair_pre_v29_rows_once(
+    app_context: &Arc<AppContext>,
+    key: &str,
+) -> Result<u32, TaskError> {
+    let app_kv = app_context.app_kv();
+    let network = app_context.network;
+    let path = app_context.db.db_file_path().filter(|path| path.exists());
+    let (Some(rows), Some(path)) = (LegacyNetworkRows::pre_v29_only(network), path) else {
+        write_completion_sentinel(&app_kv, key, 0)?;
+        return Ok(0);
+    };
+
+    // Read-only probe through the same readers: any unreadable table fails
+    // here, before a single write.
+    let backend = app_context.wallet_backend()?;
+    let conn = open_legacy_read_only(&path)?;
+    let seed_rows = migrate_wallet_seeds_rows_from_conn(&conn, |_, _| Ok(()), rows)?;
+    let key_rows = migrate_single_key_rows_from_conn(&conn, |_, _| Ok(()), rows)?;
+    migrate_wallet_meta_rows_from_conn(&conn, |_, _| Ok(()), rows)?;
+    if seed_rows.imported == 0 && key_rows.imported == 0 {
+        write_completion_sentinel(&app_kv, key, 0)?;
+        return Ok(0);
+    }
+
+    let copy = super::legacy_restore::copy_missing_wallets(&backend, &conn, rows);
+    let keys = import_missing_single_keys(app_context, &backend, &conn, rows);
+    write_completion_sentinel(&app_kv, key, 1)?;
+
+    let copy = copy?;
+    let keys = keys?;
+    tracing::info!(
+        target = "migration::finish_unwire",
+        wallets_restored = copy.seeds_restored,
+        wallets_already_present = copy.seeds_already_present,
+        wallets_failed = copy.failed,
+        imported_keys_restored = keys,
+        network = ?network,
+        "One-time repair of wallets saved by an earlier version complete",
+    );
+    super::legacy_restore::make_copied_wallets_live(app_context, &backend, &copy).await?;
+    Ok(copy.seeds_restored.saturating_add(keys))
+}
+
+/// Import the unprotected single keys `rows` selects whose address this
+/// install does not hold yet; present keys (and their names) stay untouched.
+/// Returns how many were imported.
+fn import_missing_single_keys(
+    app_context: &Arc<AppContext>,
+    backend: &crate::wallet_backend::WalletBackend,
+    conn: &Connection,
+    rows: LegacyNetworkRows,
+) -> Result<u32, MigrationError> {
+    let present: BTreeSet<String> = backend
+        .single_key()
+        .list_persisted()
+        .into_iter()
+        .map(|key| key.address)
+        .collect();
+    let mut imported = 0u32;
+    migrate_single_key_rows_from_conn(
+        conn,
+        |wif, alias| {
+            let address = super::single_key_restore::derive_p2pkh_address(wif, rows.network())?;
+            if present.contains(&address) {
+                return Ok(());
+            }
+            app_context.import_single_key_wif(
+                wif,
+                crate::model::wallet::alias::AliasSource::Preserved(alias),
+                Default::default(),
+            )?;
+            imported += 1;
+            Ok(())
+        },
+        rows,
+    )?;
+    Ok(imported)
 }
 
 /// Terminal state for a launch that reached the end without failing.
 /// `Success` raises the completion banner, so it is reserved for launches
 /// that actually moved data — a no-op launch becomes `Ready` without raising a
 /// completion banner.
-fn terminal_state(moved_data: bool) -> MigrationState {
-    if moved_data {
+fn terminal_state(moved_data: bool, wallets_recovered: u32) -> MigrationState {
+    if wallets_recovered > 0 {
+        MigrationState::RecoveredEarlierWallets {
+            count: wallets_recovered,
+        }
+    } else if moved_data {
         MigrationState::Success
     } else {
         MigrationState::Ready
@@ -1714,6 +1906,7 @@ pub(crate) fn record_identity_deletion(
         app_context.migration_status().state().as_ref(),
         MigrationState::Ready
             | MigrationState::Success
+            | MigrationState::RecoveredEarlierWallets { .. }
             | MigrationState::SucceededWithUnreadableData { .. }
     ) {
         return Ok(());
@@ -2131,11 +2324,12 @@ async fn migrate_single_key_rows(app_context: &Arc<AppContext>) -> Result<(), Ta
 fn migrate_single_key_rows_from_conn<F>(
     conn: &Connection,
     mut import: F,
-    network: dash_sdk::dpp::dashcore::Network,
+    rows: impl Into<LegacyNetworkRows>,
 ) -> Result<SingleKeyMigrationOutcome, MigrationError>
 where
     F: FnMut(&str, Option<String>) -> Result<(), TaskError>,
 {
+    let scope: LegacyNetworkRows = rows.into();
     use dash_sdk::dpp::dashcore::PrivateKey;
 
     if !legacy_table_exists_named(conn, "single_key_wallet")? {
@@ -2151,7 +2345,7 @@ where
         })?;
 
     let rows = stmt
-        .query_map(legacy_network_names(network), |row| {
+        .query_map(scope.names, |row| {
             let encrypted: Vec<u8> = row.get(0)?;
             let alias: Option<String> = row.get(1)?;
             let uses_password: i32 = row.get(2)?;
@@ -2207,7 +2401,7 @@ where
             }
         };
 
-        let priv_key = match PrivateKey::from_byte_array(&key_bytes, network) {
+        let priv_key = match PrivateKey::from_byte_array(&key_bytes, scope.network) {
             Ok(p) => p,
             Err(e) => {
                 tracing::warn!(
@@ -2368,7 +2562,7 @@ fn migrate_wallet_meta_rows(app_context: &Arc<AppContext>) -> Result<(), TaskErr
 pub(super) fn migrate_wallet_meta_rows_from_conn<F>(
     conn: &Connection,
     mut set: F,
-    network: dash_sdk::dpp::dashcore::Network,
+    rows: impl Into<LegacyNetworkRows>,
 ) -> Result<WalletMetaMigrationOutcome, MigrationError>
 where
     F: FnMut(
@@ -2379,6 +2573,7 @@ where
     if !legacy_table_exists_named(conn, "wallet")? {
         return Ok(WalletMetaMigrationOutcome::default());
     }
+    let scope: LegacyNetworkRows = rows.into();
     // `core_wallet_name` is the only optional column, so it is probed and
     // NULL-substituted. `uses_password`/`password_hint` are read unprobed —
     // the seed migration selects them unconditionally and runs first over
@@ -2402,7 +2597,7 @@ where
         })?;
 
     let rows = stmt
-        .query_map(legacy_network_names(network), |row| {
+        .query_map(scope.names, |row| {
             let seed_hash: Vec<u8> = row.get(0)?;
             let alias: Option<String> = row.get(1)?;
             let is_main: Option<bool> = row.get(2)?;
@@ -2582,7 +2777,7 @@ fn migrate_wallet_seeds_rows(app_context: &Arc<AppContext>) -> Result<(), TaskEr
 pub(super) fn migrate_wallet_seeds_rows_from_conn<F>(
     conn: &Connection,
     mut set: F,
-    network: dash_sdk::dpp::dashcore::Network,
+    rows: impl Into<LegacyNetworkRows>,
 ) -> Result<WalletSeedsMigrationOutcome, MigrationError>
 where
     F: FnMut(
@@ -2593,6 +2788,7 @@ where
     if !legacy_table_exists_named(conn, "wallet")? {
         return Ok(WalletSeedsMigrationOutcome::default());
     }
+    let scope: LegacyNetworkRows = rows.into();
     let sql = "SELECT seed_hash, encrypted_seed, salt, nonce, password_hint, \
                uses_password, master_ecdsa_bip44_account_0_epk \
                FROM wallet WHERE network IN (?1, ?2)";
@@ -2605,7 +2801,7 @@ where
         })?;
 
     let rows = stmt
-        .query_map(legacy_network_names(network), |row| {
+        .query_map(scope.names, |row| {
             let seed_hash: Vec<u8> = row.get(0)?;
             let encrypted_seed: Vec<u8> = row.get(1)?;
             let salt: Vec<u8> = row.get(2)?;

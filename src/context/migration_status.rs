@@ -119,6 +119,10 @@ pub enum MigrationState {
     AwaitingWalletPasswords { wallets: Vec<WalletSeedHash> },
     /// Migration completed successfully (or no legacy data was present).
     Success,
+    /// The one-time repair brought back `count` wallets and imported keys an
+    /// earlier storage update had skipped. Terminal; shown once as an info
+    /// banner, since the repair never runs again.
+    RecoveredEarlierWallets { count: u32 },
     /// The storage update completed, but one or more legacy rows could not be
     /// decoded. Each non-zero counter is backed by a durable warning record and
     /// identifies the recovery instructions the banner must show.
@@ -167,6 +171,10 @@ impl PartialEq for MigrationState {
             (MigrationState::Idle, MigrationState::Idle) => true,
             (MigrationState::Ready, MigrationState::Ready) => true,
             (MigrationState::Success, MigrationState::Success) => true,
+            (
+                MigrationState::RecoveredEarlierWallets { count: a },
+                MigrationState::RecoveredEarlierWallets { count: b },
+            ) => a == b,
             (
                 MigrationState::SucceededWithUnreadableData {
                     identities: ia,

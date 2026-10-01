@@ -983,6 +983,16 @@ impl MigrationReconciler {
                 );
                 self.banner_handle = Some(handle);
             }
+            MigrationState::RecoveredEarlierWallets { count } => {
+                let handle = MessageBanner::set_global(
+                    ctx,
+                    format!(
+                        "Wallets and imported keys saved by the earlier version of Dash Evo Tool were brought back: {count}."
+                    ),
+                    MessageType::Info,
+                );
+                self.banner_handle = Some(handle);
+            }
             MigrationState::SucceededWithUnreadableData {
                 identities,
                 votes,

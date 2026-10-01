@@ -416,6 +416,13 @@ pub(crate) fn legacy_network_names(network: Network) -> [&'static str; 2] {
     }
 }
 
+/// The pre-v29 spelling of `network` when it differs from today's (only
+/// mainnet's `dash`), else `None`.
+pub(crate) fn pre_v29_network_name(network: Network) -> Option<&'static str> {
+    let [current, pre_v29] = legacy_network_names(network);
+    (current != pre_v29).then_some(pre_v29)
+}
+
 /// Detects the path to the Dash-Qt binary on the system.
 ///
 /// Filesystem IO — never call from a `Deserialize` path. Callers that need an
@@ -471,6 +478,8 @@ mod tests {
             for name in names {
                 assert_eq!(network_from_legacy_str(name), Some(network), "{name}");
             }
+            let expected = (network == Network::Mainnet).then_some("dash");
+            assert_eq!(pre_v29_network_name(network), expected, "{network:?}");
         }
     }
 

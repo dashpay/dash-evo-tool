@@ -12,8 +12,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use super::finish_unwire::{
-    MigrationError, migrate_wallet_meta_rows_from_conn, migrate_wallet_seeds_rows_from_conn,
-    open_legacy_read_only,
+    LegacyNetworkRows, MigrationError, migrate_wallet_meta_rows_from_conn,
+    migrate_wallet_seeds_rows_from_conn, open_legacy_read_only,
 };
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
@@ -89,25 +89,64 @@ async fn restore_wallets(
     }
 
     let backend = app_context.wallet_backend()?;
-    let network = app_context.network;
     let conn = open_legacy_read_only(path).map_err(restore_failed)?;
+    let copy = copy_missing_wallets(&backend, &conn, app_context.network.into())
+        .map_err(restore_failed)?;
+
+    summary.wallets_restored = copy.seeds_restored;
+    summary.wallets_already_present = copy.seeds_already_present;
+    summary.wallets_skipped_malformed = copy.skipped_malformed;
+    summary.wallets_failed = copy.failed;
+
+    make_copied_wallets_live(app_context, &backend, &copy).await
+}
+
+/// Counters of one add-only [`copy_missing_wallets`] pass.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(super) struct MissingWalletsCopy {
+    /// Seed envelopes written because the vault had no copy.
+    pub(super) seeds_restored: u32,
+    /// Seeds the vault already held, left untouched.
+    pub(super) seeds_already_present: u32,
+    /// Metadata entries written beside a stored seed that lacked one.
+    pub(super) metas_restored: u32,
+    /// Damaged rows skipped.
+    pub(super) skipped_malformed: u32,
+    /// Rows that could not be read or written.
+    pub(super) failed: u32,
+}
+
+/// Copy the wallet seed envelopes and metadata `rows` selects that this
+/// install lacks. Add-only: nothing present is overwritten or removed, and a
+/// protected envelope travels as-is, so it stays protected. The legacy
+/// connection is only read.
+///
+/// # Errors
+///
+/// [`MigrationError`] when a legacy wallet table cannot be read at all;
+/// per-row problems are counted instead.
+pub(super) fn copy_missing_wallets(
+    backend: &crate::wallet_backend::WalletBackend,
+    conn: &rusqlite::Connection,
+    rows: LegacyNetworkRows,
+) -> Result<MissingWalletsCopy, MigrationError> {
+    let network = rows.network();
     let seeds = backend.wallet_seeds();
     let metas = backend.wallet_meta();
 
-    let mut restored = 0u32;
+    let mut seeds_restored = 0u32;
     let seed_outcome = migrate_wallet_seeds_rows_from_conn(
-        &conn,
+        conn,
         |seed_hash, envelope| {
             if seeds.contains(&seed_hash)? {
                 return Ok(());
             }
             seeds.set(&seed_hash, &envelope)?;
-            restored += 1;
+            seeds_restored += 1;
             Ok(())
         },
-        network,
-    )
-    .map_err(restore_failed)?;
+        rows,
+    )?;
 
     // Hydration is driven by wallet metadata, so a seed without it stays
     // invisible. Write it only where missing, and only beside a stored seed.
@@ -116,7 +155,7 @@ async fn restore_wallets(
     // `failed` also counts undecodable rows the seed pass already counted.
     let mut meta_callback_failures = 0u32;
     migrate_wallet_meta_rows_from_conn(
-        &conn,
+        conn,
         |seed_hash, meta| {
             let restore_meta = || -> Result<bool, TaskError> {
                 if metas.try_get(network, &seed_hash)?.is_some() || !seeds.contains(&seed_hash)? {
@@ -136,19 +175,28 @@ async fn restore_wallets(
                 }
             }
         },
-        network,
-    )
-    .map_err(restore_failed)?;
+        rows,
+    )?;
 
-    summary.wallets_restored = restored;
-    summary.wallets_already_present = seed_outcome.imported.saturating_sub(restored);
-    summary.wallets_skipped_malformed = seed_outcome.skipped_malformed;
-    summary.wallets_failed = seed_outcome.failed.saturating_add(meta_callback_failures);
+    Ok(MissingWalletsCopy {
+        seeds_restored,
+        seeds_already_present: seed_outcome.imported.saturating_sub(seeds_restored),
+        metas_restored,
+        skipped_malformed: seed_outcome.skipped_malformed,
+        failed: seed_outcome.failed.saturating_add(meta_callback_failures),
+    })
+}
 
-    if restored > 0 || metas_restored > 0 {
+/// Make wallets a [`copy_missing_wallets`] pass wrote live without a restart.
+/// Open wallets register upstream; a protected one stays closed until the
+/// user unlocks it, and that unlock registers it — no prompt here.
+pub(super) async fn make_copied_wallets_live(
+    app_context: &Arc<AppContext>,
+    backend: &crate::wallet_backend::WalletBackend,
+    copy: &MissingWalletsCopy,
+) -> Result<(), TaskError> {
+    if copy.seeds_restored > 0 || copy.metas_restored > 0 {
         backend.hydrate_context_wallets(app_context)?;
-        // Registers the restored open wallets upstream; a protected one stays
-        // closed until the user unlocks it, and that unlock registers it.
         app_context.bootstrap_loaded_wallets().await;
     }
     Ok(())

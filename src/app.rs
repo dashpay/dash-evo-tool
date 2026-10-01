@@ -201,6 +201,7 @@ fn migration_allows_scheduled_vote_sweep(state: &MigrationState) -> bool {
         state,
         MigrationState::Ready
             | MigrationState::Success
+            | MigrationState::RecoveredEarlierWallets { .. }
             | MigrationState::SucceededWithUnreadableData { .. }
     )
 }

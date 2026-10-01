@@ -514,6 +514,7 @@ fn summarize_migration(state: &MigrationState) -> MigrationSummary {
         },
         MigrationState::AwaitingWalletPasswords { .. } => summary("awaiting_wallet_passwords"),
         MigrationState::Success => summary("success"),
+        MigrationState::RecoveredEarlierWallets { .. } => summary("recovered_earlier_wallets"),
         MigrationState::SucceededWithUnreadableData {
             identities,
             votes,

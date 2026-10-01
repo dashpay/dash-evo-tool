@@ -164,9 +164,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Updating from v0.9.x carries mainnet wallets and imported keys across, and
   "Restore from Previous Version" finds mainnet data those versions saved.
-  They stored mainnet under an older name that both steps skipped. Mainnet
-  users who already updated without their wallets can bring them back with
-  "Restore from Previous Version".
+  They stored mainnet under an older name that both steps skipped. For mainnet
+  users who already updated without them, the next start brings those wallets
+  and imported keys back once, without overwriting anything and keeping
+  password-protected wallets protected, and says so in a notice.
 
 - "Restore from Previous Version" reports an identity whose password prompt was
   declined as skipped, with a note to run the restore again, instead of as a

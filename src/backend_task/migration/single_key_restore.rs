@@ -320,7 +320,7 @@ fn legacy_decrypt_to_wif(
 
 /// Derive the P2PKH address for `wif` on `network`. Used to confirm the
 /// restored key's address matches the legacy row before trusting it (S5).
-fn derive_p2pkh_address(wif: &str, network: Network) -> Result<String, TaskError> {
+pub(super) fn derive_p2pkh_address(wif: &str, network: Network) -> Result<String, TaskError> {
     let priv_key = PrivateKey::from_wif(wif).map_err(|source| TaskError::InvalidWif {
         source: Box::new(source),
     })?;

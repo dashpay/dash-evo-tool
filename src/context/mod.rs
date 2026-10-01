@@ -206,6 +206,8 @@ pub struct AppContext {
     /// Current masternode-list membership (ProTxHash → is evonode); `None`
     /// until the SPV masternode list is available.
     masternode_list_membership: RwLock<Option<Arc<BTreeMap<Identifier, bool>>>>,
+    /// Unix ms of the last completed contest + vote-state refresh; 0 = never.
+    dpns_contests_refreshed_at_ms: std::sync::atomic::AtomicU64,
     /// Shared app-level k/v store at `<data_dir>/det-app.sqlite`.
     /// Cross-network, global-scoped slot used for `AppSettings` and other
     /// DET-owned application data that must outlive a single network's
@@ -576,6 +578,7 @@ impl AppContext {
             pending_dpns_usernames: RwLock::new(HashMap::new()),
             dpns_vote_attention: RwLock::new(Default::default()),
             masternode_list_membership: RwLock::new(None),
+            dpns_contests_refreshed_at_ms: std::sync::atomic::AtomicU64::new(0),
             app_kv,
             #[cfg(test)]
             det_kv_override: Mutex::new(None),

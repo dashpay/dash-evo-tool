@@ -39,6 +39,9 @@ use crate::model::dpns_voting::SCHEDULED_VOTE_MAX_LATENESS_MS;
 #[derive(Debug, Clone, PartialEq)]
 pub enum ContestedResourceTask {
     QueryDPNSContests,
+    /// The same contest + vote-state refresh, run by the background timer:
+    /// partial failures are logged instead of reported to the user.
+    RefreshContestsInBackground,
     SubmitDpnsVoteOperation(
         DpnsVoteOperation,
         Vec<QualifiedIdentity>,
@@ -192,12 +195,22 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let is_scheduled_sweep =
             matches!(&task, ContestedResourceTask::CastDueScheduledVotes { .. });
-        if !is_scheduled_sweep && !matches!(&task, ContestedResourceTask::QueryDPNSContests) {
+        if !is_scheduled_sweep
+            && !matches!(
+                &task,
+                ContestedResourceTask::QueryDPNSContests
+                    | ContestedResourceTask::RefreshContestsInBackground
+            )
+        {
             self.ensure_dpns_vote_recovery(sdk).await?;
         }
         match task {
             ContestedResourceTask::QueryDPNSContests => self
-                .query_dpns_contested_resources(sdk, sender)
+                .query_dpns_contested_resources(sdk, sender, false)
+                .await
+                .map(|_| BackendTaskSuccessResult::None),
+            ContestedResourceTask::RefreshContestsInBackground => self
+                .query_dpns_contested_resources(sdk, sender, true)
                 .await
                 .map(|_| BackendTaskSuccessResult::None),
             ContestedResourceTask::SubmitDpnsVoteOperation(

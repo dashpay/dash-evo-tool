@@ -18,7 +18,9 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::context::identity_load_registry::{IdentityLoadPhase, IdentityLoadToken};
 use crate::model::contested_name::MasternodeContestSummary;
-use crate::model::dpns_voting::operator::{MasternodesSegment, opening_masternodes_segment};
+use crate::model::dpns_voting::operator::{
+    MasternodesSegment, background_refresh_due, opening_masternodes_segment,
+};
 use crate::model::masternode_input::decode_identity_id;
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, MasternodeKeyPresence};
 use crate::model::user_role::UserRole;
@@ -40,6 +42,9 @@ use crate::ui::state::global_nav::PageNavSpec;
 use crate::ui::state::masternodes_view::{masternodes_page_nav_spec, node_pill_item};
 use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
+
+/// Arriving on Votes refreshes contests unless one completed this recently.
+const VOTES_ARRIVAL_REFRESH_MIN_GAP: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Minimum horizontal gap between cards in the grid (matches the identity
 /// picker grid).
@@ -113,6 +118,9 @@ pub struct MasternodesScreen {
     /// The single voting workspace (Masternodes ▸ Votes). Receives every vote
     /// result whether or not its segment is showing.
     votes: DPNSScreen,
+    /// Set when Votes comes into view; the next frame refreshes contests and
+    /// vote state unless a refresh completed moments ago (VOTE-FR-074).
+    votes_arrival_refresh: bool,
 }
 
 #[cfg(test)]
@@ -150,6 +158,7 @@ impl MasternodesScreen {
                 app_context.masternodes_last_segment().unwrap_or_default(),
             ),
             votes: DPNSScreen::new(app_context, VotesView::ToDecide),
+            votes_arrival_refresh: false,
         };
         screen.reload();
         screen
@@ -167,6 +176,8 @@ impl MasternodesScreen {
 
     /// Show `segment` and remember it as the last-used one on this network.
     pub fn select_segment(&mut self, segment: MasternodesSegment) {
+        self.votes_arrival_refresh |=
+            segment == MasternodesSegment::Votes && self.segment != segment;
         self.segment = segment;
         if let Err(error) = self.app_context.set_masternodes_last_segment(segment) {
             tracing::debug!(?error, "Could not remember the Masternodes segment");
@@ -691,6 +702,7 @@ impl ScreenLike for MasternodesScreen {
                 .masternodes_last_segment()
                 .unwrap_or_default(),
         );
+        self.votes_arrival_refresh |= self.segment == MasternodesSegment::Votes;
     }
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
@@ -782,6 +794,25 @@ impl ScreenLike for MasternodesScreen {
             }
             action
         });
+        // Never displace a user action; a refresh deferred here runs next frame.
+        if action == AppAction::None
+            && std::mem::take(&mut self.votes_arrival_refresh)
+            && self.segment == MasternodesSegment::Votes
+            && background_refresh_due(
+                self.app_context.dpns_contests_refreshed_at_ms(),
+                None,
+                crate::utils::time::now_ms(),
+                VOTES_ARRIVAL_REFRESH_MIN_GAP,
+            )
+        {
+            let network = self.app_context.network;
+            action = AppAction::BackendTaskWithContext {
+                task: BackendTask::ContestedResourceTask(
+                    ContestedResourceTask::RefreshContestsInBackground,
+                ),
+                context: crate::backend_task::BackendTaskContext::DpnsBackgroundRefresh { network },
+            };
+        }
         if self.votes.take_load_node_request() {
             self.select_segment(MasternodesSegment::Nodes);
             if self.pending_load.is_none() {

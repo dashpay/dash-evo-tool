@@ -13,6 +13,7 @@ use dash_sdk::platform::Identifier;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+pub mod contest_timing;
 pub mod operator;
 
 /// Grace period for admitting a scheduled vote to automatic execution.

@@ -304,6 +304,9 @@ fn render_top_island(
                                         action = btn_act.create_action(app_context);
                                     }
                                 }
+
+                                ui.add_space(3.0);
+                                action |= crate::ui::dpns::attention_chip::show(ui, app_context);
                             },
                         );
                     });

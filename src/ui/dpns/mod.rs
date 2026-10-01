@@ -1,5 +1,7 @@
 //! Masternode voting on contested DPNS names (Masternodes ▸ Votes).
 
+pub mod attention_chip;
+pub mod copy;
 pub mod dpns_contested_names_screen;
 
 /// Sub-view of the Masternodes ▸ Votes segment.

@@ -2380,6 +2380,7 @@ impl ScreenLike for DPNSScreen {
         {
             tracing::warn!(?error, "Could not refresh cached DPNS vote state");
         }
+        self.app_context.recompute_dpns_vote_attention();
     }
 
     fn refresh_on_arrival(&mut self) {
@@ -2509,6 +2510,7 @@ impl ScreenLike for DPNSScreen {
                     );
                 }
                 self.rebuild_scheduled_vote_rows();
+                self.app_context.recompute_dpns_vote_attention();
             }
             BackendTaskSuccessResult::ScheduledVoteSweepCompleted { network, .. }
                 if network == self.app_context.network() =>

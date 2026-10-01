@@ -47,6 +47,23 @@ impl AppContext {
         )
     }
 
+    /// Record that a contest + vote-state refresh just completed.
+    pub(crate) fn mark_dpns_contests_refreshed(&self) {
+        self.dpns_contests_refreshed_at_ms
+            .store(now_ms(), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// When the last contest + vote-state refresh completed (Unix ms).
+    pub fn dpns_contests_refreshed_at_ms(&self) -> Option<u64> {
+        match self
+            .dpns_contests_refreshed_at_ms
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            0 => None,
+            at => Some(at),
+        }
+    }
+
     /// Replace the masternode-list membership snapshot (`None`: list unavailable).
     pub(crate) fn set_masternode_list_membership(
         &self,
@@ -229,6 +246,7 @@ impl AppContext {
         Ok(AttentionSummary::new(
             &attention,
             unresolved_target_count(&operations),
+            resolved.included.len(),
         ))
     }
 }

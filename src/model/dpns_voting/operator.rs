@@ -223,6 +223,32 @@ pub fn influence(
         .then_some(Influence::CanChangeLeader { leader, margin })
 }
 
+/// A coarse remaining time, in the largest whole unit that fits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimeLeft {
+    Minutes(u64),
+    Hours(u64),
+    Days(u64),
+}
+
+/// Remaining time until `deadline_ms`, or `None` once it has passed.
+///
+/// Under an hour counts minutes (at least 1), under two days counts hours,
+/// otherwise days.
+pub fn time_left(deadline_ms: u64, now_ms: u64) -> Option<TimeLeft> {
+    const MINUTE: u64 = 60_000;
+    const HOUR: u64 = 60 * MINUTE;
+    const DAY: u64 = 24 * HOUR;
+    let remaining = deadline_ms.checked_sub(now_ms).filter(|ms| *ms > 0)?;
+    Some(if remaining < HOUR {
+        TimeLeft::Minutes((remaining / MINUTE).max(1))
+    } else if remaining < 2 * DAY {
+        TimeLeft::Hours(remaining / HOUR)
+    } else {
+        TimeLeft::Days(remaining / DAY)
+    })
+}
+
 /// Default lead time for "When voting is about to end".
 pub fn relative_schedule_preset(network: Network) -> Duration {
     match network {
@@ -248,6 +274,22 @@ pub fn relative_schedule(
         .ok_or(DpnsScheduleEditValidationError::Time)?;
     validate_dpns_schedule_time(at, now_ms, Some(end_time))?;
     Ok(at)
+}
+
+/// Whether a background contest + vote-state refresh should be dispatched.
+///
+/// Due once `interval` has passed since both the last completed refresh and
+/// the last dispatch (so an in-flight refresh is not re-dispatched). All times
+/// are Unix milliseconds; `None` means never.
+pub fn background_refresh_due(
+    last_completed_ms: Option<u64>,
+    last_dispatched_ms: Option<u64>,
+    now_ms: u64,
+    interval: Duration,
+) -> bool {
+    let interval = u64::try_from(interval.as_millis()).unwrap_or(u64::MAX);
+    let elapsed = |at: Option<u64>| at.is_none_or(|at| now_ms.saturating_sub(at) >= interval);
+    elapsed(last_completed_ms) && elapsed(last_dispatched_ms)
 }
 
 /// How often contests and node vote state refresh in the background.
@@ -293,11 +335,13 @@ pub struct AttentionSummary {
     pub unresolved: usize,
     /// Up to [`ATTENTION_TOOLTIP_NAMES`] soonest-ending names needing a decision.
     pub soonest_names: Vec<(String, Option<TimestampMillis>)>,
+    /// Node-set nodes able to vote; the chip is hidden when there are none.
+    pub voting_nodes: usize,
 }
 
 impl AttentionSummary {
     /// Build the summary from open contests and the unresolved-target count.
-    pub fn new(contests: &[ContestAttention], unresolved: usize) -> Self {
+    pub fn new(contests: &[ContestAttention], unresolved: usize, voting_nodes: usize) -> Self {
         let mut pending: Vec<&ContestAttention> =
             contests.iter().filter(|c| c.needs_decision).collect();
         pending.sort_by_key(|contest| contest.end_time.unwrap_or(u64::MAX));
@@ -310,6 +354,7 @@ impl AttentionSummary {
                 .take(ATTENTION_TOOLTIP_NAMES)
                 .map(|contest| (contest.name.clone(), contest.end_time))
                 .collect(),
+            voting_nodes,
         }
     }
 
@@ -574,6 +619,49 @@ mod tests {
     }
 
     #[test]
+    fn time_left_uses_the_largest_whole_unit() {
+        let minute = 60_000;
+        assert_eq!(time_left(10, 10), None);
+        assert_eq!(time_left(5, 10), None);
+        assert_eq!(time_left(30_000, 0), Some(TimeLeft::Minutes(1)));
+        assert_eq!(time_left(12 * minute, 0), Some(TimeLeft::Minutes(12)));
+        assert_eq!(time_left(3 * 60 * minute + 5, 0), Some(TimeLeft::Hours(3)));
+        assert_eq!(time_left(47 * 60 * minute, 0), Some(TimeLeft::Hours(47)));
+        assert_eq!(time_left(4 * 24 * 60 * minute, 0), Some(TimeLeft::Days(4)));
+    }
+
+    /// VOTE-TC-104 (dispatch half): due after the interval since both the last
+    /// completion and the last dispatch.
+    #[test]
+    fn background_refresh_waits_for_completion_and_dispatch() {
+        let interval = Duration::from_secs(180);
+        let ms = 180_000;
+        assert!(background_refresh_due(None, None, 0, interval));
+        assert!(!background_refresh_due(
+            Some(1_000),
+            None,
+            1_000 + ms - 1,
+            interval
+        ));
+        assert!(background_refresh_due(
+            Some(1_000),
+            None,
+            1_000 + ms,
+            interval
+        ));
+        assert!(
+            !background_refresh_due(Some(0), Some(500_000), 600_000, interval),
+            "an in-flight refresh is not dispatched again"
+        );
+        assert!(background_refresh_due(
+            Some(0),
+            Some(500_000),
+            500_000 + ms,
+            interval
+        ));
+    }
+
+    #[test]
     fn a_contest_needs_a_decision_while_an_unlocked_node_has_not_voted() {
         let open = (
             DpnsCurrentVoteState::Available(None),
@@ -615,8 +703,10 @@ mod tests {
                 contest("mid", Some(500), true),
             ],
             2,
+            3,
         );
         assert_eq!(summary.needs_decision, 4);
+        assert_eq!(summary.voting_nodes, 3);
         assert_eq!(summary.unresolved, 2);
         assert_eq!(summary.badge_count(), 6);
         assert_eq!(summary.soonest_end, Some(100));

@@ -100,6 +100,33 @@ fn nav_tooltip(screen: RootScreenType) -> &'static str {
     }
 }
 
+/// Paint a small count badge on the top-right corner of a nav icon; nothing
+/// when `count` is zero. The count stays readable as text, not color alone.
+fn paint_count_badge(ui: &Ui, icon_rect: egui::Rect, count: usize) {
+    if count == 0 {
+        return;
+    }
+    let text = if count > 99 {
+        "99+".to_owned()
+    } else {
+        count.to_string()
+    };
+    let center = icon_rect.right_top() + egui::vec2(-2.0, 4.0);
+    let radius = if text.len() > 1 { 9.0 } else { 7.0 };
+    ui.painter().circle_filled(
+        center,
+        radius,
+        DashColors::warning_color(ui.visuals().dark_mode),
+    );
+    ui.painter().text(
+        center,
+        egui::Align2::CENTER_CENTER,
+        text,
+        egui::FontId::proportional(10.0),
+        egui::Color32::BLACK,
+    );
+}
+
 pub fn add_left_panel(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
@@ -207,6 +234,13 @@ pub fn add_left_panel(
                                                     // clicking the text behaves like the icon, and
                                                     // both show the pointer cursor + tooltip.
                                                     let added = ui.add(button).clickable_tooltip(tooltip);
+                                                    if *screen_type == RootScreenType::RootScreenMasternodes {
+                                                        paint_count_badge(
+                                                            ui,
+                                                            added.rect,
+                                                            app_context.dpns_vote_attention().badge_count(),
+                                                        );
+                                                    }
                                                     // Provide an accessible name for the image-only button
                                                     added.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, is_selected, *label));
 

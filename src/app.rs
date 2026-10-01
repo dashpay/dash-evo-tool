@@ -1414,6 +1414,8 @@ pub struct AppState {
     scheduled_vote_sweep_deferred_since_ms: BTreeMap<Network, u64>,
     /// Networks with a scheduled-vote sweep currently running.
     scheduled_vote_sweeps_in_progress: BTreeSet<Network>,
+    /// Unix ms of the last background contest refresh dispatched per network.
+    dpns_background_refresh_dispatched_at_ms: BTreeMap<Network, u64>,
     /// Last recovery-sweep attempt per network, used to throttle retries while
     /// retaining the original eligibility cutoff.
     scheduled_vote_recovery_last_attempt: BTreeMap<Network, Instant>,
@@ -1949,6 +1951,7 @@ impl AppState {
             last_scheduled_vote_check: Instant::now(),
             scheduled_vote_sweep_deferred_since_ms: BTreeMap::new(),
             scheduled_vote_sweeps_in_progress: BTreeSet::new(),
+            dpns_background_refresh_dispatched_at_ms: BTreeMap::new(),
             scheduled_vote_recovery_last_attempt: BTreeMap::new(),
             last_repaint_request: Instant::now(),
             subtasks,
@@ -3480,6 +3483,14 @@ impl App for AppState {
                     // recovery path, so suppress the duplicate generic banner.
                 }
                 TaskResult::Error {
+                    context: BackendTaskContext::DpnsBackgroundRefresh { network },
+                    error,
+                } => {
+                    // A background refresh retries on its own cadence; the
+                    // voting panel's Refresh is where failures are reported.
+                    tracing::debug!(?error, ?network, "Background contest refresh failed");
+                }
+                TaskResult::Error {
                     context,
                     error:
                         err @ (TaskError::ScheduledVoteSweepFailed { .. }
@@ -3636,6 +3647,33 @@ impl App for AppState {
                         },
                     ),
                     BackendTaskContext::ScheduledVoteSweep { network },
+                );
+            }
+        }
+
+        // Background contest + vote-state refresh feeding the attention chip and
+        // the Masternodes badge (VOTE-FR-074): only while voting nodes are loaded.
+        if self.boot.phase().renders_screens()
+            && !self.network_selection_required
+            && FeatureGate::Masternodes.is_available(&active_context)
+            && active_context.dpns_vote_attention().voting_nodes > 0
+        {
+            let now_ms = unix_time_ms();
+            if crate::model::dpns_voting::operator::background_refresh_due(
+                active_context.dpns_contests_refreshed_at_ms(),
+                self.dpns_background_refresh_dispatched_at_ms
+                    .get(&network)
+                    .copied(),
+                now_ms,
+                crate::model::dpns_voting::operator::background_refresh_interval(network),
+            ) {
+                self.dpns_background_refresh_dispatched_at_ms
+                    .insert(network, now_ms);
+                self.handle_backend_task_with_context(
+                    BackendTask::ContestedResourceTask(
+                        ContestedResourceTask::RefreshContestsInBackground,
+                    ),
+                    BackendTaskContext::DpnsBackgroundRefresh { network },
                 );
             }
         }

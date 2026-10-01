@@ -14,10 +14,17 @@ use std::sync::Arc;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 impl AppContext {
+    /// Refresh the contest cache, contenders, end times and every loaded node's
+    /// proved votes as one snapshot.
+    ///
+    /// `quiet` (the background timer) logs per-contest failures instead of
+    /// sending them to the UI, so an offline app does not raise a banner every
+    /// few minutes.
     pub(super) async fn query_dpns_contested_resources(
         self: &Arc<Self>,
         sdk: &Sdk,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
+        quiet: bool,
     ) -> Result<(), TaskError> {
         let data_contract = self.dpns_contract.as_ref();
         let document_type = data_contract
@@ -144,6 +151,9 @@ impl AppContext {
                             );
                         }
                     }
+                    Err(e) if quiet => {
+                        tracing::debug!(error = ?e, "Background refresh could not query contest end times");
+                    }
                     Err(e) => {
                         tracing::error!("Error querying dpns end times: {}", e);
                         let result = contextualize_dapi_task_result(
@@ -195,6 +205,9 @@ impl AppContext {
                             );
                         }
                     }
+                    Err(e) if quiet => {
+                        tracing::debug!(error = ?e, %name, "Background refresh could not query contenders");
+                    }
                     Err(e) => {
                         tracing::error!("Error querying dpns vote contenders for {}: {}", name, e);
                         let result = contextualize_dapi_task_result(
@@ -230,6 +243,7 @@ impl AppContext {
         self.refresh_masternode_list_membership().await;
         self.forget_closed_dpns_vote_counts();
         self.recompute_dpns_vote_attention();
+        self.mark_dpns_contests_refreshed();
         self.refresh_pending_dpns_usernames()?;
 
         sender

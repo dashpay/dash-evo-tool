@@ -1552,6 +1552,15 @@ pub enum AppAction {
     SwitchIdentityHubTab(crate::ui::identity::IdentityHubTab),
 }
 
+/// Whether results of the task behind `context` belong to the network chooser (settings)
+/// screen whichever screen is visible: it tracks the task and must hear how it ended.
+fn network_chooser_owns_task(context: &BackendTaskContext) -> bool {
+    matches!(
+        context,
+        BackendTaskContext::ClearNetworkDatabase | BackendTaskContext::UpdateBackupRetention
+    )
+}
+
 impl BitOrAssign for AppAction {
     fn bitor_assign(&mut self, rhs: Self) {
         if matches!(rhs, AppAction::None) {
@@ -1670,7 +1679,8 @@ impl AppState {
     pub(crate) fn boot_inputs()
     -> Result<(PathBuf, Arc<Database>), Box<dyn std::error::Error + Send + Sync>> {
         let data_dir = crate::boot::prepare_environment()?;
-        let db_file_path = data_file_path(&data_dir, "data.db")?;
+        let db_file_path =
+            data_file_path(&data_dir, crate::database::legacy_backups::LEGACY_DATABASE)?;
         let db = if db_file_path.exists() {
             Arc::new(Database::open_legacy_read_only(&db_file_path)?)
         } else {
@@ -3228,6 +3238,16 @@ impl App for AppState {
                                 );
                             }
                         }
+                        result @ BackendTaskSuccessResult::UpdatedBackupRetention { .. } => {
+                            // The settings form waits for this answer even after the user
+                            // navigates away, so it goes to the chooser, not the visible screen.
+                            if let Some(screen) = self
+                                .main_screens
+                                .get_mut(&RootScreenType::RootScreenNetworkChooser)
+                            {
+                                screen.display_backend_task_result(&context, result);
+                            }
+                        }
                         BackendTaskSuccessResult::DashPayIncomingDetected(outputs) => {
                             // The EventBridge surfaced received outputs on a
                             // freshly-seen wallet transaction. Run the owner-
@@ -3517,13 +3537,13 @@ impl App for AppState {
                     );
                     self.route_contact_request_error_to_hidden_hub(&err);
                     self.route_dpns_vote_error_to_hidden_screens(&context, &err);
-                    let is_database_clear = context == BackendTaskContext::ClearNetworkDatabase;
-                    let suppress_stale_error = !is_database_clear
+                    let chooser_owned = network_chooser_owns_task(&context);
+                    let suppress_stale_error = !chooser_owned
                         && !recovery_delivered
                         && self
                             .visible_screen_mut()
                             .should_suppress_backend_task_error(&context, &err);
-                    if is_database_clear {
+                    if chooser_owned {
                         if let Some(screen) = self
                             .main_screens
                             .get_mut(&RootScreenType::RootScreenNetworkChooser)
@@ -3537,7 +3557,7 @@ impl App for AppState {
                     // Let the screen handle specific error types first.
                     // If handled, skip the generic error banner.
                     let handled = suppress_stale_error
-                        || (!is_database_clear
+                        || (!chooser_owned
                             && !recovery_delivered
                             && self.visible_screen_mut().display_task_error(&err));
 
@@ -3574,7 +3594,7 @@ impl App for AppState {
                             }
                             _ => {}
                         }
-                        if !is_database_clear && !recovery_delivered {
+                        if !chooser_owned && !recovery_delivered {
                             self.visible_screen_mut()
                                 .display_message(&msg, MessageType::Error);
                         }
@@ -5309,5 +5329,24 @@ mod shutdown_tests {
                 + WALLET_BACKEND_SHUTDOWN_TIMEOUT
                 + SHUTDOWN_DEADLINE_MARGIN
         );
+    }
+}
+
+#[cfg(test)]
+mod network_chooser_routing_tests {
+    use super::*;
+    use crate::backend_task::system_task::SystemTask;
+    use crate::model::backup_retention::BackupRetention;
+
+    /// A retention save outlives navigation: its result and error must reach the
+    /// chooser even when another screen is visible, or its form stays disabled.
+    #[test]
+    fn backup_retention_task_results_route_to_network_chooser() {
+        let task = BackendTask::SystemTask(SystemTask::UpdateBackupRetention(
+            BackupRetention::KeepForever,
+        ));
+        let context = BackendTaskContext::from(&task);
+        assert_eq!(context, BackendTaskContext::UpdateBackupRetention);
+        assert!(network_chooser_owns_task(&context));
     }
 }

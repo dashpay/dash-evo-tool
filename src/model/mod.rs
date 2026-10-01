@@ -1,6 +1,7 @@
 pub mod address;
 pub mod amount;
 pub mod asset_lock;
+pub mod backup_retention;
 pub mod contested_name;
 pub mod dashpay;
 pub mod dashpay_derivation;

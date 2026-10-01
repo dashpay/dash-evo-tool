@@ -7,6 +7,7 @@
 //! stale value.
 
 use super::{AppContext, SettingsCacheGuard};
+use crate::model::backup_retention::BackupRetention;
 use crate::model::settings::{AppSettings, detect_dash_qt_path};
 use crate::model::user_role::UserRole;
 use crate::ui::RootScreenType;
@@ -225,6 +226,25 @@ impl AppContext {
         Ok(with_default_user_role(settings))
     }
 
+    /// The persisted upgrade-backup retention policy.
+    ///
+    /// An absent or out-of-range value resolves to the default. An unreadable
+    /// value is an error, never the default: pruning with a guessed policy could
+    /// delete backups a user chose to keep forever.
+    pub fn backup_retention(&self) -> Result<BackupRetention, KvAdapterError> {
+        Ok(self
+            .app_kv
+            .get::<BackupRetention>(DetScope::Global, BackupRetention::KV_KEY)?
+            .unwrap_or_default()
+            .sanitized())
+    }
+
+    /// Persist the upgrade-backup retention policy.
+    pub fn set_backup_retention(&self, retention: BackupRetention) -> Result<(), KvAdapterError> {
+        self.app_kv
+            .put(DetScope::Global, BackupRetention::KV_KEY, &retention)
+    }
+
     /// Write the [`AppSettings`] blob to the shared app k/v store.
     ///
     /// The blob is stored verbatim — a `user_role` of `None` stays `None` on disk
@@ -271,6 +291,34 @@ mod tests {
 
     fn empty_kv() -> DetKv {
         DetKv::from_store(Arc::new(InMemoryKv::default()))
+    }
+
+    #[test]
+    fn backup_retention_round_trips_and_defaults_when_absent_or_invalid() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = test_app_context(tmp.path());
+        assert_eq!(ctx.backup_retention().unwrap(), BackupRetention::default());
+        for retention in [
+            BackupRetention::KeepForever,
+            BackupRetention::DeleteAfterDays(7),
+        ] {
+            ctx.set_backup_retention(retention).unwrap();
+            assert_eq!(ctx.backup_retention().unwrap(), retention);
+        }
+        ctx.set_backup_retention(BackupRetention::DeleteAfterDays(0))
+            .unwrap();
+        assert_eq!(ctx.backup_retention().unwrap(), BackupRetention::default());
+    }
+
+    #[test]
+    fn unreadable_backup_retention_is_an_error_not_the_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Arc::new(FailingKv::default());
+        let ctx = test_app_context_with_kv(tmp.path(), Arc::new(DetKv::from_store(store.clone())));
+        ctx.set_backup_retention(BackupRetention::KeepForever)
+            .unwrap();
+        store.fail_all_reads(true);
+        assert!(ctx.backup_retention().is_err());
     }
 
     /// F69 — the `AppSettings` blob survives a put/get round-trip through the

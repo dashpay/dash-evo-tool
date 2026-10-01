@@ -507,7 +507,7 @@ fn rotate_log_file() {
 
 /// Rotates `{stem}.log` in `dir` to a timestamped name and removes rotated
 /// copies of the same stem older than [`LOG_RETENTION_DAYS`].
-fn rotate_log_in_dir(dir: &Path, stem: &str) {
+pub(crate) fn rotate_log_in_dir(dir: &Path, stem: &str) {
     let log_path = dir.join(format!("{stem}.log"));
     if log_path.exists() {
         let ts = fs::metadata(&log_path)
@@ -516,6 +516,8 @@ fn rotate_log_in_dir(dir: &Path, stem: &str) {
             .unwrap_or_else(|_| Local::now())
             .timestamp();
         let rotated = dir.join(rotated_name(stem, ts));
+        // Not a deletion, so not routed through `delete_file`: it moves the
+        // current log aside under a fresh timestamped name.
         let _ = fs::rename(&log_path, rotated);
     }
 
@@ -531,7 +533,10 @@ fn rotate_log_in_dir(dir: &Path, stem: &str) {
         if let Some(ts) = parse_rotated_ts(name, stem)
             && ts < cutoff
         {
-            let _ = fs::remove_file(path);
+            let _ = crate::utils::file_deletion::delete_file(
+                &path,
+                crate::utils::file_deletion::DeletionIntent::Log { dir, stem },
+            );
         }
     }
 }
@@ -541,12 +546,18 @@ fn rotated_name(stem: &str, ts: i64) -> String {
     format!("{stem}.{ts:010}.log")
 }
 
-/// Parses the timestamp out of a rotated log file name produced by
-/// [`rotated_name`], returning `None` for names that don't match the stem.
-fn parse_rotated_ts(name: &str, stem: &str) -> Option<i64> {
-    name.strip_prefix(&format!("{stem}."))
-        .and_then(|s| s.strip_suffix(".log"))
-        .and_then(|s| s.parse::<i64>().ok())
+/// The timestamp in a rotated log name `<stem>.<digits>.log`, or `None` for any
+/// other name. Also the deletion chokepoint's definition of a rotated log.
+pub(crate) fn parse_rotated_ts(name: &str, stem: &str) -> Option<i64> {
+    if stem.is_empty() {
+        return None;
+    }
+    name.strip_prefix(stem)?
+        .strip_prefix('.')?
+        .strip_suffix(".log")
+        .filter(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))?
+        .parse()
+        .ok()
 }
 
 #[cfg(test)]
@@ -659,6 +670,9 @@ mod tests {
         assert_eq!(parse_rotated_ts("det.log", "det"), None);
         assert_eq!(parse_rotated_ts("det.notanumber.log", "det"), None);
         assert_eq!(parse_rotated_ts("unrelated.txt", "det"), None);
+        assert_eq!(parse_rotated_ts("det.-5.log", "det"), None);
+        assert_eq!(parse_rotated_ts("det.+5.log", "det"), None);
+        assert_eq!(parse_rotated_ts(".5.log", ""), None);
     }
 
     #[test]

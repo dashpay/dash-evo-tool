@@ -189,8 +189,11 @@ enum RegistrationPersistFailure {
 impl RegistrationPersistFailure {
     fn into_task_error(self) -> TaskError {
         let (Self::Staged(source) | Self::Discarded(source)) = self;
-        TaskError::IdentityFundingAccountPersistFailed {
-            source: Box::new(source),
+        let source = Box::new(source);
+        if source.is_transient() {
+            TaskError::IdentityFundingAccountPersistBusy { source }
+        } else {
+            TaskError::IdentityFundingAccountPersistFailed { source }
         }
     }
 }

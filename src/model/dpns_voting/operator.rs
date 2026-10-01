@@ -237,6 +237,9 @@ pub enum Influence {
     },
     /// The top contenders are tied.
     Tied,
+    /// Lock name has as many votes as the single top request; the request
+    /// still wins, because Lock needs strictly more votes.
+    TiedWithLock,
 }
 
 /// Influence of a node set of `node_set_weight` on a weighted tally.
@@ -254,8 +257,14 @@ pub fn influence(
     ranked.sort_by_key(|(_, votes)| std::cmp::Reverse(*votes));
     let (top_id, top_votes) = *ranked.first()?;
     let runner_up = ranked.get(1).map_or(0, |(_, votes)| *votes);
+    if top_votes.max(lock_votes) == 0 {
+        return None;
+    }
     if ranked.len() > 1 && top_votes == runner_up && lock_votes <= top_votes {
         return Some(Influence::Tied);
+    }
+    if lock_votes == top_votes {
+        return Some(Influence::TiedWithLock);
     }
     let (leader, margin) = if lock_votes > top_votes {
         (ResourceVoteChoice::Lock, lock_votes - top_votes)
@@ -635,6 +644,18 @@ mod tests {
         );
     }
 
+    /// Lock equal to the single top request is a Lock tie, never a 0-vote lead.
+    #[test]
+    fn lock_equal_to_the_leader_is_a_lock_tie() {
+        let zed = Identifier::from([1; 32]);
+        let amy = Identifier::from([2; 32]);
+        assert_eq!(
+            influence(&[(zed, 5), (amy, 3)], 5, 4),
+            Some(Influence::TiedWithLock)
+        );
+        assert_eq!(influence(&[(zed, 5)], 5, 4), Some(Influence::TiedWithLock));
+    }
+
     /// VOTE-TC-093 (model half): equal top contenders are a tie.
     #[test]
     fn equal_top_contenders_tie() {
@@ -643,6 +664,16 @@ mod tests {
             (Identifier::from([2; 32]), 8),
         ];
         assert_eq!(influence(&tally, 3, 0), Some(Influence::Tied));
+        assert_eq!(
+            influence(&tally, 8, 0),
+            Some(Influence::Tied),
+            "a two-request tie stays a request tie when Lock matches it"
+        );
+        assert_eq!(
+            influence(&[(tally[0].0, 0), (tally[1].0, 0)], 0, 4),
+            None,
+            "a contest with no votes has no tie line"
+        );
         assert_eq!(
             influence(&[(Identifier::from([1; 32]), 0)], 0, 10),
             None,

@@ -99,6 +99,10 @@ pub fn influence_line(leader: &str, margin: u32, weight: u32) -> String {
 /// Tie line (VOTE-FR-077, PF §3).
 pub const TIE_LINE: &str = "If still tied at the end, the most recent request wins.";
 
+/// Lock tied with the single leading request (Lock needs strictly more votes).
+pub const LOCK_TIE_LINE: &str =
+    "Lock name is tied with the leading request. If still tied at the end, the request wins.";
+
 /// Weighted-tally hint (VOTE-FR-077).
 pub const EVONODE_WEIGHT_HINT: &str = "Evonodes count as 4 votes.";
 

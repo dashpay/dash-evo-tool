@@ -287,6 +287,9 @@ impl CardView<'_> {
             Some(Influence::Tied) => {
                 ui.label(copy::TIE_LINE);
             }
+            Some(Influence::TiedWithLock) => {
+                ui.label(copy::LOCK_TIE_LINE);
+            }
             Some(Influence::CanChangeLeader { leader, margin }) if self.has_voting_nodes => {
                 let leader = match leader {
                     ResourceVoteChoice::TowardsIdentity(id) => card

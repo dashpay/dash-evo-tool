@@ -449,24 +449,14 @@ impl AppContext {
             source: Box::new(e),
         })?;
 
-        // Determine alias: use user input, or fall back to first DPNS name if available
-        let alias = if identity_type == IdentityType::User {
-            None
-        } else if !alias_input.is_empty() {
-            Some(alias_input)
-        } else if !maybe_owned_dpns_names.is_empty() {
-            Some(format!("{}.dash", maybe_owned_dpns_names[0].name))
-        } else {
-            None
-        };
-
         let mut qualified_identity = QualifiedIdentity {
             identity,
             associated_voter_identity,
             associated_operator_identity: None,
             associated_owner_key_id: None,
             identity_type,
-            alias,
+            alias: (identity_type != IdentityType::User && !alias_input.is_empty())
+                .then_some(alias_input),
             private_keys: encrypted_private_keys.into(),
             dpns_names: maybe_owned_dpns_names,
             associated_wallets: wallets
@@ -482,6 +472,7 @@ impl AppContext {
             status: IdentityStatus::Active,
             network: self.network,
         };
+        qualified_identity.set_default_node_alias(None);
         let wallet_info =
             if load_mode == IdentityLoadMode::MergeIntoExisting && encryption_password.is_none() {
                 self.persist_merged_identity(&mut qualified_identity, merge_seal_password.as_ref())?

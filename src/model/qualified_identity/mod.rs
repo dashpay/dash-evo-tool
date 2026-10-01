@@ -949,6 +949,16 @@ impl QualifiedIdentity {
             .map_err(|e| ProtocolError::Generic(format!("HASH160 recovery scan failed: {e}")))
     }
 
+    /// Default an unnamed node to the preferred DPNS name, or its first owned name.
+    pub fn set_default_node_alias(&mut self, preferred_dpns_name: Option<&str>) {
+        if self.identity_type == IdentityType::User || self.alias.is_some() {
+            return;
+        }
+        self.alias = preferred_dpns_name
+            .or_else(|| self.dpns_names.first().map(|name| name.name.as_str()))
+            .map(|name| format!("{name}.dash"));
+    }
+
     pub fn display_string(&self) -> String {
         self.display_name_label(None)
     }
@@ -2697,6 +2707,79 @@ mod identity_display_name_tests {
         identity.identity_type = IdentityType::Masternode;
         assert_eq!(identity.display_string(), "Legacy local name");
         assert_eq!(identity.to_string(), "Legacy local name");
+    }
+
+    #[test]
+    fn default_node_alias_preserves_explicit_names_and_excludes_users() {
+        for identity_type in [
+            IdentityType::User,
+            IdentityType::Masternode,
+            IdentityType::Evonode,
+        ] {
+            for existing in [None, Some("Operator label"), Some("")] {
+                let mut identity = identity();
+                identity.identity_type = identity_type;
+                identity.alias = existing.map(str::to_owned);
+                identity.dpns_names = vec![DPNSNameInfo {
+                    name: "first".into(),
+                    acquired_at: 0,
+                }];
+                identity.set_default_node_alias(None);
+                let expected = if identity_type == IdentityType::User {
+                    existing
+                } else {
+                    existing.or(Some("first.dash"))
+                };
+                assert_eq!(
+                    identity.alias.as_deref(),
+                    expected,
+                    "{identity_type:?}/{existing:?}"
+                );
+                identity.set_default_node_alias(Some("newly-registered"));
+                assert_eq!(identity.alias.as_deref(), expected);
+                if identity_type == IdentityType::User {
+                    assert_eq!(identity.display_name_label(Some("Profile")), "Profile");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn default_node_alias_prefers_registered_name_and_handles_no_dpns_names() {
+        for identity_type in [
+            IdentityType::User,
+            IdentityType::Masternode,
+            IdentityType::Evonode,
+        ] {
+            for (first_name, preferred, node_alias) in [
+                (None, None, None),
+                (Some("older"), None, Some("older.dash")),
+                (None, Some("submitted"), Some("submitted.dash")),
+                (Some("older"), Some("submitted"), Some("submitted.dash")),
+            ] {
+                let mut identity = identity();
+                identity.identity_type = identity_type;
+                identity.alias = None;
+                identity.dpns_names = first_name
+                    .into_iter()
+                    .map(|name| DPNSNameInfo {
+                        name: name.into(),
+                        acquired_at: 0,
+                    })
+                    .collect();
+                identity.set_default_node_alias(preferred);
+                let expected = if identity_type == IdentityType::User {
+                    None
+                } else {
+                    node_alias
+                };
+                assert_eq!(
+                    identity.alias.as_deref(),
+                    expected,
+                    "{identity_type:?}/{preferred:?}/{first_name:?}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -2552,7 +2552,12 @@ impl ScreenLike for DPNSScreen {
             // submission is in flight, so a failed submission must leave that
             // state here. Otherwise the window stays on "Submitting votes…"
             // with no way to retry or close it.
-            if matches!(
+            if matches!(error, TaskError::DpnsVoteReviewRequired) {
+                // A first vote became a change during preflight: reopen the
+                // confirm on fresh vote state so it shows the change warning.
+                self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
+                self.show_bulk_schedule_popup = !self.selected_votes.is_empty();
+            } else if matches!(
                 self.bulk_vote_handling_status,
                 VoteHandlingStatus::CastingVotes | VoteHandlingStatus::SchedulingVotes
             ) {
@@ -3858,8 +3863,12 @@ mod tests {
         assert!(screen.pending_vote_operation.is_none());
         assert!(matches!(
             screen.bulk_vote_handling_status,
-            VoteHandlingStatus::Failed(_)
+            VoteHandlingStatus::NotStarted
         ));
+        assert!(
+            screen.show_bulk_schedule_popup,
+            "DPN-005: the confirm reopens with the change warning"
+        );
         assert_eq!(
             screen.build_review_plan().unwrap().aggregate.targets[0].current_choice,
             Some(ResourceVoteChoice::Lock)

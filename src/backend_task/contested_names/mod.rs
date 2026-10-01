@@ -783,9 +783,6 @@ impl AppContext {
                         if !app_context.claim_dpns_vote_target(operation_id, &target.key)? {
                             continue;
                         }
-                        // TODO(DPN-005): re-read the proved current choice here and, when a
-                        // first vote has become a change, hand the batch back to the confirm
-                        // step with the change warning instead of submitting.
                         if let Some((status, failure)) =
                             voting_ended_outcome(contests.get(&target.contested_name), now_ms())
                         {

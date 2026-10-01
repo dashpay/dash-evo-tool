@@ -820,7 +820,7 @@ As a power user, I want to review past contests so that I can see outcomes and h
 
 - Votes ▸ History lists finished contests with the outcome in words (went to a named requester with a copyable identifier, or locked for good), and my nodes' votes with their total weight.
 
-### DPN-005: Vote on contested names [Gap]
+### DPN-005: Vote on contested names [Implemented]
 **Persona:** Priya
 
 As a masternode operator, I want to make one decision per contest and have all my chosen nodes cast it so that voting with many nodes takes seconds.

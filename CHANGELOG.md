@@ -194,6 +194,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Returning from a successful identity top-up refreshes the balance on
+  "Get a username" without clearing the chosen name or payment review.
+- Username registration stays blocked while its payment is in progress,
+  even when an unrelated background task fails. Username updates preserve
+  concurrent changes to the identity's keys.
+- Vote choices show identity handles to distinguish similar names.
+  "Cast now" leaves other nodes' queued votes untouched, and failed contest
+  refreshes can be retried.
+
 - DPNS vote confirmation now highlights the name and chosen vote in separate
   blocks, explains Lock and Abstain, and separates the previous vote and timing.
 

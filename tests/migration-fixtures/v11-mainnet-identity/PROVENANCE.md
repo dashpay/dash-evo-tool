@@ -17,6 +17,12 @@ wallet and identity are public test material: never send funds to them or
 reuse their keys. This is an explicit exception to the usual testnet-only
 fixture policy and prohibition on committing wallet seeds.
 
+**INTENTIONAL:** The operator reconfirmed this exception on 2026-10-02 for
+PR #1043. [AGENTS.md](../../../AGENTS.md) records the authoritative, narrowly
+scoped approval for this exact database and its corresponding public test key.
+The associated keys are permanently public and compromised; this approval
+does not cover any new secret material or establish a current on-chain balance.
+
 Contents:
 
 - One unprotected wallet, `e2e-test-mainnet`, with seed hash

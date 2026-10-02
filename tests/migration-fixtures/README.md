@@ -28,6 +28,8 @@ not signing, voter/operator associations, or fetching proofs with the old SDK.
 
 ### Authorized mainnet fixture exception
 
+<!-- INTENTIONAL: the sole operator-approved mainnet/public-secret exception is defined in ../../AGENTS.md. -->
+
 The operator-authorized [`v11-mainnet-identity`](v11-mainnet-identity/PROVENANCE.md)
 profile is a complete captured mainnet database, including the public
 test wallet seed and an explicitly published imported private key.
@@ -49,6 +51,11 @@ mainnet-recapture rules below. Its existing bytes are retained to reproduce
 legacy serialization; its wallet and identity are permanently public test
 material and must never receive funds or be reused. The dust allowance for
 capturing testnet archives does not apply to this mainnet fixture.
+
+This is an **INTENTIONAL** exception, reconfirmed by the operator on 2026-10-02
+for PR #1043 and recorded in [AGENTS.md](../../AGENTS.md). It covers only the
+existing database identified by its provenance hash and its corresponding test
+key constant; it does not authorize additional mainnet captures or secrets.
 
 ### CI coverage
 
@@ -84,7 +91,7 @@ for the full design and its relationship to PR #981.
 
 ## Threat model — read before capturing anything
 
-Treat every fixture byte as **published**. The following capture rules apply
+Treat every fixture byte as **published**. INTENTIONAL: the following capture rules apply
 to the manifest's testnet archives; the approved bundled mainnet database is
 covered by the [exception above](#authorized-mainnet-fixture-exception).
 

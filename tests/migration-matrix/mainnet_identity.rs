@@ -25,9 +25,10 @@ use sha2::{Digest, Sha256};
 use crate::identity_storage::{self, IDENTITY_KEY, StoredIdentity};
 use crate::{DEFAULT_BOOT_TIMEOUT, assertions, cli, manifest::Fixture, stage};
 
+// INTENTIONAL: this exact public mainnet database is the sole fixture exception in AGENTS.md.
 const CAPTURE: &[u8] =
     include_bytes!("../migration-fixtures/v11-mainnet-identity/data-with-imported-key.db");
-// Operator-authorized public test key; see the fixture's PROVENANCE.md.
+// INTENTIONAL: operator-approved public test key; see AGENTS.md and the fixture's PROVENANCE.md.
 const IMPORTED_PRIVATE_KEY: &str =
     "394195a3ed1d404bd673484e1274a4c4d5040d46705cdca3337f3dbd999760af";
 

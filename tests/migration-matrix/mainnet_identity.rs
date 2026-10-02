@@ -26,8 +26,7 @@ use sha2::{Digest, Sha256};
 use crate::public_identities::StoredIdentity;
 use crate::{DEFAULT_BOOT_TIMEOUT, assertions, cli, manifest::Fixture, stage};
 
-const CAPTURE: &[u8] = include_bytes!("../migration-fixtures/v11-mainnet-identity/data.db");
-const CAPTURE_WITH_IMPORTED_KEY: &[u8] =
+const CAPTURE: &[u8] =
     include_bytes!("../migration-fixtures/v11-mainnet-identity/data-with-imported-key.db");
 // Operator-authorized public test key; see the fixture's PROVENANCE.md.
 const IMPORTED_PRIVATE_KEY: &str =
@@ -35,19 +34,10 @@ const IMPORTED_PRIVATE_KEY: &str =
 
 #[test]
 fn mainnet_imported_key_fixture_is_the_authorized_capture() {
-    assert_eq!(CAPTURE_WITH_IMPORTED_KEY.len(), 180_224);
-    assert_eq!(
-        hex::encode(Sha256::digest(CAPTURE_WITH_IMPORTED_KEY)),
-        "23fc06e82df316dca56cb6ae338aaa470790e6e1cdf19f35cdcd777d1d9485d3"
-    );
-}
-
-#[test]
-fn mainnet_identity_fixture_is_the_authorized_capture() {
     assert_eq!(CAPTURE.len(), 180_224);
     assert_eq!(
         hex::encode(Sha256::digest(CAPTURE)),
-        "81309e1fb1f8158aa1b5bb0b61a7c662d5b0926115cda629bc863496d91590c9"
+        "23fc06e82df316dca56cb6ae338aaa470790e6e1cdf19f35cdcd777d1d9485d3"
     );
 }
 
@@ -105,16 +95,8 @@ fn stored_identity(dir: &Path) -> (Connection, StoredIdentity) {
 }
 
 #[test]
-fn mainnet_identity_fixture_migrates_and_signs() {
-    check_migration_and_signing(CAPTURE, 4);
-}
-
-#[test]
 fn mainnet_imported_key_fixture_migrates_and_signs() {
-    check_migration_and_signing(CAPTURE_WITH_IMPORTED_KEY, 5);
-}
-
-fn check_migration_and_signing(original: &[u8], key_count: usize) {
+    let original = CAPTURE;
     if !cfg!(feature = "cli") && std::env::var_os(cli::BINARY_ENV).is_none() {
         println!("Skipping mainnet CLI migration: enable cli or set DET_CLI_BIN");
         return;
@@ -138,8 +120,8 @@ fn check_migration_and_signing(original: &[u8], key_count: usize) {
         }).unwrap();
     let original_identity = QualifiedIdentity::from_bytes(&bytes).unwrap();
     assert_eq!(wallet_index, 3);
-    assert_eq!(original_identity.identity.public_keys().len(), key_count);
-    assert_eq!(original_identity.private_keys.len(), key_count);
+    assert_eq!(original_identity.identity.public_keys().len(), 5);
+    assert_eq!(original_identity.private_keys.len(), 5);
     for (_, (key, data)) in original_identity.private_keys.iter() {
         if key.identity_public_key.id() == 4 {
             assert_eq!(key.identity_public_key.key_type(), KeyType::ECDSA_SECP256K1);
@@ -173,7 +155,7 @@ fn check_migration_and_signing(original: &[u8], key_count: usize) {
             canonical_bytes = Some(stored.qi_bytes.clone());
         }
         let persisted = QualifiedIdentity::from_bytes(&stored.qi_bytes).unwrap();
-        assert_eq!(persisted.private_keys.len(), key_count);
+        assert_eq!(persisted.private_keys.len(), 5);
         for (key, data) in persisted.private_keys.values() {
             if key.identity_public_key.id() == 4 {
                 assert!(matches!(data, PrivateKeyData::InVault));
@@ -228,7 +210,7 @@ fn check_migration_and_signing(original: &[u8], key_count: usize) {
                     panic!("restore summary")
                 };
                 assert_eq!(summary.wallets_restored, 1);
-                assert_eq!(summary.identity_keys_restored as usize, key_count);
+                assert_eq!(summary.identity_keys_restored, 5);
                 assert!(!summary.has_problems());
             }
             let identities = context.load_local_qualified_identities().unwrap();

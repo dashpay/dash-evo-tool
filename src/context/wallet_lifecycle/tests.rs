@@ -3547,8 +3547,13 @@ async fn restore_protected_single_key_round_trip_and_wrong_password() {
     // The protected row shows up as pending (still encrypted under the
     // old password; not in the modern vault yet).
     let pending = list_pending_protected_restores(&ctx).expect("list pending");
-    assert_eq!(pending.len(), 1, "exactly one protected row awaits restore");
-    assert_eq!(pending[0].address, address);
+    assert_eq!(
+        pending.pending.len(),
+        1,
+        "exactly one protected row awaits restore"
+    );
+    assert_eq!(pending.pending[0].address, address);
+    assert_eq!(pending.unreadable, 0);
 
     // Wrong password: generic failure, nothing restored, row intact.
     let err = restore_protected_single_key(
@@ -3564,7 +3569,7 @@ async fn restore_protected_single_key_round_trip_and_wrong_password() {
     );
     let still_pending = list_pending_protected_restores(&ctx).expect("re-list pending");
     assert_eq!(
-        still_pending.len(),
+        still_pending.pending.len(),
         1,
         "a failed restore must leave the protected row pending and uncorrupted"
     );
@@ -3594,7 +3599,7 @@ async fn restore_protected_single_key_round_trip_and_wrong_password() {
     );
     let after = list_pending_protected_restores(&ctx).expect("final pending");
     assert!(
-        after.is_empty(),
+        after.pending.is_empty(),
         "the restored key must drop off the pending list"
     );
 }

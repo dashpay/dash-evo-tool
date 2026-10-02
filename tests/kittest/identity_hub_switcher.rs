@@ -567,6 +567,11 @@ fn ui_polish_many_identities_picker_scroll_reaches_add_card() {
         );
         add.click();
         harness.run_steps(5);
+        // The card opens its create/load menu; picking an item opens the screen.
+        harness
+            .get_by_role_and_label(egui::accesskit::Role::Button, "Load an existing identity")
+            .click();
+        harness.run_steps(5);
         assert!(
             !harness.state().screen_stack.is_empty(),
             "Add card must be clickable after scrolling"
@@ -1124,5 +1129,132 @@ fn hidden_hub_receives_its_profile_save_and_releases_the_next_draft() {
             editor.state().1.is_some(),
             "hidden completion must release its pending save"
         );
+    });
+}
+
+/// With identities already loaded and none selected (the picker), the hub's
+/// top-bar "Add" menu offers both add flows: "Create a new identity" pushes
+/// `AddNewIdentityScreen` and "Load an existing identity" pushes
+/// `AddExistingIdentityScreen`.
+#[test]
+fn picker_top_bar_add_menu_creates_or_loads_an_identity() {
+    with_isolated_data_dir(|| {
+        use dash_evo_tool::ui::Screen;
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
+        let app_context = harness.state().current_app_context().clone();
+        seed_identity(&app_context, 0xC1, "Add Menu Alpha");
+        seed_identity(&app_context, 0xC2, "Add Menu Beta");
+        harness.run_steps(5);
+        assert!(harness.query_by_label(PICKER_HEADING).is_some());
+
+        harness.get_by_label("Add ▾").click();
+        harness.run_steps(3);
+        harness.get_by_label("Load an existing identity").click();
+        harness.run_steps(3);
+        assert!(
+            matches!(
+                harness.state().screen_stack.last(),
+                Some(Screen::AddExistingIdentityScreen(_))
+            ),
+            "\"Load an existing identity\" must push AddExistingIdentityScreen"
+        );
+
+        harness.state_mut().screen_stack.clear();
+        harness.run_steps(3);
+        harness.get_by_label("Add ▾").click();
+        harness.run_steps(3);
+        harness.get_by_label("Create a new identity").click();
+        harness.run_steps(3);
+        assert!(
+            matches!(
+                harness.state().screen_stack.last(),
+                Some(Screen::AddNewIdentityScreen(_))
+            ),
+            "\"Create a new identity\" must push AddNewIdentityScreen"
+        );
+    });
+}
+
+#[test]
+fn picker_create_entries_preserve_selected_wallet() {
+    with_identity_hub(|mut harness, app_context| {
+        use dash_evo_tool::model::wallet::Wallet;
+        use dash_evo_tool::model::wallet::birth_height::WalletOrigin;
+        use dash_evo_tool::ui::Screen;
+        use zeroize::Zeroize;
+
+        let mut wallets = Vec::new();
+        for alias in ["First candidate", "Second candidate"] {
+            let mut seed: [u8; 64] = rand::random();
+            let wallet =
+                Wallet::new_from_seed(seed, app_context.network(), Some(alias.into()), None)
+                    .expect("wallet fixture");
+            let hash = wallet.seed_hash();
+            app_context
+                .register_wallet(wallet, &seed, WalletOrigin::Imported)
+                .expect("register wallet fixture");
+            seed.zeroize();
+            wallets.push((hash, alias));
+        }
+        wallets.sort_by_key(|(hash, _)| *hash);
+        let (selected_hash, selected_alias) = wallets[1];
+        assert_ne!(
+            app_context
+                .wallet_context()
+                .first_hd()
+                .unwrap()
+                .read()
+                .unwrap()
+                .seed_hash(),
+            selected_hash
+        );
+        for byte in [0xC3, 0xC4] {
+            let id = seed_identity(&app_context, byte, &format!("Owned identity {byte}"));
+            let identity = app_context
+                .load_local_user_identities()
+                .unwrap()
+                .into_iter()
+                .find(|identity| identity.identity.id() == id)
+                .unwrap();
+            app_context
+                .insert_local_qualified_identity(&identity, &Some((selected_hash, 0)))
+                .unwrap();
+        }
+        app_context.set_selected_hd_wallet(Some(wallets[0].0));
+        harness.run_steps(5);
+        harness
+            .get_by_role_and_label(egui::accesskit::Role::Link, wallets[0].1)
+            .click();
+        harness.run_steps(3);
+        harness
+            .get_by_label(&format!("💼 {selected_alias}"))
+            .click();
+        harness.run_steps(5);
+
+        for entry in ["Add ▾", "Add a new identity"] {
+            assert_eq!(app_context.selected_wallet_hash(), Some(selected_hash));
+            assert!(harness.query_by_label(PICKER_HEADING).is_some());
+            harness
+                .get_by_role_and_label(egui::accesskit::Role::Button, entry)
+                .click();
+            harness.run_steps(3);
+            harness.get_by_label("Create a new identity").click();
+            harness.run_steps(3);
+            assert!(matches!(
+                harness.state().screen_stack.last(),
+                Some(Screen::AddNewIdentityScreen(_))
+            ));
+            assert!(
+                harness
+                    .query_by_value(&format!("{selected_alias} — 0 DASH"))
+                    .is_some(),
+                "{entry} must preselect the chosen wallet in the creation form"
+            );
+            harness.state_mut().screen_stack.clear();
+            harness.run_steps(3);
+        }
     });
 }

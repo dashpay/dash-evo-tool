@@ -3,8 +3,8 @@
 //!
 //! User-initiated and repeatable. Wallet seed envelopes are copied only where
 //! the vault has no copy of that seed (never overwritten, protected envelopes
-//! travel as-is), unprotected imported keys only where neither their secret
-//! nor their details are stored, and identity keys go through the per-identity
+//! travel as-is), imported-key secrets are preserved while missing public
+//! details can be repaired, and identity keys go through the per-identity
 //! #889 recovery, which restores only missing items and never resurrects a
 //! deleted identity.
 //! `data.db` is opened read-only; the one-time drain sentinel is not consulted
@@ -120,7 +120,11 @@ async fn restore_wallets(
     // offers to restore, so a key already restored there is not counted.
     match super::single_key_restore::list_pending_protected_restores(app_context) {
         Ok(pending) => {
-            summary.imported_keys_need_password = u32::try_from(pending.len()).unwrap_or(u32::MAX);
+            summary.imported_keys_need_password =
+                u32::try_from(pending.pending.len()).unwrap_or(u32::MAX);
+            summary.imported_keys_failed = summary
+                .imported_keys_failed
+                .saturating_add(pending.unreadable);
         }
         Err(error) => {
             tracing::warn!(
@@ -356,6 +360,121 @@ mod tests {
 
     fn app_context(dir: &Path) -> Arc<AppContext> {
         app_context_on(dir, Network::Testnet)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn review_regression_restore_counts_unreadable_protected_keys() {
+        use crate::model::wallet::single_key::ClosedSingleKey;
+        use dash_sdk::dpp::dashcore::{Address, PrivateKey, PublicKey, secp256k1::Secp256k1};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = app_context(dir.path());
+        let raw = [0x39; 32];
+        let private = PrivateKey::from_byte_array(&raw, ctx.network).unwrap();
+        let public = PublicKey::new(private.inner.public_key(&Secp256k1::new()));
+        let address = Address::p2pkh(&public, ctx.network).to_string();
+        let password = format!("test-password-{}", dir.path().display());
+        let envelope = ClosedSingleKey::encrypt_private_key(&raw, &password).unwrap();
+        ctx.db.execute(
+            "INSERT INTO single_key_wallet (key_hash, address, alias, network, uses_password, encrypted_private_key, salt, nonce, public_key)
+             VALUES (?1, ?2, 'Valid', 'testnet', 1, ?3, ?4, ?5, ?6)",
+            rusqlite::params![raw.as_slice(), address, envelope.ciphertext, envelope.salt, envelope.nonce, public.to_bytes()],
+        ).expect("valid protected row");
+        ctx.db.execute(
+            "INSERT INTO single_key_wallet (key_hash, address, alias, network, uses_password, encrypted_private_key, salt, nonce, public_key)
+             SELECT x'02', x'FF', 'Damaged', network, uses_password, encrypted_private_key, salt, nonce, public_key FROM single_key_wallet", [],
+        ).expect("unreadable address beside valid ciphertext");
+        wire_backend(&ctx).await;
+        let summary = run(&ctx).await.expect("restore");
+        assert_eq!(
+            summary.imported_keys_need_password, 1,
+            "valid row stays pending"
+        );
+        assert_eq!(
+            summary.imported_keys_failed, 1,
+            "unreadable protected row is a failure"
+        );
+        ctx.db
+            .execute(
+                "UPDATE single_key_wallet SET alias = x'FF' WHERE alias = 'Valid'",
+                [],
+            )
+            .unwrap();
+        let summary = run(&ctx).await.unwrap();
+        assert_eq!(summary.imported_keys_need_password, 0);
+        assert_eq!(
+            summary.imported_keys_failed, 2,
+            "each unreadable protected row counts once"
+        );
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn single_key_restore_repairs_orphans_reports_missing_secrets_and_clears_both() {
+        use crate::model::wallet::alias::AliasSource;
+        use crate::wallet_backend::DetScope;
+        use crate::wallet_backend::secret_seam::{SecretScheme, SecretSeam};
+        use crate::wallet_backend::single_key::{
+            label_for_address, meta_key_for, single_key_namespace_id,
+        };
+        use dash_sdk::dpp::dashcore::PrivateKey;
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = app_context(dir.path());
+        wire_backend(&ctx).await;
+        let backend = ctx.wallet_backend().unwrap();
+        let seam = SecretSeam::new(backend.secret_store());
+        let mut addresses = Vec::new();
+        for byte in [0x41, 0x42] {
+            let raw = [byte; 32];
+            let private = PrivateKey::from_byte_array(&raw, ctx.network).unwrap();
+            let (meta, _) = ctx
+                .import_single_key_wif(
+                    &private.to_wif(),
+                    AliasSource::Preserved(None),
+                    Default::default(),
+                )
+                .unwrap();
+            ctx.db.execute(
+                "INSERT INTO single_key_wallet (key_hash, address, network, uses_password, encrypted_private_key, salt, nonce, public_key)
+                 VALUES (?1, ?2, 'testnet', 0, ?1, x'', x'', x'')",
+                rusqlite::params![raw.as_slice(), meta.address],
+            ).unwrap();
+            if byte == 0x41 {
+                ctx.app_kv()
+                    .delete(DetScope::Global, &meta_key_for(ctx.network, &meta.address))
+                    .unwrap();
+            } else {
+                seam.delete_secret(
+                    &single_key_namespace_id(),
+                    &label_for_address(&meta.address),
+                )
+                .unwrap();
+            }
+            addresses.push(meta.address);
+        }
+        let summary = run(&ctx).await.unwrap();
+        assert_eq!(summary.imported_keys_restored, 1);
+        assert_eq!(summary.imported_keys_failed, 1);
+        assert_eq!(backend.single_key().hydrate_wallets().len(), 1);
+        assert_eq!(
+            seam.scheme(
+                &single_key_namespace_id(),
+                &label_for_address(&addresses[1])
+            )
+            .unwrap(),
+            SecretScheme::Absent,
+            "an interrupted removal is never resurrected"
+        );
+        let cleared = backend.forget_all_wallets_local();
+        assert!(cleared.failures.is_empty());
+        assert!(backend.single_key().list_persisted().is_empty());
+        for address in addresses {
+            assert_eq!(
+                seam.scheme(&single_key_namespace_id(), &label_for_address(&address))
+                    .unwrap(),
+                SecretScheme::Absent
+            );
+        }
+        backend.shutdown().await;
     }
 
     fn app_context_on(dir: &Path, network: Network) -> Arc<AppContext> {

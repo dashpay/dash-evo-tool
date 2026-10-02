@@ -1,6 +1,7 @@
 use crate::app::{AppAction, DesiredAppAction};
 use crate::context::AppContext;
 use crate::context::connection_status::OverallConnectionState;
+use crate::ui::components::action_menu::show_action_menu;
 use crate::ui::components::global_nav_switcher::{self, GlobalNavEffect};
 use crate::ui::state::global_nav::{PageNavSpec, PillConsumption};
 use crate::ui::state::hub_selection::HubSelection;
@@ -221,39 +222,29 @@ fn render_top_island(
                                 if !doc_actions.is_empty() {
                                     ui.add_space(3.0);
 
-                                    let resp = ComponentStyles::add_toolbar_button(
+                                    let resp = ComponentStyles::add_toolbar_menu_button(
                                         ui,
                                         "Documents",
                                         network_accent,
                                     );
                                     let popup_id = ui.make_persistent_id("docs_popup");
 
-                                    let dark_mode = ui.style().visuals.dark_mode;
-                                    egui::Popup::new(
-                                        popup_id,
-                                        ui.ctx().clone(),
-                                        &resp,
-                                        resp.layer_id,
-                                    )
-                                    .open_memory(
-                                        resp.clicked().then_some(egui::SetOpenCommand::Toggle),
-                                    )
-                                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                                    .frame(
-                                        egui::Frame::popup(ui.style())
-                                            .fill(DashColors::popup_fill(dark_mode)),
-                                    )
-                                    .show(|ui| {
-                                        ui.set_min_width(150.0);
-                                        for (text, da) in doc_actions {
-                                            let btn = egui::Button::new(text)
-                                                .min_size(egui::vec2(ui.available_width(), 0.0));
-                                            if ComponentStyles::add_button(ui, btn).clicked() {
-                                                action = da.create_action(app_context);
-                                                ui.close();
-                                            }
-                                        }
-                                    });
+                                    action |= show_action_menu(
+                                        ui,
+                                        app_context,
+                                        egui::Popup::new(
+                                            popup_id,
+                                            ui.ctx().clone(),
+                                            &resp,
+                                            resp.layer_id,
+                                        )
+                                        .open_memory(
+                                            resp.clicked().then_some(egui::SetOpenCommand::Toggle),
+                                        ),
+                                        doc_actions
+                                            .iter()
+                                            .map(|(label, action)| (*label, action, true, "")),
+                                    );
                                 }
 
                                 // Grouped Contracts menu
@@ -261,46 +252,71 @@ fn render_top_island(
                                     ui.add_space(3.0);
 
                                     let popup_id = ui.auto_id_with("contracts_popup");
-                                    let resp = ComponentStyles::add_toolbar_button(
+                                    let resp = ComponentStyles::add_toolbar_menu_button(
                                         ui,
                                         "Contracts",
                                         network_accent,
                                     );
 
-                                    let dark_mode = ui.style().visuals.dark_mode;
-                                    egui::Popup::new(
-                                        popup_id,
-                                        ui.ctx().clone(),
-                                        &resp,
-                                        resp.layer_id,
-                                    )
-                                    .open_memory(
-                                        resp.clicked().then_some(egui::SetOpenCommand::Toggle),
-                                    )
-                                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                                    .frame(
-                                        egui::Frame::popup(ui.style())
-                                            .fill(DashColors::popup_fill(dark_mode)),
-                                    )
-                                    .show(|ui| {
-                                        ui.set_min_width(150.0);
-                                        for (text, ca) in contract_actions {
-                                            let btn = egui::Button::new(text)
-                                                .min_size(egui::vec2(ui.available_width(), 0.0));
-                                            if ComponentStyles::add_button(ui, btn).clicked() {
-                                                action = ca.create_action(app_context);
-                                                ui.close();
-                                            }
-                                        }
-                                    });
+                                    action |= show_action_menu(
+                                        ui,
+                                        app_context,
+                                        egui::Popup::new(
+                                            popup_id,
+                                            ui.ctx().clone(),
+                                            &resp,
+                                            resp.layer_id,
+                                        )
+                                        .open_memory(
+                                            resp.clicked().then_some(egui::SetOpenCommand::Toggle),
+                                        ),
+                                        contract_actions
+                                            .iter()
+                                            .map(|(label, action)| (*label, action, true, "")),
+                                    );
                                 }
 
                                 // Render other buttons normally
                                 for (text, btn_act) in other_actions.into_iter().rev() {
                                     ui.add_space(3.0);
-                                    if ComponentStyles::add_toolbar_button(ui, text, network_accent)
-                                        .clicked()
-                                    {
+                                    let response = if matches!(btn_act, DesiredAppAction::Menu(_)) {
+                                        ComponentStyles::add_toolbar_menu_button(
+                                            ui,
+                                            text,
+                                            network_accent,
+                                        )
+                                    } else {
+                                        ComponentStyles::add_toolbar_button(
+                                            ui,
+                                            text,
+                                            network_accent,
+                                        )
+                                    };
+                                    if let DesiredAppAction::Menu(items) = btn_act {
+                                        action |= show_action_menu(
+                                            ui,
+                                            app_context,
+                                            egui::Popup::new(
+                                                ui.make_persistent_id(text),
+                                                ui.ctx().clone(),
+                                                &response,
+                                                response.layer_id,
+                                            )
+                                            .open_memory(
+                                                response
+                                                    .clicked()
+                                                    .then_some(egui::SetOpenCommand::Toggle),
+                                            ),
+                                            items.iter().map(|item| {
+                                                (
+                                                    item.label,
+                                                    &item.action,
+                                                    item.enabled,
+                                                    item.tooltip,
+                                                )
+                                            }),
+                                        );
+                                    } else if response.clicked() {
                                         action = btn_act.create_action(app_context);
                                     }
                                 }
@@ -406,7 +422,7 @@ pub fn apply_global_nav_effect(
         GlobalNavEffect::AddWallet => {
             AppAction::SetMainScreen(RootScreenType::RootScreenWalletsBalances)
         }
-        GlobalNavEffect::AddIdentityCreate | GlobalNavEffect::CreateTestIdentities => {
+        GlobalNavEffect::AddIdentityCreate => {
             AppAction::AddScreen(ScreenType::AddNewIdentity.create_screen(app_context))
         }
         GlobalNavEffect::AddIdentityLoad => {
@@ -478,6 +494,70 @@ pub fn add_top_panel_with_global_nav_capturing(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn advanced_menu_opens_dispatches_and_closes_in_both_themes() {
+        use crate::app::ToolbarMenuItem;
+        use egui_kittest::{
+            Harness,
+            kittest::{NodeT, Queryable},
+        };
+        for dark in [false, true] {
+            let tmp = tempfile::tempdir().expect("temp dir");
+            let ctx = crate::context::test_support::test_app_context(tmp.path());
+            let mut harness = Harness::builder()
+                .with_size(egui::vec2(1200.0, 400.0))
+                .build_ui_state(
+                    |ui, last_action| {
+                        let action = render_top_island(
+                            ui,
+                            &ctx,
+                            |_| AppAction::None,
+                            vec![(
+                                "Advanced",
+                                DesiredAppAction::Menu(vec![
+                                    ToolbarMenuItem {
+                                        label: "Import key",
+                                        action: DesiredAppAction::Custom("import".into()),
+                                        enabled: true,
+                                        tooltip: "Import a key.",
+                                    },
+                                    ToolbarMenuItem {
+                                        label: "Full resync",
+                                        action: DesiredAppAction::Custom("resync".into()),
+                                        enabled: false,
+                                        tooltip: "Wait for sync.",
+                                    },
+                                ]),
+                            )],
+                        );
+                        if action != AppAction::None {
+                            *last_action = action;
+                        }
+                    },
+                    AppAction::None,
+                );
+            harness.ctx.set_visuals(if dark {
+                egui::Visuals::dark()
+            } else {
+                egui::Visuals::light()
+            });
+            harness.run();
+            assert!(harness.query_by_label("Import key").is_none());
+            harness.get_by_label("Advanced ▾").click();
+            harness.run();
+            assert!(
+                harness
+                    .get_by_label("Full resync")
+                    .accesskit_node()
+                    .is_disabled()
+            );
+            harness.get_by_label("Import key").click();
+            harness.run();
+            assert_eq!(harness.state(), &AppAction::Custom("import".into()));
+            assert!(harness.query_by_label("Import key").is_none());
+        }
+    }
 
     /// TC-WALLETLINK-02: the Wallets page's spec exposes an **interactive**
     /// (`Consumed`) wallet pill with no how-to tooltip — the pill drives the

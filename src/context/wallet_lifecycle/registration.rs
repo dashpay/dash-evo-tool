@@ -53,10 +53,9 @@ impl AppContext {
         Ok((imported, wallet))
     }
 
-    /// Add-only, unprotected import of `wif` for recovery paths: imports
-    /// nothing and returns `Ok(None)` when this install already holds the
-    /// key's secret or details, so an existing (possibly protected) secret is
-    /// never overwritten. See
+    /// Add-only import of `wif` for recovery paths. Existing secrets are never
+    /// overwritten; missing public metadata can be repaired. Returns `Ok(None)`
+    /// when both secret and metadata are present. See
     /// [`SingleKeyView::import_wif_if_absent`](crate::wallet_backend::single_key::SingleKeyView::import_wif_if_absent).
     pub(crate) fn import_single_key_wif_if_absent(
         &self,

@@ -162,7 +162,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- Restore signing and missing-key recovery for legacy HASH160 identity keys whose saved metadata contains a compressed public key, including profiles migrated by earlier versions; cover mainnet migration and restore with an operator-authorized database and verified signatures from four wallet-derived keys and an imported ECDSA key.
+- Restoring imported keys remains recoverable after interrupted storage writes
+  and reports unreadable protected keys. Startup migration preserves existing
+  keys, seeds, and their password protection.
 
 - Updating from v0.9.x carries mainnet wallets and imported keys across, and
   "Restore from Previous Version" finds mainnet data those versions saved.
@@ -185,6 +187,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   password prompt closed, password needed in the app window, or key missing —
   with what to do next. The identity, key and wallet involved are kept in the
   technical details.
+
+- The Identities page lets you load an existing identity when you already have
+  identities. A new "Add" menu in the top bar offers "Create a new identity" and
+  "Load an existing identity", and the "Add a new identity" card now offers both
+  choices instead of opening only identity creation.
 
 - Token detail headers sort rows by identity name, identity ID, or numeric balance;
   unchecked balances stay last in either direction.

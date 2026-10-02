@@ -2363,7 +2363,16 @@ impl WalletsBalancesScreen {
         match crate::backend_task::migration::single_key_restore::list_pending_protected_restores(
             &self.app_context,
         ) {
-            Ok(list) => self.pending_protected_restores = list,
+            Ok(list) => {
+                self.pending_protected_restores = list.pending;
+                if list.unreadable > 0 {
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        "Some imported keys saved by the earlier version could not be read. Import those keys again from your backup.",
+                        MessageType::Warning,
+                    );
+                }
+            }
             Err(e) => {
                 tracing::warn!(
                     error = ?e,

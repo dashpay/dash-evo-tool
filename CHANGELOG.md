@@ -162,6 +162,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Weekly releases use the latest completed push results for tests and Clippy,
+  so scheduled checks cannot hide a failing test suite.
+
 - Restoring imported keys remains recoverable after interrupted storage writes
   and reports unreadable protected keys. Startup migration preserves existing
   keys, seeds, and their password protection.
@@ -274,8 +277,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Removing a wallet deletes its cached identity public keys right away, and a
   key-slot load that finishes after the removal no longer stores them again.
-- The dedicated migration CI workflow runs archived-profile checks without
-  repeating the helper tests and bundled migration covered by the main suite.
 
 - Migration fixture coverage skips historical non-SemVer release tags instead
   of failing to parse them and blocking weekly builds. Missing fixtures for
@@ -649,6 +650,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   says plainly that the rate shown is fixed rather than read from the network.
 
 ### Changed
+
+- CI shares one build between the regular tests and migration checks, then runs
+  both suites in parallel.
 
 - User identities use their DashPay Display name on cards, navigation, and selectors, falling back to a username or shortened identity ID. The identity-list tool reports cached profile display names for User identities and preserves administrative node names.
 

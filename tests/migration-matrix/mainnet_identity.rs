@@ -13,7 +13,6 @@ use dash_evo_tool::model::qualified_identity::QualifiedIdentity;
 use dash_evo_tool::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
 use dash_evo_tool::utils::egui_mpsc::SenderAsync;
 use dash_evo_tool::utils::tasks::TaskManager;
-use dash_evo_tool::wallet_backend::KV_SCHEMA_VERSION;
 use dash_evo_tool::wallet_backend::{DetScope, IdentityKeyView};
 use dash_sdk::dpp::dashcore::{Network, signer};
 use dash_sdk::dpp::identity::KeyType;
@@ -23,7 +22,7 @@ use dash_sdk::dpp::identity::signer::Signer;
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 
-use crate::public_identities::StoredIdentity;
+use crate::identity_storage::{self, IDENTITY_KEY, StoredIdentity};
 use crate::{DEFAULT_BOOT_TIMEOUT, assertions, cli, manifest::Fixture, stage};
 
 const CAPTURE: &[u8] =
@@ -41,8 +40,35 @@ fn mainnet_imported_key_fixture_is_the_authorized_capture() {
     );
 }
 
+const NETWORK: Network = Network::Mainnet;
+const WALLET_ALIAS: &str = "e2e-test-mainnet";
+const WALLET_IDENTITY_INDEX: u32 = 3;
+const KEY_COUNT: usize = 5;
+const IMPORTED_KEY_ID: u32 = 4;
+const COMPRESSED_PUBLIC_KEY_LEN: usize = 33;
+const HASH160_LEN: usize = 20;
+
+#[derive(Clone, Copy, Debug)]
+enum Scenario {
+    FreshMigration,
+    RepairPreviousMigration,
+    RepeatAndRestoreMissingKeys,
+}
+
+#[derive(Clone, Copy)]
+enum KeyLayout {
+    Legacy,
+    Migrated,
+}
+
+struct LegacyIdentity {
+    bytes: Vec<u8>,
+    identity: QualifiedIdentity,
+    wallet_hash: [u8; 32],
+}
+
 async fn open_context(dir: &Path) -> (Arc<AppContext>, Arc<TaskManager>) {
-    let db = Database::new(dir.join("data.db")).unwrap();
+    let db = Database::new(dir.join(assertions::DATA_DB)).unwrap();
     db.execute("PRAGMA query_only = ON", []).unwrap();
     let tasks = Arc::new(TaskManager::default());
     let app_kv = AppContext::open_app_kv(dir).unwrap();
@@ -50,7 +76,7 @@ async fn open_context(dir: &Path) -> (Arc<AppContext>, Arc<TaskManager>) {
     app_kv
         .put(
             DetScope::Global,
-            &dapi_refresh_sentinel_key_for(Network::Mainnet),
+            &dapi_refresh_sentinel_key_for(NETWORK),
             &MigrationCompletion {
                 completed_at: 0,
                 sha: "offline-signing-test".into(),
@@ -60,7 +86,7 @@ async fn open_context(dir: &Path) -> (Arc<AppContext>, Arc<TaskManager>) {
         .unwrap();
     let context = AppContext::new(
         dir.to_path_buf(),
-        Network::Mainnet,
+        NETWORK,
         Arc::new(db),
         Arc::clone(&tasks),
         Default::default(),
@@ -79,72 +105,227 @@ async fn open_context(dir: &Path) -> (Arc<AppContext>, Arc<TaskManager>) {
 }
 
 fn stored_identity(dir: &Path) -> (Connection, StoredIdentity) {
-    let conn = Connection::open(dir.join("det-mainnet.sqlite")).unwrap();
-    let bytes: Vec<u8> = conn
-        .query_row(
-            "SELECT value FROM meta_identity WHERE key = 'det:identity:v1'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(bytes[0], KV_SCHEMA_VERSION);
-    let (stored, consumed) =
-        bincode::serde::decode_from_slice(&bytes[1..], bincode::config::standard()).unwrap();
-    assert_eq!(consumed, bytes.len() - 1);
-    (conn, stored)
+    let conn = Connection::open(dir.join(assertions::network_db_name(NETWORK))).unwrap();
+    let mut records = identity_storage::read_identities(&conn).unwrap();
+    assert_eq!(records.len(), 1);
+    (conn, records.remove(0).1)
 }
 
-#[test]
-fn mainnet_imported_key_fixture_migrates_and_signs() {
-    let original = CAPTURE;
-    if !cfg!(feature = "cli") && std::env::var_os(cli::BINARY_ENV).is_none() {
-        println!("Skipping mainnet CLI migration: enable cli or set DET_CLI_BIN");
-        return;
-    }
+fn stage_capture() -> stage::StagedFixture {
     let root = tempfile::tempdir().unwrap();
     let fixture: Fixture = serde_json::from_value(serde_json::json!({
         "id": "v11-mainnet-identity", "network": "mainnet",
         "expect": {"derive_address": false, "starting_db_version": 11},
-        "contents": {"wallets": [{"alias": "e2e-test-mainnet"}]}
+        "contents": {"wallets": [{"alias": WALLET_ALIAS}]}
     }))
     .unwrap();
     let source_dir = root.path().join(&fixture.id);
     std::fs::create_dir(&source_dir).unwrap();
-    std::fs::write(source_dir.join("data.db"), original).unwrap();
-    let staged = stage::stage(root.path(), &fixture).unwrap();
-    let data_db = staged.data_dir().join("data.db");
-    let legacy = Connection::open(&data_db).unwrap();
-    let (bytes, wallet_hash, wallet_index): (Vec<u8>, Vec<u8>, u32) = legacy
+    std::fs::write(source_dir.join(assertions::DATA_DB), CAPTURE).unwrap();
+    stage::stage(root.path(), &fixture).unwrap()
+}
+
+fn read_legacy_identity(data_db: &Path) -> LegacyIdentity {
+    let conn = Connection::open(data_db).unwrap();
+    let (bytes, wallet_hash, wallet_index): (Vec<u8>, Vec<u8>, u32) = conn
         .query_row("SELECT data, wallet, wallet_index FROM identity WHERE is_local = 1 AND network = 'dash'", [], |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?))
         }).unwrap();
-    let original_identity = QualifiedIdentity::from_bytes(&bytes).unwrap();
-    assert_eq!(wallet_index, 3);
-    assert_eq!(original_identity.identity.public_keys().len(), 5);
-    assert_eq!(original_identity.private_keys.len(), 5);
-    for (_, (key, data)) in original_identity.private_keys.iter() {
-        if key.identity_public_key.id() == 4 {
-            assert_eq!(key.identity_public_key.key_type(), KeyType::ECDSA_SECP256K1);
-            let PrivateKeyData::Clear(secret) = data else {
-                panic!("captured imported key must be plaintext")
-            };
-            assert_eq!(hex::encode(secret), IMPORTED_PRIVATE_KEY);
-        } else {
-            assert!(matches!(data, PrivateKeyData::AtWalletDerivationPath(_)));
-            assert_eq!(key.identity_public_key.key_type(), KeyType::ECDSA_HASH160);
-        }
-        assert_eq!(key.identity_public_key.data().len(), 33);
+    assert_eq!(wallet_index, WALLET_IDENTITY_INDEX);
+    LegacyIdentity {
+        identity: QualifiedIdentity::from_bytes(&bytes).unwrap(),
+        bytes,
+        wallet_hash: wallet_hash.try_into().unwrap(),
     }
-    drop(legacy);
+}
 
+fn assert_key_layout(identity: &QualifiedIdentity, source: &QualifiedIdentity, layout: KeyLayout) {
+    assert_eq!(identity.identity, source.identity);
+    assert_eq!(identity.identity.public_keys().len(), KEY_COUNT);
+    assert_eq!(identity.private_keys.len(), KEY_COUNT);
+    assert_eq!(
+        identity.private_keys.keys_set(),
+        source.private_keys.keys_set()
+    );
+    for ((placement, (key, data)), (_, (_, original_data))) in
+        identity.private_keys.iter().zip(source.private_keys.iter())
+    {
+        let public_key = &key.identity_public_key;
+        assert_eq!(public_key.id(), placement.1);
+        let expected_len = if public_key.id() == IMPORTED_KEY_ID {
+            assert_eq!(public_key.key_type(), KeyType::ECDSA_SECP256K1);
+            match layout {
+                KeyLayout::Legacy => {
+                    let PrivateKeyData::Clear(secret) = data else {
+                        panic!("captured imported key must be plaintext")
+                    };
+                    assert_eq!(hex::encode(secret), IMPORTED_PRIVATE_KEY);
+                }
+                KeyLayout::Migrated => assert!(matches!(data, PrivateKeyData::InVault)),
+            }
+            COMPRESSED_PUBLIC_KEY_LEN
+        } else {
+            assert_eq!(public_key.key_type(), KeyType::ECDSA_HASH160);
+            assert!(matches!(data, PrivateKeyData::AtWalletDerivationPath(_)));
+            assert!(
+                data == original_data,
+                "wallet derivation references must survive unchanged"
+            );
+            match layout {
+                KeyLayout::Legacy => COMPRESSED_PUBLIC_KEY_LEN,
+                KeyLayout::Migrated => HASH160_LEN,
+            }
+        };
+        assert_eq!(public_key.data().len(), expected_len);
+    }
+}
+
+fn boot_cli(cli: &cli::DetCli) {
+    let run = cli.wallets_list(DEFAULT_BOOT_TIMEOUT).unwrap();
+    assertions::check_boot(&run, "core-wallets-list").unwrap();
+    assertions::check_wallets(&[WALLET_ALIAS.to_owned()], &run).unwrap();
+    let info = cli.network_info(DEFAULT_BOOT_TIMEOUT).unwrap();
+    assertions::check_network(NETWORK, &info).unwrap();
+}
+
+fn restore_legacy_snapshots(dir: &Path, source: &LegacyIdentity) {
+    // Preserve completed drain markers while simulating an earlier broken upgrade.
+    let (conn, mut stored) = stored_identity(dir);
+    stored.qi_bytes = source.bytes.clone();
+    assert_eq!(
+        conn.execute(
+            "UPDATE meta_identity SET value = ?1 WHERE key = ?2",
+            rusqlite::params![stored.encode().unwrap(), IDENTITY_KEY],
+        )
+        .unwrap(),
+        1
+    );
+}
+
+async fn restore_missing_keys(context: &Arc<AppContext>, source: &LegacyIdentity) {
+    let mut damaged = context.load_local_qualified_identities().unwrap().remove(0);
+    // Remove actual vault bytes so surviving secrets cannot mask a failed restore.
+    let secrets = context.secret_store();
+    let keys = IdentityKeyView::new(&secrets, damaged.identity.id().to_buffer());
+    for ((target, id), (_, data)) in damaged.private_keys.iter() {
+        if matches!(data, PrivateKeyData::InVault) {
+            keys.delete(target, *id).unwrap();
+            assert!(keys.get(target, *id).unwrap().is_none());
+        }
+    }
+    damaged.private_keys = Default::default();
+    context.update_local_qualified_identity(&damaged).unwrap();
+    context
+        .wallet_backend()
+        .unwrap()
+        .wallet_seeds()
+        .delete_raw(&source.wallet_hash)
+        .unwrap();
+    let result = context
+        .run_migration_task(MigrationTask::RestoreFromPreviousVersion)
+        .await
+        .unwrap();
+    let BackendTaskSuccessResult::PreviousVersionRestored(summary) = result else {
+        panic!("restore summary")
+    };
+    assert_eq!(summary.wallets_restored, 1);
+    assert_eq!(summary.identity_keys_restored as usize, KEY_COUNT);
+    assert!(!summary.has_problems());
+}
+
+async fn verify_signatures(identity: &QualifiedIdentity, scenario: Scenario) {
+    for key in identity.identity.public_keys().values() {
+        if key.id() == IMPORTED_KEY_ID {
+            let (_, secret) = identity
+                .resolve_private_key_bytes(key)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(hex::encode(*secret), IMPORTED_PRIVATE_KEY);
+        }
+        assert!(
+            identity.can_sign_with(key),
+            "key {} must remain available",
+            key.id()
+        );
+        let message = format!(
+            "DET offline migration check: {scenario:?}, key {}",
+            key.id()
+        );
+        let signature = identity.sign(key, message.as_bytes()).await.unwrap();
+        let verify = |data: &[u8]| match key.key_type() {
+            KeyType::ECDSA_SECP256K1 => {
+                signer::verify_data_signature(data, signature.as_slice(), key.data().as_slice())
+            }
+            KeyType::ECDSA_HASH160 => signer::verify_hash_signature(
+                &signer::double_sha(data),
+                signature.as_slice(),
+                key.data().as_slice(),
+            ),
+            other => panic!("unexpected captured key type: {other:?}"),
+        };
+        verify(message.as_bytes())
+            .unwrap_or_else(|error| panic!("{scenario:?}, key {}: {error}", key.id()));
+        assert!(verify(b"different message").is_err());
+        println!(
+            "{scenario:?}: key {} ({:?}, {:?}) signature verified",
+            key.id(),
+            key.purpose(),
+            key.security_level()
+        );
+    }
+}
+
+async fn check_signing_copy(dir: &Path, source: &LegacyIdentity, scenario: Scenario) {
+    // In-process backend handles can retain advisory locks after shutdown.
+    // Sign from an exact copy so only CLI processes open the boot fixture.
+    let fixture: Fixture = serde_json::from_value(serde_json::json!({
+        "id": dir.file_name().unwrap().to_str().unwrap(), "network": "mainnet"
+    }))
+    .unwrap();
+    let copy = stage::stage(dir.parent().unwrap(), &fixture).unwrap();
+    let (context, tasks) = open_context(copy.data_dir()).await;
+    if matches!(scenario, Scenario::RepeatAndRestoreMissingKeys) {
+        restore_missing_keys(&context, source).await;
+    }
+    let identities = context.load_local_qualified_identities().unwrap();
+    assert_eq!(identities.len(), 1);
+    let identity = &identities[0];
+    assert_key_layout(identity, &source.identity, KeyLayout::Migrated);
+    assert_eq!(identity.wallet_index, Some(WALLET_IDENTITY_INDEX));
+    assert_eq!(identity.network, NETWORK);
+    assert_eq!(identity.associated_wallets.len(), 1);
+    assert!(
+        identity
+            .associated_wallets
+            .contains_key(source.wallet_hash.as_slice())
+    );
+    verify_signatures(identity, scenario).await;
+    context.wallet_backend().unwrap().shutdown().await;
+    tasks.shutdown_async().await.unwrap();
+}
+
+#[test]
+fn mainnet_imported_key_fixture_migrates_and_signs() {
+    if !cfg!(feature = "cli") && std::env::var_os(cli::BINARY_ENV).is_none() {
+        println!("Skipping mainnet CLI migration: enable cli or set DET_CLI_BIN");
+        return;
+    }
+    let staged = stage_capture();
+    let data_db = staged.data_dir().join(assertions::DATA_DB);
+    let source = read_legacy_identity(&data_db);
+    assert_key_layout(&source.identity, &source.identity, KeyLayout::Legacy);
     let cli = cli::DetCli::new(&staged).unwrap();
     let mut canonical_bytes = None;
-    for boot in 1..=3 {
-        let run = cli.wallets_list(DEFAULT_BOOT_TIMEOUT).unwrap();
-        assertions::check_boot(&run, "core-wallets-list").unwrap();
-        assertions::check_wallets(&["e2e-test-mainnet".to_owned()], &run).unwrap();
-        let info = cli.network_info(DEFAULT_BOOT_TIMEOUT).unwrap();
-        assertions::check_network(Network::Mainnet, &info).unwrap();
+    for scenario in [
+        Scenario::FreshMigration,
+        Scenario::RepairPreviousMigration,
+        Scenario::RepeatAndRestoreMissingKeys,
+    ] {
+        if matches!(scenario, Scenario::RepairPreviousMigration) {
+            restore_legacy_snapshots(staged.data_dir(), &source);
+        }
+        boot_cli(&cli);
         let (_, stored) = stored_identity(staged.data_dir());
         if let Some(expected) = &canonical_bytes {
             assert!(
@@ -155,161 +336,17 @@ fn mainnet_imported_key_fixture_migrates_and_signs() {
             canonical_bytes = Some(stored.qi_bytes.clone());
         }
         let persisted = QualifiedIdentity::from_bytes(&stored.qi_bytes).unwrap();
-        assert_eq!(persisted.private_keys.len(), 5);
-        for (key, data) in persisted.private_keys.values() {
-            if key.identity_public_key.id() == 4 {
-                assert!(matches!(data, PrivateKeyData::InVault));
-                assert_eq!(key.identity_public_key.data().len(), 33);
-            } else {
-                assert_eq!(key.identity_public_key.data().len(), 20);
-            }
-        }
-
-        // In-process backend handles can retain advisory locks after shutdown.
-        // Sign from an exact copy so only CLI processes open the boot fixture.
-        let snapshot_fixture: Fixture = serde_json::from_value(serde_json::json!({
-            "id": staged.data_dir().file_name().unwrap().to_str().unwrap(),
-            "network": "mainnet"
-        }))
-        .unwrap();
-        let signing_copy =
-            stage::stage(staged.data_dir().parent().unwrap(), &snapshot_fixture).unwrap();
-
+        assert_key_layout(&persisted, &source.identity, KeyLayout::Migrated);
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
             .build()
             .unwrap();
-        runtime.block_on(async {
-            let (context, tasks) = open_context(signing_copy.data_dir()).await;
-            if boot == 3 {
-                let mut damaged = context.load_local_qualified_identities().unwrap().remove(0);
-                // Remove the actual vault bytes too: restoring metadata alone
-                // must not accidentally pass by reusing a surviving secret.
-                let secrets = context.secret_store();
-                let keys = IdentityKeyView::new(&secrets, damaged.identity.id().to_buffer());
-                for ((target, id), (_, data)) in damaged.private_keys.iter() {
-                    if matches!(data, PrivateKeyData::InVault) {
-                        keys.delete(target, *id).unwrap();
-                        assert!(keys.get(target, *id).unwrap().is_none());
-                    }
-                }
-                damaged.private_keys = Default::default();
-                context.update_local_qualified_identity(&damaged).unwrap();
-                context
-                    .wallet_backend()
-                    .unwrap()
-                    .wallet_seeds()
-                    .delete_raw(&wallet_hash.clone().try_into().unwrap())
-                    .unwrap();
-                let result = context
-                    .run_migration_task(MigrationTask::RestoreFromPreviousVersion)
-                    .await
-                    .unwrap();
-                let BackendTaskSuccessResult::PreviousVersionRestored(summary) = result else {
-                    panic!("restore summary")
-                };
-                assert_eq!(summary.wallets_restored, 1);
-                assert_eq!(summary.identity_keys_restored, 5);
-                assert!(!summary.has_problems());
-            }
-            let identities = context.load_local_qualified_identities().unwrap();
-            assert_eq!(identities.len(), 1);
-            let identity = &identities[0];
-            assert_eq!(identity.identity, original_identity.identity);
-            assert_eq!(identity.wallet_index, Some(wallet_index));
-            assert_eq!(identity.network, Network::Mainnet);
-            assert_eq!(identity.associated_wallets.len(), 1);
-            assert!(
-                identity
-                    .associated_wallets
-                    .contains_key(wallet_hash.as_slice())
-            );
-            assert_eq!(
-                identity.private_keys.keys_set(),
-                original_identity.private_keys.keys_set()
-            );
-            for ((placement, (key, data)), (original_placement, (_, original_data))) in identity
-                .private_keys
-                .iter()
-                .zip(original_identity.private_keys.iter())
-            {
-                assert_eq!(placement, original_placement);
-                if key.identity_public_key.id() == 4 {
-                    assert!(matches!(data, PrivateKeyData::InVault));
-                    assert_eq!(key.identity_public_key.data().len(), 33);
-                } else {
-                    assert!(
-                        data == original_data,
-                        "wallet derivation references must survive unchanged"
-                    );
-                    assert_eq!(key.identity_public_key.data().len(), 20);
-                }
-            }
-            for key in identity.identity.public_keys().values() {
-                if key.id() == 4 {
-                    let (_, secret) = identity
-                        .resolve_private_key_bytes(key)
-                        .await
-                        .unwrap()
-                        .unwrap();
-                    assert_eq!(hex::encode(*secret), IMPORTED_PRIVATE_KEY);
-                }
-                assert!(
-                    identity.can_sign_with(key),
-                    "key {} must remain available",
-                    key.id()
-                );
-                let message = format!("DET offline migration check: boot {boot}, key {}", key.id());
-                let signature = identity.sign(key, message.as_bytes()).await.unwrap();
-                let verify = |data: &[u8]| match key.key_type() {
-                    KeyType::ECDSA_SECP256K1 => signer::verify_data_signature(
-                        data,
-                        signature.as_slice(),
-                        key.data().as_slice(),
-                    ),
-                    KeyType::ECDSA_HASH160 => signer::verify_hash_signature(
-                        &signer::double_sha(data),
-                        signature.as_slice(),
-                        key.data().as_slice(),
-                    ),
-                    other => panic!("unexpected captured key type: {other:?}"),
-                };
-                verify(message.as_bytes())
-                    .unwrap_or_else(|error| panic!("boot {boot}, key {}: {error}", key.id()));
-                assert!(verify(b"different message").is_err());
-                println!(
-                    "boot {boot}: key {} ({:?}, {:?}) signature verified",
-                    key.id(),
-                    key.purpose(),
-                    key.security_level()
-                );
-            }
-            context.wallet_backend().unwrap().shutdown().await;
-            tasks.shutdown_async().await.unwrap();
-        });
+        runtime.block_on(check_signing_copy(staged.data_dir(), &source, scenario));
         drop(runtime);
         assert!(
-            std::fs::read(&data_db).unwrap() == original,
+            std::fs::read(&data_db).unwrap() == CAPTURE,
             "legacy database must stay byte-identical"
         );
-        if boot == 1 {
-            // An earlier upgrade imported the old snapshots but set all drain
-            // sentinels. The next boot must repair them without a fresh import.
-            let (conn, mut stored) = stored_identity(staged.data_dir());
-            stored.qi_bytes = bytes.clone();
-            let mut encoded = vec![KV_SCHEMA_VERSION];
-            encoded.extend(
-                bincode::serde::encode_to_vec(&stored, bincode::config::standard()).unwrap(),
-            );
-            assert_eq!(
-                conn.execute(
-                    "UPDATE meta_identity SET value = ?1 WHERE key = 'det:identity:v1'",
-                    [encoded]
-                )
-                .unwrap(),
-                1
-            );
-        }
     }
 }

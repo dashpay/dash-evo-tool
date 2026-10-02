@@ -326,6 +326,29 @@ impl From<BTreeMap<(PrivateKeyTarget, KeyID), (QualifiedIdentityPublicKey, Priva
     }
 }
 
+impl KeyStorage {
+    /// Canonicalize valid compressed public keys saved in legacy HASH160 snapshots.
+    pub(crate) fn normalize_legacy_hash160_keys(&mut self) -> bool {
+        use dash_sdk::dpp::dashcore::{PublicKey, hashes::Hash};
+        use dash_sdk::dpp::identity::KeyType;
+
+        let mut changed = false;
+        for (qualified, _) in self.private_keys.values_mut() {
+            let IdentityPublicKey::V0(key) = &mut qualified.identity_public_key else {
+                continue;
+            };
+            if key.key_type != KeyType::ECDSA_HASH160 || key.data.len() != 33 {
+                continue;
+            }
+            if let Ok(public) = PublicKey::from_slice(key.data.as_slice()) {
+                key.data = public.pubkey_hash().to_byte_array().to_vec().into();
+                changed = true;
+            }
+        }
+        changed
+    }
+}
+
 impl From<BTreeMap<(PrivateKeyTarget, KeyID), (QualifiedIdentityPublicKey, [u8; 32])>>
     for KeyStorage
 {
@@ -961,6 +984,86 @@ mod tests {
     use std::collections::BTreeMap;
 
     use crate::wallet_backend::leak_test_support::{assert_no_leak_bytes, distinctive_secret_32};
+
+    #[test]
+    fn legacy_hash160_normalization_preserves_key_identity_and_is_idempotent() {
+        use dash_sdk::dpp::dashcore::{PublicKey, hashes::Hash};
+        use dash_sdk::dpp::identity::KeyType;
+
+        let public = PublicKey::from_slice(
+            &hex::decode("037a73e2f4ca866e238844256f04d6ec555c0d241f5cf5dbf890a771067a538915")
+                .unwrap(),
+        )
+        .unwrap();
+        let IdentityPublicKey::V0(mut legacy) =
+            IdentityPublicKey::random_key(0, Some(1), PlatformVersion::latest())
+        else {
+            panic!("V0 key");
+        };
+        legacy.key_type = KeyType::ECDSA_HASH160;
+        legacy.purpose = Purpose::AUTHENTICATION;
+        legacy.data = public.to_bytes().into();
+        let mut canonical = legacy.clone();
+        canonical.data = public.pubkey_hash().to_byte_array().to_vec().into();
+        let canonical = IdentityPublicKey::V0(canonical);
+        let mut storage = KeyStorage::from(BTreeMap::from([(
+            (PrivateKeyTarget::PrivateKeyOnMainIdentity, 0),
+            (
+                QualifiedIdentityPublicKey::from(IdentityPublicKey::V0(legacy)),
+                PrivateKeyData::InVault,
+            ),
+        )]));
+        assert!(storage.candidates(&canonical).next().is_none());
+        assert!(storage.normalize_legacy_hash160_keys());
+        assert_eq!(storage.candidates(&canonical).count(), 1);
+        let (stored, secret) = storage.values().next().unwrap();
+        assert_eq!(stored.identity_public_key, canonical);
+        assert!(matches!(secret, PrivateKeyData::InVault));
+        assert!(!storage.normalize_legacy_hash160_keys());
+        let IdentityPublicKey::V0(mut different) = canonical else {
+            unreachable!()
+        };
+        different.purpose = Purpose::TRANSFER;
+        assert!(
+            storage
+                .candidates(&IdentityPublicKey::V0(different))
+                .next()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn legacy_hash160_normalization_leaves_other_and_malformed_keys_unchanged() {
+        use dash_sdk::dpp::identity::KeyType;
+
+        for (key_type, data) in [
+            (KeyType::ECDSA_HASH160, vec![0; 33]),
+            (KeyType::ECDSA_HASH160, vec![1; 20]),
+            (
+                KeyType::ECDSA_SECP256K1,
+                hex::decode("037a73e2f4ca866e238844256f04d6ec555c0d241f5cf5dbf890a771067a538915")
+                    .unwrap(),
+            ),
+        ] {
+            let IdentityPublicKey::V0(mut key) =
+                IdentityPublicKey::random_key(0, Some(1), PlatformVersion::latest())
+            else {
+                panic!("V0 key")
+            };
+            key.key_type = key_type;
+            key.data = data.into();
+            let mut storage = KeyStorage::from(BTreeMap::from([(
+                (PrivateKeyTarget::PrivateKeyOnMainIdentity, 0),
+                (
+                    QualifiedIdentityPublicKey::from(IdentityPublicKey::V0(key)),
+                    PrivateKeyData::InVault,
+                ),
+            )]));
+            let original = storage.clone();
+            assert!(!storage.normalize_legacy_hash160_keys());
+            assert_eq!(storage, original);
+        }
+    }
 
     /// A recognizable 32-byte secret. Delegates to the shared
     /// [`distinctive_secret_32`] so the seam / sidecar / QI-blob leak cases

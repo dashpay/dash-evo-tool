@@ -21,6 +21,7 @@ on:
       - "tests/migration-fixtures/manifest.json"
       - "tests/migration-fixtures/v0.9.3-public-identities/data.sql"
       - "tests/migration-fixtures/v0.9.3-public-identities/expected.json"
+      - "tests/migration-fixtures/v11-mainnet-identity/data-with-imported-key.db"
       - ".github/workflows/tests.yml"
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]

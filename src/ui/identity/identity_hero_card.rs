@@ -185,7 +185,7 @@ pub struct IdentityHeroCard {
     avatar_decode_ok: bool,
     /// A DPNS username the identity has requested but not yet been awarded.
     /// When set and no owned `dpns_handle` exists, the hero shows the requested
-    /// name with a "Pending" pill instead of the `No username yet` prompt.
+    /// name with a phase pill instead of the `No username yet` prompt.
     pending_username: Option<UsernameRequest>,
 }
 
@@ -356,7 +356,7 @@ impl IdentityHeroCard {
                         }
                         (None, Some(pending)) => {
                             // Requested but not yet awarded — show the requested
-                            // name with a `Pending` pill so it is not mistaken
+                            // name with a phase pill so it is not mistaken
                             // for "no username requested".
                             self.paint_pending_username_line(ui, dark_mode, pending);
                         }
@@ -537,7 +537,7 @@ impl IdentityHeroCard {
     }
 
     /// Paint the pending-username line: the requested `@name` (muted, italic to
-    /// signal it is not yet final) followed by a shared `Pending` pill whose
+    /// signal it is not yet final) followed by a shared phase pill whose
     /// tooltip carries the estimated ready time.
     fn paint_pending_username_line(&self, ui: &mut Ui, dark_mode: bool, pending: &UsernameRequest) {
         let name =
@@ -760,7 +760,7 @@ mod tests {
         assert!(hero.pending_username.is_none());
     }
 
-    /// The pending variant renders the requested name with a `Pending` pill and
+    /// The pending variant renders the requested name with a phase pill and
     /// suppresses the misleading `No username yet` prompt.
     #[test]
     fn hero_pending_variant_shows_pill_not_pick_username_prompt() {
@@ -778,9 +778,11 @@ mod tests {
 
         assert!(
             harness
-                .query_by_label(pill::PENDING_USERNAME_PILL_LABEL)
+                .query_by_label(crate::ui::identity::username_copy::phase_label(
+                    crate::model::dpns_usernames::RequestPhase::Joinable
+                ))
                 .is_some(),
-            "pending hero must render the 'Pending' pill"
+            "pending hero must render the phase pill"
         );
         assert!(
             harness.query_by_label("No username yet").is_none(),
@@ -788,7 +790,7 @@ mod tests {
         );
     }
 
-    /// An owned DPNS name always wins: no `Pending` pill even if a pending
+    /// An owned DPNS name always wins: no phase pill even if a pending
     /// request is also attached.
     #[test]
     fn hero_owned_handle_wins_over_pending() {
@@ -810,7 +812,9 @@ mod tests {
         );
         assert!(
             harness
-                .query_by_label(pill::PENDING_USERNAME_PILL_LABEL)
+                .query_by_label(crate::ui::identity::username_copy::phase_label(
+                    crate::model::dpns_usernames::RequestPhase::Joinable
+                ))
                 .is_none(),
             "owned name must suppress the pending pill"
         );

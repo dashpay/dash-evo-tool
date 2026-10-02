@@ -381,7 +381,12 @@ impl AppContext {
 
     async fn ensure_dpns_vote_recovery(self: &Arc<Self>, sdk: &Sdk) -> Result<(), TaskError> {
         let mut recovered = self.dpns_vote_recovery.lock().await;
-        if *recovered {
+        if recovered.initialized {
+            for (operation_id, keys) in recovered.pending.clone() {
+                self.recover_idle_dpns_vote_targets(operation_id, &keys)
+                    .await?;
+                recovered.pending.remove(&operation_id);
+            }
             return Ok(());
         }
         self.migrate_dpns_vote_operations()?;
@@ -403,7 +408,7 @@ impl AppContext {
                     .await?;
             }
         }
-        *recovered = true;
+        recovered.initialized = true;
         Ok(())
     }
 
@@ -772,6 +777,8 @@ impl AppContext {
                 let operation_id = operation.id;
                 let contests = Arc::clone(&contests);
                 async move {
+                    // Every claim, including missing-voter cleanup, shares recovery's gate.
+                    let _dispatch_guard = app_context.dpns_vote_dispatch.acquire(voter_id).await?;
                     let Some(voter) = voter else {
                         let mut scheduled_voter_missing = false;
                         for target in targets {
@@ -795,7 +802,6 @@ impl AppContext {
 
                     // One voter's targets are deliberately sequential: PutVote
                     // obtains and consumes the same masternode nonce.
-                    let _dispatch_guard = app_context.dpns_vote_dispatch.acquire(voter_id).await?;
                     for target in targets {
                         if !app_context.claim_dpns_vote_target(operation_id, &target.key)? {
                             continue;
@@ -983,14 +989,35 @@ impl AppContext {
         result
     }
 
+    /// Cleanup cannot release a claim while an executor still owns its voter gate.
+    /// Acquire only one gate at a time, then the journal lock; never the reverse.
+    async fn recover_idle_dpns_vote_targets(
+        &self,
+        operation_id: DpnsVoteOperationId,
+        keys: &BTreeSet<DpnsVoteTargetKey>,
+    ) -> Result<(), TaskError> {
+        let voters: BTreeSet<_> = keys.iter().map(|key| key.voter_id).collect();
+        for voter_id in voters {
+            let _dispatch_guard = self.dpns_vote_dispatch.acquire(voter_id).await?;
+            let voter_keys = keys
+                .iter()
+                .filter(|key| key.voter_id == voter_id)
+                .cloned()
+                .collect();
+            self.recover_interrupted_dpns_vote_operation(operation_id, &voter_keys)?;
+        }
+        Ok(())
+    }
+
     async fn recover_failed_dpns_vote_operation(
         &self,
         operation_id: DpnsVoteOperationId,
         keys: &BTreeSet<DpnsVoteTargetKey>,
         original_error: &TaskError,
     ) {
-        if let Err(recovery_error) =
-            self.recover_interrupted_dpns_vote_operation(operation_id, keys)
+        if let Err(recovery_error) = self
+            .recover_idle_dpns_vote_targets(operation_id, keys)
+            .await
         {
             tracing::error!(
                 error = %recovery_error,
@@ -998,7 +1025,13 @@ impl AppContext {
                 operation_id = %operation_id,
                 "Failed to persist recovery for an interrupted DPNS vote operation"
             );
-            *self.dpns_vote_recovery.lock().await = false;
+            self.dpns_vote_recovery
+                .lock()
+                .await
+                .pending
+                .entry(operation_id)
+                .or_default()
+                .extend(keys.iter().cloned());
         }
     }
 
@@ -2418,16 +2451,16 @@ mod tests {
                 .await
                 .is_err()
         );
-        assert!(!*context.dpns_vote_recovery.lock().await);
+        assert!(!context.dpns_vote_recovery.lock().await.initialized);
         context
             .ensure_dpns_vote_recovery(&context.sdk())
             .await
             .unwrap();
-        assert!(*context.dpns_vote_recovery.lock().await);
+        assert!(context.dpns_vote_recovery.lock().await.initialized);
     }
 
     #[tokio::test]
-    async fn direct_dispatch_terminal_write_failure_rearms_global_recovery() {
+    async fn followup_failed_scoped_recovery_preserves_other_live_claims() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let store = Arc::new(crate::wallet_backend::kv_test_support::FailingKv::default());
         let context = crate::context::test_support::test_app_context_with_kv(
@@ -2462,7 +2495,44 @@ mod tests {
         context
             .insert_dpns_vote_operation(&mut operation, None)
             .expect("persist in-flight operation");
-        *context.dpns_vote_recovery.lock().await = true;
+        context.dpns_vote_recovery.lock().await.initialized = true;
+        let mut live = operation.clone();
+        live.id = DpnsVoteOperation::new(Vec::new()).id;
+        live.targets[0].target.key.voter_id = Identifier::from([3; 32]);
+        let live_key = live.targets[0].target.key.clone();
+        context.insert_dpns_vote_operation(&mut live, None).unwrap();
+        let _live_guard = context
+            .dpns_vote_dispatch
+            .acquire(live_key.voter_id)
+            .await
+            .unwrap();
+        let own_guard = context
+            .dpns_vote_dispatch
+            .acquire(target_key.voter_id)
+            .await
+            .unwrap();
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(20),
+                context.recover_idle_dpns_vote_targets(
+                    operation_id,
+                    &BTreeSet::from([target_key.clone()])
+                ),
+            )
+            .await
+            .is_err(),
+            "recovery must wait for this target's live executor"
+        );
+        assert_eq!(
+            context
+                .dpns_vote_operation(operation_id)
+                .unwrap()
+                .unwrap()
+                .targets[0]
+                .status,
+            DpnsVoteTargetStatus::Submitting
+        );
+        drop(own_guard);
         store.fail_next_puts_containing(&operation_id.to_string(), 2);
 
         let terminal_error = context
@@ -2481,7 +2551,6 @@ mod tests {
             )
             .await;
 
-        assert!(!*context.dpns_vote_recovery.lock().await);
         assert_eq!(
             context
                 .dpns_vote_operation(operation_id)
@@ -2492,10 +2561,40 @@ mod tests {
             DpnsVoteTargetStatus::Submitting
         );
 
-        context
-            .ensure_dpns_vote_recovery(&context.sdk())
-            .await
-            .expect("the re-armed recovery pass must succeed");
+        store.fail_next_puts_containing(&operation_id.to_string(), 1);
+        assert!(
+            context
+                .ensure_dpns_vote_recovery(&context.sdk())
+                .await
+                .is_err()
+        );
+        assert!(
+            context
+                .dpns_vote_recovery
+                .lock()
+                .await
+                .pending
+                .get(&operation_id)
+                .is_some_and(|keys| keys.contains(&target_key)),
+            "failed persistence must retain recovery keys"
+        );
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            context.ensure_dpns_vote_recovery(&context.sdk()),
+        )
+        .await
+        .expect("unrelated live voter cannot block scoped recovery")
+        .unwrap();
+        assert_eq!(
+            context
+                .dpns_vote_operation(live.id)
+                .unwrap()
+                .unwrap()
+                .targets[0]
+                .status,
+            DpnsVoteTargetStatus::Submitting,
+            "recovery cannot release an unrelated live claim"
+        );
         assert_eq!(
             context
                 .dpns_vote_operation(operation_id)

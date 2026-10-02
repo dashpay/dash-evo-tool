@@ -13,9 +13,6 @@ use eframe::egui::{
     Color32, CornerRadius, Frame, Margin, Response, RichText, Sense, Stroke, StrokeKind, Ui,
 };
 
-/// Label shown on the DPNS pending-registration pill.
-pub const PENDING_USERNAME_PILL_LABEL: &str = "Waiting for vote";
-
 /// Paint an inline pill: `label` in `accent`, on a 12%-accent fill with a 1px
 /// accent ring. `tooltip`, when present, is attached on hover. Returns the
 /// pill's [`Response`].
@@ -48,14 +45,14 @@ pub fn accent_pill(ui: &mut Ui, label: &str, accent: Color32, tooltip: Option<&s
     }
 }
 
-/// Paint the DPNS "Pending" pill for a username the identity has requested but
+/// Paint the request phase pill for a username the identity has requested but
 /// not yet been awarded. The hover tooltip carries the estimated ready time
 /// when known (see [`pending_username_tooltip`]).
 pub fn pending_username_pill(ui: &mut Ui, pending: &UsernameRequest) -> Response {
     let tooltip = pending_username_tooltip(pending);
     accent_pill(
         ui,
-        PENDING_USERNAME_PILL_LABEL,
+        crate::ui::identity::username_copy::phase_label(pending.phase),
         DashColors::WARNING_BRIGHT,
         Some(&tooltip),
     )
@@ -130,17 +127,22 @@ mod tests {
     }
 
     #[test]
-    fn pending_pill_renders_the_pending_label() {
-        let pending = waiting(None);
-        let mut harness = Harness::builder().build_ui(move |ui| {
-            pending_username_pill(ui, &pending);
-        });
-        harness.run();
-        assert!(
-            harness
-                .query_by_label(PENDING_USERNAME_PILL_LABEL)
-                .is_some(),
-            "the pending pill must render its '{PENDING_USERNAME_PILL_LABEL}' label"
-        );
+    fn followup_pending_pill_uses_the_request_phase() {
+        for phase in [
+            crate::model::dpns_usernames::RequestPhase::Joinable,
+            crate::model::dpns_usernames::RequestPhase::Voting,
+        ] {
+            let mut pending = waiting(None);
+            pending.phase = phase;
+            let mut harness = Harness::builder().build_ui(move |ui| {
+                pending_username_pill(ui, &pending);
+            });
+            harness.run();
+            assert!(
+                harness
+                    .query_by_label(crate::ui::identity::username_copy::phase_label(phase))
+                    .is_some()
+            );
+        }
     }
 }

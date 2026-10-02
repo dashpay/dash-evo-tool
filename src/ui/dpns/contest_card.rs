@@ -486,7 +486,9 @@ mod tests {
         let labels = BTreeMap::from([(Identifier::from([4; 32]), "mn-07".to_owned())]);
         assert_eq!(
             card_node_line(&card, &labels).as_deref(),
-            Some("Your nodes: 2 not voted · 1 voted: Abstain · mn-07 has no changes left")
+            Some(
+                "2 of your nodes have not voted. 1 of your nodes voted: Abstain. mn-07 has no changes left."
+            )
         );
     }
 

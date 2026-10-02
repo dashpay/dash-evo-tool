@@ -194,6 +194,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Refreshing owned usernames preserves concurrent identity alias and key edits.
+- Ambiguous vote broadcasts remain locked while their results are checked. Failed recovery
+  retries only affected targets and cannot release another active voter's claim.
+- Holding Enter cannot submit the vote confirmation. Scheduled vote errors release their
+  own controls during bulk submissions, and card refreshes show the shared progress state.
+- Username request badges reflect the joining and voting phases consistently, and voting
+  choices and feedback use shared labels and complete translation-ready sentences.
+
 - Returning from a successful identity top-up refreshes the balance on
   "Get a username" without clearing the chosen name or payment review.
 - Username registration stays blocked while its payment is in progress,

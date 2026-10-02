@@ -217,6 +217,53 @@ pub fn phase_label(phase: RequestPhase) -> &'static str {
     }
 }
 
+/// Complete timeline sentences for the request status page.
+pub fn requested_at_line(at: TimestampMillis) -> String {
+    format!("Requested on {date}.", date = format_date(at))
+}
+
+pub fn joining_timeline_line(end: TimestampMillis, joining: bool) -> String {
+    if joining {
+        format!(
+            "Open for other requests until {date}.",
+            date = format_date_time(end)
+        )
+    } else {
+        format!(
+            "Other requests could join until {date}.",
+            date = format_date(end)
+        )
+    }
+}
+
+pub fn voting_timeline_line(end: TimestampMillis, phase: RequestPhase) -> String {
+    match phase {
+        RequestPhase::Joinable => format!(
+            "The community vote will end around {date}.",
+            date = format_date_time(end)
+        ),
+        RequestPhase::Voting => format!(
+            "The community vote ends around {date}.",
+            date = format_date_time(end)
+        ),
+        _ => format!(
+            "The community vote ended on {date}.",
+            date = format_date(end)
+        ),
+    }
+}
+
+/// Result sentence on the request timeline.
+pub fn request_result_line(phase: RequestPhase) -> &'static str {
+    match phase {
+        RequestPhase::Joinable | RequestPhase::Voting => "Result: Not decided yet.",
+        RequestPhase::Won => "Result: The name is yours.",
+        RequestPhase::Lost => "Result: The name went to someone else.",
+        RequestPhase::Locked => "Result: The name is locked for good.",
+        RequestPhase::NoWinner => "Result: No one got the name.",
+    }
+}
+
 /// Second sentence of the Home request card.
 pub fn standing_line(standing: TallyStanding, others: usize) -> &'static str {
     match standing {

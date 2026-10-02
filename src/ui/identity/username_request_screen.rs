@@ -18,9 +18,7 @@ use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::identity::identity_pill::shorten_id;
 use crate::ui::identity::register_dpns_name_screen::status_line;
-use crate::ui::identity::username_copy::{
-    Tone, format_date, format_date_time, phase_label, what_happens_next,
-};
+use crate::ui::identity::username_copy::{Tone, format_date_time, phase_label, what_happens_next};
 use crate::ui::identity::usernames_card::register_action_for;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
@@ -95,19 +93,12 @@ impl UsernameRequestScreen {
             status_line(
                 ui,
                 Tone::Positive,
-                &format!("Requested {}", format_date(at)),
+                &super::username_copy::requested_at_line(at),
                 dark_mode,
             );
         }
         if let Some(join_end) = request.join_end {
-            let text = if joining {
-                format!(
-                    "Open for other requests until {}",
-                    format_date_time(join_end)
-                )
-            } else {
-                format!("Open for other requests. Ended {}.", format_date(join_end))
-            };
+            let text = super::username_copy::joining_timeline_line(join_end, joining);
             let tone = if joining {
                 Tone::Caution
             } else {
@@ -116,33 +107,22 @@ impl UsernameRequestScreen {
             status_line(ui, tone, &text, dark_mode);
         }
         if let Some(end) = request.end {
-            let (tone, text) = if done {
-                (
-                    Tone::Positive,
-                    format!("Community vote ended {}.", format_date(end)),
-                )
+            let tone = if done {
+                Tone::Positive
             } else if voting {
-                (
-                    Tone::Caution,
-                    format!("Community vote. Ends around {}.", format_date_time(end)),
-                )
+                Tone::Caution
             } else {
-                (
-                    Tone::Neutral,
-                    format!("Community vote until {}", format_date_time(end)),
-                )
+                Tone::Neutral
             };
+            let text = super::username_copy::voting_timeline_line(end, request.phase);
             status_line(ui, tone, &text, dark_mode);
         }
-        let (tone, result) = match request.phase {
-            RequestPhase::Joinable | RequestPhase::Voting => {
-                (Tone::Neutral, "Result: Not decided yet.")
-            }
-            RequestPhase::Won => (Tone::Positive, "Result: The name is yours."),
-            RequestPhase::Lost => (Tone::Negative, "Result: The name went to someone else."),
-            RequestPhase::Locked => (Tone::Negative, "Result: The name is locked for good."),
-            RequestPhase::NoWinner => (Tone::Negative, "Result: No one got the name."),
+        let tone = match request.phase {
+            RequestPhase::Joinable | RequestPhase::Voting => Tone::Neutral,
+            RequestPhase::Won => Tone::Positive,
+            RequestPhase::Lost | RequestPhase::Locked | RequestPhase::NoWinner => Tone::Negative,
         };
+        let result = super::username_copy::request_result_line(request.phase);
         status_line(ui, tone, result, dark_mode);
     }
 
@@ -175,11 +155,11 @@ impl UsernameRequestScreen {
                     ui.label(votes.to_string());
                     ui.end_row();
                 }
-                ui.label("Lock, so no one gets it");
+                ui.label(crate::ui::dpns::copy::vote_choice_label(dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice::Lock, None));
                 ui.label(lock_standing);
                 ui.label(tally.lock.to_string());
                 ui.end_row();
-                ui.label("Abstain");
+                ui.label(crate::ui::dpns::copy::vote_choice_label(dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice::Abstain, None));
                 ui.label("");
                 ui.label(tally.abstain.to_string());
                 ui.end_row();

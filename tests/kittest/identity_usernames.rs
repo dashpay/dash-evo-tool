@@ -465,11 +465,11 @@ fn request_status_page_explains_the_vote() {
         for text in [
             "Your request for @ali",
             "Requested ",
-            "Community vote. Ends around",
+            "The community vote ends around",
             "Result: Not decided yet.",
             "Leading",
             "Other request (",
-            "Lock, so no one gets it",
+            "Lock name",
             "Evonodes count as 4 votes.",
             "becomes yours automatically.",
             "the most recent request wins.",

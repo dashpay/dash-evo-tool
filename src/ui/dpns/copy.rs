@@ -5,7 +5,9 @@
 use crate::model::dpns_voting::composer::SkipReason;
 use crate::model::dpns_voting::operator::{ChangesLeft, NodeExclusion, TimeLeft};
 use crate::model::dpns_voting::progress::{NeedsAttention, ProgressCounts};
-use crate::model::dpns_voting::{DpnsVoteFailure, DpnsVoteTargetStatus};
+use crate::model::dpns_voting::{DpnsVoteFailure, DpnsVoteOperation, DpnsVoteTargetStatus};
+use crate::ui::MessageType;
+use std::collections::BTreeSet;
 
 /// Candidate choice with an identity handle, including when its name is unavailable.
 pub fn vote_choice_label(
@@ -145,39 +147,48 @@ pub const EVONODE_WEIGHT_HINT: &str = "Evonodes count as 4 votes.";
 
 /// One part of the node line: nodes that have not voted.
 pub fn not_voted_part(count: usize) -> String {
-    format!("{count} not voted")
+    match count {
+        1 => "1 of your nodes has not voted.".to_owned(),
+        count => format!("{count} of your nodes have not voted."),
+    }
 }
 
 /// One part of the node line: nodes that voted `choice`.
 pub fn voted_part(count: usize, choice_label: &str) -> String {
-    format!("{count} voted: {choice_label}")
+    match count {
+        1 => format!("1 of your nodes voted: {choice_label}."),
+        count => format!("{count} of your nodes voted: {choice_label}."),
+    }
 }
 
 /// One part of the node line: nodes out of changes, named when few.
 pub fn no_changes_part(names: &[String]) -> String {
     match names {
-        [one] => format!("{one} has no changes left"),
-        [first, second] => format!("{first} and {second} have no changes left"),
-        many => format!("{count} nodes have no changes left", count = many.len()),
+        [one] => format!("{one} has no changes left."),
+        [first, second] => format!("{first} and {second} have no changes left."),
+        many => format!("{count} nodes have no changes left.", count = many.len()),
     }
 }
 
 /// One part of the node line: nodes whose targets are being sent.
 pub fn sending_part(count: usize) -> String {
     match count {
-        1 => "1 sending".to_owned(),
-        count => format!("{count} sending"),
+        1 => "1 of your nodes is sending a vote.".to_owned(),
+        count => format!("{count} of your nodes are sending votes."),
     }
 }
 
 /// One part of the node line: nodes with a scheduled vote.
 pub fn scheduled_part(count: usize) -> String {
-    format!("{count} scheduled")
+    match count {
+        1 => "1 of your nodes has a scheduled vote.".to_owned(),
+        count => format!("{count} of your nodes have scheduled votes."),
+    }
 }
 
 /// The node line under a card's choices, from its parts.
 pub fn node_line(parts: &[String]) -> String {
-    format!("Your nodes: {parts}", parts = parts.join(" · "))
+    parts.join(" ")
 }
 
 /// Shown when picking a decision changes earlier votes (VOTE-FR-015).
@@ -206,61 +217,61 @@ pub fn sending_with_label(count: usize) -> String {
 
 /// Tray summary (VOTE-FR-086).
 pub fn tray_label(decisions: usize, transactions: usize) -> String {
-    let decisions = match decisions {
-        1 => "1 decision ready".to_owned(),
-        count => format!("{count} decisions ready"),
-    };
-    match transactions {
-        1 => format!("{decisions} · 1 transaction, one per node and name"),
-        count => format!("{decisions} · {count} transactions, one per node and name"),
+    match (decisions, transactions) {
+        (1, 1) => "1 decision ready · 1 transaction, one per node and name".to_owned(),
+        (1, transactions) => {
+            format!("1 decision ready · {transactions} transactions, one per node and name")
+        }
+        (decisions, 1) => {
+            format!("{decisions} decisions ready · 1 transaction, one per node and name")
+        }
+        (decisions, transactions) => format!(
+            "{decisions} decisions ready · {transactions} transactions, one per node and name"
+        ),
     }
 }
 
 /// Node-set chip (VOTE-FR-075).
 pub fn node_set_chip_label(set_name: &str, nodes: usize, weight: u32) -> String {
-    let nodes = match nodes {
-        1 => "1 node".to_owned(),
-        count => format!("{count} nodes"),
-    };
-    let votes = match weight {
-        1 => "1 vote".to_owned(),
-        weight => format!("{weight} votes"),
-    };
-    format!("Vote with: {set_name} · {nodes} · {votes}")
+    match (nodes, weight) {
+        (1, 1) => format!("Vote with: {set_name} · 1 node · 1 vote"),
+        (1, weight) => format!("Vote with: {set_name} · 1 node · {weight} votes"),
+        (nodes, 1) => format!("Vote with: {set_name} · {nodes} nodes · 1 vote"),
+        (nodes, weight) => format!("Vote with: {set_name} · {nodes} nodes · {weight} votes"),
+    }
 }
 
 /// Final batch banner (VOTE-FR-061): `{n} nodes voted on {d} names.`, with
 /// the still-checking count and VOTE-FR-064 guidance when `checking > 0`.
 pub fn batch_voted_line(nodes: usize, names: usize, checking: usize) -> String {
-    let voted = match (nodes, names) {
-        (1, 1) => "1 node voted on 1 name".to_owned(),
-        (1, names) => format!("1 node voted on {names} names"),
-        (nodes, 1) => format!("{nodes} nodes voted on 1 name"),
-        (nodes, names) => format!("{nodes} nodes voted on {names} names"),
-    };
-    match checking {
-        0 => format!("{voted}."),
-        1 => format!(
-            "{voted}; 1 is still being checked. Dash Evo Tool will keep checking. Do not submit it again."
-        ),
-        checking => format!(
-            "{voted}; {checking} are still being checked. Dash Evo Tool will keep checking. Do not submit them again."
-        ),
+    if checking > 0 {
+        return format!(
+            "Participating nodes: {nodes}. Names with confirmed votes: {names}. Votes still being checked: {checking}. Dash Evo Tool will keep checking. Do not submit the pending votes again."
+        );
+    }
+    match (nodes, names) {
+        (1, 1) => "1 node voted on 1 name.".to_owned(),
+        (1, names) => format!("1 node voted on {names} names."),
+        (nodes, 1) => format!("{nodes} nodes voted on 1 name."),
+        (nodes, names) => format!("{nodes} nodes voted on {names} names."),
     }
 }
 
 /// Drawer header (VOTE-FR-083).
 pub fn drawer_header(counts: ProgressCounts) -> String {
-    let casting = match counts.total {
-        1 => "Casting 1 vote".to_owned(),
-        total => format!("Casting {total} votes"),
-    };
-    format!(
-        "{casting} · {done} done · {sending} sending · {checking} being checked",
-        done = counts.done(),
-        sending = counts.sending,
-        checking = counts.checking,
-    )
+    let done = counts.done();
+    let ProgressCounts {
+        total,
+        sending,
+        checking,
+        ..
+    } = counts;
+    match total {
+        1 => format!("Casting 1 vote · {done} done · {sending} sending · {checking} being checked"),
+        total => format!(
+            "Casting {total} votes · {done} done · {sending} sending · {checking} being checked"
+        ),
+    }
 }
 
 /// Drawer row status (VOTE-FR-083/087).
@@ -282,23 +293,14 @@ pub fn progress_row_status(
 
 /// `Needs attention` summary (VOTE-FR-084).
 pub fn needs_attention_line(attention: NeedsAttention) -> String {
-    let mut parts = Vec::new();
-    match attention.checking {
-        0 => {}
-        1 => parts.push("1 vote is still being checked".to_owned()),
-        count => parts.push(format!("{count} votes are still being checked")),
-    }
-    match attention.failed {
-        0 => {}
-        1 => parts.push("1 vote failed".to_owned()),
-        count => parts.push(format!("{count} votes failed")),
-    }
-    match attention.missed_schedules {
-        0 => {}
-        1 => parts.push("1 scheduled vote was missed".to_owned()),
-        count => parts.push(format!("{count} scheduled votes were missed")),
-    }
-    format!("Needs attention: {parts}.", parts = parts.join(" · "))
+    let NeedsAttention {
+        checking,
+        failed,
+        missed_schedules,
+    } = attention;
+    format!(
+        "Votes still being checked: {checking}. Failed votes: {failed}. Missed scheduled votes: {missed_schedules}."
+    )
 }
 
 /// One part of the History `Your nodes voted` cell, e.g.
@@ -407,20 +409,21 @@ pub fn excluded_nodes_line(count: usize, exclusion: NodeExclusion) -> String {
 
 /// One skipped-reason line, e.g. `2 votes: no changes left (5 of 5 votes used)`.
 pub fn skipped_reason_line(count: usize, reason: SkipReason) -> String {
-    let votes = match count {
-        1 => "1 vote".to_owned(),
-        count => format!("{count} votes"),
-    };
-    let reason = match reason {
-        SkipReason::AlreadyVoted => "the node already voted this way",
-        SkipReason::NoChangesLeft => "no changes left (5 of 5 votes used)",
-        SkipReason::VoteStateUnavailable => {
-            "vote state is unavailable; refresh voting to include it"
+    match reason {
+        SkipReason::AlreadyVoted => {
+            format!("Votes skipped: {count}. The selected nodes already voted this way.")
         }
-        SkipReason::AlreadyInProgress => "an earlier vote on this name is still being sent",
-        SkipReason::NotUsed => "you chose not to use the node",
-    };
-    format!("{votes}: {reason}")
+        SkipReason::NoChangesLeft => format!(
+            "Votes skipped: {count}. The selected nodes have no changes left (5 of 5 votes used)."
+        ),
+        SkipReason::VoteStateUnavailable => format!(
+            "Votes skipped: {count}. Vote state is unavailable. Refresh voting to include these nodes."
+        ),
+        SkipReason::AlreadyInProgress => {
+            format!("Votes skipped: {count}. Earlier votes on these names are still being sent.")
+        }
+        SkipReason::NotUsed => format!("Votes skipped: {count}. You chose not to use these nodes."),
+    }
 }
 
 /// Confirm primary button (VOTE-FR-080).
@@ -470,6 +473,183 @@ pub fn changes_left_label(changes: ChangesLeft) -> String {
             "Changes left unknown. This node voted outside Dash Evo Tool.".to_owned()
         }
     }
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct DpnsVoteFeedbackCounts {
+    confirmed: usize,
+    scheduled: usize,
+    unconfirmed: usize,
+    rejected: usize,
+    failed_before_submission: usize,
+    cancelled: usize,
+    not_applied: usize,
+    in_progress: usize,
+}
+
+/// Feedback for a submit whose single requested vote was already in place.
+const DPNS_ONE_VOTE_ALREADY_CAST: &str =
+    "The selected node already has the requested vote. Nothing was submitted.";
+
+/// Feedback for a submit in which every requested vote was already in place.
+/// Also used where the skipped count is unavailable, so it has to read true for
+/// a single selected node too.
+pub(crate) const DPNS_ALL_VOTES_ALREADY_CAST: &str =
+    "Every selected node already has the requested vote. Nothing was submitted.";
+
+/// Guidance for votes that reached Platform without a confirmed outcome. Shared
+/// by the all-unconfirmed and mixed branches so the "do not resubmit" warning
+/// never differs between them.
+fn dpns_unconfirmed_guidance(unconfirmed: usize) -> String {
+    match unconfirmed {
+        1 => "The vote was submitted, but the result could not be confirmed yet. Dash Evo Tool will keep checking. Do not submit it again.".to_owned(),
+        count => format!(
+            "{count} votes were submitted, but their results could not be confirmed yet. Dash Evo Tool will keep checking. Do not submit them again."
+        ),
+    }
+}
+
+pub(crate) fn dpns_vote_feedback(operation: &DpnsVoteOperation) -> (String, MessageType, bool) {
+    let mut counts = DpnsVoteFeedbackCounts::default();
+    for outcome in &operation.targets {
+        match outcome.status {
+            DpnsVoteTargetStatus::Confirmed => counts.confirmed += 1,
+            DpnsVoteTargetStatus::Scheduled => counts.scheduled += 1,
+            DpnsVoteTargetStatus::Unconfirmed => counts.unconfirmed += 1,
+            DpnsVoteTargetStatus::Rejected => counts.rejected += 1,
+            DpnsVoteTargetStatus::FailedBeforeSubmission => {
+                counts.failed_before_submission += 1;
+            }
+            DpnsVoteTargetStatus::Cancelled => counts.cancelled += 1,
+            DpnsVoteTargetStatus::NotApplied => counts.not_applied += 1,
+            DpnsVoteTargetStatus::Queued
+            | DpnsVoteTargetStatus::Submitting
+            | DpnsVoteTargetStatus::Confirming => counts.in_progress += 1,
+        }
+    }
+    if operation.targets.is_empty() {
+        let message = match operation.no_op_count {
+            1 => DPNS_ONE_VOTE_ALREADY_CAST,
+            _ => DPNS_ALL_VOTES_ALREADY_CAST,
+        };
+        return (message.to_owned(), MessageType::Info, false);
+    }
+    let target_count = operation.targets.len();
+    if target_count == 1 && counts.confirmed == 1 {
+        return (
+            "Vote cast successfully.".to_owned(),
+            MessageType::Success,
+            false,
+        );
+    }
+    // VOTE-FR-061: a batch that only confirmed, or confirmed with some still
+    // being checked, reads as nodes × names.
+    if counts.confirmed > 0 && counts.confirmed + counts.unconfirmed == target_count {
+        let confirmed = operation
+            .targets
+            .iter()
+            .filter(|outcome| outcome.status == DpnsVoteTargetStatus::Confirmed);
+        let nodes = confirmed
+            .clone()
+            .map(|outcome| outcome.target.key.voter_id)
+            .collect::<BTreeSet<_>>()
+            .len();
+        let names = confirmed
+            .map(|outcome| outcome.target.key.vote_poll_id)
+            .collect::<BTreeSet<_>>()
+            .len();
+        let checking = counts.unconfirmed;
+        let message_type = if checking == 0 {
+            MessageType::Success
+        } else {
+            MessageType::Warning
+        };
+        return (
+            batch_voted_line(nodes, names, checking),
+            message_type,
+            checking > 0,
+        );
+    }
+    let single = target_count == 1;
+    if counts.scheduled == target_count {
+        let message = if single {
+            "Vote scheduled successfully.".to_owned()
+        } else {
+            format!("{target_count} votes were scheduled.")
+        };
+        return (message, MessageType::Success, false);
+    }
+    if counts.confirmed + counts.scheduled == target_count {
+        return (
+            format!(
+                "Votes cast successfully: {confirmed}. Votes scheduled: {scheduled}.",
+                confirmed = counts.confirmed,
+                scheduled = counts.scheduled,
+            ),
+            MessageType::Success,
+            false,
+        );
+    }
+    if counts.unconfirmed == target_count {
+        return (
+            dpns_unconfirmed_guidance(counts.unconfirmed),
+            MessageType::Warning,
+            true,
+        );
+    }
+    if counts.rejected == target_count {
+        let message = if single {
+            "The vote was rejected. Review the vote and try again."
+        } else {
+            "The votes were rejected. Review the votes and try again."
+        };
+        return (message.to_owned(), MessageType::Error, false);
+    }
+    if counts.failed_before_submission == target_count {
+        let message = if single {
+            "This vote was not submitted. Check your connection and try again."
+        } else {
+            "These votes were not submitted. Check your connection and try again."
+        };
+        return (message.to_owned(), MessageType::Error, false);
+    }
+    if counts.not_applied == target_count {
+        let message = if single {
+            "The submitted vote was not applied. Review the vote and try again."
+        } else {
+            "The submitted votes were not applied. Review the votes and try again."
+        };
+        return (message.to_owned(), MessageType::Error, false);
+    }
+    if counts.cancelled == target_count {
+        let message = if single {
+            "The scheduled vote was cancelled. Nothing was submitted."
+        } else {
+            "The scheduled votes were cancelled. Nothing was submitted."
+        };
+        return (message.to_owned(), MessageType::Info, false);
+    }
+    if counts.in_progress == target_count {
+        return (
+            "Voting is still in progress. Wait for the result before submitting again.".to_owned(),
+            MessageType::Info,
+            false,
+        );
+    }
+
+    let reviewable = counts.rejected + counts.failed_before_submission + counts.not_applied;
+    let DpnsVoteFeedbackCounts {
+        confirmed,
+        scheduled,
+        cancelled,
+        in_progress,
+        unconfirmed,
+        ..
+    } = counts;
+    let message = format!(
+        "Vote results: {confirmed} confirmed, {scheduled} scheduled, {reviewable} needing review, {cancelled} cancelled, {in_progress} in progress, and {unconfirmed} still being checked. Review failed votes before retrying. Wait for votes in progress or still being checked; do not submit those votes again."
+    );
+    (message, MessageType::Warning, unconfirmed > 0)
 }
 
 #[cfg(test)]
@@ -535,7 +715,7 @@ mod tests {
                 voted_part(4, "Abstain"),
                 no_changes_part(&["mn-07".to_owned()]),
             ]),
-            "Your nodes: 19 not voted · 4 voted: Abstain · mn-07 has no changes left"
+            "19 of your nodes have not voted. 4 of your nodes voted: Abstain. mn-07 has no changes left."
         );
         assert_eq!(
             change_warning_line(4),
@@ -570,7 +750,7 @@ mod tests {
         assert_eq!(skipped_header(2), "Skipped: 2 votes");
         assert_eq!(
             skipped_reason_line(1, SkipReason::NoChangesLeft),
-            "1 vote: no changes left (5 of 5 votes used)"
+            "Votes skipped: 1. The selected nodes have no changes left (5 of 5 votes used)."
         );
         assert_eq!(confirm_button_label(72, true), "Cast 72 votes");
         assert_eq!(confirm_button_label(1, false), "Schedule 1 vote");
@@ -598,7 +778,7 @@ mod tests {
         assert_eq!(batch_voted_line(24, 3, 0), "24 nodes voted on 3 names.");
         assert_eq!(
             batch_voted_line(2, 1, 1),
-            "2 nodes voted on 1 name; 1 is still being checked. Dash Evo Tool will keep checking. Do not submit it again."
+            "Participating nodes: 2. Names with confirmed votes: 1. Votes still being checked: 1. Dash Evo Tool will keep checking. Do not submit the pending votes again."
         );
     }
 
@@ -628,7 +808,7 @@ mod tests {
                 failed: 0,
                 missed_schedules: 2,
             }),
-            "Needs attention: 1 vote is still being checked · 2 scheduled votes were missed."
+            "Votes still being checked: 1. Failed votes: 0. Missed scheduled votes: 2."
         );
     }
 

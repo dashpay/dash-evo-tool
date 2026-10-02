@@ -102,6 +102,16 @@ impl Drop for ContactRequestActionClaim<'_> {
 /// vote-state refresh all share this single budget.
 pub(crate) const MAX_CONCURRENT_DPNS_VOTERS: usize = 4;
 
+/// Startup recovery runs once. Later failures retry only the affected targets.
+#[derive(Debug, Default)]
+pub(crate) struct DpnsVoteRecovery {
+    pub(crate) initialized: bool,
+    pub(crate) pending: std::collections::BTreeMap<
+        crate::model::dpns_voting::DpnsVoteOperationId,
+        std::collections::BTreeSet<crate::model::dpns_voting::DpnsVoteTargetKey>,
+    >,
+}
+
 #[derive(Debug)]
 pub(crate) struct DpnsVoteDispatchCoordinator {
     voter_gates: Mutex<HashMap<Identifier, Arc<tokio::sync::Mutex<()>>>>,
@@ -266,8 +276,7 @@ pub struct AppContext {
     pub(crate) dpns_vote_dispatch: DpnsVoteDispatchCoordinator,
     pub(crate) dpns_vote_refresh_permits: tokio::sync::Semaphore,
     /// Runs crash recovery before this context first accepts vote work.
-    /// Re-armed only if targeted recovery cannot persist after an executor error.
-    pub(crate) dpns_vote_recovery: tokio::sync::Mutex<bool>,
+    pub(crate) dpns_vote_recovery: tokio::sync::Mutex<DpnsVoteRecovery>,
     /// Full in-process diagnostics keyed to sanitized durable outcomes.
     dpns_vote_diagnostics: Mutex<DpnsVoteDiagnostics>,
     dpns_vote_diagnostic_sequence: AtomicU64,
@@ -612,7 +621,7 @@ impl AppContext {
             dpns_vote_dispatch: DpnsVoteDispatchCoordinator::default(),
             dpns_vote_refresh_permits: tokio::sync::Semaphore::new(MAX_CONCURRENT_DPNS_VOTERS),
             dpns_vote_state_publications: dpns_vote_state::DpnsVoteStatePublications::default(),
-            dpns_vote_recovery: tokio::sync::Mutex::new(false),
+            dpns_vote_recovery: tokio::sync::Mutex::new(DpnsVoteRecovery::default()),
             dpns_vote_diagnostics: Mutex::new(BTreeMap::new()),
             dpns_vote_diagnostic_sequence: AtomicU64::new(0),
             pending_wallet_selection: Mutex::new(None),

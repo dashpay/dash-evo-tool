@@ -734,7 +734,6 @@ impl DPNSScreen {
                     .disabled_tooltip("Contests are already being refreshed.")
                     .clicked()
                 {
-                    self.refreshing_status = RefreshingStatus::Refreshing;
                     app_action = AppAction::BackendTask(BackendTask::ContestedResourceTask(
                         ContestedResourceTask::QueryDPNSContests,
                     ));
@@ -1162,11 +1161,14 @@ impl DPNSScreen {
                         self.selected_cards.insert(name.clone());
                     }
                 }
-                CardEvent::RefreshVoting => {
+                CardEvent::RefreshVoting
+                    if self.refreshing_status != RefreshingStatus::Refreshing =>
+                {
                     self.pending_backend_task = Some(BackendTask::ContestedResourceTask(
                         ContestedResourceTask::QueryDPNSContests,
                     ));
                 }
+                CardEvent::RefreshVoting => {}
             }
             self.focused_card = Some(name);
         }
@@ -1849,8 +1851,14 @@ impl DPNSScreen {
             .and_then(|identity| identity.alias.clone())
             .unwrap_or_else(|| short_identifier(row.vote.voter_id));
         let mut choices = vec![
-            (ResourceVoteChoice::Lock, "Lock".to_owned()),
-            (ResourceVoteChoice::Abstain, "Abstain".to_owned()),
+            (
+                ResourceVoteChoice::Lock,
+                vote_choice_label(ResourceVoteChoice::Lock, None),
+            ),
+            (
+                ResourceVoteChoice::Abstain,
+                vote_choice_label(ResourceVoteChoice::Abstain, None),
+            ),
         ];
         if let Some(candidates) = self.candidate_names.get(&row.vote.contested_name) {
             choices.extend(candidates.iter().map(|(candidate_id, name)| {
@@ -2087,7 +2095,22 @@ impl DPNSScreen {
         } else {
             "Nothing can be submitted. Choose at least one node and a vote it has not already cast."
         };
-        let can_submit = !operation_in_progress && transactions > 0;
+        // Holding Enter after opening the sheet must never confirm a vote,
+        // including when the primary button has keyboard focus.
+        let repeated_enter = ui.input(|input| {
+            input.events.iter().any(|event| {
+                matches!(
+                    event,
+                    egui::Event::Key {
+                        key: egui::Key::Enter,
+                        pressed: true,
+                        repeat: true,
+                        ..
+                    }
+                )
+            })
+        });
+        let can_submit = !operation_in_progress && transactions > 0 && !repeated_enter;
         let (mut submit_clicked, mut cancel_clicked) = ui
             .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let submit_clicked = ComponentStyles::add_primary_button_enabled(
@@ -2203,7 +2226,9 @@ impl DPNSScreen {
                             .current_choice
                             .and_then(|choice| self.candidate_name(&target.contested_name, choice)),
                     );
-                    ui.label(format!("{current} → {requested}"));
+                    ui.label(format!(
+                        "Current choice: {current}. Requested choice: {requested}."
+                    ));
                     let timing = match target.timing {
                         VoteTiming::Now => "Now".to_owned(),
                         VoteTiming::Scheduled(at) => format!("{when} UTC", when = utc_minute(at)),
@@ -2506,12 +2531,10 @@ impl ScreenLike for DPNSScreen {
             self.refreshing_status = RefreshingStatus::NotRefreshing;
             self.refresh_banner.take_and_clear();
         }
-        self.release_pending_on_error = match self.pending_vote_operation {
-            Some(operation_id) => {
-                dpns_operation_id(context, self.app_context.network()) == Some(operation_id)
-            }
-            None => self.finish_scheduled_dispatch(context),
-        };
+        self.finish_scheduled_dispatch(context);
+        self.release_pending_on_error = self.pending_vote_operation.is_some_and(|operation_id| {
+            dpns_operation_id(context, self.app_context.network()) == Some(operation_id)
+        });
     }
 
     fn display_task_error(&mut self, error: &TaskError) -> bool {
@@ -2806,6 +2829,11 @@ impl ScreenLike for DPNSScreen {
             }
         }
 
+        if action == AppAction::None
+            && let Some(task) = self.pending_backend_task.take()
+        {
+            action = AppAction::BackendTask(task);
+        }
         if let AppAction::BackendTask(BackendTask::ContestedResourceTask(
             ContestedResourceTask::QueryDPNSContests,
         )) = &action
@@ -2818,11 +2846,6 @@ impl ScreenLike for DPNSScreen {
             self.refreshing_status = RefreshingStatus::Refreshing;
         }
 
-        if action == AppAction::None
-            && let Some(task) = self.pending_backend_task.take()
-        {
-            action = AppAction::BackendTask(task);
-        }
         if action == AppAction::None
             && let Some(preference) = self.pending_preference.take()
         {
@@ -3448,6 +3471,45 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn followup_repeated_enter_does_not_submit_confirmation() {
+        let (screen, _dir) = two_contest_screen().await;
+        let rendering = screen.clone();
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1400.0, 1200.0))
+            .build_ui(move |ui| {
+                rendering.lock_recover().ui(ui);
+            });
+        harness.run();
+        screen.lock_recover().list_focused = true;
+        for key in [egui::Key::J, egui::Key::L] {
+            harness.key_press(key);
+            harness.run();
+        }
+        let enter = |pressed| egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed,
+            repeat: false, // egui derives repeat from the held-key state.
+            modifiers: egui::Modifiers::NONE,
+        };
+        harness.event(enter(true));
+        harness.run();
+        assert!(screen.lock_recover().show_bulk_schedule_popup);
+        assert!(screen.lock_recover().pending_vote_operation.is_none());
+        harness.event(enter(true));
+        harness.run_steps(2);
+        assert!(screen.lock_recover().pending_vote_operation.is_none());
+        harness.event(enter(false));
+        harness.run_steps(2);
+        harness.event(enter(true));
+        harness.run_steps(2);
+        assert!(
+            screen.lock_recover().pending_vote_operation.is_some(),
+            "a fresh press after release confirms"
+        );
+    }
+
     fn voting_ui_review_fixture() -> (DPNSScreen, tempfile::TempDir) {
         let (ctx, temp_dir) = kv_ctx();
         let voter = masternode_identity(1, "node-one", true, ctx.network());
@@ -3489,7 +3551,9 @@ mod tests {
         // VOTE-TC-102: the Needs attention row leads to the drawer's Check again.
         assert!(
             harness
-                .query_by_label("Needs attention: 1 vote is still being checked.")
+                .query_by_label(
+                    "Votes still being checked: 1. Failed votes: 0. Missed scheduled votes: 0."
+                )
                 .is_some()
         );
         assert!(harness.query_by_label("Show progress").is_some());
@@ -3776,7 +3840,7 @@ mod tests {
     }
 
     #[test]
-    fn voting_ui_manual_cast_completes_only_for_its_exact_dispatch() {
+    fn followup_manual_cast_failure_during_bulk_clears_only_its_dispatch() {
         let (mut screen, _dir) = voting_ui_review_fixture();
         let voter = screen.voting_identities[0].clone();
         let vote = crate::backend_task::contested_names::ScheduledDPNSVote {
@@ -3826,19 +3890,27 @@ mod tests {
         screen
             .pending_scheduled_actions
             .insert(key.clone(), dispatch.clone());
+        let bulk_id = DpnsVoteOperationId::from_bytes([13; 16]);
+        screen.pending_vote_operation = Some(bulk_id);
+        screen.bulk_vote_handling_status = VoteHandlingStatus::CastingVotes;
         screen.display_backend_task_error(&dispatch, &error);
         screen.display_task_error(&error);
         assert!(screen.pending_scheduled_actions.is_empty());
         screen
             .pending_scheduled_actions
             .insert(key, dispatch.clone());
+        assert_eq!(screen.pending_vote_operation, Some(bulk_id));
+        assert!(matches!(
+            screen.bulk_vote_handling_status,
+            VoteHandlingStatus::CastingVotes
+        ));
         screen.reset_for_network_switch();
         assert!(screen.pending_scheduled_actions.is_empty());
         assert!(!screen.finish_scheduled_dispatch(&dispatch));
     }
 
     #[test]
-    fn review_fixes_unavailable_contests_offer_a_visible_refresh_action() {
+    fn followup_card_refresh_enters_shared_progress_state() {
         use egui_kittest::kittest::Queryable;
         use std::sync::atomic::{AtomicBool, Ordering};
         let (mut screen, _dir) = voting_ui_review_fixture();
@@ -3859,7 +3931,11 @@ mod tests {
                         ContestedResourceTask::QueryDPNSContests
                     ))
                 ) {
-                    received_refresh.store(true, Ordering::Relaxed);
+                    received_refresh.store(
+                        screen.refreshing_status == RefreshingStatus::Refreshing
+                            && screen.refresh_banner.is_some(),
+                        Ordering::Relaxed,
+                    );
                 }
             });
         harness.run();
@@ -3972,7 +4048,7 @@ mod tests {
         assert!(harness.query_by_label("Voted with 1 of 2 nodes").is_some());
         assert!(
             harness
-                .query_by_label("Your nodes: 1 not voted · 1 voted: Lock name")
+                .query_by_label("1 of your nodes has not voted. 1 of your nodes voted: Lock name.")
                 .is_some()
         );
     }

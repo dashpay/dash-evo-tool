@@ -1,3 +1,6 @@
+#[cfg(test)]
+use crate::model::dpns_voting::{DpnsVoteOperation, DpnsVoteTargetStatus};
+use crate::ui::dpns::copy::{DPNS_ALL_VOTES_ALREADY_CAST, dpns_vote_feedback};
 mod reconcilers;
 use reconcilers::{
     AccessibilityActivator, ConnectionBanner, GateEvent, MigrationReconciler, PendingConfirmation,
@@ -17,10 +20,7 @@ use crate::context::connection_status::{ConnectionStatus, OverallConnectionState
 use crate::context::feature_gate::FeatureGate;
 use crate::context::migration_status::{MigrationState, MigrationStep};
 use crate::database::Database;
-use crate::model::dpns_voting::{
-    DpnsScheduledVoteClearDisposition, DpnsScheduledVoteClearOutcome, DpnsVoteOperation,
-    DpnsVoteTargetStatus,
-};
+use crate::model::dpns_voting::{DpnsScheduledVoteClearDisposition, DpnsScheduledVoteClearOutcome};
 use crate::model::settings::AppSettings;
 use crate::model::wallet::{TransactionConfirmation, TransactionStatus};
 use crate::ui::components::passphrase_modal;
@@ -326,201 +326,6 @@ fn clear_confirmed_vote_recovery_cutoff(
     } else {
         false
     }
-}
-
-#[derive(Debug, Default, PartialEq, Eq)]
-struct DpnsVoteFeedbackCounts {
-    confirmed: usize,
-    scheduled: usize,
-    unconfirmed: usize,
-    rejected: usize,
-    failed_before_submission: usize,
-    cancelled: usize,
-    not_applied: usize,
-    in_progress: usize,
-}
-
-/// Feedback for a submit whose single requested vote was already in place.
-const DPNS_ONE_VOTE_ALREADY_CAST: &str =
-    "The selected node already has the requested vote. Nothing was submitted.";
-
-/// Feedback for a submit in which every requested vote was already in place.
-/// Also used where the skipped count is unavailable, so it has to read true for
-/// a single selected node too.
-const DPNS_ALL_VOTES_ALREADY_CAST: &str =
-    "Every selected node already has the requested vote. Nothing was submitted.";
-
-/// Guidance for votes that reached Platform without a confirmed outcome. Shared
-/// by the all-unconfirmed and mixed branches so the "do not resubmit" warning
-/// never differs between them.
-fn dpns_unconfirmed_guidance(unconfirmed: usize) -> String {
-    match unconfirmed {
-        1 => "The vote was submitted, but the result could not be confirmed yet. Dash Evo Tool will keep checking. Do not submit it again.".to_owned(),
-        count => format!(
-            "{count} votes were submitted, but their results could not be confirmed yet. Dash Evo Tool will keep checking. Do not submit them again."
-        ),
-    }
-}
-
-fn dpns_vote_feedback(operation: &DpnsVoteOperation) -> (String, MessageType, bool) {
-    let mut counts = DpnsVoteFeedbackCounts::default();
-    for outcome in &operation.targets {
-        match outcome.status {
-            DpnsVoteTargetStatus::Confirmed => counts.confirmed += 1,
-            DpnsVoteTargetStatus::Scheduled => counts.scheduled += 1,
-            DpnsVoteTargetStatus::Unconfirmed => counts.unconfirmed += 1,
-            DpnsVoteTargetStatus::Rejected => counts.rejected += 1,
-            DpnsVoteTargetStatus::FailedBeforeSubmission => {
-                counts.failed_before_submission += 1;
-            }
-            DpnsVoteTargetStatus::Cancelled => counts.cancelled += 1,
-            DpnsVoteTargetStatus::NotApplied => counts.not_applied += 1,
-            DpnsVoteTargetStatus::Queued
-            | DpnsVoteTargetStatus::Submitting
-            | DpnsVoteTargetStatus::Confirming => counts.in_progress += 1,
-        }
-    }
-    if operation.targets.is_empty() {
-        let message = match operation.no_op_count {
-            1 => DPNS_ONE_VOTE_ALREADY_CAST,
-            _ => DPNS_ALL_VOTES_ALREADY_CAST,
-        };
-        return (message.to_owned(), MessageType::Info, false);
-    }
-    let target_count = operation.targets.len();
-    if target_count == 1 && counts.confirmed == 1 {
-        return (
-            "Vote cast successfully.".to_owned(),
-            MessageType::Success,
-            false,
-        );
-    }
-    // VOTE-FR-061: a batch that only confirmed, or confirmed with some still
-    // being checked, reads as nodes × names.
-    if counts.confirmed > 0 && counts.confirmed + counts.unconfirmed == target_count {
-        let confirmed = operation
-            .targets
-            .iter()
-            .filter(|outcome| outcome.status == DpnsVoteTargetStatus::Confirmed);
-        let nodes = confirmed
-            .clone()
-            .map(|outcome| outcome.target.key.voter_id)
-            .collect::<BTreeSet<_>>()
-            .len();
-        let names = confirmed
-            .map(|outcome| outcome.target.key.vote_poll_id)
-            .collect::<BTreeSet<_>>()
-            .len();
-        let checking = counts.unconfirmed;
-        let message_type = if checking == 0 {
-            MessageType::Success
-        } else {
-            MessageType::Warning
-        };
-        return (
-            crate::ui::dpns::copy::batch_voted_line(nodes, names, checking),
-            message_type,
-            checking > 0,
-        );
-    }
-    let single = target_count == 1;
-    if counts.scheduled == target_count {
-        let message = if single {
-            "Vote scheduled successfully.".to_owned()
-        } else {
-            format!("{target_count} votes were scheduled.")
-        };
-        return (message, MessageType::Success, false);
-    }
-    if counts.confirmed + counts.scheduled == target_count {
-        return (
-            format!(
-                "Votes cast successfully: {confirmed}. Votes scheduled: {scheduled}.",
-                confirmed = counts.confirmed,
-                scheduled = counts.scheduled,
-            ),
-            MessageType::Success,
-            false,
-        );
-    }
-    if counts.unconfirmed == target_count {
-        return (
-            dpns_unconfirmed_guidance(counts.unconfirmed),
-            MessageType::Warning,
-            true,
-        );
-    }
-    if counts.rejected == target_count {
-        let message = if single {
-            "The vote was rejected. Review the vote and try again."
-        } else {
-            "The votes were rejected. Review the votes and try again."
-        };
-        return (message.to_owned(), MessageType::Error, false);
-    }
-    if counts.failed_before_submission == target_count {
-        let message = if single {
-            "This vote was not submitted. Check your connection and try again."
-        } else {
-            "These votes were not submitted. Check your connection and try again."
-        };
-        return (message.to_owned(), MessageType::Error, false);
-    }
-    if counts.not_applied == target_count {
-        let message = if single {
-            "The submitted vote was not applied. Review the vote and try again."
-        } else {
-            "The submitted votes were not applied. Review the votes and try again."
-        };
-        return (message.to_owned(), MessageType::Error, false);
-    }
-    if counts.cancelled == target_count {
-        let message = if single {
-            "The scheduled vote was cancelled. Nothing was submitted."
-        } else {
-            "The scheduled votes were cancelled. Nothing was submitted."
-        };
-        return (message.to_owned(), MessageType::Info, false);
-    }
-    if counts.in_progress == target_count {
-        return (
-            "Voting is still in progress. Wait for the result before submitting again.".to_owned(),
-            MessageType::Info,
-            false,
-        );
-    }
-
-    let reviewable = counts.rejected + counts.failed_before_submission + counts.not_applied;
-    let confirmed_sentence = match counts.confirmed {
-        0 => format!("None of the {target_count} votes were confirmed."),
-        1 => format!("1 of the {target_count} votes was confirmed."),
-        confirmed => format!("{confirmed} of the {target_count} votes were confirmed."),
-    };
-    let review_sentence = match reviewable {
-        0 => String::new(),
-        1 => "Review the failed vote.".to_owned(),
-        count => format!("Review the {count} failed votes."),
-    };
-    let mut message = confirmed_sentence;
-    if !review_sentence.is_empty() {
-        message.push(' ');
-        message.push_str(&review_sentence);
-    }
-    if counts.scheduled > 0 {
-        message.push_str(&format!(
-            " Votes scheduled: {scheduled}.",
-            scheduled = counts.scheduled
-        ));
-    }
-    if counts.in_progress > 0 {
-        message
-            .push_str(" Voting is still in progress. Wait for the result before submitting again.");
-    }
-    if counts.unconfirmed > 0 {
-        message.push(' ');
-        message.push_str(&dpns_unconfirmed_guidance(counts.unconfirmed));
-    }
-    (message, MessageType::Warning, counts.unconfirmed > 0)
 }
 
 fn scheduled_vote_clear_feedback(
@@ -4343,7 +4148,7 @@ mod migration_banner_tests {
         assert!(keep_visible);
         assert_eq!(
             message,
-            "1 of the 7 votes was confirmed. Review the 3 failed votes. Votes scheduled: 1. The vote was submitted, but the result could not be confirmed yet. Dash Evo Tool will keep checking. Do not submit it again."
+            "Vote results: 1 confirmed, 1 scheduled, 3 needing review, 1 cancelled, 0 in progress, and 1 still being checked. Review failed votes before retrying. Wait for votes in progress or still being checked; do not submit those votes again."
         );
     }
 
@@ -4363,7 +4168,7 @@ mod migration_banner_tests {
         assert!(keep_visible);
         assert_eq!(
             message,
-            "1 node voted on 2 names; 1 is still being checked. Dash Evo Tool will keep checking. Do not submit it again."
+            "Participating nodes: 1. Names with confirmed votes: 2. Votes still being checked: 1. Dash Evo Tool will keep checking. Do not submit the pending votes again."
         );
     }
 
@@ -4381,12 +4186,12 @@ mod migration_banner_tests {
         assert!(!keep_visible);
         assert_eq!(
             message,
-            "2 of the 3 votes were confirmed. Review the failed vote."
+            "Vote results: 2 confirmed, 0 scheduled, 1 needing review, 0 cancelled, 0 in progress, and 0 still being checked. Review failed votes before retrying. Wait for votes in progress or still being checked; do not submit those votes again."
         );
     }
 
     #[test]
-    fn vote_feedback_reports_no_confirmations_without_a_leading_zero() {
+    fn vote_feedback_reports_mixed_failures_without_confirmations() {
         let operation = feedback_operation(&[
             DpnsVoteTargetStatus::Rejected,
             DpnsVoteTargetStatus::NotApplied,
@@ -4396,7 +4201,7 @@ mod migration_banner_tests {
 
         assert_eq!(
             message,
-            "None of the 2 votes were confirmed. Review the 2 failed votes."
+            "Vote results: 0 confirmed, 0 scheduled, 2 needing review, 0 cancelled, 0 in progress, and 0 still being checked. Review failed votes before retrying. Wait for votes in progress or still being checked; do not submit those votes again."
         );
     }
 

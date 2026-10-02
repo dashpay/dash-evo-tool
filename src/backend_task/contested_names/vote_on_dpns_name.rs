@@ -81,7 +81,7 @@ fn classify_broadcast_error(error: dash_sdk::Error) -> DpnsVoteAttempt {
             if rejected {
                 DpnsVoteAttempt::Rejected(error)
             } else {
-                DpnsVoteAttempt::FailedBeforeSubmission(error)
+                DpnsVoteAttempt::Unconfirmed(error)
             }
         }
         _ => DpnsVoteAttempt::Unconfirmed(TaskError::from(error)),
@@ -246,7 +246,7 @@ mod tests {
     }
 
     #[test]
-    fn cause_less_broadcast_rejection_fails_before_submission() {
+    fn followup_cause_less_broadcast_error_remains_unconfirmed() {
         let attempt = classify_broadcast_error(
             dash_sdk::error::StateTransitionBroadcastError {
                 code: 1,
@@ -256,10 +256,7 @@ mod tests {
             .into(),
         );
 
-        assert!(matches!(
-            attempt,
-            DpnsVoteAttempt::FailedBeforeSubmission(_)
-        ));
+        assert!(matches!(attempt, DpnsVoteAttempt::Unconfirmed(_)));
     }
 
     #[test]

@@ -113,7 +113,7 @@ pub fn add_left_panel(
                     // Reserve a fixed area at the bottom for the logo and labels,
                     // and make the button list above it vertically scrollable.
                     let mut bottom_reserved = Spacing::SM + 20.0; // spacing + logo height
-                    if app_context.network != Network::Dash {
+                    if app_context.network != Network::Mainnet {
                         bottom_reserved += 22.0; // network label + spacing
                     }
                     if app_context.is_developer_mode() {
@@ -209,7 +209,7 @@ pub fn add_left_panel(
                                     |ui| {
                                         // Dash logo at the very bottom
                                         if let Some(dash_texture) = load_icon(ctx, "dash.png") {
-                                            if app_context.network == Network::Dash {
+                                            if app_context.network == Network::Mainnet {
                                                 ui.add_space(Spacing::SM);
                                             }
                                             let logo_size = egui::vec2(50.0, 20.0);
@@ -232,7 +232,7 @@ pub fn add_left_panel(
                                         }
 
                                         // Network label (if not on mainnet)
-                                        if app_context.network != Network::Dash {
+                                        if app_context.network != Network::Mainnet {
                                             let (network_name, network_color) = match app_context.network {
                                                 Network::Testnet => (
                                                     "Testnet",

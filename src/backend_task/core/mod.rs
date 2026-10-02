@@ -73,12 +73,13 @@ impl AppContext {
                 // Load configs
                 let config = Config::load().map_err(|e| format!("Failed to load config: {}", e))?;
 
-                let maybe_mainnet_config = config.config_for_network(Network::Dash);
+                let maybe_mainnet_config = config.config_for_network(Network::Mainnet);
                 let maybe_testnet_config = config.config_for_network(Network::Testnet);
                 let maybe_devnet_config = config.config_for_network(Network::Devnet);
                 let maybe_local_config = config.config_for_network(Network::Regtest);
 
-                let mainnet_result = Self::get_best_chain_lock(maybe_mainnet_config, Network::Dash);
+                let mainnet_result =
+                    Self::get_best_chain_lock(maybe_mainnet_config, Network::Mainnet);
                 let testnet_result =
                     Self::get_best_chain_lock(maybe_testnet_config, Network::Testnet);
                 let devnet_result = Self::get_best_chain_lock(maybe_devnet_config, Network::Devnet);

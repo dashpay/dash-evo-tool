@@ -16,7 +16,7 @@ impl Database {
         network: Network,
         start_root_screen: RootScreenType,
     ) -> Result<()> {
-        let network_str = network.to_string();
+        let network_str = crate::database::network_name(&network);
         let screen_type_int = start_root_screen.to_int();
         self.execute(
             "INSERT INTO settings (id, network, start_root_screen, database_version)
@@ -194,8 +194,11 @@ impl Database {
             };
 
             // Convert network from string to enum
-            let parsed_network =
-                Network::from_str(&network).map_err(|_| rusqlite::Error::InvalidQuery)?;
+            let parsed_network = if network == "dash" {
+                Network::Mainnet
+            } else {
+                Network::from_str(&network).map_err(|_| rusqlite::Error::InvalidQuery)?
+            };
 
             // Convert start_root_screen from int to enum
             let root_screen_type = RootScreenType::from_int(start_root_screen)
@@ -224,5 +227,30 @@ impl Database {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e),
         }
+    }
+}
+
+#[cfg(test)]
+mod compatibility_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_mainnet_settings_remain_readable_and_writable() {
+        let db = Database::new(":memory:").unwrap();
+        db.initialize(std::path::Path::new("unused.db")).unwrap();
+        db.execute(
+            "UPDATE settings SET network = 'dash', start_root_screen = 20",
+            [],
+        )
+        .unwrap();
+        let (network, screen, ..) = db.get_settings().unwrap().unwrap();
+        assert_eq!(network, Network::Mainnet);
+        assert_eq!(screen, RootScreenType::RootScreenIdentities);
+        db.insert_or_update_settings(network, screen).unwrap();
+        let conn = db.conn.lock().unwrap();
+        let stored: String = conn
+            .query_row("SELECT network FROM settings", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(stored, "dash");
     }
 }

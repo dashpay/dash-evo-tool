@@ -40,7 +40,7 @@ impl Database {
         token_id: &Identifier,
         app_context: &AppContext,
     ) -> rusqlite::Result<Option<TokenConfiguration>> {
-        let network = app_context.network.to_string();
+        let network = crate::database::network_name(&app_context.network);
         let token_id_bytes = token_id.to_vec();
 
         let conn = self.conn.lock().unwrap();
@@ -70,7 +70,7 @@ impl Database {
         token_id: &Identifier,
         app_context: &AppContext,
     ) -> rusqlite::Result<Option<Identifier>> {
-        let network = app_context.network.to_string();
+        let network = crate::database::network_name(&app_context.network);
         let token_id_bytes = token_id.to_vec();
 
         let conn = self.conn.lock().unwrap();
@@ -103,7 +103,7 @@ impl Database {
         token_position: u16,
         app_context: &AppContext,
     ) -> rusqlite::Result<()> {
-        let network = app_context.network.to_string();
+        let network = crate::database::network_name(&app_context.network);
         let token_id_bytes = token_id.to_vec();
         let data_contract_bytes = data_contract_id.to_vec();
 
@@ -173,7 +173,7 @@ impl Database {
         balance: u64,
         app_context: &AppContext,
     ) -> rusqlite::Result<()> {
-        let network = app_context.network.to_string();
+        let network = crate::database::network_name(&app_context.network);
         let token_id_bytes = token_identifier.to_vec();
         let identity_id_bytes = identity_id.to_vec();
 
@@ -196,7 +196,7 @@ impl Database {
         &self,
         app_context: &AppContext,
     ) -> rusqlite::Result<IndexMap<Identifier, TokenInfoWithDataContract>> {
-        let network = app_context.network.to_string();
+        let network = crate::database::network_name(&app_context.network);
         let conn = self.conn.lock().unwrap();
 
         let mut stmt = conn.prepare(
@@ -275,7 +275,7 @@ impl Database {
         &self,
         app_context: &AppContext,
     ) -> rusqlite::Result<IndexMap<Identifier, TokenInfo>> {
-        let network = app_context.network.to_string();
+        let network = crate::database::network_name(&app_context.network);
         let conn = self.conn.lock().unwrap();
 
         // -- 1.  query id / alias / config / contract / position ────────────────
@@ -335,7 +335,7 @@ impl Database {
         &self,
         app_context: &AppContext,
     ) -> rusqlite::Result<IndexMap<IdentityTokenIdentifier, IdentityTokenBalance>> {
-        let network = app_context.network.to_string();
+        let network = crate::database::network_name(&app_context.network);
 
         let rows_data = {
             let conn = self.conn.lock().unwrap();
@@ -416,7 +416,7 @@ impl Database {
         token_id: &Identifier,
         app_context: &AppContext,
     ) -> rusqlite::Result<()> {
-        let network = app_context.network.to_string();
+        let network = crate::database::network_name(&app_context.network);
         let token_id_bytes = token_id.to_vec();
 
         self.execute(
@@ -433,7 +433,7 @@ impl Database {
         identity_id: &Identifier,
         app_context: &AppContext,
     ) -> rusqlite::Result<()> {
-        let network = app_context.network.to_string();
+        let network = crate::database::network_name(&app_context.network);
         let token_identifier_vec = token_identifier.to_vec();
         let identity_id_vec = identity_id.to_vec();
 
@@ -554,7 +554,7 @@ impl Database {
         if app_context.network != Network::Devnet {
             return Ok(());
         }
-        let network = app_context.network.to_string();
+        let network = crate::database::network_name(&app_context.network);
 
         let conn = self.conn.lock().unwrap();
 

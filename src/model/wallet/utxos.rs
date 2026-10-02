@@ -99,8 +99,7 @@ impl Wallet {
         let addresses: Vec<_> = self.known_addresses.keys().collect();
         if tracing::enabled!(tracing::Level::TRACE) {
             for addr in addresses.iter() {
-                let (net, payload) = (*addr).clone().into_parts();
-                tracing::trace!(net=net.to_string(),payload=?payload , "Address to load UTXOs for");
+                tracing::trace!(%network, payload=?addr.payload(), "Address to load UTXOs for");
             }
         }
 
@@ -174,7 +173,7 @@ impl Wallet {
 
             // Remove UTXOs that are no longer unspent
             for outpoint in removed_outpoints {
-                db.drop_utxo(&outpoint, &network.to_string())
+                db.drop_utxo(&outpoint, crate::database::network_name(&network))
                     .map_err(|e| e.to_string())?;
             }
 

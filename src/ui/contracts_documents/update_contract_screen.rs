@@ -470,10 +470,9 @@ impl ScreenLike for UpdateDataContractScreen {
                                 )
                                 .clicked()
                             {
-                                let platform_version = self.app_context.platform_version();
                                 self.selected_contract = Some(display_text.to_string());
                                 self.contract_json_input =
-                                    match contract.contract.to_json(platform_version) {
+                                    match serde_json::to_value(&contract.contract) {
                                         Ok(json) => serde_json::to_string_pretty(&json)
                                             .expect("Expected to get string pretty"),
                                         Err(e) => format!("Error serialising contract: {e}"),

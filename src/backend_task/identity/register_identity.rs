@@ -8,10 +8,7 @@ use dash_sdk::dpp::block::extended_epoch_info::ExtendedEpochInfo;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{OutPoint, PrivateKey};
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
-use dash_sdk::dpp::native_bls::NativeBlsModule;
 use dash_sdk::dpp::prelude::AssetLockProof;
-use dash_sdk::dpp::state_transition::identity_create_transition::IdentityCreateTransition;
-use dash_sdk::dpp::state_transition::identity_create_transition::methods::IdentityCreateTransitionMethodsV0;
 use dash_sdk::platform::transition::put_identity::PutIdentity;
 use dash_sdk::platform::{Fetch, Identity};
 use dash_sdk::{Error, Sdk};
@@ -138,7 +135,7 @@ impl AppContext {
                     });
                     for utxo in used_utxos.keys() {
                         self.db
-                            .drop_utxo(utxo, &self.network.to_string())
+                            .drop_utxo(utxo, crate::database::network_name(&self.network))
                             .map_err(|e| e.to_string())?;
                     }
                 }
@@ -198,7 +195,7 @@ impl AppContext {
                         !utxo_map.is_empty()
                     });
                     self.db
-                        .drop_utxo(&utxo, &self.network.to_string())
+                        .drop_utxo(&utxo, crate::database::network_name(&self.network))
                         .map_err(|e| e.to_string())?;
                 }
 
@@ -361,7 +358,7 @@ impl AppContext {
         qualified_identity: QualifiedIdentity,
     ) -> Result<Identity, String> {
         match identity
-            .put_to_platform_and_wait_for_response(
+            .put_to_platform_and_wait_for_response_with_private_key(
                 sdk,
                 asset_lock_proof.clone(),
                 asset_lock_proof_private_key,
@@ -374,7 +371,7 @@ impl AppContext {
             Err(e) => {
                 if matches!(e, Error::Protocol(ProtocolError::UnknownVersionError(_))) {
                     identity
-                        .put_to_platform_and_wait_for_response(
+                        .put_to_platform_and_wait_for_response_with_private_key(
                             sdk,
                             asset_lock_proof.clone(),
                             asset_lock_proof_private_key,
@@ -382,23 +379,7 @@ impl AppContext {
                             None,
                         )
                         .await
-                        .map_err(|e| {
-                            let identity_create_transition =
-                                IdentityCreateTransition::try_from_identity_with_signer(
-                                    identity,
-                                    asset_lock_proof,
-                                    asset_lock_proof_private_key.inner.as_ref(),
-                                    &qualified_identity,
-                                    &NativeBlsModule,
-                                    0,
-                                    self.platform_version(),
-                                )
-                                .expect("expected to make transition");
-                            format!(
-                                "error: {}, transaction is {:?}",
-                                e, identity_create_transition
-                            )
-                        })
+                        .map_err(|e| e.to_string())
                 } else {
                     Err(e.to_string())
                 }

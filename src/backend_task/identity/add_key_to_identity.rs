@@ -58,6 +58,7 @@ impl AppContext {
             sdk.version(),
             None,
         )
+        .await
         .map_err(|e| format!("IdentityUpdateTransition error: {}", e))?;
 
         let result = state_transition

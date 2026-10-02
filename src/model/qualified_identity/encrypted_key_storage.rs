@@ -54,8 +54,8 @@ impl Encode for WalletDerivationPath {
     }
 }
 
-impl Decode for WalletDerivationPath {
-    fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, DecodeError> {
+impl<C> Decode<C> for WalletDerivationPath {
+    fn decode<D: Decoder<Context = C>>(decoder: &mut D) -> Result<Self, DecodeError> {
         // Decode `wallet_seed_hash`
         let wallet_seed_hash = WalletSeedHash::decode(decoder)?;
 
@@ -92,8 +92,10 @@ impl Decode for WalletDerivationPath {
     }
 }
 
-impl<'de> BorrowDecode<'de> for WalletDerivationPath {
-    fn borrow_decode<D: BorrowDecoder<'de>>(decoder: &mut D) -> Result<Self, DecodeError> {
+impl<'de, C> BorrowDecode<'de, C> for WalletDerivationPath {
+    fn borrow_decode<D: BorrowDecoder<'de, Context = C>>(
+        decoder: &mut D,
+    ) -> Result<Self, DecodeError> {
         // Decode `wallet_seed_hash`
         let wallet_seed_hash = WalletSeedHash::decode(decoder)?;
 
@@ -407,5 +409,31 @@ impl KeyStorage {
                     .insert(key, (value.0, PrivateKeyData::Clear(value.1)));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod compatibility_tests {
+    use super::*;
+
+    #[test]
+    fn decodes_legacy_wallet_derivation_path() {
+        let mut bytes = vec![42; 32];
+        bytes.extend_from_slice(&[2, 1, 5, 0, 7]);
+        let (path, consumed): (WalletDerivationPath, _) =
+            bincode::decode_from_slice(&bytes, bincode::config::standard()).unwrap();
+        assert_eq!(consumed, bytes.len());
+        assert_eq!(path.wallet_seed_hash, [42; 32]);
+        assert_eq!(
+            path.derivation_path,
+            DerivationPath::from(vec![
+                ChildNumber::Hardened { index: 5 },
+                ChildNumber::Normal { index: 7 }
+            ])
+        );
+        assert_eq!(
+            bincode::encode_to_vec(path, bincode::config::standard()).unwrap(),
+            bytes
+        );
     }
 }

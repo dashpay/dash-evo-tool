@@ -195,18 +195,13 @@ pub enum ContractSearchStatus {
     ErrorMessage(String),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Default)]
 pub enum TokenCreatorStatus {
+    #[default]
     NotStarted,
     WaitingForResult(u64),
     Complete,
     ErrorMessage(String),
-}
-
-impl Default for TokenCreatorStatus {
-    fn default() -> Self {
-        Self::NotStarted
-    }
 }
 
 /// Sorting columns
@@ -3073,7 +3068,7 @@ mod tests {
             wallet_index: None,
             top_ups: BTreeMap::new(),
             status: IdentityStatus::Active,
-            network: Network::Dash,
+            network: Network::Mainnet,
         };
 
         token_creator_ui.selected_identity = Some(mock_identity);
@@ -3378,7 +3373,7 @@ mod tests {
             wallet_index: None,
             top_ups: BTreeMap::new(),
             status: IdentityStatus::Active,
-            network: Network::Dash,
+            network: Network::Mainnet,
         };
 
         token_creator_ui.selected_identity = Some(mock_identity);
@@ -3497,7 +3492,7 @@ mod tests {
             wallet_index: None,
             top_ups: BTreeMap::new(),
             status: IdentityStatus::Active,
-            network: Network::Dash,
+            network: Network::Mainnet,
         };
 
         token_creator_ui.selected_identity = Some(mock_identity);

@@ -53,11 +53,10 @@ pub struct NetworkConfig {
 impl Config {
     pub fn config_for_network(&self, network: Network) -> &Option<NetworkConfig> {
         match network {
-            Network::Dash => &self.mainnet_config,
+            Network::Mainnet => &self.mainnet_config,
             Network::Testnet => &self.testnet_config,
             Network::Devnet => &self.devnet_config,
             Network::Regtest => &self.local_config,
-            _ => &None,
         }
     }
 
@@ -269,17 +268,10 @@ impl Config {
     /// Update (overwrite) the configuration for a particular network.
     pub fn update_config_for_network(&mut self, network: Network, new_config: NetworkConfig) {
         match network {
-            Network::Dash => self.mainnet_config = Some(new_config),
+            Network::Mainnet => self.mainnet_config = Some(new_config),
             Network::Testnet => self.testnet_config = Some(new_config),
             Network::Devnet => self.devnet_config = Some(new_config),
             Network::Regtest => self.local_config = Some(new_config),
-            _ => {
-                // Optionally handle any custom or unknown network here if needed
-                tracing::warn!(
-                    "Attempted to update config for an unknown network: {:?}",
-                    network
-                );
-            }
         }
     }
 }

@@ -52,7 +52,7 @@ impl Database {
         let alias = qualified_identity.alias.clone();
         let identity_type = format!("{:?}", qualified_identity.identity_type);
 
-        let network = app_context.network.to_string();
+        let network = crate::database::network_name(&app_context.network);
 
         let status = qualified_identity.status.as_u8();
 
@@ -99,7 +99,7 @@ impl Database {
         let identity_type = format!("{:?}", qualified_identity.identity_type);
 
         // Get the network string from the app context
-        let network = app_context.network.to_string();
+        let network = crate::database::network_name(&app_context.network);
 
         let status = qualified_identity.status.as_u8();
 
@@ -127,7 +127,7 @@ impl Database {
             qualified_identity.map_or("".to_string(), |qi| format!("{:?}", qi.identity_type));
         let data = qualified_identity.map(|qi| qi.to_bytes());
 
-        let network = app_context.network.to_string();
+        let network = crate::database::network_name(&app_context.network);
 
         // Check if the identity already exists
         let conn = self.conn.lock().unwrap();
@@ -152,7 +152,7 @@ impl Database {
         app_context: &AppContext,
         wallets: &BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>,
     ) -> rusqlite::Result<Vec<QualifiedIdentity>> {
-        let network = app_context.network.to_string();
+        let network = crate::database::network_name(&app_context.network);
 
         let conn = self.conn.lock().unwrap();
 
@@ -211,7 +211,7 @@ impl Database {
         app_context: &AppContext,
         wallets: &BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>,
     ) -> rusqlite::Result<Vec<QualifiedIdentity>> {
-        let network = app_context.network.to_string();
+        let network = crate::database::network_name(&app_context.network);
 
         let conn = self.conn.lock().unwrap();
 
@@ -267,7 +267,7 @@ impl Database {
         app_context: &AppContext,
         wallets: &BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>,
     ) -> rusqlite::Result<Option<QualifiedIdentity>> {
-        let network = app_context.network.to_string();
+        let network = crate::database::network_name(&app_context.network);
 
         let conn = self.conn.lock().unwrap();
 
@@ -321,7 +321,7 @@ impl Database {
         &self,
         app_context: &AppContext,
     ) -> rusqlite::Result<Vec<QualifiedIdentity>> {
-        let network = app_context.network.to_string();
+        let network = crate::database::network_name(&app_context.network);
 
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -347,7 +347,7 @@ impl Database {
         &self,
         app_context: &AppContext,
     ) -> rusqlite::Result<Vec<(QualifiedIdentity, Option<WalletSeedHash>)>> {
-        let network = app_context.network.to_string();
+        let network = crate::database::network_name(&app_context.network);
 
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -374,7 +374,7 @@ impl Database {
         app_context: &AppContext,
     ) -> rusqlite::Result<()> {
         let id = identifier.to_vec();
-        let network = app_context.network.to_string();
+        let network = crate::database::network_name(&app_context.network);
 
         let conn = self.conn.lock().unwrap();
 
@@ -408,7 +408,7 @@ impl Database {
         if app_context.network != Network::Devnet {
             return Ok(());
         }
-        let network = app_context.network.to_string();
+        let network = crate::database::network_name(&app_context.network);
 
         let conn = self.conn.lock().unwrap();
 

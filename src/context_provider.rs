@@ -5,6 +5,7 @@ use crate::database::Database;
 use dash_sdk::core::LowLevelDashCoreClient as CoreClient;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::error::ContextProviderError;
 use dash_sdk::platform::ContextProvider;
@@ -72,21 +73,28 @@ impl ContextProvider for Provider {
     fn get_data_contract(
         &self,
         data_contract_id: &dash_sdk::platform::Identifier,
-        _platform_version: &PlatformVersion,
+        platform_version: &PlatformVersion,
     ) -> Result<Option<Arc<DataContract>>, dash_sdk::error::ContextProviderError> {
         let app_ctx_guard = self.app_context.lock().expect("lock poisoned");
         let app_ctx = app_ctx_guard
             .as_ref()
             .ok_or(ContextProviderError::Config("no app context".to_string()))?;
 
-        if data_contract_id == &app_ctx.dpns_contract.id() {
-            Ok(Some(app_ctx.dpns_contract.clone()))
+        let system_contract = if data_contract_id == &app_ctx.dpns_contract.id() {
+            Some(SystemDataContract::DPNS)
         } else if data_contract_id == &app_ctx.token_history_contract.id() {
-            Ok(Some(app_ctx.token_history_contract.clone()))
+            Some(SystemDataContract::TokenHistory)
         } else if data_contract_id == &app_ctx.withdraws_contract.id() {
-            Ok(Some(app_ctx.withdraws_contract.clone()))
+            Some(SystemDataContract::Withdrawals)
         } else if data_contract_id == &app_ctx.keyword_search_contract.id() {
-            Ok(Some(app_ctx.keyword_search_contract.clone()))
+            Some(SystemDataContract::KeywordSearch)
+        } else {
+            None
+        };
+        if let Some(system_contract) = system_contract {
+            load_system_data_contract(system_contract, platform_version)
+                .map(|contract| Some(Arc::new(contract)))
+                .map_err(|e| ContextProviderError::Generic(e.to_string()))
         } else {
             let dc = self
                 .db

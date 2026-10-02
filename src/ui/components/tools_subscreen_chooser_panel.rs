@@ -12,7 +12,6 @@ pub enum ToolsSubscreen {
     DocumentViewer,
     ProofViewer,
     ContractViewer,
-    GroveSTARK,
     MasternodeListDiff,
 }
 
@@ -25,7 +24,6 @@ impl ToolsSubscreen {
             Self::ProofViewer => "Proof deserializer",
             Self::DocumentViewer => "Document deserializer",
             Self::ContractViewer => "Contract deserializer",
-            Self::GroveSTARK => "ZK Proofs",
             Self::MasternodeListDiff => "Masternode list diff inspector",
         }
     }
@@ -42,7 +40,6 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
         ToolsSubscreen::TransactionViewer,
         ToolsSubscreen::DocumentViewer,
         ToolsSubscreen::ContractViewer,
-        ToolsSubscreen::GroveSTARK,
         ToolsSubscreen::MasternodeListDiff,
     ];
 
@@ -63,7 +60,6 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
             ui::RootScreenType::RootScreenToolsMasternodeListDiffScreen => {
                 ToolsSubscreen::MasternodeListDiff
             }
-            ui::RootScreenType::RootScreenToolsGroveSTARKScreen => ToolsSubscreen::GroveSTARK,
             _ => ToolsSubscreen::PlatformInfo,
         },
         _ => ToolsSubscreen::PlatformInfo, // Fallback to Active screen if settings unavailable
@@ -157,10 +153,6 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
                                     ToolsSubscreen::MasternodeListDiff => {
                                         action = AppAction::SetMainScreen(
                                             RootScreenType::RootScreenToolsMasternodeListDiffScreen)
-                                    }
-                                    ToolsSubscreen::GroveSTARK => {
-                                        action = AppAction::SetMainScreen(
-                                            RootScreenType::RootScreenToolsGroveSTARKScreen)
                                     }
                                 }
                             }

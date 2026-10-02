@@ -59,11 +59,10 @@ impl NetworkChooserScreen {
         };
 
         let current_context = match current_network {
-            Network::Dash => mainnet_app_context,
+            Network::Mainnet => mainnet_app_context,
             Network::Testnet => testnet_app_context.unwrap_or(mainnet_app_context),
             Network::Devnet => devnet_app_context.unwrap_or(mainnet_app_context),
             Network::Regtest => local_app_context.unwrap_or(mainnet_app_context),
-            _ => mainnet_app_context,
         };
         let developer_mode = current_context.is_developer_mode();
 
@@ -99,7 +98,7 @@ impl NetworkChooserScreen {
 
     pub fn context_for_network(&self, network: Network) -> &Arc<AppContext> {
         match network {
-            Network::Dash => &self.mainnet_app_context,
+            Network::Mainnet => &self.mainnet_app_context,
             Network::Testnet if self.testnet_app_context.is_some() => {
                 self.testnet_app_context.as_ref().unwrap()
             }
@@ -179,7 +178,7 @@ impl NetworkChooserScreen {
                 ui.end_row();
 
                 // Render Mainnet Row
-                app_action |= self.render_network_row(ui, Network::Dash, "Mainnet");
+                app_action |= self.render_network_row(ui, Network::Mainnet, "Mainnet");
 
                 // Render Testnet Row
                 app_action |= self.render_network_row(ui, Network::Testnet, "Testnet");
@@ -457,11 +456,10 @@ impl NetworkChooserScreen {
                                     ui.add_space(8.0);
 
                                     let (network_name, zmq_ports) = match self.current_network {
-                                        Network::Dash => ("Mainnet", ("23708", "23708")),
+                                        Network::Mainnet => ("Mainnet", ("23708", "23708")),
                                         Network::Testnet => ("Testnet", ("23709", "23709")),
                                         Network::Devnet => ("Devnet", ("23710", "23710")),
                                         Network::Regtest => ("Regtest", ("20302", "20302")),
-                                        _ => ("Unknown", ("0", "0")),
                                     };
 
                                     ui.label(
@@ -649,11 +647,10 @@ impl NetworkChooserScreen {
     /// Check if the network is working
     fn check_network_status(&self, network: Network) -> bool {
         match network {
-            Network::Dash => self.mainnet_core_status_online,
+            Network::Mainnet => self.mainnet_core_status_online,
             Network::Testnet => self.testnet_core_status_online,
             Network::Devnet => self.devnet_core_status_online,
             Network::Regtest => self.local_core_status_online,
-            _ => false,
         }
     }
 }

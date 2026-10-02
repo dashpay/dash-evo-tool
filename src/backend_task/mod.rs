@@ -11,7 +11,6 @@ use dash_sdk::dpp::dashcore::bls_sig_utils::BLSSignature;
 use dash_sdk::dpp::dashcore::network::message_qrinfo::QRInfo;
 use dash_sdk::dpp::dashcore::BlockHash;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::model::grovestark_prover::ProofDataOutput;
 use crate::ui::tokens::tokens_screen::{
     ContractDescriptionInfo, IdentityTokenIdentifier, TokenInfo,
 };
@@ -33,14 +32,12 @@ use futures::future::join_all;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokens::TokenTask;
-use grovestark::GroveSTARKTask;
 
 pub mod broadcast_state_transition;
 pub mod contested_names;
 pub mod contract;
 pub mod core;
 pub mod document;
-pub mod grovestark;
 pub mod identity;
 pub mod mnlist;
 pub mod platform_info;
@@ -64,7 +61,6 @@ pub enum BackendTask {
     SystemTask(SystemTask),
     MnListTask(mnlist::MnListTask),
     PlatformInfo(PlatformInfoTaskRequestType),
-    GroveSTARKTask(GroveSTARKTask),
     None,
 }
 
@@ -110,8 +106,6 @@ pub enum BackendTaskSuccessResult {
     },
     UpdatedThemePreference(crate::ui::theme::ThemeMode),
     PlatformInfo(PlatformInfoTaskResult),
-    GeneratedZKProof(ProofDataOutput),
-    VerifiedZKProof(bool, ProofDataOutput),
     // MNList-specific results
     MnListFetchedDiff {
         base_height: u32,
@@ -204,9 +198,6 @@ impl AppContext {
             }
             BackendTask::PlatformInfo(platform_info_task) => {
                 self.run_platform_info_task(platform_info_task).await
-            }
-            BackendTask::GroveSTARKTask(grovestark_task) => {
-                grovestark::run_grovestark_task(grovestark_task, &sdk).await
             }
             BackendTask::None => Ok(BackendTaskSuccessResult::None),
         }

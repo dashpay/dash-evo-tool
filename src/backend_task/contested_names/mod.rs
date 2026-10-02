@@ -96,7 +96,7 @@ impl AppContext {
                 .vote_on_dpns_name(
                     &scheduled_vote.contested_name,
                     scheduled_vote.choice,
-                    &vec![(**voter).clone()],
+                    &[(**voter).clone()],
                     sdk,
                     sender,
                 )

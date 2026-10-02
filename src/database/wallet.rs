@@ -26,7 +26,7 @@ use std::str::FromStr;
 impl Database {
     /// Insert a new wallet into the wallet table
     pub fn store_wallet(&self, wallet: &Wallet, network: &Network) -> rusqlite::Result<()> {
-        let network_str = network.to_string();
+        let network_str = crate::database::network_name(network);
 
         // Serialize the extended public keys
         let master_ecdsa_bip44_account_0_epk_bytes =
@@ -73,7 +73,7 @@ impl Database {
     /// This clears dependent records (addresses, utxos, asset locks, identity links)
     /// to keep the database consistent before deleting the wallet itself.
     pub fn remove_wallet(&self, seed_hash: &[u8; 32], network: &Network) -> rusqlite::Result<()> {
-        let network_str = network.to_string();
+        let network_str = crate::database::network_name(network);
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
 
@@ -211,7 +211,7 @@ impl Database {
 
     /// Retrieve all wallets for a specific network, including their addresses, balances, and known addresses.
     pub fn get_wallets(&self, network: &Network) -> rusqlite::Result<Vec<Wallet>> {
-        let network_str = network.to_string();
+        let network_str = crate::database::network_name(network);
         let conn = self.conn.lock().unwrap();
 
         tracing::trace!("step 1: retrieve all wallets for the given network");
@@ -221,7 +221,7 @@ impl Database {
 
         let mut wallets_map: BTreeMap<[u8; 32], Wallet> = BTreeMap::new();
 
-        let wallet_rows = stmt.query_map([network_str.clone()], |row| {
+        let wallet_rows = stmt.query_map([network_str], |row| {
             let seed_hash: Vec<u8> = row.get(0)?;
             let encrypted_seed: Vec<u8> = row.get(1)?;
             let salt: Vec<u8> = row.get(2)?;
@@ -297,7 +297,7 @@ impl Database {
             "SELECT seed_hash, address, derivation_path, balance, path_reference, path_type FROM wallet_addresses WHERE seed_hash IN (SELECT seed_hash FROM wallet WHERE network = ?)",
         )?;
 
-        let address_rows = address_stmt.query_map([network_str.clone()], |row| {
+        let address_rows = address_stmt.query_map([network_str], |row| {
             let seed_hash: Vec<u8> = row.get(0)?;
             let address: String = row.get(1)?;
             let derivation_path: String = row.get(2)?;
@@ -353,8 +353,7 @@ impl Database {
                     .insert(address.clone(), derivation_path.clone());
                 tracing::trace!(
                     address = ?address,
-                    network = address.network().to_string(),
-                    expected_network = network.to_string(),
+                    expected_network = crate::database::network_name(network),
                     "loaded address from database");
 
                 // Add the address to the `watched_addresses` map with AddressInfo.
@@ -374,7 +373,7 @@ impl Database {
             "SELECT txid, vout, address, value, script_pubkey FROM utxos WHERE network = ?",
         )?;
 
-        let utxo_rows = utxo_stmt.query_map([network_str.clone()], |row| {
+        let utxo_rows = utxo_stmt.query_map([network_str], |row| {
             let txid: Vec<u8> = row.get(0)?;
             let vout: i64 = row.get(1)?;
             let address: String = row.get(2)?;
@@ -415,7 +414,7 @@ impl Database {
             "SELECT wallet, amount, transaction_data, instant_lock_data, chain_locked_height FROM asset_lock_transaction where identity_id IS NULL AND network = ?",
         )?;
 
-        let asset_lock_rows = asset_lock_stmt.query_map([network.to_string()], |row| {
+        let asset_lock_rows = asset_lock_stmt.query_map([network_str], |row| {
             let wallet_seed: Vec<u8> = row.get(0)?;
             let amount: Duffs = row.get(1)?;
             let tx_data: Vec<u8> = row.get(2)?;
@@ -488,7 +487,7 @@ impl Database {
             "SELECT data, wallet, wallet_index FROM identity WHERE network = ? AND wallet IS NOT NULL AND wallet_index IS NOT NULL",
         )?;
 
-        let identity_rows = identity_stmt.query_map([network_str.clone()], |row| {
+        let identity_rows = identity_stmt.query_map([network_str], |row| {
             let data: Vec<u8> = row.get(0)?;
             let wallet_seed_hash: Vec<u8> = row.get(1)?;
             let wallet_index: u32 = row.get(2)?;
@@ -526,48 +525,14 @@ impl Database {
     }
 }
 
-/// Ensure the address is valid for the given network and
-/// update its network if necessary.
-///
-/// Consumes the address and returns a new Address with the correct network.
+/// Validate an address against the wallet network.
 fn check_address_for_network(
     address_unchecked: Address<NetworkUnchecked>,
     network: &Network,
 ) -> Result<Address<NetworkChecked>, WalletError> {
-    let address_checked = address_unchecked
+    address_unchecked
         .require_network(*network)
-        .inspect_err(|e| {
-            tracing::error!("address is not valid for the network: {}", e);
-        })?;
-
-    // For devnet/regtest addresses, require_network() accepts testnet addresses; we need to overwrite it here in case there is
-    // a mismatch to match the network we are using.
-    //
-    // See also logic in [`Address::is_valid_for_network()`].
-    match address_checked.network() {
-        // When the address is correct, do nothing
-        address_network if network == address_network => Ok(address_checked),
-        // For devnet/regtest addresses, address type can default to testnet, require_network() accepts this;
-        //  we need to overwrite it with correct network.
-        Network::Testnet if network == &Network::Devnet || network == &Network::Regtest => {
-            Ok(Address::new(*network, address_checked.payload().clone()))
-        }
-        // other cases, like mainnet or testnet, return an error on mismatch
-        address_network => {
-            tracing::error!(address = ?address_checked,
-            network = address_network.to_string(),
-            required_network = network.to_string(),
-            "address has invalid network set");
-
-            Err(WalletError::AddressError(
-                dashcore::address::Error::NetworkValidation {
-                    required: *network,
-                    found: *address_checked.network(),
-                    address: address_checked.as_unchecked().clone(),
-                },
-            ))
-        }
-    }
+        .map_err(WalletError::from)
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -580,5 +545,61 @@ pub enum WalletError {
 impl From<WalletError> for rusqlite::Error {
     fn from(err: WalletError) -> Self {
         rusqlite::Error::UserFunctionError(Box::new(err))
+    }
+}
+
+#[cfg(test)]
+mod compatibility_tests {
+    use super::*;
+    use dash_sdk::dpp::dashcore::{PrivateKey, secp256k1::Secp256k1};
+    use dash_sdk::dpp::key_wallet::bip32::ExtendedPrivKey;
+
+    #[test]
+    fn loads_and_removes_wallet_in_legacy_mainnet_namespace() {
+        let db = Database::new(":memory:").unwrap();
+        db.initialize(std::path::Path::new("unused.db")).unwrap();
+        let private = ExtendedPrivKey::new_master(Network::Mainnet, &[42; 64]).unwrap();
+        let public = ExtendedPubKey::from_priv(&Secp256k1::new(), &private);
+        db.execute(
+            "INSERT INTO wallet (seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, alias, is_main, uses_password, network) VALUES (?, ?, X'', X'', ?, 'legacy', 1, 0, 'dash')",
+            params![[7u8; 32].as_slice(), [42u8; 64].as_slice(), public.encode().as_slice()],
+        ).unwrap();
+        let wallets = db.get_wallets(&Network::Mainnet).unwrap();
+        assert_eq!(wallets.len(), 1);
+        assert_eq!(wallets[0].seed_hash(), [7; 32]);
+        assert_eq!(wallets[0].alias.as_deref(), Some("legacy"));
+        assert!(db.get_wallets(&Network::Testnet).unwrap().is_empty());
+        db.remove_wallet(&[7; 32], &Network::Mainnet).unwrap();
+        assert!(db.get_wallets(&Network::Mainnet).unwrap().is_empty());
+    }
+
+    #[test]
+    fn checks_mainnet_and_shared_test_network_addresses() {
+        let private = PrivateKey::from_byte_array(&[42; 32], Network::Mainnet).unwrap();
+        let public = private.public_key(&Secp256k1::new());
+        for source in [
+            Network::Mainnet,
+            Network::Testnet,
+            Network::Devnet,
+            Network::Regtest,
+        ] {
+            let address = Address::p2pkh(&public, source).to_string();
+            for target in [
+                Network::Mainnet,
+                Network::Testnet,
+                Network::Devnet,
+                Network::Regtest,
+            ] {
+                let result =
+                    check_address_for_network(Address::from_str(&address).unwrap(), &target);
+                assert_eq!(
+                    result.is_ok(),
+                    (source == Network::Mainnet) == (target == Network::Mainnet)
+                );
+                if let Ok(checked) = result {
+                    assert_eq!(checked.to_string(), address);
+                }
+            }
+        }
     }
 }

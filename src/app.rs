@@ -21,7 +21,6 @@ use crate::ui::theme::ThemeMode;
 use crate::ui::tokens::tokens_screen::{TokensScreen, TokensSubscreen};
 use crate::ui::tools::contract_visualizer_screen::ContractVisualizerScreen;
 use crate::ui::tools::document_visualizer_screen::DocumentVisualizerScreen;
-use crate::ui::tools::grovestark_screen::GroveSTARKScreen;
 use crate::ui::tools::masternode_list_diff_screen::MasternodeListDiffScreen;
 use crate::ui::tools::platform_info_screen::PlatformInfoScreen;
 use crate::ui::tools::proof_log_screen::ProofLogScreen;
@@ -169,7 +168,7 @@ impl AppState {
 
         let subtasks = Arc::new(TaskManager::new());
         let mainnet_app_context = match AppContext::new(
-            Network::Dash,
+            Network::Mainnet,
             db.clone(),
             password_info.clone(),
             subtasks.clone(),
@@ -221,7 +220,6 @@ impl AppState {
         let mut contract_visualizer_screen = ContractVisualizerScreen::new(&mainnet_app_context);
         let mut proof_log_screen = ProofLogScreen::new(&mainnet_app_context);
         let mut platform_info_screen = PlatformInfoScreen::new(&mainnet_app_context);
-        let mut grovestark_screen = GroveSTARKScreen::new(&mainnet_app_context);
         let mut document_query_screen = DocumentQueryScreen::new(&mainnet_app_context);
         let mut tokens_balances_screen =
             TokensScreen::new(&mainnet_app_context, TokensSubscreen::MyTokens);
@@ -236,7 +234,7 @@ impl AppState {
             testnet_app_context.as_ref(),
             devnet_app_context.as_ref(),
             local_app_context.as_ref(),
-            Network::Dash,
+            Network::Mainnet,
             overwrite_dash_conf,
         );
 
@@ -263,7 +261,6 @@ impl AppState {
             document_visualizer_screen = DocumentVisualizerScreen::new(testnet_app_context);
             contract_visualizer_screen = ContractVisualizerScreen::new(testnet_app_context);
             document_query_screen = DocumentQueryScreen::new(testnet_app_context);
-            grovestark_screen = GroveSTARKScreen::new(testnet_app_context);
             wallets_balances_screen = WalletsBalancesScreen::new(testnet_app_context);
             proof_log_screen = ProofLogScreen::new(testnet_app_context);
             platform_info_screen = PlatformInfoScreen::new(testnet_app_context);
@@ -291,7 +288,6 @@ impl AppState {
             document_query_screen = DocumentQueryScreen::new(devnet_app_context);
             masternode_list_diff_screen = MasternodeListDiffScreen::new(devnet_app_context);
             contract_visualizer_screen = ContractVisualizerScreen::new(devnet_app_context);
-            grovestark_screen = GroveSTARKScreen::new(devnet_app_context);
             wallets_balances_screen = WalletsBalancesScreen::new(devnet_app_context);
             proof_log_screen = ProofLogScreen::new(devnet_app_context);
             platform_info_screen = PlatformInfoScreen::new(devnet_app_context);
@@ -315,7 +311,6 @@ impl AppState {
             document_visualizer_screen = DocumentVisualizerScreen::new(local_app_context);
             contract_visualizer_screen = ContractVisualizerScreen::new(local_app_context);
             document_query_screen = DocumentQueryScreen::new(local_app_context);
-            grovestark_screen = GroveSTARKScreen::new(local_app_context);
             wallets_balances_screen = WalletsBalancesScreen::new(local_app_context);
             masternode_list_diff_screen = MasternodeListDiffScreen::new(local_app_context);
             proof_log_screen = ProofLogScreen::new(local_app_context);
@@ -345,7 +340,7 @@ impl AppState {
             .clone()
             .unwrap_or_else(|| "tcp://127.0.0.1:23708".to_string());
         let mainnet_core_zmq_listener = CoreZMQListener::spawn_listener(
-            Network::Dash,
+            Network::Mainnet,
             &mainnet_core_zmq_endpoint,
             core_message_sender.clone(), // Clone the sender for each listener
             Some(mainnet_app_context.sx_zmq_status.clone()),
@@ -451,10 +446,6 @@ impl AppState {
                     Screen::PlatformInfoScreen(platform_info_screen),
                 ),
                 (
-                    RootScreenType::RootScreenToolsGroveSTARKScreen,
-                    Screen::GroveSTARKScreen(grovestark_screen),
-                ),
-                (
                     RootScreenType::RootScreenDocumentQuery,
                     Screen::DocumentQueryScreen(document_query_screen),
                 ),
@@ -524,11 +515,10 @@ impl AppState {
 
     pub fn current_app_context(&self) -> &Arc<AppContext> {
         match self.chosen_network {
-            Network::Dash => &self.mainnet_app_context,
+            Network::Mainnet => &self.mainnet_app_context,
             Network::Testnet => self.testnet_app_context.as_ref().expect("expected testnet"),
             Network::Devnet => self.devnet_app_context.as_ref().expect("expected devnet"),
             Network::Regtest => self.local_app_context.as_ref().expect("expected local"),
-            _ => todo!(),
         }
     }
 
@@ -608,7 +598,7 @@ impl AppState {
     //     task::spawn_blocking(move || {
     //         while let Ok((tx, islock, network)) = instant_send_receiver.recv() {
     //             let app_context = match network {
-    //                 Network::Dash => &mainnet_app_context,
+    //                 Network::Mainnet => &mainnet_app_context,
     //                 Network::Testnet => {
     //                     if let Some(context) = testnet_app_context.as_ref() {
     //                         context
@@ -695,7 +685,7 @@ impl App for AppState {
         // **Poll the instant_send_receiver for any new InstantSend messages**
         while let Ok((message, network)) = self.core_message_receiver.try_recv() {
             let app_context = match network {
-                Network::Dash => &self.mainnet_app_context,
+                Network::Mainnet => &self.mainnet_app_context,
                 Network::Testnet => {
                     if let Some(context) = self.testnet_app_context.as_ref() {
                         context
@@ -720,7 +710,6 @@ impl App for AppState {
                         continue;
                     }
                 }
-                _ => continue,
             };
             match message {
                 ZMQMessage::ISLockedTransaction(tx, is_lock) => {

@@ -19,7 +19,6 @@ nix = { version = "0.30.1", features = ["signal"] }
 eframe = { version = "0.32.0", features = ["persistence"] }
 base64 = "0.22.1"
 dash-sdk = { git = "https://www.github.com/dashpay/platform", rev = "69b85c81af8e000e8506edaa13406d1f6274af5a", features = ["core_key_wallet", "core_bincode", "core_quorum-validation", "core_verification", "core_rpc_client"] }
-grovestark = { git = "https://www.github.com/pauldelucia/grovestark", rev = "5b9e289cca54c79b1305d5f4f40bf1148f1eb0e3" }
 rayon = "1.8"
 thiserror = "2.0.12"
 serde = "1.0.219"
@@ -76,6 +75,3 @@ egui_kittest = { version = "0.32.0", features = ["eframe"] }
 
 [lints.clippy]
 uninlined_format_args = "allow"
-
-[patch.crates-io]
-elliptic-curve-tools = { git = "https://github.com/mikelodder7/elliptic-curve-tools", rev = "c989865fa71503d2cbf5c5795c4ebcf4a2f3221c" }

@@ -10,8 +10,6 @@ use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
 use dash_sdk::dpp::prelude::AssetLockProof;
-use dash_sdk::dpp::state_transition::identity_topup_transition::IdentityTopUpTransition;
-use dash_sdk::dpp::state_transition::identity_topup_transition::methods::IdentityTopUpTransitionMethodsV0;
 use dash_sdk::platform::Fetch;
 use dash_sdk::platform::transition::top_up_identity::TopUpIdentity;
 use std::time::Duration;
@@ -147,7 +145,7 @@ impl AppContext {
                         });
                         for utxo in used_utxos.keys() {
                             self.db
-                                .drop_utxo(utxo, &self.network.to_string())
+                                .drop_utxo(utxo, crate::database::network_name(&self.network))
                                 .map_err(|e| e.to_string())?;
                         }
                     }
@@ -219,7 +217,7 @@ impl AppContext {
                             !utxo_map.is_empty()
                         });
                         self.db
-                            .drop_utxo(&utxo, &self.network.to_string())
+                            .drop_utxo(&utxo, crate::database::network_name(&self.network))
                             .map_err(|e| e.to_string())?;
                     }
 
@@ -254,11 +252,10 @@ impl AppContext {
 
         let updated_identity_balance = match qualified_identity
             .identity
-            .top_up_identity(
+            .top_up_identity_with_private_key(
                 &sdk,
                 asset_lock_proof.clone(),
                 &asset_lock_proof_private_key,
-                None,
                 None,
             )
             .await
@@ -268,30 +265,14 @@ impl AppContext {
                 if matches!(e, Error::Protocol(ProtocolError::UnknownVersionError(_))) {
                     qualified_identity
                         .identity
-                        .top_up_identity(
+                        .top_up_identity_with_private_key(
                             &sdk,
                             asset_lock_proof.clone(),
                             &asset_lock_proof_private_key,
                             None,
-                            None,
                         )
                         .await
-                        .map_err(|e| {
-                            let identity_create_transition =
-                                IdentityTopUpTransition::try_from_identity(
-                                    &qualified_identity.identity,
-                                    asset_lock_proof,
-                                    asset_lock_proof_private_key.inner.as_ref(),
-                                    0,
-                                    self.platform_version(),
-                                    None,
-                                )
-                                .expect("expected to make transition");
-                            format!(
-                                "error: {}, transaction is {:?}",
-                                e, identity_create_transition
-                            )
-                        })?
+                        .map_err(|e| e.to_string())?
                 } else {
                     return Err(e.to_string());
                 }

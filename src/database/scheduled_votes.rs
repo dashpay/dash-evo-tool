@@ -96,7 +96,7 @@ impl Database {
         app_context: &AppContext,
         votes: &Vec<ScheduledDPNSVote>,
     ) -> rusqlite::Result<()> {
-        let network = app_context.network.to_string();
+        let network = crate::database::network_name(&app_context.network);
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         for vote in votes {
@@ -116,7 +116,7 @@ impl Database {
         identity_id: &[u8],
         contested_name: &str,
     ) -> rusqlite::Result<()> {
-        let network = app_context.network.to_string();
+        let network = crate::database::network_name(&app_context.network);
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "DELETE FROM scheduled_votes WHERE identity_id = ? AND contested_name = ? AND network = ?",
@@ -131,7 +131,7 @@ impl Database {
         identity_id: &[u8],
         contested_name: String,
     ) -> rusqlite::Result<()> {
-        let network = app_context.network.to_string();
+        let network = crate::database::network_name(&app_context.network);
         self.execute(
             "UPDATE scheduled_votes SET executed = 1 WHERE identity_id = ? AND contested_name = ? AND network = ?",
             params![identity_id, contested_name, network],
@@ -143,7 +143,7 @@ impl Database {
         &self,
         app_context: &AppContext,
     ) -> rusqlite::Result<Vec<ScheduledDPNSVote>> {
-        let network = app_context.network.to_string();
+        let network = crate::database::network_name(&app_context.network);
 
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare("SELECT * FROM scheduled_votes WHERE network = ?")?;
@@ -208,7 +208,7 @@ impl Database {
 
     /// Clear all scheduled votes from the db
     pub fn clear_all_scheduled_votes(&self, app_context: &AppContext) -> rusqlite::Result<()> {
-        let network = app_context.network.to_string();
+        let network = crate::database::network_name(&app_context.network);
         let conn = self.conn.lock().unwrap();
 
         conn.execute(
@@ -220,7 +220,7 @@ impl Database {
     }
 
     pub fn clear_executed_scheduled_votes(&self, app_context: &AppContext) -> rusqlite::Result<()> {
-        let network = app_context.network.to_string();
+        let network = crate::database::network_name(&app_context.network);
         let conn = self.conn.lock().unwrap();
 
         conn.execute(

@@ -93,11 +93,10 @@ fn format_extended_epoch_info(
         };
 
     let epoch_estimated_time = match network {
-        Network::Dash => 788_400_000,
+        Network::Mainnet => 788_400_000,
         Network::Testnet => 3_600_000,
         Network::Devnet => 3_600_000,
         Network::Regtest => 1_200_000,
-        _ => 3_600_000,
     };
 
     let readable_epoch_end_time = match Utc
@@ -424,6 +423,9 @@ impl AppContext {
 
                 // Try the simplest possible query first - no where clauses or ordering
                 let queued_document_query = DocumentQuery {
+                    select: dash_sdk::drive::query::SelectProjection::documents(),
+                    group_by: Vec::new(),
+                    having: Vec::new(),
                     data_contract: Arc::new(withdrawal_contract),
                     document_type_name: "withdrawal".to_string(),
                     where_clauses: vec![], // No filtering - get all withdrawals to test basic query
@@ -473,6 +475,9 @@ impl AppContext {
                 .expect("expected to get withdrawal contract");
 
                 let completed_document_query = DocumentQuery {
+                    select: dash_sdk::drive::query::SelectProjection::documents(),
+                    group_by: Vec::new(),
+                    having: Vec::new(),
                     data_contract: Arc::new(withdrawal_contract),
                     document_type_name: "withdrawal".to_string(),
                     where_clauses: vec![WhereClause {

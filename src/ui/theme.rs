@@ -1144,7 +1144,12 @@ impl ComponentStyles {
     fn styled_label(label: impl Into<WidgetText>, color: Color32, strong: bool) -> WidgetText {
         let rt = match label.into() {
             WidgetText::RichText(rt) => rt.as_ref().clone(),
-            // LayoutJob/Galley variants are not used by any callsite.
+            WidgetText::LayoutJob(mut job) => {
+                for section in &mut std::sync::Arc::make_mut(&mut job).sections {
+                    section.format.color = color;
+                }
+                return WidgetText::LayoutJob(job);
+            }
             other => RichText::new(other.text().to_string()),
         };
         let rt = if strong { rt.strong() } else { rt };
@@ -1237,6 +1242,33 @@ impl ComponentStyles {
             .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
             .stroke(egui::Stroke::NONE)
             .min_size(Self::TOOLBAR_BUTTON_MIN_SIZE)
+    }
+
+    /// Add a toolbar menu button with a clearly visible dropdown indicator.
+    pub fn add_toolbar_menu_button(
+        ui: &mut egui::Ui,
+        label: &str,
+        fill: egui::Color32,
+    ) -> egui::Response {
+        let font = egui::TextStyle::Button.resolve(ui.style());
+        let mut job = egui::text::LayoutJob::default();
+        job.append(
+            label,
+            0.0,
+            egui::TextFormat::simple(font.clone(), DashColors::WHITE),
+        );
+        job.append(
+            " ▾",
+            0.0,
+            egui::TextFormat {
+                font_id: egui::FontId::new(font.size * 1.5, font.family),
+                color: DashColors::WHITE,
+                line_height: Some(font.size),
+                valign: egui::Align::Center,
+                ..Default::default()
+            },
+        );
+        Self::add_toolbar_button(ui, job, fill)
     }
 
     /// Add a toolbar button to the UI with pointer cursor on hover.

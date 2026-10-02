@@ -587,6 +587,7 @@ As a power user, I want to load an existing identity by its ID and owner private
 
 - Enter identity ID and private key.
 - Identity details are fetched and displayed.
+- Reachable from the Identities page at any time, including when identities are already loaded: the top-bar "Add" menu and the "Add a new identity" card both offer "Load an existing identity".
 
 ### IDN-003: Load evonode/masternode identity [Superseded by MN-001]
 **Persona:** Priya

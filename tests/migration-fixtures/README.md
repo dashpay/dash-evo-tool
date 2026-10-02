@@ -81,7 +81,9 @@ separate job. The Monday schedule runs only the lightweight pin/script checks
 and fixture coverage against releases, without compiling or running Rust tests.
 GitHub runs schedules from the default branch (`v1.0-dev`); the workflow file
 must exist there before scheduled checks can run.
-The weekly release gate checks `tests.yml` and `clippy.yml`.
+The weekly release gate checks the latest completed `push` run of `tests.yml`
+and `clippy.yml` on the release branch. Scheduled or manually dispatched runs
+cannot replace that result.
 
 ## Why this exists
 

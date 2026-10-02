@@ -69,14 +69,14 @@ jobs:
 
           # CI-red is a HARD block — never overridable by force or version
           # (it's a safety net, not a convenience toggle). Treated as "latest
-          # *completed* run of each CI workflow on v1.0-dev" rather than
+          # *completed push* run of each CI workflow on the release branch" rather than
           # HEAD-sha check-runs, because tests.yml/clippy.yml are path-filtered
           # and a docs-only HEAD would otherwise have zero check-runs and read
           # as falsely green. A workflow that has never run is treated as
-          # absent, not red.
+          # absent, not red. Scheduled checks do not execute the Rust suite.
           red=false
           for wf in tests.yml clippy.yml; do
-            concl=$(gh run list --workflow "$wf" --branch "$REF_NAME" --status completed \
+            concl=$(gh run list --workflow "$wf" --branch "$REF_NAME" --event push --status completed \
                       --limit 1 --json conclusion --jq '.[0].conclusion // ""')
             case "$concl" in
               failure | cancelled | timed_out | startup_failure) red=true ;;

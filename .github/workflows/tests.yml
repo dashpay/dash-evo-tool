@@ -18,6 +18,7 @@ on:
       - "scripts/migration-fixtures/**"
       - "scripts/ci/**"
       - ".github/workflows/tests.yml"
+      - ".github/workflows/weekly-build.yml"
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     paths: *code_paths
@@ -57,6 +58,7 @@ jobs:
         run: |
           bash scripts/migration-fixtures/test-scripts.sh
           bash scripts/ci/test-run-tests.sh
+          bash scripts/ci/test-weekly-gate.sh
 
       # Fetches only the upstream commit graph plus the pinned rev's migration
       # sources — seconds, not a full platform clone. See the script header for

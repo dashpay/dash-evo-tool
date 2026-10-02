@@ -222,7 +222,7 @@ fn render_top_island(
                                 if !doc_actions.is_empty() {
                                     ui.add_space(3.0);
 
-                                    let resp = ComponentStyles::add_toolbar_button(
+                                    let resp = ComponentStyles::add_toolbar_menu_button(
                                         ui,
                                         "Documents",
                                         network_accent,
@@ -252,7 +252,7 @@ fn render_top_island(
                                     ui.add_space(3.0);
 
                                     let popup_id = ui.auto_id_with("contracts_popup");
-                                    let resp = ComponentStyles::add_toolbar_button(
+                                    let resp = ComponentStyles::add_toolbar_menu_button(
                                         ui,
                                         "Contracts",
                                         network_accent,
@@ -279,16 +279,19 @@ fn render_top_island(
                                 // Render other buttons normally
                                 for (text, btn_act) in other_actions.into_iter().rev() {
                                     ui.add_space(3.0);
-                                    let label = if matches!(btn_act, DesiredAppAction::Menu(_)) {
-                                        format!("{text} ▾")
+                                    let response = if matches!(btn_act, DesiredAppAction::Menu(_)) {
+                                        ComponentStyles::add_toolbar_menu_button(
+                                            ui,
+                                            text,
+                                            network_accent,
+                                        )
                                     } else {
-                                        text.to_owned()
+                                        ComponentStyles::add_toolbar_button(
+                                            ui,
+                                            text,
+                                            network_accent,
+                                        )
                                     };
-                                    let response = ComponentStyles::add_toolbar_button(
-                                        ui,
-                                        &label,
-                                        network_accent,
-                                    );
                                     if let DesiredAppAction::Menu(items) = btn_act {
                                         action |= show_action_menu(
                                             ui,

@@ -16,6 +16,10 @@ pub struct LegacyRestoreSummary {
     pub wallets_skipped_malformed: u32,
     /// Wallet rows that could not be read or written.
     pub wallets_failed: u32,
+    /// Imported (single) keys copied back into this version's secure storage.
+    pub imported_keys_restored: u32,
+    /// Imported-key rows that could not be read or written.
+    pub imported_keys_failed: u32,
     /// Identities that received at least one restored key or link.
     pub identities_updated: u32,
     /// Identity private keys restored.
@@ -29,12 +33,15 @@ pub struct LegacyRestoreSummary {
 impl LegacyRestoreSummary {
     /// Whether anything was written by this run.
     pub fn restored_anything(&self) -> bool {
-        self.wallets_restored > 0 || self.identities_updated > 0
+        self.wallets_restored > 0 || self.imported_keys_restored > 0 || self.identities_updated > 0
     }
 
     /// Whether some saved data could not be restored.
     pub fn has_problems(&self) -> bool {
-        self.wallets_skipped_malformed > 0 || self.wallets_failed > 0 || self.identities_failed > 0
+        self.wallets_skipped_malformed > 0
+            || self.wallets_failed > 0
+            || self.imported_keys_failed > 0
+            || self.identities_failed > 0
     }
 
     /// The user-facing summary, built from complete sentences only.
@@ -54,6 +61,12 @@ impl LegacyRestoreSummary {
             sentences.push(format!(
                 "Wallets restored: {count}.",
                 count = self.wallets_restored
+            ));
+        }
+        if self.imported_keys_restored > 0 {
+            sentences.push(format!(
+                "Imported keys restored: {count}.",
+                count = self.imported_keys_restored
             ));
         }
         if self.identities_updated > 0 {
@@ -85,6 +98,14 @@ impl LegacyRestoreSummary {
                 "Import those wallets again from their recovery phrases to keep using them."
                     .to_string(),
             );
+        }
+        if self.imported_keys_failed > 0 {
+            sentences.push(format!(
+                "Imported key records that could not be restored: {count}.",
+                count = self.imported_keys_failed
+            ));
+            sentences
+                .push("Try again, or import those keys again from their private keys.".to_string());
         }
         if self.identities_failed > 0 {
             sentences.push(format!(
@@ -216,5 +237,23 @@ mod tests {
             message.contains("Identities that could not be restored: 1."),
             "{message}"
         );
+    }
+
+    #[test]
+    fn imported_keys_are_counted_and_failures_surfaced() {
+        let summary = LegacyRestoreSummary {
+            imported_keys_restored: 2,
+            imported_keys_failed: 1,
+            ..found()
+        };
+        let message = summary.user_message();
+        assert!(summary.restored_anything());
+        assert!(summary.has_problems());
+        assert!(message.contains("Imported keys restored: 2."), "{message}");
+        assert!(
+            message.contains("Imported key records that could not be restored: 1."),
+            "{message}"
+        );
+        assert!(!message.contains("Nothing new was restored."), "{message}");
     }
 }

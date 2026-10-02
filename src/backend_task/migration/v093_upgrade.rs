@@ -42,6 +42,7 @@ use crate::backend_task::migration::finish_unwire::{
 };
 use crate::backend_task::migration::legacy_settings::{SettingsImport, import_legacy_settings};
 use crate::context::AppContext;
+use crate::context::migration_status::{EarlierWalletsRepair, MigrationState};
 use crate::database::Database;
 use crate::database::test_helpers::{LegacyIdentityFixture, legacy_master_epk_bytes};
 use crate::model::qualified_identity::encrypted_key_storage::{
@@ -1693,6 +1694,27 @@ async fn affected_mainnet_profile(
 ) -> (Arc<AppContext>, Arc<WalletBackend>, Fixture) {
     let fixture = write_v093_database_on(dir, Network::Mainnet);
     let conn = Connection::open(dir.join("data.db")).expect("open data.db");
+    add_repair_single_key(&conn);
+    drop(conn);
+
+    let (ctx, _) = boot_on(dir, Network::Mainnet);
+    let backend = wire_backend(&ctx).await;
+    ctx.app_kv()
+        .put(
+            DetScope::Global,
+            &sentinel_key_for(Network::Mainnet),
+            &MigrationCompletion {
+                completed_at: 1,
+                sha: "1.0.0-weekly.20260717".to_string(),
+                network_count: 1,
+            },
+        )
+        .expect("record the earlier, row-less drain");
+    (ctx, backend, fixture)
+}
+
+/// Save [`REPAIR_SINGLE_KEY`], unprotected, under mainnet's `dash` spelling.
+fn add_repair_single_key(conn: &Connection) {
     conn.execute_batch(
         "CREATE TABLE single_key_wallet (
             key_hash BLOB NOT NULL PRIMARY KEY,
@@ -1718,22 +1740,6 @@ async fn affected_mainnet_profile(
         ],
     )
     .expect("insert single key");
-    drop(conn);
-
-    let (ctx, _) = boot_on(dir, Network::Mainnet);
-    let backend = wire_backend(&ctx).await;
-    ctx.app_kv()
-        .put(
-            DetScope::Global,
-            &sentinel_key_for(Network::Mainnet),
-            &MigrationCompletion {
-                completed_at: 1,
-                sha: "1.0.0-weekly.20260717".to_string(),
-                network_count: 1,
-            },
-        )
-        .expect("record the earlier, row-less drain");
-    (ctx, backend, fixture)
 }
 
 /// One launch of the storage update. No password is ever supplied: the repair
@@ -1761,8 +1767,11 @@ async fn repair_restores_rows_an_earlier_drain_skipped_exactly_once() {
     launch(&ctx).await;
 
     assert_eq!(
-        *ctx.migration_status().state(),
-        crate::context::migration_status::MigrationState::RecoveredEarlierWallets { count: 3 },
+        ctx.migration_status().take_earlier_wallets_repair(),
+        Some(EarlierWalletsRepair {
+            recovered: 3,
+            incomplete: false,
+        }),
         "two wallets and one imported key were brought back",
     );
     let seeds = backend.wallet_seeds();
@@ -1805,10 +1814,8 @@ async fn repair_restores_rows_an_earlier_drain_skipped_exactly_once() {
 
     // A second launch is a no-op.
     launch(&ctx).await;
-    assert_eq!(
-        *ctx.migration_status().state(),
-        crate::context::migration_status::MigrationState::Ready,
-    );
+    assert_eq!(*ctx.migration_status().state(), MigrationState::Ready);
+    assert_eq!(ctx.migration_status().take_earlier_wallets_repair(), None);
     backend.shutdown().await;
 }
 
@@ -1824,7 +1831,7 @@ async fn a_wallet_removed_after_the_repair_is_not_brought_back() {
     launch(&ctx).await;
     assert_eq!(
         *ctx.migration_status().state(),
-        crate::context::migration_status::MigrationState::Ready,
+        MigrationState::Ready,
         "the later launch ran and found nothing to repair",
     );
 
@@ -1885,9 +1892,149 @@ async fn repair_never_overwrites_and_skips_rows_with_the_current_spelling() {
         "only rows with the pre-v29 spelling are repaired",
     );
     assert_eq!(
-        *ctx.migration_status().state(),
-        crate::context::migration_status::MigrationState::RecoveredEarlierWallets { count: 2 },
+        ctx.migration_status().take_earlier_wallets_repair(),
+        Some(EarlierWalletsRepair {
+            recovered: 2,
+            incomplete: false,
+        }),
         "the protected wallet and the imported key were brought back",
+    );
+    backend.shutdown().await;
+}
+
+/// Whether the repair fixture's imported key is in this install's key list.
+fn has_repair_single_key(backend: &WalletBackend) -> bool {
+    backend
+        .single_key()
+        .list()
+        .iter()
+        .any(|key| key.address == repair_single_key_address())
+}
+
+/// The repair runs only as part of the upgrade: a pass that could not bring
+/// everything back says so, and no later launch retries it on its own, because
+/// by then the user may have removed what it would bring back. The rows stay
+/// in the earlier version's database for the user to restore on purpose.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_repair_is_reported_and_never_retried_on_a_later_launch() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let (ctx, backend, _fixture) = affected_mainnet_profile(tmp.path()).await;
+    let data_db = tmp.path().join("data.db");
+    Connection::open(&data_db)
+        .expect("open data.db")
+        .execute_batch(
+            "DROP TABLE single_key_wallet;
+             CREATE TABLE single_key_wallet (network TEXT NOT NULL);
+             INSERT INTO single_key_wallet (network) VALUES ('dash');",
+        )
+        .expect("damage the imported-key table");
+
+    launch(&ctx).await;
+
+    assert_eq!(
+        ctx.migration_status().take_earlier_wallets_repair(),
+        Some(EarlierWalletsRepair {
+            recovered: 2,
+            incomplete: true,
+        }),
+        "the wallets come back, and the unreadable keys are reported, not swallowed",
+    );
+    assert!(!has_repair_single_key(&backend));
+
+    // The table becomes readable again; a later launch still leaves it alone.
+    let conn = Connection::open(&data_db).expect("open data.db");
+    conn.execute_batch("DROP TABLE single_key_wallet;")
+        .expect("drop the damaged table");
+    add_repair_single_key(&conn);
+    drop(conn);
+    launch(&ctx).await;
+
+    assert_eq!(ctx.migration_status().take_earlier_wallets_repair(), None);
+    assert!(
+        !has_repair_single_key(&backend),
+        "only the upgrade launch imports automatically",
+    );
+
+    // Restore from Previous Version, which the notice points to, brings it back.
+    let summary = super::legacy_restore::run(&ctx).await.expect("restore");
+    assert_eq!(summary.imported_keys_restored, 1, "{summary:?}");
+    assert_eq!(summary.imported_keys_failed, 0, "{summary:?}");
+    assert!(has_repair_single_key(&backend));
+    backend.shutdown().await;
+}
+
+/// The repair's notice must outlive any other outcome of the same launch: the
+/// repair never runs again, so a notice lost behind a pending identity or vote
+/// warning is lost for good.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_repair_notice_survives_pending_identity_and_vote_warnings() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let (ctx, backend, _fixture) = affected_mainnet_profile(tmp.path()).await;
+    let app_kv = ctx.app_kv();
+    finish_unwire::write_identities_warning(&app_kv, Network::Mainnet, 2)
+        .expect("pending identity warning");
+    finish_unwire::write_vote_warning(&app_kv, Network::Mainnet, 1).expect("pending vote warning");
+
+    launch(&ctx).await;
+
+    assert_eq!(
+        *ctx.migration_status().state(),
+        MigrationState::SucceededWithUnreadableData {
+            identities: 2,
+            votes: 1,
+            top_ups: 0,
+        },
+        "the pending warnings are still published",
+    );
+    assert_eq!(
+        ctx.migration_status().take_earlier_wallets_repair(),
+        Some(EarlierWalletsRepair {
+            recovered: 3,
+            incomplete: false,
+        }),
+        "and the repair's notice rides along",
+    );
+    backend.shutdown().await;
+}
+
+/// A key whose secret is in the vault but missing from the key list (its
+/// details lost) is still present: the repair must not replace a
+/// password-protected secret with the unprotected legacy copy.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn repair_never_overwrites_a_protected_key_missing_from_the_key_list() {
+    use crate::wallet_backend::secret_seam::SecretSeam;
+    use crate::wallet_backend::single_key::{label_for_address, single_key_namespace_id};
+    use platform_wallet_storage::secrets::{SecretBytes, SecretString};
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let (ctx, backend, _fixture) = affected_mainnet_profile(tmp.path()).await;
+    let store = ctx.secret_store();
+    let label = label_for_address(&repair_single_key_address());
+    SecretSeam::new(&store)
+        .put_secret_protected(
+            &single_key_namespace_id(),
+            &label,
+            &SecretBytes::from_slice(&REPAIR_SINGLE_KEY),
+            &SecretString::new("correcthorsebattery"),
+        )
+        .expect("a protected secret without details");
+
+    launch(&ctx).await;
+
+    assert_eq!(
+        SecretSeam::new(&store)
+            .scheme(&single_key_namespace_id(), &label)
+            .expect("scheme"),
+        SecretScheme::Protected,
+        "the protected secret is untouched",
+    );
+    assert_eq!(
+        ctx.migration_status().take_earlier_wallets_repair(),
+        Some(EarlierWalletsRepair {
+            recovered: 2,
+            incomplete: false,
+        }),
+        "only the two wallets were brought back",
     );
     backend.shutdown().await;
 }

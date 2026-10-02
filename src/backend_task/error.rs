@@ -1037,6 +1037,11 @@ pub enum TaskError {
     )]
     ImportedKeyNotFound,
 
+    /// An add-only import found this key's secret or its details already
+    /// stored, and left both untouched.
+    #[error("This key is already imported. Pick it from your wallet list to use it.")]
+    ImportedKeyAlreadyStored,
+
     /// Application settings could not be saved to the app k/v store.
     #[error("Could not save your preferences. Check available disk space and try again.")]
     AppSettingsWrite {

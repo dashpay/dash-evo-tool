@@ -3,8 +3,10 @@
 //!
 //! User-initiated and repeatable. Wallet seed envelopes are copied only where
 //! the vault has no copy of that seed (never overwritten, protected envelopes
-//! travel as-is), and identity keys go through the per-identity #889 recovery,
-//! which restores only missing items and never resurrects a deleted identity.
+//! travel as-is), unprotected imported keys only where neither their secret
+//! nor their details are stored, and identity keys go through the per-identity
+//! #889 recovery, which restores only missing items and never resurrects a
+//! deleted identity.
 //! `data.db` is opened read-only; the one-time drain sentinel is not consulted
 //! or changed.
 
@@ -12,8 +14,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use super::finish_unwire::{
-    LegacyNetworkRows, MigrationError, migrate_wallet_meta_rows_from_conn,
-    migrate_wallet_seeds_rows_from_conn, open_legacy_read_only,
+    LegacyNetworkRows, MigrationError, import_missing_single_keys,
+    migrate_wallet_meta_rows_from_conn, migrate_wallet_seeds_rows_from_conn, open_legacy_read_only,
 };
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
@@ -97,6 +99,23 @@ async fn restore_wallets(
     summary.wallets_already_present = copy.seeds_already_present;
     summary.wallets_skipped_malformed = copy.skipped_malformed;
     summary.wallets_failed = copy.failed;
+
+    // Unprotected imported keys, add-only. Password-protected ones have their
+    // own restore on the wallets screen, which asks for the old password.
+    match import_missing_single_keys(app_context, &conn, app_context.network.into()) {
+        Ok(keys) => {
+            summary.imported_keys_restored = keys.imported;
+            summary.imported_keys_failed = keys.failed;
+        }
+        Err(error) => {
+            tracing::warn!(
+                target = LOG_TARGET,
+                ?error,
+                "Could not read the imported keys saved by the earlier version"
+            );
+            summary.imported_keys_failed = summary.imported_keys_failed.saturating_add(1);
+        }
+    }
 
     make_copied_wallets_live(app_context, &backend, &copy).await
 }
@@ -278,12 +297,13 @@ fn restorable_items(
     Ok(plan.approved_items())
 }
 
-/// Whether the legacy database holds any wallet or identity row for `network`.
+/// Whether the legacy database holds any wallet, imported-key or identity row
+/// for `network`.
 fn legacy_rows_present(
     conn: &rusqlite::Connection,
     network: dash_sdk::dpp::dashcore::Network,
 ) -> Result<bool, MigrationError> {
-    for table in ["wallet", "identity"] {
+    for table in ["wallet", "single_key_wallet", "identity"] {
         let read_error = |source| MigrationError::LegacyDbRead { table, source };
         if !crate::database::table_exists(conn, table).map_err(read_error)? {
             continue;

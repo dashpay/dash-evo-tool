@@ -131,6 +131,15 @@ impl std::fmt::Debug for ImportPassphrase {
     }
 }
 
+/// What an import does when the key is already stored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExistingKey {
+    /// Overwrite it (the user re-importing the same key).
+    Replace,
+    /// Leave it untouched and import nothing.
+    Keep,
+}
+
 impl<'a> SingleKeyView<'a> {
     /// Borrow the moving parts of a [`SingleKeyView`] without going
     /// through [`WalletBackend::single_key`]. Kept `pub` so benches and
@@ -193,6 +202,60 @@ impl<'a> SingleKeyView<'a> {
         alias: AliasSource,
         passphrase: ImportPassphrase,
     ) -> Result<(ImportedKey, Arc<std::sync::RwLock<SingleKeyWallet>>), TaskError> {
+        self.import_inner(wif, alias, passphrase, ExistingKey::Replace)
+    }
+
+    /// Add-only import for recovery paths: imports `wif` unprotected only when
+    /// this install holds neither its vault secret nor its details. Returns
+    /// `Ok(None)` and writes nothing when either already exists, so a stored
+    /// secret (possibly password-protected) is never overwritten.
+    ///
+    /// The presence check reads the vault and the k/v store directly, under
+    /// the same writer lock as the write, so it cannot race another import. A
+    /// check that fails is an error, never "absent".
+    ///
+    /// # Errors
+    ///
+    /// Everything [`Self::import_wif`] returns, plus vault and k/v read errors
+    /// from the presence check.
+    pub(crate) fn import_wif_if_absent(
+        &self,
+        wif: &str,
+        alias: AliasSource,
+    ) -> Result<Option<ImportedKey>, TaskError> {
+        match self.import_inner(wif, alias, ImportPassphrase::default(), ExistingKey::Keep) {
+            Ok((meta, _)) => Ok(Some(meta)),
+            Err(TaskError::ImportedKeyAlreadyStored) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Whether the vault secret or the k/v details for `address` exist.
+    /// Fallible on purpose: callers must treat an error as "unknown", never
+    /// as "absent".
+    fn is_stored(&self, address: &str) -> Result<bool, TaskError> {
+        let label = label_for_address(address);
+        if SecretSeam::new(self.secret_store).scheme(&single_key_namespace_id(), &label)?
+            != SecretScheme::Absent
+        {
+            return Ok(true);
+        }
+        let Some(kv) = self.app_kv else {
+            return Ok(false);
+        };
+        kv.contains(DetScope::Global, &meta_key_for(self.network, address))
+            .map_err(|source| TaskError::SingleKeyMetaStorage {
+                source: Box::new(source),
+            })
+    }
+
+    fn import_inner(
+        &self,
+        wif: &str,
+        alias: AliasSource,
+        passphrase: ImportPassphrase,
+        existing: ExistingKey,
+    ) -> Result<(ImportedKey, Arc<std::sync::RwLock<SingleKeyWallet>>), TaskError> {
         if let AliasSource::Preserved(Some(alias)) = &alias
             && let Err(AliasError::TooLong { length }) = validate_stored_alias(alias)
         {
@@ -222,6 +285,9 @@ impl<'a> SingleKeyView<'a> {
 
         self.context
             .import_single_key(&address_str, alias, |alias| {
+                if existing == ExistingKey::Keep && self.is_stored(&address_str)? {
+                    return Err(TaskError::ImportedKeyAlreadyStored);
+                }
                 // Extracted WIF bytes wrapped in `Zeroizing` so the stack copy wipes
                 // on drop instead of lingering after the entry is built.
                 let raw: Zeroizing<[u8; 32]> = Zeroizing::new(
@@ -2594,5 +2660,162 @@ mod tests {
             .get(DetScope::Global, &key)
             .expect("direct new-shape read");
         assert_eq!(direct.expect("present").address, address);
+    }
+
+    // ── Add-only import (recovery paths) ─────────────────────────────────
+
+    fn view_on<'a>(fx: &'a ViewFixture) -> SingleKeyView<'a> {
+        SingleKeyView {
+            secret_store: &fx.store,
+            context: &fx.index,
+            network: fx.network,
+            app_kv: Some(&fx.kv),
+        }
+    }
+
+    fn stored_scheme(store: &Arc<SecretStore>, address: &str) -> SecretScheme {
+        SecretSeam::new(store)
+            .scheme(&single_key_namespace_id(), &label_for_address(address))
+            .expect("scheme")
+    }
+
+    /// A missing key is imported, unprotected, with its details.
+    #[test]
+    fn add_only_import_imports_an_absent_key() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fx = fresh_view_with_kv(dir.path(), Network::Testnet);
+        let view = view_on(&fx);
+
+        let imported = view
+            .import_wif_if_absent(known_wif(), AliasSource::Preserved(Some("paper".into())))
+            .expect("import")
+            .expect("an absent key is imported");
+
+        assert_eq!(
+            stored_scheme(&fx.store, &imported.address),
+            SecretScheme::Unprotected
+        );
+        assert!(
+            fx.kv
+                .contains(
+                    DetScope::Global,
+                    &meta_key_for(fx.network, &imported.address)
+                )
+                .expect("probe")
+        );
+    }
+
+    /// A protected secret whose details are missing (so a sidecar listing
+    /// would not show it) is never overwritten by an unprotected copy.
+    #[test]
+    fn add_only_import_never_overwrites_a_protected_secret_without_details() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fx = fresh_view_with_kv(dir.path(), Network::Testnet);
+        let view = view_on(&fx);
+        let existing = view
+            .import_wif_with_passphrase(
+                known_wif(),
+                AliasSource::Preserved(Some("vault".into())),
+                ImportPassphrase {
+                    passphrase: Some(Zeroizing::new("correcthorsebattery".into())),
+                    hint: None,
+                },
+            )
+            .expect("protected import");
+        fx.kv
+            .delete(
+                DetScope::Global,
+                &meta_key_for(fx.network, &existing.address),
+            )
+            .expect("drop the details");
+
+        let outcome = view
+            .import_wif_if_absent(known_wif(), AliasSource::Preserved(None))
+            .expect("probe succeeds");
+
+        assert!(
+            outcome.is_none(),
+            "an existing secret is reported, not replaced"
+        );
+        assert_eq!(
+            stored_scheme(&fx.store, &existing.address),
+            SecretScheme::Protected,
+            "the protected secret is untouched",
+        );
+        assert!(
+            !fx.kv
+                .contains(
+                    DetScope::Global,
+                    &meta_key_for(fx.network, &existing.address)
+                )
+                .expect("probe"),
+            "nothing is written",
+        );
+    }
+
+    /// Details this build cannot decode still count as present.
+    #[test]
+    fn add_only_import_keeps_undecodable_details() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fx = fresh_view_with_kv(dir.path(), Network::Testnet);
+        let view = view_on(&fx);
+        let address = view
+            .import_wif(known_wif(), AliasSource::Preserved(None))
+            .expect("import")
+            .address;
+        view.forget(&address).expect("forget");
+        let meta_key = meta_key_for(fx.network, &address);
+        fx.kv
+            .put(DetScope::Global, &meta_key, &7u8)
+            .expect("undecodable details");
+        assert!(
+            fx.kv
+                .get::<ImportedKey>(DetScope::Global, &meta_key)
+                .is_err(),
+            "precondition: the details do not decode",
+        );
+
+        let outcome = view
+            .import_wif_if_absent(known_wif(), AliasSource::Preserved(None))
+            .expect("probe succeeds");
+
+        assert!(outcome.is_none());
+        assert_eq!(stored_scheme(&fx.store, &address), SecretScheme::Absent);
+    }
+
+    /// A presence check that fails aborts the import before any write.
+    #[test]
+    fn add_only_import_fails_closed_when_details_cannot_be_read() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("secrets.pwsvault");
+        let store = Arc::new(open_secret_store(&path).expect("open vault"));
+        let index = crate::wallet_backend::wallet_context::WalletContext::default();
+        let failing = Arc::new(crate::wallet_backend::kv_test_support::FailingKv::default());
+        let kv = Arc::new(DetKv::from_store(failing.clone()));
+        let view = SingleKeyView {
+            secret_store: &store,
+            context: &index,
+            network: Network::Testnet,
+            app_kv: Some(&kv),
+        };
+        failing.fail_reads(true);
+
+        let error = view
+            .import_wif_if_absent(known_wif(), AliasSource::Preserved(None))
+            .expect_err("an unreadable store is never treated as empty");
+
+        assert!(matches!(error, TaskError::SingleKeyMetaStorage { .. }));
+        assert_eq!(failing.put_count(), 0, "no details written");
+        assert!(view.list().is_empty(), "nothing indexed");
+        let address = PrivateKey::from_wif(known_wif())
+            .map(|key| {
+                let public = PublicKey {
+                    compressed: true,
+                    inner: key.inner.public_key(&Secp256k1::new()),
+                };
+                Address::p2pkh(&public, Network::Testnet).to_string()
+            })
+            .expect("address");
+        assert_eq!(stored_scheme(&store, &address), SecretScheme::Absent);
     }
 }

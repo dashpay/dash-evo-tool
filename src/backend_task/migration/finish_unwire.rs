@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::backend_task::dapi_discovery::persist_dapi_addresses;
 use crate::backend_task::error::TaskError;
-use crate::context::migration_status::{MigrationState, MigrationStep};
+use crate::context::migration_status::{EarlierWalletsRepair, MigrationState, MigrationStep};
 use crate::context::{AppContext, WalletUnlockRetention};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::settings::{legacy_network_names, pre_v29_network_name};
@@ -782,9 +782,8 @@ where
     // is what restores access to funds, so nothing about DET's own rows may gate
     // it. Propagating here would let one bad vote row wedge the drain on every
     // launch, with no user-reachable way out.
-    let (wallet_moved, wallets_recovered) = match drain_wallets(app_context, wallet_password).await
-    {
-        Ok(outcome) => (outcome.moved, outcome.recovered),
+    let wallet_moved = match drain_wallets(app_context, wallet_password).await {
+        Ok(outcome) => outcome.moved,
         Err(drain_error) => {
             if let Err(app_data_error) = &app_data {
                 tracing::warn!(
@@ -989,8 +988,8 @@ where
         return Ok(moved_data);
     }
 
-    status.set_state(terminal_state(moved_data, wallets_recovered));
-    Ok(moved_data || wallets_recovered > 0)
+    status.set_state(terminal_state(moved_data));
+    Ok(moved_data)
 }
 
 /// Drain the legacy wallet family — single-key rows, HD wallet seeds, wallet
@@ -1024,11 +1023,11 @@ async fn drain_wallets(
             network_count = completion.network_count,
             "FinishUnwire already completed for this network — skipping",
         );
-        let recovered = repair_pre_v29_rows(app_context).await;
-        return Ok(DrainOutcome {
-            moved: false,
-            recovered,
-        });
+        let repair = repair_pre_v29_rows(app_context).await;
+        // Recorded beside the state, not in it: whatever this launch ends in —
+        // a later pass's failure or warning included — the notice survives.
+        status.record_earlier_wallets_repair(repair);
+        return Ok(DrainOutcome { moved: false });
     }
 
     status.set_state(MigrationState::Running {
@@ -1098,10 +1097,7 @@ async fn drain_wallets(
         network = ?network,
         "FinishUnwire wallet drain complete",
     );
-    Ok(DrainOutcome {
-        moved: true,
-        recovered: 0,
-    })
+    Ok(DrainOutcome { moved: true })
 }
 
 /// What one [`drain_wallets`] launch did.
@@ -1109,141 +1105,200 @@ async fn drain_wallets(
 struct DrainOutcome {
     /// Wallet rows were drained on this launch.
     moved: bool,
-    /// Wallets and imported keys the one-time pre-v29 repair brought back.
-    recovered: u32,
 }
 
 /// One-time, add-only import of the wallet rows stored under the pre-v29
 /// network spelling (mainnet's `dash`), which a drain from before the
 /// spelling fix skipped while still recording itself complete.
 ///
-/// Never fails the launch: every problem is logged. Returns how many wallets
-/// and imported keys were brought back.
-async fn repair_pre_v29_rows(app_context: &Arc<AppContext>) -> u32 {
-    let key = legacy_alias_repair_key_for(app_context.network);
-    match app_context
-        .app_kv()
-        .get::<MigrationCompletion>(DetScope::Global, &key)
-    {
-        Ok(Some(_)) => return 0,
+/// **Runs only as part of the upgrade.** The per-network marker is claimed
+/// *before* any work, on the first launch of a build that carries the repair
+/// with this network active — the launch that first observes the upgrade. No
+/// later launch repeats it, whatever the outcome, so wallets the user removes
+/// or wipes afterwards are never brought back. A failure is therefore never
+/// retried automatically: it is reported as incomplete, and the rows stay in
+/// the read-only legacy database for "Restore from Previous Version".
+///
+/// When the marker cannot be read or claimed, nothing is touched and the next
+/// launch gets the same first chance.
+///
+/// Never fails the launch: every problem is logged and folded into the
+/// returned outcome.
+async fn repair_pre_v29_rows(app_context: &Arc<AppContext>) -> EarlierWalletsRepair {
+    let network = app_context.network;
+    let Some(rows) = LegacyNetworkRows::pre_v29_only(network) else {
+        return EarlierWalletsRepair::default();
+    };
+    let app_kv = app_context.app_kv();
+    let key = legacy_alias_repair_key_for(network);
+    match app_kv.get::<MigrationCompletion>(DetScope::Global, &key) {
+        Ok(Some(_)) => return EarlierWalletsRepair::default(),
         Ok(None) => {}
         Err(error) => {
             tracing::warn!(
                 target = "migration::finish_unwire",
                 ?error,
-                "Could not read the earlier-version wallet repair marker; the repair is retried on the next launch",
+                "Could not read the earlier-version wallet repair marker; nothing was repaired and the next launch checks again",
             );
-            return 0;
+            return EarlierWalletsRepair::default();
         }
     }
-    match repair_pre_v29_rows_once(app_context, &key).await {
-        Ok(recovered) => recovered,
+    if let Err(error) = write_completion_sentinel(&app_kv, &key, 0) {
+        tracing::warn!(
+            target = "migration::finish_unwire",
+            ?error,
+            "Could not record the earlier-version wallet repair marker; nothing was repaired and the next launch checks again",
+        );
+        return EarlierWalletsRepair::default();
+    }
+
+    match repair_pre_v29_rows_once(app_context, rows).await {
+        Ok(repair) => repair,
         Err(error) => {
             tracing::warn!(
                 target = "migration::finish_unwire",
                 ?error,
-                network = ?app_context.network,
-                "One-time repair of wallets saved by an earlier version did not finish",
+                network = ?network,
+                "One-time repair of wallets saved by an earlier version did not finish; the rows stay available to Restore from Previous Version",
             );
-            0
+            EarlierWalletsRepair {
+                recovered: 0,
+                incomplete: true,
+            }
         }
     }
 }
 
-/// The body of [`repair_pre_v29_rows`]. The marker is left unwritten only when
-/// the pass fails before it could write anything, so the next launch retries
-/// safely; once writing starts, the marker is recorded whatever the outcome, so
-/// a wallet the user later removes never returns. Rows a failed pass skipped
-/// stay recoverable through Restore from Previous Version.
+/// The body of [`repair_pre_v29_rows`], run after the marker is claimed. The
+/// HD wallet and single-key passes run independently, so an unreadable table
+/// in one never costs the other.
+///
+/// # Errors
+///
+/// Only when the pass cannot start: the wallet backend is not wired or the
+/// legacy database will not open. Per-pass and per-row failures mark the
+/// outcome incomplete instead.
 async fn repair_pre_v29_rows_once(
     app_context: &Arc<AppContext>,
-    key: &str,
-) -> Result<u32, TaskError> {
-    let app_kv = app_context.app_kv();
-    let network = app_context.network;
-    let path = app_context.db.db_file_path().filter(|path| path.exists());
-    let (Some(rows), Some(path)) = (LegacyNetworkRows::pre_v29_only(network), path) else {
-        write_completion_sentinel(&app_kv, key, 0)?;
-        return Ok(0);
+    rows: LegacyNetworkRows,
+) -> Result<EarlierWalletsRepair, TaskError> {
+    let Some(path) = app_context.db.db_file_path().filter(|path| path.exists()) else {
+        return Ok(EarlierWalletsRepair::default());
     };
-
-    // Read-only probe through the same readers: any unreadable table fails
-    // here, before a single write.
     let backend = app_context.wallet_backend()?;
     let conn = open_legacy_read_only(&path)?;
-    let seed_rows = migrate_wallet_seeds_rows_from_conn(&conn, |_, _| Ok(()), rows)?;
-    let key_rows = migrate_single_key_rows_from_conn(&conn, |_, _| Ok(()), rows)?;
-    migrate_wallet_meta_rows_from_conn(&conn, |_, _| Ok(()), rows)?;
-    if seed_rows.imported == 0 && key_rows.imported == 0 {
-        write_completion_sentinel(&app_kv, key, 0)?;
-        return Ok(0);
-    }
 
+    let mut repair = EarlierWalletsRepair::default();
     let copy = super::legacy_restore::copy_missing_wallets(&backend, &conn, rows);
-    let keys = import_missing_single_keys(app_context, &backend, &conn, rows);
-    write_completion_sentinel(&app_kv, key, 1)?;
-
-    let copy = copy?;
-    let keys = keys?;
+    match &copy {
+        Ok(copy) => {
+            repair.recovered = repair.recovered.saturating_add(copy.seeds_restored);
+            repair.incomplete |= copy.failed > 0 || copy.skipped_malformed > 0;
+        }
+        Err(error) => {
+            tracing::warn!(
+                target = "migration::finish_unwire",
+                ?error,
+                "Could not read the wallets saved by an earlier version during the one-time repair",
+            );
+            repair.incomplete = true;
+        }
+    }
+    match import_missing_single_keys(app_context, &conn, rows) {
+        Ok(keys) => {
+            repair.recovered = repair.recovered.saturating_add(keys.imported);
+            repair.incomplete |= keys.failed > 0;
+        }
+        Err(error) => {
+            tracing::warn!(
+                target = "migration::finish_unwire",
+                ?error,
+                "Could not read the imported keys saved by an earlier version during the one-time repair",
+            );
+            repair.incomplete = true;
+        }
+    }
     tracing::info!(
         target = "migration::finish_unwire",
-        wallets_restored = copy.seeds_restored,
-        wallets_already_present = copy.seeds_already_present,
-        wallets_failed = copy.failed,
-        imported_keys_restored = keys,
-        network = ?network,
+        ?copy,
+        ?repair,
+        network = ?rows.network(),
         "One-time repair of wallets saved by an earlier version complete",
     );
-    super::legacy_restore::make_copied_wallets_live(app_context, &backend, &copy).await?;
-    Ok(copy.seeds_restored.saturating_add(keys))
+
+    // The copied rows are already stored and hydrate on the next start, so a
+    // failure to load them now costs only this session's view of them.
+    if let Ok(copy) = &copy
+        && let Err(error) =
+            super::legacy_restore::make_copied_wallets_live(app_context, &backend, copy).await
+    {
+        tracing::warn!(
+            target = "migration::finish_unwire",
+            ?error,
+            "Wallets brought back by the one-time repair load on the next start",
+        );
+    }
+    Ok(repair)
 }
 
-/// Import the unprotected single keys `rows` selects whose address this
-/// install does not hold yet; present keys (and their names) stay untouched.
-/// Returns how many were imported.
-fn import_missing_single_keys(
-    app_context: &Arc<AppContext>,
-    backend: &crate::wallet_backend::WalletBackend,
+/// Counters of one [`import_missing_single_keys`] pass.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(super) struct MissingSingleKeysImport {
+    /// Keys imported because this install held neither their secret nor their
+    /// details.
+    pub(super) imported: u32,
+    /// Rows that could not be read, decoded, checked, or written.
+    pub(super) failed: u32,
+}
+
+/// Import the unprotected single keys `rows` selects that this install does
+/// not hold yet. Add-only: presence is checked against the vault and the
+/// k/v store directly (see
+/// [`SingleKeyView::import_wif_if_absent`](crate::wallet_backend::single_key::SingleKeyView::import_wif_if_absent)),
+/// so a stored — possibly protected — secret is never overwritten, and a check
+/// that fails counts as a failure, never as "absent".
+///
+/// TODO(follow-up): password-protected rows are skipped here (the reader counts
+/// them as `skipped_password_protected`) and left to the wallets screen's
+/// protected-key restore. Prompting for their password during this pass is a
+/// follow-up.
+///
+/// # Errors
+///
+/// [`MigrationError`] when the legacy table cannot be read at all; per-row
+/// problems are counted in [`MissingSingleKeysImport::failed`].
+pub(super) fn import_missing_single_keys(
+    app_context: &AppContext,
     conn: &Connection,
     rows: LegacyNetworkRows,
-) -> Result<u32, MigrationError> {
-    let present: BTreeSet<String> = backend
-        .single_key()
-        .list_persisted()
-        .into_iter()
-        .map(|key| key.address)
-        .collect();
+) -> Result<MissingSingleKeysImport, MigrationError> {
     let mut imported = 0u32;
-    migrate_single_key_rows_from_conn(
+    let outcome = migrate_single_key_rows_from_conn(
         conn,
         |wif, alias| {
-            let address = super::single_key_restore::derive_p2pkh_address(wif, rows.network())?;
-            if present.contains(&address) {
-                return Ok(());
+            let alias = crate::model::wallet::alias::AliasSource::Preserved(alias);
+            if app_context
+                .import_single_key_wif_if_absent(wif, alias)?
+                .is_some()
+            {
+                imported += 1;
             }
-            app_context.import_single_key_wif(
-                wif,
-                crate::model::wallet::alias::AliasSource::Preserved(alias),
-                Default::default(),
-            )?;
-            imported += 1;
             Ok(())
         },
         rows,
     )?;
-    Ok(imported)
+    Ok(MissingSingleKeysImport {
+        imported,
+        failed: outcome.failed,
+    })
 }
 
 /// Terminal state for a launch that reached the end without failing.
 /// `Success` raises the completion banner, so it is reserved for launches
 /// that actually moved data — a no-op launch becomes `Ready` without raising a
 /// completion banner.
-fn terminal_state(moved_data: bool, wallets_recovered: u32) -> MigrationState {
-    if wallets_recovered > 0 {
-        MigrationState::RecoveredEarlierWallets {
-            count: wallets_recovered,
-        }
-    } else if moved_data {
+fn terminal_state(moved_data: bool) -> MigrationState {
+    if moved_data {
         MigrationState::Success
     } else {
         MigrationState::Ready
@@ -1433,7 +1488,7 @@ fn read_vote_warning(
 ///
 /// Written BEFORE the app-data sentinel: a crash between the two re-runs the
 /// idempotent import, whereas the reverse order would lose the warning for good.
-fn write_vote_warning(
+pub(super) fn write_vote_warning(
     app_kv: &crate::wallet_backend::DetKv,
     network: Network,
     count: u32,
@@ -1583,7 +1638,7 @@ fn read_identities_warning(
 ///
 /// Written BEFORE the identity sentinel: a crash between the two re-runs the
 /// idempotent import, whereas the reverse order would lose the warning for good.
-fn write_identities_warning(
+pub(super) fn write_identities_warning(
     app_kv: &crate::wallet_backend::DetKv,
     network: Network,
     count: u32,
@@ -1906,7 +1961,6 @@ pub(crate) fn record_identity_deletion(
         app_context.migration_status().state().as_ref(),
         MigrationState::Ready
             | MigrationState::Success
-            | MigrationState::RecoveredEarlierWallets { .. }
             | MigrationState::SucceededWithUnreadableData { .. }
     ) {
         return Ok(());

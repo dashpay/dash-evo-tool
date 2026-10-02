@@ -881,6 +881,9 @@ pub(super) struct MigrationReconciler {
     wallet_unlock_popup: WalletUnlockPopup,
     /// Migrated wallet currently shown in the password prompt.
     prompt_wallet: Option<WalletSeedHash>,
+    /// Handle to the one-time earlier-wallets repair notice. Separate from
+    /// `banner_handle` so a state banner of the same launch never replaces it.
+    repair_banner: Option<BannerHandle>,
 }
 
 impl MigrationReconciler {
@@ -891,6 +894,7 @@ impl MigrationReconciler {
             last_state: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             prompt_wallet: None,
+            repair_banner: None,
         }
     }
 
@@ -905,6 +909,9 @@ impl MigrationReconciler {
             handle.clear();
         }
         self.storage_startup_error.reset();
+        if let Some(handle) = self.repair_banner.take() {
+            handle.clear();
+        }
         self.last_state = None;
         self.wallet_unlock_popup.close();
         self.prompt_wallet = None;
@@ -948,6 +955,7 @@ impl MigrationReconciler {
         if gate_raised {
             return;
         }
+        self.show_earlier_wallets_repair(ctx, app_context, &state);
         if self.last_state.as_ref() == Some(&state) {
             return;
         }
@@ -980,16 +988,6 @@ impl MigrationReconciler {
                     ctx,
                     "Storage update complete — your wallet is ready.",
                     MessageType::Success,
-                );
-                self.banner_handle = Some(handle);
-            }
-            MigrationState::RecoveredEarlierWallets { count } => {
-                let handle = MessageBanner::set_global(
-                    ctx,
-                    format!(
-                        "Wallets and imported keys saved by the earlier version of Dash Evo Tool were brought back: {count}."
-                    ),
-                    MessageType::Info,
                 );
                 self.banner_handle = Some(handle);
             }
@@ -1057,6 +1055,39 @@ impl MigrationReconciler {
                 self.banner_handle = Some(handle);
             }
         }
+    }
+
+    /// Raise the earlier-wallets repair notice once the launch that recorded
+    /// it has finished, whatever its terminal state. Taken from the status, so
+    /// it shows once. Incomplete repairs warn and stay until dismissed: the
+    /// repair never runs again, so the notice is the user's only pointer to
+    /// Restore from Previous Version.
+    fn show_earlier_wallets_repair(
+        &mut self,
+        ctx: &egui::Context,
+        app_context: &Arc<AppContext>,
+        state: &MigrationState,
+    ) {
+        if matches!(state, MigrationState::Idle) || state.is_in_progress() {
+            return;
+        }
+        let Some(repair) = app_context.migration_status().take_earlier_wallets_repair() else {
+            return;
+        };
+        let Some(text) = crate::app::earlier_wallets_repair_text(repair) else {
+            return;
+        };
+        if let Some(handle) = self.repair_banner.take() {
+            handle.clear();
+        }
+        let handle = if repair.incomplete {
+            let handle = MessageBanner::set_global(ctx, text, MessageType::Warning);
+            handle.disable_auto_dismiss();
+            handle
+        } else {
+            MessageBanner::set_global(ctx, text, MessageType::Info)
+        };
+        self.repair_banner = Some(handle);
     }
 
     fn update_password_prompt(
@@ -1521,6 +1552,60 @@ mod tests {
         harness.run();
 
         reconciler.drain_actions(&harness.ctx, app_context.network)
+    }
+
+    /// The one-time repair's notice is shown beside whatever the launch ended
+    /// in — here a failure — and only once the run is no longer in progress.
+    #[test]
+    fn the_earlier_wallets_notice_shows_once_beside_a_failure_banner() {
+        use crate::context::migration_status::EarlierWalletsRepair;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let app_context = test_app_context(tmp.path());
+        let status = app_context.migration_status();
+        let repair = EarlierWalletsRepair {
+            recovered: 1,
+            incomplete: true,
+        };
+        let notice = crate::app::earlier_wallets_repair_text(repair).expect("notice text");
+        status.record_earlier_wallets_repair(repair);
+
+        let mut reconciler = MigrationReconciler::new();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(900.0, 400.0))
+            .build_ui(MessageBanner::show_global);
+
+        status.set_state(MigrationState::Running {
+            step: crate::context::migration_status::MigrationStep::WalletSeeds,
+        });
+        let frame_state = status.state();
+        reconciler.update_banner(&harness.ctx, &app_context, frame_state.as_ref(), false);
+        harness.run();
+        assert!(harness.query_by_label(&notice).is_none());
+        assert_eq!(
+            status.earlier_wallets_repair(),
+            Some(repair),
+            "a running update leaves the notice for its end",
+        );
+
+        status.set_state(MigrationState::Failed {
+            error: Arc::new(
+                crate::backend_task::migration::MigrationError::WalletBackendUnavailable,
+            ),
+        });
+        let frame_state = status.state();
+        reconciler.update_banner(&harness.ctx, &app_context, frame_state.as_ref(), false);
+        harness.run();
+
+        assert!(harness.query_by_label(&notice).is_some(), "{notice}");
+        assert!(
+            harness
+                .query_by_label("Storage update could not complete. Your data is safe.")
+                .is_some(),
+            "the failure banner is still shown",
+        );
+        assert!(notice.contains("Restore from Previous Version"), "{notice}");
+        assert_eq!(status.earlier_wallets_repair(), None, "shown once");
     }
 
     /// The ambiguous-outcome copy the reconciler adopts, verbatim from

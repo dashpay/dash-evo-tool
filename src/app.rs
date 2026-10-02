@@ -201,7 +201,6 @@ fn migration_allows_scheduled_vote_sweep(state: &MigrationState) -> bool {
         state,
         MigrationState::Ready
             | MigrationState::Success
-            | MigrationState::RecoveredEarlierWallets { .. }
             | MigrationState::SucceededWithUnreadableData { .. }
     )
 }
@@ -827,6 +826,33 @@ pub fn migration_failed_with_unreadable_identities_text(count: u32) -> String {
          choose Load Identity on the Identities screen. For a masternode or evonode identity, \
          choose + Load on the Masternodes tab."
     )
+}
+
+/// User-facing notice for what the one-time repair of wallets an earlier update
+/// skipped did. `None` when there is nothing to say. Exposed for kittest
+/// coverage.
+pub fn earlier_wallets_repair_text(
+    repair: crate::context::migration_status::EarlierWalletsRepair,
+) -> Option<String> {
+    let recovered = repair.recovered;
+    match (recovered > 0, repair.incomplete) {
+        (false, false) => None,
+        (true, false) => Some(format!(
+            "Wallets and imported keys saved by the earlier version of Dash Evo Tool were \
+             brought back ({recovered} in total)."
+        )),
+        (true, true) => Some(format!(
+            "Some wallets and imported keys saved by the earlier version of Dash Evo Tool were \
+             brought back ({recovered} in total), but not all of them. Open Settings and choose \
+             Restore from Previous Version to bring back the rest."
+        )),
+        (false, true) => Some(
+            "Wallets and imported keys saved by the earlier version of Dash Evo Tool could not \
+             be brought back. Open Settings and choose Restore from Previous Version to try \
+             again."
+                .to_string(),
+        ),
+    }
 }
 
 /// User-facing banner copy for every non-empty combination of unreadable

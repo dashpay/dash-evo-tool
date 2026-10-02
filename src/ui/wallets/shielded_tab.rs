@@ -95,7 +95,6 @@ pub fn derive_shielded_indicator(state: &MigrationState, skipped: bool) -> Shiel
         // to `Failed` instead would lock shielded spends over a corrupt vote row and
         // offer a retry for a shielded migration that never failed.
         MigrationState::Success
-        | MigrationState::RecoveredEarlierWallets { .. }
         | MigrationState::SucceededWithUnreadableData { .. }
         | MigrationState::FailedWithUnreadableIdentities { .. } => ShieldedIndicator::Verified,
         // Idle / non-shielded running step → no badge.

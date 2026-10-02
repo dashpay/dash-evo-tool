@@ -1177,3 +1177,84 @@ fn picker_top_bar_add_menu_creates_or_loads_an_identity() {
         );
     });
 }
+
+#[test]
+fn picker_create_entries_preserve_selected_wallet() {
+    with_identity_hub(|mut harness, app_context| {
+        use dash_evo_tool::model::wallet::Wallet;
+        use dash_evo_tool::model::wallet::birth_height::WalletOrigin;
+        use dash_evo_tool::ui::Screen;
+        use zeroize::Zeroize;
+
+        let mut wallets = Vec::new();
+        for alias in ["First candidate", "Second candidate"] {
+            let mut seed: [u8; 64] = rand::random();
+            let wallet =
+                Wallet::new_from_seed(seed, app_context.network(), Some(alias.into()), None)
+                    .expect("wallet fixture");
+            let hash = wallet.seed_hash();
+            app_context
+                .register_wallet(wallet, &seed, WalletOrigin::Imported)
+                .expect("register wallet fixture");
+            seed.zeroize();
+            wallets.push((hash, alias));
+        }
+        wallets.sort_by_key(|(hash, _)| *hash);
+        let (selected_hash, selected_alias) = wallets[1];
+        assert_ne!(
+            app_context
+                .wallet_context()
+                .first_hd()
+                .unwrap()
+                .read()
+                .unwrap()
+                .seed_hash(),
+            selected_hash
+        );
+        for byte in [0xC3, 0xC4] {
+            let id = seed_identity(&app_context, byte, &format!("Owned identity {byte}"));
+            let identity = app_context
+                .load_local_user_identities()
+                .unwrap()
+                .into_iter()
+                .find(|identity| identity.identity.id() == id)
+                .unwrap();
+            app_context
+                .insert_local_qualified_identity(&identity, &Some((selected_hash, 0)))
+                .unwrap();
+        }
+        app_context.set_selected_hd_wallet(Some(wallets[0].0));
+        harness.run_steps(5);
+        harness
+            .get_by_role_and_label(egui::accesskit::Role::Link, wallets[0].1)
+            .click();
+        harness.run_steps(3);
+        harness
+            .get_by_label(&format!("💼 {selected_alias}"))
+            .click();
+        harness.run_steps(5);
+
+        for entry in ["Add ▾", "Add a new identity"] {
+            assert_eq!(app_context.selected_wallet_hash(), Some(selected_hash));
+            assert!(harness.query_by_label(PICKER_HEADING).is_some());
+            harness
+                .get_by_role_and_label(egui::accesskit::Role::Button, entry)
+                .click();
+            harness.run_steps(3);
+            harness.get_by_label("Create a new identity").click();
+            harness.run_steps(3);
+            assert!(matches!(
+                harness.state().screen_stack.last(),
+                Some(Screen::AddNewIdentityScreen(_))
+            ));
+            assert!(
+                harness
+                    .query_by_value(&format!("{selected_alias} — 0 DASH"))
+                    .is_some(),
+                "{entry} must preselect the chosen wallet in the creation form"
+            );
+            harness.state_mut().screen_stack.clear();
+            harness.run_steps(3);
+        }
+    });
+}

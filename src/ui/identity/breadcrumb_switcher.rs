@@ -76,10 +76,8 @@ const ADD_IDENTITY_CREATE_COMMAND: &str = "IdentityHubAddCreate";
 /// `AppAction::Custom` command emitted by the "Load an existing identity" item.
 const ADD_IDENTITY_LOAD_COMMAND: &str = "IdentityHubAddLoad";
 
-/// Items of the hub's "Add" menu, shared by the top-bar dropdown and the
-/// picker's "Add a new identity" card so both offer the same choices as the
-/// identity pill's dropdown. Each item emits an `AppAction::Custom` command the
-/// hub maps back via [`add_identity_command_effect`].
+/// Items shared by the hub toolbar and picker card; the identity pill defines its own items.
+/// Commands are routed by [`add_identity_command_effect`].
 pub(crate) fn add_identity_menu_items() -> Vec<ToolbarMenuItem> {
     vec![
         ToolbarMenuItem {

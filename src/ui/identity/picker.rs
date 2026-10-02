@@ -19,7 +19,8 @@ use super::identity_picker_card::{CARD_MIN_WIDTH, IdentityPickerCard};
 use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
+use crate::ui::components::action_menu::show_action_menu;
+use crate::ui::theme::DashColors;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use eframe::egui::{RichText, Ui};
@@ -151,34 +152,20 @@ fn show_add_menu(
     app_context: &Arc<AppContext>,
     card: &super::identity_picker_add_card::IdentityPickerAddCardResponse,
 ) -> AppAction {
-    let mut action = AppAction::None;
-    let dark_mode = ui.visuals().dark_mode;
-    egui::Popup::new(
-        egui::Id::new("identity_picker_add_menu"),
-        ui.ctx().clone(),
-        card.rect,
-        ui.layer_id(),
+    show_action_menu(
+        ui,
+        app_context,
+        egui::Popup::new(
+            egui::Id::new("identity_picker_add_menu"),
+            ui.ctx().clone(),
+            card.rect,
+            ui.layer_id(),
+        )
+        .open_memory(card.add_requested.then_some(egui::SetOpenCommand::Toggle)),
+        add_identity_menu_items()
+            .iter()
+            .map(|item| (item.label, &item.action, item.enabled, item.tooltip)),
     )
-    .open_memory(card.add_requested.then_some(egui::SetOpenCommand::Toggle))
-    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-    .frame(egui::Frame::popup(ui.style()).fill(DashColors::popup_fill(dark_mode)))
-    .show(|ui| {
-        for item in add_identity_menu_items() {
-            let clicked = ui
-                .add_enabled_ui(item.enabled, |ui| {
-                    ComponentStyles::add_button(ui, egui::Button::new(item.label))
-                })
-                .inner
-                .clickable_tooltip(item.tooltip)
-                .disabled_tooltip(item.tooltip)
-                .clicked();
-            if clicked {
-                action = item.action.create_action(app_context);
-                ui.close();
-            }
-        }
-    });
-    action
 }
 
 /// Compute how many cards fit per row at the given available width. Matches

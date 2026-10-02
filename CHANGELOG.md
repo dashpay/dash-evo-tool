@@ -194,6 +194,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Large voting refresh bursts yield between frames so the window remains responsive while queued results are delivered.
+
 - Votes distinguishes missing nodes from missing voting keys, and node detail refresh reloads cached votes.
 - Bulk voting reports confirmed and failed targets together while scheduled preflight failures remain retryable.
 - Relative schedule labels follow vote journal retention and clear when the scheduled time changes.

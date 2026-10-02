@@ -525,6 +525,144 @@ fn blocker_keyless_node_add_voting_key_opens_reimport_form() {
     });
 }
 
+/// A full result queue must yield to the window event loop while Voting refreshes a large cache.
+#[test]
+fn voting_refresh_burst_yields_between_frames() {
+    with_isolated_data_dir(|| {
+        // Disable backend dispatch before the click; inject equivalent results without network work.
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = rt.enter();
+        let mut harness = mount_app(RootScreenType::RootScreenMasternodes);
+        let context = harness.state().current_app_context().clone();
+        rt.block_on(harness.state().subtasks.shutdown_async())
+            .unwrap();
+        context
+            .insert_name_contests_as_normalized_names(
+                (0..985).map(|index| format!("cached{index:04}")).collect(),
+            )
+            .unwrap();
+        harness.get_by_label("Votes").click();
+        harness.run_steps(3);
+        assert_eq!(masternodes_segment(&mut harness), MasternodesSegment::Votes);
+        let sender = harness.state().task_result_sender.clone();
+        let mut queued = 0;
+        while sender.try_send(TaskResult::Refresh).is_ok() {
+            queued += 1;
+        }
+        assert!(
+            queued >= 192,
+            "the synthetic burst must fill most of the channel"
+        );
+        let started = Instant::now();
+        harness.step();
+        let elapsed = started.elapsed();
+        let remaining = harness.state().task_result_receiver.len();
+        eprintln!(
+            "Voting985contest refresh burst: frame={elapsed:?}; remaining={remaining}/{queued}"
+        );
+        // Egui may run multiple update passes during one frame; it must still yield with work queued.
+        assert!(
+            remaining > 0,
+            "A frame must yield instead of processing the entire refresh burst; elapsed={elapsed:?}, remaining={remaining}"
+        );
+        assert_eq!(
+            harness.output().viewport_output[&egui::ViewportId::ROOT].repaint_delay,
+            Duration::ZERO,
+            "pending results must schedule another frame"
+        );
+        let mut frames = 1;
+        let mut longest = elapsed;
+        while !harness.state().task_result_receiver.is_empty() && frames < 512 {
+            let started = Instant::now();
+            harness.step();
+            longest = longest.max(started.elapsed());
+            frames += 1;
+        }
+        eprintln!("Voting refresh burst completed in {frames} frames; longest frame={longest:?}");
+        assert!(
+            harness.state().task_result_receiver.is_empty(),
+            "deferred refreshes must eventually be delivered"
+        );
+        rt.block_on(context.wallet_backend().unwrap().shutdown());
+    });
+}
+
+#[test]
+fn deferred_backend_results_preserve_success_error_order() {
+    use dash_evo_tool::backend_task::error::TaskError;
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = rt.enter();
+        let mut harness = mount_app(RootScreenType::RootScreenMasternodes);
+        rt.block_on(harness.state().subtasks.shutdown_async())
+            .unwrap();
+        let sender = harness.state().task_result_sender.clone();
+        for _ in 0..192 {
+            sender.try_send(TaskResult::Repaint).unwrap();
+        }
+        sender
+            .try_send(TaskResult::Success {
+                context: BackendTaskContext::Unknown,
+                result: Box::new(BackendTaskSuccessResult::Message(
+                    "First result delivered.".to_owned(),
+                )),
+            })
+            .unwrap();
+        let error = TaskError::DpnsCurrentVoteUnavailable;
+        let error_text = error.to_string();
+        sender
+            .try_send(TaskResult::Error {
+                context: BackendTaskContext::Unknown,
+                error,
+            })
+            .unwrap();
+        sender.try_send(TaskResult::Refresh).unwrap();
+        sender
+            .try_send(TaskResult::Success {
+                context: BackendTaskContext::Unknown,
+                result: Box::new(BackendTaskSuccessResult::Message(
+                    "Last result delivered.".to_owned(),
+                )),
+            })
+            .unwrap();
+        harness.step();
+        assert!(
+            harness.query_by_label("Last result delivered.").is_none(),
+            "later results must remain queued when a frame yields"
+        );
+        for _ in 0..64 {
+            harness.step();
+            if harness.state().task_result_receiver.is_empty() {
+                break;
+            }
+        }
+        assert!(harness.state().task_result_receiver.is_empty());
+        let first = harness.get_by_label("First result delivered.").rect();
+        let error = harness.get_by_label(&error_text).rect();
+        let last = harness.get_by_label("Last result delivered.").rect();
+        assert!(
+            first.top() < error.top() && error.top() < last.top(),
+            "typed success/error results must retain their arrival order across frames"
+        );
+        rt.block_on(
+            harness
+                .state()
+                .current_app_context()
+                .wallet_backend()
+                .unwrap()
+                .shutdown(),
+        );
+    });
+}
+
 /// TC-FR3-01/15, TC-FR7-01, TC-NFR6-01 — with nodes loaded the grid renders one
 /// card per node (not the empty state), each card is a single accessible click
 /// target labelled `Open {node}`, the status label pairs with its colour, and

@@ -3103,8 +3103,21 @@ impl App for AppState {
         let active_context = self.current_app_context().clone();
         let migration_state = active_context.migration_status().state();
 
-        // Poll the receiver for any new task results
-        while let Ok(task_result) = self.task_result_receiver.try_recv() {
+        // Bound result work so refresh bursts cannot starve window input and painting.
+        let result_work_started = Instant::now();
+        let mut refresh_pending = false;
+        for processed in 0..64 {
+            if processed > 0 && result_work_started.elapsed() >= Duration::from_millis(8) {
+                break;
+            }
+            let Ok(task_result) = self.task_result_receiver.try_recv() else {
+                break;
+            };
+            // Merge adjacent cache invalidations without moving refreshes past typed results.
+            if refresh_pending && !matches!(task_result, TaskResult::Refresh) {
+                self.visible_screen_mut().refresh();
+                refresh_pending = false;
+            }
             active_context
                 .connection_status()
                 .handle_task_result(&task_result, active_context.network);
@@ -3547,13 +3560,20 @@ impl App for AppState {
                     }
                 }
                 TaskResult::Refresh => {
-                    self.visible_screen_mut().refresh();
+                    refresh_pending = true;
                 }
                 TaskResult::Repaint => {
                     // SenderAsync/SenderSync already requested a repaint when sending; avoid
                     // state-clearing screen refreshes for ambient events such as sync ticks.
                 }
             }
+        }
+
+        if refresh_pending {
+            self.visible_screen_mut().refresh();
+        }
+        if !self.task_result_receiver.is_empty() {
+            ctx.request_repaint();
         }
 
         // Schedule a periodic repaint every ~1 second so timed messages update

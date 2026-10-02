@@ -66,9 +66,9 @@ fn check_records(expected: &[ExpectedIdentity], found: &[ExpectedIdentity]) -> R
 }
 
 // Mirrors context::identity_db::StoredQualifiedIdentity, including its bincode field order.
-#[derive(Deserialize)]
-struct StoredIdentity {
-    qi_bytes: Vec<u8>,
+#[derive(Deserialize, Serialize)]
+pub(super) struct StoredIdentity {
+    pub(super) qi_bytes: Vec<u8>,
     status: u8,
     identity_type: String,
     wallet_hash: Option<[u8; 32]>,

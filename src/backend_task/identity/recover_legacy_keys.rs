@@ -313,7 +313,10 @@ impl AppContext {
         })?;
 
         match read_identity_row(&conn, self.network, &identity_id.to_buffer()) {
-            Ok(LegacyIdentityLookup::Found(row)) => Ok(Some(row.qi)),
+            Ok(LegacyIdentityLookup::Found(mut row)) => {
+                row.qi.private_keys.normalize_legacy_hash160_keys();
+                Ok(Some(row.qi))
+            }
             Ok(LegacyIdentityLookup::Absent) => Ok(None),
             Ok(LegacyIdentityLookup::Unreadable) => {
                 Err(TaskError::LegacyIdentityUnreadable { identity_id })

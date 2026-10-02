@@ -25,6 +25,15 @@ metadata, then verifies `identity-list`. It runs in the main `Tests` CI job with
 access or fixture password is required. This covers public metadata preservation,
 not signing, voter/operator associations, or fetching proofs with the old SDK.
 
+The operator-authorized [`v11-mainnet-identity`](v11-mainnet-identity/PROVENANCE.md)
+profile is a complete captured mainnet database, including its public test
+wallet seed. `mainnet_identity_fixture_migrates_and_signs` runs in the same
+`Tests` job without downloaded artifacts. It verifies fresh migration, repair
+of an already-migrated profile, repeated CLI startup, wallet bindings and valid
+signatures from all four identity keys against their original public hashes.
+It also restores a missing seed and key inventory through "Restore from Previous
+Version" and signs immediately. No transaction is broadcast.
+
 The main `Tests` workflow also runs the migration harness's helper tests.
 `Migration Matrix` selects only `migration_matrix` with `--exact` to replay
 downloaded archived profiles; it also runs the separate real-data platform
@@ -66,7 +75,9 @@ Treat every byte in it as **published**.
 - **Use a dedicated wallet.** Never reuse the backend-E2E framework wallet
   (`E2E_WALLET_MNEMONIC`) or any wallet that holds funds you care about.
   A funded wallet whose seed is published is a wallet that will be drained.
-- **Testnet only.** No fixture is ever captured on mainnet, at any profile.
+- **Testnet by default.** The explicitly authorized `v11-mainnet-identity`
+  capture above is the sole exception, including publication of its seed.
+  Its wallet and identity must never be funded or reused.
 - **Dust only.** Keep the fixture wallet's balance at the minimum the capture
   needs (enough for the identity registration performed by the *current* build
   when the profile requires one). Sweep anything above that back out. A fixture

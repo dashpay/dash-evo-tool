@@ -34,6 +34,7 @@
 
 mod assertions;
 mod cli;
+mod mainnet_identity;
 mod manifest;
 mod public_identities;
 mod stage;

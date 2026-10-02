@@ -162,6 +162,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Restore signing and missing-key recovery for legacy HASH160 identity keys whose saved metadata contains a compressed public key, including profiles migrated by earlier versions; cover mainnet migration and restore with an operator-authorized database and verified signatures from all four keys.
+
 - Updating from v0.9.x carries mainnet wallets and imported keys across, and
   "Restore from Previous Version" finds mainnet data those versions saved.
   They stored mainnet under an older name that both steps skipped. Mainnet

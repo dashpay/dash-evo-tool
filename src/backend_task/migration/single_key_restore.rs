@@ -55,6 +55,15 @@ pub struct PendingProtectedRestore {
     pub network: Network,
 }
 
+/// Readable pending keys and the number of unreadable legacy rows.
+#[derive(Debug, Default)]
+pub struct PendingProtectedRestores {
+    /// Keys that can still be restored using their passwords.
+    pub pending: Vec<PendingProtectedRestore>,
+    /// Rows that could not be decoded and must be reported as failures.
+    pub unreadable: u32,
+}
+
 /// Raw protected-row crypto fields read from the legacy table. Internal
 /// only — never leaves this module, never logged. `Debug` is intentionally
 /// NOT derived so the encrypted bytes cannot leak through `{:?}`.
@@ -74,15 +83,15 @@ struct LegacyProtectedBlob {
 /// restore flow and how many keys are waiting.
 pub fn list_pending_protected_restores(
     app_context: &Arc<AppContext>,
-) -> Result<Vec<PendingProtectedRestore>, TaskError> {
+) -> Result<PendingProtectedRestores, TaskError> {
     let backend = app_context
         .wallet_backend()
         .map_err(|_| MigrationError::WalletBackendUnavailable)?;
     let Some(path) = app_context.db.db_file_path() else {
-        return Ok(Vec::new());
+        return Ok(PendingProtectedRestores::default());
     };
     if !path.exists() {
-        return Ok(Vec::new());
+        return Ok(PendingProtectedRestores::default());
     }
 
     // Addresses already present in the modern index are restored and must
@@ -101,11 +110,10 @@ pub fn list_pending_protected_restores(
                 source: e,
             }
         })?;
-    let rows = read_pending_protected_rows(&conn, app_context.network)?;
-    Ok(rows
-        .into_iter()
-        .filter(|r| !already_present.contains(&r.address))
-        .collect())
+    let mut rows = read_pending_protected_rows(&conn, app_context.network)?;
+    rows.pending
+        .retain(|r| !already_present.contains(&r.address));
+    Ok(rows)
 }
 
 /// Pure read of protected pending rows from `conn` for `network`. Returns
@@ -114,9 +122,9 @@ pub fn list_pending_protected_restores(
 fn read_pending_protected_rows(
     conn: &Connection,
     network: Network,
-) -> Result<Vec<PendingProtectedRestore>, MigrationError> {
+) -> Result<PendingProtectedRestores, MigrationError> {
     if !table_exists(conn, "single_key_wallet")? {
-        return Ok(Vec::new());
+        return Ok(PendingProtectedRestores::default());
     }
     let sql = "SELECT address, alias FROM single_key_wallet \
                WHERE network IN (?1, ?2) AND uses_password = 1";
@@ -140,11 +148,12 @@ fn read_pending_protected_rows(
             table: "single_key_wallet",
             source: e,
         })?;
-    let mut out = Vec::new();
+    let mut out = PendingProtectedRestores::default();
     for row in rows {
         match row {
-            Ok(r) => out.push(r),
+            Ok(r) => out.pending.push(r),
             Err(e) => {
+                out.unreadable = out.unreadable.saturating_add(1);
                 tracing::warn!(
                     target = "migration::single_key_restore",
                     error = ?e,
@@ -488,14 +497,16 @@ mod tests {
         let address = seed_protected_row(&conn, &raw, "pw", Some("nick"), Network::Testnet);
 
         let pending = read_pending_protected_rows(&conn, Network::Testnet).expect("list");
-        assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].address, address);
-        assert_eq!(pending[0].alias.as_deref(), Some("nick"));
-        assert_eq!(pending[0].network, Network::Testnet);
+        assert_eq!(pending.unreadable, 0);
+        assert_eq!(pending.pending.len(), 1);
+        assert_eq!(pending.pending[0].address, address);
+        assert_eq!(pending.pending[0].alias.as_deref(), Some("nick"));
+        assert_eq!(pending.pending[0].network, Network::Testnet);
 
         // A different network sees nothing.
         let other = read_pending_protected_rows(&conn, Network::Mainnet).expect("list mainnet");
-        assert!(other.is_empty(), "protected rows are per-network");
+        assert!(other.pending.is_empty(), "protected rows are per-network");
+        assert_eq!(other.unreadable, 0);
     }
 
     /// A mainnet row a pre-v29 build saved says `dash`; both the pending list
@@ -510,8 +521,13 @@ mod tests {
             .expect("use the pre-v29 spelling");
 
         let pending = read_pending_protected_rows(&conn, Network::Mainnet).expect("list");
-        assert_eq!(pending.len(), 1, "the pre-v29 mainnet row must be listed");
-        assert_eq!(pending[0].network, Network::Mainnet);
+        assert_eq!(
+            pending.pending.len(),
+            1,
+            "the pre-v29 mainnet row must be listed"
+        );
+        assert_eq!(pending.pending[0].network, Network::Mainnet);
+        assert_eq!(pending.unreadable, 0);
         assert!(
             read_protected_blob(&conn, &address, Network::Mainnet)
                 .expect("blob")
@@ -528,6 +544,7 @@ mod tests {
         assert!(
             read_pending_protected_rows(&conn, Network::Testnet)
                 .expect("list")
+                .pending
                 .is_empty()
         );
         assert!(

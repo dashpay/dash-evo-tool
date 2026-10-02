@@ -1037,8 +1037,8 @@ pub enum TaskError {
     )]
     ImportedKeyNotFound,
 
-    /// An add-only import found this key's secret or its details already
-    /// stored, and left both untouched.
+    /// An add-only import found both this key's secret and its details already
+    /// stored, and left them untouched.
     #[error("This key is already imported. Pick it from your wallet list to use it.")]
     ImportedKeyAlreadyStored,
 

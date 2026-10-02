@@ -162,6 +162,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Restoring imported keys remains recoverable after interrupted storage writes
+  and reports unreadable protected keys. Startup migration preserves existing
+  keys, seeds, and their password protection.
+
 - Updating from v0.9.x carries mainnet wallets and imported keys across, and
   "Restore from Previous Version" finds mainnet data those versions saved.
   They stored mainnet under an older name that both steps skipped. Mainnet

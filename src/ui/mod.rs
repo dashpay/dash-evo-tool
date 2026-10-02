@@ -942,7 +942,7 @@ impl Screen {
             Screen::NetworkChooserScreen(_) => ScreenType::NetworkChooser,
             Screen::AddKeyScreen(screen) => ScreenType::AddKeyScreen(screen.identity.clone()),
             Screen::DocumentQueryScreen(_) => ScreenType::DocumentQuery,
-            Screen::AddNewIdentityScreen(_) => ScreenType::AddExistingIdentity,
+            Screen::AddNewIdentityScreen(_) => ScreenType::AddNewIdentity,
             Screen::TopUpIdentityScreen(screen) => {
                 ScreenType::TopUpIdentity(screen.identity.clone())
             }

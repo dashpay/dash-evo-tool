@@ -162,6 +162,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Restoring imported keys remains recoverable after interrupted storage writes
+  and reports unreadable protected keys. Startup migration preserves existing
+  keys, seeds, and their password protection.
+
+- Updating from v0.9.x carries mainnet wallets and imported keys across, and
+  "Restore from Previous Version" finds mainnet data those versions saved.
+  They stored mainnet under an older name that both steps skipped. Mainnet
+  users who already updated with an earlier build that missed them can bring
+  them back with Settings → "Restore from Previous Version"; nothing is
+  brought back automatically, so wallets removed since the update stay
+  removed. The restore now also brings back imported keys without a password,
+  never overwrites anything already on this device, and keeps
+  password-protected wallets protected. Password-protected imported keys are
+  not restored by it yet; the summary counts them and points to the Wallets
+  screen, which restores them with their old password.
+
+- "Restore from Previous Version" reports an identity whose password prompt was
+  declined as skipped, with a note to run the restore again, instead of as a
+  failure.
+
+- When an identity key cannot be used for signing, the message now names the
+  cause in a fixed, plain sentence — wallet not on this device, wallet locked,
+  password prompt closed, password needed in the app window, or key missing —
+  with what to do next. The identity, key and wallet involved are kept in the
+  technical details.
+
 - The Identities page lets you load an existing identity when you already have
   identities. A new "Add" menu in the top bar offers "Create a new identity" and
   "Load an existing identity", and the "Add a new identity" card now offers both

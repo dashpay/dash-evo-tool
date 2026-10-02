@@ -3,8 +3,10 @@
 //!
 //! User-initiated and repeatable. Wallet seed envelopes are copied only where
 //! the vault has no copy of that seed (never overwritten, protected envelopes
-//! travel as-is), and identity keys go through the per-identity #889 recovery,
-//! which restores only missing items and never resurrects a deleted identity.
+//! travel as-is), imported-key secrets are preserved while missing public
+//! details can be repaired, and identity keys go through the per-identity
+//! #889 recovery, which restores only missing items and never resurrects a
+//! deleted identity.
 //! `data.db` is opened read-only; the one-time drain sentinel is not consulted
 //! or changed.
 
@@ -12,14 +14,15 @@ use std::path::Path;
 use std::sync::Arc;
 
 use super::finish_unwire::{
-    MigrationError, migrate_wallet_meta_rows_from_conn, migrate_wallet_seeds_rows_from_conn,
-    open_legacy_read_only,
+    LegacyNetworkRows, MigrationError, import_missing_single_keys,
+    migrate_wallet_meta_rows_from_conn, migrate_wallet_seeds_rows_from_conn, open_legacy_read_only,
 };
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::legacy_recovery::{RecoveryItem, compute_recovery_plan};
 use crate::model::legacy_restore::LegacyRestoreSummary;
+use crate::model::settings::legacy_network_names;
 
 const LOG_TARGET: &str = "migration::legacy_restore";
 
@@ -88,25 +91,102 @@ async fn restore_wallets(
     }
 
     let backend = app_context.wallet_backend()?;
-    let network = app_context.network;
     let conn = open_legacy_read_only(path).map_err(restore_failed)?;
+    let copy = copy_missing_wallets(&backend, &conn, app_context.network.into())
+        .map_err(restore_failed)?;
+
+    summary.wallets_restored = copy.seeds_restored;
+    summary.wallets_already_present = copy.seeds_already_present;
+    summary.wallets_skipped_malformed = copy.skipped_malformed;
+    summary.wallets_failed = copy.failed;
+
+    // Unprotected imported keys, add-only. Password-protected ones have their
+    // own restore on the wallets screen, which asks for the old password.
+    match import_missing_single_keys(app_context, &conn, app_context.network.into()) {
+        Ok(keys) => {
+            summary.imported_keys_restored = keys.imported;
+            summary.imported_keys_failed = keys.failed;
+        }
+        Err(error) => {
+            tracing::warn!(
+                target = LOG_TARGET,
+                ?error,
+                "Could not read the imported keys saved by the earlier version"
+            );
+            summary.imported_keys_failed = summary.imported_keys_failed.saturating_add(1);
+        }
+    }
+    // Reported, never silently left out: the same list the wallets screen
+    // offers to restore, so a key already restored there is not counted.
+    match super::single_key_restore::list_pending_protected_restores(app_context) {
+        Ok(pending) => {
+            summary.imported_keys_need_password =
+                u32::try_from(pending.pending.len()).unwrap_or(u32::MAX);
+            summary.imported_keys_failed = summary
+                .imported_keys_failed
+                .saturating_add(pending.unreadable);
+        }
+        Err(error) => {
+            tracing::warn!(
+                target = LOG_TARGET,
+                ?error,
+                "Could not list the password-protected imported keys saved by the earlier version"
+            );
+            if summary.imported_keys_failed == 0 {
+                summary.imported_keys_failed = 1;
+            }
+        }
+    }
+
+    make_copied_wallets_live(app_context, &backend, &copy).await
+}
+
+/// Counters of one add-only [`copy_missing_wallets`] pass.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(super) struct MissingWalletsCopy {
+    /// Seed envelopes written because the vault had no copy.
+    pub(super) seeds_restored: u32,
+    /// Seeds the vault already held, left untouched.
+    pub(super) seeds_already_present: u32,
+    /// Metadata entries written beside a stored seed that lacked one.
+    pub(super) metas_restored: u32,
+    /// Damaged rows skipped.
+    pub(super) skipped_malformed: u32,
+    /// Rows that could not be read or written.
+    pub(super) failed: u32,
+}
+
+/// Copy the wallet seed envelopes and metadata `rows` selects that this
+/// install lacks. Add-only: nothing present is overwritten or removed, and a
+/// protected envelope travels as-is, so it stays protected. The legacy
+/// connection is only read.
+///
+/// # Errors
+///
+/// [`MigrationError`] when a legacy wallet table cannot be read at all;
+/// per-row problems are counted instead.
+pub(super) fn copy_missing_wallets(
+    backend: &crate::wallet_backend::WalletBackend,
+    conn: &rusqlite::Connection,
+    rows: LegacyNetworkRows,
+) -> Result<MissingWalletsCopy, MigrationError> {
+    let network = rows.network();
     let seeds = backend.wallet_seeds();
     let metas = backend.wallet_meta();
 
-    let mut restored = 0u32;
+    let mut seeds_restored = 0u32;
     let seed_outcome = migrate_wallet_seeds_rows_from_conn(
-        &conn,
+        conn,
         |seed_hash, envelope| {
             if seeds.contains(&seed_hash)? {
                 return Ok(());
             }
             seeds.set(&seed_hash, &envelope)?;
-            restored += 1;
+            seeds_restored += 1;
             Ok(())
         },
-        network,
-    )
-    .map_err(restore_failed)?;
+        rows,
+    )?;
 
     // Hydration is driven by wallet metadata, so a seed without it stays
     // invisible. Write it only where missing, and only beside a stored seed.
@@ -115,7 +195,7 @@ async fn restore_wallets(
     // `failed` also counts undecodable rows the seed pass already counted.
     let mut meta_callback_failures = 0u32;
     migrate_wallet_meta_rows_from_conn(
-        &conn,
+        conn,
         |seed_hash, meta| {
             let restore_meta = || -> Result<bool, TaskError> {
                 if metas.try_get(network, &seed_hash)?.is_some() || !seeds.contains(&seed_hash)? {
@@ -135,26 +215,36 @@ async fn restore_wallets(
                 }
             }
         },
-        network,
-    )
-    .map_err(restore_failed)?;
+        rows,
+    )?;
 
-    summary.wallets_restored = restored;
-    summary.wallets_already_present = seed_outcome.imported.saturating_sub(restored);
-    summary.wallets_skipped_malformed = seed_outcome.skipped_malformed;
-    summary.wallets_failed = seed_outcome.failed.saturating_add(meta_callback_failures);
+    Ok(MissingWalletsCopy {
+        seeds_restored,
+        seeds_already_present: seed_outcome.imported.saturating_sub(seeds_restored),
+        metas_restored,
+        skipped_malformed: seed_outcome.skipped_malformed,
+        failed: seed_outcome.failed.saturating_add(meta_callback_failures),
+    })
+}
 
-    if restored > 0 || metas_restored > 0 {
+/// Make wallets a [`copy_missing_wallets`] pass wrote live without a restart.
+/// Open wallets register upstream; a protected one stays closed until the
+/// user unlocks it, and that unlock registers it — no prompt here.
+pub(super) async fn make_copied_wallets_live(
+    app_context: &Arc<AppContext>,
+    backend: &crate::wallet_backend::WalletBackend,
+    copy: &MissingWalletsCopy,
+) -> Result<(), TaskError> {
+    if copy.seeds_restored > 0 || copy.metas_restored > 0 {
         backend.hydrate_context_wallets(app_context)?;
-        // Registers the restored open wallets upstream; a protected one stays
-        // closed until the user unlocks it, and that unlock registers it.
         app_context.bootstrap_loaded_wallets().await;
     }
     Ok(())
 }
 
 /// Restore every missing key the legacy copy of each local identity still
-/// holds. Failures are counted per identity, never fatal for the run.
+/// holds. Failures and declined password prompts are counted per identity,
+/// never fatal for the run.
 async fn restore_identity_keys(app_context: &Arc<AppContext>, summary: &mut LegacyRestoreSummary) {
     let identity_ids = match app_context.local_identity_ids() {
         Ok(ids) => ids,
@@ -198,6 +288,10 @@ async fn restore_identity_keys(app_context: &Arc<AppContext>, summary: &mut Lega
                     .saturating_add(u32::try_from(keys).unwrap_or(u32::MAX));
             }
             Ok(_) => {}
+            Err(TaskError::SecretPromptCancelled) => {
+                tracing::info!(target = LOG_TARGET, identity = %identity_id, "Skipped restoring an identity's keys because its password prompt was declined");
+                summary.identities_skipped = summary.identities_skipped.saturating_add(1);
+            }
             Err(error) => {
                 tracing::warn!(target = LOG_TARGET, identity = %identity_id, ?error, "Could not restore keys saved by the earlier version into an identity");
                 summary.identities_failed = summary.identities_failed.saturating_add(1);
@@ -224,20 +318,21 @@ fn restorable_items(
     Ok(plan.approved_items())
 }
 
-/// Whether the legacy database holds any wallet or identity row for `network`.
+/// Whether the legacy database holds any wallet, imported-key or identity row
+/// for `network`.
 fn legacy_rows_present(
     conn: &rusqlite::Connection,
     network: dash_sdk::dpp::dashcore::Network,
 ) -> Result<bool, MigrationError> {
-    for table in ["wallet", "identity"] {
+    for table in ["wallet", "single_key_wallet", "identity"] {
         let read_error = |source| MigrationError::LegacyDbRead { table, source };
         if !crate::database::table_exists(conn, table).map_err(read_error)? {
             continue;
         }
         let present: bool = conn
             .query_row(
-                &format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE network = ?1)"),
-                [network.to_string()],
+                &format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE network IN (?1, ?2))"),
+                legacy_network_names(network),
                 |row| row.get(0),
             )
             .map_err(read_error)?;
@@ -264,13 +359,132 @@ mod tests {
     use dash_sdk::dpp::dashcore::Network;
 
     fn app_context(dir: &Path) -> Arc<AppContext> {
+        app_context_on(dir, Network::Testnet)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn review_regression_restore_counts_unreadable_protected_keys() {
+        use crate::model::wallet::single_key::ClosedSingleKey;
+        use dash_sdk::dpp::dashcore::{Address, PrivateKey, PublicKey, secp256k1::Secp256k1};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = app_context(dir.path());
+        let raw = [0x39; 32];
+        let private = PrivateKey::from_byte_array(&raw, ctx.network).unwrap();
+        let public = PublicKey::new(private.inner.public_key(&Secp256k1::new()));
+        let address = Address::p2pkh(&public, ctx.network).to_string();
+        let password = format!("test-password-{}", dir.path().display());
+        let envelope = ClosedSingleKey::encrypt_private_key(&raw, &password).unwrap();
+        ctx.db.execute(
+            "INSERT INTO single_key_wallet (key_hash, address, alias, network, uses_password, encrypted_private_key, salt, nonce, public_key)
+             VALUES (?1, ?2, 'Valid', 'testnet', 1, ?3, ?4, ?5, ?6)",
+            rusqlite::params![raw.as_slice(), address, envelope.ciphertext, envelope.salt, envelope.nonce, public.to_bytes()],
+        ).expect("valid protected row");
+        ctx.db.execute(
+            "INSERT INTO single_key_wallet (key_hash, address, alias, network, uses_password, encrypted_private_key, salt, nonce, public_key)
+             SELECT x'02', x'FF', 'Damaged', network, uses_password, encrypted_private_key, salt, nonce, public_key FROM single_key_wallet", [],
+        ).expect("unreadable address beside valid ciphertext");
+        wire_backend(&ctx).await;
+        let summary = run(&ctx).await.expect("restore");
+        assert_eq!(
+            summary.imported_keys_need_password, 1,
+            "valid row stays pending"
+        );
+        assert_eq!(
+            summary.imported_keys_failed, 1,
+            "unreadable protected row is a failure"
+        );
+        ctx.db
+            .execute(
+                "UPDATE single_key_wallet SET alias = x'FF' WHERE alias = 'Valid'",
+                [],
+            )
+            .unwrap();
+        let summary = run(&ctx).await.unwrap();
+        assert_eq!(summary.imported_keys_need_password, 0);
+        assert_eq!(
+            summary.imported_keys_failed, 2,
+            "each unreadable protected row counts once"
+        );
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn single_key_restore_repairs_orphans_reports_missing_secrets_and_clears_both() {
+        use crate::model::wallet::alias::AliasSource;
+        use crate::wallet_backend::DetScope;
+        use crate::wallet_backend::secret_seam::{SecretScheme, SecretSeam};
+        use crate::wallet_backend::single_key::{
+            label_for_address, meta_key_for, single_key_namespace_id,
+        };
+        use dash_sdk::dpp::dashcore::PrivateKey;
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = app_context(dir.path());
+        wire_backend(&ctx).await;
+        let backend = ctx.wallet_backend().unwrap();
+        let seam = SecretSeam::new(backend.secret_store());
+        let mut addresses = Vec::new();
+        for byte in [0x41, 0x42] {
+            let raw = [byte; 32];
+            let private = PrivateKey::from_byte_array(&raw, ctx.network).unwrap();
+            let (meta, _) = ctx
+                .import_single_key_wif(
+                    &private.to_wif(),
+                    AliasSource::Preserved(None),
+                    Default::default(),
+                )
+                .unwrap();
+            ctx.db.execute(
+                "INSERT INTO single_key_wallet (key_hash, address, network, uses_password, encrypted_private_key, salt, nonce, public_key)
+                 VALUES (?1, ?2, 'testnet', 0, ?1, x'', x'', x'')",
+                rusqlite::params![raw.as_slice(), meta.address],
+            ).unwrap();
+            if byte == 0x41 {
+                ctx.app_kv()
+                    .delete(DetScope::Global, &meta_key_for(ctx.network, &meta.address))
+                    .unwrap();
+            } else {
+                seam.delete_secret(
+                    &single_key_namespace_id(),
+                    &label_for_address(&meta.address),
+                )
+                .unwrap();
+            }
+            addresses.push(meta.address);
+        }
+        let summary = run(&ctx).await.unwrap();
+        assert_eq!(summary.imported_keys_restored, 1);
+        assert_eq!(summary.imported_keys_failed, 1);
+        assert_eq!(backend.single_key().hydrate_wallets().len(), 1);
+        assert_eq!(
+            seam.scheme(
+                &single_key_namespace_id(),
+                &label_for_address(&addresses[1])
+            )
+            .unwrap(),
+            SecretScheme::Absent,
+            "an interrupted removal is never resurrected"
+        );
+        let cleared = backend.forget_all_wallets_local();
+        assert!(cleared.failures.is_empty());
+        assert!(backend.single_key().list_persisted().is_empty());
+        for address in addresses {
+            assert_eq!(
+                seam.scheme(&single_key_namespace_id(), &label_for_address(&address))
+                    .unwrap(),
+                SecretScheme::Absent
+            );
+        }
+        backend.shutdown().await;
+    }
+
+    fn app_context_on(dir: &Path, network: Network) -> Arc<AppContext> {
         crate::app_dir::ensure_env_file(dir);
         let db = Arc::new(crate::database::Database::new(dir.join("data.db")).expect("db"));
         db.create_tables(true).expect("create tables");
         db.set_default_version().expect("set version");
         AppContext::new(
             dir.to_path_buf(),
-            Network::Testnet,
+            network,
             db,
             Default::default(),
             Default::default(),
@@ -381,6 +595,41 @@ mod tests {
         );
         assert!(dir.path().join("data.db").exists(), "data.db is kept");
         backend.shutdown().await;
+    }
+
+    /// A mainnet wallet saved by v0.9.x carries the pre-v29 `dash` network
+    /// spelling; the restore must still find and restore it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn restores_a_mainnet_wallet_saved_with_the_dash_network_spelling() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = app_context_on(dir.path(), Network::Mainnet);
+        let seed = [0xA3; 64];
+        let seed_hash = ClosedKeyItem::compute_seed_hash(&seed);
+        seed_legacy_unprotected_hd_wallet_row(
+            &ctx.db,
+            &seed_hash,
+            &seed,
+            &legacy_master_epk_bytes(&seed, Network::Mainnet),
+            "Mainnet",
+            Network::Mainnet,
+        )
+        .expect("stage legacy wallet");
+        ctx.db
+            .execute("UPDATE wallet SET network = 'dash'", [])
+            .expect("use the v0.9.x spelling");
+        wire_backend(&ctx).await;
+
+        let summary = run(&ctx).await.expect("restore");
+
+        assert_eq!(
+            summary,
+            LegacyRestoreSummary {
+                legacy_database_found: true,
+                wallets_restored: 1,
+                ..Default::default()
+            }
+        );
+        ctx.wallet_backend().expect("backend").shutdown().await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

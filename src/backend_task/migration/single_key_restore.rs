@@ -36,6 +36,7 @@ use zeroize::Zeroizing;
 
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::model::settings::legacy_network_names;
 use crate::wallet_backend::single_key::ImportPassphrase;
 
 use super::finish_unwire::MigrationError;
@@ -52,6 +53,15 @@ pub struct PendingProtectedRestore {
     pub alias: Option<String>,
     /// Network the address is valid on.
     pub network: Network,
+}
+
+/// Readable pending keys and the number of unreadable legacy rows.
+#[derive(Debug, Default)]
+pub struct PendingProtectedRestores {
+    /// Keys that can still be restored using their passwords.
+    pub pending: Vec<PendingProtectedRestore>,
+    /// Rows that could not be decoded and must be reported as failures.
+    pub unreadable: u32,
 }
 
 /// Raw protected-row crypto fields read from the legacy table. Internal
@@ -73,15 +83,15 @@ struct LegacyProtectedBlob {
 /// restore flow and how many keys are waiting.
 pub fn list_pending_protected_restores(
     app_context: &Arc<AppContext>,
-) -> Result<Vec<PendingProtectedRestore>, TaskError> {
+) -> Result<PendingProtectedRestores, TaskError> {
     let backend = app_context
         .wallet_backend()
         .map_err(|_| MigrationError::WalletBackendUnavailable)?;
     let Some(path) = app_context.db.db_file_path() else {
-        return Ok(Vec::new());
+        return Ok(PendingProtectedRestores::default());
     };
     if !path.exists() {
-        return Ok(Vec::new());
+        return Ok(PendingProtectedRestores::default());
     }
 
     // Addresses already present in the modern index are restored and must
@@ -100,11 +110,10 @@ pub fn list_pending_protected_restores(
                 source: e,
             }
         })?;
-    let rows = read_pending_protected_rows(&conn, app_context.network)?;
-    Ok(rows
-        .into_iter()
-        .filter(|r| !already_present.contains(&r.address))
-        .collect())
+    let mut rows = read_pending_protected_rows(&conn, app_context.network)?;
+    rows.pending
+        .retain(|r| !already_present.contains(&r.address));
+    Ok(rows)
 }
 
 /// Pure read of protected pending rows from `conn` for `network`. Returns
@@ -113,12 +122,12 @@ pub fn list_pending_protected_restores(
 fn read_pending_protected_rows(
     conn: &Connection,
     network: Network,
-) -> Result<Vec<PendingProtectedRestore>, MigrationError> {
+) -> Result<PendingProtectedRestores, MigrationError> {
     if !table_exists(conn, "single_key_wallet")? {
-        return Ok(Vec::new());
+        return Ok(PendingProtectedRestores::default());
     }
     let sql = "SELECT address, alias FROM single_key_wallet \
-               WHERE network = ?1 AND uses_password = 1";
+               WHERE network IN (?1, ?2) AND uses_password = 1";
     let mut stmt = conn
         .prepare(sql)
         .map_err(|e| MigrationError::LegacyDbRead {
@@ -126,7 +135,7 @@ fn read_pending_protected_rows(
             source: e,
         })?;
     let rows = stmt
-        .query_map(rusqlite::params![network.to_string()], |row| {
+        .query_map(legacy_network_names(network), |row| {
             let address: String = row.get(0)?;
             let alias: Option<String> = row.get(1)?;
             Ok(PendingProtectedRestore {
@@ -139,11 +148,12 @@ fn read_pending_protected_rows(
             table: "single_key_wallet",
             source: e,
         })?;
-    let mut out = Vec::new();
+    let mut out = PendingProtectedRestores::default();
     for row in rows {
         match row {
-            Ok(r) => out.push(r),
+            Ok(r) => out.pending.push(r),
             Err(e) => {
+                out.unreadable = out.unreadable.saturating_add(1);
                 tracing::warn!(
                     target = "migration::single_key_restore",
                     error = ?e,
@@ -245,7 +255,8 @@ fn read_protected_blob(
     }
     let sql = "SELECT address, alias, encrypted_private_key, salt, nonce \
                FROM single_key_wallet \
-               WHERE network = ?1 AND address = ?2 AND uses_password = 1";
+               WHERE network IN (?1, ?2) AND address = ?3 AND uses_password = 1";
+    let [current, pre_v29] = legacy_network_names(network);
     let mut stmt = conn
         .prepare(sql)
         .map_err(|e| MigrationError::LegacyDbRead {
@@ -253,7 +264,7 @@ fn read_protected_blob(
             source: e,
         })?;
     let mut rows = stmt
-        .query(rusqlite::params![network.to_string(), address])
+        .query(rusqlite::params![current, pre_v29, address])
         .map_err(|e| MigrationError::LegacyDbRead {
             table: "single_key_wallet",
             source: e,
@@ -318,7 +329,7 @@ fn legacy_decrypt_to_wif(
 
 /// Derive the P2PKH address for `wif` on `network`. Used to confirm the
 /// restored key's address matches the legacy row before trusting it (S5).
-fn derive_p2pkh_address(wif: &str, network: Network) -> Result<String, TaskError> {
+pub(super) fn derive_p2pkh_address(wif: &str, network: Network) -> Result<String, TaskError> {
     let priv_key = PrivateKey::from_wif(wif).map_err(|source| TaskError::InvalidWif {
         source: Box::new(source),
     })?;
@@ -486,14 +497,43 @@ mod tests {
         let address = seed_protected_row(&conn, &raw, "pw", Some("nick"), Network::Testnet);
 
         let pending = read_pending_protected_rows(&conn, Network::Testnet).expect("list");
-        assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].address, address);
-        assert_eq!(pending[0].alias.as_deref(), Some("nick"));
-        assert_eq!(pending[0].network, Network::Testnet);
+        assert_eq!(pending.unreadable, 0);
+        assert_eq!(pending.pending.len(), 1);
+        assert_eq!(pending.pending[0].address, address);
+        assert_eq!(pending.pending[0].alias.as_deref(), Some("nick"));
+        assert_eq!(pending.pending[0].network, Network::Testnet);
 
         // A different network sees nothing.
         let other = read_pending_protected_rows(&conn, Network::Mainnet).expect("list mainnet");
-        assert!(other.is_empty(), "protected rows are per-network");
+        assert!(other.pending.is_empty(), "protected rows are per-network");
+        assert_eq!(other.unreadable, 0);
+    }
+
+    /// A mainnet row a pre-v29 build saved says `dash`; both the pending list
+    /// and the blob lookup must still find it.
+    #[test]
+    fn mainnet_rows_saved_with_the_dash_spelling_are_found() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conn = Connection::open(dir.path().join("data.db")).expect("db");
+        let raw = [0x33u8; 32];
+        let address = seed_protected_row(&conn, &raw, "pw", None, Network::Mainnet);
+        conn.execute("UPDATE single_key_wallet SET network = 'dash'", [])
+            .expect("use the pre-v29 spelling");
+
+        let pending = read_pending_protected_rows(&conn, Network::Mainnet).expect("list");
+        assert_eq!(
+            pending.pending.len(),
+            1,
+            "the pre-v29 mainnet row must be listed"
+        );
+        assert_eq!(pending.pending[0].network, Network::Mainnet);
+        assert_eq!(pending.unreadable, 0);
+        assert!(
+            read_protected_blob(&conn, &address, Network::Mainnet)
+                .expect("blob")
+                .is_some(),
+            "the pre-v29 mainnet row must be restorable"
+        );
     }
 
     /// Missing table → empty pending list and `None` blob (fresh install).
@@ -504,6 +544,7 @@ mod tests {
         assert!(
             read_pending_protected_rows(&conn, Network::Testnet)
                 .expect("list")
+                .pending
                 .is_empty()
         );
         assert!(

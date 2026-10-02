@@ -168,6 +168,15 @@ impl DetKv {
         decode_value(&bytes).map(Some)
     }
 
+    /// Whether any value is bound to `(scope, key)`, without decoding it: a
+    /// value this build cannot decode still counts as present.
+    pub fn contains(&self, scope: DetScope<'_>, key: &str) -> Result<bool, KvAdapterError> {
+        self.store
+            .get(&to_object_id(scope), key)
+            .map(|raw| raw.is_some())
+            .map_err(KvAdapterError::Store)
+    }
+
     /// Read an existing app-store value without opening the migrating persister.
     #[cfg(any(feature = "cli", feature = "mcp"))]
     pub(crate) fn read_global<T: DeserializeOwned>(

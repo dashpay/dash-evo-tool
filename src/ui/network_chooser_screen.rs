@@ -722,7 +722,7 @@ impl NetworkChooserScreen {
                 );
                 ui.add_space(6.0);
                 ui.label(
-                    egui::RichText::new("If you updated from an earlier version of Dash Evo Tool, you can bring back wallets and identity keys that are missing on this device. Nothing that is already here is changed. Wallets you removed in this version may reappear if the earlier version still has them.")
+                    egui::RichText::new("If you updated from an earlier version of Dash Evo Tool, you can bring back wallets, imported keys and identity keys that are missing on this device. Nothing that is already here is changed. Wallets and keys you removed in this version may reappear if the earlier version still has them.")
                         .color(DashColors::text_secondary(dark_mode)),
                 );
                 ui.add_space(8.0);

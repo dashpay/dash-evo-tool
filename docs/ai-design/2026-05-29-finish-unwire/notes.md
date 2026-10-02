@@ -146,6 +146,12 @@ The full 64-case specification was drafted as a scratch file and was never commi
 table below is the retained summary. TC-DEV-001/002/003's normative text is inlined in
 `tests/legacy_table_surface.rs`, the only ID range still enforced by a committed test.
 
+The guard also scans `#[cfg(test)]` blocks. Its allow-list includes
+`src/backend_task/migration/legacy_restore.rs` because restore regression fixtures
+create and damage legacy `single_key_wallet` rows in isolated test databases.
+The production restore code delegates legacy reads through the migration boundary;
+this exemption does not authorize new live-table SQL outside that boundary.
+
 | Domain | TC IDs | Count |
 |--------|--------|-------|
 | Wallet state (FR-1.x) | TC-W-001..010 | 10 |

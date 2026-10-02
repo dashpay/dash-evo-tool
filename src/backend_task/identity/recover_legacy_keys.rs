@@ -313,7 +313,10 @@ impl AppContext {
         })?;
 
         match read_identity_row(&conn, self.network, &identity_id.to_buffer()) {
-            Ok(LegacyIdentityLookup::Found(row)) => Ok(Some(row.qi)),
+            Ok(LegacyIdentityLookup::Found(mut row)) => {
+                row.qi.private_keys.normalize_legacy_hash160_keys();
+                Ok(Some(row.qi))
+            }
             Ok(LegacyIdentityLookup::Absent) => Ok(None),
             Ok(LegacyIdentityLookup::Unreadable) => {
                 Err(TaskError::LegacyIdentityUnreadable { identity_id })
@@ -1960,6 +1963,26 @@ mod tests {
             .expect("read stored blob")
             .expect("record stored");
         (identity_id, before)
+    }
+
+    /// "Restore from Previous Version": declining an identity's password
+    /// prompt skips that identity — it is counted as skipped, not as a failure.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn restore_counts_a_declined_identity_password_as_skipped() {
+        let prompt = Arc::new(TestPrompt::new([ScriptedAnswer::Cancel]));
+        let offline = Offline::new(Some(prompt.clone())).await;
+        let (identity_id, before) = seed_tier2_with_a_stranded_key(&offline).await;
+
+        let summary = crate::backend_task::migration::legacy_restore::run(&offline.ctx)
+            .await
+            .expect("restore run");
+
+        assert_eq!(prompt.ask_count(), 1, "the user was asked once");
+        assert_eq!(summary.identities_skipped, 1, "{summary:?}");
+        assert_eq!(summary.identities_failed, 0, "{summary:?}");
+        assert!(!summary.has_problems(), "{summary:?}");
+        assert_unchanged(&offline, identity_id, &before);
+        offline.shutdown().await;
     }
 
     /// Assert a failed recovery changed neither the stored record nor the vault.

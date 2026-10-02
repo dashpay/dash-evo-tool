@@ -25,12 +25,25 @@ metadata, then verifies `identity-list`. It runs in the main `Tests` CI job with
 access or fixture password is required. This covers public metadata preservation,
 not signing, voter/operator associations, or fetching proofs with the old SDK.
 
-The main `Tests` workflow also runs the migration harness's helper tests.
-`Migration Matrix` selects only `migration_matrix` with `--exact` to replay
-downloaded archived profiles; it also runs the separate real-data platform
-compatibility check. It requires evidence that at least one archive was
-exercised and exactly one test passed. Clippy checks all test targets without
-executing them.
+The `Tests` workflow builds all test targets and `det-cli` once with
+`cargo test --locked --all-features --workspace --no-run`. On that same runner,
+`scripts/ci/run-tests.sh` then runs two suites in parallel against the shared
+build: the normal workspace tests (including doctests and bundled fixtures),
+and the archived-profile migration matrix plus the real-data compatibility
+check. All Cargo invocations keep `--all-features`; the matrix uses the CLI
+binary Cargo already built, without downloading another executable.
+
+Only the migration suite receives the downloaded archive directory and fixture
+password. It selects `migration_matrix --exact` and requires evidence that at
+least one archive and exactly one matrix test ran; the real-data check must
+also execute rather than skip. Either suite failing makes the job fail, and
+both results are reported even if one fails first. Fork PRs retain the
+password-free scenarios. Clippy checks all test targets without executing them.
+
+`Tests` runs both suites for every matching code or fixture/tooling change,
+and supports manual dispatch for drafts. The platform pin guard remains a
+separate job; the Monday schedule also checks fixture coverage against releases.
+The weekly release gate checks `tests.yml` and `clippy.yml`.
 
 ## Why this exists
 

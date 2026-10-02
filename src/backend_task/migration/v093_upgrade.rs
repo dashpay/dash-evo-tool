@@ -1956,7 +1956,20 @@ async fn a_failed_repair_is_reported_and_never_retried_on_a_later_launch() {
     );
 
     // Restore from Previous Version, which the notice points to, brings it back.
-    let summary = super::legacy_restore::run(&ctx).await.expect("restore");
+    // The launch's detached DAPI refresh may still hold the storage gate,
+    // which Restore only try-locks; wait it out instead of racing it.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let summary = loop {
+        match super::legacy_restore::run(&ctx).await {
+            Err(crate::backend_task::error::TaskError::WalletStorageNotReady)
+                if std::time::Instant::now() < deadline =>
+            {
+                finish_unwire::wait_for_dapi_refresh(&ctx).await;
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            result => break result.expect("restore"),
+        }
+    };
     assert_eq!(summary.imported_keys_restored, 1, "{summary:?}");
     assert_eq!(summary.imported_keys_failed, 0, "{summary:?}");
     assert!(has_repair_single_key(&backend));

@@ -158,7 +158,7 @@ Validation floor: 24 nodes on one voting key, 6 open contests, 2 ending today.
   confirmed votes for that proTxHash × contest in the journal, it is 4 when n = 0,
   otherwise 5 − n. Label it `counted on this device`. If proved state shows a vote not present in the
   journal, show `Changes left unknown. This node voted outside Dash Evo Tool.`
-  A node with 0 left is skipped with the reason `no changes left (5 of 5 votes
+  A node with 0 left is skipped with the reason `no changes left (4 of 4 changes
   used)`.
 - **VOTE-FR-079** **[New]** — A node not in the current masternode list is
   excluded from the node set, with `Not in the masternode list. Its votes don't
@@ -195,6 +195,7 @@ Validation floor: 24 nodes on one voting key, 6 open contests, 2 ending today.
   - the timing selector and `Adjust nodes`;
   - primary `Cast {t} votes` / `Schedule {t} votes`.
   - Enter confirms and Esc cancels.
+  Relative schedule display presets are stored in one network-scoped metadata record per vote operation, without changing the vote journal binary format. Changing the absolute scheduled time clears the preset; cancellation and identity removal retain metadata only with its journal owner under the same retention rules. Network-data clearing retains journal history and uncertain locks under existing rules, and display metadata follows those owners. Reads never create or delete metadata.
 - **VOTE-FR-082** **[New]** — Keyboard (only when focus is in the contest list):
   J/K or ↓/↑ move card focus · 1–9 vote for contender n · L lock · A abstain ·
   0 clear · Space select · Enter open confirm. Selecting ≥ 2 cards shows a bulk

@@ -100,7 +100,7 @@ K = kittest, B = backend test with fake SDK seam.
 | VOTE-TC-093 | Tie copy | Two contenders equal | Render | `If still tied at the end, the most recent request wins.` | FR-077 | K |
 | VOTE-TC-094 | Changes left count | Journal: 3 confirmed votes for node × contest | Render node detail | `2 of 4` (5 − 3) | FR-078 | U |
 | VOTE-TC-095 | Changes unknown | Proved vote exists, journal empty | Render | `Changes left unknown. This node voted outside Dash Evo Tool.` | FR-078 | U |
-| VOTE-TC-096 | Out of changes skipped | Journal 5 votes | Confirm | Node under Skipped with `no changes left (5 of 5 votes used)`; not submitted | FR-078, FR-025 | B |
+| VOTE-TC-096 | Out of changes skipped | Journal 5 votes | Confirm | Node under Skipped with `no changes left (4 of 4 changes used)`; not submitted | FR-078, FR-025 | B |
 | VOTE-TC-097 | Not in list excluded | Node absent from masternode list | Node set | Row disabled with reason; not submitted | FR-079 | K |
 | VOTE-TC-098 | Keyboard flow | 2 cards | J, 2, J, L, Enter | Choices set, confirm opens; shortcuts ignored while filter field focused | FR-082, NFR-010 | K |
 | VOTE-TC-099 | Bulk bar | 3 cards selected | Click Abstain | All three drafts = Abstain | FR-082 | K |

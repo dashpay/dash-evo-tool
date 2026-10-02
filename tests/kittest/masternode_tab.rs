@@ -464,11 +464,54 @@ fn to_decide_without_a_voting_key_shows_the_load_action() {
 
         assert!(
             harness
-                .query_by_label("None of your loaded nodes has a voting key.")
+                .query_by_label("No masternodes are loaded.")
                 .is_some(),
             "the no-voter-key explanation must render in To decide"
         );
         harness.get_by_label("Load a masternode").click();
+        harness.run_steps(3);
+        assert_eq!(
+            harness.state().selected_main_screen,
+            RootScreenType::RootScreenMasternodes
+        );
+        assert_eq!(masternodes_segment(&mut harness), MasternodesSegment::Nodes);
+        assert!(
+            harness.query_by_label("ProTxHash").is_some(),
+            "the load form must open"
+        );
+    });
+}
+
+#[test]
+fn blocker_keyless_node_add_voting_key_opens_reimport_form() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenDPNSActiveContests);
+        let app_context = harness.state().current_app_context().clone();
+        seed_node(&app_context, 93, "keyless", IdentityType::Masternode);
+        app_context
+            .insert_name_contests_as_normalized_names(vec!["alice".to_owned()])
+            .expect("seed active contest");
+        let Screen::MasternodesScreen(masternodes) = harness
+            .state_mut()
+            .main_screens
+            .get_mut(&RootScreenType::RootScreenMasternodes)
+            .expect("masternodes screen")
+        else {
+            panic!("the Masternodes root must contain the Masternodes screen");
+        };
+        masternodes.votes_mut().refresh();
+        harness.run_steps(5);
+
+        assert!(
+            harness
+                .query_by_label("None of your nodes has a voting key on this device.")
+                .is_some(),
+            "the no-voter-key explanation must render in To decide"
+        );
+        harness.get_by_label("Add a voting key").click();
         harness.run_steps(3);
         assert_eq!(
             harness.state().selected_main_screen,

@@ -75,7 +75,7 @@ pub use super::VotesView;
 const NO_OPEN_CONTESTS_MESSAGE: &str =
     "There are no open name contests right now. New contests appear here automatically.";
 const CANT_VOTE_REASON: &str = "None of the nodes you vote with has a voting key that is in the masternode list. Load a voting key or change the nodes you vote with.";
-const NO_VOTING_NODES_MESSAGE: &str = "None of your loaded nodes has a voting key.";
+const NO_VOTING_NODES_MESSAGE: &str = "No masternodes are loaded.";
 const NO_VOTING_NODES_DETAIL: &str = "Load a masternode with its voting key to cast votes.";
 const JOURNAL_UNAVAILABLE_MESSAGE: &str = "Saved voting progress could not be read. The displayed history may be incomplete or out of date. Retry loading before managing votes.";
 const MISSED_SCHEDULE_GUIDANCE: &str = "The automatic voting time was missed. On the Scheduled tab, use Cast now to vote, Edit to reschedule, or Remove to cancel.";
@@ -677,7 +677,24 @@ impl DPNSScreen {
     // ---------------------------
     // Rendering: Empty states
     // ---------------------------
+    fn no_voting_nodes_copy(&self) -> (&'static str, &'static str, &'static str) {
+        if self.voting_nodes.is_empty() {
+            (
+                NO_VOTING_NODES_MESSAGE,
+                NO_VOTING_NODES_DETAIL,
+                "Load a masternode",
+            )
+        } else {
+            (
+                "None of your nodes has a voting key on this device.",
+                "Add a voting key to vote. One key can serve several nodes.",
+                "Add a voting key",
+            )
+        }
+    }
+
     fn render_no_voting_nodes(&mut self, ui: &mut Ui) -> AppAction {
+        let (heading, detail, button) = self.no_voting_nodes_copy();
         let action = AppAction::None;
         let dark_mode = ui.style().visuals.dark_mode;
         ui.vertical_centered(|ui| {
@@ -686,16 +703,13 @@ impl DPNSScreen {
                 ui.set_max_width(520.0);
                 ui.vertical_centered(|ui| {
                     ui.label(
-                        RichText::new(NO_VOTING_NODES_MESSAGE)
+                        RichText::new(heading)
                             .strong()
                             .color(DashColors::warning_color(dark_mode)),
                     );
-                    ui.label(
-                        RichText::new(NO_VOTING_NODES_DETAIL)
-                            .color(DashColors::text_primary(dark_mode)),
-                    );
+                    ui.label(RichText::new(detail).color(DashColors::text_primary(dark_mode)));
                     ui.add_space(12.0);
-                    if ComponentStyles::add_primary_button(ui, "Load a masternode").clicked() {
+                    if ComponentStyles::add_primary_button(ui, button).clicked() {
                         self.load_node_requested = true;
                     }
                 });
@@ -1921,9 +1935,14 @@ impl DPNSScreen {
         self.relative_schedule_labels = rows
             .iter()
             .filter_map(|row| {
-                let (_, key) = row.journal_target.as_ref()?;
+                let (operation_id, key) = row.journal_target.as_ref()?;
                 let at = row.vote.unix_timestamp;
-                let preset = self.app_context.dpns_relative_schedule_label(key, at)?;
+                let preset = self
+                    .vote_operations
+                    .operation(*operation_id)?
+                    .outcome(key)?
+                    .relative_schedule_preset_ms?;
+                let preset = std::time::Duration::from_millis(preset);
                 Some(((key.clone(), at), preset))
             })
             .collect();
@@ -1954,13 +1973,11 @@ impl DPNSScreen {
             return action;
         }
         if self.voting_identities.is_empty() {
-            ui.colored_label(
-                DashColors::warning_color(dark_mode),
-                NO_VOTING_NODES_MESSAGE,
-            );
-            ui.label(NO_VOTING_NODES_DETAIL);
+            let (heading, detail, button) = self.no_voting_nodes_copy();
+            ui.colored_label(DashColors::warning_color(dark_mode), heading);
+            ui.label(detail);
             ui.horizontal(|ui| {
-                if ComponentStyles::add_primary_button(ui, "Load a masternode").clicked() {
+                if ComponentStyles::add_primary_button(ui, button).clicked() {
                     self.load_node_requested = true;
                     self.show_bulk_schedule_popup = false;
                 }
@@ -4244,6 +4261,41 @@ mod tests {
         assert!(staged(&screen).is_empty());
     }
 
+    #[tokio::test]
+    async fn blocker_empty_state_distinguishes_absent_nodes_from_missing_keys() {
+        use egui_kittest::kittest::Queryable;
+        for has_node in [false, true] {
+            let (ctx, _dir, _events) = wired_ctx().await;
+            if has_node {
+                ctx.insert_local_qualified_identity(
+                    &masternode_identity(41, "read-only-node", false, ctx.network()),
+                    &None,
+                )
+                .unwrap();
+            }
+            let mut screen = DPNSScreen::new(&ctx, VotesView::ToDecide);
+            let mut harness = egui_kittest::Harness::builder()
+                .with_size(egui::vec2(1000.0, 1200.0))
+                .build_ui(move |ui| {
+                    screen.ui(ui);
+                });
+            harness.run();
+            let (message, action) = if has_node {
+                (
+                    "None of your nodes has a voting key on this device.",
+                    "Add a voting key",
+                )
+            } else {
+                ("No masternodes are loaded.", "Load a masternode")
+            };
+            assert!(
+                harness.query_by_label(message).is_some(),
+                "missing {message}"
+            );
+            assert!(harness.query_by_label(action).is_some(), "missing {action}");
+        }
+    }
+
     #[test]
     fn voting_ui_keyless_users_can_read_cached_active_contests() {
         use egui_kittest::kittest::Queryable;
@@ -4738,10 +4790,9 @@ mod tests {
             current_choice: None,
             timing: VoteTiming::Scheduled(at),
         }]);
+        operation.targets[0].relative_schedule_preset_ms = Some(6 * 3600 * 1000);
         ctx.insert_dpns_vote_operation(&mut operation, None)
             .expect("insert scheduled operation");
-        ctx.save_dpns_relative_schedule_label(&key, at, std::time::Duration::from_secs(6 * 3600))
-            .expect("save label");
         let mut screen = DPNSScreen::new(&ctx, VotesView::Scheduled);
         let expected =
             relative_schedule_label(std::time::Duration::from_secs(6 * 3600), &utc_minute(at));

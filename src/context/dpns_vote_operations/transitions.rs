@@ -4,13 +4,13 @@
 //! status untouched, so a target can only ever advance along one path.
 
 use super::keys::*;
-use super::persist_operation;
+use super::{load_operation, persist_operation};
 use crate::backend_task::error::TaskError;
 use crate::model::dpns_voting::{
     DpnsVoteFailure, DpnsVoteOperation, DpnsVoteOperationId, DpnsVoteOutcome, DpnsVoteTargetKey,
     DpnsVoteTargetStatus, failed_before_broadcast_outcome,
 };
-use crate::wallet_backend::{DetKv, DetScope};
+use crate::wallet_backend::DetKv;
 use dash_sdk::dpp::dashcore::Network;
 
 /// What [`with_target`] should do once its mutator has inspected an outcome.
@@ -34,9 +34,9 @@ pub(super) fn with_target<T>(
     key: &DpnsVoteTargetKey,
     mutate: impl FnOnce(&mut DpnsVoteOutcome) -> TargetUpdate<T>,
 ) -> Result<Option<T>, TaskError> {
-    let Some(mut operation): Option<DpnsVoteOperation> = kv
-        .get(DetScope::Global, &operation_key(network, operation_id))
-        .map_err(unreadable_operation_err)?
+    let Some(mut operation): Option<DpnsVoteOperation> =
+        load_operation(kv, &operation_key(network, operation_id))
+            .map_err(unreadable_operation_err)?
     else {
         return Ok(None);
     };

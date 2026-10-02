@@ -130,7 +130,7 @@ pub struct MasternodeDetailView {
     /// The offer to restore keys this node left behind in the previous
     /// version's saved data (issue #889).
     recovery: LegacyRecoveryState,
-    /// Open contests with this node's choice, read when the view is built;
+    /// Open contests with this node's choice, reloaded with stored screen data;
     /// `None` when they could not be read.
     node_votes: Option<Vec<NodeVoteRow>>,
 }
@@ -277,6 +277,11 @@ impl MasternodeDetailView {
     /// Refresh stored data while preserving prompts and recovery state.
     pub(crate) fn refresh_from_store(&mut self) {
         let node_id = self.identity.identity.id();
+        self.node_votes = self
+            .app_context
+            .dpns_node_votes(node_id)
+            .inspect_err(|error| tracing::debug!(?error, "Could not reload node votes"))
+            .ok();
         if let Ok(identities) = self.app_context.load_local_masternode_identities()
             && let Some(identity) = identities
                 .into_iter()
@@ -300,8 +305,7 @@ impl MasternodeDetailView {
     }
 
     /// Build the network re-fetch dispatched by the detail Refresh button:
-    /// refresh this node's identity, plus a DPNS contests re-query
-    /// when the node has a voter identity that can vote.
+    /// refresh this node's identity. The result refreshes stored identity and vote rows.
     fn refresh_from_network(&self) -> AppAction {
         let tasks = vec![BackendTask::IdentityTask(IdentityTask::RefreshIdentity(
             self.identity.clone(),
@@ -964,6 +968,51 @@ mod tests {
             status: IdentityStatus::PendingCreation,
             network: ctx.network(),
         }
+    }
+
+    #[tokio::test]
+    async fn blocker_node_detail_refresh_reloads_vote_rows_without_resetting_prompts() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(Arc::new(
+            crate::wallet_backend::kv_test_support::InMemoryKv::default(),
+        )));
+        let (sender, _events) = tokio::sync::mpsc::channel(16);
+        ctx.ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+            sender,
+            ctx.egui_ctx().clone(),
+        ))
+        .await
+        .unwrap();
+        let identity = voteless_masternode(&ctx, 43);
+        let voter = identity.identity.id();
+        ctx.insert_local_qualified_identity(&identity, &None)
+            .unwrap();
+        ctx.seed_dpns_contest_for_test("alice", None, false);
+        let poll = ctx.dpns_vote_poll_id("alice").unwrap();
+        ctx.seed_proved_dpns_votes_for_test(voter, BTreeMap::new())
+            .await
+            .unwrap();
+        let mut detail = MasternodeDetailView::new(&ctx, identity);
+        assert_eq!(detail.node_votes.as_ref().unwrap()[0].choice, None);
+        detail.set_voter_key_prompt_for_test("test-only-input");
+        ctx.seed_proved_dpns_votes_for_test(
+            voter,
+            BTreeMap::from([(
+                poll.to_buffer(),
+                dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice::Lock,
+            )]),
+        )
+        .await
+        .unwrap();
+        detail.refresh_from_store();
+        assert_eq!(
+            detail.node_votes.as_ref().unwrap()[0].choice,
+            Some(
+                dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice::Lock
+            )
+        );
+        assert!(detail.has_voter_key_prompt_for_test());
     }
 
     #[test]

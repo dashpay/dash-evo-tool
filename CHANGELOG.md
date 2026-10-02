@@ -194,6 +194,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Votes distinguishes missing nodes from missing voting keys, and node detail refresh reloads cached votes.
+- Bulk voting reports confirmed and failed targets together while scheduled preflight failures remain retryable.
+- Relative schedule labels follow vote journal retention and clear when the scheduled time changes.
+- Exhausted voting limits consistently describe four changes after the initial vote.
+
 - Refreshing owned usernames preserves concurrent identity alias and key edits.
 - Ambiguous vote broadcasts remain locked while their results are checked. Failed recovery
   retries only affected targets and cannot release another active voter's claim.

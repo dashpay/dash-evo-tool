@@ -1,4 +1,4 @@
-//! Retention for completed vote batches and their dismissal sidecars.
+//! Retention for completed vote batches and their dismissal and display metadata.
 //!
 //! Only lock-releasing operations are ever retired: unresolved work is never
 //! capped, so a target that still holds its lock cannot be pruned away.
@@ -225,6 +225,7 @@ pub(super) fn prune_completed_history(
     Ok(removed)
 }
 
+/// Remove orphan display and dismissal metadata left by interrupted cleanup.
 /// A record delete may succeed before its dismissal-sidecar delete fails.
 /// Recover directly from the owned key namespaces so rebuilding the operation
 /// index cannot make that cleanup obligation unreachable.
@@ -243,15 +244,18 @@ pub(super) fn prune_orphaned_schedule_dismissals(
         .into_iter()
         .filter_map(|key| key.strip_prefix(&operation_prefix).map(str::to_owned))
         .collect::<BTreeSet<_>>();
-    for key in kv
-        .list(DetScope::Global, Some(&dismissal_prefix))
-        .map_err(unreadable_operation_err)?
-    {
-        if key
-            .strip_prefix(&dismissal_prefix)
-            .is_some_and(|suffix| !live_suffixes.contains(suffix))
+    let relative_prefix = format!("{RELATIVE_LABEL_KEY_PREFIX}{}:", network_prefix(network));
+    for prefix in [dismissal_prefix, relative_prefix] {
+        for key in kv
+            .list(DetScope::Global, Some(&prefix))
+            .map_err(unreadable_operation_err)?
         {
-            kv.delete(DetScope::Global, &key).map_err(operation_err)?;
+            if key
+                .strip_prefix(&prefix)
+                .is_some_and(|suffix| !live_suffixes.contains(suffix))
+            {
+                kv.delete(DetScope::Global, &key).map_err(operation_err)?;
+            }
         }
     }
     Ok(())
@@ -272,6 +276,12 @@ pub(super) fn delete_terminal_operations(
     )
     .map_err(operation_err)?;
     for id in terminal_ids {
+        // Keep the owner discoverable if deleting its display metadata fails.
+        kv.delete(
+            DetScope::Global,
+            &relative_labels_key(&operation_key(network, *id)),
+        )
+        .map_err(operation_err)?;
         kv.delete(DetScope::Global, &operation_key(network, *id))
             .map_err(operation_err)?;
         kv.delete(DetScope::Global, &schedule_dismissal_key(network, *id))

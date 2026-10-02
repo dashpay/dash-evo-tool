@@ -300,6 +300,10 @@ pub struct DpnsVoteOutcome {
     pub target: DpnsVoteTarget,
     pub status: DpnsVoteTargetStatus,
     pub failure: Option<DpnsVoteFailure>,
+    /// Display-only relative preset, hydrated from journal-owned metadata.
+    /// Excluded from the established binary vote record format.
+    #[serde(skip)]
+    pub relative_schedule_preset_ms: Option<u64>,
 }
 
 /// Reviewed voting batch stored before its first broadcast.
@@ -330,6 +334,7 @@ impl DpnsVoteOperation {
                     target,
                     status,
                     failure: None,
+                    relative_schedule_preset_ms: None,
                 }
             })
             .collect::<Vec<_>>();

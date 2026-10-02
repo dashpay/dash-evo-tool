@@ -407,14 +407,14 @@ pub fn excluded_nodes_line(count: usize, exclusion: NodeExclusion) -> String {
     }
 }
 
-/// One skipped-reason line, e.g. `2 votes: no changes left (5 of 5 votes used)`.
+/// One skipped-reason line, e.g. `2 votes: no changes left (4 of 4 changes used)`.
 pub fn skipped_reason_line(count: usize, reason: SkipReason) -> String {
     match reason {
         SkipReason::AlreadyVoted => {
             format!("Votes skipped: {count}. The selected nodes already voted this way.")
         }
         SkipReason::NoChangesLeft => format!(
-            "Votes skipped: {count}. The selected nodes have no changes left (5 of 5 votes used)."
+            "Votes skipped: {count}. The selected nodes have no changes left (4 of 4 changes used)."
         ),
         SkipReason::VoteStateUnavailable => format!(
             "Votes skipped: {count}. Vote state is unavailable. Refresh voting to include these nodes."
@@ -654,6 +654,13 @@ pub(crate) fn dpns_vote_feedback(operation: &DpnsVoteOperation) -> (String, Mess
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn blocker_exhausted_vote_limit_uses_changes_consistently() {
+        let copy = super::skipped_reason_line(1, super::SkipReason::NoChangesLeft);
+        assert!(copy.contains("4 of 4 changes used"), "{copy}");
+        assert!(!copy.contains("5 of 5 votes"));
+    }
+
     /// History outcome and node-vote wording (frame V4).
     #[test]
     fn history_copy_names_the_outcome_and_votes() {
@@ -750,7 +757,7 @@ mod tests {
         assert_eq!(skipped_header(2), "Skipped: 2 votes");
         assert_eq!(
             skipped_reason_line(1, SkipReason::NoChangesLeft),
-            "Votes skipped: 1. The selected nodes have no changes left (5 of 5 votes used)."
+            "Votes skipped: 1. The selected nodes have no changes left (4 of 4 changes used)."
         );
         assert_eq!(confirm_button_label(72, true), "Cast 72 votes");
         assert_eq!(confirm_button_label(1, false), "Schedule 1 vote");

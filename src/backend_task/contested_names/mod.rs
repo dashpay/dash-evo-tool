@@ -129,22 +129,17 @@ pub struct RelativeScheduleLabels {
     pub targets: std::collections::BTreeSet<DpnsVoteTargetKey>,
 }
 
-impl AppContext {
-    /// Record the relative preset of each listed scheduled target. Display
-    /// only, so failures are logged and never block the vote.
-    fn save_relative_schedule_labels(
-        &self,
-        operation: &DpnsVoteOperation,
-        labels: &RelativeScheduleLabels,
-    ) {
-        for outcome in &operation.targets {
-            if let VoteTiming::Scheduled(at) = outcome.target.timing
-                && labels.targets.contains(&outcome.target.key)
-                && let Err(error) =
-                    self.save_dpns_relative_schedule_label(&outcome.target.key, at, labels.preset)
-            {
-                tracing::debug!(?error, "Could not save a relative schedule label");
-            }
+/// Attach display metadata before journal insertion so its lifecycle follows the outcome.
+fn set_relative_schedule_labels(
+    operation: &mut DpnsVoteOperation,
+    labels: &RelativeScheduleLabels,
+) {
+    let preset_ms = u64::try_from(labels.preset.as_millis()).unwrap_or(u64::MAX);
+    for outcome in &mut operation.targets {
+        if matches!(outcome.target.timing, VoteTiming::Scheduled(_))
+            && labels.targets.contains(&outcome.target.key)
+        {
+            outcome.relative_schedule_preset_ms = Some(preset_ms);
         }
     }
 }
@@ -293,14 +288,14 @@ impl AppContext {
                 Ok(BackendTaskSuccessResult::None)
             }
             ContestedResourceTask::SubmitDpnsVoteOperation {
-                operation,
+                mut operation,
                 voters,
                 replacing_scheduled_key,
                 network: _,
                 relative_labels,
             } => {
                 if let Some(labels) = relative_labels {
-                    self.save_relative_schedule_labels(&operation, &labels);
+                    set_relative_schedule_labels(&mut operation, &labels);
                 }
                 self.execute_dpns_vote_operation_with_recovery(
                     operation,
@@ -677,7 +672,14 @@ impl AppContext {
                     &key,
                     DpnsCurrentVoteState::Unavailable,
                 )?;
-                preflight_error.get_or_insert(source);
+                // Scheduled preflight failures remain retryable and must reach the
+                // scheduler. Immediate failures are durable per-target outcomes;
+                // report the batch summary, including any successful siblings.
+                if operation.outcome(&key).is_some_and(|outcome| {
+                    matches!(outcome.target.timing, VoteTiming::Scheduled(_))
+                }) {
+                    preflight_error.get_or_insert(source);
+                }
             }
         }
 
@@ -1395,6 +1397,123 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn blocker_partial_preflight_failure_reports_durable_success_and_failure() {
+        let (_dir, ctx) = vote_context();
+        let mut first = scheduled_operation_for(&ctx, "alice", 42).targets[0]
+            .target
+            .clone();
+        first.timing = VoteTiming::Now;
+        let mut second = first.clone();
+        second.key.voter_id = Identifier::from([2; 32]);
+        let mut operation = DpnsVoteOperation::new(vec![first, second]);
+        operation.targets[0].status = DpnsVoteTargetStatus::Confirmed;
+        ctx.insert_dpns_vote_operation(&mut operation, None)
+            .unwrap();
+        let id = operation.id;
+        let result = ctx
+            .execute_dpns_vote_operation(operation, vec![], None, &Sdk::new_mock())
+            .await;
+        assert!(
+            matches!(result, Ok(BackendTaskSuccessResult::DpnsVoteOperationUpdated { operation_id, .. }) if operation_id == id),
+            "{result:?}"
+        );
+        let saved = ctx.dpns_vote_operation(id).unwrap().unwrap();
+        assert_eq!(saved.targets[0].status, DpnsVoteTargetStatus::Confirmed);
+        assert_eq!(
+            saved.targets[1].status,
+            DpnsVoteTargetStatus::FailedBeforeSubmission
+        );
+        let (message, _, _) = crate::ui::dpns::copy::dpns_vote_feedback(&saved);
+        assert!(
+            message.contains("1 confirmed") && message.contains("1 needing review"),
+            "{message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn blocker_scheduled_preflight_failure_stays_retryable() {
+        let (_dir, ctx) = vote_context();
+        let mut operation = scheduled_operation_for(&ctx, "alice", 42);
+        ctx.insert_dpns_vote_operation(&mut operation, None)
+            .unwrap();
+        let key = operation.targets[0].target.key.clone();
+        ctx.queue_scheduled_dpns_vote_target(operation.id, &key)
+            .unwrap();
+        operation = ctx.dpns_vote_operation(operation.id).unwrap().unwrap();
+        let id = operation.id;
+        let result = ctx
+            .execute_dpns_vote_operation(operation, vec![], None, &Sdk::new_mock())
+            .await;
+        assert!(
+            matches!(result, Err(TaskError::DpnsVotePreflightFailed { .. })),
+            "{result:?}"
+        );
+        let saved = ctx.dpns_vote_operation(id).unwrap().unwrap();
+        assert_eq!(saved.targets[0].status, DpnsVoteTargetStatus::Scheduled);
+        assert!(saved.targets[0].failure.is_some());
+    }
+
+    #[tokio::test]
+    async fn blocker_preflight_persistence_failure_still_propagates() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(crate::wallet_backend::kv_test_support::FailingKv::default());
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(store.clone()));
+        let mut operation = scheduled_operation_for(&ctx, "alice", 42);
+        operation.targets[0].target.timing = VoteTiming::Now;
+        operation.targets[0].status = DpnsVoteTargetStatus::Queued;
+        ctx.insert_dpns_vote_operation(&mut operation, None)
+            .unwrap();
+        store.fail_next_puts_containing(&operation.id.to_string(), 1);
+        let id = operation.id;
+        let result = ctx
+            .execute_dpns_vote_operation(operation, vec![], None, &Sdk::new_mock())
+            .await;
+        assert!(
+            result.is_err(),
+            "A failed journal write must not produce a success summary: {result:?}"
+        );
+        assert_eq!(
+            ctx.dpns_vote_operation(id).unwrap().unwrap().targets[0].status,
+            DpnsVoteTargetStatus::Queued
+        );
+    }
+
+    #[tokio::test]
+    async fn blocker_cancelled_relative_schedule_leaves_no_app_sidecar() {
+        let (_dir, ctx) = vote_context();
+        let mut operation = scheduled_operation_for(&ctx, "alice", now_ms() + 60_000);
+        let key = operation.targets[0].target.key.clone();
+        set_relative_schedule_labels(
+            &mut operation,
+            &RelativeScheduleLabels {
+                preset: std::time::Duration::from_secs(600),
+                targets: BTreeSet::from([key.clone()]),
+            },
+        );
+        ctx.insert_dpns_vote_operation(&mut operation, None)
+            .unwrap();
+        assert_eq!(
+            ctx.dpns_vote_operation(operation.id)
+                .unwrap()
+                .unwrap()
+                .targets[0]
+                .relative_schedule_preset_ms,
+            Some(600_000)
+        );
+        ctx.remove_scheduled_dpns_vote(Some(operation.id), &key, "alice")
+            .unwrap();
+        let prefix = format!("{}:dpns_voting:relative:", ctx.network());
+        assert!(
+            ctx.app_kv()
+                .list(crate::wallet_backend::DetScope::Global, Some(&prefix))
+                .unwrap()
+                .is_empty(),
+            "cancelled schedules must not leave immortal app-level display metadata"
+        );
+    }
+
+    #[tokio::test]
     async fn review_regression_cast_now_keeps_other_queued_targets_unchanged() {
         for sibling_status in [
             DpnsVoteTargetStatus::Queued,
@@ -1750,14 +1869,20 @@ mod tests {
                 .map(|outcome| outcome.target.key.clone())
                 .collect(),
         };
-        context.save_relative_schedule_labels(&operation, &labels);
-        let alice = &operation.targets[0].target.key;
-        let bob = &operation.targets[1].target.key;
-        assert_eq!(
-            context.dpns_relative_schedule_label(alice, 9_000),
-            Some(preset)
-        );
-        assert_eq!(context.dpns_relative_schedule_label(bob, 9_000), None);
+        set_relative_schedule_labels(&mut operation, &labels);
+        context
+            .insert_dpns_vote_operation(&mut operation, None)
+            .unwrap();
+        let saved = context.dpns_vote_operation(operation.id).unwrap().unwrap();
+        assert_eq!(saved.targets[0].relative_schedule_preset_ms, Some(600_000));
+        assert_eq!(saved.targets[1].relative_schedule_preset_ms, None);
+        let mut legacy = serde_json::to_value(&saved).unwrap();
+        legacy["targets"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("relative_schedule_preset_ms");
+        let legacy: DpnsVoteOperation = serde_json::from_value(legacy).unwrap();
+        assert_eq!(legacy.targets[0].relative_schedule_preset_ms, None);
     }
 
     #[tokio::test]

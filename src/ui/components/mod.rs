@@ -1,3 +1,4 @@
+pub(crate) mod action_menu;
 pub mod address_input;
 pub mod alias_input;
 pub mod amount_input;

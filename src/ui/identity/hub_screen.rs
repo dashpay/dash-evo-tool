@@ -8,7 +8,7 @@
 
 use super::breadcrumb_switcher::{self, BreadcrumbEffect};
 use super::identity_hub_tab_bar::IdentityHubTabBar;
-use crate::app::AppAction;
+use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::IdentityTask;
@@ -407,9 +407,7 @@ impl IdentityHubScreen {
             BreadcrumbEffect::AddWallet => {
                 AppAction::SetMainScreen(RootScreenType::RootScreenWalletsBalances)
             }
-            // The bulk-create flow is not wired yet; route to the single-create
-            // screen so the dev entry is functional in the interim.
-            BreadcrumbEffect::AddIdentityCreate | BreadcrumbEffect::CreateTestIdentities => {
+            BreadcrumbEffect::AddIdentityCreate => {
                 AppAction::AddScreen(crate::ui::Screen::AddNewIdentityScreen(
                     super::add_new_identity_screen::AddNewIdentityScreen::new_with_wallet(
                         &self.app_context,
@@ -460,7 +458,10 @@ impl ScreenLike for IdentityHubScreen {
                 breadcrumb_effect = breadcrumb_switcher::render(ui, &app_context, selection);
                 AppAction::None
             },
-            vec![],
+            vec![(
+                "Add",
+                DesiredAppAction::Menu(breadcrumb_switcher::add_identity_menu_items()),
+            )],
         );
 
         action |= add_left_panel(ui, &self.app_context, RootScreenType::RootScreenIdentityHub);
@@ -598,6 +599,12 @@ impl ScreenLike for IdentityHubScreen {
         }
 
         action |= self.apply_breadcrumb_effect(breadcrumb_effect);
+        // The top-bar "Add" menu and the picker's add card emit
+        // `AppAction::Custom` commands; route them like the identity pill's
+        // add entries.
+        if let Some(effect) = breadcrumb_switcher::add_identity_command_effect(&action) {
+            action = self.apply_breadcrumb_effect(effect);
+        }
 
         self.prepare_contact_info_dialog();
         if let Some((dialog, key)) = &mut self.contact_info_overwrite_dialog {

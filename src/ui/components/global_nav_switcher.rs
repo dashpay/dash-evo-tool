@@ -16,7 +16,6 @@
 
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::model::user_role::UserRole;
 use crate::model::wallet::WalletSeedHash;
 use crate::model::wallet_association::{NOT_IN_WALLET_LABEL, WalletAssociation};
 use crate::ui::RootScreenType;
@@ -62,8 +61,6 @@ pub enum GlobalNavEffect {
     AddIdentityCreate,
     /// "Add another identity" → load an existing identity.
     AddIdentityLoad,
-    /// Dev-mode: bulk-create test identities.
-    CreateTestIdentities,
 }
 
 /// Wallet-pill mode by HD-wallet count: 0 → placeholder, 1 → subdued (info
@@ -612,12 +609,6 @@ fn render_app_global_identity_pill(
                         }
                         if ui.button("Load an existing identity").clicked() {
                             *effect = GlobalNavEffect::AddIdentityLoad;
-                            ui.close();
-                        }
-                        if app_context.user_role().at_least(UserRole::Power)
-                            && ui.button("Create multiple test identities").clicked()
-                        {
-                            *effect = GlobalNavEffect::CreateTestIdentities;
                             ui.close();
                         }
                     });

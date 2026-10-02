@@ -10,6 +10,7 @@
 //!
 //! [`global_nav_switcher`]: crate::ui::components::global_nav_switcher
 
+use crate::app::{AppAction, DesiredAppAction, ToolbarMenuItem};
 use crate::context::AppContext;
 use crate::ui::RootScreenType;
 use crate::ui::components::global_nav_switcher::{self, GlobalNavEffect};
@@ -39,8 +40,6 @@ pub enum BreadcrumbEffect {
     AddIdentityCreate,
     /// "Add another identity" → load an existing identity.
     AddIdentityLoad,
-    /// Dev-mode: bulk-create test identities.
-    CreateTestIdentities,
 }
 
 /// The hub's page-nav spec: `Identities` segment-1 linking to the hub root, an
@@ -69,7 +68,43 @@ fn map_effect(effect: GlobalNavEffect) -> BreadcrumbEffect {
         GlobalNavEffect::AddWallet => BreadcrumbEffect::AddWallet,
         GlobalNavEffect::AddIdentityCreate => BreadcrumbEffect::AddIdentityCreate,
         GlobalNavEffect::AddIdentityLoad => BreadcrumbEffect::AddIdentityLoad,
-        GlobalNavEffect::CreateTestIdentities => BreadcrumbEffect::CreateTestIdentities,
+    }
+}
+
+/// `AppAction::Custom` command emitted by the "Create a new identity" item.
+const ADD_IDENTITY_CREATE_COMMAND: &str = "IdentityHubAddCreate";
+/// `AppAction::Custom` command emitted by the "Load an existing identity" item.
+const ADD_IDENTITY_LOAD_COMMAND: &str = "IdentityHubAddLoad";
+
+/// Items shared by the hub toolbar and picker card; the identity pill defines its own items.
+/// Commands are routed by [`add_identity_command_effect`].
+pub(crate) fn add_identity_menu_items() -> Vec<ToolbarMenuItem> {
+    vec![
+        ToolbarMenuItem {
+            label: "Create a new identity",
+            action: DesiredAppAction::Custom(ADD_IDENTITY_CREATE_COMMAND.into()),
+            enabled: true,
+            tooltip: "Create a new identity and fund it from one of your wallets.",
+        },
+        ToolbarMenuItem {
+            label: "Load an existing identity",
+            action: DesiredAppAction::Custom(ADD_IDENTITY_LOAD_COMMAND.into()),
+            enabled: true,
+            tooltip: "Load an identity you already own, by its ID or from your wallet.",
+        },
+    ]
+}
+
+/// Map an action produced by an [`add_identity_menu_items`] entry to the hub
+/// effect it requests; `None` for any other action.
+pub(crate) fn add_identity_command_effect(action: &AppAction) -> Option<BreadcrumbEffect> {
+    let AppAction::Custom(command) = action else {
+        return None;
+    };
+    match command.as_str() {
+        ADD_IDENTITY_CREATE_COMMAND => Some(BreadcrumbEffect::AddIdentityCreate),
+        ADD_IDENTITY_LOAD_COMMAND => Some(BreadcrumbEffect::AddIdentityLoad),
+        _ => None,
     }
 }
 
@@ -129,9 +164,43 @@ mod tests {
             map_effect(GlobalNavEffect::AddWallet),
             BreadcrumbEffect::AddWallet
         );
+    }
+
+    /// The Add menu offers exactly create and load, both enabled, matching
+    /// the identity pill's dropdown.
+    #[test]
+    fn add_menu_offers_create_and_load() {
+        let items = add_identity_menu_items();
+        let labels: Vec<_> = items.iter().map(|item| item.label).collect();
         assert_eq!(
-            map_effect(GlobalNavEffect::CreateTestIdentities),
-            BreadcrumbEffect::CreateTestIdentities
+            labels,
+            ["Create a new identity", "Load an existing identity"]
         );
+        assert!(items.iter().all(|item| item.enabled));
+    }
+
+    /// Every add-menu item maps back to its hub effect; unrelated actions do not.
+    #[test]
+    fn add_menu_actions_map_to_hub_effects() {
+        let ctx_free_action = |item: &ToolbarMenuItem| match &item.action {
+            DesiredAppAction::Custom(command) => AppAction::Custom(command.clone()),
+            other => panic!("unexpected menu action {other:?}"),
+        };
+        let effects: Vec<_> = add_identity_menu_items()
+            .iter()
+            .map(|item| add_identity_command_effect(&ctx_free_action(item)))
+            .collect();
+        assert_eq!(
+            effects,
+            [
+                Some(BreadcrumbEffect::AddIdentityCreate),
+                Some(BreadcrumbEffect::AddIdentityLoad),
+            ]
+        );
+        assert_eq!(
+            add_identity_command_effect(&AppAction::Custom("OpenImportSingleKey".into())),
+            None
+        );
+        assert_eq!(add_identity_command_effect(&AppAction::None), None);
     }
 }

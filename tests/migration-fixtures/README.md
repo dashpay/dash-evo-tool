@@ -37,12 +37,16 @@ Only the migration suite receives the downloaded archive directory and fixture
 password. It selects `migration_matrix --exact` and requires evidence that at
 least one archive and exactly one matrix test ran; the real-data check must
 also execute rather than skip. Either suite failing makes the job fail, and
-both results are reported even if one fails first. Fork PRs retain the
+both results are reported even if one fails first. Complete per-suite logs are
+printed in separate Actions groups after both suites finish. Fork PRs retain the
 password-free scenarios. Clippy checks all test targets without executing them.
 
 `Tests` runs both suites for every matching code or fixture/tooling change,
 and supports manual dispatch for drafts. The platform pin guard remains a
-separate job; the Monday schedule also checks fixture coverage against releases.
+separate job. The Monday schedule runs only the lightweight pin/script checks
+and fixture coverage against releases, without compiling or running Rust tests.
+GitHub runs schedules from the default branch (`v1.0-dev`); the workflow file
+must exist there before scheduled checks can run.
 The weekly release gate checks `tests.yml` and `clippy.yml`.
 
 ## Why this exists
@@ -148,8 +152,10 @@ Review and merge the renewal PR before the original expiry. An existing open
 renewal PR suppresses duplicate uploads/PRs; close it to request a replacement.
 Missing, expired or mismatched archives fail visibly and require restoring the
 same bytes through the bootstrap workflow. Uploaded replacements alone do not
-renew the manifest: the PR must be merged. Run the migration matrix on that PR
-before merging; GitHub may require approval for checks on bot-created PRs.
+renew the manifest: the PR must be merged. Before merging, dispatch the `Tests`
+workflow on the renewal branch (`gh workflow run tests.yml --ref <renewal-branch>`)
+or mark the PR ready for review to run the tests and migration checks.
+GitHub may require approval for checks on bot-created PRs.
 
 Scheduled runs require the workflow file on the repository's **default branch**,
 even though it checks out `v1.0-dev`. Before that, dispatch it explicitly.

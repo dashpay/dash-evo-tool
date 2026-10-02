@@ -26,7 +26,7 @@ on:
   # manual run covers them. Note it tests the branch head, not the PR merge
   # commit, so it does not prove the merged result is green.
   workflow_dispatch:
-  # The pin guard and fixture coverage can change without a commit here.
+  # GitHub schedules run from the default branch; only lightweight checks run.
   schedule:
     - cron: "0 4 * * 1"
 
@@ -66,7 +66,7 @@ jobs:
 
   test:
     name: Test Suite
-    if: github.event.pull_request.draft != true
+    if: github.event_name != 'schedule' && github.event.pull_request.draft != true
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:

@@ -24,7 +24,9 @@ if [[ " $* " == *' --workspace '* ]]; then
     done
     [[ -e "$CASE_DIR/matrix-started" ]]
     echo 'ordinary tests and doctests ran'
-    [[ "$CASE_NAME" != unit-failure ]]
+    if [[ "$CASE_NAME" == unit-failure || "$CASE_NAME" == both-fail ]]; then
+        exit 37
+    fi
 elif [[ " $* " == *' --test migration-matrix '* ]]; then
     [[ -d "$MIGRATION_FIXTURES_DIR" && "$MIGRATION_V093_WALLET_PASSWORD" == disposable-test-password ]]
     if [[ "$CASE_NAME" == fork ]]; then
@@ -36,7 +38,9 @@ elif [[ " $* " == *' --test migration-matrix '* ]]; then
         sleep 0.02
     done
     [[ -e "$CASE_DIR/tests-started" ]]
-    [[ "$CASE_NAME" != matrix-failure ]]
+    if [[ "$CASE_NAME" == matrix-failure || "$CASE_NAME" == both-fail ]]; then
+        exit 42
+    fi
     [[ "$CASE_NAME" == empty-matrix ]] || echo 'Running 3 migration fixture(s)'
     echo 'test result: ok. 1 passed; 0 failed;'
 elif [[ " $* " == *' --lib platform_compatibility_upgrades_the_real '* ]]; then
@@ -49,7 +53,7 @@ else
 fi
 MOCK
 chmod +x "$scratch/bin/cargo"
-for scenario in success fork unit-failure matrix-failure empty-matrix compatibility-failure skipped-compatibility download-failure; do
+for scenario in success fork unit-failure matrix-failure both-fail empty-matrix compatibility-failure skipped-compatibility download-failure; do
     case_dir="$scratch/$scenario"
     mkdir -p "$case_dir/fixtures"
     fixture_dir="$case_dir/fixtures"
@@ -76,5 +80,20 @@ for scenario in success fork unit-failure matrix-failure empty-matrix compatibil
         [[ -e "$case_dir/matrix-started" ]]
     fi
     [[ -s "$case_dir/logs/tests.log" && -s "$case_dir/logs/migration.log" ]]
+    case "$scenario" in
+        unit-failure) grep -Fxq 'Suite exit codes: tests=37 migration=0' "$case_dir/output" ;;
+        matrix-failure) grep -Fxq 'Suite exit codes: tests=0 migration=42' "$case_dir/output" ;;
+        both-fail) grep -Fxq 'Suite exit codes: tests=37 migration=42' "$case_dir/output" ;;
+    esac
+    {
+        echo '::group::Tests and doctests'
+        cat "$case_dir/logs/tests.log"
+        echo '::endgroup::'
+        echo '::group::Archived migrations'
+        cat "$case_dir/logs/migration.log"
+        echo '::endgroup::'
+    } > "$case_dir/expected-groups"
+    sed '/^Suite exit codes:/,$d' "$case_dir/output" > "$case_dir/actual-groups"
+    diff -u "$case_dir/expected-groups" "$case_dir/actual-groups"
     echo "PASS: $scenario"
 done

@@ -33,9 +33,9 @@ run_migrations() {
 # archived profiles a second time or inherit their password.
 env -u MIGRATION_FIXTURES_DIR -u MIGRATION_FIXTURES_MANIFEST \
     -u MIGRATION_V093_WALLET_PASSWORD -u MIGRATION_MATRIX_SKIP_PASSWORDS \
-    cargo test --locked --all-features --workspace 2>&1 | tee "$log_dir/tests.log" &
+    cargo test --locked --all-features --workspace > "$log_dir/tests.log" 2>&1 &
 tests_pid=$!
-run_migrations 2>&1 | tee "$log_dir/migration.log" &
+run_migrations > "$log_dir/migration.log" 2>&1 &
 migrations_pid=$!
 
 # Wait for both even when one fails; neither result may hide the other's failure.
@@ -43,6 +43,13 @@ tests_status=0
 migrations_status=0
 wait "$tests_pid" || tests_status=$?
 wait "$migrations_pid" || migrations_status=$?
+# Emit complete suites through Actions masking without interleaving their logs.
+echo '::group::Tests and doctests'
+cat "$log_dir/tests.log"
+echo '::endgroup::'
+echo '::group::Archived migrations'
+cat "$log_dir/migration.log"
+echo '::endgroup::'
 printf 'Suite exit codes: tests=%s migration=%s\n' "$tests_status" "$migrations_status"
 if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
     printf '| Suite | Exit code |\n|---|---|\n| Tests and doctests | %s |\n| Archived migrations | %s |\n' \

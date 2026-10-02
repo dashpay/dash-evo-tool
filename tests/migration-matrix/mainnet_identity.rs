@@ -13,8 +13,8 @@ use dash_evo_tool::model::qualified_identity::QualifiedIdentity;
 use dash_evo_tool::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
 use dash_evo_tool::utils::egui_mpsc::SenderAsync;
 use dash_evo_tool::utils::tasks::TaskManager;
-use dash_evo_tool::wallet_backend::DetScope;
 use dash_evo_tool::wallet_backend::KV_SCHEMA_VERSION;
+use dash_evo_tool::wallet_backend::{DetScope, IdentityKeyView};
 use dash_sdk::dpp::dashcore::{Network, signer};
 use dash_sdk::dpp::identity::KeyType;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -27,6 +27,20 @@ use crate::public_identities::StoredIdentity;
 use crate::{DEFAULT_BOOT_TIMEOUT, assertions, cli, manifest::Fixture, stage};
 
 const CAPTURE: &[u8] = include_bytes!("../migration-fixtures/v11-mainnet-identity/data.db");
+const CAPTURE_WITH_IMPORTED_KEY: &[u8] =
+    include_bytes!("../migration-fixtures/v11-mainnet-identity/data-with-imported-key.db");
+// Operator-authorized public test key; see the fixture's PROVENANCE.md.
+const IMPORTED_PRIVATE_KEY: &str =
+    "394195a3ed1d404bd673484e1274a4c4d5040d46705cdca3337f3dbd999760af";
+
+#[test]
+fn mainnet_imported_key_fixture_is_the_authorized_capture() {
+    assert_eq!(CAPTURE_WITH_IMPORTED_KEY.len(), 180_224);
+    assert_eq!(
+        hex::encode(Sha256::digest(CAPTURE_WITH_IMPORTED_KEY)),
+        "23fc06e82df316dca56cb6ae338aaa470790e6e1cdf19f35cdcd777d1d9485d3"
+    );
+}
 
 #[test]
 fn mainnet_identity_fixture_is_the_authorized_capture() {
@@ -92,11 +106,19 @@ fn stored_identity(dir: &Path) -> (Connection, StoredIdentity) {
 
 #[test]
 fn mainnet_identity_fixture_migrates_and_signs() {
+    check_migration_and_signing(CAPTURE, 4);
+}
+
+#[test]
+fn mainnet_imported_key_fixture_migrates_and_signs() {
+    check_migration_and_signing(CAPTURE_WITH_IMPORTED_KEY, 5);
+}
+
+fn check_migration_and_signing(original: &[u8], key_count: usize) {
     if !cfg!(feature = "cli") && std::env::var_os(cli::BINARY_ENV).is_none() {
         println!("Skipping mainnet CLI migration: enable cli or set DET_CLI_BIN");
         return;
     }
-    let original = CAPTURE;
     let root = tempfile::tempdir().unwrap();
     let fixture: Fixture = serde_json::from_value(serde_json::json!({
         "id": "v11-mainnet-identity", "network": "mainnet",
@@ -116,11 +138,19 @@ fn mainnet_identity_fixture_migrates_and_signs() {
         }).unwrap();
     let original_identity = QualifiedIdentity::from_bytes(&bytes).unwrap();
     assert_eq!(wallet_index, 3);
-    assert_eq!(original_identity.identity.public_keys().len(), 4);
-    assert_eq!(original_identity.private_keys.len(), 4);
+    assert_eq!(original_identity.identity.public_keys().len(), key_count);
+    assert_eq!(original_identity.private_keys.len(), key_count);
     for (_, (key, data)) in original_identity.private_keys.iter() {
-        assert!(matches!(data, PrivateKeyData::AtWalletDerivationPath(_)));
-        assert_eq!(key.identity_public_key.key_type(), KeyType::ECDSA_HASH160);
+        if key.identity_public_key.id() == 4 {
+            assert_eq!(key.identity_public_key.key_type(), KeyType::ECDSA_SECP256K1);
+            let PrivateKeyData::Clear(secret) = data else {
+                panic!("captured imported key must be plaintext")
+            };
+            assert_eq!(hex::encode(secret), IMPORTED_PRIVATE_KEY);
+        } else {
+            assert!(matches!(data, PrivateKeyData::AtWalletDerivationPath(_)));
+            assert_eq!(key.identity_public_key.key_type(), KeyType::ECDSA_HASH160);
+        }
         assert_eq!(key.identity_public_key.data().len(), 33);
     }
     drop(legacy);
@@ -143,13 +173,15 @@ fn mainnet_identity_fixture_migrates_and_signs() {
             canonical_bytes = Some(stored.qi_bytes.clone());
         }
         let persisted = QualifiedIdentity::from_bytes(&stored.qi_bytes).unwrap();
-        assert_eq!(persisted.private_keys.len(), 4);
-        assert!(
-            persisted
-                .private_keys
-                .values()
-                .all(|(key, _)| key.identity_public_key.data().len() == 20)
-        );
+        assert_eq!(persisted.private_keys.len(), key_count);
+        for (key, data) in persisted.private_keys.values() {
+            if key.identity_public_key.id() == 4 {
+                assert!(matches!(data, PrivateKeyData::InVault));
+                assert_eq!(key.identity_public_key.data().len(), 33);
+            } else {
+                assert_eq!(key.identity_public_key.data().len(), 20);
+            }
+        }
 
         // In-process backend handles can retain advisory locks after shutdown.
         // Sign from an exact copy so only CLI processes open the boot fixture.
@@ -170,6 +202,16 @@ fn mainnet_identity_fixture_migrates_and_signs() {
             let (context, tasks) = open_context(signing_copy.data_dir()).await;
             if boot == 3 {
                 let mut damaged = context.load_local_qualified_identities().unwrap().remove(0);
+                // Remove the actual vault bytes too: restoring metadata alone
+                // must not accidentally pass by reusing a surviving secret.
+                let secrets = context.secret_store();
+                let keys = IdentityKeyView::new(&secrets, damaged.identity.id().to_buffer());
+                for ((target, id), (_, data)) in damaged.private_keys.iter() {
+                    if matches!(data, PrivateKeyData::InVault) {
+                        keys.delete(target, *id).unwrap();
+                        assert!(keys.get(target, *id).unwrap().is_none());
+                    }
+                }
                 damaged.private_keys = Default::default();
                 context.update_local_qualified_identity(&damaged).unwrap();
                 context
@@ -186,7 +228,7 @@ fn mainnet_identity_fixture_migrates_and_signs() {
                     panic!("restore summary")
                 };
                 assert_eq!(summary.wallets_restored, 1);
-                assert_eq!(summary.identity_keys_restored, 4);
+                assert_eq!(summary.identity_keys_restored as usize, key_count);
                 assert!(!summary.has_problems());
             }
             let identities = context.load_local_qualified_identities().unwrap();
@@ -211,13 +253,26 @@ fn mainnet_identity_fixture_migrates_and_signs() {
                 .zip(original_identity.private_keys.iter())
             {
                 assert_eq!(placement, original_placement);
-                assert!(
-                    data == original_data,
-                    "wallet derivation references must survive unchanged"
-                );
-                assert_eq!(key.identity_public_key.data().len(), 20);
+                if key.identity_public_key.id() == 4 {
+                    assert!(matches!(data, PrivateKeyData::InVault));
+                    assert_eq!(key.identity_public_key.data().len(), 33);
+                } else {
+                    assert!(
+                        data == original_data,
+                        "wallet derivation references must survive unchanged"
+                    );
+                    assert_eq!(key.identity_public_key.data().len(), 20);
+                }
             }
             for key in identity.identity.public_keys().values() {
+                if key.id() == 4 {
+                    let (_, secret) = identity
+                        .resolve_private_key_bytes(key)
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(hex::encode(*secret), IMPORTED_PRIVATE_KEY);
+                }
                 assert!(
                     identity.can_sign_with(key),
                     "key {} must remain available",

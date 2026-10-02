@@ -6,6 +6,14 @@
 The exact capturing release is unknown; the stored schema version is 11 and
 all network rows use the historical mainnet spelling `dash`.
 
+`data-with-imported-key.db` is the operator's second 180,224-byte capture from
+the same day, with SHA-256
+`23fc06e82df316dca56cb6ae338aaa470790e6e1cdf19f35cdcd777d1d9485d3`.
+It adds key 4, ECDSA_SECP256K1 AUTHENTICATION/HIGH, to the same identity.
+Unlike keys 0–3, this key was imported as plaintext rather than derived from
+the wallet. The operator also explicitly authorized its private key as a
+public test constant (`IMPORTED_PRIVATE_KEY` in the regression test).
+
 The operator explicitly authorized publication of the complete database,
 including its unprotected wallet seed, for permanent public testing. This
 wallet and identity are public test material: never send funds to them or
@@ -34,14 +42,21 @@ and an unchanged repeat. Signing uses exact copies of each boot's resulting
 profile to isolate in-process advisory locks. The source stays byte-identical.
 The test does not broadcast transactions or require chain sync.
 
+Both captures run through the same scenarios. The second additionally checks
+that key 4 becomes an `InVault` reference and resolves to the exact private
+key supplied by the operator after every boot and after recovery. Its
+signatures are verified against the original full public key.
+
 The final signing copy also loses its wallet seed and identity key inventory
 deliberately. `RestoreFromPreviousVersion` must recover the seed and all four
-keys from the preserved database, and all four signatures must verify in the
-same session. Missing wallets remain an explicit restore action, as in #1043;
+or five keys from the preserved database, and every signature must verify in
+the same session. For the second capture, the imported key's actual vault
+entry is also deleted before restoration, so a surviving secret cannot mask
+a recovery failure. Missing wallets remain an explicit restore action, as in #1043;
 startup does not resurrect wallets the user may have removed deliberately.
 
 Run:
 
 ```sh
-cargo test --locked --test migration-matrix --all-features mainnet_identity -- --nocapture
+cargo test --locked --test migration-matrix --all-features mainnet_ -- --nocapture
 ```

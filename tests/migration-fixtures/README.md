@@ -26,13 +26,18 @@ access or fixture password is required. This covers public metadata preservation
 not signing, voter/operator associations, or fetching proofs with the old SDK.
 
 The operator-authorized [`v11-mainnet-identity`](v11-mainnet-identity/PROVENANCE.md)
-profile is a complete captured mainnet database, including its public test
-wallet seed. `mainnet_identity_fixture_migrates_and_signs` runs in the same
+profile includes two complete captured mainnet databases, including the public
+test wallet seed and an explicitly published imported private key.
+`mainnet_identity_fixture_migrates_and_signs` and
+`mainnet_imported_key_fixture_migrates_and_signs` run in the same
 `Tests` job without downloaded artifacts. It verifies fresh migration, repair
 of an already-migrated profile, repeated CLI startup, wallet bindings and valid
-signatures from all four identity keys against their original public hashes.
+signatures from every identity key against its original public key or hash.
+The second capture adds an imported ECDSA_SECP256K1 key alongside the four
+wallet-derived HASH160 keys and verifies its exact bytes in the vault.
 It also restores a missing seed and key inventory through "Restore from Previous
-Version" and signs immediately. No transaction is broadcast.
+Version" (including a deleted imported-key vault entry) and signs immediately.
+No transaction is broadcast.
 
 The main `Tests` workflow also runs the migration harness's helper tests.
 `Migration Matrix` selects only `migration_matrix` with `--exact` to replay

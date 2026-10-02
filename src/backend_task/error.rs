@@ -627,12 +627,63 @@ pub enum TaskError {
         source: Box<crate::backend_task::migration::MigrationError>,
     },
 
-    /// Signing with an identity key failed because its private half could not
-    /// be resolved (missing wallet seed, missing vault key, locked wallet, or a
-    /// declined password prompt). The DET signer tags its `ProtocolError` with
-    /// [`SIGNING_KEY_UNAVAILABLE_PREFIX`]; the banner shows the text after it,
-    /// which names the cause, the remedy, and the identity and key involved.
-    #[error("{}", signing_key_unavailable_message(source_error))]
+    /// Signing with an identity key failed because the wallet the key is
+    /// derived from has no secret on this device. Recognised from the DET
+    /// signer's [`SigningKeyUnavailableCause::WalletSecretMissing`] marker; the
+    /// signer's full text (identity, key, wallet) stays in the source chain.
+    #[error(
+        "This identity's key comes from a wallet that is not on this device, so nothing was signed. Import that wallet again from its recovery phrase, on the same network. If you updated from an earlier version of Dash Evo Tool, you can instead use Restore from Previous Version in Settings."
+    )]
+    IdentitySigningWalletSecretMissing {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// Signing with an identity key failed because the wallet it is derived
+    /// from is locked.
+    #[error(
+        "The wallet holding this identity's key is locked, so nothing was signed. Unlock the wallet and try again."
+    )]
+    IdentitySigningWalletLocked {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// Signing with an identity key stopped because the user dismissed its
+    /// password prompt.
+    #[error(
+        "You closed the password prompt, so nothing was signed or changed. Try the action again when you're ready."
+    )]
+    IdentitySigningPasswordDeclined {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// Signing with an identity key needs a password, but no interactive
+    /// prompt is available (headless / MCP).
+    #[error(
+        "This identity's key is protected by a password, which can only be entered in the app window. Open Dash Evo Tool and run this action there."
+    )]
+    IdentitySigningPasswordUnavailable {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// Signing with an identity key failed because the key's private half is
+    /// missing from this device's secure storage.
+    #[error(
+        "This identity's signing key could not be found on this device, so nothing was signed. Add the identity's private key again, then retry."
+    )]
+    IdentitySigningKeyMissing {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// Signing with an identity key failed for any other reason the DET
+    /// signer reports (see [`SigningKeyUnavailableCause::Other`]).
+    #[error(
+        "This identity's signing key could not be used on this device, so nothing was signed. Import the wallet or key again and retry."
+    )]
     IdentitySigningFailed {
         #[source]
         source_error: Box<SdkError>,
@@ -996,6 +1047,11 @@ pub enum TaskError {
         "This imported key is no longer available. Import the key again to keep using this address."
     )]
     ImportedKeyNotFound,
+
+    /// An add-only import found both this key's secret and its details already
+    /// stored, and left them untouched.
+    #[error("This key is already imported. Pick it from your wallet list to use it.")]
+    ImportedKeyAlreadyStored,
 
     /// Application settings could not be saved to the app k/v store.
     #[error("Could not save your preferences. Check available disk space and try again.")]
@@ -3619,31 +3675,98 @@ impl From<dashcore_rpc::Error> for TaskError {
     }
 }
 
-/// Marker the DET identity signer puts in front of the `ProtocolError::Generic`
-/// text it returns when a signing key cannot be resolved.
+/// Why the DET identity signer could not resolve a signing key.
 ///
-/// Intentional, sanctioned exception to the no-string-parsing rule (see AGENTS.md):
-/// the upstream `Signer` trait can only return `ProtocolError`, which has no
-/// variant carrying a typed source, so this DET-owned marker is the only way to
-/// recognise DET's own signing failure once the SDK hands it back.
+/// The upstream `Signer` trait can only return `ProtocolError`, which has no
+/// variant carrying a typed source, so the signer starts its
+/// `ProtocolError::Generic` text with [`Self::marker`] and `From<SdkError>`
+/// maps the marker back to a dedicated `TaskError` variant. Intentional,
+/// sanctioned exception to the no-string-parsing rule (see AGENTS.md): only
+/// the fixed marker is matched; the text after it never reaches a banner.
 // TODO(upstream): replace with a typed ProtocolError source variant in dashpay/platform
-pub const SIGNING_KEY_UNAVAILABLE_PREFIX: &str = "[det:signing-key-unavailable] ";
-
-/// The user-facing text a prefixed signer failure carries, or `None` when
-/// `error` is not one.
-fn signing_key_unavailable_text(error: &SdkError) -> Option<&str> {
-    match error {
-        SdkError::Protocol(ProtocolError::Generic(text)) => {
-            text.strip_prefix(SIGNING_KEY_UNAVAILABLE_PREFIX)
-        }
-        _ => None,
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SigningKeyUnavailableCause {
+    /// The wallet the key derives from has no secret on this device.
+    WalletSecretMissing,
+    /// The wallet the key derives from is locked.
+    WalletLocked,
+    /// The user dismissed the password prompt.
+    PasswordDeclined,
+    /// A password is needed but no interactive prompt is available.
+    PasswordUnavailable,
+    /// The key's private half is missing from secure storage.
+    KeyMissing,
+    /// Any other resolution failure.
+    Other,
 }
 
-fn signing_key_unavailable_message(error: &SdkError) -> &str {
-    signing_key_unavailable_text(error).unwrap_or(
-        "This identity's signing key is not available on this device. Import the wallet or key again and retry.",
-    )
+impl SigningKeyUnavailableCause {
+    const ALL: [Self; 6] = [
+        Self::WalletSecretMissing,
+        Self::WalletLocked,
+        Self::PasswordDeclined,
+        Self::PasswordUnavailable,
+        Self::KeyMissing,
+        Self::Other,
+    ];
+
+    /// The cause a key-resolution failure is reported as.
+    pub fn of(error: &TaskError) -> Self {
+        match error {
+            TaskError::SecretSeamMissing => Self::WalletSecretMissing,
+            TaskError::WalletLocked => Self::WalletLocked,
+            TaskError::SecretPromptCancelled => Self::PasswordDeclined,
+            TaskError::SecretPromptUnavailable => Self::PasswordUnavailable,
+            TaskError::IdentityKeyMissing => Self::KeyMissing,
+            _ => Self::Other,
+        }
+    }
+
+    /// The fixed, DET-owned marker that starts the signer's error text.
+    pub const fn marker(self) -> &'static str {
+        match self {
+            Self::WalletSecretMissing => "[det:signing-key-unavailable:wallet-secret-missing] ",
+            Self::WalletLocked => "[det:signing-key-unavailable:wallet-locked] ",
+            Self::PasswordDeclined => "[det:signing-key-unavailable:password-declined] ",
+            Self::PasswordUnavailable => "[det:signing-key-unavailable:password-unavailable] ",
+            Self::KeyMissing => "[det:signing-key-unavailable:key-missing] ",
+            Self::Other => "[det:signing-key-unavailable:other] ",
+        }
+    }
+
+    /// Prefix shared by every marker; a marker from a cause this build does
+    /// not know still maps to [`Self::Other`].
+    const MARKER_NAMESPACE: &'static str = "[det:signing-key-unavailable:";
+
+    /// The cause whose marker starts an unwrapped signer error, if any.
+    fn recognise(error: &SdkError) -> Option<Self> {
+        let SdkError::Protocol(ProtocolError::Generic(text)) = error else {
+            return None;
+        };
+        Self::ALL
+            .into_iter()
+            .find(|cause| text.starts_with(cause.marker()))
+            .or_else(|| {
+                text.starts_with(Self::MARKER_NAMESPACE)
+                    .then_some(Self::Other)
+            })
+    }
+
+    fn into_task_error(self, source_error: SdkError) -> TaskError {
+        let source_error = Box::new(source_error);
+        match self {
+            Self::WalletSecretMissing => {
+                TaskError::IdentitySigningWalletSecretMissing { source_error }
+            }
+            Self::WalletLocked => TaskError::IdentitySigningWalletLocked { source_error },
+            Self::PasswordDeclined => TaskError::IdentitySigningPasswordDeclined { source_error },
+            Self::PasswordUnavailable => {
+                TaskError::IdentitySigningPasswordUnavailable { source_error }
+            }
+            Self::KeyMissing => TaskError::IdentitySigningKeyMissing { source_error },
+            Self::Other => TaskError::IdentitySigningFailed { source_error },
+        }
+    }
 }
 
 impl From<SdkError> for TaskError {
@@ -3651,10 +3774,8 @@ impl From<SdkError> for TaskError {
         // DET's own signer failure, tagged by `QualifiedIdentity::sign`.
         // Intentional, sanctioned exception to the no-string-parsing rule (see AGENTS.md).
         // TODO(upstream): replace with a typed ProtocolError source variant in dashpay/platform
-        if signing_key_unavailable_text(&error).is_some() {
-            return TaskError::IdentitySigningFailed {
-                source_error: Box::new(error),
-            };
+        if let Some(cause) = SigningKeyUnavailableCause::recognise(&error) {
+            return cause.into_task_error(error);
         }
 
         if sdk_error_is_masternode_list_not_ready(&error) {
@@ -4062,19 +4183,97 @@ mod tests {
         assert!(matches!(error, TaskError::SdkError { .. }), "{error:?}");
     }
 
-    /// A prefixed signer failure maps to the dedicated variant, and the banner
-    /// shows exactly the text after the prefix.
+    fn marked_signer_error(cause: SigningKeyUnavailableCause) -> SdkError {
+        SdkError::Protocol(ProtocolError::Generic(format!(
+            "{}SDK-carried text for identity Abc123",
+            cause.marker()
+        )))
+    }
+
+    /// Every signer cause maps to its own variant with a fixed banner that
+    /// carries neither the marker nor any text that travelled through the SDK.
     #[test]
-    fn prefixed_signer_failure_maps_to_identity_signing_failed() {
-        let text = TaskError::SecretSeamMissing.to_string();
-        let error = TaskError::from(SdkError::Protocol(ProtocolError::Generic(format!(
-            "{SIGNING_KEY_UNAVAILABLE_PREFIX}{text}"
-        ))));
+    fn each_signer_cause_maps_to_its_variant_with_a_fixed_banner() {
+        use SigningKeyUnavailableCause as Cause;
+        type IsVariant = fn(&TaskError) -> bool;
+        let cases: [(Cause, TaskError, IsVariant); 6] = [
+            (
+                Cause::WalletSecretMissing,
+                TaskError::SecretSeamMissing,
+                |e| matches!(e, TaskError::IdentitySigningWalletSecretMissing { .. }),
+            ),
+            (Cause::WalletLocked, TaskError::WalletLocked, |e| {
+                matches!(e, TaskError::IdentitySigningWalletLocked { .. })
+            }),
+            (
+                Cause::PasswordDeclined,
+                TaskError::SecretPromptCancelled,
+                |e| matches!(e, TaskError::IdentitySigningPasswordDeclined { .. }),
+            ),
+            (
+                Cause::PasswordUnavailable,
+                TaskError::SecretPromptUnavailable,
+                |e| matches!(e, TaskError::IdentitySigningPasswordUnavailable { .. }),
+            ),
+            (Cause::KeyMissing, TaskError::IdentityKeyMissing, |e| {
+                matches!(e, TaskError::IdentitySigningKeyMissing { .. })
+            }),
+            (Cause::Other, TaskError::WalletKeyLookupFailed, |e| {
+                matches!(e, TaskError::IdentitySigningFailed { .. })
+            }),
+        ];
+        let mut banners = std::collections::BTreeSet::new();
+        for (cause, resolution_error, is_expected) in cases {
+            assert_eq!(Cause::of(&resolution_error), cause);
+            assert!(cause.marker().starts_with(Cause::MARKER_NAMESPACE));
+            let error = TaskError::from(marked_signer_error(cause));
+            assert!(is_expected(&error), "{cause:?} -> {error:?}");
+            let banner = error.to_string();
+            assert!(!banner.contains("[det:"), "{banner}");
+            assert!(!banner.contains("SDK-carried"), "{banner}");
+            assert!(!banner.contains("Abc123"), "{banner}");
+            assert!(banners.insert(banner), "each cause has its own message");
+            assert!(
+                format!("{error:?}").contains("SDK-carried text"),
+                "the signer text stays in the details"
+            );
+        }
+    }
+
+    /// A marker from a cause this build does not know falls back to the
+    /// generic signing variant, still with a fixed banner.
+    #[test]
+    fn unknown_signer_marker_falls_back_to_the_generic_variant() {
+        let error = TaskError::from(SdkError::Protocol(ProtocolError::Generic(
+            "[det:signing-key-unavailable:from-the-future] SDK-carried text".into(),
+        )));
         assert!(
             matches!(error, TaskError::IdentitySigningFailed { .. }),
             "{error:?}"
         );
-        assert_eq!(error.to_string(), text);
+        assert!(!error.to_string().contains("SDK-carried"));
+    }
+
+    /// A marked signer error the SDK wrapped in another variant is not
+    /// recognised (no string search) and never shows its text.
+    #[test]
+    fn rewrapped_signer_error_is_not_recognised_and_shows_no_sdk_text() {
+        let text = format!(
+            "{}SDK-carried text",
+            SigningKeyUnavailableCause::WalletLocked.marker()
+        );
+        let error = TaskError::from(SdkError::Generic(text));
+        assert!(
+            !matches!(
+                error,
+                TaskError::IdentitySigningWalletLocked { .. }
+                    | TaskError::IdentitySigningFailed { .. }
+            ),
+            "{error:?}"
+        );
+        let banner = error.to_string();
+        assert!(!banner.contains("[det:"), "{banner}");
+        assert!(!banner.contains("SDK-carried"), "{banner}");
     }
 
     fn dapi_connection_refused_error() -> TaskError {

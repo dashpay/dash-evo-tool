@@ -5,7 +5,6 @@ use std::path::Path;
 use std::time::Duration;
 
 use dash_evo_tool::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
-use dash_evo_tool::wallet_backend::KV_SCHEMA_VERSION;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
@@ -13,7 +12,7 @@ use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{assertions, cli};
+use crate::{assertions, cli, identity_storage};
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct ExpectedIdentity {
@@ -63,16 +62,6 @@ fn check_records(expected: &[ExpectedIdentity], found: &[ExpectedIdentity]) -> R
         ));
     }
     Ok(())
-}
-
-// Mirrors context::identity_db::StoredQualifiedIdentity, including its bincode field order.
-#[derive(Deserialize)]
-struct StoredIdentity {
-    qi_bytes: Vec<u8>,
-    status: u8,
-    identity_type: String,
-    wallet_hash: Option<[u8; 32]>,
-    wallet_index: Option<u32>,
 }
 
 fn snapshot(bytes: &[u8], status: u8, identity_type: &str) -> Result<ExpectedIdentity, String> {
@@ -196,24 +185,10 @@ pub fn check_migrated(
     }
     let conn = assertions::open_copy(network_db, scratch, &format!("identities-{label}"))?
         .ok_or("migrated identity database is missing")?;
-    let mut statement = conn.prepare("SELECT identity_id, value FROM meta_identity WHERE key = 'det:identity:v1' ORDER BY identity_id")
-        .map_err(|e| e.to_string())?;
-    let rows = statement
-        .query_map([], |row| {
-            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
-        })
-        .map_err(|e| e.to_string())?;
     let mut found = Vec::new();
-    for row in rows {
-        let (id, bytes) = row.map_err(|e| e.to_string())?;
-        let Some((&KV_SCHEMA_VERSION, body)) = bytes.split_first() else {
-            return Err("unexpected identity k/v schema version".into());
-        };
-        let (stored, consumed): (StoredIdentity, _) =
-            bincode::serde::decode_from_slice(body, bincode::config::standard())
-                .map_err(|e| e.to_string())?;
-        if consumed != body.len() || stored.wallet_hash.is_some() || stored.wallet_index.is_some() {
-            return Err("unexpected data or wallet binding in public identity record".into());
+    for (id, stored) in identity_storage::read_identities(&conn)? {
+        if stored.wallet_hash.is_some() || stored.wallet_index.is_some() {
+            return Err("unexpected wallet binding in public identity record".into());
         }
         let record = snapshot(&stored.qi_bytes, stored.status, &stored.identity_type)?;
         if record.id != dash_sdk::dpp::dashcore::base58::encode_slice(&id) {

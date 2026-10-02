@@ -7,7 +7,7 @@ pub mod qualified_identity_public_key;
 // contract, whose closures must return `Result<_, TaskError>`. Removing it
 // requires making that secret-seam chokepoint generic over the closure error
 // type — a wallet_backend change out of scope here.
-use crate::backend_task::error::{SIGNING_KEY_UNAVAILABLE_PREFIX, TaskError};
+use crate::backend_task::error::{SigningKeyUnavailableCause, TaskError};
 use crate::model::qualified_identity::encrypted_key_storage::{
     KeyStorage, ResolvedPrivateKey, same_key,
 };
@@ -796,10 +796,10 @@ impl QualifiedIdentity {
 
     /// The `ProtocolError` returned when `key` cannot be resolved for signing.
     ///
-    /// `ProtocolError` cannot carry a typed source, so the text is tagged with
-    /// [`SIGNING_KEY_UNAVAILABLE_PREFIX`] for `From<SdkError>` to recognise; the
-    /// rest is the cause's user-facing message plus the identity, key and
-    /// wallet involved. The typed error is logged here in full.
+    /// `ProtocolError` cannot carry a typed source, so the text starts with the
+    /// cause's [`SigningKeyUnavailableCause::marker`] for `From<SdkError>` to
+    /// recognise. The rest (cause, identity, key and wallet involved) is for
+    /// the details panel and logs only; the typed error is logged here in full.
     ///
     /// Intentional, sanctioned exception to the no-string-parsing rule (see AGENTS.md).
     // TODO(upstream): replace with a typed ProtocolError source variant in dashpay/platform
@@ -822,7 +822,8 @@ impl QualifiedIdentity {
         );
 
         let mut text = format!(
-            "{SIGNING_KEY_UNAVAILABLE_PREFIX}{cause} This concerns key {key_id} ({purpose}) of identity {identity_id}.",
+            "{marker}{cause} This concerns key {key_id} ({purpose}) of identity {identity_id}.",
+            marker = SigningKeyUnavailableCause::of(cause).marker(),
             key_id = key.id(),
             purpose = purpose_label(key.purpose()),
         );
@@ -2233,9 +2234,9 @@ mod key_resolution_tests {
     }
 
     /// Signing with a key whose wallet seed is missing must reach the caller as
-    /// the dedicated error carrying the instructions and the identity, key and
-    /// wallet — not as a generic SDK error. No task scope is involved, so this
-    /// holds for any caller, spawned subtasks included.
+    /// its dedicated variant with a fixed banner, while the identity, key and
+    /// wallet stay available in the details. No task scope is involved, so
+    /// this holds for any caller, spawned subtasks included.
     #[tokio::test]
     async fn signing_with_a_missing_wallet_seed_surfaces_the_typed_error() {
         let key = voting_key(4);
@@ -2250,30 +2251,32 @@ mod key_resolution_tests {
         let error = TaskError::from(dash_sdk::Error::Protocol(protocol_error));
 
         assert!(
-            matches!(error, TaskError::IdentitySigningFailed { .. }),
-            "expected IdentitySigningFailed, got {error:?}"
+            matches!(error, TaskError::IdentitySigningWalletSecretMissing { .. }),
+            "expected IdentitySigningWalletSecretMissing, got {error:?}"
         );
         let message = error.to_string();
+        assert!(message.contains("recovery phrase"), "{message}");
         assert!(
-            message.starts_with(&TaskError::SecretSeamMissing.to_string()),
-            "the banner leads with the missing-wallet instructions: {message}"
-        );
-        assert!(
-            !message.contains(SIGNING_KEY_UNAVAILABLE_PREFIX),
+            message.contains("Restore from Previous Version"),
             "{message}"
         );
+        assert!(!message.contains("[det:"), "{message}");
+        let identity_id = Identifier::from([1u8; 32]).to_string(Encoding::Base58);
         assert!(
-            message.contains(&Identifier::from([1u8; 32]).to_string(Encoding::Base58)),
-            "{message}"
+            !message.contains(&identity_id),
+            "the banner is fixed text: {message}"
         );
-        assert!(message.contains("key 4 (voting)"), "{message}");
+
+        let details = format!("{error:?}");
+        assert!(details.contains(&identity_id), "{details}");
+        assert!(details.contains("key 4 (voting)"), "{details}");
         assert!(
-            message.contains("The key comes from a wallet that is not on this device."),
-            "{message}"
+            details.contains("The key comes from a wallet that is not on this device."),
+            "{details}"
         );
         assert!(
-            !message.contains(&hex::encode(seed_hash)),
-            "the raw seed hash stays out of the banner: {message}"
+            !details.contains(&hex::encode(seed_hash)),
+            "the raw seed hash stays out of the details: {details}"
         );
     }
 

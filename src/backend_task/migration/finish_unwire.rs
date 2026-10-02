@@ -22,12 +22,13 @@ use crate::backend_task::error::TaskError;
 use crate::context::migration_status::{MigrationState, MigrationStep};
 use crate::context::{AppContext, WalletUnlockRetention};
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::settings::legacy_network_names;
 use crate::model::wallet::WalletSeedHash;
 use crate::wallet_backend::secret_access::is_wrong_passphrase;
 use crate::wallet_backend::{DetScope, KvAdapterError, network_prefix};
 
 /// Sentinel key format string. The migration body filters every
-/// legacy table by `WHERE network = ?1`, so the sentinel must mirror
+/// legacy table by network, so the sentinel must mirror
 /// that scope — otherwise an upgrade on mainnet writes the sentinel
 /// and a later switch to testnet skips the migration even though
 /// testnet wallets are still in the legacy file. Versioned (`:v1`) so
@@ -37,7 +38,7 @@ const SENTINEL_KEY_PREFIX: &str = "det:migration:finish_unwire";
 const SENTINEL_KEY_VERSION: &str = "v1";
 
 /// Per-network sentinel key. The migration filters legacy rows by
-/// `WHERE network = ?1`, so the sentinel scope must match. A previous
+/// network, so the sentinel scope must match. A previous
 /// global key let an upgrade on mainnet hide all testnet wallets after
 /// a network switch.
 pub fn sentinel_key_for(network: Network) -> String {
@@ -91,6 +92,30 @@ pub struct MigrationCompletion {
     /// in the payload so a forward-compatible reader can re-aggregate
     /// across networks without a schema bump.
     pub network_count: u32,
+}
+
+/// Which legacy rows a reader selects for one network: every spelling DET
+/// ever stored for it (mainnet was `dash` before schema 29).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LegacyNetworkRows {
+    network: Network,
+    names: [&'static str; 2],
+}
+
+impl From<Network> for LegacyNetworkRows {
+    fn from(network: Network) -> Self {
+        Self {
+            network,
+            names: legacy_network_names(network),
+        }
+    }
+}
+
+impl LegacyNetworkRows {
+    /// The network these rows belong to.
+    pub(crate) fn network(self) -> Network {
+        self.network
+    }
 }
 
 /// Domain error envelope for the migration orchestrator.
@@ -952,7 +977,10 @@ where
 /// record the per-network completion sentinel.
 ///
 /// Returns `true` when this launch drained wallet rows, `false` for the two
-/// no-op paths (sentinel already present, or no legacy rows at all). This is
+/// no-op paths (sentinel already present, or no legacy rows at all). Profiles
+/// an earlier build drained are never re-read here, so nothing the user
+/// removed since comes back; "Restore from Previous Version" is the way to
+/// bring back rows that earlier drain missed. This is
 /// the funds path: [`run`] keeps it free of every DET-owned concern so nothing
 /// but a genuine wallet-migration failure can withhold access to a seed.
 async fn drain_wallets(
@@ -965,9 +993,9 @@ async fn drain_wallets(
 
     // Idempotency: if the sentinel for *this network* already exists,
     // this launch has nothing to do. The sentinel is per-network
-    // because every migration body filters legacy rows by `WHERE
-    // network = ?1` — a shared sentinel would let an upgrade on
-    // mainnet silently skip the testnet migration after a switch.
+    // because every migration body filters legacy rows by network — a
+    // shared sentinel would let an upgrade on mainnet silently skip the
+    // testnet migration after a switch.
     if let Some(completion) = read_sentinel(&app_kv, network)? {
         tracing::info!(
             target = "migration::finish_unwire",
@@ -1043,6 +1071,57 @@ async fn drain_wallets(
         "FinishUnwire wallet drain complete",
     );
     Ok(true)
+}
+
+/// Counters of one [`import_missing_single_keys`] pass.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(super) struct MissingSingleKeysImport {
+    /// Keys imported or made enumerable by recovering missing public metadata.
+    pub(super) imported: u32,
+    /// Rows that could not be read, decoded, checked, or written.
+    pub(super) failed: u32,
+}
+
+/// Import the unprotected single keys `rows` selects that this install does
+/// not hold yet. Add-only: presence is checked against the vault and the
+/// k/v store directly (see
+/// [`SingleKeyView::import_wif_if_absent`](crate::wallet_backend::single_key::SingleKeyView::import_wif_if_absent)),
+/// so a stored — possibly protected — secret is never overwritten, and a check
+/// that fails counts as a failure, never as "absent".
+///
+/// TODO(follow-up): password-protected rows are skipped here (the reader counts
+/// them as `skipped_password_protected`) and left to the wallets screen's
+/// protected-key restore. Prompting for their password during this pass is a
+/// follow-up.
+///
+/// # Errors
+///
+/// [`MigrationError`] when the legacy table cannot be read at all; per-row
+/// problems are counted in [`MissingSingleKeysImport::failed`].
+pub(super) fn import_missing_single_keys(
+    app_context: &AppContext,
+    conn: &Connection,
+    rows: LegacyNetworkRows,
+) -> Result<MissingSingleKeysImport, MigrationError> {
+    let mut imported = 0u32;
+    let outcome = migrate_single_key_rows_from_conn(
+        conn,
+        |wif, alias| {
+            let alias = crate::model::wallet::alias::AliasSource::Preserved(alias);
+            if app_context
+                .import_single_key_wif_if_absent(wif, alias)?
+                .is_some()
+            {
+                imported += 1;
+            }
+            Ok(())
+        },
+        rows,
+    )?;
+    Ok(MissingSingleKeysImport {
+        imported,
+        failed: outcome.failed,
+    })
 }
 
 /// Terminal state for a launch that reached the end without failing.
@@ -2094,10 +2173,9 @@ async fn migrate_single_key_rows(app_context: &Arc<AppContext>) -> Result<(), Ta
         &conn,
         |wif, alias| {
             app_context
-                .import_single_key_wif(
+                .import_single_key_wif_if_absent(
                     wif,
                     crate::model::wallet::alias::AliasSource::Preserved(alias),
-                    Default::default(),
                 )
                 .map(|_| ())
         },
@@ -2130,18 +2208,19 @@ async fn migrate_single_key_rows(app_context: &Arc<AppContext>) -> Result<(), Ta
 fn migrate_single_key_rows_from_conn<F>(
     conn: &Connection,
     mut import: F,
-    network: dash_sdk::dpp::dashcore::Network,
+    rows: impl Into<LegacyNetworkRows>,
 ) -> Result<SingleKeyMigrationOutcome, MigrationError>
 where
     F: FnMut(&str, Option<String>) -> Result<(), TaskError>,
 {
+    let scope: LegacyNetworkRows = rows.into();
     use dash_sdk::dpp::dashcore::PrivateKey;
 
     if !legacy_table_exists_named(conn, "single_key_wallet")? {
         return Ok(SingleKeyMigrationOutcome::default());
     }
     let sql = "SELECT encrypted_private_key, alias, uses_password \
-               FROM single_key_wallet WHERE network = ?1";
+               FROM single_key_wallet WHERE network IN (?1, ?2)";
     let mut stmt = conn
         .prepare(sql)
         .map_err(|e| MigrationError::LegacyDbRead {
@@ -2150,10 +2229,14 @@ where
         })?;
 
     let rows = stmt
-        .query_map(rusqlite::params![network.to_string()], |row| {
+        .query_map(scope.names, |row| {
+            let uses_password: i32 = row.get(2)?;
+            // Protected rows are decoded and counted by their restore reader.
+            if uses_password != 0 {
+                return Ok((Vec::new(), None, uses_password));
+            }
             let encrypted: Vec<u8> = row.get(0)?;
             let alias: Option<String> = row.get(1)?;
-            let uses_password: i32 = row.get(2)?;
             Ok((encrypted, alias, uses_password))
         })
         .map_err(|e| MigrationError::LegacyDbRead {
@@ -2206,7 +2289,7 @@ where
             }
         };
 
-        let priv_key = match PrivateKey::from_byte_array(&key_bytes, network) {
+        let priv_key = match PrivateKey::from_byte_array(&key_bytes, scope.network) {
             Ok(p) => p,
             Err(e) => {
                 tracing::warn!(
@@ -2220,11 +2303,7 @@ where
         };
         let wif = priv_key.to_wif();
 
-        // `import` is `SingleKeyView::import_wif` in production; the
-        // view writes to the secret store under the canonical
-        // `single_key_priv.<addr>` label and seeds the in-memory
-        // index. Re-import on the same address overwrites the same
-        // bytes — idempotent (TC-SK-002).
+        // Recovery imports preserve any existing secret and its protection.
         match import(&wif, alias) {
             Ok(_) => outcome.imported = outcome.imported.saturating_add(1),
             Err(e) => {
@@ -2340,7 +2419,12 @@ fn migrate_wallet_meta_rows(app_context: &Arc<AppContext>) -> Result<(), TaskErr
     let view = backend.wallet_meta();
     let outcome = migrate_wallet_meta_rows_from_conn(
         &conn,
-        |seed_hash, meta| view.set_migrated(app_context.network, &seed_hash, &meta),
+        |seed_hash, meta| {
+            if view.try_get(app_context.network, &seed_hash)?.is_none() {
+                view.set_migrated(app_context.network, &seed_hash, &meta)?;
+            }
+            Ok(())
+        },
         app_context.network,
     )?;
     tracing::info!(
@@ -2367,7 +2451,7 @@ fn migrate_wallet_meta_rows(app_context: &Arc<AppContext>) -> Result<(), TaskErr
 pub(super) fn migrate_wallet_meta_rows_from_conn<F>(
     conn: &Connection,
     mut set: F,
-    network: dash_sdk::dpp::dashcore::Network,
+    rows: impl Into<LegacyNetworkRows>,
 ) -> Result<WalletMetaMigrationOutcome, MigrationError>
 where
     F: FnMut(
@@ -2378,6 +2462,7 @@ where
     if !legacy_table_exists_named(conn, "wallet")? {
         return Ok(WalletMetaMigrationOutcome::default());
     }
+    let scope: LegacyNetworkRows = rows.into();
     // `core_wallet_name` is the only optional column, so it is probed and
     // NULL-substituted. `uses_password`/`password_hint` are read unprobed —
     // the seed migration selects them unconditionally and runs first over
@@ -2386,11 +2471,11 @@ where
     let sql = if core_wallet_name_present {
         "SELECT seed_hash, alias, is_main, core_wallet_name, master_ecdsa_bip44_account_0_epk, \
          uses_password, password_hint \
-         FROM wallet WHERE network = ?1"
+         FROM wallet WHERE network IN (?1, ?2)"
     } else {
         "SELECT seed_hash, alias, is_main, NULL AS core_wallet_name, \
          master_ecdsa_bip44_account_0_epk, uses_password, password_hint \
-         FROM wallet WHERE network = ?1"
+         FROM wallet WHERE network IN (?1, ?2)"
     };
 
     let mut stmt = conn
@@ -2401,7 +2486,7 @@ where
         })?;
 
     let rows = stmt
-        .query_map(rusqlite::params![network.to_string()], |row| {
+        .query_map(scope.names, |row| {
             let seed_hash: Vec<u8> = row.get(0)?;
             let alias: Option<String> = row.get(1)?;
             let is_main: Option<bool> = row.get(2)?;
@@ -2530,8 +2615,7 @@ pub(super) struct WalletSeedsMigrationOutcome {
 /// salt + nonce + flags + xpub) into the upstream vault via
 /// [`WalletSeedView`](crate::wallet_backend::WalletSeedView) without
 /// decrypting it, so protected and unprotected rows take the same path.
-/// Idempotent: re-running overwrites the same envelope under the same
-/// `WalletId`.
+/// Existing seeds are preserved, including raw and password-protected copies.
 fn migrate_wallet_seeds_rows(app_context: &Arc<AppContext>) -> Result<(), TaskError> {
     let backend = app_context
         .wallet_backend()
@@ -2548,7 +2632,12 @@ fn migrate_wallet_seeds_rows(app_context: &Arc<AppContext>) -> Result<(), TaskEr
     let view = backend.wallet_seeds();
     let outcome = migrate_wallet_seeds_rows_from_conn(
         &conn,
-        |seed_hash, envelope| view.set(&seed_hash, &envelope),
+        |seed_hash, envelope| {
+            if !view.contains(&seed_hash)? {
+                view.set(&seed_hash, &envelope)?;
+            }
+            Ok(())
+        },
         app_context.network,
     )?;
 
@@ -2581,7 +2670,7 @@ fn migrate_wallet_seeds_rows(app_context: &Arc<AppContext>) -> Result<(), TaskEr
 pub(super) fn migrate_wallet_seeds_rows_from_conn<F>(
     conn: &Connection,
     mut set: F,
-    network: dash_sdk::dpp::dashcore::Network,
+    rows: impl Into<LegacyNetworkRows>,
 ) -> Result<WalletSeedsMigrationOutcome, MigrationError>
 where
     F: FnMut(
@@ -2592,9 +2681,10 @@ where
     if !legacy_table_exists_named(conn, "wallet")? {
         return Ok(WalletSeedsMigrationOutcome::default());
     }
+    let scope: LegacyNetworkRows = rows.into();
     let sql = "SELECT seed_hash, encrypted_seed, salt, nonce, password_hint, \
                uses_password, master_ecdsa_bip44_account_0_epk \
-               FROM wallet WHERE network = ?1";
+               FROM wallet WHERE network IN (?1, ?2)";
 
     let mut stmt = conn
         .prepare(sql)
@@ -2604,7 +2694,7 @@ where
         })?;
 
     let rows = stmt
-        .query_map(rusqlite::params![network.to_string()], |row| {
+        .query_map(scope.names, |row| {
             let seed_hash: Vec<u8> = row.get(0)?;
             let encrypted_seed: Vec<u8> = row.get(1)?;
             let salt: Vec<u8> = row.get(2)?;
@@ -4407,6 +4497,38 @@ mod tests {
         assert_eq!(outcome, SingleKeyMigrationOutcome::default());
     }
 
+    /// A mainnet single key saved before schema 29 carries the `dash`
+    /// spelling; the mainnet drain must still copy it.
+    #[test]
+    fn mainnet_single_key_saved_with_the_dash_spelling_is_copied() {
+        use dash_sdk::dpp::dashcore::Network;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conn = Connection::open(dir.path().join("data.db")).expect("open legacy db");
+        create_legacy_table(&conn);
+        seed_legacy_row(
+            &conn,
+            &[4u8; 32],
+            &[0xCE; 32],
+            &[],
+            &[],
+            "XMainnetOnly",
+            None,
+            false,
+            Network::Mainnet,
+        );
+        conn.execute("UPDATE single_key_wallet SET network = 'dash'", [])
+            .expect("use the pre-v29 spelling");
+
+        let outcome =
+            migrate_single_key_rows_from_conn(&conn, |_wif, _alias| Ok(()), Network::Mainnet)
+                .expect("copy single-key rows");
+        assert_eq!(
+            outcome.imported, 1,
+            "the pre-v29 mainnet row must be copied"
+        );
+    }
+
     /// Copying a legacy single key must not change its source table or rows.
     #[test]
     fn single_key_copy_leaves_legacy_table_unchanged() {
@@ -5886,7 +6008,96 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn migration_retry_refreshes_hydrated_duplicate_key_names() {
+    async fn review_regression_startup_drain_preserves_protected_mainnet_key() {
+        use crate::model::wallet::alias::AliasSource;
+        use crate::wallet_backend::single_key::ImportPassphrase;
+        use dash_sdk::dpp::dashcore::{Network, PrivateKey};
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = app_context_for_network(tmp.path(), Network::Mainnet);
+        wire_backend(&ctx).await;
+        let raw = [0x36; 32];
+        let key = PrivateKey::from_byte_array(&raw, ctx.network).unwrap();
+        let password = format!("test-password-{}", tmp.path().display());
+        let (meta, _) = ctx
+            .import_single_key_wif(
+                &key.to_wif(),
+                AliasSource::Preserved(Some("Protected".into())),
+                ImportPassphrase {
+                    passphrase: Some(zeroize::Zeroizing::new(password.clone())),
+                    hint: Some("keep hint".into()),
+                },
+            )
+            .unwrap();
+        let conn = Connection::open(ctx.db.db_file_path().unwrap()).unwrap();
+        seed_legacy_row(
+            &conn,
+            &raw,
+            &raw,
+            &[],
+            &[],
+            &meta.address,
+            Some("Old"),
+            false,
+            ctx.network,
+        );
+        conn.execute("UPDATE single_key_wallet SET network = 'dash'", [])
+            .unwrap();
+        migrate_single_key_rows(&ctx).await.unwrap();
+        let backend = ctx.wallet_backend().unwrap();
+        let restored = backend.single_key().list();
+        assert_eq!(
+            restored,
+            vec![meta.clone()],
+            "startup keeps current protection and metadata"
+        );
+        let seam = crate::wallet_backend::secret_seam::SecretSeam::new(backend.secret_store());
+        let bytes = seam
+            .get_secret_protected(
+                &crate::wallet_backend::single_key::single_key_namespace_id(),
+                &crate::wallet_backend::single_key::label_for_address(&meta.address),
+                &SecretString::new(password),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(bytes.expose_secret(), raw);
+        backend.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn review_regression_startup_drain_preserves_protected_mainnet_seed() {
+        use dash_sdk::dpp::dashcore::Network;
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = app_context_for_network(tmp.path(), Network::Mainnet);
+        let seed = [0x37; 64];
+        let hash = seed_legacy_wallet(&ctx, &seed, "Old", ctx.network);
+        ctx.db
+            .execute("UPDATE wallet SET network = 'dash'", [])
+            .unwrap();
+        wire_backend(&ctx).await;
+        let backend = ctx.wallet_backend().unwrap();
+        let password = SecretString::new(format!("test-password-{}", tmp.path().display()));
+        backend
+            .wallet_seeds()
+            .set_protected(&hash, &seed, &password)
+            .unwrap();
+        migrate_wallet_seeds_rows(&ctx).unwrap();
+        assert!(
+            backend.wallet_seeds().get(&hash).unwrap().is_none(),
+            "startup must not add an unprotected legacy copy beside a protected seed"
+        );
+        assert_eq!(
+            *backend
+                .wallet_seeds()
+                .get_protected(&hash, &password)
+                .unwrap()
+                .unwrap(),
+            seed
+        );
+        backend.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn migration_retry_preserves_hydrated_key_names() {
         use crate::model::wallet::alias::AliasSource;
         use dash_sdk::dpp::dashcore::PrivateKey;
 
@@ -5938,7 +6149,8 @@ mod tests {
         backend.hydrate_context_wallets(&ctx).unwrap();
         let listed = backend.single_key().list();
         assert_eq!(listed.len(), 2);
-        assert_ne!(listed[0].alias, listed[1].alias);
+        assert_eq!(listed[0].alias.as_deref(), Some("Dup"));
+        assert_eq!(listed[1].alias.as_deref(), Some("Dup"));
         for wallet in ctx.wallet_context().single_key_wallets().values() {
             let wallet = wallet.read().unwrap();
             let stored = listed

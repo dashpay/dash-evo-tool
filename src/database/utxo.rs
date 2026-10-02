@@ -36,7 +36,7 @@ impl Database {
                 address.to_string(),
                 value,
                 script_pubkey,
-                network.to_string()
+                crate::database::network_name(&network)
             ],
         )?;
         Ok(())

@@ -29,7 +29,6 @@ use dash_sdk::dpp::dashcore::sml::masternode_list_entry::qualified_masternode_li
 use dash_sdk::dpp::dashcore::sml::quorum_entry::qualified_quorum_entry::{
     QualifiedQuorumEntry, VerifyingChainLockSignaturesType,
 };
-use dash_sdk::dpp::dashcore::sml::quorum_validation_error::ClientDataRetrievalError;
 use dash_sdk::dpp::dashcore::transaction::special_transaction::quorum_commitment::QuorumEntry;
 use dash_sdk::dpp::dashcore::{
     Block, BlockHash as BlockHash2, ChainLock, InstantLock, Transaction,
@@ -151,7 +150,7 @@ impl MasternodeListDiffScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         let mut mnlist_diffs = BTreeMap::new();
         let engine = match app_context.network {
-            Network::Dash => {
+            Network::Mainnet => {
                 use std::env;
                 println!(
                     "Current working directory: {:?}",
@@ -168,18 +167,18 @@ impl MasternodeListDiffScreen {
                             MasternodeListEngine::initialize_with_diff_to_height(
                                 diff,
                                 2227096,
-                                Network::Dash,
+                                Network::Mainnet,
                             )
                             .expect("expected to start engine")
                         }
                         Err(e) => {
                             eprintln!("Failed to read MNListDiff file: {}", e);
-                            MasternodeListEngine::default_for_network(Network::Dash)
+                            MasternodeListEngine::default_for_network(Network::Mainnet)
                         }
                     }
                 } else {
                     eprintln!("MNListDiff file not found: {}", file_path);
-                    MasternodeListEngine::default_for_network(Network::Dash)
+                    MasternodeListEngine::default_for_network(Network::Mainnet)
                 }
             }
             Network::Testnet => {
@@ -205,7 +204,7 @@ impl MasternodeListDiffScreen {
                     }
                 } else {
                     eprintln!("MNListDiff file not found: {}", file_path);
-                    MasternodeListEngine::default_for_network(Network::Dash)
+                    MasternodeListEngine::default_for_network(Network::Mainnet)
                 }
             }
             _ => MasternodeListEngine::default_for_network(app_context.network),
@@ -1263,7 +1262,7 @@ impl MasternodeListDiffScreen {
         let max_blocks = 2000;
 
         let loaded_list_height = match self.app_context.network {
-            Network::Dash => 2227096,
+            Network::Mainnet => 2227096,
             Network::Testnet => 1296600,
             _ => 0,
         };
@@ -1318,6 +1317,36 @@ impl MasternodeListDiffScreen {
         self.feed_qr_info_and_get_dmls(qr_info, Some(p2p_handler))
     }
 
+    fn prepare_qr_info_heights(&mut self, qr_info: &QRInfo) -> Result<(), String> {
+        let diffs = [
+            &qr_info.mn_list_diff_tip,
+            &qr_info.mn_list_diff_h,
+            &qr_info.mn_list_diff_at_h_minus_c,
+            &qr_info.mn_list_diff_at_h_minus_2c,
+            &qr_info.mn_list_diff_at_h_minus_3c,
+        ];
+        for diff in diffs
+            .into_iter()
+            .chain(
+                qr_info
+                    .quorum_snapshot_and_mn_list_diff_at_h_minus_4c
+                    .as_ref()
+                    .map(|(_, diff)| diff),
+            )
+            .chain(qr_info.mn_list_diff_list.iter())
+        {
+            for hash in [diff.base_block_hash, diff.block_hash] {
+                let height = if hash == BlockHash::all_zeros() {
+                    0
+                } else {
+                    self.get_height_and_cache(&hash)?
+                };
+                self.masternode_list_engine.feed_block_height(height, hash);
+            }
+        }
+        Ok(())
+    }
+
     fn feed_qr_info_and_get_dmls(
         &mut self,
         qr_info: QRInfo,
@@ -1334,36 +1363,14 @@ impl MasternodeListDiffScreen {
             Some(core_p2phandler) => core_p2phandler,
         };
 
-        // Extracting immutable references before calling `feed_qr_info`
-        let get_height_fn = {
-            let block_height_cache = &self.block_height_cache;
-            let app_context = &self.app_context;
+        if let Err(e) = self.prepare_qr_info_heights(&qr_info) {
+            self.error = Some(e);
+            return;
+        }
 
-            move |block_hash: &BlockHash| {
-                if block_hash.as_byte_array() == &[0; 32] {
-                    return Ok(0);
-                }
-                if let Some(height) = block_height_cache.get(block_hash) {
-                    return Ok(*height);
-                }
-                match app_context
-                    .core_client
-                    .read()
-                    .unwrap()
-                    .get_block_header_info(
-                        &(BlockHash2::from_byte_array(block_hash.to_byte_array())),
-                    ) {
-                    Ok(block_info) => Ok(block_info.height as CoreBlockHeight),
-                    Err(_) => Err(ClientDataRetrievalError::RequiredBlockNotPresent(
-                        *block_hash,
-                    )),
-                }
-            }
-        };
-
-        if let Err(e) =
-            self.masternode_list_engine
-                .feed_qr_info(qr_info, false, true, Some(get_height_fn))
+        if let Err(e) = self
+            .masternode_list_engine
+            .feed_qr_info(qr_info, false, true)
         {
             self.error = Some(e.to_string());
             return;
@@ -1908,7 +1915,8 @@ impl MasternodeListDiffScreen {
                         .confirmed_hash
                         .map(|h| h.to_string().to_lowercase())
                         .unwrap_or_default();
-                    let service_ip = masternode.service_address.ip().to_string().to_lowercase();
+                    let service_ip =
+                        service_address_label(&masternode.service_address).to_lowercase();
                     let operator_public_key =
                         masternode.operator_public_key.to_string().to_lowercase();
                     let voting_key_id = masternode.key_id_voting.to_string().to_lowercase();
@@ -1986,7 +1994,9 @@ impl MasternodeListDiffScreen {
                                     } else {
                                         "EN"
                                     },
-                                    masternode.masternode_list_entry.service_address.ip(),
+                                    service_address_label(
+                                        &masternode.masternode_list_entry.service_address
+                                    ),
                                     pro_tx_hash.to_string().as_str().split_at(5).0
                                 ),
                             )
@@ -2315,7 +2325,7 @@ impl MasternodeListDiffScreen {
                                         } else {
                                             "EN"
                                         },
-                                        masternode.service_address.ip(),
+                                        service_address_label(&masternode.service_address),
                                         masternode
                                             .pro_reg_tx_hash
                                             .to_string()
@@ -2680,7 +2690,7 @@ impl MasternodeListDiffScreen {
                                             "Version: {}\n\
                                      ProRegTxHash: {}\n\
                                      Confirmed Hash: {}\n\
-                                     Service Address: {}:{}\n\
+                                     Service Address: {}\n\
                                      Operator Public Key: {}\n\
                                      Voting Key ID: {}\n\
                                      Is Valid: {}\n\
@@ -2692,8 +2702,7 @@ impl MasternodeListDiffScreen {
                                                 Some(confirmed_hash) =>
                                                     confirmed_hash.reverse().to_string(),
                                             },
-                                            masternode.service_address.ip(),
-                                            masternode.service_address.port(),
+                                            service_address_label(&masternode.service_address),
                                             masternode.operator_public_key,
                                             masternode.key_id_voting,
                                             masternode.is_valid,
@@ -2739,7 +2748,7 @@ impl MasternodeListDiffScreen {
                                     "Version: {}\n\
                                      ProRegTxHash: {}\n\
                                      Confirmed Hash: {}\n\
-                                     Service Address: {}:{}\n\
+                                     Service Address: {}\n\
                                      Operator Public Key: {}\n\
                                      Voting Key ID: {}\n\
                                      Is Valid: {}\n\
@@ -2753,8 +2762,7 @@ impl MasternodeListDiffScreen {
                                         Some(confirmed_hash) =>
                                             confirmed_hash.reverse().to_string(),
                                     },
-                                    masternode.service_address.ip(),
-                                    masternode.service_address.port(),
+                                    service_address_label(&masternode.service_address),
                                     masternode.operator_public_key,
                                     masternode.key_id_voting,
                                     masternode.is_valid,
@@ -3064,10 +3072,9 @@ impl MasternodeListDiffScreen {
                 ui.heading("New Masternodes");
                 for masternode in &mn_list_diff.new_masternodes {
                     ui.label(format!(
-                        "{} {}:{}",
+                        "{} {}",
                         masternode.pro_reg_tx_hash,
-                        masternode.service_address.ip(),
-                        masternode.service_address.port(),
+                        service_address_label(&masternode.service_address),
                     ));
                 }
 
@@ -3508,7 +3515,7 @@ impl MasternodeListDiffScreen {
                 cycle_hash
             ));
         }
-        for (index, commitment) in cycle_quorums.iter().enumerate() {
+        for (index, commitment) in cycle_quorums.iter() {
             // Determine the appropriate symbol based on verification status
             let verification_symbol = match commitment.verified {
                 LLMQEntryVerificationStatus::Verified => "✔", // Checkmark
@@ -4171,35 +4178,14 @@ impl ScreenLike for MasternodeListDiffScreen {
                     self.insert_mn_list_diff(d);
                 }
 
-                // Apply to engine using the same closure as before to resolve heights
-                let block_height_cache = self.block_height_cache.clone();
-                let app_context = self.app_context.clone();
-                let get_height_fn = move |block_hash: &BlockHash| {
-                    if block_hash.as_byte_array() == &[0; 32] {
-                        return Ok(0);
-                    }
-                    if let Some(height) = block_height_cache.get(block_hash) {
-                        return Ok(*height);
-                    }
-                    match app_context
-                        .core_client
-                        .read()
-                        .unwrap()
-                        .get_block_header_info(
-                            &(BlockHash2::from_byte_array(block_hash.to_byte_array())),
-                        ) {
-                        Ok(block_info) => Ok(block_info.height as CoreBlockHeight),
-                        Err(_) => Err(ClientDataRetrievalError::RequiredBlockNotPresent(
-                            *block_hash,
-                        )),
-                    }
-                };
-                if let Err(e) = self.masternode_list_engine.feed_qr_info(
-                    qr_info.clone(),
-                    false,
-                    true,
-                    Some(get_height_fn),
-                ) {
+                if let Err(e) = self.prepare_qr_info_heights(&qr_info) {
+                    self.error = Some(e);
+                    return;
+                }
+                if let Err(e) =
+                    self.masternode_list_engine
+                        .feed_qr_info(qr_info.clone(), false, true)
+                {
                     self.error = Some(e.to_string());
                 }
                 // Store full qr_info for the QR tab
@@ -4404,4 +4390,12 @@ enum PendingTask {
     QrInfo,
     QrInfoWithDmls,
     ChainLocks,
+}
+
+fn service_address_label(
+    info: &dash_sdk::dpp::dashcore::sml::masternode_list_entry::MasternodeNetInfo,
+) -> String {
+    info.primary_service_address()
+        .map(|address| address.to_string())
+        .unwrap_or_else(|| "N/A".to_string())
 }

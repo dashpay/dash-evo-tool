@@ -48,7 +48,7 @@ impl Default for Settings {
     /// Default settings for the application
     fn default() -> Self {
         Self::new(
-            Network::Dash,
+            Network::Mainnet,
             RootScreenType::RootScreenIdentities,
             None,
             None, // autodetect

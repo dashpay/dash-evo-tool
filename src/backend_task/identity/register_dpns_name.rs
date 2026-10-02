@@ -156,6 +156,9 @@ impl AppContext {
         // Re-fetch the identity's DPNS names from Platform
         // TODO: Use the proof in the response to see if the name is contested or not (document is returned whether it's contested or not)
         let dpns_names_document_query = DocumentQuery {
+            select: dash_sdk::drive::query::SelectProjection::documents(),
+            group_by: Vec::new(),
+            having: Vec::new(),
             data_contract: self.dpns_contract.clone(),
             document_type_name: "domain".to_string(),
             where_clauses: vec![WhereClause {

@@ -7,7 +7,6 @@ use crate::ui::contracts_documents::contracts_documents_screen::DOCUMENT_PRIVATE
 use crate::ui::theme::{DashColors, Shadow, Shape, Spacing};
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
-use dash_sdk::dpp::data_contract::conversion::json::DataContractJsonConversionMethodsV0;
 use dash_sdk::dpp::data_contract::document_type::Index;
 use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
 use dash_sdk::dpp::data_contract::{
@@ -479,7 +478,7 @@ pub fn add_contract_chooser_panel(
 
                                             if json_expanded {
                                                 ui.vertical(|ui| {
-                                                    match contract.contract.to_json(app_context.platform_version()) {
+                                                    match serde_json::to_value(&contract.contract) {
                                                         Ok(json_value) => {
                                                             let pretty_str = serde_json::to_string_pretty(&json_value)
                                                                 .unwrap_or_else(|_| "Error formatting JSON".to_string());
@@ -575,8 +574,7 @@ pub fn add_contract_chooser_panel(
                     // Copy JSON option
                     if ui.button("Copy (JSON)").clicked() {
                         // Convert contract to JSON
-                        if let Ok(json_value) =
-                            contract.contract.to_json(app_context.platform_version())
+                        if let Ok(json_value) = serde_json::to_value(&contract.contract)
                             && let Ok(json_string) = serde_json::to_string_pretty(&json_value)
                         {
                             ui.ctx().copy_text(json_string);

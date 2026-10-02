@@ -42,7 +42,7 @@ impl Database {
                 amount,
                 &islock_bytes,
                 wallet_seed_hash,
-                network.to_string()
+                crate::database::network_name(&network)
             ],
         )?;
 
@@ -153,7 +153,7 @@ impl Database {
         if app_context.network != Network::Devnet {
             return Ok(());
         }
-        let network = app_context.network.to_string();
+        let network = crate::database::network_name(&app_context.network);
 
         let conn = self.conn.lock().unwrap();
 
@@ -219,7 +219,7 @@ impl Database {
             "SELECT transaction_data, amount, instant_lock_data, chain_locked_height, identity_id, wallet, network FROM asset_lock_transaction where network = ?",
         )?;
 
-        let mut rows = stmt.query(params![network.to_string()])?;
+        let mut rows = stmt.query(params![crate::database::network_name(&network)])?;
 
         let mut results = Vec::new();
 

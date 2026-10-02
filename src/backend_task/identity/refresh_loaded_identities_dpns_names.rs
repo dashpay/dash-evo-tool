@@ -22,6 +22,9 @@ impl AppContext {
 
             // Fetch DPNS names using SDK
             let dpns_names_document_query = DocumentQuery {
+                select: dash_sdk::drive::query::SelectProjection::documents(),
+                group_by: Vec::new(),
+                having: Vec::new(),
                 data_contract: self.dpns_contract.clone(),
                 document_type_name: "domain".to_string(),
                 where_clauses: vec![WhereClause {

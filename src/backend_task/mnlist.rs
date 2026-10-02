@@ -81,7 +81,7 @@ pub async fn run_mnlist_task(
             let client = app.core_client.read().unwrap();
             // Determine the range (replicate UI logic approximately)
             let loaded_list_height = match app.network {
-                Network::Dash => 2_227_096,
+                Network::Mainnet => 2_227_096,
                 Network::Testnet => 1_296_600,
                 _ => 0,
             };

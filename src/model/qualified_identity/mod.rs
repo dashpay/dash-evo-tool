@@ -270,8 +270,8 @@ impl Encode for QualifiedIdentity {
 }
 
 // Implement Decode manually for QualifiedIdentity, excluding decrypted_wallets
-impl Decode for QualifiedIdentity {
-    fn decode<D: bincode::de::Decoder>(
+impl<C> Decode<C> for QualifiedIdentity {
+    fn decode<D: bincode::de::Decoder<Context = C>>(
         decoder: &mut D,
     ) -> Result<Self, bincode::error::DecodeError> {
         Ok(Self {
@@ -287,13 +287,14 @@ impl Decode for QualifiedIdentity {
             wallet_index: None,
             top_ups: Default::default(),
             status: IdentityStatus::Unknown, // Loaded from the database, not encoded
-            network: Network::Dash,          // Loaded from the database, not encoded
+            network: Network::Mainnet,       // Loaded from the database, not encoded
         })
     }
 }
 
-impl Signer for QualifiedIdentity {
-    fn sign(
+#[dash_sdk::dpp::async_trait::async_trait]
+impl Signer<IdentityPublicKey> for QualifiedIdentity {
+    async fn sign(
         &self,
         identity_public_key: &IdentityPublicKey,
         data: &[u8],
@@ -353,6 +354,23 @@ impl Signer for QualifiedIdentity {
             // is to return the error for the BIP13_SCRIPT_HASH
             KeyType::BIP13_SCRIPT_HASH => Err(ProtocolError::InvalidIdentityPublicKeyTypeError(
                 InvalidIdentityPublicKeyTypeError::new(identity_public_key.key_type()),
+            )),
+        }
+    }
+
+    async fn sign_create_witness(
+        &self,
+        key: &IdentityPublicKey,
+        data: &[u8],
+    ) -> Result<dash_sdk::dpp::address_funds::AddressWitness, ProtocolError> {
+        match key.key_type() {
+            KeyType::ECDSA_SECP256K1 | KeyType::ECDSA_HASH160 => {
+                Ok(dash_sdk::dpp::address_funds::AddressWitness::P2pkh {
+                    signature: self.sign(key, data).await?,
+                })
+            }
+            _ => Err(ProtocolError::InvalidIdentityPublicKeyTypeError(
+                InvalidIdentityPublicKeyTypeError::new(key.key_type()),
             )),
         }
     }

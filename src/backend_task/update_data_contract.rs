@@ -98,7 +98,7 @@ impl AppContext {
                 allow_signing_with_any_security_level: false,
                 allow_signing_with_any_purpose: false,
             },
-        ).map_err(|e| {
+        ).await.map_err(|e| {
             format!(
                 "Failed to sign state transition: {}",
                 e

@@ -31,7 +31,6 @@ use dash_sdk::dpp::state_transition::StateTransitionSigningOptions;
 use dash_sdk::dpp::state_transition::batch_transition::methods::StateTransitionCreationOptions;
 use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
 use dash_sdk::dpp::version::PlatformVersion;
-use dash_sdk::dpp::version::v10::PLATFORM_V10;
 use dash_sdk::platform::{DataContract, Identifier};
 use dash_sdk::query_types::IndexMap;
 use egui::Context;
@@ -224,7 +223,7 @@ impl AppContext {
     }
 
     pub fn platform_version(&self) -> &'static PlatformVersion {
-        default_platform_version(&self.network)
+        self.sdk.read().expect("SDK lock was poisoned").version()
     }
 
     pub fn state_transition_options(&self) -> Option<StateTransitionCreationOptions> {
@@ -877,18 +876,5 @@ impl AppContext {
             .get_contract_id_by_token_id(token_id, self)?
             .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
         self.db.get_contract_by_id(contract_id, self)
-    }
-}
-
-/// Returns the default platform version for the given network.
-///
-/// For certain releases like developer previews, we may want to only increment the platform version for non-mainnet.
-pub(crate) const fn default_platform_version(network: &Network) -> &'static PlatformVersion {
-    match network {
-        Network::Dash => &PLATFORM_V10,
-        Network::Testnet => &PLATFORM_V10,
-        Network::Devnet => &PLATFORM_V10,
-        Network::Regtest => &PLATFORM_V10,
-        _ => panic!("unsupported network"),
     }
 }

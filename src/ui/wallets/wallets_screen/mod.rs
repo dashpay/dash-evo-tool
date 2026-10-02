@@ -66,7 +66,7 @@ impl DerivationPathHelpers for DerivationPath {
     fn is_bip44(&self, network: Network) -> bool {
         // BIP44 external paths have the form m/44'/coin_type'/account'/0/...
         let coin_type = match network {
-            Network::Dash => 5,
+            Network::Mainnet => 5,
             _ => 1,
         };
         let components = self.as_ref();
@@ -78,7 +78,7 @@ impl DerivationPathHelpers for DerivationPath {
     fn is_bip44_external(&self, network: Network) -> bool {
         // BIP44 external paths have the form m/44'/coin_type'/account'/0/...
         let coin_type = match network {
-            Network::Dash => 5,
+            Network::Mainnet => 5,
             _ => 1,
         };
         let components = self.as_ref();
@@ -91,7 +91,7 @@ impl DerivationPathHelpers for DerivationPath {
     fn is_bip44_change(&self, network: Network) -> bool {
         // BIP44 change paths have the form m/44'/coin_type'/account'/1/...
         let coin_type = match network {
-            Network::Dash => 5,
+            Network::Mainnet => 5,
             _ => 1,
         };
         let components = self.as_ref();
@@ -104,7 +104,7 @@ impl DerivationPathHelpers for DerivationPath {
     fn is_asset_lock_funding(&self, network: Network) -> bool {
         // BIP44 change paths have the form m/44'/coin_type'/account'/1/...
         let coin_type = match network {
-            Network::Dash => 5,
+            Network::Mainnet => 5,
             _ => 1,
         };
         // Asset lock funding paths have the form m/9'/coin_type'/5'/1'/x

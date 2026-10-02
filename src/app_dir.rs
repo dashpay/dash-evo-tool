@@ -54,11 +54,10 @@ pub fn core_cookie_path(
 ) -> Result<PathBuf, std::io::Error> {
     core_user_data_dir_path().map(|path| {
         let network_dir = match network {
-            Network::Dash => "",
+            Network::Mainnet => "",
             Network::Testnet => "testnet3",
             Network::Devnet => devnet_name.as_deref().unwrap_or(""),
             Network::Regtest => "regtest",
-            _ => unimplemented!(),
         };
         path.join(network_dir).join(".cookie")
     })
@@ -105,19 +104,13 @@ pub fn copy_env_file_if_not_exists() {
 /// Returns the path to the config file or an error if it fails.
 pub fn create_dash_core_config_if_not_exists(network: Network) -> Result<PathBuf, io::Error> {
     let (resource, filename) = match network {
-        Network::Dash => (BundledResource::CoreConfigMainnet, "mainnet.conf"),
+        Network::Mainnet => (BundledResource::CoreConfigMainnet, "mainnet.conf"),
         Network::Testnet => (BundledResource::CoreConfigTestnet, "testnet.conf"),
         Network::Devnet => (BundledResource::CoreConfigDevnet, "devnet.conf"),
         Network::Regtest => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "Local network does not support overwriting dash.conf",
-            ));
-        }
-        _ => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Unsupported network",
             ));
         }
     };

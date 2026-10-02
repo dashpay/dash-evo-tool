@@ -318,6 +318,9 @@ impl AppContext {
             ) => {
                 // First fetch the document to transfer
                 let document_query = DocumentQuery {
+                    select: dash_sdk::drive::query::SelectProjection::documents(),
+                    group_by: Vec::new(),
+                    having: Vec::new(),
                     data_contract: data_contract.clone(),
                     document_type_name: document_type.name().to_string(),
                     where_clauses: vec![],
@@ -394,6 +397,9 @@ impl AppContext {
             ) => {
                 // First fetch the document to purchase
                 let document_query = DocumentQuery {
+                    select: dash_sdk::drive::query::SelectProjection::documents(),
+                    group_by: Vec::new(),
+                    having: Vec::new(),
                     data_contract: data_contract.clone(),
                     document_type_name: document_type.name().to_string(),
                     where_clauses: vec![],
@@ -471,6 +477,9 @@ impl AppContext {
             ) => {
                 // First fetch the document to set price on
                 let document_query = DocumentQuery {
+                    select: dash_sdk::drive::query::SelectProjection::documents(),
+                    group_by: Vec::new(),
+                    having: Vec::new(),
                     data_contract: data_contract.clone(),
                     document_type_name: document_type.name().to_string(),
                     where_clauses: vec![],

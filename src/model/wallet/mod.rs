@@ -614,12 +614,13 @@ impl Wallet {
         path_reference: DerivationPathReference,
         app_context: &AppContext,
     ) -> Result<(), String> {
-        if !address.network().eq(&app_context.network) {
+        if !address
+            .as_unchecked()
+            .is_valid_for_network(app_context.network)
+        {
             return Err(format!(
-                "address {} network {} does not match wallet network {}",
-                address,
-                address.network(),
-                app_context.network
+                "address {} does not match wallet network {}",
+                address, app_context.network
             ));
         }
 
@@ -648,7 +649,7 @@ impl Wallet {
 
         tracing::trace!(
             address = ?&address,
-            network = &address.network().to_string(),
+            network = %app_context.network,
             "registered new address"
         );
         Ok(())

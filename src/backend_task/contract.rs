@@ -83,6 +83,9 @@ impl AppContext {
                                 // Fetch the contract description from the Search Contract
                                 let search_contract = &self.keyword_search_contract;
                                 let document_query = DocumentQuery {
+                                    select: dash_sdk::drive::query::SelectProjection::documents(),
+                                    group_by: Vec::new(),
+                                    having: Vec::new(),
                                     data_contract: search_contract.clone(),
                                     document_type_name: "fullDescription".to_string(),
                                     limit: 1,

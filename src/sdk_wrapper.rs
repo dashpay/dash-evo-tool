@@ -1,5 +1,4 @@
 use crate::config::NetworkConfig;
-use crate::context::default_platform_version;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::platform::ContextProvider;
 use dash_sdk::{RequestSettings, Sdk, SdkBuilder}; // Adjust imports
@@ -18,11 +17,9 @@ pub fn initialize_sdk<P: ContextProvider + 'static>(
         timeout: Some(Duration::from_secs(10)),
         retries: Some(6),
         ban_failed_address: Some(true),
+        max_decoding_message_size: None,
     };
-    let platform_version = default_platform_version(&network);
-
     let sdk = SdkBuilder::new(address_list)
-        .with_version(platform_version)
         .with_network(network)
         .with_context_provider(context_provider)
         .with_settings(request_settings)
@@ -31,7 +28,7 @@ pub fn initialize_sdk<P: ContextProvider + 'static>(
 
     info!(
         ?network,
-        protocol_version = platform_version.protocol_version,
+        protocol_version = sdk.version().protocol_version,
         "SDK initialized successfully"
     );
 

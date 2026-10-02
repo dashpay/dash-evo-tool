@@ -14,6 +14,17 @@ mod wallet;
 use rusqlite::{Connection, Params};
 use std::sync::Mutex;
 
+/// Network names used by the v0.9.3 database schema.
+pub(crate) fn network_name(network: &dash_sdk::dpp::dashcore::Network) -> &'static str {
+    use dash_sdk::dpp::dashcore::Network;
+    match network {
+        Network::Mainnet => "dash",
+        Network::Testnet => "testnet",
+        Network::Devnet => "devnet",
+        Network::Regtest => "regtest",
+    }
+}
+
 #[derive(Debug)]
 pub struct Database {
     conn: Mutex<Connection>,

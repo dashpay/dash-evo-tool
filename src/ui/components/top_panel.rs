@@ -190,7 +190,7 @@ pub fn add_top_panel(
     let mut action = AppAction::None;
     let dark_mode = ctx.style().visuals.dark_mode;
     let network_accent = match app_context.network {
-        Network::Dash => {
+        Network::Mainnet => {
             if dark_mode {
                 Color32::from_rgb(0, 113, 182) // Muted blue for dark mode (20% darker)
             } else {
@@ -216,13 +216,6 @@ pub fn add_top_panel(
                 Color32::from_rgb(111, 55, 15) // Muted brown for dark mode (20% darker)
             } else {
                 Color32::from_rgb(139, 69, 19) // Original brown
-            }
-        }
-        _ => {
-            if dark_mode {
-                Color32::from_rgb(0, 113, 182) // Muted blue for dark mode
-            } else {
-                DashColors::DASH_BLUE
             }
         }
     };

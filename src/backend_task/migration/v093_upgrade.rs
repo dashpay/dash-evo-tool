@@ -1839,8 +1839,7 @@ async fn an_earlier_drain_is_never_redone_and_restore_brings_skipped_rows_back()
 }
 
 /// A key whose secret is in the vault but missing from the key list (its
-/// details lost) is still present: Restore must not replace a
-/// password-protected secret with the unprotected legacy copy.
+/// details lost) regains its metadata without replacing its protected secret.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn restore_never_overwrites_a_protected_key_missing_from_the_key_list() {
     use crate::wallet_backend::secret_seam::SecretSeam;
@@ -1850,13 +1849,15 @@ async fn restore_never_overwrites_a_protected_key_missing_from_the_key_list() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let (ctx, backend, _fixture) = affected_mainnet_profile(tmp.path()).await;
     let store = ctx.secret_store();
-    let label = label_for_address(&skipped_single_key_address());
+    let address = skipped_single_key_address();
+    let label = label_for_address(&address);
+    let password = SecretString::new(format!("test-password-{}", tmp.path().display()));
     SecretSeam::new(&store)
         .put_secret_protected(
             &single_key_namespace_id(),
             &label,
             &SecretBytes::from_slice(&SKIPPED_SINGLE_KEY),
-            &SecretString::new("correcthorsebattery"),
+            &password,
         )
         .expect("a protected secret without details");
     launch(&ctx).await;
@@ -1870,7 +1871,31 @@ async fn restore_never_overwrites_a_protected_key_missing_from_the_key_list() {
         SecretScheme::Protected,
         "the protected secret is untouched",
     );
-    assert_eq!(summary.imported_keys_restored, 0, "{summary:?}");
+    assert_eq!(summary.imported_keys_restored, 1, "{summary:?}");
     assert_eq!(summary.imported_keys_failed, 0, "{summary:?}");
+    let secret = SecretSeam::new(&store)
+        .get_secret_protected(&single_key_namespace_id(), &label, &password)
+        .expect("the original password still opens the secret")
+        .expect("the original secret is retained");
+    assert!(
+        secret.expose_secret() == SKIPPED_SINGLE_KEY,
+        "metadata recovery must preserve the original key material",
+    );
+    let keys = backend.single_key().list();
+    let key = keys
+        .iter()
+        .find(|key| key.address == address)
+        .expect("the repaired key is listed");
+    assert!(key.has_passphrase, "recovered metadata keeps protection");
+    let wallets = backend.single_key().hydrate_wallets();
+    let (_, wallet) = wallets
+        .iter()
+        .find(|(_, wallet)| wallet.address.to_string() == address)
+        .expect("persisted metadata makes the key available at cold boot");
+    assert!(wallet.uses_password && !wallet.is_open());
+
+    let repeated = restore(&ctx).await;
+    assert_eq!(repeated.imported_keys_restored, 0, "{repeated:?}");
+    assert_eq!(repeated.imported_keys_failed, 0, "{repeated:?}");
     backend.shutdown().await;
 }

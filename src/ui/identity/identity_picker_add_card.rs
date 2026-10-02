@@ -13,8 +13,9 @@
 //!   `"Create a new identity or load one you already own."`.
 //!
 //! The entire card is a click target. Clicking emits a response with
-//! `add_requested == true` which the picker grid uses to route to
-//! `AddNewIdentityScreen` (the existing, unmodified screen).
+//! `add_requested == true` and the card's `rect`, which the picker grid uses
+//! to anchor a menu offering both "Create a new identity" and "Load an
+//! existing identity", so the sub-line's promise holds.
 
 use super::identity_picker_card::{CARD_HEIGHT, CARD_MIN_WIDTH};
 use crate::ui::components::component_trait::ComponentResponse;
@@ -40,14 +41,17 @@ pub enum AddCardBorderStyle {
 pub struct IdentityPickerAddCardResponse {
     /// True when the user clicked the card this frame.
     pub add_requested: bool,
+    /// Screen rect of the card, used to anchor the create/load menu.
+    pub rect: Rect,
     changed_value: Option<()>,
 }
 
 impl IdentityPickerAddCardResponse {
-    pub(crate) fn new(add_requested: bool) -> Self {
+    pub(crate) fn new(add_requested: bool, rect: Rect) -> Self {
         let changed_value = if add_requested { Some(()) } else { None };
         Self {
             add_requested,
+            rect,
             changed_value,
         }
     }
@@ -201,7 +205,7 @@ impl IdentityPickerAddCard {
             WidgetInfo::labeled(WidgetType::Button, true, "Add a new identity".to_string())
         });
 
-        IdentityPickerAddCardResponse::new(response.clicked())
+        IdentityPickerAddCardResponse::new(response.clicked(), rect)
     }
 }
 
@@ -329,7 +333,7 @@ mod tests {
 
     #[test]
     fn response_add_requested_populates_changed_value() {
-        let resp = IdentityPickerAddCardResponse::new(true);
+        let resp = IdentityPickerAddCardResponse::new(true, Rect::NOTHING);
         assert!(resp.has_changed());
         assert!(resp.is_valid());
         assert_eq!(resp.changed_value(), &Some(()));
@@ -337,7 +341,7 @@ mod tests {
 
     #[test]
     fn response_not_requested_has_no_change() {
-        let resp = IdentityPickerAddCardResponse::new(false);
+        let resp = IdentityPickerAddCardResponse::new(false, Rect::NOTHING);
         assert!(!resp.has_changed());
         assert_eq!(resp.changed_value(), &None);
     }

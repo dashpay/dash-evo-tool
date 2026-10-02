@@ -162,6 +162,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The Identities page lets you load an existing identity when you already have
+  identities. A new "Add" menu in the top bar offers "Create a new identity" and
+  "Load an existing identity", and the "Add a new identity" card now offers both
+  choices instead of opening only identity creation.
+
 - Token detail headers sort rows by identity name, identity ID, or numeric balance;
   unchecked balances stay last in either direction.
 

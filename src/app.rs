@@ -1270,8 +1270,18 @@ pub struct AppState {
     prompt_was_blocking: bool,
 }
 
+/// An action displayed in a toolbar dropdown.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolbarMenuItem {
+    pub label: &'static str,
+    pub action: DesiredAppAction,
+    pub enabled: bool,
+    pub tooltip: &'static str,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum DesiredAppAction {
+    Menu(Vec<ToolbarMenuItem>),
     None,
     Refresh,
     AddScreenType(Box<ScreenType>),
@@ -1283,7 +1293,7 @@ pub enum DesiredAppAction {
 impl DesiredAppAction {
     pub fn create_action(&self, app_context: &Arc<AppContext>) -> AppAction {
         match self {
-            DesiredAppAction::None => AppAction::None,
+            DesiredAppAction::None | DesiredAppAction::Menu(_) => AppAction::None,
             DesiredAppAction::Refresh => AppAction::Refresh,
             DesiredAppAction::Custom(message) => AppAction::Custom(message.clone()),
             DesiredAppAction::AddScreenType(screen_type) => {

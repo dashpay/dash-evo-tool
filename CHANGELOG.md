@@ -139,10 +139,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Masternodes tab**: a new "Masternodes" entry in the left nav (visible when
   Expert mode is on) for loading and managing masternode and evonode (HP
   masternode) identities by ProTxHash. Loaded nodes appear as a card list
-  showing type, voter-key readiness, key status, and DPNS-voting status;
+  showing type, voter-key readiness, key status, and username-voting status;
   opening a card shows a detail view with Withdraw / Top up / Transfer
-  actions, key management, a "DPNS Voting" button that opens the DPNS Active
-  contests screen, and — for evonodes only — a link to claim token rewards.
+  actions, key management, "This node's votes", a "Vote with this node"
+  button that opens Masternodes → Votes with that node selected, and — for
+  evonodes only — a link to claim token rewards.
   The load form accepts an optional password to encrypt the entered
   voting/owner/payout keys immediately instead of only after a separate
   step; leaving it blank keeps today's behavior, and protection can always
@@ -150,17 +151,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   evonode from *Identities → Load Existing Identity → Show Advanced
   Options*, which no longer offers those identity types.
 
-- **DPNS voting redesigned around the Active contests screen**: casting,
-  batching, and scheduling DPNS name-contest votes across your masternodes
-  now happens in one place — DPNS → Active contests. Contests are grouped
-  into Needs your vote / Voted / Vote state unavailable / Not votable by
-  your nodes, with a Review
-  and cast step for casting now or scheduling later, plus a reminder that
-  Platform allows up to four changes after the initial vote. The
-  Masternodes detail screen no longer casts votes inline — its "DPNS
-  Voting" button takes you straight to Active contests instead.
-  Review shows each node's current and requested choice and warns when a
-  change uses the limited allowance; it does not claim a remaining count.
+- **Username voting in Masternodes → Votes**: decide name contests across
+  your masternodes in one place, with To decide / Voted / Scheduled / History
+  views, node-set selection, bulk choices, and one confirmation for the batch.
+  Cards show weighted tallies and your nodes' influence. A top-bar indicator
+  and navigation badge highlight contests needing a vote, with background
+  refresh every 30 minutes on Mainnet and every 3 minutes on other networks.
+  Review shows each node's current and requested choice and remaining vote
+  changes, or Unknown when the local history cannot establish the count.
+  Cast now, choose a UTC time, or schedule shortly before voting ends.
+  A progress drawer lets you keep working while votes are sent.
   Uncertain results stay visible and blocked from repeat submission.
   Unresolved operations remain accessible after a contest closes and are
   not displaced by newer completed votes. Failed scheduled attempts retain
@@ -171,6 +171,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Removing a node cancels its unstarted scheduled votes.
   Contests remain readable without a voting key, and a missing voting key
   can be added from the node's detail page without replacing its other keys.
+
+- **Usernames in Identities**: check a name's availability, request it, and
+  follow its status without opening the voting screen. Names that need a
+  community vote show the non-refundable fee before payment; availability
+  is checked again before registration. Request status shows the timeline,
+  tally, and outcome, and suggests alternatives that need no vote.
+  Profile → Usernames lists your names and requests, with a "Show as main"
+  choice for the username displayed when no profile display name is set.
+  The former DPNS tool entry is removed; old voting shortcuts open
+  Masternodes → Votes, and old username shortcuts open Identities.
 
 - **Wallet/identity indicator on more screens (rollout in progress)**: the
   wallet and identity picker previously shown only at the top of the Identity

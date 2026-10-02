@@ -38,10 +38,12 @@ state and submit typed drafts.
 
 ## Domain model (built in #901)
 
-`src/model/dpns_voting.rs` holds the pure, serializable types:
+`src/model/dpns_voting/` contains `mod.rs` (journal and vote-state types),
+`composer.rs` (draft expansion), `operator.rs` (node sets, influence and
+scheduling), and `progress.rs` (progress summaries). The journal types include:
 
 - `DpnsVoteTargetKey { network, voter_id, vote_poll_id }`
-- `DpnsVoteTarget { key, contested_name, requested_choice, current_choice, timing }`
+- `DpnsVoteTarget { key, voter_alias, contested_name, requested_choice, current_choice, timing }`
 - `DpnsVoteOperationId([u8; 16])`, generated with the existing RNG dependency
 - `VoteTiming { Now, Scheduled(TimestampMillis) }`
 - `DpnsVoteTargetStatus`: Scheduled, Queued, Submitting, Confirming, Confirmed,
@@ -50,26 +52,28 @@ state and submit typed drafts.
 - `DpnsVoteFailure`: a pure domain enum, mapped structurally from backend
   errors. It never serializes `TaskError` or secrets.
 
-2026-10-01 additions (pure, same module):
+Operator helpers in `src/model/dpns_voting/operator.rs`:
 
 - `NodeSet { All, EvonodesOnly, MasternodesOnly, Custom(BTreeSet<Identifier>) }`
   plus resolution against the loaded nodes, producing excluded nodes with typed
-  reasons (`NoVotingKey`, `NoChangesLeft`, `NotInMasternodeList`,
-  `VoteStateUnavailable`).
+  reasons (`NoVotingKey`, `NotInMasternodeList`). Contest-specific checks
+  separately exclude exhausted or unavailable vote states.
 - `ChangesLeft { Known(u8), Unknown }`, computed from journal counts and proved
   state (VOTE-FR-078).
-- `node_weight(node_type) -> u32` (1 or 4) and `influence(tally, node_set_weight)
-  -> Option<Influence>` (VOTE-FR-077).
-- `relative_schedule(end_time, preset) -> Result<TimestampMillis, …>`
+- `node_weight(kind) -> u32` (1 or 4) and
+  `influence(contenders, lock_votes, node_set_weight) -> Option<Influence>`
+  (VOTE-FR-077).
+- `relative_schedule(end_time, preset, now_ms) -> Result<TimestampMillis, …>`
   (VOTE-FR-081).
-- `FailureReason::VotingEnded` for VOTE-FR-087.
+- `DpnsVoteFailure::VotingEnded` in `mod.rs` for VOTE-FR-087.
 
 ## Data ownership (built in #901)
 
-- `src/context/dpns_vote_state.rs`: proved votes per node via
-  `ResourceVote::fetch_many` keyed by proTxHash (not the SDK stub). Indexed by
-  node + poll and persisted per node scope.
-- `src/context/dpns_vote_operations.rs`: journal and target locks. Persists
+- `src/backend_task/contested_names/refresh_vote_states.rs`: proved votes per
+  node via `ResourceVote::fetch_many` keyed by proTxHash.
+- `src/context/dpns_vote_state.rs`: vote-state cache indexed by node + poll
+  and persisted per network and node scope.
+- `src/context/dpns_vote_operations/`: journal and target locks. Persists
   before the first broadcast, restores on startup, and releases a lock only on a
   terminal state or on cancelling an unsubmitted schedule. Unconfirmed targets
   stay locked.
@@ -78,29 +82,34 @@ state and submit typed drafts.
 
 `ContestedResourceTask::SubmitDpnsVoteOperation`,
 `ReconcileDpnsVoteOperation`, `CastDueScheduledVotes { … }`;
-`BackendTaskSuccessResult::DpnsVoteOperationUpdated(id)`. The due-schedule sweep
+`BackendTaskSuccessResult::DpnsVoteOperationUpdated { network, operation_id }`.
+The due-schedule sweep
 runs on a timer of about 60 s in `AppState::update()`.
 
-## Execution algorithm (unchanged)
+## Execution algorithm
 
-1. Validate against proved state.
+1. Refresh proved state for the operation's queued voters and validate it.
 2. Remove no-ops.
 3. Persist the operation and take locks atomically.
 4. Group by node.
-5. Bound concurrency across nodes, and run each node sequentially: nonce →
-   build → persist hash → broadcast → wait → classify.
-6. A cause-less wait failure becomes Unconfirmed and is reconciled, never
-   rebroadcast.
-7. Refresh vote state after each terminal outcome.
+5. Bound concurrency across nodes, and run each node sequentially: claim the
+   target → check the contest deadline → nonce → build and validate → persist
+   the broadcast boundary (`Confirming`) → broadcast → wait → classify.
+6. Persist the outcome. Errors after the broadcast boundary remain Unconfirmed
+   unless rejection is established; reconcile them without rebroadcasting.
+7. Cache confirmed choices and mirror terminal outcomes to legacy schedules.
 
-2026-10-01: before dispatching a queued target, re-check the contest end time.
+Before dispatching a queued target, re-check the contest end time.
 If voting has ended, mark it `FailedBeforeSubmission(VotingEnded)`.
 
-## Reconciliation (unchanged)
+## Reconciliation
 
-Resume by transition hash when dashpay/platform#4137 lands. Meanwhile use the
-proved per-identity range query starting at the exact poll ID (#4138
-workaround). Confirm only on an exact match, and stay Unconfirmed otherwise.
+The journal stores no transition hash. Reconciliation uses a proved
+per-identity range query starting at the exact poll ID (#4138 workaround).
+An exact choice match confirms the vote. A proved closed contest with no match
+marks it NotApplied; while the contest can still accept votes, a missing or
+different choice remains Unconfirmed. Transition-based recovery is a future
+integration tracked by dashpay/platform#4137.
 
 ## Scheduling (built in #901)
 
@@ -197,9 +206,9 @@ see below) for countdowns, presets and the chip.
 |---|---|---|---|
 | `model/dpns.rs`: contested-name rule (delegating to the contract's `field_matches`), contest/join durations per network, urgency window | **U** | V | Lands first. Replaces both `is_contested_name` copies. |
 | `model/fee_estimation.rs`: contest fee from `sdk.version()` / `prefunded_voting_balance_for_document` | **U** | — | Repo rule: fee math only here |
-| `model/dpns_voting.rs` (+ NodeSet, ChangesLeft, influence, relative schedule) | **V** | — | |
+| `model/dpns_voting/` (journal, composer, operator helpers, progress) | **V** | — | |
 | `context/contested_names_db.rs`: pending usernames → `Vec`, outcomes | **U** | — | V doesn't edit it; V reads contests via the existing API |
-| `context/dpns_vote_state.rs`, `dpns_vote_operations.rs`, new `dpns_vote_attention.rs` | **V** | — | |
+| `context/dpns_vote_state.rs`, `dpns_vote_operations/`, `dpns_vote_attention.rs` | **V** | — | |
 | `backend_task/contested_names/*` | **V** | U reads `get_contested_dpns_vote_state` via its own new op | U adds no code here |
 | New `backend_task/identity/dpns_usernames.rs` (`CheckUsernameAvailability`, `RefreshMyUsernameRequests`) | **U** | — | |
 | `backend_task/mod.rs` (`BackendTaskSuccessResult` variants) | both | — | Each stream adds its variants in its own contiguous block (V first, U after). Rebase conflict expected and trivial. |

@@ -864,7 +864,7 @@ As a masternode operator, I want to choose which nodes vote and decide many cont
 - A node-set selector (All my nodes, Evonodes only, Masternodes only, Custom) shows node count and total weight, is saved per network, and lists nodes that can't vote with the reason.
 - Keyboard: J/K move between cards, 1–9 vote for a requester, L lock, A abstain, Space select, Enter cast. Shortcuts act only in the contest list. Selecting several cards shows a bulk bar (Lock name, Abstain, Clear).
 - Adjust nodes in the confirm step shows every node × contest target (current → new choice, timing, changes left) and allows per-node timing or Don't use this node.
-- A vote for a requester always identifies that requester, by name or by identifier.
+- A vote for a requester shows their name and a shortened identity ID, or the ID alone when the name is unavailable, so similar names remain distinguishable.
 - Switching networks clears drafts and open dialogs.
 - A successful mixed batch reports cast and scheduled counts.
 
@@ -875,7 +875,7 @@ As a user, I want my identity's Display name to identify it throughout the app s
 
 - Change Display name in the identity profile.
 - Lists and navigation use Display name, then the main username (DPN-018), then a shortened identity ID.
-- My usernames lists registered names without assigning local identity aliases.
+- Profile → Usernames lists registered names without assigning local identity aliases.
 
 ### DPN-009: Scheduled votes preserved across an app upgrade [Implemented]
 **Persona:** Priya
@@ -1832,7 +1832,7 @@ As a masternode operator, I want a Refresh control on the Masternodes tab, so th
 
 - The Nodes list and a node's detail view each expose a Refresh action that re-reads the local cache immediately and dispatches one identity refresh per loaded node (or for the single open node on the detail view).
 - The Nodes-list Refresh also queries contests and node vote state when at least one node is loaded. The detail-view Refresh updates only that node. Refresh is a no-op when no node is loaded. Votes has its own refresh action.
-- [Gap] A background refresh keeps contest and vote state current while voting nodes are loaded (see DPN-013).
+- A background refresh keeps contest and vote state current while voting nodes are loaded (see DPN-013).
 
 ### MN-012: Switch wallet/identity from the Masternodes header [Implemented]
 **Persona:** Priya

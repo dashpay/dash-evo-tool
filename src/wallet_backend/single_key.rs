@@ -344,10 +344,27 @@ impl<'a> SingleKeyView<'a> {
 
                 if let Some(kv) = self.app_kv {
                     let key = meta_key_for(self.network, &address_str);
-                    kv.put(DetScope::Global, &key, &imported)
-                        .map_err(|source| TaskError::SingleKeyMetaStorage {
+                    if let Err(source) = kv.put(DetScope::Global, &key, &imported) {
+                        // In `Keep` mode the presence check above proved the
+                        // secret absent, so the one just written belongs to
+                        // this call: take it back, or it would block every
+                        // retry (`ImportedKeyAlreadyStored`) while staying
+                        // invisible without its details. `Replace` mode may
+                        // have overwritten an earlier secret, which is not
+                        // ours to delete.
+                        if existing == ExistingKey::Keep
+                            && let Err(rollback) = SecretSeam::new(self.secret_store)
+                                .delete_secret(&single_key_namespace_id(), &label)
+                        {
+                            tracing::warn!(
+                                ?rollback,
+                                "Could not remove an imported key's secret after its details failed to save",
+                            );
+                        }
+                        return Err(TaskError::SingleKeyMetaStorage {
                             source: Box::new(source),
-                        })?;
+                        });
+                    }
                 }
 
                 let wallet = self
@@ -2817,5 +2834,53 @@ mod tests {
             })
             .expect("address");
         assert_eq!(stored_scheme(&store, &address), SecretScheme::Absent);
+    }
+
+    /// A details write that fails takes back the secret the same add-only
+    /// import just stored, so a retry finds the key absent and imports it —
+    /// instead of an orphan secret that blocks every retry and never shows up.
+    #[test]
+    fn add_only_import_rolls_back_its_secret_when_details_fail() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("secrets.pwsvault");
+        let store = Arc::new(open_secret_store(&path).expect("open vault"));
+        let index = crate::wallet_backend::wallet_context::WalletContext::default();
+        let failing = Arc::new(crate::wallet_backend::kv_test_support::FailingKv::default());
+        let kv = Arc::new(DetKv::from_store(failing.clone()));
+        let view = SingleKeyView {
+            secret_store: &store,
+            context: &index,
+            network: Network::Testnet,
+            app_kv: Some(&kv),
+        };
+        failing.fail_next_puts(1);
+
+        let error = view
+            .import_wif_if_absent(known_wif(), AliasSource::Preserved(None))
+            .expect_err("the details write fails");
+
+        assert!(matches!(error, TaskError::SingleKeyMetaStorage { .. }));
+        assert!(view.list().is_empty(), "nothing indexed");
+        let address = PrivateKey::from_wif(known_wif())
+            .map(|key| {
+                let public = PublicKey {
+                    compressed: true,
+                    inner: key.inner.public_key(&Secp256k1::new()),
+                };
+                Address::p2pkh(&public, Network::Testnet).to_string()
+            })
+            .expect("address");
+        assert_eq!(
+            stored_scheme(&store, &address),
+            SecretScheme::Absent,
+            "the secret this import stored is taken back",
+        );
+
+        let retried = view
+            .import_wif_if_absent(known_wif(), AliasSource::Preserved(None))
+            .expect("retry")
+            .expect("the retry imports the key");
+        assert_eq!(retried.address, address);
+        assert_eq!(stored_scheme(&store, &address), SecretScheme::Unprotected);
     }
 }

@@ -2038,3 +2038,56 @@ async fn repair_never_overwrites_a_protected_key_missing_from_the_key_list() {
     );
     backend.shutdown().await;
 }
+
+/// What the user removes or wipes after the upgrade launch stays gone, even
+/// when that launch's repair failed partway: no later launch imports anything
+/// automatically, so neither the wallets it did bring back nor the keys it
+/// could not read return on their own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_wipe_after_a_partly_failed_repair_never_brings_anything_back() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let (ctx, backend, fixture) = affected_mainnet_profile(tmp.path()).await;
+    let data_db = tmp.path().join("data.db");
+    Connection::open(&data_db)
+        .expect("open data.db")
+        .execute_batch(
+            "DROP TABLE single_key_wallet;
+             CREATE TABLE single_key_wallet (network TEXT NOT NULL);",
+        )
+        .expect("damage the imported-key table");
+
+    launch(&ctx).await;
+    assert_eq!(
+        ctx.migration_status().take_earlier_wallets_repair(),
+        Some(EarlierWalletsRepair {
+            recovered: 2,
+            incomplete: true,
+        }),
+        "precondition: the claim launch failed partway",
+    );
+
+    // The user removes one recovered wallet, then wipes all local data.
+    ctx.remove_wallet(&fixture.unprotected)
+        .expect("user removes the wallet");
+    finish_unwire::wait_for_dapi_refresh(&ctx).await;
+    ctx.clear_network_database()
+        .await
+        .expect("user deletes all local data");
+
+    // The imported-key table becomes readable; later launches still import nothing.
+    let conn = Connection::open(&data_db).expect("open data.db");
+    conn.execute_batch("DROP TABLE single_key_wallet;")
+        .expect("drop the damaged table");
+    add_repair_single_key(&conn);
+    drop(conn);
+    launch(&ctx).await;
+    launch(&ctx).await;
+
+    let seeds = backend.wallet_seeds();
+    assert!(!seeds.contains(&fixture.unprotected).expect("probe"));
+    assert!(!seeds.contains(&fixture.protected).expect("probe"));
+    assert!(!has_repair_single_key(&backend));
+    assert!(ctx.wallet_context().wallets().is_empty());
+    assert_eq!(ctx.migration_status().take_earlier_wallets_repair(), None);
+    backend.shutdown().await;
+}

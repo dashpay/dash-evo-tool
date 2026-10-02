@@ -147,18 +147,6 @@ pub struct MigrationSummary {
     /// Failure text, set only for the two failed states.
     error: Option<String>,
     unreadable: Option<UnreadableCounts>,
-    /// What the one-time repair of wallets an earlier update skipped did on
-    /// this launch; reported beside any state.
-    earlier_wallets: Option<EarlierWalletsCounts>,
-}
-
-/// Outcome of the one-time repair of wallets an earlier update skipped.
-#[derive(Serialize, schemars::JsonSchema)]
-pub struct EarlierWalletsCounts {
-    /// Wallets and imported keys brought back.
-    recovered: u32,
-    /// Some could not be brought back; "Restore from Previous Version" retries them.
-    incomplete: bool,
 }
 
 /// Newest migration applied to the upstream wallet-storage schema.
@@ -252,7 +240,7 @@ impl AsyncTool<DashMcpService> for AppStorageStatus {
             data_db_expected_version: DEFAULT_DB_VERSION,
             data_db_up_to_date: data_db_version == Some(i64::from(DEFAULT_DB_VERSION)),
             wallet_storage_lineage: wallet_storage_lineage(ctx.data_dir())?,
-            migration: summarize_status(&ctx.migration_status()),
+            migration: summarize_migration(&ctx.migration_status().state()),
             sentinels,
         })
     }
@@ -502,24 +490,8 @@ impl AsyncTool<DashMcpService> for AppStorageUpdate {
         resolve::ensure_wallets_hydrated_with_password(&ctx, &param.password).await?;
 
         Ok(AppStorageUpdateOutput {
-            migration: summarize_status(&ctx.migration_status()),
+            migration: summarize_migration(&ctx.migration_status().state()),
         })
-    }
-}
-
-/// [`summarize_migration`] plus the earlier-wallets repair outcome, which is
-/// recorded beside the state rather than in it.
-fn summarize_status(
-    status: &crate::context::migration_status::MigrationStatus,
-) -> MigrationSummary {
-    MigrationSummary {
-        earlier_wallets: status
-            .earlier_wallets_repair()
-            .map(|repair| EarlierWalletsCounts {
-                recovered: repair.recovered,
-                incomplete: repair.incomplete,
-            }),
-        ..summarize_migration(&status.state())
     }
 }
 
@@ -531,7 +503,6 @@ fn summarize_migration(state: &MigrationState) -> MigrationSummary {
         step: None,
         error: None,
         unreadable: None,
-        earlier_wallets: None,
     };
 
     match state {

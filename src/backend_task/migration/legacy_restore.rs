@@ -116,6 +116,23 @@ async fn restore_wallets(
             summary.imported_keys_failed = summary.imported_keys_failed.saturating_add(1);
         }
     }
+    // Reported, never silently left out: the same list the wallets screen
+    // offers to restore, so a key already restored there is not counted.
+    match super::single_key_restore::list_pending_protected_restores(app_context) {
+        Ok(pending) => {
+            summary.imported_keys_need_password = u32::try_from(pending.len()).unwrap_or(u32::MAX);
+        }
+        Err(error) => {
+            tracing::warn!(
+                target = LOG_TARGET,
+                ?error,
+                "Could not list the password-protected imported keys saved by the earlier version"
+            );
+            if summary.imported_keys_failed == 0 {
+                summary.imported_keys_failed = 1;
+            }
+        }
+    }
 
     make_copied_wallets_live(app_context, &backend, &copy).await
 }

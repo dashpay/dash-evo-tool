@@ -20,6 +20,9 @@ pub struct LegacyRestoreSummary {
     pub imported_keys_restored: u32,
     /// Imported-key rows that could not be read or written.
     pub imported_keys_failed: u32,
+    /// Password-protected imported keys this run left out: they need their
+    /// old password, which the wallets screen asks for.
+    pub imported_keys_need_password: u32,
     /// Identities that received at least one restored key or link.
     pub identities_updated: u32,
     /// Identity private keys restored.
@@ -41,6 +44,7 @@ impl LegacyRestoreSummary {
         self.wallets_skipped_malformed > 0
             || self.wallets_failed > 0
             || self.imported_keys_failed > 0
+            || self.imported_keys_need_password > 0
             || self.identities_failed > 0
     }
 
@@ -106,6 +110,16 @@ impl LegacyRestoreSummary {
             ));
             sentences
                 .push("Try again, or import those keys again from their private keys.".to_string());
+        }
+        if self.imported_keys_need_password > 0 {
+            sentences.push(format!(
+                "Password-protected imported keys that were not restored: {count}.",
+                count = self.imported_keys_need_password
+            ));
+            sentences.push(
+                "Open the Wallets screen and choose Restore now to restore them with their old password."
+                    .to_string(),
+            );
         }
         if self.identities_failed > 0 {
             sentences.push(format!(
@@ -255,5 +269,34 @@ mod tests {
             "{message}"
         );
         assert!(!message.contains("Nothing new was restored."), "{message}");
+    }
+
+    /// Protected imported keys are never silently left out: they make the
+    /// summary a warning and say where to restore them.
+    #[test]
+    fn protected_imported_keys_are_reported_as_not_restored() {
+        let summary = LegacyRestoreSummary {
+            wallets_restored: 1,
+            imported_keys_need_password: 2,
+            ..found()
+        };
+        let message = summary.user_message();
+        assert!(summary.has_problems(), "{message}");
+        assert!(
+            message.contains("Password-protected imported keys that were not restored: 2."),
+            "{message}"
+        );
+        assert!(message.contains("Wallets screen"), "{message}");
+
+        let only_protected = LegacyRestoreSummary {
+            imported_keys_need_password: 1,
+            ..found()
+        };
+        assert!(
+            !only_protected
+                .user_message()
+                .contains("Nothing needed to be restored"),
+            "a pending protected key is not an all-clear",
+        );
     }
 }

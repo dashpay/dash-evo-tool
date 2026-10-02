@@ -221,27 +221,6 @@ impl MigrationState {
     }
 }
 
-/// What the one-time repair of wallets saved under the pre-v29 network
-/// spelling did on this launch. Reported beside the terminal
-/// [`MigrationState`] rather than as one, so no other outcome of the same
-/// launch (a failure, an unreadable-data warning) can drop it: the repair
-/// never runs again, so this is the user's only notice.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct EarlierWalletsRepair {
-    /// Wallets and imported keys brought back.
-    pub recovered: u32,
-    /// Some rows could not be brought back. They stay in the earlier
-    /// version's database, recoverable with "Restore from Previous Version".
-    pub incomplete: bool,
-}
-
-impl EarlierWalletsRepair {
-    /// Nothing to tell the user.
-    pub fn is_empty(self) -> bool {
-        self.recovered == 0 && !self.incomplete
-    }
-}
-
 /// Atomic, cheaply-readable migration status.
 ///
 /// Cloned by `AppContext` and read once per UI frame. Writers (the
@@ -254,7 +233,6 @@ pub struct MigrationStatus {
     wallet_password_submitted: Notify,
     skipped_wallets: Mutex<BTreeSet<WalletSeedHash>>,
     seed_leases: Mutex<Vec<SecretLease>>,
-    earlier_wallets_repair: Mutex<Option<EarlierWalletsRepair>>,
 }
 
 impl MigrationStatus {
@@ -265,36 +243,7 @@ impl MigrationStatus {
             wallet_password_submitted: Notify::new(),
             skipped_wallets: Mutex::new(BTreeSet::new()),
             seed_leases: Mutex::new(Vec::new()),
-            earlier_wallets_repair: Mutex::new(None),
         }
-    }
-
-    /// Record what the one-time earlier-wallets repair did, for one notice.
-    /// An empty outcome records nothing.
-    pub fn record_earlier_wallets_repair(&self, repair: EarlierWalletsRepair) {
-        if repair.is_empty() {
-            return;
-        }
-        *self
-            .earlier_wallets_repair
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(repair);
-    }
-
-    /// The recorded repair outcome, left in place (status reporting).
-    pub fn earlier_wallets_repair(&self) -> Option<EarlierWalletsRepair> {
-        *self
-            .earlier_wallets_repair
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
-    /// Take the recorded repair outcome, so its notice is shown once.
-    pub fn take_earlier_wallets_repair(&self) -> Option<EarlierWalletsRepair> {
-        self.earlier_wallets_repair
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take()
     }
 
     /// Hold a seed the storage update's password prompt just unlocked, so it

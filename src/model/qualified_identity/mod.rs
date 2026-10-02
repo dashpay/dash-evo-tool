@@ -606,16 +606,12 @@ impl QualifiedIdentity {
             .map_err(|e| format!("Failed to decode QualifiedIdentity: {}", e))
     }
 
-    /// Whether a masternode vote signed by this identity can reach Platform.
-    ///
-    /// True only with a loaded voter identity and its public key — the exact
-    /// precondition the vote submission path enforces. Stricter than
-    /// [`Self::masternode_key_presence`]'s `voting` flag, which also reports a
-    /// bare [`Purpose::VOTING`] main key that the vote path cannot sign with.
-    /// Voting surfaces must gate on this, so a read-only node is refused before
-    /// the operator composes a vote rather than at submission time.
+    /// Whether a voter identity and a matching signing-key reference are loaded.
+    /// Secret availability is checked by the signer at submission time.
     pub fn can_cast_masternode_vote(&self) -> bool {
-        self.associated_voter_identity.is_some()
+        self.associated_voter_identity
+            .as_ref()
+            .is_some_and(|(_, key)| self.can_sign_with(key))
     }
 
     /// Which masternode/evonode key roles are loaded for this identity.
@@ -2422,10 +2418,30 @@ mod masternode_key_presence_tests {
     /// path. A read-only node, and a node carrying nothing but a `VOTING`-purpose
     /// main key, must both be refused before a vote is composed.
     #[test]
-    fn only_a_loaded_voter_identity_can_cast_a_masternode_vote() {
-        assert!(qi_with(true, &[]).can_cast_masternode_vote());
+    fn review_regression_only_a_loaded_voter_identity_can_cast_a_masternode_vote() {
+        assert!(!qi_with(true, &[]).can_cast_masternode_vote());
         assert!(!qi_with(false, &[]).can_cast_masternode_vote());
         assert!(!qi_with(false, &[Purpose::VOTING]).can_cast_masternode_vote());
+        let mut identity = qi_with(true, &[]);
+        let key = identity
+            .associated_voter_identity
+            .as_ref()
+            .unwrap()
+            .1
+            .clone();
+        identity.private_keys.insert_at(
+            (PrivateKeyTarget::PrivateKeyOnVoterIdentity, key.id()),
+            (
+                QualifiedIdentityPublicKey::from(key),
+                PrivateKeyData::InVault,
+            ),
+        );
+        assert!(
+            identity.can_cast_masternode_vote(),
+            "protected references remain eligible for the signer to unlock"
+        );
+        identity.private_keys = KeyStorage::default();
+        assert!(!identity.can_cast_masternode_vote());
     }
 }
 

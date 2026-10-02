@@ -34,7 +34,10 @@ pub fn card_choices(card: &VoteCard) -> Vec<(ResourceVoteChoice, String)> {
         .map(|contender| {
             (
                 ResourceVoteChoice::TowardsIdentity(contender.id),
-                format!("Vote for {name}", name = contender.name),
+                copy::vote_choice_label(
+                    ResourceVoteChoice::TowardsIdentity(contender.id),
+                    Some(&contender.name),
+                ),
             )
         })
         .collect();
@@ -45,18 +48,14 @@ pub fn card_choices(card: &VoteCard) -> Vec<(ResourceVoteChoice, String)> {
 
 /// Short label of a choice for node lines and summaries.
 pub fn choice_short_label(card: &VoteCard, choice: ResourceVoteChoice) -> String {
-    match choice {
-        ResourceVoteChoice::Lock => "Lock".to_owned(),
-        ResourceVoteChoice::Abstain => "Abstain".to_owned(),
-        ResourceVoteChoice::TowardsIdentity(id) => card
-            .contest
-            .contestants
-            .iter()
-            .flatten()
-            .find(|contender| contender.id == id)
-            .map(|contender| format!("for {name}", name = contender.name))
-            .unwrap_or_else(|| "for another identity".to_owned()),
-    }
+    let name = card
+        .contest
+        .contestants
+        .iter()
+        .flatten()
+        .find(|contender| choice == ResourceVoteChoice::TowardsIdentity(contender.id))
+        .map(|contender| contender.name.as_str());
+    copy::vote_choice_label(choice, name)
 }
 
 /// The node line for a card, or `None` when no node is loaded.
@@ -114,7 +113,7 @@ pub fn node_label(node: Identifier, labels: &BTreeMap<Identifier, String>) -> St
     labels.get(&node).cloned().unwrap_or_else(|| {
         let encoded =
             node.to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
-        format!("{head}…", head = &encoded[..6])
+        crate::model::identity_name::shorten_id(&encoded)
     })
 }
 
@@ -235,7 +234,10 @@ impl CardView<'_> {
             .flatten()
             .map(|contender| {
                 (
-                    format!("Vote for {name}", name = contender.name),
+                    copy::vote_choice_label(
+                        ResourceVoteChoice::TowardsIdentity(contender.id),
+                        Some(&contender.name),
+                    ),
                     contender.votes,
                 )
             })
@@ -345,6 +347,11 @@ impl CardView<'_> {
                         egui::Button::selectable(highlighted == Some(choice), text),
                     )
                     .disabled_tooltip(disabled_reason);
+                if let ResourceVoteChoice::TowardsIdentity(id) = choice {
+                    response.clone().on_hover_text(id.to_string(
+                        dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
+                    ));
+                }
                 if response.clicked() {
                     events.push(CardEvent::Choose(choice));
                 }
@@ -441,7 +448,30 @@ mod tests {
     fn choices_list_contenders_then_lock_and_abstain() {
         let card = card(&[]);
         let labels: Vec<String> = card_choices(&card).into_iter().map(|(_, l)| l).collect();
-        assert_eq!(labels, vec!["Vote for alice", "Lock name", "Abstain"]);
+        assert_eq!(
+            labels,
+            vec![
+                copy::vote_choice_label(
+                    ResourceVoteChoice::TowardsIdentity(Identifier::from([7; 32])),
+                    Some("alice")
+                ),
+                "Lock name".to_owned(),
+                "Abstain".to_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn equal_contender_names_keep_distinct_vote_handles() {
+        let mut card = card(&[]);
+        let contest = Arc::make_mut(&mut card.contest);
+        let mut other = contest.contestants.as_ref().unwrap()[0].clone();
+        other.id = Identifier::from([9; 32]);
+        contest.contestants.as_mut().unwrap().push(other);
+        let choices = card_choices(&card);
+        assert_ne!(choices[0].1, choices[1].1);
+        assert!(choices[0].1.starts_with("Vote for alice ("));
+        assert!(choices[1].1.starts_with("Vote for alice ("));
     }
 
     #[test]
@@ -456,7 +486,7 @@ mod tests {
         let labels = BTreeMap::from([(Identifier::from([4; 32]), "mn-07".to_owned())]);
         assert_eq!(
             card_node_line(&card, &labels).as_deref(),
-            Some("Your nodes: 2 not voted · 1 voted Abstain · mn-07 has no changes left")
+            Some("Your nodes: 2 not voted · 1 voted: Abstain · mn-07 has no changes left")
         );
     }
 

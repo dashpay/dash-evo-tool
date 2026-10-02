@@ -1,15 +1,12 @@
 //! Key schema for the DPNS vote journal's k/v namespaces.
 //!
-//! Every key the journal owns is built here so the on-disk layout, including
-//! the v1 names still read by migration, has one definition.
+//! Every key the journal owns is built here so the on-disk layout has one definition.
 
 use crate::backend_task::error::TaskError;
 use crate::model::dpns_voting::DpnsVoteOperationId;
 use crate::wallet_backend::{KvAdapterError, network_prefix};
 use dash_sdk::dpp::dashcore::Network;
 
-pub(super) const LEGACY_OPERATION_INDEX_KEY: &str = "det:dpns_vote_operations:v1";
-pub(super) const LEGACY_OPERATION_KEY_PREFIX: &str = "det:dpns_vote_operation:v1:";
 pub(super) const OPERATION_INDEX_KEY_PREFIX: &str = "det:dpns_vote_operations:v2:";
 pub(super) const OPERATION_KEY_PREFIX: &str = "det:dpns_vote_operation:v2:";
 pub(super) const OPERATION_LOCK_INDEX_KEY_PREFIX: &str = "det:dpns_vote_operation_locks:v2:";
@@ -51,10 +48,6 @@ pub(super) fn operation_lock_index_dirty_key(network: Network) -> String {
         "{OPERATION_LOCK_INDEX_DIRTY_KEY_PREFIX}{}",
         network_prefix(network)
     )
-}
-
-pub(super) fn legacy_operation_key(id: DpnsVoteOperationId) -> String {
-    format!("{LEGACY_OPERATION_KEY_PREFIX}{id}")
 }
 
 pub(super) fn operation_err(source: KvAdapterError) -> TaskError {

@@ -64,70 +64,6 @@ fn operation_matches_network(
     Ok(false)
 }
 
-fn migrate_legacy_operations(kv: &DetKv, network: Network) -> Result<(), TaskError> {
-    let legacy_ids: Vec<[u8; 16]> = kv
-        .get(DetScope::Global, LEGACY_OPERATION_INDEX_KEY)
-        .map_err(unreadable_operation_err)?
-        .unwrap_or_default();
-    if legacy_ids.is_empty() {
-        return Ok(());
-    }
-
-    let mut qualified_ids = load_operation_ids(kv, network)?;
-    let mut qualified_changed = false;
-    let mut retained_legacy_ids = Vec::<[u8; 16]>::new();
-    for bytes in &legacy_ids {
-        let bytes = *bytes;
-        let id = DpnsVoteOperationId::from_bytes(bytes);
-        if qualified_ids.contains(&bytes) {
-            continue;
-        }
-        let operation: DpnsVoteOperation = kv
-            .get(DetScope::Global, &legacy_operation_key(id))
-            .map_err(unreadable_operation_err)?
-            .ok_or(TaskError::DpnsVoteOperationRecordMissing)?;
-        match operation_matches_network(&operation, network) {
-            Ok(false) => continue,
-            Err(TaskError::DpnsVoteJournalNetworkMismatch) => {
-                retained_legacy_ids.push(bytes);
-                continue;
-            }
-            Err(error) => return Err(error),
-            Ok(true) => {}
-        }
-        kv.put(
-            DetScope::Global,
-            &operation_lock_index_dirty_key(network),
-            &true,
-        )
-        .map_err(operation_err)?;
-        kv.put(DetScope::Global, &operation_key(network, id), &operation)
-            .map_err(operation_err)?;
-        qualified_ids.push(bytes);
-        qualified_changed = true;
-    }
-    if qualified_changed {
-        kv.put(
-            DetScope::Global,
-            &operation_index_key(network),
-            &qualified_ids,
-        )
-        .map_err(operation_err)?;
-    }
-    if retained_legacy_ids.len() != legacy_ids.len() {
-        kv.put(
-            DetScope::Global,
-            LEGACY_OPERATION_INDEX_KEY,
-            &retained_legacy_ids,
-        )
-        .map_err(operation_err)?;
-    }
-    if qualified_changed {
-        rebuild_lock_index(kv, network)?;
-    }
-    Ok(())
-}
-
 fn load_operations_read_only(
     kv: &DetKv,
     network: Network,
@@ -147,7 +83,6 @@ fn load_operations_read_only(
 }
 
 fn load_operations(kv: &DetKv, network: Network) -> Result<Vec<DpnsVoteOperation>, TaskError> {
-    migrate_legacy_operations(kv, network)?;
     load_or_rebuild_lock_index(kv, network)?;
     load_operations_read_only(kv, network)
 }
@@ -619,7 +554,7 @@ impl AppContext {
         Ok(dismissed)
     }
 
-    /// Migrate legacy journals and scheduled-vote mirrors before backend recovery.
+    /// Import stored scheduled votes before backend recovery.
     pub(crate) fn migrate_dpns_vote_operations(&self) -> Result<(), TaskError> {
         let (_guard, kv) = self.journal()?;
         let mut operations = load_operations(&kv, self.network)?;
@@ -833,7 +768,7 @@ impl AppContext {
     pub(crate) fn recover_interrupted_dpns_vote_operations(&self) -> Result<(), TaskError> {
         let (_guard, kv) = self.journal()?;
         for mut operation in load_operations(&kv, self.network)? {
-            if recover_interrupted_target_statuses(&mut operation) {
+            if recover_interrupted_target_statuses(&mut operation, |_| true) {
                 persist_operation(&kv, self.network, &operation)?;
             }
         }
@@ -847,6 +782,7 @@ impl AppContext {
     pub(crate) fn recover_interrupted_dpns_vote_operation(
         &self,
         operation_id: DpnsVoteOperationId,
+        keys: &BTreeSet<DpnsVoteTargetKey>,
     ) -> Result<(), TaskError> {
         let (_guard, kv) = self.journal()?;
         let Some(mut operation): Option<DpnsVoteOperation> = kv
@@ -855,7 +791,7 @@ impl AppContext {
         else {
             return Ok(());
         };
-        if recover_interrupted_target_statuses(&mut operation) {
+        if recover_interrupted_target_statuses(&mut operation, |key| keys.contains(key)) {
             persist_operation(&kv, self.network, &operation)?;
         }
         Ok(())
@@ -1845,119 +1781,6 @@ mod tests {
         assert!(load_operations(&kv, Network::Mainnet).unwrap().is_empty());
     }
 
-    #[test]
-    fn legacy_journal_migrates_idempotently_into_network_namespace() {
-        let kv = kv();
-        let operation = operation(DpnsVoteTargetStatus::Scheduled);
-        kv.put(
-            DetScope::Global,
-            &legacy_operation_key(operation.id),
-            &operation,
-        )
-        .unwrap();
-        kv.put(
-            DetScope::Global,
-            LEGACY_OPERATION_INDEX_KEY,
-            &vec![operation.id.to_bytes()],
-        )
-        .unwrap();
-
-        assert_eq!(
-            load_operations(&kv, Network::Testnet).unwrap(),
-            vec![operation.clone()]
-        );
-        assert_eq!(
-            load_operations(&kv, Network::Testnet).unwrap(),
-            vec![operation],
-            "repeating migration must not duplicate the operation"
-        );
-    }
-
-    #[test]
-    fn legacy_migration_quarantines_cross_network_row_without_blocking_siblings() {
-        let kv = kv();
-        let mut poisoned = operation(DpnsVoteTargetStatus::Unconfirmed);
-        poisoned.targets[0].target.key.network = Network::Mainnet;
-        let mut valid = operation(DpnsVoteTargetStatus::Scheduled);
-        valid.targets[0].target.key.vote_poll_id = Identifier::from([3; 32]);
-        kv.put(
-            DetScope::Global,
-            &legacy_operation_key(poisoned.id),
-            &poisoned,
-        )
-        .unwrap();
-        kv.put(DetScope::Global, &legacy_operation_key(valid.id), &valid)
-            .unwrap();
-        kv.put(
-            DetScope::Global,
-            LEGACY_OPERATION_INDEX_KEY,
-            &vec![poisoned.id.to_bytes(), valid.id.to_bytes()],
-        )
-        .unwrap();
-
-        assert_eq!(
-            load_operations(&kv, Network::Testnet).unwrap(),
-            vec![valid.clone()]
-        );
-        assert_eq!(
-            load_operations(&kv, Network::Testnet).unwrap(),
-            vec![valid],
-            "a quarantined row must not block or duplicate valid siblings on later sweeps"
-        );
-        assert_eq!(
-            kv.get::<Vec<[u8; 16]>>(DetScope::Global, LEGACY_OPERATION_INDEX_KEY)
-                .unwrap()
-                .unwrap_or_default(),
-            vec![poisoned.id.to_bytes()],
-            "a quarantined row must remain indexed for a correct-network migration pass"
-        );
-        assert!(
-            kv.get::<DpnsVoteOperation>(DetScope::Global, &legacy_operation_key(poisoned.id))
-                .unwrap()
-                .is_some(),
-            "quarantine must park the foreign record rather than delete it"
-        );
-
-        assert_eq!(
-            load_operations(&kv, Network::Mainnet).unwrap(),
-            vec![poisoned]
-        );
-        assert_eq!(
-            kv.get::<Vec<[u8; 16]>>(DetScope::Global, LEGACY_OPERATION_INDEX_KEY)
-                .unwrap()
-                .unwrap_or_default(),
-            Vec::<[u8; 16]>::new(),
-            "the legacy index must drop a quarantined row after correct-network migration"
-        );
-    }
-
-    #[test]
-    fn mismatched_terminal_legacy_record_is_safely_ignored() {
-        let kv = kv();
-        let operation = operation(DpnsVoteTargetStatus::Confirmed);
-        kv.put(
-            DetScope::Global,
-            &legacy_operation_key(operation.id),
-            &operation,
-        )
-        .unwrap();
-        kv.put(
-            DetScope::Global,
-            LEGACY_OPERATION_INDEX_KEY,
-            &vec![operation.id.to_bytes()],
-        )
-        .unwrap();
-
-        assert!(load_operations(&kv, Network::Mainnet).unwrap().is_empty());
-        assert_eq!(
-            kv.get::<Vec<[u8; 16]>>(DetScope::Global, LEGACY_OPERATION_INDEX_KEY)
-                .unwrap()
-                .unwrap_or_default(),
-            Vec::<[u8; 16]>::new(),
-            "a terminal row for another network must not be scanned again"
-        );
-    }
-
     /// VOTE-FR-078: the durable count advances once per vote Platform applied,
     /// and survives pruning of the operation that spent it.
     #[test]
@@ -2750,7 +2573,9 @@ mod tests {
     #[test]
     fn interrupted_immediate_submission_recovers_before_submission() {
         let mut operation = operation(DpnsVoteTargetStatus::Submitting);
-        assert!(recover_interrupted_target_statuses(&mut operation));
+        assert!(recover_interrupted_target_statuses(&mut operation, |_| {
+            true
+        }));
         assert_eq!(
             operation.targets[0].status,
             DpnsVoteTargetStatus::FailedBeforeSubmission
@@ -2766,7 +2591,9 @@ mod tests {
         let mut operation = operation(DpnsVoteTargetStatus::Submitting);
         operation.targets[0].target.timing = VoteTiming::Scheduled(42);
 
-        assert!(recover_interrupted_target_statuses(&mut operation));
+        assert!(recover_interrupted_target_statuses(&mut operation, |_| {
+            true
+        }));
         assert_eq!(operation.targets[0].status, DpnsVoteTargetStatus::Scheduled);
         assert_eq!(
             operation.targets[0].failure,
@@ -2778,7 +2605,9 @@ mod tests {
     fn interrupted_confirmation_recovers_to_unconfirmed() {
         let mut operation = operation(DpnsVoteTargetStatus::Confirming);
 
-        assert!(recover_interrupted_target_statuses(&mut operation));
+        assert!(recover_interrupted_target_statuses(&mut operation, |_| {
+            true
+        }));
         assert_eq!(
             operation.targets[0].status,
             DpnsVoteTargetStatus::Unconfirmed

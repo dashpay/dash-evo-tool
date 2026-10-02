@@ -264,6 +264,7 @@ pub struct AppContext {
     /// Serializes all nonce-consuming vote submissions per voter across tasks,
     /// while bounding unrelated voters globally.
     pub(crate) dpns_vote_dispatch: DpnsVoteDispatchCoordinator,
+    pub(crate) dpns_vote_refresh_permits: tokio::sync::Semaphore,
     /// Runs crash recovery before this context first accepts vote work.
     /// Re-armed only if targeted recovery cannot persist after an executor error.
     pub(crate) dpns_vote_recovery: tokio::sync::Mutex<bool>,
@@ -609,6 +610,7 @@ impl AppContext {
             contact_request_actions_in_flight: Mutex::new(HashSet::new()),
             dpns_vote_operation_guard: Mutex::new(()),
             dpns_vote_dispatch: DpnsVoteDispatchCoordinator::default(),
+            dpns_vote_refresh_permits: tokio::sync::Semaphore::new(MAX_CONCURRENT_DPNS_VOTERS),
             dpns_vote_state_publications: dpns_vote_state::DpnsVoteStatePublications::default(),
             dpns_vote_recovery: tokio::sync::Mutex::new(false),
             dpns_vote_diagnostics: Mutex::new(BTreeMap::new()),

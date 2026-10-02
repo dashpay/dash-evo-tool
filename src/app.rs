@@ -490,17 +490,32 @@ fn dpns_vote_feedback(operation: &DpnsVoteOperation) -> (String, MessageType, bo
         );
     }
 
-    let remaining = target_count.saturating_sub(counts.confirmed);
+    let reviewable = counts.rejected + counts.failed_before_submission + counts.not_applied;
     let confirmed_sentence = match counts.confirmed {
         0 => format!("None of the {target_count} votes were confirmed."),
         1 => format!("1 of the {target_count} votes was confirmed."),
         confirmed => format!("{confirmed} of the {target_count} votes were confirmed."),
     };
-    let review_sentence = match remaining {
-        1 => "Review the remaining vote.".to_owned(),
-        remaining => format!("Review the remaining {remaining} votes."),
+    let review_sentence = match reviewable {
+        0 => String::new(),
+        1 => "Review the failed vote.".to_owned(),
+        count => format!("Review the {count} failed votes."),
     };
-    let mut message = format!("{confirmed_sentence} {review_sentence}");
+    let mut message = confirmed_sentence;
+    if !review_sentence.is_empty() {
+        message.push(' ');
+        message.push_str(&review_sentence);
+    }
+    if counts.scheduled > 0 {
+        message.push_str(&format!(
+            " Votes scheduled: {scheduled}.",
+            scheduled = counts.scheduled
+        ));
+    }
+    if counts.in_progress > 0 {
+        message
+            .push_str(" Voting is still in progress. Wait for the result before submitting again.");
+    }
     if counts.unconfirmed > 0 {
         message.push(' ');
         message.push_str(&dpns_unconfirmed_guidance(counts.unconfirmed));
@@ -4318,7 +4333,7 @@ mod migration_banner_tests {
         assert!(keep_visible);
         assert_eq!(
             message,
-            "1 of the 7 votes was confirmed. Review the remaining 6 votes. The vote was submitted, but the result could not be confirmed yet. Dash Evo Tool will keep checking. Do not submit it again."
+            "1 of the 7 votes was confirmed. Review the 3 failed votes. Votes scheduled: 1. The vote was submitted, but the result could not be confirmed yet. Dash Evo Tool will keep checking. Do not submit it again."
         );
     }
 
@@ -4356,7 +4371,7 @@ mod migration_banner_tests {
         assert!(!keep_visible);
         assert_eq!(
             message,
-            "2 of the 3 votes were confirmed. Review the remaining vote."
+            "2 of the 3 votes were confirmed. Review the failed vote."
         );
     }
 
@@ -4371,7 +4386,7 @@ mod migration_banner_tests {
 
         assert_eq!(
             message,
-            "None of the 2 votes were confirmed. Review the remaining 2 votes."
+            "None of the 2 votes were confirmed. Review the 2 failed votes."
         );
     }
 

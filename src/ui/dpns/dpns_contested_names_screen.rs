@@ -103,34 +103,11 @@ fn schedule_is_missed(status: DpnsVoteTargetStatus, timing: VoteTiming, now_ms: 
         && matches!(timing, VoteTiming::Scheduled(timestamp) if dpns_schedule_is_overdue(timestamp, now_ms))
 }
 
-fn candidate_choice_label(candidate_name: &str) -> String {
-    format!("Vote for {candidate_name}")
-}
-
 fn short_identifier(identifier: Identifier) -> String {
-    let encoded = identifier.to_string(Encoding::Base58);
-    format!(
-        "{head}…{tail}",
-        head = &encoded[..6],
-        tail = &encoded[encoded.len() - 4..],
-    )
+    crate::model::identity_name::shorten_id(&identifier.to_string(Encoding::Base58))
 }
 
-/// Name a vote choice for the operator.
-///
-/// A `TowardsIdentity` choice falls back to the candidate's Base58 handle when
-/// no name is cached: every surface that shows a vote — including the
-/// review-and-cast sheet, which submission does not gate on a resolvable name —
-/// must disclose which identity the vote goes to.
-fn vote_choice_label(choice: ResourceVoteChoice, candidate_name: Option<&str>) -> String {
-    match choice {
-        ResourceVoteChoice::Lock => "Lock".to_owned(),
-        ResourceVoteChoice::Abstain => "Abstain".to_owned(),
-        ResourceVoteChoice::TowardsIdentity(identifier) => candidate_name
-            .map(candidate_choice_label)
-            .unwrap_or_else(|| format!("Vote for {handle}", handle = short_identifier(identifier))),
-    }
-}
+use super::copy::{target_status_label, vote_choice_label};
 
 /// Candidate display names resolved once per refresh: contest → candidate → name.
 ///
@@ -161,21 +138,6 @@ fn candidate_name_index(
         }
     }
     index
-}
-
-fn target_status_label(status: DpnsVoteTargetStatus) -> &'static str {
-    match status {
-        DpnsVoteTargetStatus::Scheduled => "Scheduled",
-        DpnsVoteTargetStatus::Queued => "Queued",
-        DpnsVoteTargetStatus::Submitting => "Submitting",
-        DpnsVoteTargetStatus::Confirming => "Confirming",
-        DpnsVoteTargetStatus::Confirmed => "Confirmed",
-        DpnsVoteTargetStatus::Unconfirmed => "Confirmation is still being checked",
-        DpnsVoteTargetStatus::Rejected => "Rejected",
-        DpnsVoteTargetStatus::FailedBeforeSubmission => "Not submitted",
-        DpnsVoteTargetStatus::NotApplied => "Not applied",
-        DpnsVoteTargetStatus::Cancelled => "Cancelled",
-    }
 }
 
 fn target_outcome_label(
@@ -1894,7 +1856,10 @@ impl DPNSScreen {
             choices.extend(candidates.iter().map(|(candidate_id, name)| {
                 (
                     ResourceVoteChoice::TowardsIdentity(*candidate_id),
-                    candidate_choice_label(name),
+                    vote_choice_label(
+                        ResourceVoteChoice::TowardsIdentity(*candidate_id),
+                        Some(name),
+                    ),
                 )
             }));
         }
@@ -2537,6 +2502,10 @@ impl ScreenLike for DPNSScreen {
     }
 
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+        if context.is_dpns_contest_refresh() {
+            self.refreshing_status = RefreshingStatus::NotRefreshing;
+            self.refresh_banner.take_and_clear();
+        }
         self.release_pending_on_error = match self.pending_vote_operation {
             Some(operation_id) => {
                 dpns_operation_id(context, self.app_context.network()) == Some(operation_id)
@@ -2875,6 +2844,18 @@ mod tests {
     use crate::utils::tasks::TaskManager;
     use dash_sdk::dpp::dashcore::Network;
 
+    #[test]
+    fn review_regression_failed_manual_contest_refresh_can_be_retried() {
+        let (ctx, _dir) = kv_ctx();
+        let mut screen = DPNSScreen::new(&ctx, VotesView::History);
+        screen.refreshing_status = RefreshingStatus::Refreshing;
+        let context = BackendTaskContext::from(&BackendTask::ContestedResourceTask(
+            ContestedResourceTask::QueryDPNSContests,
+        ));
+        screen.display_backend_task_error(&context, &TaskError::DpnsCurrentVoteUnavailable);
+        assert!(screen.refreshing_status == RefreshingStatus::NotRefreshing);
+    }
+
     fn offline_ctx() -> (Arc<AppContext>, tempfile::TempDir) {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let data_dir = temp_dir.path().to_path_buf();
@@ -2935,6 +2916,7 @@ mod tests {
         network: Network,
     ) -> QualifiedIdentity {
         use dash_sdk::dpp::identity::Identity;
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
         use dash_sdk::dpp::version::PlatformVersion;
         use dash_sdk::platform::IdentityPublicKey;
 
@@ -2953,6 +2935,14 @@ mod tests {
                 IdentityPublicKey::random_key(0, Some(id as u64), platform_version),
             )
         });
+        let mut private_keys =
+            crate::model::qualified_identity::encrypted_key_storage::KeyStorage::default();
+        if let Some((_, key)) = &associated_voter_identity {
+            private_keys.insert_at((crate::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnVoterIdentity, key.id()), (
+                crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey::from(key.clone()),
+                crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData::InVault,
+            ));
+        }
         QualifiedIdentity {
             identity,
             associated_voter_identity,
@@ -2960,7 +2950,7 @@ mod tests {
             associated_owner_key_id: None,
             identity_type: crate::model::qualified_identity::IdentityType::Masternode,
             alias: Some(alias.to_owned()),
-            private_keys: Default::default(),
+            private_keys,
             dpns_names: vec![],
             associated_wallets: std::collections::BTreeMap::new(),
             secret_access: None,
@@ -3059,7 +3049,7 @@ mod tests {
     }
 
     #[test]
-    fn review_choice_names_the_candidate_or_falls_back_to_its_identifier() {
+    fn review_regression_review_choice_names_the_candidate_or_falls_back_to_its_identifier() {
         let candidate_id = Identifier::from([42; 32]);
         let encoded = candidate_id.to_string(Encoding::Base58);
 
@@ -3067,7 +3057,8 @@ mod tests {
             ResourceVoteChoice::TowardsIdentity(candidate_id),
             Some("alice"),
         );
-        assert_eq!(named, "Vote for alice");
+        assert!(named.starts_with("Vote for alice ("));
+        assert!(named.contains(&crate::model::identity_name::shorten_id(&encoded)));
         assert!(!named.contains(&encoded));
 
         let unresolved = vote_choice_label(ResourceVoteChoice::TowardsIdentity(candidate_id), None);
@@ -3151,7 +3142,13 @@ mod tests {
             Some("alice"),
         );
 
-        assert_eq!(label, "Vote for alice");
+        assert_eq!(
+            label,
+            vote_choice_label(
+                ResourceVoteChoice::TowardsIdentity(candidate_id),
+                Some("alice")
+            )
+        );
         assert!(!label.contains(&candidate_id.to_string(Encoding::Base58)));
     }
 
@@ -3975,7 +3972,7 @@ mod tests {
         assert!(harness.query_by_label("Voted with 1 of 2 nodes").is_some());
         assert!(
             harness
-                .query_by_label("Your nodes: 1 not voted · 1 voted Lock")
+                .query_by_label("Your nodes: 1 not voted · 1 voted: Lock name")
                 .is_some()
         );
     }
@@ -4019,7 +4016,7 @@ mod tests {
         screen.rebuild_cards();
         assert_eq!(
             screen.history_votes_cell("voted"),
-            "Lock (2 nodes, 5 votes)"
+            "Lock name (2 nodes, 5 votes)"
         );
         assert_eq!(screen.history_votes_cell("skipped"), NODES_DID_NOT_VOTE);
         assert_eq!(screen.history_votes_cell("absent"), "");
@@ -4364,11 +4361,11 @@ mod tests {
         for label in [
             "Casting 3 votes · 2 done · 0 sending · 1 being checked",
             "node-one · alpha.dash · Abstain",
-            "Voted",
+            "Confirmed",
             "node-two · alpha.dash · Abstain",
-            "Rejected by Platform",
+            "Rejected",
             "Review again",
-            "Still being checked. Don't submit it again.",
+            "Still being checked. Do not submit it again.",
             "Check again",
         ] {
             assert!(harness.query_by_label(label).is_some(), "missing {label}");
@@ -4586,7 +4583,7 @@ mod tests {
         );
         assert_eq!(
             review_current_choice_label(Some(ResourceVoteChoice::Lock), None),
-            "Lock"
+            "Lock name"
         );
     }
 

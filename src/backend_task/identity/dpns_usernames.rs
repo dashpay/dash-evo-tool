@@ -217,7 +217,7 @@ impl AppContext {
             })
             .collect();
 
-        for mut identity in identities {
+        for identity in identities {
             let identity_id = identity.identity.id();
             let previous = self.username_requests_for(&identity_id);
             let mut fresh: Vec<UsernameRequest> = snapshots
@@ -268,7 +268,7 @@ impl AppContext {
                 tracing::warn!(?error, %identity_id, "Username requests could not be stored");
             }
             if newly_won {
-                self.record_won_usernames(sdk, &mut identity).await;
+                self.record_won_usernames(sdk, &identity).await;
             }
         }
         Ok(BackendTaskSuccessResult::MyUsernameRequestsRefreshed)
@@ -276,14 +276,18 @@ impl AppContext {
 
     /// Re-read the registered names of an identity that just won a vote, so the
     /// won name is listed and shown at once.
-    async fn record_won_usernames(&self, sdk: &Sdk, identity: &mut QualifiedIdentity) {
+    async fn record_won_usernames(&self, sdk: &Sdk, identity: &QualifiedIdentity) {
         match self
             .fetch_owned_dpns_names(sdk, identity.identity.id())
             .await
         {
             Ok(names) => {
-                identity.dpns_names = names;
-                if let Err(error) = self.update_local_qualified_identity(identity) {
+                if let Err(error) =
+                    self.edit_local_qualified_identity(&identity.identity.id(), |fresh| {
+                        fresh.dpns_names = names;
+                        Ok(())
+                    })
+                {
                     tracing::warn!(?error, "Won username could not be saved on the identity");
                 }
             }

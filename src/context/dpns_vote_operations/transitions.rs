@@ -89,9 +89,15 @@ pub(super) fn cancel_scheduled_target(
     .unwrap_or(false))
 }
 
-pub(super) fn recover_interrupted_target_statuses(operation: &mut DpnsVoteOperation) -> bool {
+pub(super) fn recover_interrupted_target_statuses(
+    operation: &mut DpnsVoteOperation,
+    includes: impl Fn(&DpnsVoteTargetKey) -> bool,
+) -> bool {
     let mut changed = false;
     for outcome in &mut operation.targets {
+        if !includes(&outcome.target.key) {
+            continue;
+        }
         match outcome.status {
             DpnsVoteTargetStatus::Submitting => {
                 (outcome.status, outcome.failure) =

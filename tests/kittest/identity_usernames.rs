@@ -187,10 +187,16 @@ fn pay_time_recheck_returns_to_choose_with_locked_row() {
         let mut screen = answered(&app_context, "alice", UsernameAvailability::NeedsVote);
         screen.open_confirm_for_test();
         let ctx = egui::Context::default();
-        screen.raise_progress_overlay_for_test(&ctx);
-        let handled = screen.display_task_error(&TaskError::UsernameNoLongerAvailable {
+        let AppAction::BackendTaskWithContext { context, .. } =
+            screen.begin_registration_for_test(&ctx)
+        else {
+            panic!("expected registration");
+        };
+        let error = TaskError::UsernameNoLongerAvailable {
             availability: UsernameAvailability::Locked,
-        });
+        };
+        screen.display_backend_task_error(&context, &error);
+        let handled = screen.display_task_error(&error);
         assert!(handled, "the screen explains the change inline");
         assert!(!ProgressOverlay::has_global(&ctx));
         assert!(!screen.is_confirming_for_test());
@@ -676,14 +682,20 @@ fn pay_recheck_network_failure_unblocks_confirm() {
         let mut screen = answered(&app_context, "alice", UsernameAvailability::NeedsVote);
         screen.open_confirm_for_test();
         let ctx = egui::Context::default();
-        screen.begin_registration_for_test(&ctx);
+        let AppAction::BackendTaskWithContext { context, .. } =
+            screen.begin_registration_for_test(&ctx)
+        else {
+            panic!("expected registration");
+        };
         assert!(
             ProgressOverlay::has_global(&ctx),
             "precondition: overlay up"
         );
-        let handled = screen.display_task_error(&TaskError::UsernameAvailabilityCheckFailed {
+        let error = TaskError::UsernameAvailabilityCheckFailed {
             source: Box::new(dash_sdk::Error::Generic("timeout".into())),
-        });
+        };
+        screen.display_backend_task_error(&context, &error);
+        let handled = screen.display_task_error(&error);
         assert!(!handled, "the banner must tell the user to retry");
         assert!(
             !ProgressOverlay::has_global(&ctx),
@@ -830,15 +842,35 @@ fn sync_gate_alone_blocks_pay() {
 fn top_up_returns_with_name_kept() {
     with_isolated_data_dir(|| {
         let (_rt, app_context) = fresh_app_context();
-        seed_username_identity(&app_context, 0x36, "Alex", &[], 0, true);
+        let id = seed_username_identity(&app_context, 0x36, "Alex", &[], 185_053_640, true);
         let mut screen = answered(&app_context, "nova", UsernameAvailability::NeedsVote);
         screen.open_confirm_for_test();
         let mut harness = mount(screen);
         harness.get_by_label("Top up").click();
         harness.run();
-        harness.state_mut().refresh_on_arrival();
+        app_context
+            .edit_local_qualified_identity(&id, |identity| {
+                identity.identity.set_balance(30_000_000_000);
+                Ok(())
+            })
+            .unwrap();
+        harness.state_mut().refresh();
         harness.run();
         assert!(harness.state().is_confirming_for_test());
+        assert_eq!(
+            harness
+                .state()
+                .selected_qualified_identity
+                .as_ref()
+                .unwrap()
+                .identity
+                .balance(),
+            30_000_000_000
+        );
+        assert!(
+            harness.query_by_label("Top up").is_none(),
+            "the updated balance covers the registration"
+        );
         assert!(
             harness
                 .query_by_label_contains("and request @nova")

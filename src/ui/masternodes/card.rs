@@ -60,13 +60,13 @@ pub fn voter_readiness_label(voting_present: bool) -> &'static str {
 pub fn dpns_status_line(summary: MasternodeContestSummary) -> String {
     if summary.vote_state == MasternodeVoteStateSummary::Unavailable {
         if summary.open_contest_count == 0 {
-            "DPNS voting status unavailable".to_owned()
+            "Voting status unavailable".to_owned()
         } else if summary.open_contest_count == 1 {
             "Vote state unavailable for 1 active contest".to_owned()
         } else {
             format!(
-                "Vote state unavailable for {} active contests",
-                summary.open_contest_count
+                "Vote state unavailable for {count} active contests",
+                count = summary.open_contest_count
             )
         }
     } else if summary.open_contest_count > 0 {
@@ -76,8 +76,8 @@ pub fn dpns_status_line(summary: MasternodeContestSummary) -> String {
                 "Checking votes for 1 active contest".to_owned()
             } else {
                 format!(
-                    "Checking votes for {} active contests",
-                    summary.open_contest_count
+                    "Checking votes for {count} active contests",
+                    count = summary.open_contest_count
                 )
             }
         } else if summary.needs_vote_count == 0 {
@@ -87,14 +87,15 @@ pub fn dpns_status_line(summary: MasternodeContestSummary) -> String {
                 "1 active contest · 1 needs a vote".to_owned()
             } else {
                 format!(
-                    "{} active contests · 1 needs a vote",
-                    summary.open_contest_count
+                    "{count} active contests · 1 needs a vote",
+                    count = summary.open_contest_count
                 )
             }
         } else {
             format!(
-                "{} active contests · {} need votes",
-                summary.open_contest_count, summary.needs_vote_count
+                "{contests} active contests · {needs_vote} need votes",
+                contests = summary.open_contest_count,
+                needs_vote = summary.needs_vote_count
             )
         }
     } else if summary.has_failed_scheduled_vote {
@@ -524,7 +525,7 @@ mod tests {
     fn dpns_status_reports_unavailable_when_the_summary_read_failed() {
         assert_eq!(
             dpns_status_line(MasternodeContestSummary::unavailable()),
-            "DPNS voting status unavailable"
+            "Voting status unavailable"
         );
     }
 

@@ -1086,7 +1086,7 @@ pub enum TaskError {
 
     /// A DPNS contest record could not be read or written in the
     /// per-network wallet k/v store.
-    #[error("Could not access your DPNS contest data. Check available disk space and try again.")]
+    #[error("Could not access your name contest data. Check available disk space and try again.")]
     ContestStorage {
         #[source]
         source: crate::wallet_backend::KvAdapterError,
@@ -1094,7 +1094,7 @@ pub enum TaskError {
 
     /// A DPNS vote operation or current-vote snapshot could not be persisted.
     #[error(
-        "Could not save DPNS voting progress. Check available disk space and try again."
+        "Could not save voting progress. Check available disk space and try again."
     )]
     DpnsVoteOperationStorage {
         #[source]
@@ -1104,7 +1104,7 @@ pub enum TaskError {
     /// An indexed journal row could not be decoded, so unresolved target locks
     /// cannot be reconstructed safely.
     #[error(
-        "Saved DPNS voting progress is unreadable. Restart the app and retry loading. If this continues, restore a backup of the saved data before managing votes."
+        "Saved voting progress is unreadable. Restart the app and try loading your votes again."
     )]
     DpnsVoteOperationUnreadable {
         #[source]
@@ -1113,18 +1113,18 @@ pub enum TaskError {
 
     /// An operation index referenced a missing row, so target locks are unknown.
     #[error(
-        "Saved DPNS voting progress is incomplete. Restart the app and retry loading. If this continues, restore a backup of the saved data before managing votes."
+        "Saved voting progress is incomplete. Restart the app and try loading your votes again."
     )]
     DpnsVoteOperationRecordMissing,
 
     /// A non-terminal operation was found under a different network namespace.
     #[error(
-        "Saved DPNS voting progress belongs to another network. Switch back to that network or resolve the pending vote there."
+        "Saved voting progress belongs to another network. Switch back to that network or resolve the pending vote there."
     )]
     DpnsVoteJournalNetworkMismatch,
 
     /// The bounded in-process vote coordinator was shut down unexpectedly.
-    #[error("DPNS voting is stopping. Wait for DET to finish closing, then try again.")]
+    #[error("Voting is stopping. Wait for the app to finish closing, then open it and try again.")]
     DpnsVoteCoordinatorUnavailable,
 
     /// Another unresolved operation already owns this exact node and contest.
@@ -2014,7 +2014,7 @@ pub enum TaskError {
     IdentityLoadInProgress { identity_id: Identifier },
 
     /// The load was invalidated by removal or a scoped target changed protection.
-    #[error("This node changed while its key was loading. Open the current node and try again.")]
+    #[error("This identity changed while its key was loading. Open the current identity and try again.")]
     IdentityLoadSuperseded { identity_id: Identifier },
 
     /// The ProTxHash could not be read as a hex ProTxHash or a Base58 identity

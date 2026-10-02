@@ -1,12 +1,48 @@
 //! User-facing sentences for the voting workspace.
 //!
-//! Each function returns one complete translation unit with its plural pair,
-//! so no caller concatenates fragments.
+//! Shared labels and sentences; count-sensitive sentences keep their plural forms here.
 
 use crate::model::dpns_voting::composer::SkipReason;
 use crate::model::dpns_voting::operator::{ChangesLeft, NodeExclusion, TimeLeft};
 use crate::model::dpns_voting::progress::{NeedsAttention, ProgressCounts};
 use crate::model::dpns_voting::{DpnsVoteFailure, DpnsVoteTargetStatus};
+
+/// Candidate choice with an identity handle, including when its name is unavailable.
+pub fn vote_choice_label(
+    choice: dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice,
+    candidate_name: Option<&str>,
+) -> String {
+    use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
+    match choice {
+        ResourceVoteChoice::Lock => "Lock name".to_owned(),
+        ResourceVoteChoice::Abstain => "Abstain".to_owned(),
+        ResourceVoteChoice::TowardsIdentity(id) => {
+            let handle = crate::model::identity_name::shorten_id(
+                &id.to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58),
+            );
+            match candidate_name {
+                Some(name) => format!("Vote for {name} ({handle})"),
+                None => format!("Vote for {handle}"),
+            }
+        }
+    }
+}
+
+/// Shared status label for a vote in progress or history.
+pub fn target_status_label(status: DpnsVoteTargetStatus) -> &'static str {
+    match status {
+        DpnsVoteTargetStatus::Scheduled => "Scheduled",
+        DpnsVoteTargetStatus::Queued => "Queued",
+        DpnsVoteTargetStatus::Submitting => "Submitting",
+        DpnsVoteTargetStatus::Confirming => "Confirming",
+        DpnsVoteTargetStatus::Confirmed => "Confirmed",
+        DpnsVoteTargetStatus::Unconfirmed => "Still being checked",
+        DpnsVoteTargetStatus::Rejected => "Rejected",
+        DpnsVoteTargetStatus::FailedBeforeSubmission => "Not submitted",
+        DpnsVoteTargetStatus::NotApplied => "Not applied",
+        DpnsVoteTargetStatus::Cancelled => "Cancelled",
+    }
+}
 
 /// A remaining time as a phrase, e.g. `3 hours`.
 pub fn time_left_phrase(time_left: TimeLeft) -> String {
@@ -83,15 +119,16 @@ pub fn requests_label(contenders: usize) -> String {
 
 /// Influence line (VOTE-FR-077).
 pub fn influence_line(leader: &str, margin: u32, weight: u32) -> String {
-    let margin_votes = if margin == 1 {
-        "1 vote".to_owned()
-    } else {
-        format!("{margin} votes")
-    };
-    match weight {
-        1 => format!("{leader} leads by {margin_votes}. Your 1 vote can change who leads."),
-        weight => {
-            format!("{leader} leads by {margin_votes}. Your {weight} votes can change who leads.")
+    match (margin, weight) {
+        (1, 1) => format!("{leader} leads by 1 vote. Your 1 vote can change who leads."),
+        (1, weight) => {
+            format!("{leader} leads by 1 vote. Your {weight} votes can change who leads.")
+        }
+        (margin, 1) => {
+            format!("{leader} leads by {margin} votes. Your 1 vote can change who leads.")
+        }
+        (margin, weight) => {
+            format!("{leader} leads by {margin} votes. Your {weight} votes can change who leads.")
         }
     }
 }
@@ -113,7 +150,7 @@ pub fn not_voted_part(count: usize) -> String {
 
 /// One part of the node line: nodes that voted `choice`.
 pub fn voted_part(count: usize, choice_label: &str) -> String {
-    format!("{count} voted {choice_label}")
+    format!("{count} voted: {choice_label}")
 }
 
 /// One part of the node line: nodes out of changes, named when few.
@@ -232,21 +269,14 @@ pub fn progress_row_status(
     failure: Option<DpnsVoteFailure>,
 ) -> &'static str {
     match (status, failure) {
-        (_, Some(DpnsVoteFailure::VotingEnded)) => "Not cast. Voting ended.",
-        (_, Some(DpnsVoteFailure::VotingKeyMissing)) => "Not cast. The voting key is not loaded.",
-        (
-            DpnsVoteTargetStatus::Queued
-            | DpnsVoteTargetStatus::Submitting
-            | DpnsVoteTargetStatus::Confirming,
-            _,
-        ) => "Sending…",
-        (DpnsVoteTargetStatus::Unconfirmed, _) => "Still being checked. Don't submit it again.",
-        (DpnsVoteTargetStatus::Confirmed, _) => "Voted",
-        (DpnsVoteTargetStatus::Rejected, _) => "Rejected by Platform",
-        (DpnsVoteTargetStatus::NotApplied, _) => "Not applied",
-        (DpnsVoteTargetStatus::FailedBeforeSubmission, _) => "Not sent",
-        (DpnsVoteTargetStatus::Scheduled, _) => "Scheduled",
-        (DpnsVoteTargetStatus::Cancelled, _) => "Cancelled",
+        (DpnsVoteTargetStatus::FailedBeforeSubmission, Some(DpnsVoteFailure::VotingEnded)) => {
+            "Not submitted. Voting ended."
+        }
+        (DpnsVoteTargetStatus::FailedBeforeSubmission, Some(DpnsVoteFailure::VotingKeyMissing)) => {
+            "Not submitted. The voting key is not loaded."
+        }
+        (DpnsVoteTargetStatus::Unconfirmed, _) => "Still being checked. Do not submit it again.",
+        (status, _) => target_status_label(status),
     }
 }
 
@@ -260,8 +290,8 @@ pub fn needs_attention_line(attention: NeedsAttention) -> String {
     }
     match attention.failed {
         0 => {}
-        1 => parts.push("1 vote was not cast".to_owned()),
-        count => parts.push(format!("{count} votes were not cast")),
+        1 => parts.push("1 vote failed".to_owned()),
+        count => parts.push(format!("{count} votes failed")),
     }
     match attention.missed_schedules {
         0 => {}
@@ -505,7 +535,7 @@ mod tests {
                 voted_part(4, "Abstain"),
                 no_changes_part(&["mn-07".to_owned()]),
             ]),
-            "Your nodes: 19 not voted · 4 voted Abstain · mn-07 has no changes left"
+            "Your nodes: 19 not voted · 4 voted: Abstain · mn-07 has no changes left"
         );
         assert_eq!(
             change_warning_line(4),
@@ -590,7 +620,7 @@ mod tests {
                 DpnsVoteTargetStatus::FailedBeforeSubmission,
                 Some(DpnsVoteFailure::VotingEnded)
             ),
-            "Not cast. Voting ended."
+            "Not submitted. Voting ended."
         );
         assert_eq!(
             needs_attention_line(NeedsAttention {

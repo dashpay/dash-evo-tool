@@ -4,7 +4,7 @@
 use crate::app::AppAction;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::{IdentityTask, RegisterDpnsNameInput};
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
+use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::context::connection_status::OverallConnectionState;
 use crate::model::dpns::{
@@ -95,6 +95,8 @@ pub struct RegisterDpnsNameScreen {
     pub source: RegisterDpnsNameSource,
     /// Full-window block while the registration runs; torn down on every terminal result.
     op_overlay: Option<OverlayHandle>,
+    registration_context: Option<BackendTaskContext>,
+    registration_error_handled: bool,
     /// Label of the availability check in flight. One check runs at a time, so a
     /// failure always belongs to this label.
     check_in_flight: Option<String>,
@@ -116,6 +118,8 @@ impl RegisterDpnsNameScreen {
             completed_fee_result: None,
             source,
             op_overlay: None,
+            registration_context: None,
+            registration_error_handled: false,
             check_in_flight: None,
         };
         screen.reload_identity();
@@ -280,7 +284,10 @@ impl RegisterDpnsNameScreen {
         });
         self.step = Step::Submitting;
         self.raise_progress_overlay(ctx);
-        AppAction::BackendTask(BackendTask::IdentityTask(task))
+        let task = BackendTask::IdentityTask(task);
+        let context = BackendTaskContext::for_dispatch_on(&task, self.app_context.network());
+        self.registration_context = Some(context.clone());
+        AppAction::BackendTaskWithContext { task, context }
     }
 
     fn raise_progress_overlay(&mut self, ctx: &Context) {
@@ -704,53 +711,55 @@ pub(crate) fn status_line(ui: &mut Ui, tone: Tone, text: &str, dark_mode: bool) 
 }
 
 impl ScreenLike for RegisterDpnsNameScreen {
-    fn display_message(&mut self, _message: &str, message_type: MessageType) {
-        // Banners are shown by AppState; this only unblocks the flow after a failure.
-        if matches!(message_type, MessageType::Error | MessageType::Warning) {
-            if self.check_in_flight.take().is_some()
-                && let Availability::Row { row, .. } = &mut self.availability
-                && *row == AvailabilityRow::Checking
-            {
-                *row = AvailabilityRow::CantCheck;
-            }
-            self.op_overlay.take_and_clear();
-            if self.step == Step::Submitting {
-                self.step = Step::Confirm;
-            }
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
+        self.registration_error_handled = false;
+        if self.registration_context.as_ref() != Some(context) {
+            return;
+        }
+        self.registration_context = None;
+        self.op_overlay.take_and_clear();
+        if let TaskError::UsernameNoLongerAvailable { availability } = error {
+            self.step = Step::Choose;
+            self.availability = Availability::Row {
+                label: self.label().to_owned(),
+                row: AvailabilityRow::Known(*availability),
+            };
+            self.registration_error_handled = true;
+        } else {
+            self.step = Step::Confirm;
         }
     }
 
     fn display_task_error(&mut self, error: &TaskError) -> bool {
-        match error {
-            TaskError::UsernameAvailabilityCheckFailed { .. } if self.step == Step::Submitting => {
-                // The pay-time re-check failed before anything was spent: unblock
-                // the confirm step and let the banner ask the user to retry.
-                self.op_overlay.take_and_clear();
-                self.step = Step::Confirm;
-                false
-            }
-            TaskError::UsernameAvailabilityCheckFailed { .. } => {
-                let failed = self.check_in_flight.take();
-                if let Availability::Row { label, row } = &mut self.availability
-                    && *row == AvailabilityRow::Checking
-                    && failed.as_ref() == Some(label)
-                {
-                    *row = AvailabilityRow::CantCheck;
-                }
-                // The inline row explains the failure; no banner needed.
-                true
-            }
-            TaskError::UsernameNoLongerAvailable { availability } => {
-                self.op_overlay.take_and_clear();
-                self.step = Step::Choose;
-                self.availability = Availability::Row {
-                    label: self.label().to_owned(),
-                    row: AvailabilityRow::Known(*availability),
-                };
-                true
-            }
-            _ => false,
+        if std::mem::take(&mut self.registration_error_handled) {
+            return true;
         }
+        if matches!(error, TaskError::UsernameAvailabilityCheckFailed { .. })
+            && self.step != Step::Submitting
+            && let Some(failed) = self.check_in_flight.take()
+        {
+            if let Availability::Row { label, row } = &mut self.availability
+                && *row == AvailabilityRow::Checking
+                && failed == *label
+            {
+                *row = AvailabilityRow::CantCheck;
+            }
+            return true;
+        }
+        false
+    }
+
+    fn display_backend_task_result(
+        &mut self,
+        context: &BackendTaskContext,
+        result: BackendTaskSuccessResult,
+    ) {
+        if matches!(result, BackendTaskSuccessResult::RegisteredDpnsName { .. })
+            && self.registration_context.as_ref() != Some(context)
+        {
+            return;
+        }
+        self.display_task_result(result);
     }
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
@@ -760,6 +769,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
                 fee_result,
             } => {
                 self.op_overlay.take_and_clear();
+                self.registration_context = None;
                 self.completed_fee_result = Some(fee_result);
                 self.step = Step::Done(outcome);
             }
@@ -782,7 +792,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
         }
     }
 
-    fn refresh_on_arrival(&mut self) {
+    fn refresh(&mut self) {
         self.reload_identity();
     }
 
@@ -875,6 +885,42 @@ impl ScreenLike for RegisterDpnsNameScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn review_regression_unrelated_error_keeps_paid_registration_blocked() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let mut screen = RegisterDpnsNameScreen::new(&ctx, RegisterDpnsNameSource::Identities);
+        screen.step = Step::Submitting;
+        screen.raise_progress_overlay(ctx.egui_ctx());
+        screen.display_message("Background refresh failed.", MessageType::Error);
+        assert_eq!(screen.step, Step::Submitting);
+        assert!(screen.op_overlay.is_some());
+    }
+
+    #[test]
+    fn only_the_matching_registration_dispatch_releases_payment() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let mut screen = RegisterDpnsNameScreen::new(&ctx, RegisterDpnsNameSource::Identities);
+        let context = BackendTaskContext::for_dispatch(&BackendTask::ContestedResourceTask(
+            crate::backend_task::contested_names::ContestedResourceTask::QueryDPNSContests,
+        ));
+        screen.registration_context = Some(context.clone());
+        screen.step = Step::Submitting;
+        screen.raise_progress_overlay(ctx.egui_ctx());
+        let error = TaskError::UsernameNoLongerAvailable {
+            availability: UsernameAvailability::Locked,
+        };
+        screen.display_backend_task_error(&BackendTaskContext::Unknown, &error);
+        assert!(!screen.display_task_error(&error));
+        assert_eq!(screen.step, Step::Submitting);
+        assert!(screen.op_overlay.is_some());
+        screen.display_backend_task_error(&context, &error);
+        assert!(screen.display_task_error(&error));
+        assert_eq!(screen.step, Step::Choose);
+        assert!(screen.op_overlay.is_none());
+    }
 
     /// USR-TC-035: on a protocol 14 network the confirm step charges the
     /// 0.1 DASH community vote fee and adds it to the registration fee.

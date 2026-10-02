@@ -15,12 +15,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// v1 predates network qualification, so it is one key rather than a prefix.
-const LEGACY_CURRENT_VOTES_KEY: &str = "det:dpns_current_votes:v1";
 const CURRENT_VOTES_KEY_PREFIX: &str = "det:dpns_current_votes:v3:";
-/// Superseded per-network prefixes, deleted on the first read that misses.
-/// Bumping [`CURRENT_VOTES_KEY_PREFIX`] means adding the retired value here.
-const LEGACY_CURRENT_VOTES_KEY_PREFIXES: [&str; 1] = ["det:dpns_current_votes:v2:"];
 const CURRENT_VOTE_MAX_AGE_MS: u64 = 120_000;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -115,21 +110,11 @@ fn load_snapshot(
     network: Network,
     voter_id: &Identifier,
 ) -> Result<Option<StoredCurrentVotes>, TaskError> {
-    let scope = DetScope::Identity(&voter_id.to_buffer());
-    if let Some(snapshot) = kv
-        .get(scope, &current_votes_key(network))
-        .map_err(vote_state_err)?
-    {
-        return Ok(Some(snapshot));
-    }
-    // Superseded values have no independent per-poll freshness and must be re-proved.
-    kv.delete(scope, LEGACY_CURRENT_VOTES_KEY)
-        .map_err(vote_state_err)?;
-    for prefix in LEGACY_CURRENT_VOTES_KEY_PREFIXES {
-        kv.delete(scope, &format!("{prefix}{}", network_prefix(network)))
-            .map_err(vote_state_err)?;
-    }
-    Ok(None)
+    kv.get(
+        DetScope::Identity(&voter_id.to_buffer()),
+        &current_votes_key(network),
+    )
+    .map_err(vote_state_err)
 }
 
 fn save_snapshot(
@@ -861,29 +846,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn v2_snapshot_is_invalidated_without_decoding_a_new_wire_shape() {
-        let kv = kv();
-        let voter = Identifier::from([1; 32]);
-        let key = "det:dpns_current_votes:v2:testnet";
-        let old = (
-            true,
-            now_ms(),
-            BTreeMap::<[u8; 32], ResourceVoteChoice>::new(),
-        );
-        kv.put(DetScope::Identity(&voter.to_buffer()), key, &old)
-            .unwrap();
-        assert_eq!(load_snapshot(&kv, Network::Testnet, &voter).unwrap(), None);
-        assert!(
-            kv.get::<(bool, u64, BTreeMap<[u8; 32], ResourceVoteChoice>)>(
-                DetScope::Identity(&voter.to_buffer()),
-                key
-            )
-            .unwrap()
-            .is_none()
-        );
-    }
-
     #[tokio::test]
     async fn failed_refresh_preserves_its_typed_network_cause() {
         let temp = tempfile::tempdir().unwrap();
@@ -1027,43 +989,6 @@ mod tests {
             Some(snapshot)
         );
         assert_eq!(load_snapshot(&kv, Network::Mainnet, &voter).unwrap(), None);
-    }
-
-    #[test]
-    fn legacy_snapshot_is_discarded_instead_of_assigned_to_a_network() {
-        let kv = kv();
-        let voter = Identifier::from([1; 32]);
-        let snapshot = StoredCurrentVotes {
-            available: true,
-            updated_at: now_ms(),
-            votes: BTreeMap::new(),
-            ..Default::default()
-        };
-        kv.put(
-            DetScope::Identity(&voter.to_buffer()),
-            LEGACY_CURRENT_VOTES_KEY,
-            &snapshot,
-        )
-        .unwrap();
-
-        assert_eq!(load_snapshot(&kv, Network::Testnet, &voter).unwrap(), None);
-        assert_eq!(load_snapshot(&kv, Network::Mainnet, &voter).unwrap(), None);
-        assert!(
-            kv.get::<StoredCurrentVotes>(
-                DetScope::Identity(&voter.to_buffer()),
-                &current_votes_key(Network::Testnet),
-            )
-            .unwrap()
-            .is_none()
-        );
-        assert!(
-            kv.get::<StoredCurrentVotes>(
-                DetScope::Identity(&voter.to_buffer()),
-                LEGACY_CURRENT_VOTES_KEY,
-            )
-            .unwrap()
-            .is_none()
-        );
     }
 
     #[test]

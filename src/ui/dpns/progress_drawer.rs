@@ -14,7 +14,10 @@ use crate::ui::dpns::copy::{drawer_header, progress_row_status};
 use crate::ui::theme::DashColors;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
+use dash_sdk::platform::Identifier;
 use eframe::egui::{self, Align2, Id, RichText, Sense, Ui};
+use std::collections::BTreeMap;
+use std::sync::Arc;
 
 const OPEN_ID: &str = "dpns_vote_progress_drawer_open";
 
@@ -24,11 +27,17 @@ const OPEN_ID: &str = "dpns_vote_progress_drawer_open";
 pub struct DrawerState {
     /// Settled operations created before this time are not listed.
     since_ms: u64,
+    operations: Option<Arc<[crate::model::dpns_voting::DpnsVoteOperation]>>,
+    candidates: BTreeMap<(String, Identifier), String>,
 }
 
 impl DrawerState {
     pub fn new(since_ms: u64) -> Self {
-        Self { since_ms }
+        Self {
+            since_ms,
+            operations: None,
+            candidates: BTreeMap::new(),
+        }
     }
 
     /// Settled operations created before this moment are not listed.
@@ -75,17 +84,6 @@ pub fn row_action(outcome: &DpnsVoteOutcome) -> Option<RowAction> {
     }
 }
 
-fn choice_label(choice: ResourceVoteChoice) -> String {
-    match choice {
-        ResourceVoteChoice::Lock => "Lock".to_owned(),
-        ResourceVoteChoice::Abstain => "Abstain".to_owned(),
-        ResourceVoteChoice::TowardsIdentity(id) => {
-            let encoded = id.to_string(Encoding::Base58);
-            format!("Vote for {head}…", head = &encoded[..6])
-        }
-    }
-}
-
 fn paint_segments(ui: &mut Ui, counts: ProgressCounts) {
     let dark_mode = ui.visuals().dark_mode;
     let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 6.0), Sense::hover());
@@ -116,6 +114,30 @@ pub fn show(ctx: &egui::Context, app_context: &AppContext, state: &mut DrawerSta
         return AppAction::None;
     }
     let counts = progress_counts(shown.iter().copied());
+    if !state
+        .operations
+        .as_ref()
+        .is_some_and(|previous| Arc::ptr_eq(previous, &operations))
+    {
+        state.candidates = app_context
+            .all_contested_names()
+            .unwrap_or_default()
+            .into_iter()
+            .flat_map(|contest| {
+                contest
+                    .contestants
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(move |candidate| {
+                        (
+                            (contest.normalized_contested_name.clone(), candidate.id),
+                            candidate.name,
+                        )
+                    })
+            })
+            .collect();
+        state.operations = Some(Arc::clone(&operations));
+    }
     let mut open = is_open(ctx);
     let mut action = AppAction::None;
     egui::Area::new(Id::new("dpns_vote_progress_drawer"))
@@ -157,12 +179,21 @@ pub fn show(ctx: &egui::Context, app_context: &AppContext, state: &mut DrawerSta
                                     outcome.target.voter_alias.clone().unwrap_or_else(|| {
                                         let encoded =
                                             outcome.target.key.voter_id.to_string(Encoding::Base58);
-                                        format!("{head}…", head = &encoded[..6])
+                                        crate::model::identity_name::shorten_id(&encoded)
                                     });
                                 ui.label(format!(
                                     "{node} · {name}.dash · {choice}",
                                     name = outcome.target.contested_name,
-                                    choice = choice_label(outcome.target.requested_choice),
+                                    choice = crate::ui::dpns::copy::vote_choice_label(
+                                        outcome.target.requested_choice,
+                                        match outcome.target.requested_choice {
+                                            ResourceVoteChoice::TowardsIdentity(id) => state
+                                                .candidates
+                                                .get(&(outcome.target.contested_name.clone(), id))
+                                                .map(String::as_str),
+                                            _ => None,
+                                        },
+                                    ),
                                 ));
                                 let color = match progress_phase(outcome) {
                                     Some(ProgressPhase::Failed) => {

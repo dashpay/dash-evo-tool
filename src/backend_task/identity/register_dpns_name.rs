@@ -17,7 +17,7 @@ use dash_sdk::{
             accessors::v0::DataContractV0Getters, document_type::accessors::DocumentTypeV0Getters,
         },
         document::DocumentV0,
-        identity::accessors::IdentityGettersV0,
+        identity::accessors::{IdentityGettersV0, IdentitySettersV0},
         platform_value::Bytes32,
         util::{hash::hash_double, strings::convert_to_homograph_safe_chars},
     },
@@ -239,7 +239,7 @@ impl AppContext {
     async fn finish_username_registration(
         &self,
         sdk: &Sdk,
-        mut identity: crate::model::qualified_identity::QualifiedIdentity,
+        identity: crate::model::qualified_identity::QualifiedIdentity,
         name: &str,
         outcome: crate::model::dpns::DpnsRegistrationOutcome,
         joined_until: Option<u64>,
@@ -259,34 +259,24 @@ impl AppContext {
             );
         }
 
-        match self.fetch_owned_dpns_names(sdk, identity_id).await {
-            Ok(names) => identity.dpns_names = names,
+        let refreshed_names = match self.fetch_owned_dpns_names(sdk, identity_id).await {
+            Ok(names) => Some(names),
             Err(error) => {
                 tracing::warn!(
                     ?error,
                     "Registered names could not be re-read after registration"
                 );
-                if outcome == crate::model::dpns::DpnsRegistrationOutcome::Registered
-                    && !identity.dpns_names.iter().any(|known| known.name == name)
-                {
-                    identity.dpns_names.push(DPNSNameInfo {
-                        name: name.to_owned(),
-                        acquired_at: crate::utils::time::now_ms(),
-                    });
-                }
+                None
             }
-        }
+        };
 
-        // Name an unnamed node after its main username, never a pending request.
-        let main_username = self.main_username(&identity);
-        identity.initialize_node_alias(None, main_username.as_deref());
-
+        let mut refreshed_balance = None;
         let fee_result = match dash_sdk::platform::Identity::fetch_by_identifier(sdk, identity_id)
             .await
         {
             Ok(Some(refreshed_identity)) => {
                 let actual_fee = balance_before.saturating_sub(refreshed_identity.balance());
-                identity.identity = refreshed_identity;
+                refreshed_balance = Some(refreshed_identity.balance());
                 if actual_fee != estimated_fee {
                     tracing::warn!(
                         estimated_fee,
@@ -302,7 +292,24 @@ impl AppContext {
             }
         };
 
-        if let Err(error) = self.update_local_qualified_identity(&identity) {
+        if let Err(error) = self.edit_local_qualified_identity(&identity_id, |fresh| {
+            if let Some(names) = refreshed_names {
+                fresh.dpns_names = names;
+            } else if outcome == crate::model::dpns::DpnsRegistrationOutcome::Registered
+                && !fresh.dpns_names.iter().any(|known| known.name == name)
+            {
+                fresh.dpns_names.push(DPNSNameInfo {
+                    name: name.to_owned(),
+                    acquired_at: crate::utils::time::now_ms(),
+                });
+            }
+            if let Some(balance) = refreshed_balance {
+                fresh.identity.set_balance(balance);
+            }
+            let main_username = self.main_username(fresh);
+            fresh.initialize_node_alias(None, main_username.as_deref());
+            Ok(())
+        }) {
             tracing::warn!(
                 ?error,
                 "Identity could not be saved locally after username registration"
@@ -402,6 +409,45 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn review_regression_registration_preserves_concurrent_identity_edits() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(
+            std::sync::Arc::new(crate::wallet_backend::kv_test_support::InMemoryKv::default()),
+        ));
+        let stale = bare_identity(8);
+        let mut current = stale.clone();
+        current.alias = Some("Updated during registration".into());
+        let key = dash_sdk::platform::IdentityPublicKey::random_key(
+            9,
+            Some(8),
+            dash_sdk::dpp::version::PlatformVersion::latest(),
+        );
+        current.private_keys.insert_at((crate::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity, 9), (
+            crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey::from(key.clone()),
+            crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData::InVault,
+        ));
+        ctx.update_local_qualified_identity(&current).unwrap();
+        ctx.finish_username_registration(
+            &Sdk::new_mock(),
+            stale,
+            "alice-123",
+            crate::model::dpns::DpnsRegistrationOutcome::Registered,
+            None,
+            1_000,
+            100,
+        )
+        .await;
+        let saved = ctx
+            .get_local_qualified_identity(&current.identity.id())
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.alias, current.alias);
+        assert!(saved.private_keys.first_live_candidate(&key).is_some());
+        assert!(saved.dpns_names.iter().any(|name| name.name == "alice-123"));
+    }
+
     /// Once the documents are broadcast and paid for, failed re-reads must not
     /// turn into an error that re-enables Pay; the request is recorded and no
     /// automatic alias hides the user's chosen main name.
@@ -418,6 +464,7 @@ mod tests {
         let sdk = Sdk::new_mock();
         let identity = bare_identity(7);
         let id = identity.identity.id();
+        ctx.update_local_qualified_identity(&identity).unwrap();
 
         let pending = ctx
             .finish_username_registration(

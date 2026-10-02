@@ -31,7 +31,7 @@ use dash_sdk::dpp::voting::votes::resource_vote::accessors::v0::ResourceVoteGett
 use dash_sdk::drive::query::contested_resource_votes_given_by_identity_query::ContestedResourceVotesGivenByIdentityQuery;
 use dash_sdk::platform::{FetchMany, Identifier};
 use futures::{StreamExt, stream};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 #[cfg(test)]
@@ -460,9 +460,11 @@ impl AppContext {
                     )? {
                         return Err(TaskError::DpnsVoteTargetBusy);
                     }
-                    return self
+                    let mut operation = self
                         .dpns_vote_operation(outcome.operation_id)?
-                        .ok_or(TaskError::DpnsVoteOperationRecordMissing);
+                        .ok_or(TaskError::DpnsVoteOperationRecordMissing)?;
+                    operation.targets.retain(|target| target.target.key == key);
+                    return Ok(operation);
                 }
                 DpnsVoteTargetStatus::Unconfirmed
                 | DpnsVoteTargetStatus::Queued
@@ -593,6 +595,11 @@ impl AppContext {
                 operation_id: operation.id,
             });
         }
+        let requested_keys: BTreeSet<_> = operation
+            .targets
+            .iter()
+            .map(|outcome| outcome.target.key.clone())
+            .collect();
         let was_persisted = self.dpns_vote_operation(operation.id)?.is_some();
         let new_schedules = operation
             .targets
@@ -673,6 +680,9 @@ impl AppContext {
             operation = self
                 .dpns_vote_operation(operation.id)?
                 .ok_or(TaskError::DpnsVoteOperationRecordMissing)?;
+            operation
+                .targets
+                .retain(|outcome| requested_keys.contains(&outcome.target.key));
         } else {
             self.validate_new_dpns_schedules(&new_schedules)?;
             let scheduled_votes = operation
@@ -958,11 +968,16 @@ impl AppContext {
         sdk: &Sdk,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let operation_id = operation.id;
+        let keys = operation
+            .targets
+            .iter()
+            .map(|outcome| outcome.target.key.clone())
+            .collect();
         let result = self
             .execute_dpns_vote_operation(operation, voters, replacing_scheduled_key, sdk)
             .await;
         if let Err(error) = &result {
-            self.recover_failed_dpns_vote_operation(operation_id, error)
+            self.recover_failed_dpns_vote_operation(operation_id, &keys, error)
                 .await;
         }
         result
@@ -971,9 +986,12 @@ impl AppContext {
     async fn recover_failed_dpns_vote_operation(
         &self,
         operation_id: DpnsVoteOperationId,
+        keys: &BTreeSet<DpnsVoteTargetKey>,
         original_error: &TaskError,
     ) {
-        if let Err(recovery_error) = self.recover_interrupted_dpns_vote_operation(operation_id) {
+        if let Err(recovery_error) =
+            self.recover_interrupted_dpns_vote_operation(operation_id, keys)
+        {
             tracing::error!(
                 error = %recovery_error,
                 original_error = %original_error,
@@ -1279,7 +1297,7 @@ mod tests {
     use dash_sdk::dpp::identity::Identity;
     use dash_sdk::dpp::version::PlatformVersion;
     use std::cell::RefCell;
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
 
     fn dapi_connection_refused_error() -> TaskError {
         use dash_sdk::Error as SdkError;
@@ -1341,6 +1359,48 @@ mod tests {
                 )
                 .unwrap(),
         ])
+    }
+
+    #[tokio::test]
+    async fn review_regression_cast_now_keeps_other_queued_targets_unchanged() {
+        for sibling_status in [
+            DpnsVoteTargetStatus::Queued,
+            DpnsVoteTargetStatus::Submitting,
+            DpnsVoteTargetStatus::Confirming,
+        ] {
+            let (_temp, context) = vote_context();
+            let mut operation = scheduled_operation_for(&context, "alice", 42);
+            let mut sibling = operation.targets[0].target.clone();
+            sibling.key.voter_id = Identifier::from([2; 32]);
+            operation = DpnsVoteOperation::new(vec![operation.targets[0].target.clone(), sibling]);
+            operation.targets[1].status = sibling_status;
+            context
+                .insert_dpns_vote_operation(&mut operation, None)
+                .unwrap();
+            let original_sibling = operation.targets[1].clone();
+            let selected = context
+                .operation_for_scheduled_vote(
+                    &ScheduledDPNSVote {
+                        voter_id: Identifier::from([1; 32]),
+                        contested_name: "alice".into(),
+                        choice: ResourceVoteChoice::Lock,
+                        unix_timestamp: 42,
+                        executed_successfully: false,
+                    },
+                    &qualified_identity(1),
+                )
+                .unwrap();
+            let _ = context
+                .execute_dpns_vote_operation_with_recovery(
+                    selected,
+                    vec![qualified_identity(1)],
+                    None,
+                    &Sdk::new_mock(),
+                )
+                .await;
+            let saved = context.dpns_vote_operation(operation.id).unwrap().unwrap();
+            assert_eq!(saved.targets[1], original_sibling);
+        }
     }
 
     #[test]
@@ -2414,7 +2474,11 @@ mod tests {
             )
             .expect_err("terminal operation write must fail");
         context
-            .recover_failed_dpns_vote_operation(operation_id, &terminal_error)
+            .recover_failed_dpns_vote_operation(
+                operation_id,
+                &BTreeSet::from([target_key.clone()]),
+                &terminal_error,
+            )
             .await;
 
         assert!(!*context.dpns_vote_recovery.lock().await);

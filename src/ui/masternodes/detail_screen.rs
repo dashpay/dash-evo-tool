@@ -193,19 +193,12 @@ impl MasternodeDetailView {
 
 /// The choice cell of a node vote row.
 fn node_vote_choice_label(row: &NodeVoteRow) -> String {
-    use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
     match (row.state_known, row.choice) {
         (false, _) => "Vote state unavailable".to_owned(),
         (true, None) => "Not voted yet".to_owned(),
-        (true, Some(ResourceVoteChoice::Lock)) => "Lock".to_owned(),
-        (true, Some(ResourceVoteChoice::Abstain)) => "Abstain".to_owned(),
-        (true, Some(ResourceVoteChoice::TowardsIdentity(id))) => match &row.contender_name {
-            Some(name) => format!("Vote for {name}"),
-            None => format!(
-                "Vote for {id}",
-                id = shorten_id(&id.to_string(Encoding::Base58))
-            ),
-        },
+        (true, Some(choice)) => {
+            crate::ui::dpns::copy::vote_choice_label(choice, row.contender_name.as_deref())
+        }
     }
 }
 

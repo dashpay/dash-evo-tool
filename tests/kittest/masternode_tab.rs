@@ -153,12 +153,18 @@ fn seed_node_with_voter_key(app_context: &Arc<AppContext>, byte: u8, alias: &str
         .expect("node basic identity");
     let node_qi = QualifiedIdentity {
         identity: node_identity,
-        associated_voter_identity: Some((voter_identity, voter_key)),
+        associated_voter_identity: Some((voter_identity, voter_key.clone())),
         associated_operator_identity: None,
         associated_owner_key_id: None,
         identity_type: IdentityType::Masternode,
         alias: Some(alias.to_string()),
-        private_keys: KeyStorage::default(),
+        private_keys: KeyStorage::from(BTreeMap::from([(
+            (PrivateKeyTarget::PrivateKeyOnVoterIdentity, voter_key.id()),
+            (
+                QualifiedIdentityPublicKey::from(voter_key),
+                PrivateKeyData::InVault,
+            ),
+        )])),
         dpns_names: vec![],
         associated_wallets: BTreeMap::new(),
         secret_access: None,
@@ -981,6 +987,9 @@ fn remove_flow_deletes_associated_voter_identity() {
 
         // Open the node's detail and confirm removal.
         harness.get_by_label("Open mn-with-voter").click();
+        harness.run_steps(3);
+        // A node without a signing key also shows the add-key form above removal.
+        harness.get_by_label("Remove masternode").scroll_to_me();
         harness.run_steps(3);
         harness.get_by_label("Remove masternode").click();
         harness.run_steps(3);

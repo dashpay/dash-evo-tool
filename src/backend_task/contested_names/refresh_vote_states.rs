@@ -34,9 +34,6 @@ impl AppContext {
     /// Submission preflight uses this so one operation queries only its own
     /// voters; ids that are not loaded masternodes are skipped and therefore
     /// absent from the results.
-    ///
-    /// TODO(dpns-voting): concurrent preflights each bound their own fan-out;
-    /// a shared concurrency limit across callers is deferred (PR #901 review).
     pub(crate) async fn refresh_dpns_vote_states_for(
         &self,
         sdk: &Sdk,
@@ -63,9 +60,13 @@ impl AppContext {
                 let sdk = sdk.clone();
                 let kv = kv.clone();
                 async move {
-                    let result = self.publish_dpns_vote_state(
-                        &kv, voter_id, fetch_votes_for_voter(&sdk, voter_id),
-                    ).await.map_err(Arc::new);
+                    let result = async {
+                        let _permit = self.dpns_vote_refresh_permits.acquire().await
+                            .map_err(|_| TaskError::DpnsVoteCoordinatorUnavailable)?;
+                        self.publish_dpns_vote_state(
+                            &kv, voter_id, fetch_votes_for_voter(&sdk, voter_id),
+                        ).await
+                    }.await.map_err(Arc::new);
                     if let Err(error) = &result {
                         tracing::warn!(?error, %voter_id, "Could not refresh proved DPNS vote state");
                     }

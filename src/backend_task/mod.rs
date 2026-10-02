@@ -350,6 +350,8 @@ pub enum BackendTaskContext {
     /// The background contest + vote-state refresh; its failures are logged,
     /// never bannered.
     DpnsBackgroundRefresh { network: Network },
+    /// A user-requested contest refresh.
+    DpnsContestRefresh,
     /// A single schedule action, before its journal operation is resolved.
     DpnsScheduledVote { key: DpnsScheduledVoteKey },
     /// An optimistic edit of one durable scheduled target.
@@ -456,6 +458,7 @@ impl BackendTaskContext {
         matches!(
             self.operation(),
             Self::DpnsVoteOperation { .. }
+                | Self::DpnsContestRefresh
                 | Self::DpnsScheduledVote { .. }
                 | Self::DpnsScheduledVoteEdit { .. }
                 | Self::ScheduledVoteSweep { .. }
@@ -476,6 +479,10 @@ impl BackendTaskContext {
             | Self::LegacyRecoveryOnNetwork { operation, .. } => operation.operation(),
             operation => operation,
         }
+    }
+
+    pub(crate) fn is_dpns_contest_refresh(&self) -> bool {
+        matches!(self.operation(), Self::DpnsContestRefresh)
     }
 
     pub(crate) fn is_fetch_documents(&self) -> bool {
@@ -643,6 +650,9 @@ impl From<&BackendTask> for BackendTaskContext {
                 network: *network,
                 operation_id: *operation_id,
             },
+            BackendTask::ContestedResourceTask(ContestedResourceTask::QueryDPNSContests) => {
+                Self::DpnsContestRefresh
+            }
             BackendTask::MigrationTask(MigrationTask::RestoreFromPreviousVersion) => {
                 Self::RestoreFromPreviousVersion
             }

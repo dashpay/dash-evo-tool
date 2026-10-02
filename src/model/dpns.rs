@@ -4,10 +4,20 @@
 //! pipeline so every DPNS lookup uses the same logic, and provides shared
 //! extraction utilities for DPNS domain documents.
 
+use std::collections::BTreeMap;
+use std::sync::LazyLock;
+use std::time::Duration;
+
 use dash_sdk::dpp::ProtocolError;
+use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+use dash_sdk::dpp::data_contract::document_type::ContestedIndexFieldMatch;
+use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
 use dash_sdk::dpp::data_contract::document_type::methods::DocumentTypeV0Methods;
+use dash_sdk::dpp::data_contracts::SystemDataContract;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::platform_value::Value;
+use dash_sdk::dpp::system_data_contracts::load_system_data_contract;
 use dash_sdk::dpp::util::strings::convert_to_homograph_safe_chars;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::dpp::voting::vote_polls::VotePoll;
@@ -37,6 +47,118 @@ pub fn classify_dpns_registration_outcome(
         }
         None => Ok(DpnsRegistrationOutcome::Registered),
     }
+}
+
+/// How long a DPNS name contest runs and how long others may join it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContestDurations {
+    /// Time from the first request until the vote ends.
+    pub total: Duration,
+    /// Time from the first request during which others may also ask for the name.
+    pub join: Duration,
+}
+
+/// Contest timing on `network` at `platform_version`.
+///
+/// Mainnet uses the production windows (14 days / 7 days at PV13); every other
+/// network uses the testing windows (90 / 45 minutes). Values come from the
+/// platform version tables, never from literals.
+pub fn contest_durations(network: Network, platform_version: &PlatformVersion) -> ContestDurations {
+    let voting = &platform_version.dpp.voting_versions;
+    let joining = &platform_version.dpp.validation.voting;
+    let (total_ms, join_ms) = if network == Network::Mainnet {
+        (
+            voting.default_vote_poll_time_duration_mainnet_ms,
+            joining.allow_other_contenders_time_mainnet_ms,
+        )
+    } else {
+        (
+            voting.default_vote_poll_time_duration_test_network_ms,
+            joining.allow_other_contenders_time_testing_ms,
+        )
+    };
+    ContestDurations {
+        total: Duration::from_millis(total_ms),
+        join: Duration::from_millis(join_ms),
+    }
+}
+
+/// Mainnet urgency window before a contest ends.
+const MAINNET_URGENCY_WINDOW: Duration = Duration::from_secs(24 * 60 * 60);
+/// Urgency window on testing networks, scaled to their 90-minute contests.
+const TESTING_URGENCY_WINDOW: Duration = Duration::from_secs(30 * 60);
+
+/// How close to its end a contest counts as urgent: 24 h on mainnet, 30 min elsewhere.
+pub fn urgency_window(network: Network) -> Duration {
+    if network == Network::Mainnet {
+        MAINNET_URGENCY_WINDOW
+    } else {
+        TESTING_URGENCY_WINDOW
+    }
+}
+
+/// Field matches of the bundled DPNS contract's contested `domain` index.
+///
+/// The contested rule lives only in the contract JSON, so it is read from the
+/// bundled system contract once instead of being duplicated here.
+static CONTESTED_FIELD_MATCHES: LazyLock<Option<BTreeMap<String, ContestedIndexFieldMatch>>> =
+    LazyLock::new(|| {
+        let contract =
+            load_system_data_contract(SystemDataContract::DPNS, PlatformVersion::latest()).ok()?;
+        let document_type = contract.document_type_for_name("domain").ok()?;
+        document_type
+            .find_contested_index()
+            .and_then(|index| index.contested_index.as_ref())
+            .map(|contested| contested.field_matches.clone())
+    });
+
+/// Whether registering `label` opens a community vote.
+///
+/// Applies the DPNS contract's contested-index rule to the homograph-normalized
+/// label (letters, `0`, `1`, and `-`, shorter than 20 characters). Accepts a bare
+/// label or a `.dash` name. Returns `true` if the bundled rule cannot be read,
+/// so callers never under-warn about a vote.
+pub fn is_contested_label(label: &str) -> bool {
+    let normalized = Value::Text(normalize_dpns_label(label));
+    match CONTESTED_FIELD_MATCHES.as_ref() {
+        Some(matches) => matches
+            .get("normalizedLabel")
+            .is_some_and(|field_match| field_match.matches(&normalized)),
+        None => true,
+    }
+}
+
+/// Suffixes tried, in order, when suggesting names that avoid a community vote.
+const UNCONTESTED_SUFFIXES: [&str; 5] = ["2", "-3", "99", "7", "-2026"];
+/// Number of suggestions offered.
+const SUGGESTION_COUNT: usize = 3;
+/// Longest label DPNS accepts.
+const MAX_LABEL_LEN: usize = 63;
+
+/// Up to three valid labels close to `label` that do not need a community vote.
+///
+/// Each suggestion appends a digit from 2 to 9, which takes the name out of the
+/// contested rule. Returns an empty list when `label` has no usable base.
+pub fn suggest_uncontested(label: &str) -> Vec<String> {
+    let base = strip_dash_suffix(label).to_ascii_lowercase();
+    let base = base.trim_end_matches('-');
+    if base.is_empty() || !base.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return Vec::new();
+    }
+    UNCONTESTED_SUFFIXES
+        .iter()
+        .map(|suffix| {
+            let room = MAX_LABEL_LEN.saturating_sub(suffix.len());
+            let trimmed = base[..base.len().min(room)].trim_end_matches('-');
+            format!("{trimmed}{suffix}")
+        })
+        .filter(|candidate| {
+            candidate != base
+                && validate_dpns_name(candidate) == DpnsNameValidationResult::Valid
+                && !is_contested_label(candidate)
+        })
+        .take(SUGGESTION_COUNT)
+        .collect()
 }
 
 /// The `.dash` parent domain suffix (case-insensitive match target).
@@ -267,6 +389,75 @@ mod tests {
             .expect("classification succeeds"),
             DpnsRegistrationOutcome::Registered
         );
+    }
+
+    #[test]
+    fn contested_rule_matches_contract() {
+        // USR-TC-001
+        assert!(is_contested_label("alice"));
+        assert!(is_contested_label("al1ce"));
+        assert!(!is_contested_label("alice2"));
+        assert!(!is_contested_label(&"a".repeat(20)));
+        assert!(is_contested_label(&"a".repeat(19)));
+        assert!(is_contested_label("b0b-01"));
+        assert!(is_contested_label("Alice"));
+        assert!(is_contested_label("alice.dash"));
+    }
+
+    #[test]
+    fn contest_durations_per_network() {
+        // USR-TC-003
+        let pv = PlatformVersion::get(13).expect("PV13");
+        let day = Duration::from_secs(24 * 60 * 60);
+        let minute = Duration::from_secs(60);
+        assert_eq!(
+            contest_durations(Network::Mainnet, pv),
+            ContestDurations {
+                total: 14 * day,
+                join: 7 * day
+            }
+        );
+        for network in [Network::Testnet, Network::Devnet, Network::Regtest] {
+            assert_eq!(
+                contest_durations(network, pv),
+                ContestDurations {
+                    total: 90 * minute,
+                    join: 45 * minute
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn urgency_window_per_network() {
+        // USR-TC-004
+        assert_eq!(
+            urgency_window(Network::Mainnet),
+            Duration::from_secs(24 * 60 * 60)
+        );
+        assert_eq!(
+            urgency_window(Network::Testnet),
+            Duration::from_secs(30 * 60)
+        );
+    }
+
+    #[test]
+    fn suggestions_avoid_the_vote() {
+        // USR-TC-007
+        for label in ["alice", "Nova", "b0b-", &"a".repeat(63)] {
+            let suggestions = suggest_uncontested(label);
+            assert_eq!(suggestions.len(), 3, "{label}: {suggestions:?}");
+            for suggestion in &suggestions {
+                assert_eq!(
+                    validate_dpns_name(suggestion),
+                    DpnsNameValidationResult::Valid,
+                    "{suggestion}"
+                );
+                assert!(!is_contested_label(suggestion), "{suggestion}");
+            }
+        }
+        assert!(suggest_uncontested("").is_empty());
+        assert!(suggest_uncontested("a_b").is_empty());
     }
 
     #[test]

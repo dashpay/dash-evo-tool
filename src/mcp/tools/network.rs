@@ -293,7 +293,7 @@ mod tests {
         let ctx = test_app_context_with_kv(tmp.path(), Arc::new(DetKv::from_store(store.clone())));
         let service =
             DashMcpService::new_shared(Arc::new(arc_swap::ArcSwap::from(Arc::clone(&ctx))));
-        store.fail_next_puts(usize::MAX);
+        store.fail_next_puts_containing("", usize::MAX);
         let result = NetworkSwitch::invoke(
             &service,
             NetworkSwitchParams {

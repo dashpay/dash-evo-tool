@@ -28,7 +28,7 @@ use super::identity_hero_card::{HeroIdentityKind, IdentityHeroCard};
 use super::onboarding_checklist::{ChecklistAction, ChecklistStep, OnboardingChecklist};
 use crate::app::AppAction;
 use crate::context::AppContext;
-use crate::model::contested_name::PendingUsername;
+use crate::model::dpns_usernames::UsernameRequest;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::ScreenType;
 use crate::ui::identity::register_dpns_name_screen::RegisterDpnsNameSource;
@@ -279,7 +279,7 @@ pub fn render(
     // the onboarding checklist so a pending request is not mistaken for "no
     // username". Only meaningful when the identity owns no name yet; the cache
     // read is best-effort, so a failure simply omits the indicator.
-    let pending_username: Option<PendingUsername> =
+    let pending_username: Option<UsernameRequest> =
         app_context.pending_dpns_username_for_identity(&identity);
 
     // A tiny local closure that dispatches via the pure
@@ -301,6 +301,10 @@ pub fn render(
     if hero_response.pick_username_clicked() {
         apply(HomeButton::PickUsernameHero);
     }
+
+    // --- Username requests: pending cards and one-time outcome banners -
+    ui.add_space(Spacing::SM);
+    let notices_action = super::username_notices::render(ui, app_context, &identity);
 
     // --- Inline "Set up your social profile" card (no-profile variant) -
     //
@@ -378,11 +382,7 @@ pub fn render(
     if !state.dismissed_checklist {
         // Extract the primary DPNS handle for the done-subtext ("You are
         // @{handle}.") — passed into the checklist as optional context.
-        let primary_handle = identity
-            .dpns_names
-            .first()
-            .map(|n| n.name.trim().to_string())
-            .filter(|s| !s.is_empty());
+        let primary_handle = app_context.main_username(&identity);
 
         let mut checklist = OnboardingChecklist::new();
         if let Some(h) = &primary_handle {
@@ -393,7 +393,7 @@ pub fn render(
         } else if let Some(pending) = &pending_username {
             // Requested but not yet awarded — reflect the pending state instead
             // of nagging the user to pick a name they already chose.
-            checklist = checklist.with_pending_username(pending.name.clone());
+            checklist = checklist.with_pending_username(pending.label.clone());
         }
         if hero_has_social_profile {
             checklist = checklist.mark_complete(ChecklistStep::SetDisplayName);
@@ -534,6 +534,7 @@ pub fn render(
         });
     }
 
+    action |= notices_action;
     (action, outcome)
 }
 
@@ -570,15 +571,11 @@ fn build_hero(
     app_context: &Arc<AppContext>,
     qi: &QualifiedIdentity,
     profiles: &mut super::profile_cache::ProfileCache,
-    pending_username: Option<PendingUsername>,
+    pending_username: Option<UsernameRequest>,
 ) -> IdentityHeroCard {
     let kind: HeroIdentityKind = qi.identity_type.into();
     let balance_dash = format_credits_short(qi.identity.balance());
-    let handle = qi
-        .dpns_names
-        .first()
-        .map(|n| n.name.clone())
-        .filter(|n| !n.trim().is_empty());
+    let handle = app_context.main_username(qi);
 
     // Best-effort DashPay display name. The local profile cache was removed in
     // the platform-wallet migration; the hub loads profiles asynchronously, so

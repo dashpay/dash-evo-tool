@@ -2,7 +2,7 @@
 //! `identity_picker_card.rs`'s visual language, adding voter-readiness,
 //! key-presence, and DPNS-status rows (colour always paired with text, NFR-6).
 
-use crate::model::contested_name::MasternodeContestSummary;
+use crate::model::contested_name::{MasternodeContestSummary, MasternodeVoteStateSummary};
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, MasternodeKeyPresence};
 use crate::ui::identity::identity_picker_card::{
@@ -55,11 +55,51 @@ pub fn voter_readiness_label(voting_present: bool) -> &'static str {
     }
 }
 
-/// DPNS status line with count-first precedence (§10.1): open contests first
-/// (actionable), then a pending scheduled vote, then none.
+/// DPNS status line with count-first precedence (§10.1): open contests first,
+/// then failed or pending scheduled votes, then none.
 pub fn dpns_status_line(summary: MasternodeContestSummary) -> String {
-    if summary.open_contest_count > 0 {
-        format!("{} contests to vote on", summary.open_contest_count)
+    if summary.vote_state == MasternodeVoteStateSummary::Unavailable {
+        if summary.open_contest_count == 0 {
+            "Voting status unavailable".to_owned()
+        } else if summary.open_contest_count == 1 {
+            "Vote state unavailable for 1 active contest".to_owned()
+        } else {
+            format!(
+                "Vote state unavailable for {count} active contests",
+                count = summary.open_contest_count
+            )
+        }
+    } else if summary.open_contest_count > 0 {
+        let single = summary.open_contest_count == 1;
+        if summary.vote_state == MasternodeVoteStateSummary::Checking {
+            if single {
+                "Checking votes for 1 active contest".to_owned()
+            } else {
+                format!(
+                    "Checking votes for {count} active contests",
+                    count = summary.open_contest_count
+                )
+            }
+        } else if summary.needs_vote_count == 0 {
+            "Votes cast in all active contests".to_owned()
+        } else if summary.needs_vote_count == 1 {
+            if single {
+                "1 active contest · 1 needs a vote".to_owned()
+            } else {
+                format!(
+                    "{count} active contests · 1 needs a vote",
+                    count = summary.open_contest_count
+                )
+            }
+        } else {
+            format!(
+                "{contests} active contests · {needs_vote} need votes",
+                contests = summary.open_contest_count,
+                needs_vote = summary.needs_vote_count
+            )
+        }
+    } else if summary.has_failed_scheduled_vote {
+        "Scheduled vote needs attention".to_string()
     } else if summary.has_scheduled_vote {
         "Vote scheduled".to_string()
     } else {
@@ -368,9 +408,44 @@ mod tests {
     fn tc_fr3_09_dpns_open_contest_count() {
         let summary = MasternodeContestSummary {
             open_contest_count: 3,
+            needs_vote_count: 1,
             has_scheduled_vote: false,
+            ..Default::default()
         };
-        assert_eq!(dpns_status_line(summary), "3 contests to vote on");
+        assert_eq!(
+            dpns_status_line(summary),
+            "3 active contests · 1 needs a vote"
+        );
+    }
+
+    /// A single active contest reads in the singular in every state.
+    #[test]
+    fn dpns_status_line_is_singular_for_one_active_contest() {
+        for (vote_state, needs_vote_count, expected) in [
+            (
+                MasternodeVoteStateSummary::Unavailable,
+                0,
+                "Vote state unavailable for 1 active contest",
+            ),
+            (
+                MasternodeVoteStateSummary::Checking,
+                0,
+                "Checking votes for 1 active contest",
+            ),
+            (
+                MasternodeVoteStateSummary::Ready,
+                1,
+                "1 active contest · 1 needs a vote",
+            ),
+        ] {
+            let summary = MasternodeContestSummary {
+                open_contest_count: 1,
+                needs_vote_count,
+                vote_state,
+                ..Default::default()
+            };
+            assert_eq!(dpns_status_line(summary), expected, "{vote_state:?}");
+        }
     }
 
     #[test]
@@ -386,18 +461,72 @@ mod tests {
         // Both an open contest AND a scheduled vote present → count wins.
         let summary = MasternodeContestSummary {
             open_contest_count: 2,
+            needs_vote_count: 1,
             has_scheduled_vote: true,
+            ..Default::default()
         };
-        assert_eq!(dpns_status_line(summary), "2 contests to vote on");
+        assert_eq!(
+            dpns_status_line(summary),
+            "2 active contests · 1 needs a vote"
+        );
     }
 
     #[test]
     fn dpns_scheduled_shown_only_when_no_open_contests() {
         let summary = MasternodeContestSummary {
             open_contest_count: 0,
+            needs_vote_count: 0,
             has_scheduled_vote: true,
+            ..Default::default()
         };
         assert_eq!(dpns_status_line(summary), "Vote scheduled");
+    }
+
+    #[test]
+    fn terminal_scheduled_failure_needs_attention() {
+        let summary = MasternodeContestSummary {
+            has_scheduled_vote: false,
+            has_failed_scheduled_vote: true,
+            ..Default::default()
+        };
+
+        assert_eq!(dpns_status_line(summary), "Scheduled vote needs attention");
+    }
+
+    #[test]
+    fn dpns_status_reports_checking_instead_of_all_votes_cast() {
+        let summary = MasternodeContestSummary {
+            open_contest_count: 3,
+            vote_state: MasternodeVoteStateSummary::Checking,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            dpns_status_line(summary),
+            "Checking votes for 3 active contests"
+        );
+    }
+
+    #[test]
+    fn dpns_status_reports_unavailable_instead_of_all_votes_cast() {
+        let summary = MasternodeContestSummary {
+            open_contest_count: 2,
+            vote_state: MasternodeVoteStateSummary::Unavailable,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            dpns_status_line(summary),
+            "Vote state unavailable for 2 active contests"
+        );
+    }
+
+    #[test]
+    fn dpns_status_reports_unavailable_when_the_summary_read_failed() {
+        assert_eq!(
+            dpns_status_line(MasternodeContestSummary::unavailable()),
+            "Voting status unavailable"
+        );
     }
 
     #[test]

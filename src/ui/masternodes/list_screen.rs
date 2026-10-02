@@ -12,12 +12,15 @@ use dash_sdk::platform::Identifier;
 use eframe::egui::{self, RichText};
 
 use crate::app::{AppAction, BackendTasksExecutionMode};
-use crate::backend_task::contested_names::ContestedResourceTask;
+use crate::backend_task::contested_names::{ContestedResourceTask, DpnsVotingPreference};
 use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::context::identity_load_registry::{IdentityLoadPhase, IdentityLoadToken};
 use crate::model::contested_name::MasternodeContestSummary;
+use crate::model::dpns_voting::operator::{
+    MasternodesSegment, background_refresh_due, opening_masternodes_segment,
+};
 use crate::model::masternode_input::decode_identity_id;
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, MasternodeKeyPresence};
 use crate::model::user_role::UserRole;
@@ -28,6 +31,8 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::legacy_recovery_section::completion_message;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel_with_global_nav_capturing;
+use crate::ui::dpns::VotesView;
+use crate::ui::dpns::dpns_contested_names_screen::DPNSScreen;
 use crate::ui::identity::identity_pill::shorten_id;
 use crate::ui::identity::picker::compute_column_count;
 use crate::ui::masternodes::card::{MasternodeCard, card_heading};
@@ -37,6 +42,9 @@ use crate::ui::state::global_nav::PageNavSpec;
 use crate::ui::state::masternodes_view::{masternodes_page_nav_spec, node_pill_item};
 use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
+
+/// Arriving on Votes refreshes contests unless one completed this recently.
+const VOTES_ARRIVAL_REFRESH_MIN_GAP: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Minimum horizontal gap between cards in the grid (matches the identity
 /// picker grid).
@@ -105,6 +113,16 @@ pub struct MasternodesScreen {
     pending_load: Option<PendingLoad>,
     /// Identity removals dispatched by this screen whose results have not arrived.
     pending_removals: BTreeSet<Identifier>,
+    /// The visible half of the page: Votes or Nodes.
+    segment: MasternodesSegment,
+    /// The single voting workspace (Masternodes ▸ Votes). Receives every vote
+    /// result whether or not its segment is showing.
+    votes: DPNSScreen,
+    /// Set when Votes comes into view; the next frame refreshes contests and
+    /// vote state unless a refresh completed moments ago (VOTE-FR-074).
+    votes_arrival_refresh: bool,
+    /// The segment to persist through the backend once no user action is out.
+    pending_segment_save: Option<MasternodesSegment>,
 }
 
 #[cfg(test)]
@@ -114,6 +132,14 @@ impl MasternodesScreen {
         self.nodes
             .iter()
             .map(|node| card_heading(node.alias.as_deref(), &node.node_id_short))
+            .collect()
+    }
+
+    /// Return each card's rendered DPNS status line, in grid order.
+    pub(crate) fn dpns_status_lines_for_test(&self) -> Vec<String> {
+        self.nodes
+            .iter()
+            .map(|node| crate::ui::masternodes::card::dpns_status_line(node.contest_summary))
             .collect()
     }
 }
@@ -129,9 +155,73 @@ impl MasternodesScreen {
             view: MasternodesView::List,
             pending_load: None,
             pending_removals: BTreeSet::new(),
+            segment: opening_masternodes_segment(
+                0,
+                app_context.masternodes_last_segment().unwrap_or_default(),
+            ),
+            votes: DPNSScreen::new(app_context, VotesView::ToDecide),
+            votes_arrival_refresh: false,
+            pending_segment_save: None,
         };
         screen.reload();
         screen
+    }
+
+    /// The visible segment.
+    pub fn segment(&self) -> MasternodesSegment {
+        self.segment
+    }
+
+    /// The voting workspace, for routing vote results while this screen is hidden.
+    pub fn votes_mut(&mut self) -> &mut DPNSScreen {
+        &mut self.votes
+    }
+
+    /// Show `segment` and remember it as the last-used one on this network.
+    pub fn select_segment(&mut self, segment: MasternodesSegment) {
+        self.votes_arrival_refresh |=
+            segment == MasternodesSegment::Votes && self.segment != segment;
+        if segment != self.segment {
+            self.votes.release_list_focus();
+        }
+        self.segment = segment;
+        self.pending_segment_save = Some(segment);
+    }
+
+    /// Open Masternodes ▸ Votes on `view`.
+    pub fn open_votes(&mut self, view: VotesView) {
+        self.select_segment(MasternodesSegment::Votes);
+        self.votes.view = view;
+    }
+
+    /// Contests needing a decision plus unresolved targets, for the nav badge
+    /// and the opening segment.
+    fn attention_count(&self) -> usize {
+        self.app_context.dpns_vote_attention().badge_count()
+    }
+
+    fn render_segment_header(&mut self, ui: &mut egui::Ui) {
+        let attention = self.attention_count();
+        ui.horizontal(|ui| {
+            let votes_label = if attention > 0 {
+                format!("Votes ({attention})")
+            } else {
+                "Votes".to_owned()
+            };
+            for (segment, label) in [
+                (MasternodesSegment::Votes, votes_label),
+                (MasternodesSegment::Nodes, "Nodes".to_owned()),
+            ] {
+                if ui
+                    .selectable_label(self.segment == segment, label)
+                    .clicked()
+                    && self.segment != segment
+                {
+                    self.select_segment(segment);
+                }
+            }
+        });
+        ui.add_space(8.0);
     }
 
     /// Re-read the loaded masternode/evonode identities and their DPNS contest
@@ -144,19 +234,36 @@ impl MasternodesScreen {
             .load_local_masternode_identities()
             .unwrap_or_default();
 
+        // Votes are published and cached under the node's own ProTxHash; the
+        // voter identity only supplies the key that signs them. Resolve every
+        // node's voter_id up front and fetch all their summaries in one call:
+        // the contest cache, derived vote-poll ids, operation journal and
+        // schedule dismissals depend on the contest set, not the node, so an
+        // operator with a large fleet must not pay for them once per card.
+        let voter_ids: Vec<Identifier> = identities
+            .iter()
+            .filter(|qi| qi.associated_voter_identity.is_some())
+            .map(|qi| qi.identity.id())
+            .collect();
+        let summaries = self
+            .app_context
+            .masternode_contest_summaries(&voter_ids)
+            .unwrap_or_default();
+
         self.nodes = identities
             .into_iter()
             .map(|qi| {
                 let node_id = qi.identity.id();
                 let node_id_short = shorten_id(&node_id.to_string(Encoding::Hex));
-                let voter_id = qi
-                    .associated_voter_identity
-                    .as_ref()
-                    .map(|(identity, _)| identity.id());
-                let contest_summary = self
-                    .app_context
-                    .masternode_contest_summary(voter_id)
-                    .unwrap_or_default();
+                let has_voter_id = qi.associated_voter_identity.is_some();
+                let contest_summary = if has_voter_id {
+                    summaries
+                        .get(&node_id)
+                        .copied()
+                        .unwrap_or_else(MasternodeContestSummary::unavailable)
+                } else {
+                    MasternodeContestSummary::default()
+                };
                 NodeCardData {
                     node_id,
                     node_id_short,
@@ -221,6 +328,14 @@ impl MasternodesScreen {
         self.view = MasternodesView::List;
         self.pending_load = None;
         self.pending_removals.clear();
+        self.votes.app_context = self.app_context.clone();
+        self.votes.reset_for_network_switch();
+        self.segment = opening_masternodes_segment(
+            0,
+            self.app_context
+                .masternodes_last_segment()
+                .unwrap_or_default(),
+        );
         self.reload();
     }
 
@@ -396,10 +511,17 @@ impl MasternodesScreen {
             .into_iter()
             .find(|qi| qi.identity.id() == node_id)
         {
-            self.view = MasternodesView::Detail(Box::new(MasternodeDetailView::new(
-                &self.app_context,
-                identity,
-            )));
+            // An Add-voting-key merge outstanding on this same node must keep
+            // gating Save across the rebuild; the fresh view cannot know of it.
+            let pending_voter_key_load = match &self.view {
+                MasternodesView::Detail(detail) if detail.node_id() == node_id => {
+                    detail.pending_voter_key_load()
+                }
+                _ => None,
+            };
+            let mut detail = Box::new(MasternodeDetailView::new(&self.app_context, identity));
+            detail.adopt_pending_voter_key_load(pending_voter_key_load);
+            self.view = MasternodesView::Detail(detail);
         }
     }
 
@@ -420,6 +542,12 @@ impl MasternodesScreen {
                 AppAction::None
             }
             DetailOutcome::Forward(action) => *action,
+            DetailOutcome::VoteWithNode(node) => {
+                self.view = MasternodesView::List;
+                self.votes.vote_with_node(node);
+                self.select_segment(MasternodesSegment::Votes);
+                AppAction::None
+            }
         };
         self.capture_removal_dispatch(&action);
         action
@@ -562,6 +690,7 @@ impl ScreenLike for MasternodesScreen {
     }
     fn refresh(&mut self) {
         self.reload();
+        self.votes.refresh();
     }
 
     fn refresh_on_arrival(&mut self) {
@@ -570,12 +699,34 @@ impl ScreenLike for MasternodesScreen {
         if let MasternodesView::Detail(detail) = &mut self.view {
             detail.refresh_on_arrival();
         }
+        self.votes.refresh_on_arrival();
     }
 
     fn reset_to_root_view(&mut self) {
         if !matches!(self.view, MasternodesView::Load(_)) {
             self.view = MasternodesView::List;
         }
+        self.segment = opening_masternodes_segment(
+            self.attention_count(),
+            self.app_context
+                .masternodes_last_segment()
+                .unwrap_or_default(),
+        );
+        self.votes_arrival_refresh |= self.segment == MasternodesSegment::Votes;
+    }
+
+    fn display_message(&mut self, message: &str, message_type: MessageType) {
+        self.votes.display_message(message, message_type);
+    }
+
+    fn display_backend_task_result(
+        &mut self,
+        context: &crate::backend_task::BackendTaskContext,
+        result: BackendTaskSuccessResult,
+    ) {
+        self.votes
+            .display_backend_task_result(context, result.clone());
+        self.apply_node_result(result);
     }
 
     /// Drop every secret the open view holds — the load form's keys and
@@ -597,20 +748,102 @@ impl ScreenLike for MasternodesScreen {
         }
     }
 
-    fn display_backend_task_result(
-        &mut self,
-        context: &crate::backend_task::BackendTaskContext,
-        result: BackendTaskSuccessResult,
-    ) {
-        if let BackendTaskSuccessResult::DPNSVoteResults(results) = &result
-            && let MasternodesView::Detail(detail) = &mut self.view
-        {
-            detail.consume_cast_votes(context, results);
-        }
-        self.display_task_result(result);
+    fn display_task_result(&mut self, result: crate::backend_task::BackendTaskSuccessResult) {
+        self.votes.display_task_result(result.clone());
+        self.apply_node_result(result);
     }
 
-    fn display_task_result(&mut self, result: crate::backend_task::BackendTaskSuccessResult) {
+    fn display_task_error(&mut self, error: &crate::backend_task::error::TaskError) -> bool {
+        // A failing load reports `Failed` before its error reaches the UI, so
+        // settling here re-enables the still-open form's submit button (the Load
+        // view is untouched, so every entered field survives for correction).
+        // An error from some other task — a detail-view vote, a refresh — leaves
+        // this load's phase outstanding and the gate held. The voting panel
+        // decides whether the global banner is suppressed.
+        self.reconcile_pending_load();
+        self.votes.display_task_error(error)
+    }
+
+    /// End the open detail view's recovery operation only when the failure is
+    /// that operation's own. A failed restore returns to its offer so the user
+    /// can correct a mistyped identity password and press Restore again; any
+    /// other task's error — which reaches this screen simply because it is
+    /// visible — must leave a running restore in flight.
+    fn display_backend_task_error(
+        &mut self,
+        context: &crate::backend_task::BackendTaskContext,
+        error: &crate::backend_task::error::TaskError,
+    ) {
+        self.votes.display_backend_task_error(context, error);
+        if let MasternodesView::Detail(detail) = &mut self.view {
+            detail.absorb_recovery_error(context);
+        }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let (mut action, effect) =
+            add_top_panel_with_global_nav_capturing(ui, &self.app_context, self.nav_spec(), vec![]);
+        self.apply_nav_effect(effect);
+
+        action |= add_left_panel(ui, &self.app_context, RootScreenType::RootScreenMasternodes);
+
+        let network_accent =
+            DashColors::network_accent(self.app_context.network, ui.style().visuals.dark_mode);
+
+        action |= island_central_panel(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            self.render_segment_header(ui);
+            if self.segment == MasternodesSegment::Votes {
+                return self.votes.ui(ui);
+            }
+            let mut action = AppAction::None;
+            match self.view {
+                MasternodesView::Load(_) => action |= self.render_load_view(ui),
+                MasternodesView::Detail(_) => action |= self.render_detail_view(ui, network_accent),
+                MasternodesView::List => action |= self.render_list_view(ui, network_accent),
+            }
+            action
+        });
+        // Never displace a user action; a refresh deferred here runs next frame.
+        if action == AppAction::None
+            && std::mem::take(&mut self.votes_arrival_refresh)
+            && self.segment == MasternodesSegment::Votes
+            && background_refresh_due(
+                self.app_context.dpns_contests_refreshed_at_ms(),
+                None,
+                crate::utils::time::now_ms(),
+                VOTES_ARRIVAL_REFRESH_MIN_GAP,
+            )
+        {
+            // A user-visible refresh (VOTE-FR-074): failures reach the banner,
+            // unlike the timer's background refresh.
+            action = AppAction::BackendTask(BackendTask::ContestedResourceTask(
+                ContestedResourceTask::QueryDPNSContests,
+            ));
+        }
+        if self.votes.take_load_node_request() {
+            self.select_segment(MasternodesSegment::Nodes);
+            if self.pending_load.is_none() {
+                self.view = MasternodesView::Load(self.new_load_form());
+            }
+        }
+        if action == AppAction::None
+            && let Some(segment) = self.pending_segment_save.take()
+        {
+            action = AppAction::BackendTask(BackendTask::ContestedResourceTask(
+                ContestedResourceTask::SaveDpnsVotingPreference(
+                    DpnsVotingPreference::MasternodesSegment(segment),
+                ),
+            ));
+        }
+
+        action
+    }
+}
+
+impl MasternodesScreen {
+    /// Apply a task result to the node list and the open detail view.
+    fn apply_node_result(&mut self, result: BackendTaskSuccessResult) {
         match result {
             // A recovery preview changed nothing in the store, so it is routed
             // into the open detail view instead of reloading and re-opening it.
@@ -687,54 +920,6 @@ impl ScreenLike for MasternodesScreen {
             detail.refresh_from_store();
         }
     }
-
-    fn display_task_error(&mut self, _error: &crate::backend_task::error::TaskError) -> bool {
-        // A failing load reports `Failed` before its error reaches the UI, so
-        // settling here re-enables the still-open form's submit button (the Load
-        // view is untouched, so every entered field survives for correction).
-        // An error from some other task — a detail-view vote, a refresh — leaves
-        // this load's phase outstanding and the gate held. Let the global banner
-        // render the error (return false).
-        self.reconcile_pending_load();
-        false
-    }
-
-    /// End the open detail view's recovery operation only when the failure is
-    /// that operation's own. A failed restore returns to its offer so the user
-    /// can correct a mistyped identity password and press Restore again; any
-    /// other task's error — which reaches this screen simply because it is
-    /// visible — must leave a running restore in flight.
-    fn display_backend_task_error(
-        &mut self,
-        context: &crate::backend_task::BackendTaskContext,
-        _error: &crate::backend_task::error::TaskError,
-    ) {
-        if let MasternodesView::Detail(detail) = &mut self.view {
-            detail.absorb_recovery_error(context);
-        }
-    }
-
-    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
-        let (mut action, effect) =
-            add_top_panel_with_global_nav_capturing(ui, &self.app_context, self.nav_spec(), vec![]);
-        self.apply_nav_effect(effect);
-
-        action |= add_left_panel(ui, &self.app_context, RootScreenType::RootScreenMasternodes);
-
-        let network_accent =
-            DashColors::network_accent(self.app_context.network, ui.style().visuals.dark_mode);
-
-        action |= island_central_panel(ui, |ui| {
-            ui.set_min_width(ui.available_width());
-            match self.view {
-                MasternodesView::Load(_) => self.render_load_view(ui),
-                MasternodesView::Detail(_) => self.render_detail_view(ui, network_accent),
-                MasternodesView::List => self.render_list_view(ui, network_accent),
-            }
-        });
-
-        action
-    }
 }
 
 #[cfg(test)]
@@ -752,6 +937,7 @@ mod tests {
     use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::identity::Identity;
     use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
     use dash_sdk::platform::Identifier;
     use std::collections::BTreeMap;
 
@@ -805,6 +991,102 @@ mod tests {
         };
         ctx.insert_local_qualified_identity(&qi, &None)
             .expect("seed masternode");
+    }
+
+    /// Seed a masternode carrying an associated voter identity — the state that
+    /// lets it cast a DPNS vote. Returns the node's own id, which is also the
+    /// ProTxHash its votes are published and cached under.
+    fn seed_masternode_with_voter(ctx: &Arc<AppContext>, byte: u8, alias: &str) -> Identifier {
+        let pv = PlatformVersion::latest();
+        let node_id = Identifier::from([byte; 32]);
+        let voter_identity =
+            Identity::create_basic_identity(Identifier::from([byte ^ 0xFF; 32]), pv)
+                .expect("voter identity");
+        let voter_key = dash_sdk::platform::IdentityPublicKey::random_key(1, Some(1), pv);
+        let qi = QualifiedIdentity {
+            identity: Identity::create_basic_identity(node_id, pv).expect("basic identity"),
+            associated_voter_identity: Some((voter_identity, voter_key)),
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::Masternode,
+            alias: Some(alias.to_owned()),
+            private_keys: KeyStorage::default(),
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::PendingCreation,
+            network: ctx.network(),
+        };
+        ctx.insert_local_qualified_identity(&qi, &None)
+            .expect("seed masternode with voter");
+        node_id
+    }
+
+    /// A vote a node cast resolves on that node's own card.
+    ///
+    /// The card reads the proved-vote cache, which is keyed by the id the vote
+    /// was published under — the node's ProTxHash, never the separate
+    /// `associated_voter_identity` record. The vote is written here through the
+    /// production writer, so this asserts reader/writer agreement rather than
+    /// restating either side: keying the read on anything else can only miss,
+    /// and a miss is reported as the permanent "Checking" line.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_cast_vote_resolves_on_the_card_of_the_node_that_cast_it() {
+        let (ctx, _tmp) = offline_ctx().await;
+        let node_id = seed_masternode_with_voter(&ctx, 0x55, "voting-node");
+        ctx.seed_dpns_contest_for_test("alpha", None, false);
+        let poll_id = ctx.dpns_vote_poll_id("alpha").expect("DPNS vote poll id");
+        ctx.cache_confirmed_dpns_vote(node_id, poll_id, ResourceVoteChoice::Lock)
+            .expect("cache the confirmed vote");
+
+        let screen = MasternodesScreen::new(&ctx);
+
+        assert_eq!(
+            screen.dpns_status_lines_for_test(),
+            vec!["Votes cast in all active contests".to_string()],
+            "the card must report the vote this node cast, not stay on \"Checking\"",
+        );
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    /// Picking a segment never writes storage from the UI: the choice is
+    /// persisted through a backend task once no user action is pending.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn segment_choice_is_saved_through_a_backend_task() {
+        let (ctx, _tmp) = offline_ctx().await;
+        let mut screen = MasternodesScreen::new(&ctx);
+        let before = ctx.masternodes_last_segment().unwrap();
+        let other = if before == Some(MasternodesSegment::Votes) {
+            MasternodesSegment::Nodes
+        } else {
+            MasternodesSegment::Votes
+        };
+        screen.select_segment(other);
+        assert_eq!(ctx.masternodes_last_segment().unwrap(), before);
+        assert_eq!(screen.pending_segment_save, Some(other));
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    /// A node with no voting key can vote in nothing, so its card carries the
+    /// empty summary instead of a contest count it could never act on.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_node_without_a_voting_key_gets_the_empty_dpns_summary() {
+        let (ctx, _tmp) = offline_ctx().await;
+        seed_masternode(&ctx, 0x66, Some("read-only-node"));
+        ctx.seed_dpns_contest_for_test("alpha", None, false);
+
+        let screen = MasternodesScreen::new(&ctx);
+
+        assert_eq!(
+            screen.dpns_status_lines_for_test(),
+            vec!["No open contests".to_string()],
+            "a node that cannot vote must not be summarised against open contests",
+        );
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2033,6 +2315,25 @@ mod tests {
         ctx.wallet_backend().expect("backend").shutdown().await;
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn voting_ui_leaving_detail_clears_the_scoped_voting_key_prompt() {
+        let (ctx, _tmp) = offline_ctx().await;
+        let mut screen = MasternodesScreen::new(&ctx);
+        let mut detail = MasternodeDetailView::new(
+            &ctx,
+            masternode_identity(&ctx, Identifier::from([0x45; 32])),
+        );
+        detail.set_voter_key_prompt_for_test("unsubmitted-test-input");
+        assert!(detail.has_voter_key_prompt_for_test());
+        screen.view = MasternodesView::Detail(Box::new(detail));
+        screen.on_leave();
+        let MasternodesView::Detail(detail) = &screen.view else {
+            panic!("detail");
+        };
+        assert!(!detail.has_voter_key_prompt_for_test());
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
     /// SEC — the reported case: the user submits, navigates away while the load
     /// runs, and the load fails behind their back. The form is kept open for a
     /// corrected resubmit, so nothing else would ever drop its secrets. Leaving
@@ -2061,37 +2362,9 @@ mod tests {
         ctx.wallet_backend().expect("backend").shutdown().await;
     }
 
-    /// SEC — the detail view's in-place `Add voting key` prompt holds a plaintext
-    /// WIF too, and lives in the very same root screen. A prompt left filled but
-    /// unsubmitted must not survive the user leaving the tab.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn leaving_the_tab_discards_an_unsubmitted_voting_key() {
-        let (ctx, _tmp) = offline_ctx().await;
-        seed_masternode(&ctx, 0xc5, None);
-        let mut screen = MasternodesScreen::new(&ctx);
-        screen.open_detail(Identifier::from([0xc5; 32]));
-
-        let MasternodesView::Detail(detail) = &mut screen.view else {
-            panic!("the detail view must be open");
-        };
-        detail.set_voter_key_prompt_for_test("voter-wif");
-
-        screen.on_leave();
-
-        let MasternodesView::Detail(detail) = &screen.view else {
-            panic!("leaving must not discard the detail view");
-        };
-        assert!(
-            !detail.has_voter_key_prompt_for_test(),
-            "an unsubmitted voting key must not outlive the tab"
-        );
-
-        ctx.wallet_backend().expect("backend").shutdown().await;
-    }
-
-    /// A node with no detail view open and no nodes at all both resolve to "no
-    /// selection" — the pill falls back to its placeholder rather than naming a
-    /// node the page is not showing.
+    /// A screen with no node loaded and no detail view open has nothing to
+    /// select: the pill falls back to its placeholder rather than naming a node
+    /// the page is not showing.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn empty_page_offers_no_nodes_on_the_pill() {
         let (ctx, _tmp) = offline_ctx().await;

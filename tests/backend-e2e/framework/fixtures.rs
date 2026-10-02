@@ -355,6 +355,7 @@ async fn register_dpns_name(
     let task = BackendTask::IdentityTask(IdentityTask::RegisterDpnsName(RegisterDpnsNameInput {
         qualified_identity: qi,
         name_input: name.clone(),
+        signing_key_id: None,
     }));
     let result = run_task(app_context, task).await.unwrap_or_else(|e| {
         panic!(

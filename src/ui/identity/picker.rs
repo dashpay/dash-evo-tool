@@ -108,8 +108,8 @@ pub fn render(
                                     identity.identity.id(),
                                     profile.and_then(|p| p.display_name_opt()),
                                 );
-                                let mut card =
-                                    build_card(identity, name.as_deref()).with_width(card_width);
+                                let mut card = build_card(app_context, identity, name.as_deref())
+                                    .with_width(card_width);
                                 if let Some(profile) = profile {
                                     card = card.with_avatar_url(&profile.avatar_url);
                                 }
@@ -182,8 +182,13 @@ enum PickerCell<'a> {
     Add,
 }
 
-/// Build a picker card using the same profile name as navigation.
-fn build_card(identity: &QualifiedIdentity, display_name: Option<&str>) -> IdentityPickerCard {
+/// Build a picker card using the same profile name as navigation and the
+/// identity's main username as its handle.
+fn build_card(
+    app_context: &AppContext,
+    identity: &QualifiedIdentity,
+    display_name: Option<&str>,
+) -> IdentityPickerCard {
     let id_base58 = identity.identity.id().to_string(Encoding::Base58);
 
     // Balance formatting: design-spec §B.14 uses `{amount} DASH` with tabular
@@ -209,10 +214,8 @@ fn build_card(identity: &QualifiedIdentity, display_name: Option<&str>) -> Ident
     if let Some(name) = display_name {
         card = card.with_display_name(name);
     }
-    if let Some(dpns) = identity.dpns_names.first().map(|n| n.name.as_str())
-        && !dpns.is_empty()
-    {
-        card = card.with_dpns_handle(dpns);
+    if let Some(dpns) = app_context.main_username(identity) {
+        card = card.with_dpns_handle(&dpns);
     }
 
     card

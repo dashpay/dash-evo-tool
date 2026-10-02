@@ -8,7 +8,6 @@ pub mod component_trait;
 pub mod confirmation_dialog;
 pub mod contract_chooser_panel;
 pub mod dashpay_subscreen_chooser_panel;
-pub mod dpns_subscreen_chooser_panel;
 pub mod entropy_grid;
 pub mod global_nav_switcher;
 pub mod icons;
@@ -29,6 +28,7 @@ pub mod subscreen_chooser_panel;
 pub mod tokens_subscreen_chooser_panel;
 pub mod tools_subscreen_chooser_panel;
 pub mod top_panel;
+pub mod utc_schedule_input;
 pub mod wallet_unlock_popup;
 
 // Re-export the main traits for easy access

@@ -16,17 +16,19 @@ use dash_sdk::{
         data_contract::{
             accessors::v0::DataContractV0Getters, document_type::accessors::DocumentTypeV0Getters,
         },
-        document::{DocumentV0, DocumentV0Getters},
-        identity::accessors::IdentityGettersV0,
-        platform_value::{Bytes32, Value},
+        document::DocumentV0,
+        identity::accessors::{IdentityGettersV0, IdentitySettersV0},
+        platform_value::Bytes32,
         util::{hash::hash_double, strings::convert_to_homograph_safe_chars},
     },
-    drive::query::{SelectProjection, WhereClause, WhereOperator},
     platform::Fetch,
-    platform::{Document, DocumentQuery, FetchMany, transition::put_document::PutDocument},
+    platform::{Document, transition::put_document::PutDocument},
 };
 
 use super::{BackendTaskSuccessResult, RegisterDpnsNameInput};
+use crate::model::dpns_usernames::{
+    UsernameAvailability, dpns_signing_requirement, key_can_sign_documents,
+};
 
 fn rebrand_dpns_domain_conflict(error: TaskError) -> TaskError {
     match error {
@@ -48,10 +50,27 @@ impl AppContext {
             return Err(TaskError::InvalidDpnsName { validation });
         }
 
+        // Authoritative re-check before any fee is spent: the name may have been
+        // taken, locked, or closed to new requests since the user chose it.
+        let availability = self
+            .username_availability(
+                sdk,
+                input.qualified_identity.identity.id(),
+                &input.name_input,
+            )
+            .await?;
+        if !availability.allows_registration() {
+            return Err(TaskError::UsernameNoLongerAvailable { availability });
+        }
+        let joined_until = match availability {
+            UsernameAvailability::Joinable { join_end, .. } => Some(join_end),
+            _ => None,
+        };
+
         let mut rng = StdRng::from_entropy();
         let dpns_contract = self.dpns_contract.clone();
 
-        let mut qualified_identity = input.qualified_identity;
+        let qualified_identity = input.qualified_identity;
 
         let entropy = Bytes32::random_with_rng(&mut rng);
         let preorder_document_type = dpns_contract
@@ -152,9 +171,16 @@ impl AppContext {
         )
         .map_err(|error| SdkError::Protocol(*error))?;
 
-        let public_key = qualified_identity
-            .document_signing_key(&preorder_document_type)
-            .ok_or(TaskError::NoDocumentSigningKey)?;
+        let public_key = match input.signing_key_id {
+            Some(key_id) => qualified_identity
+                .identity
+                .get_public_key_by_id(key_id)
+                .filter(|key| {
+                    key_can_sign_documents(key, dpns_signing_requirement(&self.dpns_contract))
+                }),
+            None => qualified_identity.document_signing_key(&preorder_document_type),
+        }
+        .ok_or(TaskError::NoDocumentSigningKey)?;
 
         let fee_estimator = self.fee_estimator();
         let estimated_fee = fee_estimator.estimate_document_batch(2);
@@ -188,99 +214,131 @@ impl AppContext {
             .await
             .map_err(|error| rebrand_dpns_domain_conflict(TaskError::from(error)))?;
 
-        let dpns_names_document_query = DocumentQuery {
-            sub_queries: Vec::new(),
-            select: SelectProjection::documents(),
-            data_contract: self.dpns_contract.clone(),
-            document_type_name: "domain".to_string(),
-            where_clauses: vec![WhereClause {
-                field: "records.identity".to_string(),
-                operator: WhereOperator::Equal,
-                value: Value::Identifier(qualified_identity.identity.id().into()),
-            }],
-            time_range_clauses: Vec::new(),
-            group_by: Vec::new(),
-            having: Vec::new(),
-            order_by_clauses: vec![],
-            limit: 100,
-            offset: None,
-            start: None,
-        };
-
-        let owned_dpns_names = Document::fetch_many(sdk, dpns_names_document_query)
-            .await
-            .map(|document_map| {
-                document_map
-                    .values()
-                    .filter_map(|maybe_doc| {
-                        maybe_doc.as_ref().and_then(|doc| {
-                            let name = doc
-                                .get("label")
-                                .map(|label| label.to_str().unwrap_or_default());
-                            let acquired_at = doc
-                                .created_at()
-                                .into_iter()
-                                .chain(doc.transferred_at())
-                                .max();
-
-                            match (name, acquired_at) {
-                                (Some(name), Some(acquired_at)) => Some(DPNSNameInfo {
-                                    name: name.to_string(),
-                                    acquired_at,
-                                }),
-                                _ => None,
-                            }
-                        })
-                    })
-                    .collect::<Vec<DPNSNameInfo>>()
-            })
-            .map_err(|e| TaskError::DpnsFetchError {
-                source: Box::new(e),
-            })?;
-
-        qualified_identity.dpns_names = owned_dpns_names;
-
-        qualified_identity.initialize_node_alias(None, Some(&input.name_input));
-
-        let refreshed_identity = dash_sdk::platform::Identity::fetch_by_identifier(
-            sdk,
-            qualified_identity.identity.id(),
-        )
-        .await?
-        .ok_or(TaskError::IdentityNotFound)?;
-
-        let balance_after = refreshed_identity.balance();
-        let actual_fee = balance_before.saturating_sub(balance_after);
-
-        tracing::info!(
-            "DPNS registration complete: estimated fee {} credits, actual fee {} credits",
-            estimated_fee,
-            actual_fee
-        );
-        if actual_fee != estimated_fee {
-            tracing::warn!(
-                "Fee mismatch: estimated {} vs actual {} (diff: {})",
+        Ok(self
+            .finish_username_registration(
+                sdk,
+                qualified_identity,
+                &input.name_input,
+                outcome,
+                joined_until,
+                balance_before,
                 estimated_fee,
-                actual_fee,
-                actual_fee as i64 - estimated_fee as i64
+            )
+            .await)
+    }
+
+    /// Wrap up a registration whose documents were already broadcast and paid for.
+    ///
+    /// Infallible on purpose: the user has paid, so a failed re-read or local
+    /// save is logged and the registration still reports success, never inviting
+    /// a second payment.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the registration's already-computed facts, passed once"
+    )]
+    async fn finish_username_registration(
+        &self,
+        sdk: &Sdk,
+        identity: crate::model::qualified_identity::QualifiedIdentity,
+        name: &str,
+        outcome: crate::model::dpns::DpnsRegistrationOutcome,
+        joined_until: Option<u64>,
+        balance_before: u64,
+        estimated_fee: u64,
+    ) -> BackendTaskSuccessResult {
+        // The name request is broadcast and paid for: from here on nothing may
+        // report failure, or the user would be invited to pay again.
+        let identity_id = identity.identity.id();
+        if outcome == crate::model::dpns::DpnsRegistrationOutcome::PendingCommunityVote
+            && let Err(error) =
+                self.record_submitted_username_request(sdk, &identity_id, name, joined_until)
+        {
+            tracing::warn!(
+                ?error,
+                "Submitted username request could not be stored locally"
             );
         }
 
-        qualified_identity.identity = refreshed_identity;
+        let refreshed_names = match self.fetch_owned_dpns_names(sdk, identity_id).await {
+            Ok(names) => Some(names),
+            Err(error) => {
+                tracing::warn!(
+                    ?error,
+                    "Registered names could not be re-read after registration"
+                );
+                None
+            }
+        };
 
-        self.update_local_qualified_identity(&qualified_identity)?;
+        let mut refreshed_balance = None;
+        let fee_result = match dash_sdk::platform::Identity::fetch_by_identifier(sdk, identity_id)
+            .await
+        {
+            Ok(Some(refreshed_identity)) => {
+                let actual_fee = balance_before.saturating_sub(refreshed_identity.balance());
+                refreshed_balance = Some(refreshed_identity.balance());
+                if actual_fee != estimated_fee {
+                    tracing::warn!(
+                        estimated_fee,
+                        actual_fee,
+                        "Username registration fee differs from the estimate"
+                    );
+                }
+                FeeResult::new(estimated_fee, actual_fee)
+            }
+            Ok(None) | Err(_) => {
+                tracing::warn!("Identity balance could not be re-read after username registration");
+                FeeResult::estimated_only(estimated_fee)
+            }
+        };
 
-        let fee_result = FeeResult::new(estimated_fee, actual_fee);
-        Ok(BackendTaskSuccessResult::RegisteredDpnsName {
+        if let Err(error) = self.edit_local_qualified_identity(&identity_id, |fresh| {
+            if let Some(names) = refreshed_names {
+                fresh.dpns_names = names;
+            } else if outcome == crate::model::dpns::DpnsRegistrationOutcome::Registered
+                && !fresh.dpns_names.iter().any(|known| known.name == name)
+            {
+                fresh.dpns_names.push(DPNSNameInfo {
+                    name: name.to_owned(),
+                    acquired_at: crate::utils::time::now_ms(),
+                });
+            }
+            if let Some(balance) = refreshed_balance {
+                fresh.identity.set_balance(balance);
+            }
+            let main_username = self.main_username(fresh);
+            fresh.initialize_node_alias(None, main_username.as_deref());
+            Ok(())
+        }) {
+            tracing::warn!(
+                ?error,
+                "Identity could not be saved locally after username registration"
+            );
+        }
+
+        BackendTaskSuccessResult::RegisteredDpnsName {
             outcome,
             fee_result,
-        })
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dpns_registration_needs_a_high_or_critical_key() {
+        use dash_sdk::dpp::data_contracts::SystemDataContract;
+        use dash_sdk::dpp::identity::SecurityLevel;
+        use dash_sdk::dpp::system_data_contracts::load_system_data_contract;
+        let contract = load_system_data_contract(
+            SystemDataContract::DPNS,
+            dash_sdk::dpp::version::PlatformVersion::latest(),
+        )
+        .expect("DPNS");
+        assert_eq!(dpns_signing_requirement(&contract), SecurityLevel::HIGH);
+    }
     use dash_sdk::dpp::consensus::ConsensusError::StateError as ConsensusStateError;
     use dash_sdk::dpp::consensus::state::state_error::StateError;
 
@@ -323,5 +381,155 @@ mod tests {
         let error = rebrand_dpns_domain_conflict(TaskError::DataContractNotFound);
 
         assert!(matches!(error, TaskError::DataContractNotFound));
+    }
+
+    /// A user identity with no names, alias, or keys.
+    fn bare_identity(byte: u8) -> crate::model::qualified_identity::QualifiedIdentity {
+        use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
+        use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
+        QualifiedIdentity {
+            identity: dash_sdk::platform::Identity::create_basic_identity(
+                [byte; 32].into(),
+                dash_sdk::dpp::version::PlatformVersion::latest(),
+            )
+            .expect("identity"),
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: None,
+            private_keys: KeyStorage::default(),
+            dpns_names: Vec::new(),
+            associated_wallets: Default::default(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: Default::default(),
+            status: IdentityStatus::Active,
+            network: dash_sdk::dpp::dashcore::Network::Testnet,
+        }
+    }
+
+    #[tokio::test]
+    async fn review_regression_registration_preserves_concurrent_identity_edits() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(
+            std::sync::Arc::new(crate::wallet_backend::kv_test_support::InMemoryKv::default()),
+        ));
+        let stale = bare_identity(8);
+        let mut current = stale.clone();
+        current.alias = Some("Updated during registration".into());
+        let key = dash_sdk::platform::IdentityPublicKey::random_key(
+            9,
+            Some(8),
+            dash_sdk::dpp::version::PlatformVersion::latest(),
+        );
+        current.private_keys.insert_at((crate::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity, 9), (
+            crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey::from(key.clone()),
+            crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData::InVault,
+        ));
+        ctx.update_local_qualified_identity(&current).unwrap();
+        ctx.finish_username_registration(
+            &Sdk::new_mock(),
+            stale,
+            "alice-123",
+            crate::model::dpns::DpnsRegistrationOutcome::Registered,
+            None,
+            1_000,
+            100,
+        )
+        .await;
+        let saved = ctx
+            .get_local_qualified_identity(&current.identity.id())
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.alias, current.alias);
+        assert!(saved.private_keys.first_live_candidate(&key).is_some());
+        assert!(saved.dpns_names.iter().any(|name| name.name == "alice-123"));
+    }
+
+    /// Once the documents are broadcast and paid for, failed re-reads must not
+    /// turn into an error that re-enables Pay; the request is recorded and no
+    /// automatic alias hides the user's chosen main name.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn paid_registration_succeeds_when_rereads_fail() {
+        use crate::model::dpns::DpnsRegistrationOutcome;
+        use crate::model::dpns_usernames::RequestPhase;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(
+            std::sync::Arc::new(crate::wallet_backend::kv_test_support::InMemoryKv::default()),
+        ));
+        // No expectations: every network re-read fails.
+        let sdk = Sdk::new_mock();
+        let identity = bare_identity(7);
+        let id = identity.identity.id();
+        ctx.update_local_qualified_identity(&identity).unwrap();
+
+        let pending = ctx
+            .finish_username_registration(
+                &sdk,
+                identity.clone(),
+                "alice",
+                DpnsRegistrationOutcome::PendingCommunityVote,
+                None,
+                1_000,
+                200,
+            )
+            .await;
+        let BackendTaskSuccessResult::RegisteredDpnsName {
+            outcome,
+            fee_result,
+        } = pending
+        else {
+            panic!("expected a successful registration, got {pending:?}");
+        };
+        assert_eq!(outcome, DpnsRegistrationOutcome::PendingCommunityVote);
+        assert_eq!(fee_result.estimated_fee, 200);
+        let requests = ctx.username_requests_for(&id);
+        assert_eq!(requests.len(), 1, "the paid request must be listed");
+        assert_eq!(requests[0].phase, RequestPhase::Joinable);
+
+        let registered = ctx
+            .finish_username_registration(
+                &sdk,
+                identity,
+                "bob",
+                DpnsRegistrationOutcome::Registered,
+                None,
+                1_000,
+                100,
+            )
+            .await;
+        assert!(matches!(
+            registered,
+            BackendTaskSuccessResult::RegisteredDpnsName { .. }
+        ));
+    }
+
+    /// USR-TC-018 backend half: availability is re-checked before anything is
+    /// broadcast, so a failed or changed check spends nothing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn registration_rechecks_availability_before_spending() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        // No expectations: the first network call (the re-check) fails.
+        let result = ctx
+            .register_dpns_name(
+                &Sdk::new_mock(),
+                RegisterDpnsNameInput {
+                    qualified_identity: bare_identity(8),
+                    name_input: "alice".to_owned(),
+                    signing_key_id: None,
+                },
+            )
+            .await;
+        assert!(
+            matches!(
+                result,
+                Err(TaskError::UsernameAvailabilityCheckFailed { .. })
+            ),
+            "expected the re-check to stop the registration, got {result:?}"
+        );
     }
 }

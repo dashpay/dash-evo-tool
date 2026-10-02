@@ -3,17 +3,18 @@
 //!
 //! Proves the canonical contract the remaining transaction screens will copy:
 //! dispatching the registration raises the global blocking overlay, and every
-//! terminal result — success (`display_task_result`) or error
-//! (`display_message`) — tears it down (the no-hard-lock guarantee).
+//! terminal result — success (`display_task_result`) or a matching error
+//! (`display_backend_task_error`) — tears it down (the no-hard-lock guarantee).
 //!
 //! The screen needs an `Arc<AppContext>`, so each test borrows one from a
 //! throwaway `AppState` built in an isolated data dir. The overlay raise/teardown
 //! runs against an independent `egui::Context` the AppState never renders, so the
 //! app's own SPV block can't perturb the `has_global` assertions.
 
-use crate::support::with_isolated_data_dir;
-use dash_evo_tool::app::AppState;
-use dash_evo_tool::backend_task::{BackendTaskSuccessResult, FeeResult};
+use crate::support::{fresh_app_context, with_isolated_data_dir};
+use dash_evo_tool::app::{AppAction, AppState};
+use dash_evo_tool::backend_task::error::TaskError;
+use dash_evo_tool::backend_task::{BackendTaskContext, BackendTaskSuccessResult, FeeResult};
 use dash_evo_tool::context::AppContext;
 use dash_evo_tool::model::dpns::DpnsRegistrationOutcome;
 use dash_evo_tool::model::qualified_identity::encrypted_key_storage::KeyStorage;
@@ -100,7 +101,6 @@ fn assert_registration_outcome_copy(outcome: DpnsRegistrationOutcome, expected: 
         harness.run();
 
         assert!(harness.query_by_label(expected).is_some());
-        assert!(harness.query_by_label("DPNS Name Registered!").is_none());
         assert!(harness.query_by_label(wrong).is_none());
     });
 }
@@ -109,8 +109,8 @@ fn assert_registration_outcome_copy(outcome: DpnsRegistrationOutcome, expected: 
 fn dpns_registered_outcome_renders_finalized_copy() {
     assert_registration_outcome_copy(
         DpnsRegistrationOutcome::Registered,
-        "Your username is registered. You can use it now.",
-        "Your username request was submitted. Other people can also request this name, so the community will vote on who receives it. Check the Pending label on your identity for updates.",
+        "People can now find and pay you by this name.",
+        "We'll show the result on your identity's page. You don't need to keep this screen open.",
     );
 }
 
@@ -118,8 +118,8 @@ fn dpns_registered_outcome_renders_finalized_copy() {
 fn dpns_pending_outcome_renders_voting_copy() {
     assert_registration_outcome_copy(
         DpnsRegistrationOutcome::PendingCommunityVote,
-        "Your username request was submitted. Other people can also request this name, so the community will vote on who receives it. Check the Pending label on your identity for updates.",
-        "Your username is registered. You can use it now.",
+        "We'll show the result on your identity's page. You don't need to keep this screen open.",
+        "People can now find and pay you by this name.",
     );
 }
 
@@ -189,24 +189,42 @@ fn dpns_registration_defaults_to_app_scoped_identity() {
     });
 }
 
-/// An error message tears the overlay down (error terminal path):
-/// failed registration can never leave the window hard-locked.
+/// Only the dispatched registration's error releases the blocking overlay.
 #[test]
-fn dpns_error_message_clears_overlay() {
+fn dpns_registration_error_clears_overlay() {
     with_isolated_data_dir(|| {
-        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
-        let _guard = rt.enter();
-
-        let mut screen = screen_with_context();
+        let (_rt, app_context) = fresh_app_context();
+        let identity_id = seed_identity_for_dpns(&app_context, 0x33, "Alice");
+        app_context.set_selected_identity(Some(identity_id));
+        let mut screen = RegisterDpnsNameScreen::new(&app_context, RegisterDpnsNameSource::Dpns);
+        screen.type_label_for_test("alice");
         let ctx = egui::Context::default();
 
-        screen.raise_progress_overlay_for_test(&ctx);
+        let AppAction::BackendTaskWithContext { context, .. } =
+            screen.begin_registration_for_test(&ctx)
+        else {
+            panic!("expected registration dispatch");
+        };
         assert!(ProgressOverlay::has_global(&ctx));
 
-        screen.display_message("Registration failed. Try again.", MessageType::Error);
+        let error = TaskError::UsernameAvailabilityCheckFailed {
+            source: Box::new(dash_sdk::Error::Generic("timeout".into())),
+        };
+        screen.display_backend_task_error(&BackendTaskContext::Unknown, &error);
+        assert!(!screen.display_task_error(&error));
+        screen.display_message(&error.to_string(), MessageType::Error);
+        assert!(
+            ProgressOverlay::has_global(&ctx),
+            "an unrelated error must not release the pending registration"
+        );
+
+        screen.display_backend_task_error(&context, &error);
+        assert!(!screen.display_task_error(&error));
+        screen.display_message(&error.to_string(), MessageType::Error);
         assert!(
             !ProgressOverlay::has_global(&ctx),
             "an error result must tear down the blocking overlay"
         );
+        assert!(screen.is_confirming_for_test());
     });
 }

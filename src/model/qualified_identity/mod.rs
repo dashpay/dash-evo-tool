@@ -606,6 +606,14 @@ impl QualifiedIdentity {
             .map_err(|e| format!("Failed to decode QualifiedIdentity: {}", e))
     }
 
+    /// Whether a voter identity and a matching signing-key reference are loaded.
+    /// Secret availability is checked by the signer at submission time.
+    pub fn can_cast_masternode_vote(&self) -> bool {
+        self.associated_voter_identity
+            .as_ref()
+            .is_some_and(|(_, key)| self.can_sign_with(key))
+    }
+
     /// Which masternode/evonode key roles are loaded for this identity.
     ///
     /// Voting presence is signalled by a loaded voter identity
@@ -1070,11 +1078,27 @@ impl QualifiedIdentity {
     }
 
     /// Resolve the profile name with username and identifier fallbacks.
+    ///
+    /// The username is the first registered name; hydrated identities list
+    /// their main username first. Prefer
+    /// [`Self::display_name_label_with_username`] when the main username is known.
     pub fn display_name_label(&self, display_name: Option<&str>) -> String {
+        self.display_name_label_with_username(
+            display_name,
+            self.dpns_names.first().map(|name| name.name.as_str()),
+        )
+    }
+
+    /// Resolve the profile name with the given username and identifier fallbacks.
+    pub fn display_name_label_with_username(
+        &self,
+        display_name: Option<&str>,
+        username: Option<&str>,
+    ) -> String {
         let preferred = self.administrative_alias().or(display_name);
         crate::model::identity_name::display_label(
             preferred,
-            self.dpns_names.first().map(|name| name.name.as_str()),
+            username,
             &self.identity.id().to_string(Encoding::Base58),
         )
     }
@@ -2391,6 +2415,36 @@ mod masternode_key_presence_tests {
     fn read_only_node_has_no_keys() {
         let presence = qi_with(false, &[]).masternode_key_presence();
         assert_eq!(presence, MasternodeKeyPresence::default());
+    }
+
+    /// VOTE-TC-013: only a loaded voter identity satisfies the vote submission
+    /// path. A read-only node, and a node carrying nothing but a `VOTING`-purpose
+    /// main key, must both be refused before a vote is composed.
+    #[test]
+    fn review_regression_only_a_loaded_voter_identity_can_cast_a_masternode_vote() {
+        assert!(!qi_with(true, &[]).can_cast_masternode_vote());
+        assert!(!qi_with(false, &[]).can_cast_masternode_vote());
+        assert!(!qi_with(false, &[Purpose::VOTING]).can_cast_masternode_vote());
+        let mut identity = qi_with(true, &[]);
+        let key = identity
+            .associated_voter_identity
+            .as_ref()
+            .unwrap()
+            .1
+            .clone();
+        identity.private_keys.insert_at(
+            (PrivateKeyTarget::PrivateKeyOnVoterIdentity, key.id()),
+            (
+                QualifiedIdentityPublicKey::from(key),
+                PrivateKeyData::InVault,
+            ),
+        );
+        assert!(
+            identity.can_cast_masternode_vote(),
+            "protected references remain eligible for the signer to unlock"
+        );
+        identity.private_keys = KeyStorage::default();
+        assert!(!identity.can_cast_masternode_vote());
     }
 }
 

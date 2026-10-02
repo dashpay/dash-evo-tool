@@ -64,12 +64,11 @@ impl AppContext {
         })
     }
 
-    /// Name an identity consistently with its profile, username, or shortened identifier.
+    /// Name an identity consistently with its profile, main username, or shortened identifier.
     pub fn identity_display_label(&self, identity: &QualifiedIdentity) -> String {
-        identity.display_name_label(
-            self.identity_display_name(identity.identity.id())
-                .as_deref(),
-        )
+        let display_name = self.identity_display_name(identity.identity.id());
+        let main_username = self.main_username(identity);
+        identity.display_name_label_with_username(display_name.as_deref(), main_username.as_deref())
     }
 
     /// Serialize profile fetch/mirror/write operations for this owner and network.

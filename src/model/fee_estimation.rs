@@ -741,6 +741,17 @@ impl PlatformFeeEstimator {
     }
 }
 
+/// Community vote fee for registering a contested username, in credits.
+///
+/// Read from the protocol's vote-resolution fund (0.2 DASH before protocol 14,
+/// 0.1 DASH from 14). Platform never returns it, whatever the vote outcome.
+pub fn contest_fee_credits(platform_version: &PlatformVersion) -> Credits {
+    platform_version
+        .fee_version
+        .vote_resolution_fund_fees
+        .contested_document_vote_resolution_fund_required_amount
+}
+
 /// Credits per DASH: 1 DASH = 10^DASH_DECIMAL_PLACES credits (100 billion).
 pub const CREDITS_PER_DASH: u64 = 10u64.pow(DASH_DECIMAL_PLACES as u32);
 
@@ -1100,6 +1111,15 @@ pub fn shield_from_balance_fee_headroom(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn contest_fee_follows_protocol_version() {
+        // USR-TC-005
+        let pv13 = PlatformVersion::get(13).expect("PV13");
+        let pv14 = PlatformVersion::get(14).expect("PV14");
+        assert_eq!(contest_fee_credits(pv13), 20_000_000_000);
+        assert_eq!(contest_fee_credits(pv14), 10_000_000_000);
+    }
 
     #[test]
     fn test_credit_transfer_estimate() {

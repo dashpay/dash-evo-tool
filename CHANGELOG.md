@@ -165,6 +165,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Weekly releases independently check the latest completed push results for
   tests and Clippy and scheduled fixture coverage and pin checks. A passing
   check cannot hide a failure in another gate; absent run history is allowed.
+  Scheduled checks and push tests use separate concurrency groups so they
+  cannot cancel each other.
 
 - Restoring imported keys remains recoverable after interrupted storage writes
   and reports unreadable protected keys. Startup migration preserves existing

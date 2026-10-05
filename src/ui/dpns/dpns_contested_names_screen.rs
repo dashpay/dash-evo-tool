@@ -35,9 +35,8 @@ use crate::model::dpns_voting::operator::{
 };
 use crate::model::dpns_voting::progress::needs_attention;
 use crate::model::dpns_voting::{
-    DpnsCurrentVoteState, DpnsScheduledVoteKey, DpnsVoteFailure, DpnsVoteOperation,
-    DpnsVoteOperationId, DpnsVoteTarget, DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming,
-    dpns_schedule_is_overdue,
+    DpnsCurrentVoteState, DpnsScheduledVoteKey, DpnsVoteFailure, DpnsVoteOperationId,
+    DpnsVoteTarget, DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming, dpns_schedule_is_overdue,
 };
 use crate::model::qualified_identity::IdentityType;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -64,7 +63,7 @@ use crate::ui::state::dpns_vote_cards::{
     VoteCard, move_focus, shortcut_for, sort_by_time_left,
 };
 use crate::ui::state::dpns_vote_operations::{
-    DpnsVoteOperationSnapshot, ScheduledDpnsVoteRow, group_scheduled_rows,
+    DpnsVoteOperationSnapshot, ScheduledDecisionGroup, ScheduledDpnsVoteRow, group_scheduled_rows,
 };
 use crate::ui::state::dpns_vote_state::DpnsVoteStateSnapshot;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
@@ -85,7 +84,7 @@ const SCHEDULE_IN_FUTURE_MESSAGE: &str =
 const KEEP_RUNNING_MESSAGE: &str = "Keep Dash Evo Tool running and connected until the scheduled time, or the scheduled votes will not be cast.";
 
 /// An absolute UTC time next to how far away it is, e.g.
-/// `2026-01-02 03:04:05 (in 2 days)`.
+/// `2026-01-02 03:04:05 UTC (in 2 days)`.
 fn timestamp_with_relative(date_time: DateTime<Utc>) -> String {
     let distance = HumanTime::from(date_time).to_string();
     let relative = if distance.contains("seconds") {
@@ -95,7 +94,7 @@ fn timestamp_with_relative(date_time: DateTime<Utc>) -> String {
     };
     format!(
         "{absolute} ({relative})",
-        absolute = date_time.format("%Y-%m-%d %H:%M:%S"),
+        absolute = date_time.format("%Y-%m-%d %H:%M:%S UTC"),
     )
 }
 
@@ -430,6 +429,7 @@ pub struct DPNSScreen {
     /// replaced. Keep the three in step: the render path reads only this.
     candidate_names: CandidateNameIndex,
     scheduled_votes: Arc<Mutex<Vec<ScheduledDpnsVoteRow>>>,
+    scheduled_groups: Arc<[ScheduledDecisionGroup]>,
     pub selected_votes: Vec<SelectedVote>,
     pub app_context: Arc<AppContext>,
     pending_backend_task: Option<BackendTask>,
@@ -543,6 +543,7 @@ impl DPNSScreen {
             active_contests,
             candidate_names,
             scheduled_votes,
+            scheduled_groups: Arc::from([]),
             selected_votes: Vec::new(),
             app_context: app_context.clone(),
             sort_column: SortColumn::ContestedName,
@@ -640,6 +641,7 @@ impl DPNSScreen {
         self.candidate_names.clear();
         self.contested_names.lock_recover().clear();
         self.scheduled_votes.lock_recover().clear();
+        self.scheduled_groups = Arc::from([]);
         self.node_set_network = None;
         self.voting_nodes.clear();
         self.resolved_nodes = ResolvedNodeSet::default();
@@ -1584,14 +1586,17 @@ impl DPNSScreen {
     fn render_table_scheduled_votes(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
         let mut show_cast_progress = false;
-        let rows = self.scheduled_votes.lock_recover().clone();
-        let mut groups = group_scheduled_rows(rows);
-        if self.sort_order == SortOrder::Descending {
-            groups.reverse();
-        }
+        let groups = Arc::clone(&self.scheduled_groups);
+        let descending = self.sort_order == SortOrder::Descending;
         let now = Utc::now().timestamp_millis().max(0) as u64;
         egui::ScrollArea::both().show(ui, |ui| {
-            for (index, group) in groups.iter().enumerate() {
+            for offset in 0..groups.len() {
+                let index = if descending {
+                    groups.len() - 1 - offset
+                } else {
+                    offset
+                };
+                let group = &groups[index];
                 let dark_mode = ui.visuals().dark_mode;
                 let choice = vote_choice_label(
                     group.choice,
@@ -1696,7 +1701,7 @@ impl DPNSScreen {
                                 .iter()
                                 .find(|identity| identity.identity.id() == vote.voter_id)
                                 .and_then(|identity| identity.alias.clone())
-                                .unwrap_or_else(|| short_identifier(vote.voter_id));
+                                .unwrap_or_else(|| crate::model::identity_name::masternode_label(vote.voter_id, None));
                             ui.add(Label::new(voter));
                         });
                         row.col(|ui| {
@@ -1797,7 +1802,9 @@ impl DPNSScreen {
             .iter()
             .find(|identity| identity.identity.id() == row.vote.voter_id)
             .and_then(|identity| identity.alias.clone())
-            .unwrap_or_else(|| short_identifier(row.vote.voter_id));
+            .unwrap_or_else(|| {
+                crate::model::identity_name::masternode_label(row.vote.voter_id, None)
+            });
         let mut choices = vec![
             (
                 ResourceVoteChoice::Lock,
@@ -1879,6 +1886,7 @@ impl DPNSScreen {
                 Some(((key.clone(), at), preset))
             })
             .collect();
+        self.scheduled_groups = group_scheduled_rows(rows.clone()).into();
         *self.scheduled_votes.lock_recover() = rows;
     }
 
@@ -2375,7 +2383,7 @@ impl DPNSScreen {
             return AppAction::None;
         }
         let voters = self.casting_voters(&plan);
-        let operation = DpnsVoteOperation::new(plan.aggregate.targets);
+        let operation = AppContext::new_dpns_vote_operation(plan.aggregate.targets);
         let labels =
             (self.confirm_timing == ConfirmTiming::BeforeEnd).then(|| RelativeScheduleLabels {
                 preset: self.relative_preset,
@@ -3074,14 +3082,10 @@ mod tests {
             Some("alice"),
         );
         assert!(named.starts_with("Vote for alice ("));
-        assert!(named.contains(&crate::model::identity_name::shorten_id(&encoded)));
-        assert!(!named.contains(&encoded));
+        assert!(named.contains(&encoded));
 
         let unresolved = vote_choice_label(ResourceVoteChoice::TowardsIdentity(candidate_id), None);
-        assert_eq!(
-            unresolved,
-            format!("Vote for {}", short_identifier(candidate_id))
-        );
+        assert_eq!(unresolved, format!("Vote for {encoded}"));
     }
 
     /// Submission is not blocked when a candidate name cannot be resolved, so
@@ -3099,7 +3103,10 @@ mod tests {
         );
         let expected = decision_row(
             "alpha",
-            &format!("Vote for {handle}", handle = short_identifier(candidate_id)),
+            &format!(
+                "Vote for {handle}",
+                handle = candidate_id.to_string(Encoding::Base58)
+            ),
             1,
         );
 
@@ -3165,7 +3172,13 @@ mod tests {
                 Some("alice")
             )
         );
-        assert!(!label.contains(&candidate_id.to_string(Encoding::Base58)));
+        assert!(label.contains(&candidate_id.to_string(Encoding::Base58)));
+    }
+
+    #[test]
+    fn absolute_vote_times_are_explicitly_utc() {
+        let at = Utc.with_ymd_and_hms(2026, 10, 5, 12, 34, 56).unwrap();
+        assert!(timestamp_with_relative(at).starts_with("2026-10-05 12:34:56 UTC ("));
     }
 
     #[test]
@@ -3581,7 +3594,7 @@ mod tests {
         use egui_kittest::kittest::Queryable;
         let (screen, _dir) = voting_ui_review_fixture();
         let target = screen.build_review_plan().unwrap().aggregate.targets[0].clone();
-        let mut operation = DpnsVoteOperation::new(vec![target]);
+        let mut operation = AppContext::new_dpns_vote_operation(vec![target]);
         operation.targets[0].status = DpnsVoteTargetStatus::Unconfirmed;
         screen
             .app_context
@@ -3616,7 +3629,7 @@ mod tests {
             let (screen, _dir) = voting_ui_review_fixture();
             let mut target = screen.build_review_plan().unwrap().aggregate.targets[0].clone();
             target.timing = VoteTiming::Scheduled(1);
-            let mut operation = DpnsVoteOperation::new(vec![target]);
+            let mut operation = AppContext::new_dpns_vote_operation(vec![target]);
             operation.targets[0].status = status;
             screen
                 .app_context
@@ -3704,7 +3717,7 @@ mod tests {
             let (screen, _dir) = voting_ui_review_fixture();
             let mut target = screen.build_review_plan().unwrap().aggregate.targets[0].clone();
             target.timing = VoteTiming::Scheduled(Utc::now().timestamp_millis() as u64);
-            let mut operation = DpnsVoteOperation::new(vec![target]);
+            let mut operation = AppContext::new_dpns_vote_operation(vec![target]);
             operation.targets[0].failure = Some(failure);
             screen
                 .app_context
@@ -4375,7 +4388,7 @@ mod tests {
     #[test]
     fn voting_ui_retry_reviews_only_the_failed_node_and_contest() {
         let (mut screen, _dir) = voting_ui_review_fixture();
-        let operation = DpnsVoteOperation::new(vec![
+        let operation = AppContext::new_dpns_vote_operation(vec![
             screen
                 .build_review_plan()
                 .unwrap()
@@ -4454,7 +4467,7 @@ mod tests {
         let mut third = first.clone();
         third.key.voter_id = Identifier::from([3; 32]);
         third.voter_alias = Some("node-three".to_owned());
-        let mut operation = DpnsVoteOperation::new(vec![first, second, third]);
+        let mut operation = AppContext::new_dpns_vote_operation(vec![first, second, third]);
         operation.targets[0].status = DpnsVoteTargetStatus::Confirmed;
         operation.targets[1].status = DpnsVoteTargetStatus::Rejected;
         operation.targets[2].status = DpnsVoteTargetStatus::Unconfirmed;
@@ -4519,7 +4532,7 @@ mod tests {
             .targets
             .remove(0);
         target.timing = VoteTiming::Scheduled(42);
-        let mut operation = DpnsVoteOperation::new(vec![target]);
+        let mut operation = AppContext::new_dpns_vote_operation(vec![target]);
         operation.targets[0].status = DpnsVoteTargetStatus::Queued;
         screen
             .app_context
@@ -4720,7 +4733,7 @@ mod tests {
             voter_id,
             vote_poll_id: Identifier::from([24; 32]),
         };
-        let mut operation = DpnsVoteOperation::new(vec![DpnsVoteTarget {
+        let mut operation = AppContext::new_dpns_vote_operation(vec![DpnsVoteTarget {
             key: key.clone(),
             voter_alias: None,
             contested_name: "remove-me".to_owned(),
@@ -4759,7 +4772,7 @@ mod tests {
             vote_poll_id: Identifier::from([26; 32]),
         };
         let at = 1_900_000_000_000;
-        let mut operation = DpnsVoteOperation::new(vec![DpnsVoteTarget {
+        let mut operation = AppContext::new_dpns_vote_operation(vec![DpnsVoteTarget {
             key: key.clone(),
             voter_alias: None,
             contested_name: "later".to_owned(),
@@ -4789,7 +4802,7 @@ mod tests {
     fn clear_all_result_rebuilds_scheduled_rows_immediately() {
         let (ctx, _temp_dir) = kv_ctx();
         let voter_id = Identifier::from([21; 32]);
-        let mut operation = DpnsVoteOperation::new(vec![DpnsVoteTarget {
+        let mut operation = AppContext::new_dpns_vote_operation(vec![DpnsVoteTarget {
             key: DpnsVoteTargetKey {
                 network: ctx.network(),
                 voter_id,

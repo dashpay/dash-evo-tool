@@ -7,8 +7,8 @@ use crate::backend_task::contested_names::ScheduledDPNSVote;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::dpns_voting::{
-    DpnsVoteAuthorityRank, DpnsVoteFailure, DpnsVoteOperation, DpnsVoteOperationId,
-    DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming, dpns_vote_authority_rank,
+    DpnsVoteFailure, DpnsVoteOperation, DpnsVoteOperationId, DpnsVoteTargetKey,
+    DpnsVoteTargetStatus, VoteTiming, authoritative_dpns_vote_outcomes,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -32,20 +32,23 @@ pub(crate) struct ScheduledDecisionGroup {
 /// their input order inside a group.
 pub(crate) fn group_scheduled_rows(rows: Vec<ScheduledDpnsVoteRow>) -> Vec<ScheduledDecisionGroup> {
     let mut groups: Vec<ScheduledDecisionGroup> = Vec::new();
+    let mut indices = BTreeMap::new();
     for row in rows {
-        match groups.iter_mut().find(|group| {
-            group.contested_name == row.vote.contested_name
-                && group.choice == row.vote.choice
-                && group.unix_timestamp == row.vote.unix_timestamp
-        }) {
-            Some(group) => group.rows.push(row),
-            None => groups.push(ScheduledDecisionGroup {
+        let key = (
+            row.vote.contested_name.clone(),
+            row.vote.choice,
+            row.vote.unix_timestamp,
+        );
+        let index = *indices.entry(key).or_insert_with(|| {
+            groups.push(ScheduledDecisionGroup {
                 contested_name: row.vote.contested_name.clone(),
                 choice: row.vote.choice,
                 unix_timestamp: row.vote.unix_timestamp,
-                rows: vec![row],
-            }),
-        }
+                rows: Vec::new(),
+            });
+            groups.len() - 1
+        });
+        groups[index].rows.push(row);
     }
     groups.sort_by(|a, b| {
         a.contested_name
@@ -110,55 +113,30 @@ impl DpnsVoteOperationSnapshot {
     }
 
     pub(crate) fn scheduled_vote_rows(&self) -> Vec<ScheduledDpnsVoteRow> {
-        let mut journal_rows = BTreeMap::<
-            (dash_sdk::platform::Identifier, String),
-            (DpnsVoteAuthorityRank, ScheduledDpnsVoteRow),
-        >::new();
-        for operation in &self.operations {
-            for outcome in &operation.targets {
-                let VoteTiming::Scheduled(timestamp) = outcome.target.timing else {
-                    continue;
-                };
-                let pair = (
-                    outcome.target.key.voter_id,
-                    outcome.target.contested_name.clone(),
-                );
-                let rank =
-                    dpns_vote_authority_rank(operation.created_at, operation.id, outcome.status);
-                if journal_rows
-                    .get(&pair)
-                    .is_some_and(|(current_rank, _)| *current_rank > rank)
-                {
-                    continue;
-                }
-                journal_rows.insert(
-                    pair,
-                    (
-                        rank,
-                        ScheduledDpnsVoteRow {
-                            vote: ScheduledDPNSVote {
-                                contested_name: outcome.target.contested_name.clone(),
-                                voter_id: outcome.target.key.voter_id,
-                                choice: outcome.target.requested_choice,
-                                unix_timestamp: timestamp,
-                                executed_successfully: outcome.status
-                                    == DpnsVoteTargetStatus::Confirmed,
-                            },
-                            journal_target: (operation.id, outcome.target.key.clone()),
-                            status: outcome.status,
-                            failure: outcome.failure,
-                        },
-                    ),
-                );
-            }
-        }
-
-        journal_rows
-            .into_values()
-            .map(|(_, row)| row)
-            .filter(|row| row.status != DpnsVoteTargetStatus::Cancelled)
-            .filter(|row| !self.dismissed_schedules.contains(&row.journal_target))
-            .collect()
+        authoritative_dpns_vote_outcomes(&self.operations, |outcome| {
+            matches!(outcome.target.timing, VoteTiming::Scheduled(_))
+        })
+        .into_values()
+        .filter_map(|(operation, outcome)| {
+            let VoteTiming::Scheduled(timestamp) = outcome.target.timing else {
+                return None;
+            };
+            Some(ScheduledDpnsVoteRow {
+                vote: ScheduledDPNSVote {
+                    contested_name: outcome.target.contested_name.clone(),
+                    voter_id: outcome.target.key.voter_id,
+                    choice: outcome.target.requested_choice,
+                    unix_timestamp: timestamp,
+                    executed_successfully: outcome.status == DpnsVoteTargetStatus::Confirmed,
+                },
+                journal_target: (operation.id, outcome.target.key.clone()),
+                status: outcome.status,
+                failure: outcome.failure,
+            })
+        })
+        .filter(|row| row.status != DpnsVoteTargetStatus::Cancelled)
+        .filter(|row| !self.dismissed_schedules.contains(&row.journal_target))
+        .collect()
     }
 
     fn replace(&mut self, operations: Vec<DpnsVoteOperation>) {
@@ -206,7 +184,7 @@ mod tests {
     }
 
     fn operation(status: DpnsVoteTargetStatus) -> DpnsVoteOperation {
-        let mut operation = DpnsVoteOperation::new(vec![DpnsVoteTarget {
+        let mut operation = AppContext::new_dpns_vote_operation(vec![DpnsVoteTarget {
             key: DpnsVoteTargetKey {
                 network: Network::Testnet,
                 voter_id: Identifier::from([1; 32]),
@@ -321,7 +299,7 @@ mod tests {
         choice: ResourceVoteChoice,
         timestamp: u64,
     ) -> DpnsVoteOperation {
-        let mut operation = DpnsVoteOperation::new(vec![DpnsVoteTarget {
+        let mut operation = AppContext::new_dpns_vote_operation(vec![DpnsVoteTarget {
             key: DpnsVoteTargetKey {
                 network: Network::Testnet,
                 voter_id: Identifier::from([7; 32]),
@@ -352,6 +330,23 @@ mod tests {
             unix_timestamp: timestamp,
             executed_successfully,
         }
+    }
+
+    #[test]
+    fn scheduled_rows_keep_distinct_polls_and_networks_with_the_same_name() {
+        let first = scheduled_operation(
+            10,
+            DpnsVoteTargetStatus::Scheduled,
+            ResourceVoteChoice::Lock,
+            100,
+        );
+        let mut second = first.clone();
+        second.targets[0].target.key.vote_poll_id = Identifier::from([99; 32]);
+        let mut third = first.clone();
+        third.targets[0].target.key.network = Network::Mainnet;
+        let mut snapshot = DpnsVoteOperationSnapshot::default();
+        snapshot.replace(vec![first, second, third]);
+        assert_eq!(snapshot.scheduled_vote_rows().len(), 3);
     }
 
     #[test]

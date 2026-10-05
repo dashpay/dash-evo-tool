@@ -1532,6 +1532,24 @@ impl BackendInitReason {
     }
 }
 
+fn route_username_refresh_to_hidden_screens(
+    stack: &mut [Screen],
+    context: &BackendTaskContext,
+    result: Result<&BackendTaskSuccessResult, &TaskError>,
+) {
+    let Some((_, hidden)) = stack.split_last_mut() else {
+        return;
+    };
+    for screen in hidden {
+        if let Screen::UsernameRequestScreen(screen) = screen {
+            match result {
+                Ok(result) => screen.display_backend_task_result(context, result.clone()),
+                Err(error) => screen.display_backend_task_error(context, error),
+            }
+        }
+    }
+}
+
 impl AppState {
     /// Creates a new `AppState`, opening the seed vault keyless.
     ///
@@ -3115,6 +3133,11 @@ impl App for AppState {
                 } => {
                     let unboxed_message = *message;
                     clear_profile_saving_banner_after_success(ctx, &context, &unboxed_message);
+                    route_username_refresh_to_hidden_screens(
+                        &mut self.screen_stack,
+                        &context,
+                        Ok(&unboxed_message),
+                    );
                     self.route_identity_result_to_hidden_hub(&context, &unboxed_message);
                     self.route_dpns_vote_result_to_hidden_screens(&context, &unboxed_message);
                     match unboxed_message {
@@ -3469,6 +3492,11 @@ impl App for AppState {
                         &mut self.scheduled_vote_sweeps_in_progress,
                         &context,
                         &err,
+                    );
+                    route_username_refresh_to_hidden_screens(
+                        &mut self.screen_stack,
+                        &context,
+                        Err(&err),
                     );
                     self.route_identity_error_to_hidden_hub(&context, &err);
                     self.route_dpns_vote_error_to_hidden_screens(&context, &err);
@@ -3942,7 +3970,7 @@ mod migration_banner_tests {
     use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 
     fn feedback_operation(statuses: &[DpnsVoteTargetStatus]) -> DpnsVoteOperation {
-        let mut operation = DpnsVoteOperation::new(
+        let mut operation = AppContext::new_dpns_vote_operation(
             statuses
                 .iter()
                 .enumerate()
@@ -4578,6 +4606,57 @@ mod dpns_result_routing_tests {
         DpnsScheduledVoteClearDisposition, DpnsScheduledVoteClearOutcome, DpnsScheduledVoteKey,
         DpnsVoteOperationId,
     };
+
+    #[test]
+    fn username_refresh_completes_under_registration_and_after_pop() {
+        use crate::ui::identity::register_dpns_name_screen::{
+            RegisterDpnsNameScreen, RegisterDpnsNameSource,
+        };
+        use crate::ui::identity::username_request_screen::UsernameRequestScreen;
+        for fail in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let app_context = crate::context::test_support::test_app_context(dir.path());
+            let mut status =
+                UsernameRequestScreen::new(&app_context, Identifier::from([1; 32]), "alice".into());
+            let AppAction::BackendTaskWithContext { context, .. } = status.begin_refresh() else {
+                panic!("expected refresh dispatch");
+            };
+            let mut stack = vec![
+                Screen::UsernameRequestScreen(status),
+                Screen::RegisterDpnsNameScreen(RegisterDpnsNameScreen::new(
+                    &app_context,
+                    RegisterDpnsNameSource::Identities,
+                )),
+            ];
+            let completed = BackendTaskSuccessResult::MyUsernameRequestsRefreshed;
+            let error = TaskError::DataContractNotFound;
+            let result = if fail { Err(&error) } else { Ok(&completed) };
+            route_username_refresh_to_hidden_screens(
+                &mut stack,
+                &BackendTaskContext::Unknown,
+                result,
+            );
+            let Screen::UsernameRequestScreen(status) = &mut stack[0] else {
+                unreachable!()
+            };
+            assert!(
+                matches!(status.begin_refresh(), AppAction::None),
+                "unrelated completions must not release the pending refresh"
+            );
+            route_username_refresh_to_hidden_screens(&mut stack, &context, result);
+            stack.pop();
+            let Screen::UsernameRequestScreen(status) = &mut stack[0] else {
+                unreachable!()
+            };
+            assert!(
+                matches!(
+                    status.begin_refresh(),
+                    AppAction::BackendTaskWithContext { .. }
+                ),
+                "refresh must be enabled after returning to the status page"
+            );
+        }
+    }
 
     #[test]
     fn voting_ui_results_route_to_the_hidden_voting_panel_only_once() {

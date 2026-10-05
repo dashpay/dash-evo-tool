@@ -2531,7 +2531,7 @@ mod tests {
         contested_name: &str,
         status: DpnsVoteTargetStatus,
     ) -> DpnsVoteOperation {
-        let mut operation = DpnsVoteOperation::new(vec![DpnsVoteTarget {
+        let mut operation = AppContext::new_dpns_vote_operation(vec![DpnsVoteTarget {
             key: DpnsVoteTargetKey {
                 network: Network::Testnet,
                 voter_id,

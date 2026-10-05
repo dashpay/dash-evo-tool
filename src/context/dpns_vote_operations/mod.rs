@@ -15,9 +15,9 @@ use super::AppContext;
 use crate::backend_task::error::TaskError;
 use crate::model::dpns_voting::{
     DpnsCurrentVoteState, DpnsScheduledVoteClearDisposition, DpnsScheduledVoteClearOutcome,
-    DpnsScheduledVoteEdit, DpnsScheduledVoteKey, DpnsVoteAuthorityRank, DpnsVoteFailure,
-    DpnsVoteOperation, DpnsVoteOperationId, DpnsVoteTarget, DpnsVoteTargetKey,
-    DpnsVoteTargetStatus, VoteTiming, dpns_vote_authority_rank, unavailable_preflight_outcome,
+    DpnsScheduledVoteEdit, DpnsScheduledVoteKey, DpnsVoteFailure, DpnsVoteOperation,
+    DpnsVoteOperationId, DpnsVoteTarget, DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming,
+    authoritative_dpns_vote_outcomes, unavailable_preflight_outcome,
 };
 use crate::utils::time::now_ms;
 use crate::wallet_backend::{DetKv, DetScope};
@@ -427,6 +427,15 @@ fn operation_for_schedule_edit(
 }
 
 impl AppContext {
+    /// Build a voting batch with a fresh operation ID and the current creation time.
+    pub fn new_dpns_vote_operation(targets: Vec<DpnsVoteTarget>) -> DpnsVoteOperation {
+        DpnsVoteOperation::new(
+            DpnsVoteOperationId::from_bytes(rand::random()),
+            now_ms(),
+            targets,
+        )
+    }
+
     /// Take the process-wide journal guard, recovering from a poisoned lock.
     ///
     /// Every read and write of the operation journal, its lock index
@@ -885,12 +894,15 @@ impl AppContext {
         &self,
     ) -> Result<Vec<DpnsScheduledVoteClearOutcome>, TaskError> {
         let (_guard, kv) = self.journal()?;
-        let mut outcomes = BTreeMap::<
-            DpnsScheduledVoteKey,
-            (DpnsVoteAuthorityRank, DpnsScheduledVoteClearOutcome),
-        >::new();
-
-        for mut operation in load_operations(&kv, self.network)? {
+        let operations = load_operations(&kv, self.network)?;
+        let selected: BTreeSet<_> = authoritative_dpns_vote_outcomes(&operations, |outcome| {
+            matches!(outcome.target.timing, VoteTiming::Scheduled(_))
+        })
+        .into_values()
+        .map(|(operation, outcome)| (operation.id, outcome.target.key.clone()))
+        .collect();
+        let mut outcomes = Vec::new();
+        for mut operation in operations {
             let mut changed = false;
             for outcome in operation
                 .targets
@@ -926,22 +938,12 @@ impl AppContext {
                         DpnsScheduledVoteClearDisposition::Cleared
                     }
                 };
-                let rank = dpns_vote_authority_rank(operation.created_at, operation.id, status);
-                let should_replace = outcomes
-                    .get(&key)
-                    .is_none_or(|(existing_rank, _)| rank > *existing_rank);
-                if should_replace {
-                    outcomes.insert(
-                        key.clone(),
-                        (
-                            rank,
-                            DpnsScheduledVoteClearOutcome {
-                                operation_id: Some(operation.id),
-                                key,
-                                disposition,
-                            },
-                        ),
-                    );
+                if selected.contains(&(operation.id, outcome.target.key.clone())) {
+                    outcomes.push(DpnsScheduledVoteClearOutcome {
+                        operation_id: Some(operation.id),
+                        key,
+                        disposition,
+                    });
                 }
             }
             if changed {
@@ -950,7 +952,7 @@ impl AppContext {
         }
 
         prune_terminal_operations(&kv, self.network)?;
-        Ok(outcomes.into_values().map(|(_, outcome)| outcome).collect())
+        Ok(outcomes)
     }
 }
 
@@ -1034,7 +1036,7 @@ mod tests {
     }
 
     fn operation(status: DpnsVoteTargetStatus) -> DpnsVoteOperation {
-        let mut operation = DpnsVoteOperation::new(vec![DpnsVoteTarget {
+        let mut operation = AppContext::new_dpns_vote_operation(vec![DpnsVoteTarget {
             key: DpnsVoteTargetKey {
                 network: Network::Testnet,
                 voter_id: Identifier::from([1; 32]),
@@ -1060,6 +1062,15 @@ mod tests {
         operation.targets[0].target.key.vote_poll_id = Identifier::from([poll; 32]);
         operation.targets[0].target.contested_name = contested_name.to_owned();
         operation
+    }
+
+    #[test]
+    fn new_vote_batches_have_distinct_operation_ids() {
+        let ids: BTreeSet<_> = (0..64)
+            .map(|_| AppContext::new_dpns_vote_operation(Vec::new()).id)
+            .collect();
+        assert_eq!(ids.len(), 64);
+        assert!(!ids.contains(&DpnsVoteOperationId::from_bytes([0; 16])));
     }
 
     /// Two operations stamped inside the same millisecond — reachable whenever a
@@ -2015,7 +2026,7 @@ mod tests {
         invalid[0].key.voter_id = Identifier::from([99; 32]);
         invalid[1].key.vote_poll_id = Identifier::from([99; 32]);
         invalid[2].key.network = Network::Mainnet;
-        invalid[3].operation_id = DpnsVoteOperationId::random();
+        invalid[3].operation_id = DpnsVoteOperationId::from_bytes(rand::random());
         for request in invalid {
             assert!(matches!(
                 context.edit_scheduled_dpns_vote_target(&request),

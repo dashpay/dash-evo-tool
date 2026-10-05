@@ -58,9 +58,8 @@ pub fn vote_choice_label(
         ResourceVoteChoice::Lock => "Lock name".to_owned(),
         ResourceVoteChoice::Abstain => "Abstain".to_owned(),
         ResourceVoteChoice::TowardsIdentity(id) => {
-            let handle = crate::model::identity_name::shorten_id(
-                &id.to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58),
-            );
+            let handle =
+                id.to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
             match candidate_name {
                 Some(name) => format!("Vote for {name} ({handle})"),
                 None => format!("Vote for {handle}"),

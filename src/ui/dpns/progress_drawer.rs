@@ -245,14 +245,12 @@ pub fn show(ctx: &egui::Context, app_context: &AppContext, state: &mut DrawerSta
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::dpns_voting::{
-        DpnsVoteOperation, DpnsVoteTarget, DpnsVoteTargetKey, VoteTiming,
-    };
+    use crate::model::dpns_voting::{DpnsVoteTarget, DpnsVoteTargetKey, VoteTiming};
     use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::platform::Identifier;
 
     fn outcome(status: DpnsVoteTargetStatus, failure: Option<DpnsVoteFailure>) -> DpnsVoteOutcome {
-        let mut operation = DpnsVoteOperation::new(vec![DpnsVoteTarget {
+        let mut operation = AppContext::new_dpns_vote_operation(vec![DpnsVoteTarget {
             key: DpnsVoteTargetKey {
                 network: Network::Testnet,
                 voter_id: Identifier::from([1; 32]),

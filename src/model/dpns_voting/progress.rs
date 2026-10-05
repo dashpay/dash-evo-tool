@@ -3,9 +3,9 @@
 
 use super::{
     DpnsVoteOperation, DpnsVoteOperationId, DpnsVoteOutcome, DpnsVoteTargetStatus, VoteTiming,
-    dpns_schedule_is_overdue, dpns_vote_authority_rank,
+    authoritative_dpns_vote_outcomes, dpns_schedule_is_overdue,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 /// Where one sent target stands, as the drawer groups it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,44 +124,23 @@ pub fn needs_attention(
     dismissed: &BTreeSet<DpnsVoteOperationId>,
     now_ms: u64,
 ) -> NeedsAttention {
-    let mut latest = BTreeMap::new();
-    for operation in operations {
-        for outcome in &operation.targets {
-            let rank = dpns_vote_authority_rank(
-                operation.created_at,
-                outcome.operation_id,
-                outcome.status,
-            );
-            let current = latest.entry(&outcome.target.key).or_insert(rank);
-            *current = (*current).max(rank);
-        }
-    }
     let mut attention = NeedsAttention::default();
-    for operation in operations {
-        for outcome in &operation.targets {
-            let rank = dpns_vote_authority_rank(
-                operation.created_at,
-                outcome.operation_id,
-                outcome.status,
-            );
-            if latest.get(&outcome.target.key) != Some(&rank) {
-                continue;
+    for (operation, outcome) in authoritative_dpns_vote_outcomes(operations, |_| true).into_values()
+    {
+        match (outcome.status, outcome.target.timing) {
+            (DpnsVoteTargetStatus::Unconfirmed, _) => attention.checking += 1,
+            (DpnsVoteTargetStatus::Scheduled, VoteTiming::Scheduled(at))
+                if dpns_schedule_is_overdue(at, now_ms) =>
+            {
+                attention.missed_schedules += 1;
             }
-            match (outcome.status, outcome.target.timing) {
-                (DpnsVoteTargetStatus::Unconfirmed, _) => attention.checking += 1,
-                (DpnsVoteTargetStatus::Scheduled, VoteTiming::Scheduled(at))
-                    if dpns_schedule_is_overdue(at, now_ms) =>
-                {
-                    attention.missed_schedules += 1;
-                }
-                _ if operation.created_at >= since_ms
-                    && !dismissed.contains(&operation.id)
-                    && progress_phase(outcome) == Some(ProgressPhase::Failed) =>
-                {
-                    attention.failed += 1;
-                }
-                _ => {}
+            _ if operation.created_at >= since_ms
+                && !dismissed.contains(&operation.id)
+                && progress_phase(outcome) == Some(ProgressPhase::Failed) =>
+            {
+                attention.failed += 1;
             }
+            _ => {}
         }
     }
     attention
@@ -180,6 +159,8 @@ mod tests {
         statuses: &[(DpnsVoteTargetStatus, VoteTiming)],
     ) -> DpnsVoteOperation {
         let mut operation = DpnsVoteOperation::new(
+            DpnsVoteOperationId::from_bytes((created_at as u128).to_be_bytes()),
+            created_at,
             statuses
                 .iter()
                 .enumerate()
@@ -197,7 +178,6 @@ mod tests {
                 })
                 .collect(),
         );
-        operation.created_at = created_at;
         for (outcome, (status, _)) in operation.targets.iter_mut().zip(statuses) {
             outcome.status = *status;
         }
@@ -242,10 +222,10 @@ mod tests {
     #[test]
     fn drawer_lists_in_flight_and_recent_undismissed_operations() {
         let old_in_flight = operation(1, &[(S::Unconfirmed, NOW)]);
-        let old_settled = operation(1, &[(S::Confirmed, NOW)]);
+        let old_settled = operation(2, &[(S::Confirmed, NOW)]);
         let recent_settled = operation(100, &[(S::Confirmed, NOW)]);
-        let dismissed_settled = operation(100, &[(S::Rejected, NOW)]);
-        let schedule_only = operation(100, &[(S::Scheduled, VoteTiming::Scheduled(500))]);
+        let dismissed_settled = operation(101, &[(S::Rejected, NOW)]);
+        let schedule_only = operation(102, &[(S::Scheduled, VoteTiming::Scheduled(500))]);
         let operations = vec![
             old_in_flight.clone(),
             old_settled,

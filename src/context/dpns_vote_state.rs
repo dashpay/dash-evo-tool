@@ -420,7 +420,7 @@ mod tests {
     #[tokio::test]
     async fn review_fixes_overlapping_refreshes_keep_both_due_targets_admitted() {
         use crate::model::dpns_voting::{
-            DpnsVoteOperation, DpnsVoteTarget, DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming,
+            DpnsVoteTarget, DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming,
         };
         let temp = tempfile::tempdir().unwrap();
         let context = crate::context::test_support::test_app_context(temp.path());
@@ -429,7 +429,7 @@ mod tests {
         let voter = Identifier::from([1; 32]);
         let polls = [Identifier::from([2; 32]), Identifier::from([3; 32])];
         let mut operations = polls.map(|poll| {
-            DpnsVoteOperation::new(vec![DpnsVoteTarget {
+            AppContext::new_dpns_vote_operation(vec![DpnsVoteTarget {
                 key: DpnsVoteTargetKey {
                     network: context.network(),
                     voter_id: voter,
@@ -730,14 +730,14 @@ mod tests {
         assert!(result.state(&context, poll).is_err());
 
         use crate::model::dpns_voting::{
-            DpnsVoteOperation, DpnsVoteTarget, DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming,
+            DpnsVoteTarget, DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming,
         };
         let key = DpnsVoteTargetKey {
             network: Network::Testnet,
             voter_id: voter,
             vote_poll_id: poll,
         };
-        let mut operation = DpnsVoteOperation::new(vec![DpnsVoteTarget {
+        let mut operation = AppContext::new_dpns_vote_operation(vec![DpnsVoteTarget {
             key: key.clone(),
             voter_alias: None,
             contested_name: "example".to_owned(),

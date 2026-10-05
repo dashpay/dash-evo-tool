@@ -17,7 +17,7 @@ impl AddNewIdentityScreen {
                     AppAction::PopScreenAndRefresh,
                 ),
                 (
-                    "Register DPNS Name".to_string(),
+                    "Get a username".to_string(),
                     AppAction::Custom("register_dpns".to_string()),
                 ),
             ],

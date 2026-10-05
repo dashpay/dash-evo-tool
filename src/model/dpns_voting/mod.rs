@@ -1,5 +1,3 @@
-use crate::backend_task::error::TaskError;
-use crate::utils::time::now_ms;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::data_contract::DataContract;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
@@ -69,11 +67,6 @@ pub fn dpns_vote_poll_availability(
 pub struct DpnsVoteOperationId([u8; 16]);
 
 impl DpnsVoteOperationId {
-    /// Generate a random operation identifier without adding a UUID dependency.
-    pub fn random() -> Self {
-        Self(rand::random())
-    }
-
     /// Return the stable persisted byte representation.
     pub fn to_bytes(self) -> [u8; 16] {
         self.0
@@ -312,9 +305,11 @@ pub struct DpnsVoteOperation {
 
 impl DpnsVoteOperation {
     /// Build an operation while removing targets that match proved current state.
-    pub fn new(targets: Vec<DpnsVoteTarget>) -> Self {
-        let id = DpnsVoteOperationId::random();
-        let created_at = now_ms();
+    pub fn new(
+        id: DpnsVoteOperationId,
+        created_at: TimestampMillis,
+        targets: Vec<DpnsVoteTarget>,
+    ) -> Self {
         let original_len = targets.len();
         let targets = targets
             .into_iter()
@@ -368,6 +363,15 @@ fn dpns_vote_poll_index_values(normalized_label: &str) -> Vec<Value> {
     ]
 }
 
+/// A DPNS contract schema cannot describe the requested vote poll.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum DpnsVotePollError {
+    #[error("The username contract is missing its domain definition. Refresh and try again.")]
+    MissingDomain,
+    #[error("The username contract does not support voting. Refresh and try again.")]
+    MissingContestedIndex,
+}
+
 /// The exact Platform vote poll for one DPNS label under `dpns_contract`.
 ///
 /// Normalizes `name` itself, so callers pass the label as the user typed it.
@@ -377,20 +381,16 @@ fn dpns_vote_poll_index_values(normalized_label: &str) -> Vec<Value> {
 ///
 /// # Errors
 ///
-/// [`TaskError::DataContractNotFound`] when the contract carries no `domain`
-/// document type, and [`TaskError::ContractSchemaMismatch`] when that document
-/// type declares no contested index.
+/// Returns a schema error if the domain document or its contested index is missing.
 pub fn dpns_vote_poll(
     dpns_contract: &DataContract,
     name: &str,
-) -> Result<ContestedDocumentResourceVotePoll, TaskError> {
+) -> Result<ContestedDocumentResourceVotePoll, DpnsVotePollError> {
     let document_type = dpns_contract
         .document_type_for_name("domain")
-        .map_err(|_| TaskError::DataContractNotFound)?;
+        .map_err(|_| DpnsVotePollError::MissingDomain)?;
     let Some(contested_index) = document_type.find_contested_index() else {
-        return Err(TaskError::ContractSchemaMismatch {
-            detail: "DPNS domain document type has no contested index",
-        });
+        return Err(DpnsVotePollError::MissingContestedIndex);
     };
     Ok(ContestedDocumentResourceVotePoll {
         index_name: contested_index.name.clone(),
@@ -420,23 +420,35 @@ pub fn dpns_vote_authority_rank(
     (status.holds_lock(), created_at, operation_id)
 }
 
-/// The outcome that currently speaks for `key`, by [`dpns_vote_authority_rank`].
-///
-/// Returns `None` when no operation in `operations` targets `key`.
+/// Select one outcome per exact target, optionally restricting the eligible history.
+/// A lock holder wins, then the newest operation; equal ranks select the last record.
+pub fn authoritative_dpns_vote_outcomes(
+    operations: &[DpnsVoteOperation],
+    include: impl Fn(&DpnsVoteOutcome) -> bool,
+) -> std::collections::BTreeMap<&DpnsVoteTargetKey, (&DpnsVoteOperation, &DpnsVoteOutcome)> {
+    let mut selected = std::collections::BTreeMap::new();
+    for operation in operations {
+        for outcome in operation.targets.iter().filter(|outcome| include(outcome)) {
+            let rank = dpns_vote_authority_rank(operation.created_at, operation.id, outcome.status);
+            let entry = selected
+                .entry(&outcome.target.key)
+                .or_insert((operation, outcome));
+            if rank >= dpns_vote_authority_rank(entry.0.created_at, entry.0.id, entry.1.status) {
+                *entry = (operation, outcome);
+            }
+        }
+    }
+    selected
+}
+
+/// The outcome that currently speaks for `key`, or `None` when it is absent.
 pub fn authoritative_dpns_vote_outcome<'a>(
     operations: &'a [DpnsVoteOperation],
     key: &DpnsVoteTargetKey,
 ) -> Option<&'a DpnsVoteOutcome> {
-    operations
-        .iter()
-        .filter_map(|operation| {
-            operation
-                .outcome(key)
-                .map(|outcome| (operation.created_at, outcome))
-        })
-        .max_by_key(|(created_at, outcome)| {
-            dpns_vote_authority_rank(*created_at, outcome.operation_id, outcome.status)
-        })
+    authoritative_dpns_vote_outcomes(operations, |outcome| &outcome.target.key == key)
+        .into_values()
+        .next()
         .map(|(_, outcome)| outcome)
 }
 
@@ -460,6 +472,55 @@ mod tests {
     use dash_sdk::platform::Identifier;
 
     #[test]
+    fn authoritative_outcomes_preserve_exact_keys_and_share_tie_breaking() {
+        let key_target = target(1, 1, None, ResourceVoteChoice::Lock);
+        let mut locked = DpnsVoteOperation::new(
+            DpnsVoteOperationId::from_bytes([1; 16]),
+            1,
+            vec![key_target.clone()],
+        );
+        locked.targets[0].status = DpnsVoteTargetStatus::Unconfirmed;
+        let mut newer = DpnsVoteOperation::new(
+            DpnsVoteOperationId::from_bytes([2; 16]),
+            2,
+            vec![key_target.clone()],
+        );
+        newer.targets[0].status = DpnsVoteTargetStatus::Confirmed;
+        let mut another_network = newer.clone();
+        another_network.targets[0].target.key.network = Network::Mainnet;
+        let mut another_poll = newer.clone();
+        another_poll.targets[0].target.key.vote_poll_id = Identifier::from([2; 32]);
+        let operations = vec![newer, locked, another_network, another_poll];
+        let selected = authoritative_dpns_vote_outcomes(&operations, |_| true);
+        assert_eq!(
+            selected.len(),
+            3,
+            "same name must not collapse networks or polls"
+        );
+        assert_eq!(selected[&key_target.key].0.id, operations[1].id);
+        for (key, (_, outcome)) in selected {
+            assert_eq!(
+                authoritative_dpns_vote_outcome(&operations, key),
+                Some(outcome)
+            );
+        }
+        let mut tied = operations[1].clone();
+        tied.id = DpnsVoteOperationId::from_bytes([3; 16]);
+        tied.targets[0].operation_id = tied.id;
+        for history in [
+            vec![operations[1].clone(), tied.clone()],
+            vec![tied.clone(), operations[1].clone()],
+        ] {
+            assert_eq!(
+                authoritative_dpns_vote_outcomes(&history, |_| true)[&key_target.key]
+                    .0
+                    .id,
+                tied.id
+            );
+        }
+    }
+
+    #[test]
     fn automatic_window_boundary_and_overflow() {
         assert!(!dpns_schedule_is_overdue(1_000, 121_000));
         assert!(dpns_schedule_is_overdue(1_000, 121_001));
@@ -468,14 +529,13 @@ mod tests {
     }
 
     #[test]
-    fn operation_ids_are_random_and_distinct() {
-        let ids: std::collections::BTreeSet<_> =
-            (0..64).map(|_| DpnsVoteOperationId::random()).collect();
-        assert_eq!(ids.len(), 64, "identifiers must not repeat");
-        assert!(
-            !ids.contains(&DpnsVoteOperationId::from_bytes([0; 16])),
-            "identifiers must not be all-zero"
-        );
+    fn operation_preserves_supplied_id_and_creation_time() {
+        let id = DpnsVoteOperationId::from_bytes([7; 16]);
+        let operation =
+            DpnsVoteOperation::new(id, 123, vec![target(1, 1, None, ResourceVoteChoice::Lock)]);
+        assert_eq!(operation.id, id);
+        assert_eq!(operation.created_at, 123);
+        assert_eq!(operation.targets[0].operation_id, id);
     }
 
     fn target(
@@ -528,15 +588,19 @@ mod tests {
     /// VOTE-TC-003: choosing the proved current vote cannot create a target.
     #[test]
     fn operation_suppresses_exact_no_ops() {
-        let operation = DpnsVoteOperation::new(vec![
-            target(
-                1,
-                1,
-                Some(ResourceVoteChoice::Lock),
-                ResourceVoteChoice::Lock,
-            ),
-            target(1, 2, None, ResourceVoteChoice::Abstain),
-        ]);
+        let operation = DpnsVoteOperation::new(
+            DpnsVoteOperationId::from_bytes([1; 16]),
+            1,
+            vec![
+                target(
+                    1,
+                    1,
+                    Some(ResourceVoteChoice::Lock),
+                    ResourceVoteChoice::Lock,
+                ),
+                target(1, 2, None, ResourceVoteChoice::Abstain),
+            ],
+        );
 
         assert_eq!(operation.targets.len(), 1);
         assert_eq!(operation.no_op_count, 1);
@@ -549,8 +613,11 @@ mod tests {
     /// VOTE-TC-032: outcomes retain the exact voter × contest target.
     #[test]
     fn outcomes_retain_target_correlation() {
-        let operation =
-            DpnsVoteOperation::new(vec![target(7, 9, None, ResourceVoteChoice::Abstain)]);
+        let operation = DpnsVoteOperation::new(
+            DpnsVoteOperationId::from_bytes([1; 16]),
+            1,
+            vec![target(7, 9, None, ResourceVoteChoice::Abstain)],
+        );
         let outcome = &operation.targets[0];
 
         assert_eq!(outcome.operation_id, operation.id);
@@ -638,7 +705,11 @@ mod tests {
             }
         }
 
-        let operation = DpnsVoteOperation::new(vec![target(4, 5, None, ResourceVoteChoice::Lock)]);
+        let operation = DpnsVoteOperation::new(
+            DpnsVoteOperationId::from_bytes([1; 16]),
+            1,
+            vec![target(4, 5, None, ResourceVoteChoice::Lock)],
+        );
         let serialized = serde_json::to_value(&operation).expect("serialize operation");
         let mut keys = std::collections::BTreeSet::new();
         collect_keys(&serialized, &mut keys);

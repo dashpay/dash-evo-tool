@@ -2034,6 +2034,13 @@ pub enum TaskError {
     )]
     DataContractNotFound,
 
+    /// The loaded username contract cannot identify a voting poll.
+    #[error("The username voting information is incomplete. Refresh and try again.")]
+    DpnsVotePollSchema {
+        #[from]
+        source: crate::model::dpns_voting::DpnsVotePollError,
+    },
+
     // ──────────────────────────────────────────────────────────────────────────
     // Identity creation / parsing errors
     // ──────────────────────────────────────────────────────────────────────────

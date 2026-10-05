@@ -12,8 +12,8 @@ use crate::model::dpns_voting::operator::{
 };
 use crate::model::dpns_voting::{
     DpnsCurrentVoteState, DpnsVoteOperation, DpnsVoteOutcome, DpnsVotePollAvailability,
-    DpnsVoteTargetKey, DpnsVoteTargetStatus, dpns_vote_authority_rank, dpns_vote_lock_holders,
-    dpns_vote_poll_availability,
+    DpnsVoteTargetKey, DpnsVoteTargetStatus, authoritative_dpns_vote_outcomes,
+    dpns_vote_lock_holders, dpns_vote_poll_availability,
 };
 use crate::model::qualified_identity::IdentityType;
 use crate::utils::time::now_ms;
@@ -25,25 +25,9 @@ use std::sync::Arc;
 
 /// Distinct targets whose authoritative outcome is still `Unconfirmed`.
 pub(crate) fn unresolved_target_count(operations: &[DpnsVoteOperation]) -> usize {
-    let mut authoritative = BTreeMap::new();
-    for operation in operations {
-        for outcome in &operation.targets {
-            let rank = dpns_vote_authority_rank(
-                operation.created_at,
-                outcome.operation_id,
-                outcome.status,
-            );
-            let entry = authoritative
-                .entry(&outcome.target.key)
-                .or_insert((rank, outcome.status));
-            if rank >= entry.0 {
-                *entry = (rank, outcome.status);
-            }
-        }
-    }
-    authoritative
+    authoritative_dpns_vote_outcomes(operations, |_| true)
         .values()
-        .filter(|(_, status)| *status == DpnsVoteTargetStatus::Unconfirmed)
+        .filter(|(_, outcome)| outcome.status == DpnsVoteTargetStatus::Unconfirmed)
         .count()
 }
 
@@ -402,7 +386,7 @@ mod tests {
     use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 
     fn operation(poll: u8, status: DpnsVoteTargetStatus, created_at: u64) -> DpnsVoteOperation {
-        let mut operation = DpnsVoteOperation::new(vec![DpnsVoteTarget {
+        let mut operation = AppContext::new_dpns_vote_operation(vec![DpnsVoteTarget {
             key: DpnsVoteTargetKey {
                 network: Network::Testnet,
                 voter_id: Identifier::from([1; 32]),

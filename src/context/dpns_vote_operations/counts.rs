@@ -104,6 +104,7 @@ pub(super) fn forget_vote_counts(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::AppContext;
     use crate::model::dpns_voting::{DpnsVoteTarget, VoteTiming};
     use crate::wallet_backend::kv_test_support::InMemoryKv;
     use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
@@ -119,7 +120,7 @@ mod tests {
     }
 
     fn operation(status: DpnsVoteTargetStatus) -> DpnsVoteOperation {
-        let mut operation = DpnsVoteOperation::new(vec![DpnsVoteTarget {
+        let mut operation = AppContext::new_dpns_vote_operation(vec![DpnsVoteTarget {
             key: key(2),
             voter_alias: None,
             contested_name: "alice".to_owned(),

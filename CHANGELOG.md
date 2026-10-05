@@ -206,6 +206,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Username request updates preserve saved requests after a failed startup read, and
+  status refreshes complete when the request page is hidden behind registration.
+- Voting confirmation and schedule choices expose full contender identities;
+  scheduled votes use consistent node handles and explicit UTC timestamps.
+- Voting views share outcome selection and reuse scheduled decision groups between refreshes.
+
 - Restoring imported keys remains recoverable after interrupted storage writes
   and reports unreadable protected keys. Startup migration preserves existing
   keys, seeds, and their password protection.

@@ -38,12 +38,11 @@ impl AppContext {
 
 #[cfg(test)]
 mod tests {
+    use crate::context::AppContext;
     use crate::database::test_helpers::{
         create_legacy_scheduled_votes_table, seed_legacy_scheduled_vote_row,
     };
-    use crate::model::dpns_voting::{
-        DpnsVoteOperation, DpnsVoteTarget, DpnsVoteTargetKey, VoteTiming,
-    };
+    use crate::model::dpns_voting::{DpnsVoteTarget, DpnsVoteTargetKey, VoteTiming};
     use crate::wallet_backend::{DetKv, kv_test_support::InMemoryKv};
     use dash_sdk::dpp::{
         dashcore::Network, voting::vote_choices::resource_vote_choice::ResourceVoteChoice,
@@ -67,7 +66,7 @@ mod tests {
             "detection leaves the old record intact"
         );
 
-        let mut operation = DpnsVoteOperation::new(vec![DpnsVoteTarget {
+        let mut operation = AppContext::new_dpns_vote_operation(vec![DpnsVoteTarget {
             key: DpnsVoteTargetKey {
                 network: Network::Testnet,
                 voter_id: Identifier::from([1; 32]),

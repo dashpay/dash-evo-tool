@@ -16,7 +16,7 @@ use crate::model::dpns_usernames::{
 };
 use crate::model::dpns_voting::{
     DpnsCurrentVoteState, DpnsVoteOperation, DpnsVoteOperationId, DpnsVoteTargetKey, VoteTiming,
-    dpns_vote_authority_rank,
+    authoritative_dpns_vote_outcomes,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::utils::time::now_ms;
@@ -48,32 +48,10 @@ fn scheduled_vote_journal_summary(
     voter_id: Identifier,
     dismissed: &BTreeSet<(DpnsVoteOperationId, DpnsVoteTargetKey)>,
 ) -> (bool, bool) {
-    let authoritative_by_target = operations
-        .iter()
-        .flat_map(|operation| {
-            operation
-                .targets
-                .iter()
-                .map(move |outcome| (operation.created_at, outcome))
-        })
-        .filter(|(_, outcome)| {
-            outcome.target.key.voter_id == voter_id
-                && matches!(outcome.target.timing, VoteTiming::Scheduled(_))
-        })
-        .fold(
-            BTreeMap::new(),
-            |mut authoritative, (created_at, outcome)| {
-                let rank =
-                    dpns_vote_authority_rank(created_at, outcome.operation_id, outcome.status);
-                let entry = authoritative
-                    .entry(&outcome.target.key)
-                    .or_insert((rank, outcome));
-                if rank >= entry.0 {
-                    *entry = (rank, outcome);
-                }
-                authoritative
-            },
-        );
+    let authoritative_by_target = authoritative_dpns_vote_outcomes(operations, |outcome| {
+        outcome.target.key.voter_id == voter_id
+            && matches!(outcome.target.timing, VoteTiming::Scheduled(_))
+    });
 
     let pending = authoritative_by_target
         .values()
@@ -384,18 +362,23 @@ impl AppContext {
         let kv = self.det_kv()?;
         let key = identity_key(USERNAME_REQUESTS_KEY_PREFIX, identity_id);
         let mut cache = self.username_cache_mut();
-        let current = cache.requests.get(identity_id).cloned().unwrap_or_default();
+        let current = kv
+            .get::<Vec<UsernameRequest>>(DetScope::Global, &key)
+            .map_err(username_err)?
+            .unwrap_or_default();
         let requests = update(&current);
-        if requests == current {
-            return Ok(());
+        if requests != current {
+            if requests.is_empty() {
+                kv.delete(DetScope::Global, &key).map_err(username_err)?;
+            } else {
+                kv.put(DetScope::Global, &key, &requests)
+                    .map_err(username_err)?;
+            }
         }
         if requests.is_empty() {
-            kv.delete(DetScope::Global, &key).map_err(username_err)?;
             cache.requests.remove(identity_id);
             cache.hydration_pending.remove(identity_id);
         } else {
-            kv.put(DetScope::Global, &key, &requests)
-                .map_err(username_err)?;
             if requests
                 .iter()
                 .any(|request| request.phase == RequestPhase::Won)
@@ -1119,6 +1102,68 @@ mod tests {
     }
 
     #[test]
+    fn username_append_after_failed_initial_load_preserves_saved_requests() {
+        use crate::wallet_backend::kv_test_support::FailingKv;
+        let temp = tempfile::tempdir().unwrap();
+        let context = test_app_context(temp.path());
+        let store = Arc::new(FailingKv::default());
+        let kv = DetKv::from_store(store.clone());
+        context.set_det_kv_override_for_test(kv.clone());
+        let id = Identifier::from([1; 32]);
+        let key = identity_key(USERNAME_REQUESTS_KEY_PREFIX, &id);
+        let original = request("alpha", RequestPhase::Won);
+        kv.put(DetScope::Global, &key, &vec![original.clone()])
+            .unwrap();
+        store.fail_next_gets_containing(USERNAME_REQUESTS_KEY_PREFIX, 1);
+        assert!(context.refresh_pending_dpns_usernames().is_err());
+        assert!(context.username_requests_for(&id).is_empty());
+
+        // An unreadable authoritative record must never be treated as an empty list.
+        store.fail_next_gets_containing(USERNAME_REQUESTS_KEY_PREFIX, 1);
+        assert!(
+            context
+                .update_username_requests(&id, |_| panic!("must not update"))
+                .is_err()
+        );
+        context
+            .update_username_requests(&id, |current| {
+                let mut requests = current.to_vec();
+                requests.push(request("beta", RequestPhase::Voting));
+                requests
+            })
+            .unwrap();
+        let expected = vec![original, request("beta", RequestPhase::Voting)];
+        assert_eq!(context.username_requests_for(&id), expected);
+        assert!(context.username_requests_need_refresh());
+        assert_eq!(
+            kv.get::<Vec<UsernameRequest>>(DetScope::Global, &key)
+                .unwrap(),
+            Some(expected)
+        );
+    }
+
+    #[test]
+    fn unchanged_username_update_populates_an_unloaded_cache() {
+        let temp = tempfile::tempdir().unwrap();
+        let context = test_app_context(temp.path());
+        let kv = empty_kv();
+        context.set_det_kv_override_for_test(kv.clone());
+        let id = Identifier::from([1; 32]);
+        let saved = vec![request("alpha", RequestPhase::Won)];
+        kv.put(
+            DetScope::Global,
+            &identity_key(USERNAME_REQUESTS_KEY_PREFIX, &id),
+            &saved,
+        )
+        .unwrap();
+        context
+            .update_username_requests(&id, |current| current.to_vec())
+            .unwrap();
+        assert_eq!(context.username_requests_for(&id), saved);
+        assert!(context.username_requests_need_refresh());
+    }
+
+    #[test]
     fn reloaded_expired_request_has_current_phase_without_rewriting_snapshot() {
         let temp_dir = tempfile::tempdir().unwrap();
         let context = test_app_context(temp_dir.path());
@@ -1406,7 +1451,7 @@ mod tests {
             current_choice: None,
             timing: VoteTiming::Scheduled(42),
         });
-        let mut operation = DpnsVoteOperation::new(targets.into());
+        let mut operation = AppContext::new_dpns_vote_operation(targets.into());
         operation.targets[0].status = DpnsVoteTargetStatus::Rejected;
         operation.targets[1].status = DpnsVoteTargetStatus::Unconfirmed;
         context
@@ -1445,7 +1490,7 @@ mod tests {
     #[test]
     fn terminal_schedule_failure_is_not_reported_as_pending() {
         let voter_id = Identifier::from([7; 32]);
-        let mut operation = DpnsVoteOperation::new(vec![
+        let mut operation = AppContext::new_dpns_vote_operation(vec![
             crate::model::dpns_voting::DpnsVoteTarget {
                 key: crate::model::dpns_voting::DpnsVoteTargetKey {
                     network: Network::Testnet,
@@ -1490,7 +1535,7 @@ mod tests {
     #[test]
     fn cancelled_schedule_is_not_reported_as_failed() {
         let voter_id = Identifier::from([7; 32]);
-        let mut operation = DpnsVoteOperation::new(vec![
+        let mut operation = AppContext::new_dpns_vote_operation(vec![
             crate::model::dpns_voting::DpnsVoteTarget {
                 key: crate::model::dpns_voting::DpnsVoteTargetKey {
                     network: Network::Testnet,
@@ -1528,10 +1573,10 @@ mod tests {
             current_choice: None,
             timing: VoteTiming::Scheduled(42),
         };
-        let mut failed = DpnsVoteOperation::new(vec![target.clone()]);
+        let mut failed = AppContext::new_dpns_vote_operation(vec![target.clone()]);
         failed.created_at = 1;
         failed.targets[0].status = DpnsVoteTargetStatus::Rejected;
-        let mut confirmed = DpnsVoteOperation::new(vec![target]);
+        let mut confirmed = AppContext::new_dpns_vote_operation(vec![target]);
         confirmed.created_at = 2;
         confirmed.targets[0].status = DpnsVoteTargetStatus::Confirmed;
 
@@ -1655,7 +1700,7 @@ mod tests {
                 .unwrap();
         }
         let mut operation =
-            DpnsVoteOperation::new(vec![crate::model::dpns_voting::DpnsVoteTarget {
+            AppContext::new_dpns_vote_operation(vec![crate::model::dpns_voting::DpnsVoteTarget {
             key: DpnsVoteTargetKey {
                 network: Network::Testnet,
                 voter_id: Identifier::from([1; 32]),

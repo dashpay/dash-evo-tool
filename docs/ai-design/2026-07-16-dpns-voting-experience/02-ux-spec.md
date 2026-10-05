@@ -59,11 +59,11 @@ Card (two columns):
   - weighted tally bars with numbers (`Vote for` rows = contenders, then
     `Lock name`, `Abstain`);
   - influence line (VOTE-FR-077).
-- Right: `Your decision` pills `Vote for {name}` (1–9) · `Lock name` (L) ·
-  `Abstain` (A). The node line reads `Your nodes: 19 not voted · 4 voted Abstain
-  · mn-07 has no changes left`. When the decision changes earlier votes:
+- Right: `Your decision` pills `Vote for {name} ({full_base58_id})` (1–9) · `Lock name` (L) ·
+  `Abstain` (A). The node line reads `19 of your nodes have not voted.
+  4 of your nodes voted: Abstain. mn-07 has no changes left.` When the decision changes earlier votes:
   `Changing 4 earlier votes uses 1 of each node's 4 changes.` Unavailable state:
-  `vote state unavailable for 3 nodes; they're left out.` with
+  `Vote state is unavailable for 3 nodes; they're left out.` with
   [Refresh voting].
 - Checkbox at top-left for bulk selection. Keyboard focus ring on the focused
   card.
@@ -74,9 +74,8 @@ reason per card).
 Tray (outside scroll): `{d} decisions ready · {t} transactions, one per node and
 name` [Clear] [Cast ⏎].
 
-Needs-attention row (warning style, only when present): `Needs attention: 1 vote
-from mn-12 on dashfan.dash is still being checked. Don't submit it again.
-1 scheduled vote was missed.` [Show].
+Needs-attention row (warning style, only when present): `Votes still being checked: 1.
+Missed scheduled votes: 1. Do not submit the pending votes again.` [Show].
 
 ## Node set (frame V1b)
 
@@ -87,6 +86,9 @@ A popover with radios: All my nodes · Evonodes only · Masternodes only · Cust
 - Disabled rows: `No key` [Add voting key] · `Not in the masternode list` ·
   `No changes left`.
 - `Save as my default` (per network) · [Done].
+
+Candidate choices show the full Base58 identity in the confirmation, node adjustment,
+schedule editor, and progress drawer, even when the candidate name is unavailable.
 
 ## Confirm (frame V2)
 
@@ -109,10 +111,11 @@ Rules (unchanged from #901, now in the confirm step):
 ## Progress drawer (frame V2b)
 
 As specified in VOTE-FR-083.
-- Row copy by status: `Done` · `Sending` · `Being checked` + `This vote may
-  already have been submitted. Don't submit it again.` [Check again] ·
-  `Not applied` + `Platform shows a different vote.` [Review again] ·
-  `Not cast` + reason.
+- Row copy by status: `Confirmed` · `Submitting` · `Confirming` ·
+  `Still being checked. Do not submit it again.` [Check again] ·
+  `Not applied` [Review again] · `Not submitted` + saved reason.
+- A different current vote does not prove that an ambiguous submission failed.
+  Checking retains the duplicate-prevention lock until a conclusive result.
 - Collapsed state: a chip `Casting 44 votes · 33 done` above the network chip.
 - The final banner is defined in VOTE-FR-061.
 
@@ -120,9 +123,10 @@ As specified in VOTE-FR-083.
 
 Columns: Name · Nodes (`24 nodes ▾`) · Vote · When · Status · actions.
 - When shows the relative label plus absolute UTC and a relative time.
-- Statuses: `Scheduled` [Edit] [Remove] · `Missed` + `Dash Evo Tool wasn't
-  running at that time. Voting is still open for {time}.` [Cast now] [Edit]
-  [Remove] · `Not cast` + saved reason + valid action · `Cast with {n} nodes`.
+- Statuses: `Scheduled` [Edit] [Remove] · `Missed automatic vote` + guidance
+  [Cast now] [Edit] [Remove] · `Not submitted` + saved reason + valid action ·
+  `Confirmed`. Node labels use the alias or the same hexadecimal ProTxHash
+  handle as the Nodes view.
 - Bulk `Remove finished votes` asks for confirmation.
 - Note: `Keep Dash Evo Tool open and connected so scheduled votes are cast on
   time.`
@@ -142,7 +146,7 @@ or Testnet network. Devnet and Regtest have no public explorer link.
 | No nodes loaded | `Load a masternode with its voting key to vote on name contests.` (contests shown read-only; choice tooltip `Load a masternode with a voting key to vote.`) | Load a masternode |
 | Nodes, no voting key | `None of your nodes has a voting key on this device. Add a voting key to vote. One key can serve several nodes.` | Add a voting key |
 | No open contests | `There are no open name contests right now. New contests appear here automatically.` | Refresh |
-| Journal unreadable | `Saved voting progress couldn't be read, so this history may be incomplete. Votes that are still being checked stay protected from resubmission.` | Retry loading |
+| Journal unreadable | `Saved voting progress could not be read. The displayed history may be incomplete or out of date. Do not submit votes again until you have retried loading and checked their status.` | Retry loading |
 
 ## Node detail (frame V6)
 

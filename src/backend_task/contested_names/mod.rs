@@ -464,7 +464,7 @@ impl AppContext {
         )?;
         // An explicit retry must reach fresh preflight even if the cached
         // choice matches. Preflight records an already-satisfied target durably.
-        let mut operation = DpnsVoteOperation::new(vec![DpnsVoteTarget {
+        let mut operation = AppContext::new_dpns_vote_operation(vec![DpnsVoteTarget {
             current_choice: None,
             ..target
         }]);
@@ -1306,7 +1306,7 @@ mod tests {
         name: &str,
         timestamp: u64,
     ) -> DpnsVoteOperation {
-        DpnsVoteOperation::new(vec![
+        AppContext::new_dpns_vote_operation(vec![
             context
                 .dpns_vote_target(
                     &qualified_identity(1),
@@ -1328,7 +1328,7 @@ mod tests {
         first.timing = VoteTiming::Now;
         let mut second = first.clone();
         second.key.voter_id = Identifier::from([2; 32]);
-        let mut operation = DpnsVoteOperation::new(vec![first, second]);
+        let mut operation = AppContext::new_dpns_vote_operation(vec![first, second]);
         operation.targets[0].status = DpnsVoteTargetStatus::Confirmed;
         ctx.insert_dpns_vote_operation(&mut operation, None)
             .unwrap();
@@ -1446,7 +1446,10 @@ mod tests {
             let mut operation = scheduled_operation_for(&context, "alice", 42);
             let mut sibling = operation.targets[0].target.clone();
             sibling.key.voter_id = Identifier::from([2; 32]);
-            operation = DpnsVoteOperation::new(vec![operation.targets[0].target.clone(), sibling]);
+            operation = AppContext::new_dpns_vote_operation(vec![
+                operation.targets[0].target.clone(),
+                sibling,
+            ]);
             operation.targets[1].status = sibling_status;
             context
                 .insert_dpns_vote_operation(&mut operation, None)
@@ -1486,7 +1489,7 @@ mod tests {
         context
             .insert_dpns_vote_operation(&mut previous, None)
             .unwrap();
-        let mut newer = DpnsVoteOperation::new(vec![DpnsVoteTarget {
+        let mut newer = AppContext::new_dpns_vote_operation(vec![DpnsVoteTarget {
             requested_choice: ResourceVoteChoice::Abstain,
             timing: VoteTiming::Now,
             ..previous.targets[0].target.clone()
@@ -1519,7 +1522,7 @@ mod tests {
     #[test]
     fn new_immediate_vote_requires_review_when_it_becomes_a_change() {
         let (_temp, context) = vote_context();
-        let mut operation = DpnsVoteOperation::new(vec![DpnsVoteTarget {
+        let mut operation = AppContext::new_dpns_vote_operation(vec![DpnsVoteTarget {
             timing: VoteTiming::Now,
             ..scheduled_operation_for(&context, "alice", 42).targets[0]
                 .target
@@ -1614,7 +1617,7 @@ mod tests {
             ),
             (None, None, DpnsVoteTargetStatus::Queued),
         ] {
-            let mut operation = DpnsVoteOperation::new(vec![DpnsVoteTarget {
+            let mut operation = AppContext::new_dpns_vote_operation(vec![DpnsVoteTarget {
                 timing: VoteTiming::Now,
                 current_choice: reviewed,
                 ..scheduled_operation_for(&context, "alice", 42).targets[0]
@@ -1859,7 +1862,8 @@ mod tests {
         context.seed_dpns_contest_for_test("bob", Some(timestamp), false);
         let mut targets = scheduled_operation_for(&context, "alice", timestamp).targets;
         targets.extend(scheduled_operation_for(&context, "bob", timestamp).targets);
-        let operation = DpnsVoteOperation::new(targets.into_iter().map(|o| o.target).collect());
+        let operation =
+            AppContext::new_dpns_vote_operation(targets.into_iter().map(|o| o.target).collect());
         let result = context
             .execute_dpns_vote_operation(operation, vec![], None, &context.sdk())
             .await;
@@ -1939,7 +1943,7 @@ mod tests {
                 false,
             )
             .expect("scheduled target");
-        let mut operation = DpnsVoteOperation::new(vec![target]);
+        let mut operation = AppContext::new_dpns_vote_operation(vec![target]);
         let operation_id = operation.id;
         context
             .insert_dpns_vote_operation(&mut operation, None)
@@ -1972,13 +1976,13 @@ mod tests {
             current_choice: None,
             timing: VoteTiming::Scheduled(42),
         };
-        let mut older = DpnsVoteOperation::new(vec![target.clone()]);
+        let mut older = AppContext::new_dpns_vote_operation(vec![target.clone()]);
         older.created_at = 1;
         older.targets[0].status = DpnsVoteTargetStatus::Confirmed;
-        let mut newer = DpnsVoteOperation::new(vec![target.clone()]);
+        let mut newer = AppContext::new_dpns_vote_operation(vec![target.clone()]);
         newer.created_at = 2;
         newer.targets[0].status = DpnsVoteTargetStatus::Cancelled;
-        let mut lock_holder = DpnsVoteOperation::new(vec![target]);
+        let mut lock_holder = AppContext::new_dpns_vote_operation(vec![target]);
         lock_holder.created_at = 0;
         lock_holder.targets[0].status = DpnsVoteTargetStatus::Scheduled;
         let operations = vec![older.clone(), lock_holder.clone(), newer.clone()];
@@ -2215,7 +2219,7 @@ mod tests {
             voter_id: Identifier::from([1; 32]),
             vote_poll_id: Identifier::from([2; 32]),
         };
-        let mut operation = DpnsVoteOperation::new(vec![DpnsVoteTarget {
+        let mut operation = AppContext::new_dpns_vote_operation(vec![DpnsVoteTarget {
             key: key.clone(),
             voter_alias: None,
             contested_name: "dominguez".to_owned(),
@@ -2300,7 +2304,7 @@ mod tests {
             "a terminal operation must become prunable instead of growing the journal forever"
         );
 
-        let mut retry = DpnsVoteOperation::new(vec![DpnsVoteTarget {
+        let mut retry = AppContext::new_dpns_vote_operation(vec![DpnsVoteTarget {
             current_choice: None,
             ..persisted.targets[0].target.clone()
         }]);
@@ -2317,7 +2321,7 @@ mod tests {
             crate::wallet_backend::kv_test_support::InMemoryKv::default(),
         ));
         context.set_det_kv_override_for_test(kv);
-        let mut operation = DpnsVoteOperation::new(vec![DpnsVoteTarget {
+        let mut operation = AppContext::new_dpns_vote_operation(vec![DpnsVoteTarget {
             key: DpnsVoteTargetKey {
                 network: Network::Testnet,
                 voter_id: Identifier::from([1; 32]),
@@ -2507,7 +2511,7 @@ mod tests {
             .expect("wire wallet backend offline");
         context
             .set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(store.clone()));
-        let mut operation = DpnsVoteOperation::new(vec![DpnsVoteTarget {
+        let mut operation = AppContext::new_dpns_vote_operation(vec![DpnsVoteTarget {
             key: DpnsVoteTargetKey {
                 network: Network::Testnet,
                 voter_id: Identifier::from([1; 32]),
@@ -2527,7 +2531,7 @@ mod tests {
             .expect("persist in-flight operation");
         context.dpns_vote_recovery.lock().await.initialized = true;
         let mut live = operation.clone();
-        live.id = DpnsVoteOperation::new(Vec::new()).id;
+        live.id = AppContext::new_dpns_vote_operation(Vec::new()).id;
         live.targets[0].target.key.voter_id = Identifier::from([3; 32]);
         let live_key = live.targets[0].target.key.clone();
         context.insert_dpns_vote_operation(&mut live, None).unwrap();
@@ -2812,7 +2816,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let operation = DpnsVoteOperation::new(vec![
+        let operation = AppContext::new_dpns_vote_operation(vec![
             context
                 .dpns_vote_target(
                     &voter,

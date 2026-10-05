@@ -17,6 +17,7 @@ use dash_evo_tool::backend_task::error::TaskError;
 use dash_evo_tool::backend_task::{BackendTaskContext, BackendTaskSuccessResult, FeeResult};
 use dash_evo_tool::context::AppContext;
 use dash_evo_tool::model::dpns::DpnsRegistrationOutcome;
+use dash_evo_tool::model::dpns_usernames::UsernameAvailability;
 use dash_evo_tool::model::qualified_identity::encrypted_key_storage::KeyStorage;
 use dash_evo_tool::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
 use dash_evo_tool::ui::MessageType;
@@ -198,6 +199,12 @@ fn dpns_registration_error_clears_overlay() {
         app_context.set_selected_identity(Some(identity_id));
         let mut screen = RegisterDpnsNameScreen::new(&app_context, RegisterDpnsNameSource::Dpns);
         screen.type_label_for_test("alice");
+        let _ = screen.flush_debounce_for_test();
+        screen.display_task_result(BackendTaskSuccessResult::UsernameAvailability {
+            label: "alice".to_owned(),
+            availability: UsernameAvailability::NeedsVote,
+        });
+        screen.open_confirm_for_test();
         let ctx = egui::Context::default();
 
         let AppAction::BackendTaskWithContext { context, .. } =

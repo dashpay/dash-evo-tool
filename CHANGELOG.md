@@ -648,6 +648,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The startup "The app is opening your saved data." block now counts the saved
+  wallets as it prepares them ("Step 3 of 12"), so a profile with many wallets
+  shows progress instead of a still screen.
+
 - The Tests workflow incorporates the archived-profile checks from Migration
   Matrix, sharing one build and running the regular and migration suites in
   parallel. Monday schedules run only lightweight fixture and pin checks in a

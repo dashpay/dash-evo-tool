@@ -315,12 +315,14 @@ pub enum RequestPhase {
     Locked,
     /// The vote ended and no one got the name.
     NoWinner,
+    /// The estimated voting period elapsed; the network outcome is not known yet.
+    AwaitingOutcome,
 }
 
 impl RequestPhase {
-    /// Whether the vote is still running.
+    /// Whether the request still needs a confirmed network outcome.
     pub fn is_pending(self) -> bool {
-        matches!(self, Self::Joinable | Self::Voting)
+        matches!(self, Self::Joinable | Self::Voting | Self::AwaitingOutcome)
     }
 }
 
@@ -394,6 +396,20 @@ pub struct UsernameRequest {
 }
 
 impl UsernameRequest {
+    /// Advance cached timing without inferring an outcome from the local clock.
+    pub fn phase_at(&self, now: TimestampMillis) -> RequestPhase {
+        if !self.phase.is_pending() {
+            return self.phase;
+        }
+        if self.end.is_some_and(|end| now >= end) {
+            return RequestPhase::AwaitingOutcome;
+        }
+        if self.phase == RequestPhase::Joinable && self.join_end.is_some_and(|end| now >= end) {
+            return RequestPhase::Voting;
+        }
+        self.phase
+    }
+
     /// A request just submitted at `now`, before the network reports its contest.
     ///
     /// `joined_until` is the join deadline of an existing contest the request
@@ -576,6 +592,36 @@ mod tests {
             contenders,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn cached_request_phase_advances_at_deadlines_without_inventing_outcome() {
+        let mut request = UsernameRequest::submitted(
+            "d1ssh",
+            1_000,
+            ContestDurations {
+                total: Duration::from_secs(10),
+                join: Duration::from_secs(5),
+            },
+            None,
+        );
+        assert_eq!(request.phase_at(5_999), RequestPhase::Joinable);
+        assert_eq!(request.phase_at(6_000), RequestPhase::Voting);
+        assert_eq!(request.phase_at(10_999), RequestPhase::Voting);
+        assert_eq!(request.phase_at(11_000), RequestPhase::AwaitingOutcome);
+        assert!(request.phase_at(11_000).is_pending());
+        for phase in [
+            RequestPhase::Won,
+            RequestPhase::Lost,
+            RequestPhase::Locked,
+            RequestPhase::NoWinner,
+        ] {
+            request.phase = phase;
+            assert_eq!(request.phase_at(11_000), phase);
+        }
+        request.phase = RequestPhase::Voting;
+        request.end = None;
+        assert_eq!(request.phase_at(u64::MAX), RequestPhase::Voting);
     }
 
     #[test]

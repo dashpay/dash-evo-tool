@@ -202,6 +202,8 @@ impl UsernamesCard {
                             "Others can ask for this name until {}. Masternodes can already vote.",
                             format_date(join_end)
                         ),
+                        (RequestPhase::AwaitingOutcome, _, _) =>
+                            "The estimated voting period has ended. View the status to check the outcome.".to_owned(),
                         (_, _, Some(end)) => {
                             format!("Voting ends around {}.", format_date(end))
                         }

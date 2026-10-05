@@ -48,7 +48,7 @@ pub fn outcome_banner_text(request: &UsernameRequest) -> Option<String> {
         RequestPhase::NoWinner => Some(format!(
             "The vote for @{name} ended without a winner. You can choose a different username."
         )),
-        RequestPhase::Joinable | RequestPhase::Voting => None,
+        RequestPhase::Joinable | RequestPhase::Voting | RequestPhase::AwaitingOutcome => None,
     }
 }
 
@@ -128,18 +128,23 @@ pub fn render(
         notice_frame(ui, dark_mode, |ui| {
             status_line(ui, Tone::Caution, phase_label(request.phase), dark_mode);
             let name = &request.label;
-            let first = match request.end {
-                Some(end) => format!(
+            let first = match (request.phase, request.end) {
+                (RequestPhase::AwaitingOutcome, _) => format!(
+                    "@{name} is awaiting the voting result. View its status to check the outcome."
+                ),
+                (_, Some(end)) => format!(
                     "@{name} is waiting for a community vote. It ends around {date}.",
                     date = format_date(end)
                 ),
-                None => format!("@{name} is waiting for a community vote."),
+                (_, None) => format!("@{name} is waiting for a community vote."),
             };
             ui.label(RichText::new(first).strong());
-            ui.label(standing_line(
-                request.tally.standing(),
-                request.tally.others.len(),
-            ));
+            if request.phase != RequestPhase::AwaitingOutcome {
+                ui.label(standing_line(
+                    request.tally.standing(),
+                    request.tally.others.len(),
+                ));
+            }
             if ComponentStyles::add_secondary_button(ui, "View status", dark_mode).clicked() {
                 action = AppAction::AddScreen(
                     ScreenType::UsernameRequestStatus {

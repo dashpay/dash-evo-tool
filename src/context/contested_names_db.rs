@@ -307,11 +307,18 @@ impl AppContext {
 
     /// Every stored username request of `identity_id`, pending first. Frame-safe.
     pub fn username_requests_for(&self, identity_id: &Identifier) -> Vec<UsernameRequest> {
+        let now = crate::utils::time::now_ms();
         self.username_cache()
             .requests
             .get(identity_id)
+            .into_iter()
+            .flatten()
             .cloned()
-            .unwrap_or_default()
+            .map(|mut request| {
+                request.phase = request.phase_at(now);
+                request
+            })
+            .collect()
     }
 
     /// Whether any identity has a request still in its community vote. Frame-safe.
@@ -368,12 +375,9 @@ impl AppContext {
         if identity_owns_dpns_name(identity) {
             return None;
         }
-        self.username_cache()
-            .requests
-            .get(&identity.identity.id())?
-            .iter()
+        self.username_requests_for(&identity.identity.id())
+            .into_iter()
             .find(|request| request.phase.is_pending())
-            .cloned()
     }
 
     /// The registered name `identity` shows as its main one. Frame-safe.
@@ -943,6 +947,37 @@ mod tests {
             tally: Default::default(),
             last_updated: 0,
         }
+    }
+
+    #[test]
+    fn reloaded_expired_request_has_current_phase_without_rewriting_snapshot() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let context = test_app_context(temp_dir.path());
+        context.set_det_kv_override_for_test(empty_kv());
+        let identity = qualified_identity(1, "");
+        let id = identity.identity.id();
+        let mut expired = request("d1ssh", RequestPhase::Joinable);
+        expired.join_end = Some(1);
+        expired.end = Some(2);
+        context
+            .store_username_requests(&id, vec![expired.clone()])
+            .unwrap();
+        *context.username_cache_mut() = UsernameCache::default();
+        context.refresh_pending_dpns_usernames().unwrap();
+
+        assert_eq!(
+            context.username_requests_for(&id)[0].phase,
+            RequestPhase::AwaitingOutcome
+        );
+        assert_eq!(
+            context
+                .pending_dpns_username_for_identity(&identity)
+                .unwrap()
+                .phase,
+            RequestPhase::AwaitingOutcome
+        );
+        assert!(context.any_pending_username_request());
+        assert_eq!(context.username_cache().requests[&id], vec![expired]);
     }
 
     #[test]

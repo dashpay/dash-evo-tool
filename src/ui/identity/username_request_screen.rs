@@ -87,6 +87,7 @@ impl UsernameRequestScreen {
         let (joining, voting, done) = match request.phase {
             RequestPhase::Joinable => (true, false, false),
             RequestPhase::Voting => (false, true, false),
+            RequestPhase::AwaitingOutcome => (false, false, false),
             _ => (false, false, true),
         };
         if let Some(at) = request.requested_at {
@@ -118,7 +119,9 @@ impl UsernameRequestScreen {
             status_line(ui, tone, &text, dark_mode);
         }
         let tone = match request.phase {
-            RequestPhase::Joinable | RequestPhase::Voting => Tone::Neutral,
+            RequestPhase::Joinable | RequestPhase::Voting | RequestPhase::AwaitingOutcome => {
+                Tone::Neutral
+            }
             RequestPhase::Won => Tone::Positive,
             RequestPhase::Lost | RequestPhase::Locked | RequestPhase::NoWinner => Tone::Negative,
         };

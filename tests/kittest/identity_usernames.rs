@@ -284,7 +284,11 @@ fn view_only_identity_is_told_to_add_a_key() {
 fn request(label: &str, phase: RequestPhase) -> UsernameRequest {
     let mut request = UsernameRequest::submitted(
         label,
-        1_700_000_000_000,
+        dash_evo_tool::utils::time::now_ms().saturating_sub(if phase == RequestPhase::Voting {
+            8 * 86_400_000
+        } else {
+            0
+        }),
         dash_evo_tool::model::dpns::ContestDurations {
             total: std::time::Duration::from_secs(14 * 86_400),
             join: std::time::Duration::from_secs(7 * 86_400),
@@ -640,6 +644,40 @@ fn home_shows_pending_request_header_and_card() {
             harness
                 .query_by_label("You're leading right now.")
                 .is_some()
+        );
+        assert!(harness.query_by_label("View status").is_some());
+    });
+}
+
+#[test]
+fn reopening_home_after_username_deadline_does_not_show_open_voting() {
+    with_isolated_data_dir(|| {
+        let (_rt, app_context) = fresh_app_context();
+        let id = seed_username_identity(&app_context, 0x26, "Alex", &[], 0, true);
+        let mut expired = request("d1ssh", RequestPhase::Joinable);
+        expired.join_end = Some(dash_evo_tool::utils::time::now_ms() - 3 * 86_400_000);
+        expired.end = expired.join_end;
+        app_context
+            .store_username_requests(&id, vec![expired])
+            .unwrap();
+        let harness = mount_home(app_context);
+        assert!(
+            harness
+                .query_all_by_label_contains("Open for other requests")
+                .next()
+                .is_none()
+        );
+        assert!(harness.query_by_label_contains("It ends around").is_none());
+        assert!(
+            harness
+                .query_all_by_label_contains("Awaiting result")
+                .next()
+                .is_some()
+        );
+        assert!(
+            harness
+                .query_by_label("No one else has asked so far.")
+                .is_none()
         );
         assert!(harness.query_by_label("View status").is_some());
     });

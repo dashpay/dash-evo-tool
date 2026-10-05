@@ -210,6 +210,7 @@ pub fn phase_label(phase: RequestPhase) -> &'static str {
     match phase {
         RequestPhase::Joinable => "Open for other requests",
         RequestPhase::Voting => "Waiting for vote",
+        RequestPhase::AwaitingOutcome => "Awaiting result",
         RequestPhase::Won => "Registered",
         RequestPhase::Lost => "Went to someone else",
         RequestPhase::Locked => "Locked for good",
@@ -246,6 +247,10 @@ pub fn voting_timeline_line(end: TimestampMillis, phase: RequestPhase) -> String
             "The community vote ends around {date}.",
             date = format_date_time(end)
         ),
+        RequestPhase::AwaitingOutcome => format!(
+            "The estimated voting period ended around {date}.",
+            date = format_date(end)
+        ),
         _ => format!(
             "The community vote ended on {date}.",
             date = format_date(end)
@@ -257,6 +262,9 @@ pub fn voting_timeline_line(end: TimestampMillis, phase: RequestPhase) -> String
 pub fn request_result_line(phase: RequestPhase) -> &'static str {
     match phase {
         RequestPhase::Joinable | RequestPhase::Voting => "Result: Not decided yet.",
+        RequestPhase::AwaitingOutcome => {
+            "Result: Awaiting confirmation. Refresh to check the outcome."
+        }
         RequestPhase::Won => "Result: The name is yours.",
         RequestPhase::Lost => "Result: The name went to someone else.",
         RequestPhase::Locked => "Result: The name is locked for good.",

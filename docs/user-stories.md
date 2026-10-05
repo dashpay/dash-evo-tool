@@ -816,6 +816,7 @@ As a user, I want to register a username for one of my identities so that others
 As a user, I want to see each identity's usernames and their state so that I know which names I have and which are still being decided.
 
 - Profile ▸ Usernames lists the main name, other active names, every pending request (also when the identity already owns a name), and outcomes from the last 30 days (went to someone else, locked for good).
+- Saved requests refresh before the wider contest search. After the estimated deadline, Home, the identity badge, and the status page show “Awaiting result” until the network confirms an outcome; elapsed time alone never awards or rejects a name.
 - Row actions: Copy username, Show QR code, Show as main. Usernames can't be deleted, so no delete action is offered.
 - The identity switcher and "See all identities" show each identity's usernames. There is no separate cross-identity usernames table.
 

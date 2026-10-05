@@ -176,10 +176,9 @@ impl AppContext {
 
     /// Refresh the username requests of every loaded identity.
     ///
-    /// One scan of running contests serves all identities. Requests missing
-    /// from the scan are re-read individually, for their outcome or running
-    /// tally. Only the network scan fails the task; local storage problems are
-    /// logged so a background refresh never raises a banner.
+    /// Saved pending requests are checked and published before the wider scan,
+    /// so a slow or failing discovery query cannot hold their outcomes back.
+    /// Discovery also finds requests made on other devices.
     pub(super) async fn refresh_my_username_requests(
         &self,
         sdk: &Sdk,
@@ -197,6 +196,44 @@ impl AppContext {
         if identities.is_empty() {
             return Ok(BackendTaskSuccessResult::MyUsernameRequestsRefreshed);
         }
+        let durations = self.username_contest_durations(sdk);
+        let mut checked = BTreeMap::new();
+        for identity in &identities {
+            let identity_id = identity.identity.id();
+            let previous = self.username_requests_for(&identity_id);
+            let mut fresh = Vec::new();
+            for old in previous.iter().filter(|old| old.phase.is_pending()) {
+                if !checked.contains_key(&old.normalized_label) {
+                    match sdk
+                        .get_contested_dpns_vote_state(&old.normalized_label, None)
+                        .await
+                    {
+                        Ok(contenders) => {
+                            checked.insert(
+                                old.normalized_label.clone(),
+                                self.contest_snapshot(sdk, &contenders),
+                            );
+                        }
+                        Err(error) => tracing::debug!(
+                            name = %old.normalized_label, ?error,
+                            "Username request outcome could not be read; keeping the stored status"
+                        ),
+                    }
+                }
+                if let Some(snapshot) = checked.get(&old.normalized_label) {
+                    fresh.extend(username_request_from_contest(
+                        identity_id,
+                        &old.normalized_label,
+                        snapshot,
+                        old.end,
+                        now_ms(),
+                        durations,
+                    ));
+                }
+            }
+            self.apply_username_refresh(sdk, identity, &previous, fresh)
+                .await;
+        }
         // TODO(usernames): the SDK scan pages only while a timestamp group holds 100 polls and drops
         // names whose vote state fails; requests made on another device can be missed past that cap.
         let running = sdk
@@ -205,7 +242,6 @@ impl AppContext {
             .map_err(|source| TaskError::UsernameRequestRefreshFailed {
                 source: Box::new(source),
             })?;
-        let durations = self.username_contest_durations(sdk);
         let now = now_ms();
         let snapshots: BTreeMap<&String, (ContestSnapshot, u64)> = running
             .iter()
@@ -220,8 +256,13 @@ impl AppContext {
         for identity in identities {
             let identity_id = identity.identity.id();
             let previous = self.username_requests_for(&identity_id);
-            let mut fresh: Vec<UsernameRequest> = snapshots
+            let fresh: Vec<UsernameRequest> = snapshots
                 .iter()
+                .filter(|(name, _)| {
+                    !previous.iter().any(|request| {
+                        request.normalized_label == name.as_str() && !request.phase.is_pending()
+                    })
+                })
                 .filter_map(|(name, (snapshot, end))| {
                     username_request_from_contest(
                         identity_id,
@@ -233,45 +274,36 @@ impl AppContext {
                     )
                 })
                 .collect();
-            for old in previous.iter().filter(|old| {
-                old.phase.is_pending() && !snapshots.contains_key(&old.normalized_label)
-            }) {
-                match sdk
-                    .get_contested_dpns_vote_state(&old.normalized_label, None)
-                    .await
-                {
-                    Ok(contenders) => fresh.extend(username_request_from_contest(
-                        identity_id,
-                        &old.normalized_label,
-                        &self.contest_snapshot(sdk, &contenders),
-                        old.end,
-                        now,
-                        durations,
-                    )),
-                    Err(error) => tracing::debug!(
-                        name = %old.normalized_label,
-                        ?error,
-                        "Username request outcome could not be read; keeping the stored status"
-                    ),
-                }
-            }
-            let newly_won = fresh.iter().any(|request| {
-                request.phase == RequestPhase::Won
-                    && !previous.iter().any(|old| {
-                        old.normalized_label == request.normalized_label
-                            && old.phase == RequestPhase::Won
-                    })
-            });
-            if let Err(error) = self.update_username_requests(&identity_id, |current| {
-                merge_requests(current, fresh, now)
-            }) {
-                tracing::warn!(?error, %identity_id, "Username requests could not be stored");
-            }
-            if newly_won {
-                self.record_won_usernames(sdk, &identity).await;
-            }
+            self.apply_username_refresh(sdk, &identity, &previous, fresh)
+                .await;
         }
         Ok(BackendTaskSuccessResult::MyUsernameRequestsRefreshed)
+    }
+
+    async fn apply_username_refresh(
+        &self,
+        sdk: &Sdk,
+        identity: &QualifiedIdentity,
+        previous: &[UsernameRequest],
+        fresh: Vec<UsernameRequest>,
+    ) {
+        let identity_id = identity.identity.id();
+        let newly_won = fresh.iter().any(|request| {
+            request.phase == RequestPhase::Won
+                && !previous.iter().any(|old| {
+                    old.normalized_label == request.normalized_label
+                        && old.phase == RequestPhase::Won
+                })
+        });
+        if let Err(error) = self.update_username_requests(&identity_id, |current| {
+            merge_requests(current, fresh, now_ms())
+        }) {
+            tracing::warn!(?error, %identity_id, "Username requests could not be stored");
+        }
+        self.egui_ctx().request_repaint();
+        if newly_won {
+            self.record_won_usernames(sdk, identity).await;
+        }
     }
 
     /// Re-read the registered names of an identity that just won a vote, so the
@@ -353,5 +385,99 @@ impl AppContext {
         self.note_username_seen_mark(&identity_id, Some(result.is_ok()));
         result?;
         Ok(BackendTaskSuccessResult::UsernamePreferencesSaved)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dash_sdk::dpp::block::block_info::BlockInfo;
+    use dash_sdk::dpp::voting::contender_structs::ContenderWithSerializedDocument;
+    use dash_sdk::drive::query::vote_poll_vote_state_query::{
+        ContestedDocumentVotePollDriveQuery, ContestedDocumentVotePollDriveQueryResultType,
+    };
+
+    #[tokio::test]
+    async fn known_username_outcome_refresh_survives_discovery_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(
+            std::sync::Arc::new(crate::wallet_backend::kv_test_support::InMemoryKv::default()),
+        ));
+        let id = Identifier::from([42; 32]);
+        let identity = QualifiedIdentity {
+            identity: dash_sdk::dpp::identity::Identity::create_basic_identity(
+                id,
+                dash_sdk::dpp::version::PlatformVersion::latest(),
+            )
+            .unwrap(),
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: crate::model::qualified_identity::IdentityType::User,
+            alias: None,
+            private_keys: Default::default(),
+            dpns_names: vec![],
+            associated_wallets: Default::default(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: Default::default(),
+            status: crate::model::qualified_identity::IdentityStatus::Active,
+            network: ctx.network,
+        };
+        ctx.insert_local_qualified_identity_sidecar_only(&identity)
+            .unwrap();
+        ctx.store_username_requests(
+            &id,
+            vec![UsernameRequest::submitted(
+                "d1ssh",
+                1,
+                ContestDurations {
+                    total: std::time::Duration::from_secs(10),
+                    join: std::time::Duration::from_secs(5),
+                },
+                None,
+            )],
+        )
+        .unwrap();
+        let mut sdk = Sdk::new_mock();
+        sdk.mock()
+            .expect_fetch_many::<Identifier, ContenderWithSerializedDocument, _, Contenders>(
+                ContestedDocumentVotePollDriveQuery {
+                    vote_poll: crate::model::dpns_voting::dpns_vote_poll(
+                        &ctx.dpns_contract,
+                        "d1ssh",
+                    )
+                    .unwrap(),
+                    result_type:
+                        ContestedDocumentVotePollDriveQueryResultType::DocumentsAndVoteTally,
+                    allow_include_locked_and_abstaining_vote_tally: true,
+                    start_at: None,
+                    limit: None,
+                    offset: None,
+                },
+                Some(Contenders {
+                    winner: Some((
+                        ContestedDocumentVotePollWinnerInfo::Locked,
+                        BlockInfo {
+                            time_ms: now_ms(),
+                            ..Default::default()
+                        },
+                    )),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+        // No discovery expectation: scanning unrelated contests fails.
+        assert!(matches!(
+            ctx.refresh_my_username_requests(&sdk).await,
+            Err(TaskError::UsernameRequestRefreshFailed { .. })
+        ));
+        ctx.refresh_pending_dpns_usernames().unwrap();
+        assert_eq!(
+            ctx.username_requests_for(&id)[0].phase,
+            RequestPhase::Locked
+        );
     }
 }

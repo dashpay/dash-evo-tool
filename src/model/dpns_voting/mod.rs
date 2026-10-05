@@ -44,25 +44,20 @@ pub enum DpnsVotePollAvailability {
     /// The poll is open, or DET has no proof that it closed. Absence of
     /// evidence must never be read as closure, so unknown polls land here.
     MayAccept,
-    /// The contest is decided or its deadline has passed.
+    /// The contest has an authoritative terminal outcome.
     ProvedClosed,
 }
 
 /// Classify a poll from its cached contest, if DET has one.
 ///
-/// `now_ms` is the current wall clock in Unix milliseconds, matched against the
-/// contest deadline. Returns [`DpnsVotePollAvailability::MayAccept`] for a
-/// contest DET has never cached or whose state is still unknown.
+/// A local deadline cannot prove closure; Platform may still accept votes until resolution.
 pub fn dpns_vote_poll_availability(
     contest: Option<&crate::model::contested_name::ContestedName>,
-    now_ms: u64,
 ) -> DpnsVotePollAvailability {
     let Some(contest) = contest else {
         return DpnsVotePollAvailability::MayAccept;
     };
-    let decided = contest.state.is_decided();
-    let expired = contest.end_time.is_some_and(|end| end <= now_ms);
-    if decided || expired {
+    if contest.state.is_decided() {
         DpnsVotePollAvailability::ProvedClosed
     } else {
         DpnsVotePollAvailability::MayAccept

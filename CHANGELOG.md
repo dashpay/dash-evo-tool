@@ -165,7 +165,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   votes whose results are still uncertain.
   Cast now, choose a UTC time, or schedule shortly before voting ends.
   A progress drawer lets you keep working while votes are sent.
+  Decisions staged or changed during submission remain available afterward.
   Uncertain results stay visible and blocked from repeat submission.
+  Passing the estimated deadline alone does not release an uncertain vote.
   Unresolved operations remain accessible after a contest closes and are
   not displaced by newer completed votes. Failed scheduled attempts retain
   an actionable explanation after restarting the app.
@@ -181,6 +183,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   community vote show the non-refundable fee before payment; availability
   is checked again before registration. Request status shows the timeline,
   tally, and outcome, and suggests alternatives that need no vote.
+  Request refreshes preserve concurrent edits and retain saved requests when
+  storage cannot be read.
   Profile → Usernames lists your names and requests, with a "Show as main"
   choice for the username displayed when no profile display name is set.
   The former DPNS tool entry is removed; old voting shortcuts open

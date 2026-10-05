@@ -247,6 +247,7 @@ impl AppContext {
     /// main-name choices and seen outcomes without touching storage per frame.
     pub(crate) fn refresh_pending_dpns_usernames(&self) -> Result<(), TaskError> {
         let kv = self.det_kv()?;
+        let mut current = self.username_cache_mut();
         let mut cache = UsernameCache::default();
         for key in kv
             .list(DetScope::Global, Some(USERNAME_REQUESTS_KEY_PREFIX))
@@ -255,14 +256,11 @@ impl AppContext {
             let Some(id) = identity_from_key(&key, USERNAME_REQUESTS_KEY_PREFIX) else {
                 continue;
             };
-            match kv.get::<Vec<UsernameRequest>>(DetScope::Global, &key) {
-                Ok(Some(requests)) => {
-                    cache.requests.insert(id, requests);
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    tracing::warn!(key = %key, ?error, "Skipping unreadable username request list")
-                }
+            if let Some(requests) = kv
+                .get::<Vec<UsernameRequest>>(DetScope::Global, &key)
+                .map_err(username_err)?
+            {
+                cache.requests.insert(id, requests);
             }
         }
         for key in kv
@@ -270,7 +268,9 @@ impl AppContext {
             .map_err(username_err)?
         {
             if let Some(id) = identity_from_key(&key, MAIN_USERNAME_KEY_PREFIX)
-                && let Ok(Some(name)) = kv.get::<String>(DetScope::Global, &key)
+                && let Some(name) = kv
+                    .get::<String>(DetScope::Global, &key)
+                    .map_err(username_err)?
             {
                 cache.main.insert(id, name);
             }
@@ -280,12 +280,13 @@ impl AppContext {
             .map_err(username_err)?
         {
             if let Some(id) = identity_from_key(&key, SEEN_OUTCOMES_KEY_PREFIX)
-                && let Ok(Some(seen)) = kv.get::<BTreeSet<String>>(DetScope::Global, &key)
+                && let Some(seen) = kv
+                    .get::<BTreeSet<String>>(DetScope::Global, &key)
+                    .map_err(username_err)?
             {
                 cache.seen.insert(id, seen);
             }
         }
-        let mut current = self.username_cache_mut();
         cache.seen_marks = std::mem::take(&mut current.seen_marks);
         *current = cache;
         Ok(())
@@ -946,6 +947,133 @@ mod tests {
             decided_at: None,
             tally: Default::default(),
             last_updated: 0,
+        }
+    }
+
+    #[derive(Default)]
+    struct ReloadReadHookKv {
+        inner: InMemoryKv,
+        after_read: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    }
+
+    impl KvStore for ReloadReadHookKv {
+        fn get(&self, scope: &ObjectId, key: &str) -> Result<Option<Vec<u8>>, KvError> {
+            let value = self.inner.get(scope, key)?;
+            let hook = self.after_read.lock().unwrap().take();
+            if let Some(hook) = hook {
+                hook();
+            }
+            Ok(value)
+        }
+
+        fn put(&self, scope: &ObjectId, key: &str, value: &[u8]) -> Result<(), KvError> {
+            self.inner.put(scope, key, value)
+        }
+
+        fn delete(&self, scope: &ObjectId, key: &str) -> Result<(), KvError> {
+            self.inner.delete(scope, key)
+        }
+
+        fn list_keys(
+            &self,
+            scope: &ObjectId,
+            prefix: Option<&str>,
+        ) -> Result<Vec<String>, KvError> {
+            self.inner.list_keys(scope, prefix)
+        }
+    }
+
+    #[test]
+    fn review_safety_username_reload_preserves_overlapping_request_write() {
+        let temp = tempfile::tempdir().unwrap();
+        let context = test_app_context(temp.path());
+        let store = Arc::new(ReloadReadHookKv::default());
+        context.set_det_kv_override_for_test(DetKv::from_store(store.clone()));
+        let id = Identifier::from([1; 32]);
+        let original = request("alpha", RequestPhase::Voting);
+        context
+            .store_username_requests(&id, vec![original.clone()])
+            .unwrap();
+        let weak = Arc::downgrade(&context);
+        let (worker_tx, worker_rx) = std::sync::mpsc::channel();
+        *store.after_read.lock().unwrap() = Some(Box::new(move || {
+            let context = weak.upgrade().unwrap();
+            let serialized = matches!(
+                context.pending_dpns_usernames.try_write(),
+                Err(std::sync::TryLockError::WouldBlock)
+            );
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                context
+                    .update_username_requests(&id, |current| {
+                        let mut requests = current.to_vec();
+                        requests.push(request("beta", RequestPhase::Voting));
+                        requests
+                    })
+                    .unwrap();
+                let _ = done_tx.send(());
+            });
+            worker_tx.send(worker).unwrap();
+            // Force the stale-read interleaving unless the reload excludes the writer.
+            if !serialized {
+                done_rx.recv().unwrap();
+            }
+        }));
+        context.refresh_pending_dpns_usernames().unwrap();
+        worker_rx.recv().unwrap().join().unwrap();
+        let expected = vec![original, request("beta", RequestPhase::Voting)];
+        assert_eq!(context.username_requests_for(&id), expected);
+        context.refresh_pending_dpns_usernames().unwrap();
+        assert_eq!(context.username_requests_for(&id), expected);
+    }
+
+    #[test]
+    fn review_safety_username_reload_preserves_snapshot_on_record_read_failure() {
+        use crate::wallet_backend::kv_test_support::FailingKv;
+        for prefix in [
+            USERNAME_REQUESTS_KEY_PREFIX,
+            MAIN_USERNAME_KEY_PREFIX,
+            SEEN_OUTCOMES_KEY_PREFIX,
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let context = test_app_context(temp.path());
+            let store = Arc::new(FailingKv::default());
+            context.set_det_kv_override_for_test(DetKv::from_store(store.clone()));
+            let id = Identifier::from([1; 32]);
+            let original = request("alpha", RequestPhase::Won);
+            context
+                .store_username_requests(&id, vec![original.clone()])
+                .unwrap();
+            context.set_main_username(&id, "alpha").unwrap();
+            context
+                .mark_username_outcomes_seen(&id, std::slice::from_ref(&original))
+                .unwrap();
+            store.fail_next_gets_containing(prefix, 1);
+            let result = context.refresh_pending_dpns_usernames();
+            assert_eq!(
+                context.username_requests_for(&id),
+                vec![original.clone()],
+                "{prefix}"
+            );
+            assert_eq!(
+                context.username_cache().main.get(&id).map(String::as_str),
+                Some("alpha"),
+                "{prefix}"
+            );
+            assert!(context.username_outcome_seen(&id, &original), "{prefix}");
+            assert!(result.is_err(), "a failed {prefix} read must be reported");
+            context
+                .update_username_requests(&id, |current| {
+                    let mut requests = current.to_vec();
+                    requests.push(request("beta", RequestPhase::Voting));
+                    requests
+                })
+                .unwrap();
+            context.refresh_pending_dpns_usernames().unwrap();
+            assert_eq!(
+                context.username_requests_for(&id),
+                vec![original, request("beta", RequestPhase::Voting)]
+            );
         }
     }
 

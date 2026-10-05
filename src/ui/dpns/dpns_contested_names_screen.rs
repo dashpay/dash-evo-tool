@@ -445,6 +445,8 @@ pub struct DPNSScreen {
     vote_operations: DpnsVoteOperationSnapshot,
     vote_state: DpnsVoteStateSnapshot,
     pending_vote_operation: Option<DpnsVoteOperationId>,
+    submitted_votes: BTreeMap<String, SelectedVote>,
+    submitted_cards: BTreeSet<String>,
     pending_scheduled_actions: BTreeMap<DpnsScheduledVoteKey, BackendTaskContext>,
     /// Set by `display_backend_task_error` when the failed task is this
     /// panel's pending submission; `display_task_error` then releases it.
@@ -562,6 +564,8 @@ impl DPNSScreen {
             vote_operations,
             vote_state,
             pending_vote_operation: None,
+            submitted_votes: BTreeMap::new(),
+            submitted_cards: BTreeSet::new(),
             pending_scheduled_actions: BTreeMap::new(),
             release_pending_on_error: false,
             session_started_ms: now_ms(),
@@ -628,6 +632,8 @@ impl DPNSScreen {
         self.pending_backend_task = None;
         self.pending_preference = None;
         self.pending_vote_operation = None;
+        self.submitted_votes.clear();
+        self.submitted_cards.clear();
         self.pending_scheduled_actions.clear();
         self.release_pending_on_error = false;
         self.scheduled_clear_dialog = None;
@@ -1274,11 +1280,17 @@ impl DPNSScreen {
         ui.horizontal(|ui| {
             ui.label(RichText::new(tray_label(decisions, transactions)).strong());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ComponentStyles::add_primary_button_enabled(ui, transactions > 0, "Cast")
-                    .disabled_tooltip(
-                        "Your nodes already hold these choices. Pick a different decision.",
-                    )
-                    .clicked()
+                if ComponentStyles::add_primary_button_enabled(
+                    ui,
+                    transactions > 0 && self.pending_vote_operation.is_none(),
+                    "Cast",
+                )
+                .disabled_tooltip(if self.pending_vote_operation.is_some() {
+                    "Votes are being submitted. Wait for the result before sending another batch."
+                } else {
+                    "Your nodes already hold these choices. Pick a different decision."
+                })
+                .clicked()
                 {
                     self.open_review_for_node_set();
                 }
@@ -1291,6 +1303,9 @@ impl DPNSScreen {
 
     /// Open the confirm step for the staged decisions across the node set.
     fn open_review_for_node_set(&mut self) {
+        if self.pending_vote_operation.is_some() {
+            return;
+        }
         self.retry_voter = None;
         self.node_overrides.clear();
         self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
@@ -2348,6 +2363,9 @@ impl DPNSScreen {
     }
 
     fn bulk_apply_votes(&mut self) -> AppAction {
+        if self.pending_vote_operation.is_some() {
+            return AppAction::None;
+        }
         let plan = match self.build_review_plan() {
             Ok(plan) => plan,
             Err(error) => {
@@ -2391,6 +2409,13 @@ impl DPNSScreen {
         };
         self.retry_voter = None;
         self.pending_vote_operation = Some(operation.id);
+        self.submitted_votes = self
+            .selected_votes
+            .iter()
+            .cloned()
+            .map(|vote| (vote.contested_name.clone(), vote))
+            .collect();
+        self.submitted_cards = self.selected_cards.clone();
         AppAction::BackendTask(BackendTask::ContestedResourceTask(
             ContestedResourceTask::SubmitDpnsVoteOperation {
                 operation,
@@ -2495,6 +2520,8 @@ impl ScreenLike for DPNSScreen {
         }
         if self.release_pending_on_error {
             self.pending_vote_operation = None;
+            self.submitted_votes.clear();
+            self.submitted_cards.clear();
             self.release_pending_on_error = false;
             // The review window disables both Submit and Cancel while a
             // submission is in flight, so a failed submission must leave that
@@ -2550,14 +2577,20 @@ impl ScreenLike for DPNSScreen {
                 let owns_result = self.pending_vote_operation == Some(operation_id);
                 if owns_result {
                     self.pending_vote_operation = None;
-                    if matches!(
-                        self.bulk_vote_handling_status,
-                        VoteHandlingStatus::CastingVotes | VoteHandlingStatus::SchedulingVotes
-                    ) {
-                        self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
-                        self.selected_votes.clear();
-                        self.selected_cards.clear();
-                    }
+                    self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
+                    self.selected_votes.retain(|vote| {
+                        self.submitted_votes.get(&vote.contested_name) != Some(vote)
+                    });
+                    let staged: BTreeSet<&String> = self
+                        .selected_votes
+                        .iter()
+                        .map(|vote| &vote.contested_name)
+                        .collect();
+                    self.selected_cards.retain(|name| {
+                        !self.submitted_cards.contains(name) || staged.contains(name)
+                    });
+                    self.submitted_votes.clear();
+                    self.submitted_cards.clear();
                 }
                 if let Err(error) = self.vote_operations.refresh(&self.app_context) {
                     tracing::warn!(
@@ -2608,7 +2641,9 @@ impl ScreenLike for DPNSScreen {
         let mut action = AppAction::None;
 
         // `Review again` from the progress drawer, which lives outside this panel.
-        if let Some(outcome) = self.app_context.take_dpns_vote_review_request() {
+        if self.pending_vote_operation.is_none()
+            && let Some(outcome) = self.app_context.take_dpns_vote_review_request()
+        {
             self.view = VotesView::ToDecide;
             self.review_failed_target(&outcome);
         }
@@ -2970,15 +3005,13 @@ mod tests {
     /// panel's own operation reports, never on another operation's update.
     #[test]
     fn own_operation_result_clears_staged_decisions_without_an_overlay() {
-        let (ctx, _temp_dir) = offline_ctx();
-        let mut screen = DPNSScreen::new(&ctx, VotesView::ToDecide);
-        screen.selected_votes = vec![SelectedVote {
-            contested_name: "alpha".to_owned(),
-            vote_choice: ResourceVoteChoice::Lock,
-            end_time: None,
-        }];
-        screen.bulk_vote_handling_status = VoteHandlingStatus::CastingVotes;
-        screen.pending_vote_operation = Some(DpnsVoteOperationId::from_bytes([7; 16]));
+        let (mut screen, _temp_dir) = voting_ui_review_fixture();
+        let ctx = Arc::clone(&screen.app_context);
+        assert!(matches!(
+            screen.bulk_apply_votes(),
+            AppAction::BackendTask(_)
+        ));
+        let operation_id = screen.pending_vote_operation.unwrap();
 
         screen.display_task_result(BackendTaskSuccessResult::DpnsVoteOperationUpdated {
             network: ctx.network(),
@@ -2992,7 +3025,7 @@ mod tests {
             .insert(pending_scheduled_key(&ctx), BackendTaskContext::Unknown);
         screen.display_task_result(BackendTaskSuccessResult::DpnsVoteOperationUpdated {
             network: ctx.network(),
-            operation_id: DpnsVoteOperationId::from_bytes([7; 16]),
+            operation_id,
         });
 
         assert!(screen.selected_votes.is_empty());
@@ -3501,6 +3534,73 @@ mod tests {
         screen.vote_state =
             DpnsVoteStateSnapshot::load(&ctx, &[voter.identity.id()], &[poll]).unwrap();
         (screen, temp_dir)
+    }
+
+    #[test]
+    fn review_safety_submission_result_preserves_new_staged_decisions() {
+        let (mut screen, _dir) = voting_ui_review_fixture();
+        for name in ["alpha", "beta"] {
+            screen
+                .app_context
+                .seed_dpns_contest_for_test(name, Some(now_ms() + 600_000), false);
+        }
+        screen.refresh();
+        screen.selected_cards.insert("alpha".to_owned());
+        assert!(matches!(
+            screen.bulk_apply_votes(),
+            AppAction::BackendTask(_)
+        ));
+        let operation_id = screen.pending_vote_operation.unwrap();
+        let new_vote = SelectedVote {
+            contested_name: "beta".to_owned(),
+            vote_choice: ResourceVoteChoice::Lock,
+            end_time: None,
+        };
+        screen.selected_votes.push(new_vote.clone());
+        screen.selected_cards.insert("beta".to_owned());
+        screen.display_task_result(BackendTaskSuccessResult::DpnsVoteOperationUpdated {
+            network: screen.app_context.network(),
+            operation_id,
+        });
+        assert_eq!(screen.selected_votes, vec![new_vote]);
+        assert_eq!(screen.selected_cards, BTreeSet::from(["beta".to_owned()]));
+        assert!(screen.pending_vote_operation.is_none());
+    }
+
+    #[test]
+    fn review_safety_pending_submission_cannot_be_replaced_by_reopening_review() {
+        let (mut screen, _dir) = voting_ui_review_fixture();
+        assert!(matches!(
+            screen.bulk_apply_votes(),
+            AppAction::BackendTask(_)
+        ));
+        let operation_id = screen.pending_vote_operation;
+        screen.show_bulk_schedule_popup = false;
+        screen.open_review_for_node_set();
+        assert!(!screen.show_bulk_schedule_popup);
+        assert!(matches!(
+            screen.bulk_vote_handling_status,
+            VoteHandlingStatus::CastingVotes
+        ));
+        assert!(matches!(screen.bulk_apply_votes(), AppAction::None));
+        assert_eq!(screen.pending_vote_operation, operation_id);
+    }
+
+    #[test]
+    fn review_safety_submission_result_preserves_changed_staged_choice() {
+        let (mut screen, _dir) = voting_ui_review_fixture();
+        assert!(matches!(
+            screen.bulk_apply_votes(),
+            AppAction::BackendTask(_)
+        ));
+        let operation_id = screen.pending_vote_operation.unwrap();
+        screen.selected_votes[0].vote_choice = ResourceVoteChoice::Lock;
+        let revised = screen.selected_votes.clone();
+        screen.display_task_result(BackendTaskSuccessResult::DpnsVoteOperationUpdated {
+            network: screen.app_context.network(),
+            operation_id,
+        });
+        assert_eq!(screen.selected_votes, revised);
     }
 
     #[test]

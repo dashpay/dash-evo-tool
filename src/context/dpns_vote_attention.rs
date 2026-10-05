@@ -158,14 +158,12 @@ impl AppContext {
 
     /// Drop vote counts for polls the contest cache proves closed.
     pub(crate) fn forget_closed_dpns_vote_counts(&self) {
-        let now = now_ms();
         let closed: BTreeSet<Identifier> = self
             .all_contested_names()
             .unwrap_or_default()
             .iter()
             .filter(|contest| {
-                dpns_vote_poll_availability(Some(contest), now)
-                    == DpnsVotePollAvailability::ProvedClosed
+                dpns_vote_poll_availability(Some(contest)) == DpnsVotePollAvailability::ProvedClosed
             })
             .filter_map(|contest| {
                 self.dpns_vote_poll_id(&contest.normalized_contested_name)

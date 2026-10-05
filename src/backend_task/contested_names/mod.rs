@@ -144,20 +144,17 @@ fn set_relative_schedule_labels(
     }
 }
 
-/// The outcome of a target whose contest closed before it was sent
-/// (VOTE-FR-087), or `None` while the contest may still accept votes.
-///
-/// Terminal for scheduled targets too: a closed poll can never accept the
-/// vote, so retrying it would only fail again.
+/// Reject new submissions after the deadline or an authoritative terminal outcome.
 fn voting_ended_outcome(
     contest: Option<&ContestedName>,
     now_ms: u64,
 ) -> Option<(DpnsVoteTargetStatus, Option<DpnsVoteFailure>)> {
-    (dpns_vote_poll_availability(contest, now_ms) == DpnsVotePollAvailability::ProvedClosed)
-        .then_some((
-            DpnsVoteTargetStatus::FailedBeforeSubmission,
-            Some(DpnsVoteFailure::VotingEnded),
-        ))
+    (dpns_vote_poll_availability(contest) == DpnsVotePollAvailability::ProvedClosed
+        || contest.is_some_and(|contest| contest.end_time.is_some_and(|end| end <= now_ms)))
+    .then_some((
+        DpnsVoteTargetStatus::FailedBeforeSubmission,
+        Some(DpnsVoteFailure::VotingEnded),
+    ))
 }
 
 /// A missing voter keeps the pre-broadcast status rules but names the cause,
@@ -1056,7 +1053,6 @@ impl AppContext {
             .into_iter()
             .map(|contest| (contest.normalized_contested_name.clone(), contest))
             .collect::<BTreeMap<_, _>>();
-        let now_ms = now_ms();
         for outcome in operation
             .targets
             .iter()
@@ -1064,7 +1060,7 @@ impl AppContext {
         {
             // Targets may carry the label the operator typed; contests are keyed normalized.
             let normalized = convert_to_homograph_safe_chars(&outcome.target.contested_name);
-            let availability = dpns_vote_poll_availability(contests.get(&normalized), now_ms);
+            let availability = dpns_vote_poll_availability(contests.get(&normalized));
             let poll_id = outcome.target.key.vote_poll_id;
             let query = ContestedResourceVotesGivenByIdentityQuery {
                 identity_id: outcome.target.key.voter_id,
@@ -2243,41 +2239,44 @@ mod tests {
     }
 
     #[test]
-    fn poll_availability_is_proved_only_by_a_cached_decided_or_expired_contest() {
+    fn review_safety_elapsed_deadline_keeps_ambiguous_votes_locked() {
+        let (_temp, context) = vote_context();
+        context.seed_dpns_contest_for_test("dominguez", Some(1_000), false);
+        let contests = context.all_contested_names().unwrap();
+        for now in [1_000, 2_000, u64::MAX] {
+            let availability = dpns_vote_poll_availability(contests.first());
+            for observed in [None, Some(ResourceVoteChoice::Abstain)] {
+                let status =
+                    classify_reconciled_vote(observed, ResourceVoteChoice::Lock, availability)
+                        .unwrap_or(DpnsVoteTargetStatus::Unconfirmed);
+                assert_eq!(status, DpnsVoteTargetStatus::Unconfirmed);
+                assert!(status.holds_lock());
+            }
+            assert!(voting_ended_outcome(contests.first(), now).is_some());
+        }
+    }
+
+    #[test]
+    fn poll_availability_requires_a_cached_decided_contest() {
         let (_temp, context) = vote_context();
         assert_eq!(
-            dpns_vote_poll_availability(None, 1_000),
+            dpns_vote_poll_availability(None),
             DpnsVotePollAvailability::MayAccept,
             "an uncached contest is unknown, not closed"
         );
 
-        for (end_time, closed, now_ms, expected) in [
-            (
-                Some(2_000),
-                false,
-                1_000,
-                DpnsVotePollAvailability::MayAccept,
-            ),
-            (None, false, 1_000, DpnsVotePollAvailability::MayAccept),
-            (
-                Some(1_000),
-                false,
-                1_000,
-                DpnsVotePollAvailability::ProvedClosed,
-            ),
-            (
-                Some(2_000),
-                true,
-                1_000,
-                DpnsVotePollAvailability::ProvedClosed,
-            ),
+        for (end_time, closed, expected) in [
+            (Some(2_000), false, DpnsVotePollAvailability::MayAccept),
+            (None, false, DpnsVotePollAvailability::MayAccept),
+            (Some(1_000), false, DpnsVotePollAvailability::MayAccept),
+            (Some(2_000), true, DpnsVotePollAvailability::ProvedClosed),
         ] {
             context.seed_dpns_contest_for_test("dominguez", end_time, closed);
             let contests = context.all_contested_names().expect("cached contests");
             assert_eq!(
-                dpns_vote_poll_availability(contests.first(), now_ms),
+                dpns_vote_poll_availability(contests.first()),
                 expected,
-                "end_time {end_time:?}, closed {closed}, now {now_ms}"
+                "end_time {end_time:?}, closed {closed}"
             );
         }
     }
@@ -2789,7 +2788,7 @@ mod tests {
             crate::model::contested_name::ContestState::Unknown
         );
 
-        let availability = dpns_vote_poll_availability(Some(skeleton), 5_000);
+        let availability = dpns_vote_poll_availability(Some(skeleton));
         assert_eq!(availability, DpnsVotePollAvailability::MayAccept);
         assert_eq!(
             voting_ended_outcome(Some(skeleton), 5_000),

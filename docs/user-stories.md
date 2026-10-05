@@ -817,6 +817,7 @@ As a user, I want to see each identity's usernames and their state so that I kno
 
 - Profile ▸ Usernames lists the main name, other active names, every pending request (also when the identity already owns a name), and outcomes from the last 30 days (went to someone else, locked for good).
 - Saved requests refresh before the wider contest search. After the estimated deadline, Home, the identity badge, and the status page show “Awaiting result” until the network confirms an outcome; elapsed time alone never awards or rejects a name.
+- Refreshing preserves concurrent requests, main-name choices, and seen outcomes. A failed storage read keeps the last complete snapshot available for later updates.
 - Row actions: Copy username, Show QR code, Show as main. Usernames can't be deleted, so no delete action is offered.
 - The identity switcher and "See all identities" show each identity's usernames. There is no separate cross-identity usernames table.
 
@@ -846,6 +847,7 @@ As a masternode operator, I want to make one decision per contest and have all m
 - Each node votes in its own transaction (Platform has no batching). The confirm shows decisions × nodes = transactions, warns once when votes change earlier choices, and lists skipped nodes with reasons (already voted this way, no changes left, vote state unavailable, not in the masternode list).
 - A node may vote five times per contest: the initial vote plus four changes. Changes left are shown per node, counted on this device, or marked unknown when the node voted outside Dash Evo Tool. Nodes with none left are skipped.
 - Choosing the current choice submits nothing. The node's proved current choice is shown before casting.
+- An uncertain vote stays locked after the estimated deadline until authoritative network evidence resolves it; the local clock cannot establish that the vote failed.
 - Unavailable voting information leaves the affected nodes out and offers Refresh voting. Other nodes can still vote.
 - If a first vote becomes a change during preflight, the confirm reopens with the change warning.
 
@@ -871,6 +873,7 @@ As a masternode operator, I want to choose which nodes vote and decide many cont
 - A vote for a requester shows their name and a shortened identity ID, or the ID alone when the name is unavailable, so similar names remain distinguishable.
 - Switching networks clears drafts and open dialogs.
 - A successful mixed batch reports cast and scheduled counts.
+- Decisions staged or changed while a batch is submitting remain in the tray when that batch finishes. Another batch can be submitted after the pending submission returns.
 
 ### DPN-008: Recognise an identity by its profile name [Implemented]
 **Persona:** Alex, Priya

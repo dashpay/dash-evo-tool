@@ -4984,6 +4984,44 @@ async fn reconcile_managed_identities_registers_only_wallet_owned() {
     backend.shutdown().await;
 }
 
+/// A wallet-owned identity stored after its wallet bootstrapped missed the
+/// bootstrap reconcile; any DashPay task must register it before running.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dashpay_task_registers_identity_stored_after_wallet_bootstrap() {
+    use crate::backend_task::dashpay::DashPayTask;
+
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+    let (seed_hash, _wallet) = register_test_wallet(&ctx, &backend, [0x4Eu8; 64], "late").await;
+
+    let owned = wallet_owned_qualified_identity(Some(0));
+    ctx.insert_local_qualified_identity(&owned, &Some((seed_hash, 0)))
+        .expect("insert wallet-owned identity");
+
+    // The task's own result is irrelevant here; only the registration matters.
+    let _ = ctx
+        .run_dashpay_task(
+            DashPayTask::LoadContactsOffline {
+                identity: owned.clone(),
+            },
+            &ctx.sdk(),
+        )
+        .await;
+
+    assert!(
+        !backend
+            .ensure_identity_managed(&seed_hash, &owned.identity, 0)
+            .await
+            .expect("identity lookup"),
+        "the DashPay task must have registered the identity with its wallet"
+    );
+
+    backend.shutdown().await;
+}
+
 /// A masternode/evonode `QualifiedIdentity` — no wallet association, the
 /// shape `insert_local_qualified_identity(.., &None)` persists.
 fn masternode_qualified_identity() -> crate::model::qualified_identity::QualifiedIdentity {

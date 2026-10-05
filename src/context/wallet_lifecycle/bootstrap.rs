@@ -276,6 +276,23 @@ impl AppContext {
         }
     }
 
+    /// Run [`Self::reconcile_managed_identities`] for every loaded wallet.
+    ///
+    /// For identities stored after their wallet's bootstrap already ran — the
+    /// bootstrap reconcile cannot have seen them. Best-effort and seed-free.
+    pub(crate) async fn reconcile_managed_identities_for_loaded_wallets(&self) {
+        let Ok(backend) = self.wallet_backend() else {
+            return;
+        };
+        let seed_hashes: Vec<WalletSeedHash> = {
+            let wallets = self.wallet_context().wallets();
+            wallets.keys().copied().collect()
+        };
+        for seed_hash in &seed_hashes {
+            self.reconcile_managed_identities(&backend, seed_hash).await;
+        }
+    }
+
     /// Two-way reconcile between DET's wallet-less identities and the
     /// upstream store's unowned scope: registers every DET-known wallet-less
     /// identity upstream doesn't have yet (backfilling nodes stored before
@@ -718,9 +735,13 @@ impl AppContext {
             guard.values().cloned().collect()
         };
 
-        for wallet in wallets.iter() {
+        let status = self.migration_status();
+        let total = wallets.len() as u32;
+        for (index, wallet) in wallets.iter().enumerate() {
+            status.set_wallet_load(Some((index as u32 + 1, total)));
             self.bootstrap_wallet_addresses_jit(wallet).await;
         }
+        status.set_wallet_load(None);
     }
 
     /// Update wallet platform address info from SDK-returned AddressInfos.

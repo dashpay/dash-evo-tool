@@ -627,6 +627,12 @@ impl StoragePrepGate {
         }
 
         self.render(ctx, migration_state);
+        if let Some(handle) = &self.overlay {
+            match app_context.migration_status().wallet_load() {
+                Some((current, total)) => handle.set_step(current, total),
+                None => handle.clear_step(),
+            };
+        }
         self.drain_actions(app_context)
     }
 

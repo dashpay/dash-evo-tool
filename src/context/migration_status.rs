@@ -230,6 +230,7 @@ impl MigrationState {
 #[derive(Debug)]
 pub struct MigrationStatus {
     state: ArcSwap<MigrationState>,
+    wallet_load: Mutex<Option<(u32, u32)>>,
     wallet_password_submitted: Notify,
     skipped_wallets: Mutex<BTreeSet<WalletSeedHash>>,
     seed_leases: Mutex<Vec<SecretLease>>,
@@ -240,6 +241,7 @@ impl MigrationStatus {
     pub fn new_idle() -> Self {
         Self {
             state: ArcSwap::from_pointee(MigrationState::Idle),
+            wallet_load: Mutex::new(None),
             wallet_password_submitted: Notify::new(),
             skipped_wallets: Mutex::new(BTreeSet::new()),
             seed_leases: Mutex::new(Vec::new()),
@@ -290,6 +292,23 @@ impl MigrationStatus {
     /// allowed and cheap.
     pub fn set_state(&self, new_state: MigrationState) {
         self.state.store(Arc::new(new_state));
+    }
+
+    /// `(current, total)` of the per-wallet pass, visible only while opening storage.
+    pub fn wallet_load(&self) -> Option<(u32, u32)> {
+        let opening = matches!(
+            **self.state.load(),
+            MigrationState::Running {
+                step: MigrationStep::Wiring
+            }
+        );
+        let progress = *self.wallet_load.lock().unwrap_or_else(|p| p.into_inner());
+        progress.filter(|_| opening)
+    }
+
+    /// Publish which wallet the per-wallet pass is preparing; `None` when it ends.
+    pub fn set_wallet_load(&self, progress: Option<(u32, u32)>) {
+        *self.wallet_load.lock().unwrap_or_else(|p| p.into_inner()) = progress;
     }
 
     /// Wait until the UI submits a migrated wallet's password.
@@ -351,6 +370,20 @@ impl Default for MigrationStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wallet_load_is_visible_only_while_opening_storage() {
+        let status = MigrationStatus::new_idle();
+        status.set_wallet_load(Some((3, 12)));
+        assert_eq!(status.wallet_load(), None);
+
+        let step = MigrationStep::Wiring;
+        status.set_state(MigrationState::Running { step });
+        assert_eq!(status.wallet_load(), Some((3, 12)));
+
+        status.set_wallet_load(None);
+        assert_eq!(status.wallet_load(), None);
+    }
 
     /// TC-MIG-001 (supporting) — MigrationStatus state transitions on the
     /// success path. Drives Idle → Running{Detecting} → Running{SingleKey}

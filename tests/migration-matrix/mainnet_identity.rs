@@ -327,7 +327,19 @@ fn mainnet_imported_key_fixture_migrates_and_signs() {
             restore_legacy_snapshots(staged.data_dir(), &source);
         }
         boot_cli(&cli);
-        let (_, stored) = stored_identity(staged.data_dir());
+        let (conn, stored) = stored_identity(staged.data_dir());
+        let wallet_registered: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM identities WHERE wallet_id IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            wallet_registered, 1,
+            "the launch that imports a wallet identity must also register it with its wallet"
+        );
+        drop(conn);
         if let Some(expected) = &canonical_bytes {
             assert!(
                 stored.qi_bytes == *expected,

@@ -15,6 +15,7 @@ on:
       - "rust-toolchain.toml"
       - "tests/backend-e2e/**"
       - "tests/migration-fixtures/**"
+      - "src/wallet_backend/platform_compatibility/fixtures/**"
       - "scripts/migration-fixtures/**"
       - "scripts/ci/**"
       - ".github/workflows/tests.yml"

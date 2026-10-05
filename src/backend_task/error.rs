@@ -1060,14 +1060,11 @@ pub enum TaskError {
         source: crate::wallet_backend::KvAdapterError,
     },
 
-    /// A scheduled DPNS vote could not be read or written in the per-network
-    /// wallet k/v store.
-    #[error(
-        "Could not access your scheduled vote queue. Check available disk space and try again."
-    )]
-    ScheduledVoteStorage {
+    /// The startup check could not read schedules from the previous version.
+    #[error("Your previous scheduled votes could not be checked. Restart the app and try again.")]
+    LegacyScheduledVotesRead {
         #[source]
-        source: crate::wallet_backend::KvAdapterError,
+        source: rusqlite::Error,
     },
 
     /// A scheduled vote failed inside the otherwise successful per-voter result payload.
@@ -1245,15 +1242,6 @@ pub enum TaskError {
     IdentityStorage {
         #[source]
         source: crate::wallet_backend::KvAdapterError,
-    },
-
-    /// A voter identifier handed to a scheduled-vote operation was not a valid
-    /// 32-byte identity id. Callers always pass an [`Identifier`]'s bytes, so
-    /// this signals an internal inconsistency rather than user input.
-    #[error("Could not read the voter for this scheduled vote. Please refresh and try again.")]
-    InvalidVoterIdentifier {
-        #[source]
-        source: dash_sdk::dpp::platform_value::Error,
     },
 
     /// A stored [`QualifiedIdentity`](crate::model::qualified_identity::QualifiedIdentity)

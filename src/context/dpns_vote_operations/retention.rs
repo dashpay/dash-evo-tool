@@ -6,10 +6,8 @@
 use super::keys::*;
 use super::{load_operations, rebuild_lock_index};
 use crate::backend_task::error::TaskError;
-use crate::context::identity_db::{delete_scheduled_vote_in, durable_scheduled_vote_keys};
 use crate::model::dpns_voting::{
-    DpnsScheduledVoteKey, DpnsVoteOperation, DpnsVoteOperationId, DpnsVoteTargetKey,
-    DpnsVoteTargetStatus, VoteTiming,
+    DpnsVoteOperation, DpnsVoteOperationId, DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming,
 };
 use crate::wallet_backend::{DetKv, DetScope, network_prefix};
 use dash_sdk::dpp::dashcore::Network;
@@ -44,7 +42,7 @@ pub(super) fn dismiss_scheduled_target(
     Ok(())
 }
 
-/// Dismiss confirmed schedule rows before clearing their mirrors, under the journal guard.
+/// Dismiss confirmed schedule rows under the journal guard.
 pub(crate) fn dismiss_confirmed_scheduled_targets(
     kv: &DetKv,
     network: Network,
@@ -61,9 +59,6 @@ pub(crate) fn dismiss_confirmed_scheduled_targets(
 }
 
 /// Which retention list a completed operation belongs to.
-///
-/// Scheduled batches are capped separately because retiring one must also drop
-/// the compatibility mirror rows that back it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum HistoryKind {
     Immediate,
@@ -93,29 +88,7 @@ impl HistoryKind {
 }
 
 pub(crate) fn prune_terminal_operations(kv: &DetKv, network: Network) -> Result<usize, TaskError> {
-    let surviving_scheduled_votes = durable_scheduled_vote_keys(kv, network)?;
-    let operations = load_operations(kv, network)?;
-    let terminal_ids = operations
-        .iter()
-        .filter(|operation| {
-            operation.is_complete()
-                && !operation.targets.is_empty()
-                && operation
-                    .targets
-                    .iter()
-                    .any(|outcome| matches!(outcome.target.timing, VoteTiming::Scheduled(_)))
-                && operation.targets.iter().all(|outcome| {
-                    !matches!(outcome.target.timing, VoteTiming::Scheduled(_))
-                        || !surviving_scheduled_votes.contains(&DpnsScheduledVoteKey {
-                            network: outcome.target.key.network,
-                            voter_id: outcome.target.key.voter_id,
-                            contested_name: outcome.target.contested_name.clone(),
-                        })
-                })
-        })
-        .map(|operation| operation.id)
-        .collect::<Vec<_>>();
-    let scheduled_count = delete_terminal_operations(kv, network, &terminal_ids)?;
+    let scheduled_count = prune_completed_history(kv, network, None, HistoryKind::Scheduled)?;
     let immediate_count = prune_completed_history(kv, network, None, HistoryKind::Immediate)?;
     prune_orphaned_schedule_dismissals(kv, network)?;
     Ok(scheduled_count + immediate_count)
@@ -181,41 +154,6 @@ pub(super) fn prune_completed_history(
             .map_err(operation_err)?;
     }
     let remove_count = ordered.len().saturating_sub(limit);
-    if kind == HistoryKind::Scheduled && remove_count > 0 {
-        let removing = ordered[..remove_count]
-            .iter()
-            .copied()
-            .collect::<BTreeSet<_>>();
-        let surviving_pairs = operations
-            .iter()
-            .filter(|operation| !removing.contains(&operation.id))
-            .flat_map(|operation| &operation.targets)
-            .filter(|outcome| matches!(outcome.target.timing, VoteTiming::Scheduled(_)))
-            .map(|outcome| {
-                (
-                    outcome.target.key.voter_id,
-                    outcome.target.contested_name.as_str(),
-                )
-            })
-            .collect::<BTreeSet<_>>();
-        // Remove mirrors before their journals so partial cleanup cannot revive a schedule.
-        for operation in terminal
-            .iter()
-            .filter(|operation| removing.contains(&operation.id))
-        {
-            for outcome in &operation.targets {
-                let pair = (
-                    outcome.target.key.voter_id,
-                    outcome.target.contested_name.as_str(),
-                );
-                if matches!(outcome.target.timing, VoteTiming::Scheduled(_))
-                    && !surviving_pairs.contains(&pair)
-                {
-                    delete_scheduled_vote_in(kv, &pair.0.to_buffer(), pair.1)?;
-                }
-            }
-        }
-    }
     let removed = delete_terminal_operations(kv, network, &ordered[..remove_count])?;
     if remove_count > 0 {
         ordered.drain(..remove_count);

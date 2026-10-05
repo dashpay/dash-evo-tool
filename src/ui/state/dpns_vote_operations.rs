@@ -14,7 +14,7 @@ use crate::model::dpns_voting::{
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ScheduledDpnsVoteRow {
     pub vote: ScheduledDPNSVote,
-    pub journal_target: Option<(DpnsVoteOperationId, DpnsVoteTargetKey)>,
+    pub journal_target: (DpnsVoteOperationId, DpnsVoteTargetKey),
     pub status: DpnsVoteTargetStatus,
     pub failure: Option<DpnsVoteFailure>,
 }
@@ -109,10 +109,7 @@ impl DpnsVoteOperationSnapshot {
         self.loaded
     }
 
-    pub(crate) fn scheduled_vote_rows(
-        &self,
-        legacy_votes: &[ScheduledDPNSVote],
-    ) -> Vec<ScheduledDpnsVoteRow> {
+    pub(crate) fn scheduled_vote_rows(&self) -> Vec<ScheduledDpnsVoteRow> {
         let mut journal_rows = BTreeMap::<
             (dash_sdk::platform::Identifier, String),
             (DpnsVoteAuthorityRank, ScheduledDpnsVoteRow),
@@ -147,7 +144,7 @@ impl DpnsVoteOperationSnapshot {
                                 executed_successfully: outcome.status
                                     == DpnsVoteTargetStatus::Confirmed,
                             },
-                            journal_target: Some((operation.id, outcome.target.key.clone())),
+                            journal_target: (operation.id, outcome.target.key.clone()),
                             status: outcome.status,
                             failure: outcome.failure,
                         },
@@ -156,38 +153,12 @@ impl DpnsVoteOperationSnapshot {
             }
         }
 
-        let journal_pairs = journal_rows.keys().cloned().collect::<BTreeSet<_>>();
-        // A cancelled target is a dismissed schedule. Its pair stays in
-        // `journal_pairs` so a mirror row that outlived a best-effort delete
-        // cannot bring the dismissed schedule back.
-        let mut rows = journal_rows
+        journal_rows
             .into_values()
             .map(|(_, row)| row)
             .filter(|row| row.status != DpnsVoteTargetStatus::Cancelled)
-            .filter(|row| {
-                !row.journal_target
-                    .as_ref()
-                    .is_some_and(|key| self.dismissed_schedules.contains(key))
-            })
-            .collect::<Vec<_>>();
-        rows.extend(
-            legacy_votes
-                .iter()
-                .filter(|vote| {
-                    !journal_pairs.contains(&(vote.voter_id, vote.contested_name.clone()))
-                })
-                .map(|vote| ScheduledDpnsVoteRow {
-                    vote: vote.clone(),
-                    journal_target: None,
-                    failure: None,
-                    status: if vote.executed_successfully {
-                        DpnsVoteTargetStatus::Confirmed
-                    } else {
-                        DpnsVoteTargetStatus::Scheduled
-                    },
-                }),
-        );
-        rows
+            .filter(|row| !self.dismissed_schedules.contains(&row.journal_target))
+            .collect()
     }
 
     fn replace(&mut self, operations: Vec<DpnsVoteOperation>) {
@@ -212,7 +183,7 @@ mod tests {
     use dash_sdk::platform::Identifier;
 
     #[test]
-    fn voting_ui_dismissed_terminal_row_suppresses_its_mirror_and_preserves_siblings() {
+    fn voting_ui_dismissed_terminal_row_preserves_siblings() {
         let mut operation = scheduled_operation(
             10,
             DpnsVoteTargetStatus::Confirmed,
@@ -228,13 +199,7 @@ mod tests {
         let mut snapshot = DpnsVoteOperationSnapshot::default();
         snapshot.replace(vec![operation]);
         snapshot.dismissed_schedules.insert(dismissed);
-        let rows = snapshot.scheduled_vote_rows(&[legacy_vote(
-            original.target.key.voter_id,
-            "alice",
-            ResourceVoteChoice::Lock,
-            100,
-            true,
-        )]);
+        let rows = snapshot.scheduled_vote_rows();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].vote.contested_name, "bob");
         assert_eq!(snapshot.operations()[0].targets[0], original);
@@ -282,14 +247,21 @@ mod tests {
     #[test]
     fn scheduled_rows_group_by_decision() {
         let row = |voter: u8, name: &str, choice, timestamp| ScheduledDpnsVoteRow {
-            vote: legacy_vote(
+            vote: scheduled_vote(
                 Identifier::from([voter; 32]),
                 name,
                 choice,
                 timestamp,
                 false,
             ),
-            journal_target: None,
+            journal_target: (
+                DpnsVoteOperationId::from_bytes([1; 16]),
+                DpnsVoteTargetKey {
+                    network: Network::Testnet,
+                    voter_id: Identifier::from([1; 32]),
+                    vote_poll_id: Identifier::from([2; 32]),
+                },
+            ),
             status: DpnsVoteTargetStatus::Scheduled,
             failure: None,
         };
@@ -336,13 +308,10 @@ mod tests {
         let mut snapshot = DpnsVoteOperationSnapshot::default();
         snapshot.replace(vec![pending.clone(), newer_rejected]);
 
-        let rows = snapshot.scheduled_vote_rows(&[]);
+        let rows = snapshot.scheduled_vote_rows();
 
         assert_eq!(rows.len(), 1);
-        assert_eq!(
-            rows[0].journal_target.as_ref().map(|(id, _)| *id),
-            Some(pending.id)
-        );
+        assert_eq!(Some(rows[0].journal_target.0), Some(pending.id));
         assert_eq!(rows[0].status, DpnsVoteTargetStatus::Scheduled);
     }
 
@@ -369,7 +338,7 @@ mod tests {
         operation
     }
 
-    fn legacy_vote(
+    fn scheduled_vote(
         voter_id: Identifier,
         name: &str,
         choice: ResourceVoteChoice,
@@ -386,7 +355,7 @@ mod tests {
     }
 
     #[test]
-    fn scheduled_rows_prefer_the_newest_journal_outcome_over_legacy_data() {
+    fn scheduled_rows_prefer_the_newest_journal_outcome() {
         let older = scheduled_operation(
             10,
             DpnsVoteTargetStatus::Confirmed,
@@ -401,20 +370,13 @@ mod tests {
         );
         let expected_id = newer.id;
         let expected_key = newer.targets[0].target.key.clone();
-        let legacy = legacy_vote(
-            Identifier::from([7; 32]),
-            "alice",
-            ResourceVoteChoice::Lock,
-            999,
-            true,
-        );
         let mut snapshot = DpnsVoteOperationSnapshot::default();
         snapshot.replace(vec![older, newer]);
 
-        let rows = snapshot.scheduled_vote_rows(&[legacy]);
+        let rows = snapshot.scheduled_vote_rows();
 
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].journal_target, Some((expected_id, expected_key)));
+        assert_eq!(rows[0].journal_target, (expected_id, expected_key));
         assert_eq!(rows[0].status, DpnsVoteTargetStatus::Rejected);
         assert_eq!(rows[0].vote.choice, ResourceVoteChoice::Abstain);
         assert_eq!(rows[0].vote.unix_timestamp, 200);
@@ -443,13 +405,10 @@ mod tests {
         let mut snapshot = DpnsVoteOperationSnapshot::default();
         snapshot.replace(vec![first, second]);
 
-        let rows = snapshot.scheduled_vote_rows(&[]);
+        let rows = snapshot.scheduled_vote_rows();
 
         assert_eq!(rows.len(), 1);
-        assert_eq!(
-            rows[0].journal_target.as_ref().map(|(id, _)| *id),
-            Some(expected_id)
-        );
+        assert_eq!(Some(rows[0].journal_target.0), Some(expected_id));
         assert_eq!(rows[0].status, DpnsVoteTargetStatus::Rejected);
         assert_eq!(rows[0].vote.unix_timestamp, 100);
     }
@@ -467,37 +426,23 @@ mod tests {
         let mut snapshot = DpnsVoteOperationSnapshot::default();
         snapshot.replace(vec![cancelled]);
 
-        assert!(snapshot.scheduled_vote_rows(&[]).is_empty());
+        assert!(snapshot.scheduled_vote_rows().is_empty());
     }
 
-    /// The compatibility-mirror delete is best effort, so a cancelled target
-    /// must keep suppressing its legacy row even when the mirror survived.
     #[test]
-    fn cancelled_targets_still_suppress_their_legacy_mirror_row() {
+    fn cancelled_targets_are_not_shown() {
         let cancelled = scheduled_operation(
             10,
             DpnsVoteTargetStatus::Cancelled,
             ResourceVoteChoice::Lock,
             100,
         );
-        let voter_id = cancelled.targets[0].target.key.voter_id;
         let mut snapshot = DpnsVoteOperationSnapshot::default();
         snapshot.replace(vec![cancelled]);
-        let legacy = [
-            legacy_vote(voter_id, "alice", ResourceVoteChoice::Lock, 100, false),
-            legacy_vote(
-                Identifier::from([11; 32]),
-                "unrelated",
-                ResourceVoteChoice::Abstain,
-                300,
-                false,
-            ),
-        ];
 
-        let rows = snapshot.scheduled_vote_rows(&legacy);
+        let rows = snapshot.scheduled_vote_rows();
 
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].vote.contested_name, "unrelated");
+        assert!(rows.is_empty());
     }
 
     /// A bulk schedule is one operation with many targets, so cancelling one of
@@ -518,7 +463,7 @@ mod tests {
         let mut snapshot = DpnsVoteOperationSnapshot::default();
         snapshot.replace(vec![operation]);
 
-        let rows = snapshot.scheduled_vote_rows(&[]);
+        let rows = snapshot.scheduled_vote_rows();
 
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].vote.contested_name, "bob");
@@ -526,7 +471,7 @@ mod tests {
     }
 
     #[test]
-    fn scheduled_rows_derive_compatibility_execution_only_from_confirmed_status() {
+    fn scheduled_rows_mark_only_confirmed_votes_as_executed() {
         let confirmed = scheduled_operation(
             10,
             DpnsVoteTargetStatus::Confirmed,
@@ -536,59 +481,10 @@ mod tests {
         let mut snapshot = DpnsVoteOperationSnapshot::default();
         snapshot.replace(vec![confirmed]);
 
-        let rows = snapshot.scheduled_vote_rows(&[]);
+        let rows = snapshot.scheduled_vote_rows();
 
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].status, DpnsVoteTargetStatus::Confirmed);
         assert!(rows[0].vote.executed_successfully);
-    }
-
-    #[test]
-    fn scheduled_rows_append_only_unseen_legacy_pairs() {
-        let journal = scheduled_operation(
-            10,
-            DpnsVoteTargetStatus::Scheduled,
-            ResourceVoteChoice::Lock,
-            100,
-        );
-        let voter_id = journal.targets[0].target.key.voter_id;
-        let mut snapshot = DpnsVoteOperationSnapshot::default();
-        snapshot.replace(vec![journal]);
-        let legacy = [
-            legacy_vote(voter_id, "alice", ResourceVoteChoice::Abstain, 999, true),
-            legacy_vote(
-                Identifier::from([9; 32]),
-                "confirmed-legacy",
-                ResourceVoteChoice::Lock,
-                300,
-                true,
-            ),
-            legacy_vote(
-                Identifier::from([10; 32]),
-                "pending-legacy",
-                ResourceVoteChoice::Abstain,
-                400,
-                false,
-            ),
-        ];
-
-        let rows = snapshot.scheduled_vote_rows(&legacy);
-
-        assert_eq!(rows.len(), 3);
-        assert!(rows.iter().any(|row| {
-            row.vote.contested_name == "alice"
-                && row.status == DpnsVoteTargetStatus::Scheduled
-                && row.journal_target.is_some()
-        }));
-        assert!(rows.iter().any(|row| {
-            row.vote.contested_name == "confirmed-legacy"
-                && row.status == DpnsVoteTargetStatus::Confirmed
-                && row.journal_target.is_none()
-        }));
-        assert!(rows.iter().any(|row| {
-            row.vote.contested_name == "pending-legacy"
-                && row.status == DpnsVoteTargetStatus::Scheduled
-                && row.journal_target.is_none()
-        }));
     }
 }

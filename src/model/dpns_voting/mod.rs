@@ -106,7 +106,7 @@ pub struct DpnsVoteTargetKey {
 /// Compare-and-set request for one scheduled target; the voter and poll cannot change.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DpnsScheduledVoteEdit {
-    pub operation_id: Option<DpnsVoteOperationId>,
+    pub operation_id: DpnsVoteOperationId,
     pub key: DpnsVoteTargetKey,
     pub expected_choice: ResourceVoteChoice,
     pub expected_timestamp: u64,
@@ -164,7 +164,7 @@ pub struct DpnsScheduledVoteKey {
     pub contested_name: String,
 }
 
-/// Result of clearing one scheduled target from the compatibility mirror.
+/// Result of clearing one scheduled target from the voting journal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DpnsScheduledVoteClearDisposition {
     Cleared,

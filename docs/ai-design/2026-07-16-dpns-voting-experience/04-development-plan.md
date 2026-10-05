@@ -97,7 +97,7 @@ runs on a timer of about 60 s in `AppState::update()`.
    the broadcast boundary (`Confirming`) → broadcast → wait → classify.
 6. Persist the outcome. Errors after the broadcast boundary remain Unconfirmed
    unless rejection is established; reconcile them without rebroadcasting.
-7. Cache confirmed choices and mirror terminal outcomes to legacy schedules.
+7. Cache confirmed choices and persist terminal outcomes in the voting journal.
 
 Before dispatching a queued target, re-check the contest end time.
 If voting has ended, mark it `FailedBeforeSubmission(VotingEnded)`.

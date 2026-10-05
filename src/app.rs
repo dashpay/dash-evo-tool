@@ -225,6 +225,20 @@ fn show_legacy_settings_import_warning(ctx: &egui::Context, error: &impl std::fm
     handle.with_details(error);
 }
 
+fn notify_legacy_scheduled_votes(app_context: &AppContext) {
+    let ctx = app_context.egui_ctx();
+    match app_context.has_legacy_scheduled_votes() {
+        Ok(true) => {
+            let network = app_context.network;
+            MessageBanner::set_global(ctx, format!("Some scheduled votes from an earlier version on {network} will not run automatically. Open Masternodes > Votes to review them and cast or schedule them again."), MessageType::Warning).disable_auto_dismiss();
+        }
+        Ok(false) => {}
+        Err(error) => {
+            MessageBanner::set_global(ctx, "Your previous scheduled votes could not be checked. Restart the app and try again.", MessageType::Warning).with_details(error);
+        }
+    }
+}
+
 fn legacy_settings_import_requires_network_selection(
     _error: &crate::backend_task::migration::legacy_settings::SettingsImportError,
 ) -> bool {
@@ -2129,6 +2143,7 @@ impl AppState {
     /// alongside it.
     fn finish_boot_phase(&mut self, start_spv: bool, arm_spv_block: bool) {
         let active_context = self.current_app_context().clone();
+        notify_legacy_scheduled_votes(&active_context);
         let first_screen_build = self.main_screens.len() == 1
             && self
                 .main_screens
@@ -4239,6 +4254,30 @@ mod migration_banner_tests {
                 top_ups: 1,
             },
         ));
+    }
+
+    #[test]
+    fn startup_reports_old_schedules_without_queueing_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        context.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(Arc::new(
+            crate::wallet_backend::kv_test_support::InMemoryKv::default(),
+        )));
+        MessageBanner::clear_all_global(context.egui_ctx());
+        notify_legacy_scheduled_votes(&context);
+        assert!(!MessageBanner::has_global(context.egui_ctx()));
+        crate::database::test_helpers::create_legacy_scheduled_votes_table(&context.db).unwrap();
+        crate::database::test_helpers::seed_legacy_scheduled_vote_row(
+            &context.db,
+            &[1; 32],
+            "alice",
+            "Lock",
+            context.network,
+        )
+        .unwrap();
+        notify_legacy_scheduled_votes(&context);
+        assert!(MessageBanner::has_global(context.egui_ctx()));
+        assert!(context.dpns_vote_operations().unwrap().is_empty());
     }
 
     #[test]

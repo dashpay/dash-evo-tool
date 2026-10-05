@@ -58,10 +58,7 @@ impl AppContext {
                 },
             },
         )?;
-        let (operation_id, mirror_error) = self.edit_scheduled_dpns_vote_target(&edit)?;
-        if let Some(error) = mirror_error {
-            tracing::warn!(?error, %operation_id, "DPNS schedule edit was journaled but its compatibility mirror could not be updated");
-        }
+        let operation_id = self.edit_scheduled_dpns_vote_target(&edit)?;
         Ok(BackendTaskSuccessResult::DpnsVoteOperationUpdated {
             network: self.network,
             operation_id,

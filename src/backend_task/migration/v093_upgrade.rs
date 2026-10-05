@@ -32,7 +32,6 @@ use dash_sdk::dpp::identity::{
 };
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use dash_sdk::dpp::platform_value::BinaryData;
-use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::platform::Identifier;
 use rusqlite::{Connection, params};
 
@@ -1007,15 +1006,8 @@ async fn assert_v093_install_upgrades(network: Network) {
     );
 
     // ── Scheduled votes ──────────────────────────────────────────────
-    let votes = ctx.get_scheduled_votes().expect("read scheduled votes");
-    assert_eq!(votes.len(), 1, "the queued vote must come across");
-    assert_eq!(votes[0].contested_name, CONTESTED_NAME);
-    assert_eq!(votes[0].choice, ResourceVoteChoice::Lock);
-    assert_eq!(votes[0].voter_id, Identifier::from(IDENTITY_ID));
-    assert!(
-        !votes[0].executed_successfully,
-        "an uncast vote must not arrive marked as cast — that would skip the vote window",
-    );
+    assert!(ctx.has_legacy_scheduled_votes().unwrap());
+    assert!(ctx.dpns_vote_operations().unwrap().is_empty());
 
     // ── Top-up history ───────────────────────────────────────────────
     assert_eq!(
@@ -1309,8 +1301,6 @@ async fn second_launch_after_a_v093_upgrade_changes_nothing() {
     app_kv
         .put(DetScope::Global, AppSettings::KV_KEY, &chosen)
         .expect("user switches network");
-    ctx.clear_all_scheduled_votes()
-        .expect("user casts the vote");
 
     // …and renames the imported masternode identity. The identity sentinel is what
     // must protect the edit; the same guarantee under an undecodable row is covered
@@ -1341,7 +1331,7 @@ async fn second_launch_after_a_v093_upgrade_changes_nothing() {
         "a re-import must not resurrect the legacy network over the user's choice",
     );
     assert!(
-        ctx.get_scheduled_votes().expect("read votes").is_empty(),
+        ctx.dpns_vote_operations().unwrap().is_empty(),
         "a re-run must not requeue a vote the user has already cast",
     );
     assert_eq!(
@@ -1471,28 +1461,15 @@ async fn the_import_never_writes_a_plaintext_key_to_disk() {
     backend.shutdown().await;
 }
 
-/// A corrupt vote queue must never cost the user their identity keys.
-///
-/// The app-data pass (scheduled votes, top-up history) can fail hard — one
-/// malformed `det:scheduled_vote_voters:v1` blob is enough. That failure is
-/// deterministic: it recurs on every launch, and the app-data sentinel is never
-/// written. So if the identity import waited on the app-data result, a masternode
-/// owner's owner/voting keys would never reach the vault — not on this launch,
-/// not on any retry — because of a broken vote queue they cannot even see.
-///
-/// The two DET-owned passes are independent; neither may gate the other.
+/// An unused vote index cannot block startup or the import of identity keys.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_corrupt_vote_index_never_strands_the_identity_keys() {
+async fn an_unused_vote_index_does_not_block_startup_or_identity_import() {
     let tmp = tempfile::tempdir().expect("tempdir");
     write_v093_database(tmp.path());
 
     let (ctx, _) = boot(tmp.path());
     let backend = wire_backend(&ctx).await;
 
-    // Poison the scheduled-vote roster with a blob that cannot decode into the
-    // voter list, so the app-data pass fails hard the way a corrupted entry would.
-    // (`det:scheduled_vote_voters:v1` is private to `context::identity_db`; a key
-    // rename surfaces here as an un-poisoned index, not a silent pass.)
     ctx.det_kv()
         .expect("per-network k/v")
         .put(
@@ -1502,13 +1479,9 @@ async fn a_corrupt_vote_index_never_strands_the_identity_keys() {
         )
         .expect("poison the vote index");
 
-    // The failure still reaches the user — it is not swallowed…
-    assert!(
-        run_migration_with_wallet_passwords(&ctx).await.is_err(),
-        "a hard app-data failure must still surface, so the user gets a retry",
-    );
-
-    // …but it must not have taken the identities down with it.
+    run_migration_with_wallet_passwords(&ctx).await.unwrap();
+    assert!(ctx.dpns_vote_operations().unwrap().is_empty());
+    assert!(ctx.has_legacy_scheduled_votes().unwrap());
     assert_eq!(
         ctx.load_local_qualified_identities()
             .expect("load identities")
@@ -1526,8 +1499,7 @@ async fn a_corrupt_vote_index_never_strands_the_identity_keys() {
             .expect("the owner key must be in the vault")
             .as_slice(),
         secrets().owner_key.as_slice(),
-        "the masternode owner key must reach the vault even when the vote import fails — \
-         otherwise a broken vote queue permanently costs the user control of their node",
+        "the masternode owner key must reach the vault",
     );
 
     backend.shutdown().await;

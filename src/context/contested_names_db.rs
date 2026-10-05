@@ -1378,11 +1378,7 @@ mod tests {
                 .has_failed_scheduled_vote
         );
         context
-            .remove_scheduled_dpns_vote(
-                Some(operation.id),
-                &operation.targets[0].target.key,
-                "alice",
-            )
+            .remove_scheduled_dpns_vote(operation.id, &operation.targets[0].target.key)
             .unwrap();
         let summary = context.masternode_contest_summary(Some(voter_id)).unwrap();
         assert!(

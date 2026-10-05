@@ -65,11 +65,11 @@ K = kittest, B = backend test with fake SDK seam.
 | VOTE-TC-056 **[Changed]** | Partial batch | Two confirmed, one unconfirmed, one rejected | Complete batch | Drawer maps every target; final banner shows counts | FR-061, FR-062, FR-083 |
 | VOTE-TC-057 | Journal read failure stays visible until retried | Saved vote-operation progress cannot be read | Open Votes ▸ Scheduled, then click `Retry loading` once the read succeeds | Persistent notice and `Retry loading` remain visible across renders until a successful refresh, then clear | FR-046 |
 
-## Scheduling and migration
+## Scheduling and upgrade notices
 
 | ID | Description | Preconditions | Steps | Expected outcome | Requirements |
 |---|---|---|---|---|---|
-| VOTE-TC-060 | Legacy schedule migration | Existing scheduled-vote records | Upgrade | Node, contest, choice, time, and executed state are preserved | FR-054 |
+| VOTE-TC-060 | Previous schedule notice | Unexecuted SQLite schedule, no matching journal target | Start the app | A persistent notice asks for a new decision; the schedule is neither imported nor executed | FR-054 |
 | VOTE-TC-061 | Due schedule uses shared coordinator | Scheduled target becomes due | Sweep | Same lock, result, and reconciliation model is used | FR-050 |
 | VOTE-TC-062 | Failed schedule remains visible | Submission fails before broadcast | Open Scheduled | Needs attention row shows corrective action | FR-052, FR-084 |
 | VOTE-TC-063 | Scheduled target can be edited | Target is Scheduled, not due | Change time or choice | Updated target persists and keeps one lock | FR-055 |

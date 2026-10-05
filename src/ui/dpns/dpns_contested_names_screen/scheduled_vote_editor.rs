@@ -66,7 +66,7 @@ impl ScheduledVoteEditor {
             return None;
         }
         Some(ContestedResourceTask::EditScheduledDpnsVote {
-            operation_id: self.original.journal_target.as_ref().map(|(id, _)| *id),
+            operation_id: self.original.journal_target.0,
             key: self.key.clone(),
             expected_choice: self.original.vote.choice,
             expected_timestamp: self.original.vote.unix_timestamp,
@@ -159,7 +159,7 @@ mod tests {
                 unix_timestamp: 1_900_000_012_345,
                 executed_successfully: false,
             },
-            journal_target: Some((DpnsVoteOperationId::from_bytes([3; 16]), key.clone())),
+            journal_target: (DpnsVoteOperationId::from_bytes([3; 16]), key.clone()),
             status: DpnsVoteTargetStatus::Scheduled,
         };
         let mut editor = ScheduledVoteEditor::new(
@@ -185,7 +185,7 @@ mod tests {
             panic!("expected edit");
         };
         assert_eq!(edited_key, key);
-        assert_eq!(operation_id, row.journal_target.map(|(id, _)| id));
+        assert_eq!(operation_id, row.journal_target.0);
         assert_eq!(expected_choice, ResourceVoteChoice::Lock);
         assert_eq!(choice, ResourceVoteChoice::Abstain);
         assert_eq!(expected_timestamp, row.vote.unix_timestamp);

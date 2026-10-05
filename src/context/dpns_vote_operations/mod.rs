@@ -12,17 +12,12 @@ use retention::*;
 use transitions::*;
 
 use super::AppContext;
-use crate::backend_task::contested_names::ScheduledDPNSVote;
 use crate::backend_task::error::TaskError;
-use crate::context::identity_db::{
-    delete_scheduled_vote_in, durable_scheduled_vote_keys, insert_scheduled_votes_in,
-};
 use crate::model::dpns_voting::{
     DpnsCurrentVoteState, DpnsScheduledVoteClearDisposition, DpnsScheduledVoteClearOutcome,
     DpnsScheduledVoteEdit, DpnsScheduledVoteKey, DpnsVoteAuthorityRank, DpnsVoteFailure,
     DpnsVoteOperation, DpnsVoteOperationId, DpnsVoteTarget, DpnsVoteTargetKey,
-    DpnsVoteTargetStatus, VoteTiming, authoritative_dpns_vote_outcome, dpns_vote_authority_rank,
-    unavailable_preflight_outcome,
+    DpnsVoteTargetStatus, VoteTiming, dpns_vote_authority_rank, unavailable_preflight_outcome,
 };
 use crate::utils::time::now_ms;
 use crate::wallet_backend::{DetKv, DetScope};
@@ -414,10 +409,7 @@ fn operation_for_schedule_edit(
         return Err(TaskError::DpnsScheduledVoteNotEditable);
     }
     let locks = load_or_rebuild_lock_index(kv, network)?;
-    let id = edit
-        .operation_id
-        .or_else(|| locks.get(&edit.key).copied())
-        .ok_or(TaskError::DpnsScheduledVoteNotEditable)?;
+    let id = edit.operation_id;
     if locks.get(&edit.key) != Some(&id) {
         return Err(TaskError::DpnsScheduledVoteNotEditable);
     }
@@ -437,8 +429,8 @@ fn operation_for_schedule_edit(
 impl AppContext {
     /// Take the process-wide journal guard, recovering from a poisoned lock.
     ///
-    /// Every read and write of the operation journal, its lock index and its
-    /// compatibility mirror must be serialized behind this one guard; a method
+    /// Every read and write of the operation journal, its lock index
+    /// must be serialized behind this one guard; a method
     /// that touches those namespaces without holding it can interleave with a
     /// target claim and hand the same target to two executors.
     fn journal_guard(&self) -> std::sync::MutexGuard<'_, ()> {
@@ -469,11 +461,11 @@ impl AppContext {
             .ok_or(TaskError::DpnsScheduledVoteNotEditable)
     }
 
-    /// Apply a validated edit under one journal/mirror guard without releasing its target lock.
+    /// Apply a validated edit under one journal guard without releasing its target lock.
     pub(crate) fn edit_scheduled_dpns_vote_target(
         &self,
         edit: &DpnsScheduledVoteEdit,
-    ) -> Result<(DpnsVoteOperationId, Option<TaskError>), TaskError> {
+    ) -> Result<DpnsVoteOperationId, TaskError> {
         let (_guard, kv) = self.journal()?;
         let mut operation = operation_for_schedule_edit(&kv, self.network, edit)?;
         if edit.unix_timestamp <= now_ms() {
@@ -490,18 +482,8 @@ impl AppContext {
         }
         outcome.target.timing = VoteTiming::Scheduled(edit.unix_timestamp);
         outcome.failure = None;
-        let mirror = ScheduledDPNSVote {
-            contested_name: outcome.target.contested_name.clone(),
-            voter_id: edit.key.voter_id,
-            choice: edit.choice,
-            unix_timestamp: edit.unix_timestamp,
-            executed_successfully: false,
-        };
         persist_operation(&kv, self.network, &operation)?;
-        Ok((
-            operation.id,
-            insert_scheduled_votes_in(&kv, &[mirror]).err(),
-        ))
+        Ok(operation.id)
     }
 
     /// Durably claim one due scheduled target before any executor can observe it.
@@ -532,35 +514,6 @@ impl AppContext {
             return replace_scheduled_operation(&kv, self.network, operation, key);
         }
         persist_operation(&kv, self.network, operation)
-    }
-
-    /// Persist an operation and its compatibility mirror under one journal guard.
-    pub(crate) fn insert_dpns_vote_operation_with_scheduled_mirror(
-        &self,
-        operation: &mut DpnsVoteOperation,
-        replacing_scheduled_key: Option<&DpnsVoteTargetKey>,
-        scheduled_votes: &[ScheduledDPNSVote],
-    ) -> Result<Option<TaskError>, TaskError> {
-        if operation
-            .targets
-            .iter()
-            .any(|outcome| outcome.target.key.network != self.network)
-        {
-            return Err(TaskError::DpnsVoteTargetBusy);
-        }
-        let (_guard, kv) = self.journal()?;
-        if let Some(key) = replacing_scheduled_key {
-            replace_scheduled_operation(&kv, self.network, operation, key)?;
-        } else {
-            persist_operation(&kv, self.network, operation)?;
-        }
-        // A repeated terminal update may have been retired by retention.
-        match load_operation(&kv, &operation_key(self.network, operation.id)) {
-            Ok(Some(_)) => {}
-            Ok(None) => return Ok(None),
-            Err(error) => return Ok(Some(unreadable_operation_err(error))),
-        }
-        Ok(insert_scheduled_votes_in(&kv, scheduled_votes).err())
     }
 
     /// Persist updated target statuses while retaining the original operation ID.
@@ -603,40 +556,6 @@ impl AppContext {
             dismissed.extend(keys.into_iter().map(|key| (id, key)));
         }
         Ok(dismissed)
-    }
-
-    /// Import stored scheduled votes before backend recovery.
-    pub(crate) fn migrate_dpns_vote_operations(&self) -> Result<(), TaskError> {
-        let (_guard, kv) = self.journal()?;
-        let mut operations = load_operations(&kv, self.network)?;
-        for legacy in self.get_scheduled_votes()? {
-            if operations.iter().any(|operation| {
-                operation.targets.iter().any(|outcome| {
-                    outcome.target.key.voter_id == legacy.voter_id
-                        && outcome.target.contested_name == legacy.contested_name
-                })
-            }) {
-                continue;
-            }
-            let mut operation = DpnsVoteOperation::new(vec![DpnsVoteTarget {
-                key: DpnsVoteTargetKey {
-                    network: self.network,
-                    voter_id: legacy.voter_id,
-                    vote_poll_id: self.dpns_vote_poll_id(&legacy.contested_name)?,
-                },
-                voter_alias: None,
-                contested_name: legacy.contested_name,
-                requested_choice: legacy.choice,
-                current_choice: None,
-                timing: VoteTiming::Scheduled(legacy.unix_timestamp),
-            }]);
-            if legacy.executed_successfully {
-                operation.targets[0].status = DpnsVoteTargetStatus::Confirmed;
-            }
-            persist_operation(&kv, self.network, &operation)?;
-            operations.push(operation);
-        }
-        Ok(())
     }
 
     /// Votes this device saw Platform apply for one node × poll; `None`
@@ -891,32 +810,22 @@ impl AppContext {
     /// Remove a schedule only after its authoritative journal state permits it.
     pub(crate) fn remove_scheduled_dpns_vote(
         &self,
-        expected_operation_id: Option<DpnsVoteOperationId>,
+        operation_id: DpnsVoteOperationId,
         key: &DpnsVoteTargetKey,
-        contested_name: &str,
     ) -> Result<(), TaskError> {
         let (_guard, kv) = self.journal()?;
         let operations = load_operations(&kv, self.network)?;
         let lock_index = load_or_rebuild_lock_index(&kv, self.network)?;
-        let selected = match expected_operation_id {
-            Some(operation_id) => operations
-                .iter()
-                .find(|operation| operation.id == operation_id)
-                .and_then(|operation| {
-                    operation
-                        .outcome(key)
-                        .map(|outcome| (operation.id, outcome.status))
-                }),
-            None => {
-                if lock_index.contains_key(key) {
-                    return Err(TaskError::DpnsScheduledVoteAlreadyStarted);
-                }
-                authoritative_dpns_vote_outcome(&operations, key)
-                    .map(|outcome| (outcome.operation_id, outcome.status))
-            }
-        };
+        let selected = operations
+            .iter()
+            .find(|operation| operation.id == operation_id)
+            .and_then(|operation| {
+                operation
+                    .outcome(key)
+                    .map(|outcome| (operation.id, outcome.status))
+            });
 
-        let journal_is_authoritative = match selected {
+        match selected {
             Some((operation_id, DpnsVoteTargetStatus::Scheduled)) => {
                 if lock_index
                     .get(key)
@@ -927,7 +836,6 @@ impl AppContext {
                 if !cancel_scheduled_target(&kv, self.network, operation_id, key)? {
                     return Err(TaskError::DpnsScheduledVoteAlreadyStarted);
                 }
-                true
             }
             Some((
                 _,
@@ -944,29 +852,14 @@ impl AppContext {
                     return Err(TaskError::DpnsScheduledVoteAlreadyStarted);
                 }
                 dismiss_scheduled_target(&kv, self.network, operation_id, key)?;
-                true
             }
             None => {
                 if lock_index.contains_key(key) {
                     return Err(TaskError::DpnsScheduledVoteAlreadyStarted);
                 }
-                false
             }
         };
 
-        let voter = key.voter_id.to_buffer();
-        if let Err(error) = delete_scheduled_vote_in(&kv, &voter, contested_name) {
-            if !journal_is_authoritative {
-                return Err(error);
-            }
-            tracing::warn!(
-                ?error,
-                expected_operation_id = ?expected_operation_id,
-                voter_id = %key.voter_id,
-                contested_name,
-                "Scheduled DPNS vote journal was updated but its compatibility mirror remains"
-            );
-        }
         Ok(())
     }
 
@@ -975,9 +868,16 @@ impl AppContext {
         &self,
         operation_id: DpnsVoteOperationId,
         key: &DpnsVoteTargetKey,
-        contested_name: &str,
     ) -> Result<(), TaskError> {
-        self.remove_scheduled_dpns_vote(Some(operation_id), key, contested_name)
+        self.remove_scheduled_dpns_vote(operation_id, key)
+    }
+
+    /// Dismiss confirmed scheduled targets without changing their recorded outcomes.
+    pub fn clear_executed_scheduled_votes(&self) -> Result<(), TaskError> {
+        let (_guard, kv) = self.journal()?;
+        dismiss_confirmed_scheduled_targets(&kv, self.network)?;
+        prune_terminal_operations(&kv, self.network)?;
+        Ok(())
     }
 
     /// Clear removable schedules and report in-flight targets retained for safety.
@@ -985,10 +885,9 @@ impl AppContext {
         &self,
     ) -> Result<Vec<DpnsScheduledVoteClearOutcome>, TaskError> {
         let (_guard, kv) = self.journal()?;
-        let mut retained = BTreeSet::new();
         let mut outcomes = BTreeMap::<
             DpnsScheduledVoteKey,
-            (Option<DpnsVoteAuthorityRank>, DpnsScheduledVoteClearOutcome),
+            (DpnsVoteAuthorityRank, DpnsScheduledVoteClearOutcome),
         >::new();
 
         for mut operation in load_operations(&kv, self.network)? {
@@ -1015,7 +914,6 @@ impl AppContext {
                     | DpnsVoteTargetStatus::Submitting
                     | DpnsVoteTargetStatus::Confirming
                     | DpnsVoteTargetStatus::Unconfirmed => {
-                        retained.insert(key.clone());
                         DpnsScheduledVoteClearDisposition::InFlight(status)
                     }
                     _ => {
@@ -1031,12 +929,12 @@ impl AppContext {
                 let rank = dpns_vote_authority_rank(operation.created_at, operation.id, status);
                 let should_replace = outcomes
                     .get(&key)
-                    .is_none_or(|(existing_rank, _)| existing_rank.is_none_or(|old| rank > old));
+                    .is_none_or(|(existing_rank, _)| rank > *existing_rank);
                 if should_replace {
                     outcomes.insert(
                         key.clone(),
                         (
-                            Some(rank),
+                            rank,
                             DpnsScheduledVoteClearOutcome {
                                 operation_id: Some(operation.id),
                                 key,
@@ -1051,36 +949,6 @@ impl AppContext {
             }
         }
 
-        let mirror_keys = durable_scheduled_vote_keys(&kv, self.network)?;
-        for key in mirror_keys {
-            let journal_is_authoritative = outcomes.contains_key(&key);
-            outcomes.entry(key.clone()).or_insert_with(|| {
-                (
-                    None,
-                    DpnsScheduledVoteClearOutcome {
-                        operation_id: None,
-                        key: key.clone(),
-                        disposition: DpnsScheduledVoteClearDisposition::Cleared,
-                    },
-                )
-            });
-            if retained.contains(&key) {
-                continue;
-            }
-            let voter = key.voter_id.to_buffer();
-            if let Err(error) = delete_scheduled_vote_in(&kv, &voter, &key.contested_name) {
-                if !journal_is_authoritative {
-                    return Err(error);
-                }
-                tracing::warn!(
-                    ?error,
-                    voter_id = %key.voter_id,
-                    contested_name = %key.contested_name,
-                    "Scheduled DPNS vote was cleared in the journal but its compatibility mirror remains"
-                );
-            }
-        }
-
         prune_terminal_operations(&kv, self.network)?;
         Ok(outcomes.into_values().map(|(_, outcome)| outcome).collect())
     }
@@ -1089,7 +957,6 @@ impl AppContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend_task::contested_names::ScheduledDPNSVote;
     use crate::model::dpns_voting::{
         DpnsScheduledVoteClearDisposition, DpnsVoteTarget, VoteTiming,
     };
@@ -1195,17 +1062,6 @@ mod tests {
         operation
     }
 
-    fn scheduled_vote(operation: &DpnsVoteOperation) -> ScheduledDPNSVote {
-        let target = &operation.targets[0].target;
-        ScheduledDPNSVote {
-            contested_name: target.contested_name.clone(),
-            voter_id: target.key.voter_id,
-            choice: target.requested_choice,
-            unix_timestamp: 42,
-            executed_successfully: false,
-        }
-    }
-
     /// Two operations stamped inside the same millisecond — reachable whenever a
     /// bulk review commits — must not make the four sites that pick "the
     /// operation that speaks for this target" disagree with each other.
@@ -1255,9 +1111,7 @@ mod tests {
         );
 
         let (_temp, context) = seed();
-        context
-            .remove_scheduled_dpns_vote(None, &key, "alice")
-            .unwrap();
+        context.remove_scheduled_dpns_vote(newer_id, &key).unwrap();
         assert!(
             context
                 .dismissed_dpns_vote_schedules()
@@ -1290,10 +1144,10 @@ mod tests {
         let (_temp, context) = seed();
         let rows =
             crate::ui::state::dpns_vote_operations::DpnsVoteOperationSnapshot::load(&context)
-                .scheduled_vote_rows(&[]);
+                .scheduled_vote_rows();
         assert_eq!(
             rows.iter()
-                .map(|row| row.journal_target.as_ref().map(|(id, _)| *id))
+                .map(|row| Some(row.journal_target.0))
                 .collect::<Vec<_>>(),
             vec![Some(newer_id)],
             "Scheduled Votes must show the same operation the other sites prefer"
@@ -1455,15 +1309,12 @@ mod tests {
             .insert_dpns_vote_operation(&mut scheduled, None)
             .unwrap();
         context
-            .insert_scheduled_votes(&[scheduled_vote(&scheduled)])
-            .unwrap();
-        context
             .queue_scheduled_dpns_vote_target(scheduled.id, &key)
             .unwrap();
 
         assert!(matches!(
             context
-                .remove_scheduled_dpns_vote(Some(scheduled.id), &key, "dominguez")
+                .remove_scheduled_dpns_vote(scheduled.id, &key)
                 .expect_err("queued targets must not be removed"),
             TaskError::DpnsScheduledVoteAlreadyStarted
         ));
@@ -1471,7 +1322,6 @@ mod tests {
             context.dpns_vote_operations().unwrap()[0].targets[0].status,
             DpnsVoteTargetStatus::Queued
         );
-        assert_eq!(context.get_scheduled_votes().unwrap().len(), 1);
     }
 
     #[test]
@@ -1500,9 +1350,6 @@ mod tests {
         context
             .insert_dpns_vote_operation(&mut queued, None)
             .unwrap();
-        context
-            .insert_scheduled_votes(&[scheduled_vote(&queued)])
-            .unwrap();
 
         let outcomes = context.clear_all_scheduled_dpns_votes().unwrap();
 
@@ -1510,7 +1357,6 @@ mod tests {
             context.dpns_vote_operations().unwrap()[0].targets[0].status,
             DpnsVoteTargetStatus::Queued
         );
-        assert_eq!(context.get_scheduled_votes().unwrap().len(), 1);
         assert_eq!(outcomes.len(), 1);
         assert_eq!(
             outcomes[0].disposition,
@@ -1519,7 +1365,7 @@ mod tests {
     }
 
     #[test]
-    fn scheduled_removal_persists_cancelled_before_best_effort_mirror_delete() {
+    fn scheduled_removal_persists_cancelled() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let store = Arc::new(FailingKv::default());
         let kv = DetKv::from_store(store.clone());
@@ -1533,24 +1379,19 @@ mod tests {
         context
             .insert_dpns_vote_operation(&mut scheduled, None)
             .unwrap();
-        context
-            .insert_scheduled_votes(&[scheduled_vote(&scheduled)])
-            .unwrap();
-        store.fail_next_deletes_containing("cancel-me", 1);
 
         context
-            .remove_scheduled_dpns_vote(Some(scheduled.id), &key, "cancel-me")
+            .remove_scheduled_dpns_vote(scheduled.id, &key)
             .unwrap();
 
         assert_eq!(
             context.dpns_vote_operations().unwrap()[0].targets[0].status,
             DpnsVoteTargetStatus::Cancelled
         );
-        assert_eq!(context.get_scheduled_votes().unwrap().len(), 1);
     }
 
     #[test]
-    fn stale_terminal_operation_cannot_remove_a_newer_locked_mirror() {
+    fn stale_terminal_operation_cannot_remove_a_newer_locked_schedule() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let context = crate::context::test_support::test_app_context(temp_dir.path());
         let kv = kv();
@@ -1564,17 +1405,13 @@ mod tests {
         context
             .insert_dpns_vote_operation(&mut current, None)
             .unwrap();
-        context
-            .insert_scheduled_votes(&[scheduled_vote(&current)])
-            .unwrap();
 
         assert!(matches!(
             context
-                .remove_scheduled_dpns_vote(Some(terminal.id), &key, "same-target")
+                .remove_scheduled_dpns_vote(terminal.id, &key)
                 .expect_err("stale terminal history must not remove the current schedule"),
             TaskError::DpnsScheduledVoteAlreadyStarted
         ));
-        assert_eq!(context.get_scheduled_votes().unwrap().len(), 1);
         assert!(
             context
                 .dpns_vote_operations()
@@ -1585,60 +1422,6 @@ mod tests {
                         && operation.targets[0].status == DpnsVoteTargetStatus::Scheduled
                 })
         );
-    }
-
-    #[test]
-    fn legacy_removal_without_expected_operation_deletes_an_unlocked_mirror() {
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let context = crate::context::test_support::test_app_context(temp_dir.path());
-        let kv = kv();
-        context.set_det_kv_override_for_test(kv);
-        let voter_id = Identifier::from([12; 32]);
-        let key = DpnsVoteTargetKey {
-            network: context.network,
-            voter_id,
-            vote_poll_id: Identifier::from([13; 32]),
-        };
-        context
-            .insert_scheduled_votes(&[ScheduledDPNSVote {
-                contested_name: "legacy-only".to_owned(),
-                voter_id,
-                choice: ResourceVoteChoice::Lock,
-                unix_timestamp: 42,
-                executed_successfully: false,
-            }])
-            .unwrap();
-
-        context
-            .remove_scheduled_dpns_vote(None, &key, "legacy-only")
-            .unwrap();
-
-        assert!(context.get_scheduled_votes().unwrap().is_empty());
-    }
-
-    #[test]
-    fn legacy_removal_without_expected_operation_preserves_a_locked_mirror() {
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let context = crate::context::test_support::test_app_context(temp_dir.path());
-        let kv = kv();
-        context.set_det_kv_override_for_test(kv);
-        let mut scheduled =
-            scheduled_operation(DpnsVoteTargetStatus::Scheduled, 12, "locked-target");
-        let key = scheduled.targets[0].target.key.clone();
-        context
-            .insert_dpns_vote_operation(&mut scheduled, None)
-            .unwrap();
-        context
-            .insert_scheduled_votes(&[scheduled_vote(&scheduled)])
-            .unwrap();
-
-        assert!(matches!(
-            context
-                .remove_scheduled_dpns_vote(None, &key, "locked-target")
-                .expect_err("a current journal lock must preserve the mirror"),
-            TaskError::DpnsScheduledVoteAlreadyStarted
-        ));
-        assert_eq!(context.get_scheduled_votes().unwrap().len(), 1);
     }
 
     #[test]
@@ -1655,41 +1438,14 @@ mod tests {
             ("unconfirmed", DpnsVoteTargetStatus::Unconfirmed),
             ("confirmed", DpnsVoteTargetStatus::Confirmed),
         ];
-        let mut votes = Vec::new();
         for (index, (name, status)) in cases.into_iter().enumerate() {
             let mut operation = scheduled_operation(status, index as u8 + 2, name);
-            votes.push(scheduled_vote(&operation));
             context
                 .insert_dpns_vote_operation(&mut operation, None)
                 .unwrap();
         }
-        votes.push(ScheduledDPNSVote {
-            contested_name: "legacy".to_owned(),
-            voter_id: Identifier::from([9; 32]),
-            choice: ResourceVoteChoice::Lock,
-            unix_timestamp: 42,
-            executed_successfully: false,
-        });
-        context.insert_scheduled_votes(&votes).unwrap();
-
         let outcomes = context.clear_all_scheduled_dpns_votes().unwrap();
-
-        let remaining_names = context
-            .get_scheduled_votes()
-            .unwrap()
-            .into_iter()
-            .map(|vote| vote.contested_name)
-            .collect::<BTreeSet<_>>();
-        assert_eq!(
-            remaining_names,
-            BTreeSet::from([
-                "confirming".to_owned(),
-                "queued".to_owned(),
-                "submitting".to_owned(),
-                "unconfirmed".to_owned(),
-            ])
-        );
-        assert_eq!(outcomes.len(), 7);
+        assert_eq!(outcomes.len(), 6);
         for (name, status) in [
             ("queued", DpnsVoteTargetStatus::Queued),
             ("submitting", DpnsVoteTargetStatus::Submitting),
@@ -1701,56 +1457,25 @@ mod tests {
                     && outcome.disposition == DpnsScheduledVoteClearDisposition::InFlight(status)
             }));
         }
-        for name in ["scheduled", "confirmed", "legacy"] {
+        for name in ["scheduled", "confirmed"] {
             assert!(outcomes.iter().any(|outcome| {
                 outcome.key.contested_name == name
                     && outcome.disposition == DpnsScheduledVoteClearDisposition::Cleared
             }));
         }
-        assert!(outcomes.iter().any(|outcome| {
-            outcome.key.contested_name == "legacy" && outcome.operation_id.is_none()
-        }));
         let remaining_operations = context.dpns_vote_operations().unwrap();
-        assert_eq!(remaining_operations.len(), 4);
-        assert!(remaining_operations.iter().all(|operation| {
-            matches!(
-                operation.targets[0].status,
-                DpnsVoteTargetStatus::Queued
-                    | DpnsVoteTargetStatus::Submitting
-                    | DpnsVoteTargetStatus::Confirming
-                    | DpnsVoteTargetStatus::Unconfirmed
-            )
-        }));
-    }
-
-    #[test]
-    fn combined_insert_reports_mirror_error_after_persisting_the_journal() {
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let store = Arc::new(FailingKv::default());
-        let kv = DetKv::from_store(store.clone());
-        let context = crate::context::test_support::test_app_context_with_kv(
-            temp_dir.path(),
-            Arc::new(kv.clone()),
-        );
-        context.set_det_kv_override_for_test(kv);
-        let mut scheduled = scheduled_operation(DpnsVoteTargetStatus::Scheduled, 2, "mirror-fails");
-        let vote = scheduled_vote(&scheduled);
-        store.fail_next_puts_containing("det:scheduled_vote:", 1);
-
-        let mirror_error = context
-            .insert_dpns_vote_operation_with_scheduled_mirror(&mut scheduled, None, &[vote])
-            .unwrap()
-            .expect("mirror failure must be returned separately");
-
-        assert!(matches!(
-            mirror_error,
-            TaskError::ScheduledVoteStorage { .. }
-        ));
         assert_eq!(
-            context.dpns_vote_operations().unwrap(),
-            vec![scheduled.clone()]
+            remaining_operations
+                .iter()
+                .filter(|op| op.targets[0].status.holds_lock())
+                .count(),
+            4
         );
-        assert!(context.get_scheduled_votes().unwrap().is_empty());
+        assert!(
+            remaining_operations
+                .iter()
+                .any(|op| op.targets[0].status == DpnsVoteTargetStatus::Cancelled)
+        );
     }
 
     /// A corrupt indexed row must block lock reconstruction rather than being skipped.
@@ -2027,46 +1752,8 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn operation_getter_does_not_migrate_legacy_scheduled_votes() {
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let store = Arc::new(CountingKv::default());
-        let context = crate::context::test_support::test_app_context_with_kv(
-            temp_dir.path(),
-            Arc::new(DetKv::from_store(store.clone())),
-        );
-        let (sender, _receiver) = tokio::sync::mpsc::channel::<crate::app::TaskResult>(8);
-        context
-            .ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
-                sender,
-                context.egui_ctx().clone(),
-            ))
-            .await
-            .expect("wire wallet backend offline");
-        context
-            .insert_scheduled_votes(&[crate::backend_task::contested_names::ScheduledDPNSVote {
-                contested_name: "dominguez".to_owned(),
-                voter_id: Identifier::from([1; 32]),
-                choice: ResourceVoteChoice::Lock,
-                unix_timestamp: 42,
-                executed_successfully: false,
-            }])
-            .unwrap();
-        store.reset_counts();
-
-        assert!(context.dpns_vote_operations().unwrap().is_empty());
-        assert_eq!(
-            store.put_count(),
-            0,
-            "a named getter must not migrate or write legacy rows"
-        );
-
-        context.migrate_dpns_vote_operations().unwrap();
-        assert_eq!(context.dpns_vote_operations().unwrap().len(), 1);
-    }
-
     #[test]
-    fn pruning_removes_terminal_scheduled_and_mixed_but_retains_immediate_history() {
+    fn pruning_retains_scheduled_and_mixed_history_below_the_limit() {
         let kv = kv();
         let mut scheduled = operation(DpnsVoteTargetStatus::Confirmed);
         scheduled.targets[0].target.timing = VoteTiming::Scheduled(42);
@@ -2088,20 +1775,23 @@ mod tests {
         persist_operation(&kv, Network::Testnet, &mixed).unwrap();
         persist_operation(&kv, Network::Testnet, &live).unwrap();
 
-        assert_eq!(prune_terminal_operations(&kv, Network::Testnet).unwrap(), 2);
+        assert_eq!(prune_terminal_operations(&kv, Network::Testnet).unwrap(), 0);
         let remaining_ids = load_operations_read_only(&kv, Network::Testnet)
             .unwrap()
             .into_iter()
             .map(|operation| operation.id)
             .collect::<BTreeSet<_>>();
-        assert_eq!(remaining_ids, BTreeSet::from([immediate.id, live.id]));
+        assert_eq!(
+            remaining_ids,
+            BTreeSet::from([scheduled.id, mixed.id, immediate.id, live.id])
+        );
         assert!(
             kv.get::<DpnsVoteOperation>(
                 DetScope::Global,
                 &operation_key(Network::Testnet, scheduled.id),
             )
             .unwrap()
-            .is_none()
+            .is_some()
         );
         assert!(
             kv.get::<DpnsVoteOperation>(
@@ -2117,42 +1807,12 @@ mod tests {
                 &operation_key(Network::Testnet, mixed.id),
             )
             .unwrap()
-            .is_none()
+            .is_some()
         );
     }
 
     #[test]
-    fn retention_read_failure_keeps_durable_insert_successful() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(FailingKv::default());
-        let kv = DetKv::from_store(store.clone());
-        let context = crate::context::test_support::test_app_context_with_kv(
-            dir.path(),
-            Arc::new(kv.clone()),
-        );
-        context.set_det_kv_override_for_test(kv);
-        let mut scheduled = scheduled_operation(DpnsVoteTargetStatus::Scheduled, 2, "read-failure");
-        let mirror = scheduled_vote(&scheduled);
-        store.fail_next_gets_containing(OPERATION_KEY_PREFIX, 1);
-        let mirror_error = context
-            .insert_dpns_vote_operation_with_scheduled_mirror(&mut scheduled, None, &[mirror])
-            .expect("a post-persistence read failure must not invite another submission");
-        assert!(mirror_error.is_some());
-        assert_eq!(
-            context.dpns_vote_operation(scheduled.id).unwrap(),
-            Some(scheduled.clone())
-        );
-        assert_eq!(
-            context
-                .dpns_vote_target_status(&scheduled.targets[0].target.key)
-                .unwrap(),
-            Some(DpnsVoteTargetStatus::Scheduled)
-        );
-        assert!(context.get_scheduled_votes().unwrap().is_empty());
-    }
-
-    #[test]
-    fn scheduled_and_mixed_history_is_bounded_with_mirrors() {
+    fn scheduled_and_mixed_history_is_bounded() {
         let dir = tempfile::tempdir().unwrap();
         let context =
             crate::context::test_support::test_app_context_with_kv(dir.path(), Arc::new(kv()));
@@ -2172,18 +1832,11 @@ mod tests {
                     .targets
                     .push(operation(DpnsVoteTargetStatus::Confirmed).targets.remove(0));
             }
-            let mirror = ScheduledDPNSVote {
-                contested_name: format!("history-{index}"),
-                voter_id: completed.targets[0].target.key.voter_id,
-                choice: ResourceVoteChoice::Lock,
-                unix_timestamp: 42,
-                executed_successfully: true,
-            };
             if index == 0 {
                 oldest = Some(completed.id);
             }
             context
-                .insert_dpns_vote_operation_with_scheduled_mirror(&mut completed, None, &[mirror])
+                .insert_dpns_vote_operation(&mut completed, None)
                 .unwrap();
         }
         let mut unresolved =
@@ -2201,162 +1854,8 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        assert_eq!(context.get_scheduled_votes().unwrap().len(), 256);
-        context.migrate_dpns_vote_operations().unwrap();
-        assert_eq!(
-            context.dpns_vote_operations().unwrap().len(),
-            257,
-            "pruned mirrors must not migrate back"
-        );
-        assert_eq!(
-            context
-                .dpns_vote_target_status(&unresolved.targets[0].target.key)
-                .unwrap(),
-            Some(DpnsVoteTargetStatus::Unconfirmed)
-        );
-    }
-
-    #[test]
-    fn scheduled_retention_cleanup_failures_retry_safely() {
-        for failing_key in [
-            "det:scheduled_vote:",
-            OPERATION_KEY_PREFIX,
-            SCHEDULE_DISMISSAL_KEY_PREFIX,
-            RELATIVE_LABEL_KEY_PREFIX,
-        ] {
-            let dir = tempfile::tempdir().unwrap();
-            let store = Arc::new(FailingKv::default());
-            let kv = DetKv::from_store(store.clone());
-            let context = crate::context::test_support::test_app_context_with_kv(
-                dir.path(),
-                Arc::new(kv.clone()),
-            );
-            context.set_det_kv_override_for_test(kv.clone());
-            let mut oldest = None;
-            // Fill the history to the prune threshold so the `newest` write below
-            // is the one that prunes, and meets the injected cleanup failure.
-            for index in 0..(DPNS_SCHEDULED_HISTORY_LIMIT + DPNS_HISTORY_PRUNE_SLACK) as u64 {
-                let mut completed = scheduled_operation(
-                    DpnsVoteTargetStatus::Confirmed,
-                    2,
-                    &format!("cleanup-{index}"),
-                );
-                completed.created_at = index;
-                completed.targets[0].relative_schedule_preset_ms = Some(600_000);
-                if index == 0 {
-                    oldest = Some(completed.clone());
-                    dismiss_scheduled_target(
-                        &kv,
-                        Network::Testnet,
-                        completed.id,
-                        &completed.targets[0].target.key,
-                    )
-                    .unwrap();
-                }
-                context
-                    .insert_dpns_vote_operation_with_scheduled_mirror(
-                        &mut completed.clone(),
-                        None,
-                        &[scheduled_vote(&completed)],
-                    )
-                    .unwrap();
-            }
-            let mut unresolved =
-                scheduled_operation(DpnsVoteTargetStatus::Unconfirmed, 3, "pending");
-            context
-                .insert_dpns_vote_operation(&mut unresolved, None)
-                .unwrap();
-            store.fail_next_deletes_containing(failing_key, 1);
-            let newest = scheduled_operation(DpnsVoteTargetStatus::Confirmed, 2, "newest");
-            context
-                .insert_dpns_vote_operation_with_scheduled_mirror(
-                    &mut newest.clone(),
-                    None,
-                    &[scheduled_vote(&newest)],
-                )
-                .unwrap();
-            assert!(
-                context.dpns_vote_operation(newest.id).unwrap().is_some(),
-                "cleanup failure must not undo a confirmed result"
-            );
-            context.recover_interrupted_dpns_vote_operations().unwrap();
-            let oldest = oldest.unwrap();
-            assert_eq!(context.dpns_vote_operations().unwrap().len(), 257);
-            assert!(context.dpns_vote_operation(oldest.id).unwrap().is_none());
-            assert!(
-                !context
-                    .get_scheduled_votes()
-                    .unwrap()
-                    .iter()
-                    .any(|vote| vote.contested_name == "cleanup-0")
-            );
-            assert!(context.dismissed_dpns_vote_schedules().unwrap().is_empty());
-            assert_eq!(
-                context
-                    .dpns_vote_target_status(&unresolved.targets[0].target.key)
-                    .unwrap(),
-                Some(DpnsVoteTargetStatus::Unconfirmed)
-            );
-            context
-                .mark_vote_executed(
-                    oldest.targets[0].target.key.voter_id.as_slice(),
-                    "cleanup-0".to_owned(),
-                )
-                .unwrap();
-            context.migrate_dpns_vote_operations().unwrap();
-            assert_eq!(
-                context.dpns_vote_operations().unwrap().len(),
-                257,
-                "late mirror completion must not revive pruned work"
-            );
-        }
-    }
-
-    #[test]
-    fn retention_preserves_a_newer_schedules_mirror() {
-        let dir = tempfile::tempdir().unwrap();
-        let kv = kv();
-        let context = crate::context::test_support::test_app_context_with_kv(
-            dir.path(),
-            Arc::new(kv.clone()),
-        );
-        context.set_det_kv_override_for_test(kv.clone());
-        let mut old = scheduled_operation(DpnsVoteTargetStatus::Confirmed, 2, "shared");
-        old.created_at = 0;
-        context
-            .insert_dpns_vote_operation_with_scheduled_mirror(
-                &mut old.clone(),
-                None,
-                &[scheduled_vote(&old)],
-            )
-            .unwrap();
-        let mut current = scheduled_operation(DpnsVoteTargetStatus::Scheduled, 2, "shared");
-        current.targets[0].target.requested_choice = ResourceVoteChoice::Abstain;
-        let current_mirror = scheduled_vote(&current);
-        context
-            .insert_dpns_vote_operation_with_scheduled_mirror(
-                &mut current,
-                None,
-                std::slice::from_ref(&current_mirror),
-            )
-            .unwrap();
-        for index in 1..=(DPNS_SCHEDULED_HISTORY_LIMIT + DPNS_HISTORY_PRUNE_SLACK) as u64 {
-            let mut completed = scheduled_operation(
-                DpnsVoteTargetStatus::Confirmed,
-                3,
-                &format!("other-{index}"),
-            );
-            completed.created_at = index;
-            persist_operation(&kv, Network::Testnet, &completed).unwrap();
-        }
-        assert!(context.dpns_vote_operation(old.id).unwrap().is_none());
-        assert_eq!(context.get_scheduled_votes().unwrap(), vec![current_mirror]);
-        assert_eq!(
-            context
-                .dpns_vote_target_status(&current.targets[0].target.key)
-                .unwrap(),
-            Some(DpnsVoteTargetStatus::Scheduled)
-        );
+        context.prune_terminal_dpns_vote_operations().unwrap();
+        assert_eq!(context.dpns_vote_operations().unwrap().len(), 257);
     }
 
     #[test]
@@ -2432,7 +1931,7 @@ mod tests {
             .insert_dpns_vote_operation(&mut scheduled, None)
             .unwrap();
         let edit = DpnsScheduledVoteEdit {
-            operation_id: Some(scheduled.id),
+            operation_id: scheduled.id,
             key: scheduled.targets[0].target.key.clone(),
             expected_choice: ResourceVoteChoice::Lock,
             expected_timestamp: u64::MAX - 2,
@@ -2459,9 +1958,8 @@ mod tests {
             expected_choice: choice_only.choice,
             ..edit
         };
-        let (id, error) = context.edit_scheduled_dpns_vote_target(&edit).unwrap();
+        let id = context.edit_scheduled_dpns_vote_target(&edit).unwrap();
         assert_eq!(id, scheduled.id);
-        assert!(error.is_none());
         let saved = context.dpns_vote_operation(id).unwrap().unwrap();
         assert_eq!(saved.targets[1], scheduled.targets[1]);
         assert_eq!(saved.targets[0].relative_schedule_preset_ms, None);
@@ -2493,47 +1991,6 @@ mod tests {
             context.edit_scheduled_dpns_vote_target(&refreshed),
             Err(TaskError::DpnsScheduledVoteNotEditable)
         ));
-        assert_eq!(
-            context.get_scheduled_votes().unwrap()[0].choice,
-            ResourceVoteChoice::Abstain
-        );
-    }
-
-    #[test]
-    fn schedule_edit_mirror_failure_retains_the_committed_edit_and_lock() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(FailingKv::default());
-        let context = crate::context::test_support::test_app_context_with_kv(
-            dir.path(),
-            Arc::new(DetKv::from_store(store.clone())),
-        );
-        context.set_det_kv_override_for_test(DetKv::from_store(store.clone()));
-        let mut scheduled = scheduled_operation(DpnsVoteTargetStatus::Scheduled, 2, "edit-me");
-        context
-            .insert_dpns_vote_operation(&mut scheduled, None)
-            .unwrap();
-        store.fail_next_puts_containing("det:scheduled_vote:", 1);
-        let edit = DpnsScheduledVoteEdit {
-            operation_id: None,
-            key: scheduled.targets[0].target.key.clone(),
-            expected_choice: ResourceVoteChoice::Lock,
-            expected_timestamp: 42,
-            choice: ResourceVoteChoice::Abstain,
-            unix_timestamp: u64::MAX - 1,
-        };
-        let (id, error) = context.edit_scheduled_dpns_vote_target(&edit).unwrap();
-        assert_eq!(id, scheduled.id);
-        assert!(error.is_some());
-        assert_eq!(
-            context.dpns_vote_operation(id).unwrap().unwrap().targets[0]
-                .target
-                .requested_choice,
-            edit.choice
-        );
-        assert_eq!(
-            context.dpns_vote_target_status(&edit.key).unwrap(),
-            Some(DpnsVoteTargetStatus::Scheduled)
-        );
     }
 
     #[test]
@@ -2547,7 +2004,7 @@ mod tests {
             .insert_dpns_vote_operation(&mut scheduled, None)
             .unwrap();
         let edit = DpnsScheduledVoteEdit {
-            operation_id: Some(scheduled.id),
+            operation_id: scheduled.id,
             key: scheduled.targets[0].target.key.clone(),
             expected_choice: ResourceVoteChoice::Lock,
             expected_timestamp: 42,
@@ -2558,7 +2015,7 @@ mod tests {
         invalid[0].key.voter_id = Identifier::from([99; 32]);
         invalid[1].key.vote_poll_id = Identifier::from([99; 32]);
         invalid[2].key.network = Network::Mainnet;
-        invalid[3].operation_id = Some(DpnsVoteOperationId::random());
+        invalid[3].operation_id = DpnsVoteOperationId::random();
         for request in invalid {
             assert!(matches!(
                 context.edit_scheduled_dpns_vote_target(&request),
@@ -2576,7 +2033,6 @@ mod tests {
             context.dpns_vote_operation(scheduled.id).unwrap(),
             Some(scheduled)
         );
-        assert!(context.get_scheduled_votes().unwrap().is_empty());
     }
 
     #[test]
@@ -2639,7 +2095,7 @@ mod tests {
         )
         .unwrap();
         store.fail_next_deletes_containing(SCHEDULE_DISMISSAL_KEY_PREFIX, 1);
-        assert!(prune_terminal_operations(&kv, Network::Testnet).is_err());
+        assert!(delete_terminal_operations(&kv, Network::Testnet, &[completed.id]).is_err());
         assert!(
             kv.get::<DpnsVoteOperation>(
                 DetScope::Global,
@@ -2669,7 +2125,46 @@ mod tests {
     }
 
     #[test]
-    fn terminal_schedule_dismissal_preserves_outcome_and_survives_mirror_delete_failure() {
+    fn clearing_confirmed_schedules_preserves_failures_and_in_flight_locks() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        context.set_det_kv_override_for_test(kv());
+        let statuses = [
+            DpnsVoteTargetStatus::Confirmed,
+            DpnsVoteTargetStatus::FailedBeforeSubmission,
+            DpnsVoteTargetStatus::Unconfirmed,
+        ];
+        let mut operations = Vec::new();
+        for (i, status) in statuses.into_iter().enumerate() {
+            let mut op = scheduled_operation(status, i as u8 + 1, &format!("schedule-{i}"));
+            context.insert_dpns_vote_operation(&mut op, None).unwrap();
+            operations.push(op);
+        }
+        context.clear_executed_scheduled_votes().unwrap();
+        let rows =
+            crate::ui::state::dpns_vote_operations::DpnsVoteOperationSnapshot::load(&context)
+                .scheduled_vote_rows();
+        assert_eq!(rows.len(), 2);
+        assert!(
+            rows.iter()
+                .all(|row| row.status != DpnsVoteTargetStatus::Confirmed)
+        );
+        for op in &operations {
+            assert_eq!(
+                context.dpns_vote_operation(op.id).unwrap().as_ref(),
+                Some(op)
+            );
+        }
+        assert_eq!(
+            context
+                .dpns_vote_target_status(&operations[2].targets[0].target.key)
+                .unwrap(),
+            Some(DpnsVoteTargetStatus::Unconfirmed)
+        );
+    }
+
+    #[test]
+    fn terminal_schedule_dismissal_preserves_outcome() {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(FailingKv::default());
         let context = crate::context::test_support::test_app_context_with_kv(
@@ -2681,13 +2176,9 @@ mod tests {
         context
             .insert_dpns_vote_operation(&mut completed, None)
             .unwrap();
-        context
-            .insert_scheduled_votes(&[scheduled_vote(&completed)])
-            .unwrap();
-        store.fail_next_deletes_containing("det:scheduled_vote:", 1);
         let key = &completed.targets[0].target.key;
         context
-            .remove_scheduled_dpns_vote(Some(completed.id), key, "dismiss-me")
+            .remove_scheduled_dpns_vote(completed.id, key)
             .unwrap();
         assert_eq!(
             context.dpns_vote_operation(completed.id).unwrap(),
@@ -2699,7 +2190,6 @@ mod tests {
                 .unwrap()
                 .contains(&(completed.id, key.clone()))
         );
-        assert_eq!(context.get_scheduled_votes().unwrap().len(), 1);
     }
 
     #[test]

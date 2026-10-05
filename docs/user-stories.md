@@ -751,7 +751,7 @@ As a user, I want the identities I loaded before an upgrade — and the keys the
 
 - Identities stored before the upgrade are imported from the previous version's storage on the first launch afterward, keeping each identity's keys, alias, and wallet link. Progress is shown as its own step.
 - An identity that cannot be read is reported in a banner naming the recovery action (load it again), rather than dropped silently. The previous version's data is never deleted, so a later build can still import it.
-- A single unreadable identity costs only itself: the readable identities in the same batch still import, and neither the wallet migration that restores access to funds nor the scheduled-vote import is blocked by it.
+- A single unreadable identity costs only itself: the readable identities in the same batch still import, and the wallet migration that restores access to funds is not blocked by it.
 - The report of unreadable identities returns on every launch until it is explicitly acknowledged, so a user who stepped away cannot lose the only notice that some of their keys were not carried over.
 - When identities and scheduled votes are both unreadable on the same launch, one banner names both remedies, and acknowledging it retires both reports — neither report can bury the other.
 - An identity the user deletes after the upgrade stays deleted. The import runs once, so a later launch never restores a removed identity, its alias, or its keys.
@@ -884,15 +884,16 @@ As a user, I want my identity's Display name to identify it throughout the app s
 - Lists and navigation use Display name, then the main username (DPN-018), then a shortened identity ID.
 - Profile → Usernames lists registered names without assigning local identity aliases.
 
-### DPN-009: Scheduled votes preserved across an app upgrade [Implemented]
+### DPN-009: Notice schedules that need a fresh decision after an upgrade [Implemented]
 **Persona:** Priya
 
-As a masternode operator, I want my previously scheduled DPNS votes to survive an app upgrade so that I do not miss a contest's vote window after updating.
+As a masternode operator, I want to be told when an upgrade cannot carry over my scheduled votes so that I can review and cast or schedule them again.
 
-- Scheduled votes stored before the upgrade remain visible and executable afterward.
-- The first launch after the upgrade imports them from the previous version's storage, keeping each vote's choice, timestamp, and already-cast state. A vote that cannot be read is reported in a banner, with the recovery action, rather than dropped silently — and never blocks the wallet migration that restores access to funds.
-- A single unreadable vote row costs only itself: the readable votes in the same batch still import.
-- The report of unreadable votes returns on every launch until it is explicitly acknowledged, so a vote whose deadline is still open cannot lose its only notice to a missed or dismissed banner.
+- Startup checks for unexecuted schedules in the previous SQLite storage on the selected network.
+- A persistent, dismissible notice directs me to Masternodes → Votes to make a new decision.
+- Old schedules are neither imported nor executed automatically; their source records remain untouched.
+- Executed schedules and votes already represented in the voting journal do not raise the notice.
+- New schedules use only the voting journal, including editing, cancellation, execution and recovery.
 
 ### DPN-010: See a pending username request [Implemented]
 **Persona:** Alex
@@ -1569,7 +1570,7 @@ As an expert user, I want to clear the cached SPV headers and filter data for a 
 As a user, I want my saved settings — selected network, theme, onboarding state, and paths — to survive an app upgrade so that I do not silently relaunch into the wrong network or a reset configuration.
 
 - Settings stored before the upgrade remain applied afterward.
-- The first launch after the upgrade imports the saved network, start screen, theme, onboarding state, Dash-Qt path, and the remaining toggles before the network is selected, so a testnet user is never relaunched on Mainnet. Top-up history is imported alongside the scheduled votes of DPN-009.
+- The first launch after the upgrade imports the saved network, start screen, theme, onboarding state, Dash-Qt path, and the remaining toggles before the network is selected, so a testnet user is never relaunched on Mainnet. Top-up history is imported; schedules from the previous storage are reported as described in DPN-009.
 
 ---
 

@@ -66,14 +66,12 @@ pub enum ContestedResourceTask {
     },
     ClearAllScheduledVotes,
     ClearExecutedScheduledVotes,
-    DeleteScheduledVote(Identifier, String),
     CancelScheduledDpnsVote {
         operation_id: DpnsVoteOperationId,
         key: DpnsVoteTargetKey,
-        contested_name: String,
     },
     EditScheduledDpnsVote {
-        operation_id: Option<DpnsVoteOperationId>,
+        operation_id: DpnsVoteOperationId,
         key: DpnsVoteTargetKey,
         expected_choice: ResourceVoteChoice,
         expected_timestamp: u64,
@@ -187,14 +185,6 @@ fn classify_reconciled_vote(
         (_, DpnsVotePollAvailability::ProvedClosed) => Some(DpnsVoteTargetStatus::NotApplied),
         (_, DpnsVotePollAvailability::MayAccept) => None,
     }
-}
-
-fn persist_terminal_then_legacy_mirror(
-    persist_terminal: impl FnOnce() -> Result<(), TaskError>,
-    update_legacy_mirror: impl FnOnce() -> Result<(), TaskError>,
-) -> Result<Option<TaskError>, TaskError> {
-    persist_terminal()?;
-    Ok(update_legacy_mirror().err())
 }
 
 fn wrap_scheduled_vote_sweep_result<T>(
@@ -329,21 +319,8 @@ impl AppContext {
                 self.clear_executed_scheduled_votes()?;
                 Ok(BackendTaskSuccessResult::Refresh)
             }
-            ContestedResourceTask::DeleteScheduledVote(voter_id, contested_name) => {
-                let key = DpnsVoteTargetKey {
-                    network: self.network,
-                    voter_id,
-                    vote_poll_id: self.dpns_vote_poll_id(&contested_name)?,
-                };
-                self.remove_scheduled_dpns_vote(None, &key, &contested_name)?;
-                Ok(BackendTaskSuccessResult::Refresh)
-            }
-            ContestedResourceTask::CancelScheduledDpnsVote {
-                operation_id,
-                key,
-                contested_name,
-            } => {
-                self.cancel_scheduled_dpns_vote_target(operation_id, &key, &contested_name)?;
+            ContestedResourceTask::CancelScheduledDpnsVote { operation_id, key } => {
+                self.cancel_scheduled_dpns_vote_target(operation_id, &key)?;
                 Ok(BackendTaskSuccessResult::Refresh)
             }
             ContestedResourceTask::EditScheduledDpnsVote {
@@ -381,7 +358,6 @@ impl AppContext {
             }
             return Ok(());
         }
-        self.migrate_dpns_vote_operations()?;
         self.recover_interrupted_dpns_vote_operations()?;
         let queued = self
             .dpns_vote_operations()?
@@ -448,35 +424,34 @@ impl AppContext {
             vote_poll_id: self.dpns_vote_poll_id(&scheduled_vote.contested_name)?,
         };
         let operations = self.dpns_vote_operations()?;
-        if let Some(outcome) = preferred_outcome_for_scheduled_key(&operations, &key)?.cloned() {
-            match outcome.status {
-                DpnsVoteTargetStatus::Scheduled => {
-                    if !self.queue_scheduled_dpns_vote_target(
-                        outcome.operation_id,
-                        &outcome.target.key,
-                    )? {
-                        return Err(TaskError::DpnsVoteTargetBusy);
-                    }
-                    let mut operation = self
-                        .dpns_vote_operation(outcome.operation_id)?
-                        .ok_or(TaskError::DpnsVoteOperationRecordMissing)?;
-                    operation.targets.retain(|target| target.target.key == key);
-                    return Ok(operation);
-                }
-                DpnsVoteTargetStatus::Unconfirmed
-                | DpnsVoteTargetStatus::Queued
-                | DpnsVoteTargetStatus::Submitting
-                | DpnsVoteTargetStatus::Confirming => {
+        let outcome = preferred_outcome_for_scheduled_key(&operations, &key)?
+            .ok_or(TaskError::DpnsVoteOperationRecordMissing)?;
+        match outcome.status {
+            DpnsVoteTargetStatus::Scheduled => {
+                if !self
+                    .queue_scheduled_dpns_vote_target(outcome.operation_id, &outcome.target.key)?
+                {
                     return Err(TaskError::DpnsVoteTargetBusy);
                 }
-                DpnsVoteTargetStatus::Confirmed
-                | DpnsVoteTargetStatus::Rejected
-                | DpnsVoteTargetStatus::FailedBeforeSubmission
-                | DpnsVoteTargetStatus::Cancelled
-                | DpnsVoteTargetStatus::NotApplied => {
-                    // An explicit Cast now action is a deliberate retry and
-                    // may create a new operation below.
-                }
+                let mut operation = self
+                    .dpns_vote_operation(outcome.operation_id)?
+                    .ok_or(TaskError::DpnsVoteOperationRecordMissing)?;
+                operation.targets.retain(|target| target.target.key == key);
+                return Ok(operation);
+            }
+            DpnsVoteTargetStatus::Unconfirmed
+            | DpnsVoteTargetStatus::Queued
+            | DpnsVoteTargetStatus::Submitting
+            | DpnsVoteTargetStatus::Confirming => {
+                return Err(TaskError::DpnsVoteTargetBusy);
+            }
+            DpnsVoteTargetStatus::Confirmed
+            | DpnsVoteTargetStatus::Rejected
+            | DpnsVoteTargetStatus::FailedBeforeSubmission
+            | DpnsVoteTargetStatus::Cancelled
+            | DpnsVoteTargetStatus::NotApplied => {
+                // An explicit Cast now action is a deliberate retry and
+                // may create a new operation below.
             }
         }
 
@@ -689,52 +664,7 @@ impl AppContext {
                 .retain(|outcome| requested_keys.contains(&outcome.target.key));
         } else {
             self.validate_new_dpns_schedules(&new_schedules)?;
-            let scheduled_votes = operation
-                .targets
-                .iter()
-                .filter_map(|outcome| match outcome.target.timing {
-                    VoteTiming::Scheduled(unix_timestamp) => Some(ScheduledDPNSVote {
-                        contested_name: outcome.target.contested_name.clone(),
-                        voter_id: outcome.target.key.voter_id,
-                        choice: outcome.target.requested_choice,
-                        unix_timestamp,
-                        executed_successfully: false,
-                    }),
-                    VoteTiming::Now => None,
-                })
-                .collect::<Vec<_>>();
-            if let Some(error) = self.insert_dpns_vote_operation_with_scheduled_mirror(
-                &mut operation,
-                replacing_scheduled_key.as_ref(),
-                &scheduled_votes,
-            )? {
-                // The journal is authoritative. The legacy table is a
-                // compatibility mirror, so its failure cannot turn a durable
-                // schedule into a reported failure that invites a duplicate.
-                tracing::warn!(
-                    ?error,
-                    operation_id = %operation.id,
-                    "DPNS vote schedule was journaled but its legacy mirror could not be updated"
-                );
-            }
-        }
-
-        for outcome in operation.targets.iter().filter(|outcome| {
-            outcome.status == DpnsVoteTargetStatus::Confirmed
-                && matches!(outcome.target.timing, VoteTiming::Scheduled(_))
-        }) {
-            if let Err(error) = self.mark_vote_executed(
-                outcome.target.key.voter_id.as_slice(),
-                outcome.target.contested_name.clone(),
-            ) {
-                tracing::warn!(
-                    ?error,
-                    operation_id = %operation.id,
-                    voter_id = %outcome.target.key.voter_id,
-                    contested_name = %outcome.target.contested_name,
-                    "Confirmed DPNS vote was journaled but its legacy mirror could not be updated"
-                );
-            }
+            self.insert_dpns_vote_operation(&mut operation, replacing_scheduled_key.as_ref())?;
         }
 
         let voters_by_id: BTreeMap<Identifier, QualifiedIdentity> = voters
@@ -904,37 +834,12 @@ impl AppContext {
                                 }
                             }
                         }
-                        let mirror_error = persist_terminal_then_legacy_mirror(
-                            || {
-                                app_context.update_dpns_vote_target(
-                                    operation_id,
-                                    &target.key,
-                                    status,
-                                    failure,
-                                )
-                            },
-                            || {
-                                if confirmed
-                                    && matches!(target.timing, VoteTiming::Scheduled(_))
-                                {
-                                    app_context.mark_vote_executed(
-                                        target.key.voter_id.as_slice(),
-                                        target.contested_name.clone(),
-                                    )
-                                } else {
-                                    Ok(())
-                                }
-                            },
+                        app_context.update_dpns_vote_target(
+                            operation_id,
+                            &target.key,
+                            status,
+                            failure,
                         )?;
-                        if let Some(error) = mirror_error {
-                            tracing::warn!(
-                                ?error,
-                                operation_id = %operation_id,
-                                voter_id = %target.key.voter_id,
-                                contested_name = %target.contested_name,
-                                "DPNS vote reached a terminal journal state but its legacy mirror could not be updated"
-                            );
-                        }
                         if confirmed {
                             app_context.cache_confirmed_dpns_vote(
                                 target.key.voter_id,
@@ -1092,20 +997,6 @@ impl AppContext {
                     }
                     if status != DpnsVoteTargetStatus::Confirmed {
                         continue;
-                    }
-                    if matches!(outcome.target.timing, VoteTiming::Scheduled(_))
-                        && let Err(error) = self.mark_vote_executed(
-                            outcome.target.key.voter_id.as_slice(),
-                            outcome.target.contested_name.clone(),
-                        )
-                    {
-                        tracing::warn!(
-                            ?error,
-                            operation_id = %operation_id,
-                            voter_id = %outcome.target.key.voter_id,
-                            contested_name = %outcome.target.contested_name,
-                            "Reconciled DPNS vote reached a terminal journal state but its legacy mirror could not be updated"
-                        );
                     }
                     self.cache_confirmed_dpns_vote(
                         outcome.target.key.voter_id,
@@ -1327,7 +1218,6 @@ mod tests {
     use crate::model::qualified_identity::{IdentityStatus, IdentityType};
     use dash_sdk::dpp::identity::Identity;
     use dash_sdk::dpp::version::PlatformVersion;
-    use std::cell::RefCell;
     use std::collections::{BTreeMap, BTreeSet};
 
     fn dapi_connection_refused_error() -> TaskError {
@@ -1372,6 +1262,43 @@ mod tests {
             crate::wallet_backend::kv_test_support::InMemoryKv::default(),
         )));
         (temp, context)
+    }
+
+    #[test]
+    fn casting_a_schedule_requires_an_existing_journal_record() {
+        let (_temp, context) = vote_context();
+        let voter = qualified_identity(1);
+        let vote = ScheduledDPNSVote {
+            contested_name: "alice".into(),
+            voter_id: voter.identity.id(),
+            choice: ResourceVoteChoice::Lock,
+            unix_timestamp: 42,
+            executed_successfully: false,
+        };
+        assert!(matches!(
+            context.operation_for_scheduled_vote(&vote, &voter),
+            Err(TaskError::DpnsVoteOperationRecordMissing)
+        ));
+        assert!(context.dpns_vote_operations().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn journal_only_recovery_does_not_import_legacy_schedules() {
+        let (_temp, context) = vote_context();
+        crate::database::test_helpers::create_legacy_scheduled_votes_table(&context.db).unwrap();
+        crate::database::test_helpers::seed_legacy_scheduled_vote_row(
+            &context.db,
+            &[1; 32],
+            "old-schedule",
+            "Lock",
+            Network::Testnet,
+        )
+        .unwrap();
+        context
+            .ensure_dpns_vote_recovery(&context.sdk())
+            .await
+            .unwrap();
+        assert!(context.dpns_vote_operations().unwrap().is_empty());
     }
 
     fn scheduled_operation_for(
@@ -1497,8 +1424,7 @@ mod tests {
                 .relative_schedule_preset_ms,
             Some(600_000)
         );
-        ctx.remove_scheduled_dpns_vote(Some(operation.id), &key, "alice")
-            .unwrap();
+        ctx.remove_scheduled_dpns_vote(operation.id, &key).unwrap();
         let prefix = format!("{}:dpns_voting:relative:", ctx.network());
         assert!(
             ctx.app_kv()
@@ -1745,7 +1671,7 @@ mod tests {
             )
             .unwrap();
         context
-            .insert_dpns_vote_operation_with_scheduled_mirror(&mut retry, None, &[scheduled])
+            .insert_dpns_vote_operation(&mut retry, None)
             .unwrap();
         let saved = context.dpns_vote_operation(retry.id).unwrap().unwrap();
         assert_eq!(saved.targets[0].status, DpnsVoteTargetStatus::Confirmed);
@@ -1942,7 +1868,6 @@ mod tests {
             Err(TaskError::DpnsScheduledVoteInvalidTime)
         ));
         assert!(context.dpns_vote_operations().unwrap().is_empty());
-        assert!(context.get_scheduled_votes().unwrap().is_empty());
         for name in ["missing", "closed"] {
             if name == "closed" {
                 context.seed_dpns_contest_for_test(name, None, true);
@@ -2474,25 +2399,6 @@ mod tests {
             context.dpns_vote_target_status(&key).unwrap(),
             Some(DpnsVoteTargetStatus::Unconfirmed)
         );
-    }
-
-    #[test]
-    fn terminal_journal_write_precedes_best_effort_legacy_mirror() {
-        let events = RefCell::new(Vec::new());
-        let mirror_error = persist_terminal_then_legacy_mirror(
-            || {
-                events.borrow_mut().push("journal");
-                Ok(())
-            },
-            || {
-                events.borrow_mut().push("legacy");
-                Err(TaskError::DpnsVoteTargetBusy)
-            },
-        )
-        .expect("the authoritative journal write succeeded");
-
-        assert!(mirror_error.is_some());
-        assert_eq!(events.into_inner(), vec!["journal", "legacy"]);
     }
 
     #[test]

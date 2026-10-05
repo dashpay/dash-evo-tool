@@ -267,8 +267,9 @@ Validation floor: 24 nodes on one voting key, 6 open contests, 2 ending today.
   with an actionable status.
 - **VOTE-FR-053** — Unconfirmed scheduled targets are not automatically
   rebroadcast.
-- **VOTE-FR-054** — Existing scheduled-vote records migrate without losing node,
-  contest, choice, time, or executed state.
+- **VOTE-FR-054** — Schedules use only the voting journal. Startup reports
+  unexecuted schedules in previous SQLite storage and asks the user to cast or
+  schedule them again; it neither imports nor executes them automatically.
 - **VOTE-FR-055** — A scheduled target can be edited or cancelled until
   execution begins. Once submitting, it follows normal operation locking.
 - **VOTE-FR-056** — A target still `Scheduled` more than 120 seconds past its

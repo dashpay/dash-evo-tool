@@ -195,16 +195,9 @@ fn scheduled_vote_cast_enabled(status: DpnsVoteTargetStatus, dispatch_pending: b
 }
 
 fn scheduled_vote_removal_task(row: &ScheduledDpnsVoteRow) -> ContestedResourceTask {
-    match &row.journal_target {
-        Some((operation_id, key)) => ContestedResourceTask::CancelScheduledDpnsVote {
-            operation_id: *operation_id,
-            key: key.clone(),
-            contested_name: row.vote.contested_name.clone(),
-        },
-        None => ContestedResourceTask::DeleteScheduledVote(
-            row.vote.voter_id,
-            row.vote.contested_name.clone(),
-        ),
+    ContestedResourceTask::CancelScheduledDpnsVote {
+        operation_id: row.journal_target.0,
+        key: row.journal_target.1.clone(),
     }
 }
 
@@ -508,10 +501,7 @@ pub struct DPNSScreen {
 impl DPNSScreen {
     pub fn new(app_context: &Arc<AppContext>, view: VotesView) -> Self {
         let vote_operations = DpnsVoteOperationSnapshot::load(app_context);
-        let legacy_scheduled_votes = app_context.get_scheduled_votes().unwrap_or_default();
-        let scheduled_votes = Arc::new(Mutex::new(
-            vote_operations.scheduled_vote_rows(&legacy_scheduled_votes),
-        ));
+        let scheduled_votes = Arc::new(Mutex::new(vote_operations.scheduled_vote_rows()));
 
         // One instance serves every sub-view, so it loads every cache.
         let contested_names = Arc::new(Mutex::new(
@@ -1608,7 +1598,7 @@ impl DPNSScreen {
                     self.candidate_name(&group.contested_name, group.choice),
                 );
                 let preset = group.rows.iter().find_map(|row| {
-                    let (_, key) = row.journal_target.as_ref()?;
+                    let (_, key) = &row.journal_target;
                     self.relative_schedule_labels
                         .get(&(key.clone(), group.unix_timestamp))
                 });
@@ -1684,10 +1674,7 @@ impl DPNSScreen {
                 for scheduled_row in rows {
                     let vote = &scheduled_row.vote;
                     let pending_key = DpnsScheduledVoteKey {
-                        network: scheduled_row
-                            .journal_target
-                            .as_ref()
-                            .map_or(self.app_context.network(), |(_, key)| key.network),
+                        network: scheduled_row.journal_target.1.network,
                         voter_id: vote.voter_id,
                         contested_name: vote.contested_name.clone(),
                     };
@@ -1877,12 +1864,11 @@ impl DPNSScreen {
     }
 
     fn rebuild_scheduled_vote_rows(&mut self) {
-        let legacy_votes = self.app_context.get_scheduled_votes().unwrap_or_default();
-        let rows = self.vote_operations.scheduled_vote_rows(&legacy_votes);
+        let rows = self.vote_operations.scheduled_vote_rows();
         self.relative_schedule_labels = rows
             .iter()
             .filter_map(|row| {
-                let (operation_id, key) = row.journal_target.as_ref()?;
+                let (operation_id, key) = &row.journal_target;
                 let at = row.vote.unix_timestamp;
                 let preset = self
                     .vote_operations
@@ -3283,7 +3269,7 @@ mod tests {
     }
 
     #[test]
-    fn scheduled_vote_removal_dispatches_the_journal_or_legacy_task() {
+    fn scheduled_vote_removal_dispatches_the_journal_task() {
         let operation_id = DpnsVoteOperationId::from_bytes([31; 16]);
         let key = DpnsVoteTargetKey {
             network: Network::Testnet,
@@ -3299,29 +3285,16 @@ mod tests {
         };
         let journal_row = ScheduledDpnsVoteRow {
             vote: vote.clone(),
-            journal_target: Some((operation_id, key.clone())),
+            journal_target: (operation_id, key.clone()),
             status: DpnsVoteTargetStatus::Scheduled,
             failure: None,
         };
-        let legacy_row = ScheduledDpnsVoteRow {
-            vote,
-            journal_target: None,
-            status: DpnsVoteTargetStatus::Scheduled,
-            failure: None,
-        };
-
         assert!(matches!(
             scheduled_vote_removal_task(&journal_row),
             ContestedResourceTask::CancelScheduledDpnsVote {
                 operation_id: id,
                 key: task_key,
-                contested_name,
-            } if id == operation_id && task_key == key && contested_name == "dispatch"
-        ));
-        assert!(matches!(
-            scheduled_vote_removal_task(&legacy_row),
-            ContestedResourceTask::DeleteScheduledVote(voter_id, contested_name)
-                if voter_id == Identifier::from([32; 32]) && contested_name == "dispatch"
+            } if id == operation_id && task_key == key
         ));
     }
 
@@ -4757,18 +4730,10 @@ mod tests {
         }]);
         ctx.insert_dpns_vote_operation(&mut operation, None)
             .expect("insert scheduled operation");
-        ctx.insert_scheduled_votes(&[ScheduledDPNSVote {
-            contested_name: "remove-me".to_owned(),
-            voter_id,
-            choice: ResourceVoteChoice::Lock,
-            unix_timestamp: 42,
-            executed_successfully: false,
-        }])
-        .expect("insert compatibility mirror");
         let mut screen = DPNSScreen::new(&ctx, VotesView::Scheduled);
         assert_eq!(screen.scheduled_votes.lock_recover().len(), 1);
 
-        ctx.cancel_scheduled_dpns_vote_target(operation.id, &key, "remove-me")
+        ctx.cancel_scheduled_dpns_vote_target(operation.id, &key)
             .expect("remove the scheduled vote");
         screen.display_task_result(BackendTaskSuccessResult::DpnsVoteOperationUpdated {
             network: ctx.network(),
@@ -4838,14 +4803,6 @@ mod tests {
         }]);
         ctx.insert_dpns_vote_operation(&mut operation, None)
             .expect("insert scheduled operation");
-        ctx.insert_scheduled_votes(&[ScheduledDPNSVote {
-            contested_name: "clear-me".to_owned(),
-            voter_id,
-            choice: ResourceVoteChoice::Lock,
-            unix_timestamp: 42,
-            executed_successfully: false,
-        }])
-        .expect("insert compatibility mirror");
         let mut screen = DPNSScreen::new(&ctx, VotesView::Scheduled);
         assert_eq!(screen.scheduled_votes.lock_recover().len(), 1);
 

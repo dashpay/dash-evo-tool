@@ -118,9 +118,8 @@ impl CountdownFailure {
 /// Two independent mechanisms per operation: a blanket `fail_all_*` toggle that
 /// fails everything until switched off, and a [`CountdownFailure`] budget that
 /// fails a fixed number of keys matching a fragment.
-#[derive(Default)]
 pub(crate) struct FailingKv {
-    inner: InMemoryKv,
+    inner: std::sync::Arc<dyn KvStore + Send + Sync>,
     fail_all_reads: AtomicBool,
     fail_all_deletes: AtomicBool,
     puts: AtomicUsize,
@@ -129,7 +128,25 @@ pub(crate) struct FailingKv {
     delete_countdown: CountdownFailure,
 }
 
+impl Default for FailingKv {
+    fn default() -> Self {
+        Self::from_store(std::sync::Arc::new(InMemoryKv::default()))
+    }
+}
+
 impl FailingKv {
+    pub(crate) fn from_store(inner: std::sync::Arc<dyn KvStore + Send + Sync>) -> Self {
+        Self {
+            inner,
+            fail_all_reads: AtomicBool::new(false),
+            fail_all_deletes: AtomicBool::new(false),
+            puts: AtomicUsize::new(0),
+            get_countdown: CountdownFailure::default(),
+            put_countdown: CountdownFailure::default(),
+            delete_countdown: CountdownFailure::default(),
+        }
+    }
+
     /// Make every subsequent `get` fail with [`KvError::LockPoisoned`] (`true`),
     /// or restore normal reads (`false`). Stored values are never touched, so a
     /// read armed to fail and then restored still yields the original blob.

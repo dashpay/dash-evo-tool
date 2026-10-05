@@ -835,7 +835,7 @@ As a masternode operator, I want to see the name contests that need a decision f
 
 As a power user, I want to review past contests so that I can see outcomes and how my nodes voted.
 
-- Votes ▸ History lists finished contests with the outcome in words (went to a named requester with a copyable identifier, or locked for good), and my nodes' votes with their total weight.
+- Votes ▸ History lists finished contests with the outcome in words (went to a named requester with a copyable identifier, or locked for good), and a link beside each name that opens its contest in Platform Explorer for the active Mainnet or Testnet network.
 
 ### DPN-005: Vote on contested names [Implemented]
 **Persona:** Priya

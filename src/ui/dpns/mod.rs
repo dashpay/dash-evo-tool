@@ -17,7 +17,7 @@ pub enum VotesView {
     Voted,
     /// Scheduled and missed automatic votes.
     Scheduled,
-    /// Finished contests and how the operator's nodes voted.
+    /// Finished contests with links to Platform Explorer.
     History,
 }
 

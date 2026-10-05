@@ -194,7 +194,7 @@ details, and the recovery action. Never parse strings.
   list (VOTE-FR-088). Show the relative label when the schedule was created
   relative (store a `relative_preset: Option<Duration>` alongside the absolute
   time for display only).
-- History: aggregate `Your nodes voted` with weight.
+- History: show contest outcomes and a per-contest Platform Explorer browser link for Mainnet and Testnet.
 
 ### Durations
 Consume `model/dpns.rs` contest-duration and urgency helpers (owned by Stream U,

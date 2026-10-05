@@ -359,16 +359,6 @@ pub fn needs_attention_line(attention: NeedsAttention) -> String {
     }
 }
 
-/// One part of the History `Your nodes voted` cell, e.g.
-/// `Vote for Zed (24 nodes, 51 votes)`.
-pub fn nodes_voted_part(choice: &str, nodes: usize, votes: u32) -> String {
-    match (nodes, votes) {
-        (1, 1) => format!("{choice} (1 node, 1 vote)"),
-        (1, votes) => format!("{choice} (1 node, {votes} votes)"),
-        (nodes, votes) => format!("{choice} ({nodes} nodes, {votes} votes)"),
-    }
-}
-
 /// A node's voting weight on its detail page (MN-003).
 pub fn voting_weight_label(weight: u32) -> String {
     match weight {
@@ -387,9 +377,6 @@ pub fn went_to_label(name: Option<&str>, short_id: &str) -> String {
 
 /// History outcome of a locked contest.
 pub const LOCKED_FOR_GOOD: &str = "Locked for good, no one can register it";
-
-/// History cell when none of your nodes voted on a finished contest.
-pub const NODES_DID_NOT_VOTE: &str = "Your nodes didn't vote.";
 
 /// Expander label of a scheduled decision's node list (VOTE-FR-088).
 pub fn scheduled_nodes_label(nodes: usize) -> String {
@@ -730,12 +717,6 @@ mod tests {
             before_end_phrase(std::time::Duration::from_secs(30)),
             "Less than a minute before the end"
         );
-        assert_eq!(
-            nodes_voted_part("Vote for Zed", 24, 51),
-            "Vote for Zed (24 nodes, 51 votes)"
-        );
-        assert_eq!(nodes_voted_part("Lock", 1, 1), "Lock (1 node, 1 vote)");
-        assert_eq!(nodes_voted_part("Lock", 1, 4), "Lock (1 node, 4 votes)");
         assert_eq!(
             excluded_nodes_line(2, NodeExclusion::NotInMasternodeList),
             "2 nodes not used: they are not in the masternode list, so their votes don't count."

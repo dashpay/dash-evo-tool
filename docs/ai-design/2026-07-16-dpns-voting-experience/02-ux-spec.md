@@ -129,7 +129,7 @@ Columns: Name · Nodes (`24 nodes ▾`) · Vote · When · Status · actions.
 
 ## History (frame V4)
 
-Name [View in Platform Explorer] · Ended · Last updated · Outcome
+Name · Ended · Last updated · Outcome · details [details]
 (`Went to {name} ({short_id})` [Copy ID] · `Locked for good, no one can register it`).
 
 The explorer link opens that contest in the system browser on the active Mainnet

@@ -1421,7 +1421,8 @@ impl DPNSScreen {
                 .column(Column::auto().resizable(true)) // Name
                 .column(Column::auto().resizable(true)) // Ended Time
                 .column(Column::auto().resizable(true)) // Last Updated
-                .column(Column::remainder()) // Outcome
+                .column(Column::auto().resizable(true)) // Outcome
+                .column(Column::remainder()) // details
                 .header(30.0, |mut header| {
                     header.col(|ui| {
                         if ui.button("Name").clicked() {
@@ -1443,6 +1444,9 @@ impl DPNSScreen {
                             self.toggle_sort(SortColumn::AwardedTo);
                         }
                     });
+                    header.col(|ui| {
+                        ui.label(RichText::new("details").strong());
+                    });
                 })
                 .body(|mut body| {
                     for contested_name in &contested_names {
@@ -1454,13 +1458,6 @@ impl DPNSScreen {
                                     RichText::new(&contested_name.normalized_contested_name)
                                         .color(DashColors::text_primary(dark_mode)),
                                 );
-                                if let Some(url) = platform_explorer_contest_url(
-                                    self.app_context.network(),
-                                    &contested_name.normalized_contested_name,
-                                ) {
-                                    ui.hyperlink_to("View in Platform Explorer", url)
-                                        .on_hover_text("Open this contest in your web browser.");
-                                }
                             });
                             // Ended Time
                             row.col(|ui| {
@@ -1559,6 +1556,15 @@ impl DPNSScreen {
                                                 .color(DashColors::text_primary(dark_mode)),
                                         );
                                     }
+                                }
+                            });
+                            row.col(|ui| {
+                                if let Some(url) = platform_explorer_contest_url(
+                                    self.app_context.network(),
+                                    &contested_name.normalized_contested_name,
+                                ) {
+                                    ui.hyperlink_to("details", url)
+                                        .on_hover_text("Open this contest in Platform Explorer in your web browser.");
                                 }
                             });
                         });

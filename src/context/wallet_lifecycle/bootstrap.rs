@@ -718,15 +718,13 @@ impl AppContext {
             guard.values().cloned().collect()
         };
 
-        // Reports only on the startup pass; withdrawn when this function returns.
         let status = self.migration_status();
-        let mut progress = status.begin_wallet_load(wallets.len());
-        for wallet in wallets.iter() {
-            if let Some(progress) = progress.as_mut() {
-                progress.advance();
-            }
+        let total = wallets.len() as u32;
+        for (index, wallet) in wallets.iter().enumerate() {
+            status.set_wallet_load(Some((index as u32 + 1, total)));
             self.bootstrap_wallet_addresses_jit(wallet).await;
         }
+        status.set_wallet_load(None);
     }
 
     /// Update wallet platform address info from SDK-returned AddressInfos.

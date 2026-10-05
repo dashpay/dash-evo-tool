@@ -52,10 +52,10 @@ On every **non-draft** PR that touches Rust code, and on pushes to `v*-dev`, Git
 
 | Workflow | Runs |
 |---|---|
-| `tests.yml` | `cargo test --all-features --workspace` and `cargo test --doc --all-features --workspace` |
+| `tests.yml` | Shared `cargo test --locked --all-features --workspace --no-run`, then workspace tests (including doctests) and archived-profile migrations in parallel |
 | `clippy.yml` | `cargo fmt --all -- --check` and `cargo clippy --all-features --all-targets -- -D warnings` |
 
-The workflows are path-filtered independently, each on `**/*.rs` (which includes `build.rs`), `**/Cargo.toml`, `Cargo.lock`, `.cargo/config.toml`, `rust-toolchain.toml`, and its own workflow file. `tests.yml` additionally watches `tests/backend-e2e/**`, so a documentation-only change under that directory (e.g. `tests/backend-e2e/README.md`) still triggers the test workflow. It also watches the migration-fixture files its tests embed at compile time: `tests/migration-fixtures/manifest.json`, the `v0.9.3-public-identities` `data.sql` / `expected.json`, and `v11-mainnet-identity/data-with-imported-key.db`; other documentation-only changes run neither workflow.
+The workflows are path-filtered independently, each on `**/*.rs` (including `build.rs`), `**/Cargo.toml`, `Cargo.lock`, `.cargo/config.toml`, `rust-toolchain.toml`, and its own workflow file. `tests.yml` additionally watches `tests/backend-e2e/**`, `tests/migration-fixtures/**`, `scripts/migration-fixtures/**`, `scripts/ci/**`, and `.github/workflows/weekly-build.yml`; documentation changes under those paths also trigger it. Both suites share one runner and Cargo target directory and use `--all-features`. Only the migration suite receives downloaded fixtures and their password. The normal workspace command already runs doctests, so there is no second doctest invocation. The platform pin guard runs separately. The Monday schedule runs only lightweight pin/script checks and fixture coverage, without compiling or running Rust tests. GitHub schedules require the workflow on the default branch (`v1.0-dev`) and run from that branch. Complete per-suite logs appear in separate Actions groups after both suites finish.
 
 Because CI always runs the full sweep, locally you should:
 
@@ -66,8 +66,8 @@ Because CI always runs the full sweep, locally you should:
 
 Two gaps where CI will **not** cover you:
 
-- **Draft PRs run no automatic CI.** Both workflows are gated on `github.event.pull_request.draft != true`, so a draft PR's `pull_request` runs are suppressed. Both support `workflow_dispatch` for manual branch runs. Those runs verify the branch head, not the PR merge commit; mark the PR ready for review (`ready_for_review` triggers the full run) to check the merged result.
-- **Backend E2E tests are not in CI.** The step is commented out in `tests.yml`, and the tests are `#[ignore]`d. If a change touches backend behaviour that only `tests/backend-e2e/` covers, run those locally; CI will not.
+- **Draft PRs run no automatic CI.** Both workflows are gated on `github.event.pull_request.draft != true`, so a draft PR's `pull_request` runs are suppressed. Both workflows support `workflow_dispatch` for manual branch runs. A manual run tests the branch head; mark the PR ready for review to test the PR merge result.
+- **Backend E2E tests are not in CI.** These tests are `#[ignore]`d, so the normal workspace test run does not execute them. If a change touches backend behaviour that only `tests/backend-e2e/` covers, run those locally; CI will not.
 
 A green CI run is only meaningful if it actually executed your tests. `cargo test <filter>` exits 0 and prints `test result: ok` even when the filter matches nothing — when checking a run, confirm your new test names appear in the log **with a pass status**, not merely present. A `#[ignore]`d test (e.g. `core_max_send_with_single_utxo_builds_without_change` in `src/wallet_backend/payments.rs`) can appear in the log as `ignored` without having actually run — the "full non-ignored-test gate" above intentionally excludes these; they stay a manual check.
 

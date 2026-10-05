@@ -67,16 +67,14 @@ jobs:
         run: |
           set -euo pipefail
 
-          # CI-red is a HARD block — never overridable by force or version
-          # (it's a safety net, not a convenience toggle). Treated as "latest
-          # *completed push* run of each CI workflow on the release branch" rather than
-          # HEAD-sha check-runs, because tests.yml/clippy.yml are path-filtered
-          # and a docs-only HEAD would otherwise have zero check-runs and read
-          # as falsely green. A workflow that has never run is treated as
-          # absent, not red. Scheduled checks do not execute the Rust suite.
+          # Use completed branch runs: path filters can leave docs-only HEAD unchecked.
+          # Gate push suites and scheduled fixture/pin checks independently.
+          # Missing history is absent, not red; force/version never bypass red CI.
           red=false
-          for wf in tests.yml clippy.yml; do
-            concl=$(gh run list --workflow "$wf" --branch "$REF_NAME" --event push --status completed \
+          for check in tests.yml:push clippy.yml:push tests.yml:schedule; do
+            wf="${check%:*}"
+            event="${check#*:}"
+            concl=$(gh run list --workflow "$wf" --branch "$REF_NAME" --event "$event" --status completed \
                       --limit 1 --json conclusion --jq '.[0].conclusion // ""')
             case "$concl" in
               failure | cancelled | timed_out | startup_failure) red=true ;;

@@ -162,8 +162,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- Weekly releases use the latest completed push results for tests and Clippy,
-  so scheduled checks cannot hide a failing test suite.
+- Weekly releases independently check the latest completed push results for
+  tests and Clippy and scheduled fixture coverage and pin checks. A passing
+  check cannot hide a failure in another gate; absent run history is allowed.
 
 - Restoring imported keys remains recoverable after interrupted storage writes
   and reports unreadable protected keys. Startup migration preserves existing

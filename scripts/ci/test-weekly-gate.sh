@@ -34,14 +34,22 @@ jq --arg workflow "$workflow" --arg event "$event" \
 MOCK
 chmod +x "$scratch/bin/gh"
 
-for failed_workflow in tests.yml clippy.yml; do
+for check in tests.yml:push clippy.yml:push tests.yml:schedule; do
+    failed_workflow="${check%:*}"
+    failed_event="${check#*:}"
     for conclusion in failure cancelled timed_out startup_failure success absent; do
-        jq -n --arg workflow "$failed_workflow" --arg conclusion "$conclusion" '
-            [{workflow: $workflow, event: "schedule", conclusion: "success"},
-             {workflow: $workflow, event: "workflow_dispatch", conclusion: "success"},
+        jq -n --arg workflow "$failed_workflow" --arg event "$failed_event" \
+            --arg conclusion "$conclusion" '
+            ([{workflow: "tests.yml", event: "push", conclusion: "success"},
+              {workflow: "clippy.yml", event: "push", conclusion: "success"},
+              {workflow: "tests.yml", event: "schedule", conclusion: "success"}]
+             | map(select(.workflow != $workflow or .event != $event)))
+            + [{workflow: $workflow, event: "workflow_dispatch", conclusion: "success"},
              {workflow: $workflow, event: "pull_request", conclusion: "success"}]
             + if $conclusion == "absent" then [] else
-              [{workflow: $workflow, event: "push", conclusion: $conclusion}]
+              [{workflow: $workflow, event: $event, conclusion: $conclusion},
+               {workflow: $workflow, event: $event,
+                conclusion: (if $conclusion == "success" then "failure" else "success" end)}]
               end' > "$scratch/history.json"
         : > "$scratch/output"
         env PATH="$scratch/bin:$PATH" RUN_HISTORY="$scratch/history.json" \
@@ -51,13 +59,13 @@ for failed_workflow in tests.yml clippy.yml; do
         [[ "$conclusion" != success && "$conclusion" != absent ]] || expected=false
         if ! grep -Fxq "ci_red=$expected" "$scratch/output"; then
             cat "$scratch/output"
-            echo "FAIL: $failed_workflow / $conclusion should set ci_red=$expected" >&2
+            echo "FAIL: $check / $conclusion should set ci_red=$expected" >&2
             exit 1
         fi
         if [[ "$expected" == true ]]; then
             grep -Fxq 'should_release=false' "$scratch/output"
             grep -Fxq 'reason=ci_red' "$scratch/output"
         fi
-        echo "PASS: $failed_workflow / $conclusion"
+        echo "PASS: $check / $conclusion"
     done
 done

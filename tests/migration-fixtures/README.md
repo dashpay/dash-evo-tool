@@ -82,8 +82,11 @@ and fixture coverage against releases, without compiling or running Rust tests.
 GitHub runs schedules from the default branch (`v1.0-dev`); the workflow file
 must exist there before scheduled checks can run.
 The weekly release gate checks the latest completed `push` run of `tests.yml`
-and `clippy.yml` on the release branch. Scheduled or manually dispatched runs
-cannot replace that result.
+and `clippy.yml` on the release branch, plus the latest completed `schedule`
+run of `tests.yml` for fixture coverage and pin checks. Each result is checked
+independently, so a passing schedule cannot replace a failed push result or
+vice versa. Missing run history is allowed, including before the first schedule.
+Manually dispatched runs cannot replace these results.
 
 ## Why this exists
 

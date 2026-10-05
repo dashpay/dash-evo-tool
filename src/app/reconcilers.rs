@@ -24,7 +24,7 @@ use crate::context::AppContext;
 use crate::context::connection_status::{
     OverallConnectionState, SPV_SYNC_PHASE_COUNT, spv_phase_step, spv_progress_token,
 };
-use crate::context::migration_status::MigrationState;
+use crate::context::migration_status::{MigrationState, MigrationStep, WalletLoadProgress};
 use crate::model::wallet::{TransactionConfirmation, WalletSeedHash};
 use crate::ui::MessageType;
 use crate::ui::components::wallet_unlock_popup::{
@@ -616,6 +616,7 @@ impl StoragePrepGate {
         ctx: &egui::Context,
         app_context: &Arc<AppContext>,
         migration_state: &MigrationState,
+        wallet_load: Option<WalletLoadProgress>,
     ) -> Option<GateEvent> {
         if !matches!(self.phase, BootPhase::Preparing { .. }) {
             self.overlay.take_and_clear();
@@ -626,7 +627,7 @@ impl StoragePrepGate {
             return Some(event);
         }
 
-        self.render(ctx, migration_state);
+        self.render(ctx, migration_state, wallet_load);
         self.drain_actions(app_context)
     }
 
@@ -682,7 +683,12 @@ impl StoragePrepGate {
     }
 
     /// Raise or update the overlay for this frame.
-    fn render(&mut self, ctx: &egui::Context, migration_state: &MigrationState) {
+    fn render(
+        &mut self,
+        ctx: &egui::Context,
+        migration_state: &MigrationState,
+        wallet_load: Option<WalletLoadProgress>,
+    ) {
         // A repaint every frame: the gate's only progress signal is a background
         // task, so egui would otherwise go idle and never poll it again.
         ctx.request_repaint();
@@ -716,9 +722,15 @@ impl StoragePrepGate {
         } else {
             storage_prep_description(migration_state)
         };
+        // The stuck copy says progress stalled; a counter beside it would argue.
+        let step = storage_prep_step(migration_state, wallet_load).filter(|_| !stuck);
 
         if let Some(handle) = &self.overlay {
             handle.set_description(description);
+            match step {
+                Some((current, total)) => handle.set_step(current, total),
+                None => handle.clear_step(),
+            };
         } else {
             // Preparation cannot continue safely in the background. Only the stuck branch
             // adds an exit, and it re-raises to do so — an `OverlayHandle`'s
@@ -728,6 +740,9 @@ impl StoragePrepGate {
                 config = config
                     .with_action("Close the app", STORAGE_PREP_CLOSE_ACTION_ID)
                     .with_keyboard_escape(STORAGE_PREP_CLOSE_ACTION_ID);
+            }
+            if let Some((current, total)) = step {
+                config = config.with_step(current, total);
             }
             self.overlay.raise(ctx, "", config);
         }
@@ -865,8 +880,28 @@ fn storage_prep_description(state: &MigrationState) -> &'static str {
     match state {
         MigrationState::Running { step } => migration_running_text(*step),
         MigrationState::AwaitingWalletPasswords { .. } => STORAGE_PREP_PASSWORD_DESCRIPTION,
-        _ => migration_running_text(crate::context::migration_status::MigrationStep::Wiring),
+        _ => migration_running_text(MigrationStep::Wiring),
     }
+}
+
+/// The gate's step counter: the wallet being prepared, out of all loaded ones.
+///
+/// Shown only beside the opening sentence it details. Any other state — a later
+/// step, a password wait, a terminal outcome — has no counter, even if a
+/// progress value is still published.
+fn storage_prep_step(
+    state: &MigrationState,
+    wallet_load: Option<WalletLoadProgress>,
+) -> Option<(u32, u32)> {
+    let opening = matches!(
+        state,
+        MigrationState::Running {
+            step: MigrationStep::Wiring
+        }
+    );
+    wallet_load
+        .filter(|_| opening)
+        .map(|progress| (progress.current, progress.total))
 }
 
 /// Reconciles the data-migration banner and its wallet-password prompt.
@@ -2278,6 +2313,43 @@ mod tests {
             harness.query_by_label(&message).is_none(),
             "the startup error must clear when the storage update is ready and unlocked",
         );
+    }
+
+    /// The wallet counter belongs to the opening sentence alone: every other
+    /// state hides it even while a progress value is still published.
+    #[test]
+    fn storage_prep_step_counts_wallets_only_while_opening_storage() {
+        let progress = Some(WalletLoadProgress {
+            current: 7,
+            total: 12,
+        });
+        let opening = MigrationState::Running {
+            step: MigrationStep::Wiring,
+        };
+        assert_eq!(storage_prep_step(&opening, progress), Some((7, 12)));
+        assert_eq!(storage_prep_step(&opening, None), None);
+
+        let mut others: Vec<MigrationState> = MigrationStep::ALL
+            .into_iter()
+            .filter(|step| *step != MigrationStep::Wiring)
+            .map(|step| MigrationState::Running { step })
+            .collect();
+        others.extend([
+            MigrationState::Idle,
+            MigrationState::Ready,
+            MigrationState::Success,
+            MigrationState::AwaitingWalletPasswords {
+                wallets: vec![[0x11; 32]],
+            },
+            MigrationState::Failed {
+                error: Arc::new(
+                    crate::backend_task::migration::MigrationError::WalletBackendUnavailable,
+                ),
+            },
+        ]);
+        for state in others {
+            assert_eq!(storage_prep_step(&state, progress), None, "{state:?}");
+        }
     }
 
     #[test]

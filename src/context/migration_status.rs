@@ -13,7 +13,7 @@
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
-use arc_swap::ArcSwap;
+use arc_swap::{ArcSwap, ArcSwapOption};
 use tokio::sync::Notify;
 
 use crate::model::wallet::WalletSeedHash;
@@ -94,6 +94,47 @@ impl MigrationStep {
             MigrationStep::Identities => 7,
             MigrationStep::Finalize => 8,
         }
+    }
+}
+
+/// Position of the startup pass that prepares the loaded wallets one by one.
+///
+/// A detail of [`MigrationStep::Wiring`]: `current` is the 1-based wallet being
+/// prepared and `total` counts every loaded wallet, including ones the pass
+/// skips at once (a locked password-protected wallet does no work at startup).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WalletLoadProgress {
+    pub current: u32,
+    pub total: u32,
+}
+
+/// Publishes [`WalletLoadProgress`] for one pass over the loaded wallets.
+///
+/// Dropping it withdraws the progress, so a pass that finishes, returns early
+/// or is cancelled can never leave a stale counter published.
+#[derive(Debug)]
+pub struct WalletLoadReporter<'a> {
+    status: &'a MigrationStatus,
+    current: u32,
+    total: u32,
+}
+
+impl WalletLoadReporter<'_> {
+    /// Announce that the next wallet is now being prepared.
+    pub fn advance(&mut self) {
+        self.current = self.current.saturating_add(1).min(self.total);
+        self.status
+            .wallet_load_progress
+            .store(Some(Arc::new(WalletLoadProgress {
+                current: self.current,
+                total: self.total,
+            })));
+    }
+}
+
+impl Drop for WalletLoadReporter<'_> {
+    fn drop(&mut self) {
+        self.status.wallet_load_progress.store(None);
     }
 }
 
@@ -230,6 +271,8 @@ impl MigrationState {
 #[derive(Debug)]
 pub struct MigrationStatus {
     state: ArcSwap<MigrationState>,
+    /// Published only while a [`WalletLoadReporter`] is alive.
+    wallet_load_progress: ArcSwapOption<WalletLoadProgress>,
     wallet_password_submitted: Notify,
     skipped_wallets: Mutex<BTreeSet<WalletSeedHash>>,
     seed_leases: Mutex<Vec<SecretLease>>,
@@ -240,6 +283,7 @@ impl MigrationStatus {
     pub fn new_idle() -> Self {
         Self {
             state: ArcSwap::from_pointee(MigrationState::Idle),
+            wallet_load_progress: ArcSwapOption::empty(),
             wallet_password_submitted: Notify::new(),
             skipped_wallets: Mutex::new(BTreeSet::new()),
             seed_leases: Mutex::new(Vec::new()),
@@ -290,6 +334,33 @@ impl MigrationStatus {
     /// allowed and cheap.
     pub fn set_state(&self, new_state: MigrationState) {
         self.state.store(Arc::new(new_state));
+    }
+
+    /// Which wallet the startup pass is preparing, while one is being prepared.
+    pub fn wallet_load_progress(&self) -> Option<WalletLoadProgress> {
+        self.wallet_load_progress.load().as_deref().copied()
+    }
+
+    /// Start reporting a pass over `total` loaded wallets.
+    ///
+    /// Returns `None` — and publishes nothing — unless the status is
+    /// [`MigrationStep::Wiring`] and there is at least one wallet: the pass also
+    /// runs later (after a storage update, after an unlock), where no surface
+    /// shows a wallet counter. Wiring is published only under the
+    /// storage-preparation gate, so at most one reporter is alive at a time.
+    pub fn begin_wallet_load(&self, total: usize) -> Option<WalletLoadReporter<'_>> {
+        let wiring = matches!(
+            *self.state.load().as_ref(),
+            MigrationState::Running {
+                step: MigrationStep::Wiring
+            }
+        );
+        let total = u32::try_from(total).unwrap_or(u32::MAX);
+        (wiring && total > 0).then(|| WalletLoadReporter {
+            status: self,
+            current: 0,
+            total,
+        })
     }
 
     /// Wait until the UI submits a migrated wallet's password.
@@ -388,6 +459,79 @@ mod tests {
         assert_eq!(*status.state(), MigrationState::Success);
         assert!(!status.state().is_executing());
         assert!(!status.state().is_in_progress());
+    }
+
+    fn wiring_status() -> MigrationStatus {
+        let status = MigrationStatus::new_idle();
+        status.set_state(MigrationState::Running {
+            step: MigrationStep::Wiring,
+        });
+        status
+    }
+
+    /// Nothing is published before the first wallet, each `advance` names the
+    /// next wallet of the same total, and the count never overruns the total.
+    #[test]
+    fn wallet_load_reporter_counts_each_wallet_of_the_total() {
+        let status = wiring_status();
+        let mut reporter = status.begin_wallet_load(3).expect("wiring reports wallets");
+        assert_eq!(status.wallet_load_progress(), None);
+
+        for current in 1..=3 {
+            reporter.advance();
+            assert_eq!(
+                status.wallet_load_progress(),
+                Some(WalletLoadProgress { current, total: 3 }),
+            );
+        }
+        reporter.advance();
+        assert_eq!(
+            status.wallet_load_progress(),
+            Some(WalletLoadProgress {
+                current: 3,
+                total: 3
+            }),
+        );
+    }
+
+    /// The end of the pass — however it ends — withdraws the counter.
+    #[test]
+    fn dropping_the_wallet_load_reporter_withdraws_the_progress() {
+        let status = wiring_status();
+        let mut reporter = status
+            .begin_wallet_load(12)
+            .expect("wiring reports wallets");
+        reporter.advance();
+        assert!(status.wallet_load_progress().is_some());
+
+        drop(reporter);
+        assert_eq!(status.wallet_load_progress(), None);
+    }
+
+    /// A profile with no wallets has nothing to count.
+    #[test]
+    fn no_wallet_load_is_reported_for_zero_wallets() {
+        assert!(wiring_status().begin_wallet_load(0).is_none());
+    }
+
+    /// The pass over the wallets also runs outside the opening step, where no
+    /// surface shows a wallet counter.
+    #[test]
+    fn wallet_load_is_reported_only_while_opening_storage() {
+        let status = MigrationStatus::new_idle();
+        assert!(status.begin_wallet_load(3).is_none(), "idle");
+
+        for step in MigrationStep::ALL
+            .into_iter()
+            .filter(|step| *step != MigrationStep::Wiring)
+        {
+            status.set_state(MigrationState::Running { step });
+            assert!(status.begin_wallet_load(3).is_none(), "{step:?}");
+        }
+        for terminal in [MigrationState::Ready, MigrationState::Success] {
+            status.set_state(terminal.clone());
+            assert!(status.begin_wallet_load(3).is_none(), "{terminal:?}");
+        }
     }
 
     /// `ALL` and `ordinal` must agree, or `ALL` silently loses a variant and the

@@ -3441,10 +3441,12 @@ impl App for AppState {
         // render, because the frame preparation completes on is the first frame
         // that may show a screen — building them later would flash the network
         // chooser (the only screen that exists until then) for one frame.
-        match self
-            .boot
-            .update(ctx, &active_context, migration_state.as_ref())
-        {
+        match self.boot.update(
+            ctx,
+            &active_context,
+            migration_state.as_ref(),
+            active_context.migration_status().wallet_load_progress(),
+        ) {
             Some(GateEvent::Prepared {
                 start_spv,
                 arm_spv_block,

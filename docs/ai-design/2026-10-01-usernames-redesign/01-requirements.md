@@ -161,7 +161,7 @@ Scope: identity-side usernames. Voting is Stream V in
   - Not synced: Pay disabled, tooltip `Available after sync finishes.`
 - **USR-FR-037** — On Pay, re-run the availability check. If it changed to
   Taken/Locked/JoinClosed, return to U4 with that row; nothing is spent.
-- **USR-FR-038** — Progress: UX-001 overlay `Registering @{name}.` `Keep Dash
+- **USR-FR-038** — Progress: blocking overlay `Registering @{name}.` `Keep Dash
   Evo Tool open until this finishes.` Results:
   - registered: `You're @{name}`;
   - request: `Your request for @{name} is in` + `If no one else asks and no one

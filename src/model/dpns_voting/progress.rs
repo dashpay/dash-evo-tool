@@ -2,8 +2,8 @@
 //! (VOTE-FR-083/084). Pure: callers pass journal operations and the clock.
 
 use super::{
-    DpnsVoteOperation, DpnsVoteOperationId, DpnsVoteOutcome, DpnsVoteTargetKey,
-    DpnsVoteTargetStatus, VoteTiming, dpns_schedule_is_overdue,
+    DpnsVoteOperation, DpnsVoteOperationId, DpnsVoteOutcome, DpnsVoteTargetStatus, VoteTiming,
+    dpns_schedule_is_overdue, dpns_vote_authority_rank,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -124,16 +124,29 @@ pub fn needs_attention(
     dismissed: &BTreeSet<DpnsVoteOperationId>,
     now_ms: u64,
 ) -> NeedsAttention {
-    let mut latest: BTreeMap<&DpnsVoteTargetKey, u64> = BTreeMap::new();
+    let mut latest = BTreeMap::new();
     for operation in operations {
         for outcome in &operation.targets {
-            let at = latest.entry(&outcome.target.key).or_default();
-            *at = (*at).max(operation.created_at);
+            let rank = dpns_vote_authority_rank(
+                operation.created_at,
+                outcome.operation_id,
+                outcome.status,
+            );
+            let current = latest.entry(&outcome.target.key).or_insert(rank);
+            *current = (*current).max(rank);
         }
     }
     let mut attention = NeedsAttention::default();
     for operation in operations {
         for outcome in &operation.targets {
+            let rank = dpns_vote_authority_rank(
+                operation.created_at,
+                outcome.operation_id,
+                outcome.status,
+            );
+            if latest.get(&outcome.target.key) != Some(&rank) {
+                continue;
+            }
             match (outcome.status, outcome.target.timing) {
                 (DpnsVoteTargetStatus::Unconfirmed, _) => attention.checking += 1,
                 (DpnsVoteTargetStatus::Scheduled, VoteTiming::Scheduled(at))
@@ -143,7 +156,6 @@ pub fn needs_attention(
                 }
                 _ if operation.created_at >= since_ms
                     && !dismissed.contains(&operation.id)
-                    && latest.get(&outcome.target.key) == Some(&operation.created_at)
                     && progress_phase(outcome) == Some(ProgressPhase::Failed) =>
                 {
                     attention.failed += 1;
@@ -293,5 +305,30 @@ mod tests {
         );
         let dismissed = BTreeSet::from([failed.id]);
         assert_eq!(needs_attention(&[failed], 0, &dismissed, 300).failed, 0);
+    }
+
+    #[test]
+    fn attention_uses_authority_for_equal_timestamps_and_lock_holders() {
+        let mut failed = operation(100, &[(S::Rejected, NOW)]);
+        failed.id = DpnsVoteOperationId([1; 16]);
+        failed.targets[0].operation_id = failed.id;
+        let mut confirmed = operation(100, &[(S::Confirmed, NOW)]);
+        confirmed.id = DpnsVoteOperationId([2; 16]);
+        confirmed.targets[0].operation_id = confirmed.id;
+        for operations in [
+            vec![failed.clone(), confirmed.clone()],
+            vec![confirmed, failed.clone()],
+        ] {
+            assert!(needs_attention(&operations, 0, &BTreeSet::new(), 300).is_empty());
+        }
+        let checking = operation(50, &[(S::Unconfirmed, NOW)]);
+        assert_eq!(
+            needs_attention(&[failed, checking], 0, &BTreeSet::new(), 300),
+            NeedsAttention {
+                checking: 1,
+                failed: 0,
+                missed_schedules: 0
+            }
+        );
     }
 }

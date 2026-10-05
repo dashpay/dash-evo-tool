@@ -49,7 +49,7 @@ Tools: DPNS removed.
   checks update per keystroke.
 - Disabled controls always carry a tooltip reason. View-only identity → `Add a
   key`. Not synced → `Available after sync finishes.`
-- Overlay only during registration (UX-001). Request-status refresh shows inline
+- Blocking progress overlay only during registration. Request-status refresh shows inline
   `Last updated {time}`, no overlay.
 - Outcome banners: once each, dismissible. Profile rows carry the state for
   30 days.

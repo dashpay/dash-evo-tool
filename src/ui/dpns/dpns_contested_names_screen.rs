@@ -77,7 +77,7 @@ const NO_OPEN_CONTESTS_MESSAGE: &str =
 const CANT_VOTE_REASON: &str = "None of the nodes you vote with has a voting key that is in the masternode list. Load a voting key or change the nodes you vote with.";
 const NO_VOTING_NODES_MESSAGE: &str = "No masternodes are loaded.";
 const NO_VOTING_NODES_DETAIL: &str = "Load a masternode with its voting key to cast votes.";
-const JOURNAL_UNAVAILABLE_MESSAGE: &str = "Saved voting progress could not be read. The displayed history may be incomplete or out of date. Retry loading before managing votes.";
+const JOURNAL_UNAVAILABLE_MESSAGE: &str = crate::ui::dpns::copy::JOURNAL_UNAVAILABLE_MESSAGE;
 const MISSED_SCHEDULE_GUIDANCE: &str = "The automatic voting time was missed. On the Scheduled tab, use Cast now to vote, Edit to reschedule, or Remove to cancel.";
 const SCHEDULE_IN_FUTURE_MESSAGE: &str =
     "Choose a future date and time before scheduling these votes.";
@@ -2658,6 +2658,7 @@ impl ScreenLike for DPNSScreen {
                 self.rebuild_scheduled_vote_rows();
             }
             BackendTaskSuccessResult::RefreshedDpnsContests => {
+                self.refresh();
                 self.refresh_banner.take_and_clear();
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
             }
@@ -2893,6 +2894,30 @@ mod tests {
             ContestedResourceTask::QueryDPNSContests,
         ));
         screen.display_backend_task_error(&context, &TaskError::DpnsCurrentVoteUnavailable);
+        assert!(screen.refreshing_status == RefreshingStatus::NotRefreshing);
+    }
+
+    #[test]
+    fn completed_contest_refresh_reloads_visible_contests_and_votes() {
+        let (mut screen, _dir) = voting_ui_review_fixture();
+        assert!(screen.active_contests.is_empty());
+        let voter = screen.voting_identities[0].identity.id();
+        let poll = screen.app_context.dpns_vote_poll_id("alpha").unwrap();
+        screen
+            .app_context
+            .insert_name_contests_as_normalized_names(vec!["alpha".into()])
+            .unwrap();
+        screen
+            .app_context
+            .cache_confirmed_dpns_vote(voter, poll, ResourceVoteChoice::Abstain)
+            .unwrap();
+        screen.refreshing_status = RefreshingStatus::Refreshing;
+        screen.display_task_result(BackendTaskSuccessResult::RefreshedDpnsContests);
+        assert!(!screen.active_contests.is_empty());
+        assert_eq!(
+            screen.vote_state.state(voter, poll),
+            DpnsCurrentVoteState::Available(Some(ResourceVoteChoice::Abstain))
+        );
         assert!(screen.refreshing_status == RefreshingStatus::NotRefreshing);
     }
 
@@ -3569,7 +3594,7 @@ mod tests {
         assert!(
             harness
                 .query_by_label(
-                    "Votes still being checked: 1. Failed votes: 0. Missed scheduled votes: 0."
+                    "Votes still being checked: 1. Do not submit the pending votes again."
                 )
                 .is_some()
         );
@@ -3640,7 +3665,7 @@ mod tests {
                     });
                 });
             harness.run();
-            let message = "Saved voting progress could not be read. The displayed history may be incomplete or out of date. Retry loading before managing votes.";
+            let message = "Saved voting progress could not be read. The displayed history may be incomplete or out of date. Do not submit votes again until you have retried loading and checked their status.";
             assert!(harness.query_by_label(message).is_some());
             screen
                 .lock_recover()
@@ -4465,7 +4490,7 @@ mod tests {
         first.voter_alias = Some("node-one".to_owned());
         let mut second = first.clone();
         second.key.voter_id = Identifier::from([2; 32]);
-        second.voter_alias = Some("node-two".to_owned());
+        second.voter_alias = None;
         let mut third = first.clone();
         third.key.voter_id = Identifier::from([3; 32]);
         third.voter_alias = Some("node-three".to_owned());
@@ -4490,7 +4515,7 @@ mod tests {
             "Casting 3 votes · 2 done · 0 sending · 1 being checked",
             "node-one · alpha.dash · Abstain",
             "Confirmed",
-            "node-two · alpha.dash · Abstain",
+            "02020…202 · alpha.dash · Abstain",
             "Rejected",
             "Review again",
             "Still being checked. Do not submit it again.",

@@ -20,7 +20,6 @@ use crate::context::connection_status::{ConnectionStatus, OverallConnectionState
 use crate::context::feature_gate::FeatureGate;
 use crate::context::migration_status::{MigrationState, MigrationStep};
 use crate::database::Database;
-use crate::model::dpns_voting::{DpnsScheduledVoteClearDisposition, DpnsScheduledVoteClearOutcome};
 use crate::model::settings::AppSettings;
 use crate::model::wallet::{TransactionConfirmation, TransactionStatus};
 use crate::ui::components::passphrase_modal;
@@ -28,6 +27,7 @@ use crate::ui::components::secret_prompt_host::{ActivePrompt, EguiSecretPromptHo
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ProgressOverlay};
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
 use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen, ProfileSearchScreen};
+use crate::ui::dpns::copy::scheduled_vote_clear_feedback;
 use crate::ui::identity::identity_pill::shorten_id;
 use crate::ui::network_chooser_screen::{NetworkChooserScreen, chooser_network_label};
 use crate::ui::theme::ThemeMode;
@@ -326,42 +326,6 @@ fn clear_confirmed_vote_recovery_cutoff(
     } else {
         false
     }
-}
-
-fn scheduled_vote_clear_feedback(
-    outcomes: &[DpnsScheduledVoteClearOutcome],
-) -> (String, MessageType) {
-    let cleared = outcomes
-        .iter()
-        .filter(|outcome| outcome.disposition == DpnsScheduledVoteClearDisposition::Cleared)
-        .count();
-    let in_flight = outcomes.len().saturating_sub(cleared);
-    let cleared_message = match cleared {
-        0 => "No scheduled votes were removed.".to_owned(),
-        1 => "1 scheduled vote was removed.".to_owned(),
-        count => format!("{count} scheduled votes were removed."),
-    };
-    if in_flight == 0 {
-        let message_type = if cleared == 0 {
-            MessageType::Info
-        } else {
-            MessageType::Success
-        };
-        return (cleared_message, message_type);
-    }
-    let retained_message = match in_flight {
-        1 => {
-            "1 vote already in progress remains listed. Wait for it to finish before trying again."
-                .to_owned()
-        }
-        count => format!(
-            "{count} votes already in progress remain listed. Wait for them to finish before trying again."
-        ),
-    };
-    (
-        format!("{cleared_message} {retained_message}"),
-        MessageType::Info,
-    )
 }
 
 /// Action id for the SPV-sync block's "Cancel" button.
@@ -2698,9 +2662,6 @@ impl AppState {
         {
             let votes = masternodes.votes_mut();
             votes.display_backend_task_result(context, result.clone());
-            if matches!(result, BackendTaskSuccessResult::RefreshedDpnsContests) {
-                votes.refresh();
-            }
         }
     }
 
@@ -4796,15 +4757,29 @@ mod dpns_result_routing_tests {
         assert_eq!(
             scheduled_vote_clear_feedback(&outcomes),
             (
-                "1 scheduled vote was removed. 2 votes already in progress remain listed. Wait for them to finish before trying again.".to_owned(),
+                "Scheduled votes removed: 1. Votes already in progress: 2. Wait for voting to finish before trying again.".to_owned(),
                 MessageType::Info,
             )
         );
         assert_eq!(
             scheduled_vote_clear_feedback(&outcomes[..1]),
             (
-                "1 scheduled vote was removed.".to_owned(),
+                "Scheduled votes removed: 1.".to_owned(),
                 MessageType::Success,
+            )
+        );
+        assert_eq!(
+            scheduled_vote_clear_feedback(&outcomes[1..]),
+            (
+                "No scheduled votes were removed. Votes already in progress: 2. Wait for voting to finish before trying again.".to_owned(),
+                MessageType::Info,
+            )
+        );
+        assert_eq!(
+            scheduled_vote_clear_feedback(&[]),
+            (
+                "No scheduled votes were removed.".to_owned(),
+                MessageType::Info
             )
         );
     }

@@ -33,7 +33,6 @@ use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel_with_global_nav_capturing;
 use crate::ui::dpns::VotesView;
 use crate::ui::dpns::dpns_contested_names_screen::DPNSScreen;
-use crate::ui::identity::identity_pill::shorten_id;
 use crate::ui::identity::picker::compute_column_count;
 use crate::ui::masternodes::card::{MasternodeCard, card_heading};
 use crate::ui::masternodes::detail_screen::{DetailOutcome, MasternodeDetailView};
@@ -254,7 +253,7 @@ impl MasternodesScreen {
             .into_iter()
             .map(|qi| {
                 let node_id = qi.identity.id();
-                let node_id_short = shorten_id(&node_id.to_string(Encoding::Hex));
+                let node_id_short = crate::model::identity_name::masternode_label(node_id, None);
                 let has_voter_id = qi.associated_voter_identity.is_some();
                 let contest_summary = if has_voter_id {
                     summaries
@@ -1096,7 +1095,8 @@ mod tests {
         seed_masternode(&ctx, 0x22, Some("alpha"));
         seed_masternode(&ctx, 0x44, None);
 
-        let fallback_heading = shorten_id(&Identifier::from([0x44; 32]).to_string(Encoding::Hex));
+        let fallback_heading =
+            crate::model::identity_name::masternode_label(Identifier::from([0x44; 32]), None);
         let screen = MasternodesScreen::new(&ctx);
 
         assert_eq!(

@@ -656,8 +656,6 @@ impl AppContext {
                     }
                 }
             }
-            // TODO(#889 review): reject resident plaintext left by an incomplete
-            // legacy migration before sealing around it (as the protect path does).
             self.seal_merged_plaintext_keys(qi, password)?;
         }
         let wallet_info = qi
@@ -2672,6 +2670,88 @@ mod tests {
         );
 
         backend.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn protected_merge_seals_resident_plaintext_alongside_new_key() {
+        use crate::wallet_backend::secret_prompt::test_support::{ScriptedAnswer, TestPrompt};
+        const PW: &str = "synthetic-resident-merge-password";
+        for always_clear in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let ctx = open_import_context(
+                dir.path(),
+                Some(Arc::new(TestPrompt::new([ScriptedAnswer::once(PW)]))),
+            )
+            .await;
+            let (qi, _) = masternode_shaped_qi();
+            let id = qi.identity.id();
+            ctx.insert_local_qualified_identity(&qi, &None).unwrap();
+            ctx.protect_identity_keys(id, Secret::new(PW), None)
+                .unwrap();
+            let mut resident = ctx.get_local_qualified_identity(&id).unwrap().unwrap();
+            let mut incoming = resident.clone();
+            let pv = PlatformVersion::latest();
+            let resident_key = IdentityPublicKey::random_key(10, Some(10), pv);
+            let new_key = IdentityPublicKey::random_key(11, Some(11), pv);
+            let resident_bytes = zeroize::Zeroizing::new(rand::random::<[u8; 32]>());
+            let new_bytes = zeroize::Zeroizing::new(rand::random::<[u8; 32]>());
+            // An incomplete migration can leave a resident key absent from the vault.
+            resident.private_keys.insert_at(
+                (V, 10),
+                (
+                    QualifiedIdentityPublicKey::from(resident_key),
+                    if always_clear {
+                        PrivateKeyData::AlwaysClear(*resident_bytes)
+                    } else {
+                        PrivateKeyData::Clear(*resident_bytes)
+                    },
+                ),
+            );
+            incoming.private_keys.insert_at(
+                (V, 11),
+                (
+                    QualifiedIdentityPublicKey::from(new_key),
+                    PrivateKeyData::Clear(*new_bytes),
+                ),
+            );
+            let backend = ctx.wallet_backend().unwrap();
+            let scope = ctx
+                .protected_identity_verify_scope(&incoming)
+                .unwrap()
+                .unwrap();
+            let verified = backend
+                .secret_access()
+                .verify_identity_object_password(&scope)
+                .await
+                .unwrap();
+            {
+                let lock = ctx.identity_record_lock(id);
+                let _guard = lock.lock().unwrap();
+                ctx.persist_merged_identity_locked(
+                    &mut incoming,
+                    Some(resident),
+                    Some(&verified),
+                    IdentityRecordWrite::UpdateListed,
+                )
+                .unwrap();
+            }
+            let reread = ctx.get_local_qualified_identity(&id).unwrap().unwrap();
+            assert!(!reread.private_keys.has_plaintext_for_vault());
+            let view = IdentityKeyView::new(backend.secret_store(), id.to_buffer());
+            for (key_id, expected) in [(10, &resident_bytes), (11, &new_bytes)] {
+                assert!(matches!(
+                    reread.private_keys.entry_at(&(V, key_id)),
+                    Some((_, PrivateKeyData::InVault))
+                ));
+                assert_eq!(view.scheme(&V, key_id).unwrap(), SecretScheme::Protected);
+                let actual = view
+                    .get_protected(&V, key_id, &SecretString::new(PW))
+                    .unwrap()
+                    .unwrap();
+                assert!(actual.as_slice() == expected.as_slice());
+            }
+            backend.shutdown().await;
+        }
     }
 
     /// Merge×Tier-2 with a stored legacy `Encrypted` key: sealing skips that key

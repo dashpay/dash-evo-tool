@@ -110,11 +110,17 @@ pub fn changed_vote_count(card: &VoteCard, choice: ResourceVoteChoice) -> usize 
 
 /// Display label for a node: its alias, else a short identifier.
 pub fn node_label(node: Identifier, labels: &BTreeMap<Identifier, String>) -> String {
-    labels.get(&node).cloned().unwrap_or_else(|| {
-        let encoded =
-            node.to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
-        crate::model::identity_name::shorten_id(&encoded)
-    })
+    crate::model::identity_name::masternode_label(node, labels.get(&node).map(String::as_str))
+}
+
+#[test]
+fn node_labels_match_the_hex_pro_tx_hash_and_preserve_aliases() {
+    let node = Identifier::from([0xab; 32]);
+    assert_eq!(node_label(node, &BTreeMap::new()), "ababa…bab");
+    assert_eq!(
+        node_label(node, &BTreeMap::from([(node, "My node".into())])),
+        "My node"
+    );
 }
 
 fn utc_label(ms: u64) -> String {

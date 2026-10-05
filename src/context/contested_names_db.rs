@@ -13,8 +13,8 @@ use crate::model::contested_name::{
 };
 use crate::model::dpns_usernames::{SeenMarkAttempts, UsernameRequest};
 use crate::model::dpns_voting::{
-    DpnsCurrentVoteState, DpnsVoteOperation, DpnsVoteOperationId, DpnsVoteTargetKey,
-    DpnsVoteTargetStatus, VoteTiming, dpns_vote_authority_rank,
+    DpnsCurrentVoteState, DpnsVoteOperation, DpnsVoteOperationId, DpnsVoteTargetKey, VoteTiming,
+    dpns_vote_authority_rank,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::utils::time::now_ms;
@@ -77,10 +77,8 @@ fn scheduled_vote_journal_summary(
         .values()
         .any(|(_, outcome)| outcome.status.holds_lock());
     let failed = authoritative_by_target.values().any(|(_, outcome)| {
-        matches!(
-            outcome.status,
-            DpnsVoteTargetStatus::Rejected | DpnsVoteTargetStatus::FailedBeforeSubmission
-        ) && !dismissed.contains(&(outcome.operation_id, outcome.target.key.clone()))
+        outcome.status.is_reviewable_failure()
+            && !dismissed.contains(&(outcome.operation_id, outcome.target.key.clone()))
     });
     (pending, failed)
 }
@@ -878,6 +876,7 @@ mod tests {
     use super::*;
     use crate::context::test_support::test_app_context;
     use crate::model::dpns_usernames::RequestPhase;
+    use crate::model::dpns_voting::DpnsVoteTargetStatus;
     use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
     use crate::model::qualified_identity::{
         DPNSNameInfo, IdentityStatus, IdentityType, QualifiedIdentity,
@@ -1260,12 +1259,32 @@ mod tests {
                 timing: VoteTiming::Scheduled(42),
             },
         ]);
-        operation.targets[0].status = DpnsVoteTargetStatus::FailedBeforeSubmission;
-
-        assert_eq!(
-            scheduled_vote_journal_summary(&[operation], voter_id, &BTreeSet::new()),
-            (false, true)
-        );
+        for status in [
+            DpnsVoteTargetStatus::FailedBeforeSubmission,
+            DpnsVoteTargetStatus::Rejected,
+            DpnsVoteTargetStatus::NotApplied,
+        ] {
+            operation.targets[0].status = status;
+            assert_eq!(
+                scheduled_vote_journal_summary(
+                    std::slice::from_ref(&operation),
+                    voter_id,
+                    &BTreeSet::new()
+                ),
+                (false, true),
+                "{status:?} must remain actionable"
+            );
+            let dismissed =
+                BTreeSet::from([(operation.id, operation.targets[0].target.key.clone())]);
+            assert_eq!(
+                scheduled_vote_journal_summary(
+                    std::slice::from_ref(&operation),
+                    voter_id,
+                    &dismissed
+                ),
+                (false, false)
+            );
+        }
     }
 
     #[test]

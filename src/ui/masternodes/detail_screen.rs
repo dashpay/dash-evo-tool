@@ -213,7 +213,8 @@ impl MasternodeDetailView {
 
     pub fn new(app_context: &Arc<AppContext>, identity: QualifiedIdentity) -> Self {
         let node_id_hex_full = identity.identity.id().to_string(Encoding::Hex);
-        let node_id_short = shorten_id(&node_id_hex_full);
+        let node_id_short =
+            crate::model::identity_name::masternode_label(identity.identity.id(), None);
         let key_presence = identity.masternode_key_presence();
         let identity_id = identity.identity.id();
         let recovery = LegacyRecoveryState::new(app_context, identity.identity.id());

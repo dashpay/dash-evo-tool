@@ -12,7 +12,6 @@ use crate::model::dpns_voting::{DpnsVoteFailure, DpnsVoteOutcome, DpnsVoteTarget
 use crate::ui::RootScreenType;
 use crate::ui::dpns::copy::{drawer_header, progress_row_status};
 use crate::ui::theme::DashColors;
-use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::platform::Identifier;
 use eframe::egui::{self, Align2, Id, RichText, Sense, Ui};
@@ -175,12 +174,10 @@ pub fn show(ctx: &egui::Context, app_context: &AppContext, state: &mut DrawerSta
                             .filter(|outcome| progress_phase(outcome).is_some())
                         {
                             ui.horizontal_wrapped(|ui| {
-                                let node =
-                                    outcome.target.voter_alias.clone().unwrap_or_else(|| {
-                                        let encoded =
-                                            outcome.target.key.voter_id.to_string(Encoding::Base58);
-                                        crate::model::identity_name::shorten_id(&encoded)
-                                    });
+                                let node = crate::model::identity_name::masternode_label(
+                                    outcome.target.key.voter_id,
+                                    outcome.target.voter_alias.as_deref(),
+                                );
                                 ui.label(format!(
                                     "{node} · {name}.dash · {choice}",
                                     name = outcome.target.contested_name,

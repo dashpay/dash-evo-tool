@@ -5,9 +5,48 @@
 use crate::model::dpns_voting::composer::SkipReason;
 use crate::model::dpns_voting::operator::{ChangesLeft, NodeExclusion, TimeLeft};
 use crate::model::dpns_voting::progress::{NeedsAttention, ProgressCounts};
-use crate::model::dpns_voting::{DpnsVoteFailure, DpnsVoteOperation, DpnsVoteTargetStatus};
+use crate::model::dpns_voting::{
+    DpnsScheduledVoteClearDisposition, DpnsScheduledVoteClearOutcome, DpnsVoteFailure,
+    DpnsVoteOperation, DpnsVoteTargetStatus,
+};
 use crate::ui::MessageType;
 use std::collections::BTreeSet;
+
+/// Recovery guidance while saved voting progress is unreadable.
+pub const JOURNAL_UNAVAILABLE_MESSAGE: &str = "Saved voting progress could not be read. The displayed history may be incomplete or out of date. Do not submit votes again until you have retried loading and checked their status.";
+
+/// Feedback for removing scheduled votes, including votes already in progress.
+pub fn scheduled_vote_clear_feedback(
+    outcomes: &[DpnsScheduledVoteClearOutcome],
+) -> (String, MessageType) {
+    let cleared = outcomes
+        .iter()
+        .filter(|outcome| outcome.disposition == DpnsScheduledVoteClearDisposition::Cleared)
+        .count();
+    let in_flight = outcomes.len().saturating_sub(cleared);
+    match (cleared, in_flight) {
+        (0, 0) => (
+            "No scheduled votes were removed.".to_owned(),
+            MessageType::Info,
+        ),
+        (cleared, 0) => (
+            format!("Scheduled votes removed: {cleared}."),
+            MessageType::Success,
+        ),
+        (0, in_flight) => (
+            format!(
+                "No scheduled votes were removed. Votes already in progress: {in_flight}. Wait for voting to finish before trying again."
+            ),
+            MessageType::Info,
+        ),
+        (cleared, in_flight) => (
+            format!(
+                "Scheduled votes removed: {cleared}. Votes already in progress: {in_flight}. Wait for voting to finish before trying again."
+            ),
+            MessageType::Info,
+        ),
+    }
+}
 
 /// Candidate choice with an identity handle, including when its name is unavailable.
 pub fn vote_choice_label(
@@ -298,9 +337,26 @@ pub fn needs_attention_line(attention: NeedsAttention) -> String {
         failed,
         missed_schedules,
     } = attention;
-    format!(
-        "Votes still being checked: {checking}. Failed votes: {failed}. Missed scheduled votes: {missed_schedules}."
-    )
+    match (checking > 0, failed > 0, missed_schedules > 0) {
+        (true, true, true) => format!(
+            "Votes still being checked: {checking}. Failed votes: {failed}. Missed scheduled votes: {missed_schedules}. Do not submit the pending votes again."
+        ),
+        (true, true, false) => format!(
+            "Votes still being checked: {checking}. Failed votes: {failed}. Do not submit the pending votes again."
+        ),
+        (true, false, true) => format!(
+            "Votes still being checked: {checking}. Missed scheduled votes: {missed_schedules}. Do not submit the pending votes again."
+        ),
+        (true, false, false) => {
+            format!("Votes still being checked: {checking}. Do not submit the pending votes again.")
+        }
+        (false, true, true) => {
+            format!("Failed votes: {failed}. Missed scheduled votes: {missed_schedules}.")
+        }
+        (false, true, false) => format!("Failed votes: {failed}."),
+        (false, false, true) => format!("Missed scheduled votes: {missed_schedules}."),
+        (false, false, false) => String::new(),
+    }
 }
 
 /// One part of the History `Your nodes voted` cell, e.g.
@@ -470,7 +526,8 @@ pub fn changes_left_label(changes: ChangesLeft) -> String {
     match changes {
         ChangesLeft::Known(left) => format!("{left} of 4 changes left, counted on this device"),
         ChangesLeft::Unknown => {
-            "Changes left unknown. This node voted outside Dash Evo Tool.".to_owned()
+            "Changes left unknown. This device has no record of this node's earlier votes."
+                .to_owned()
         }
     }
 }
@@ -775,7 +832,7 @@ mod tests {
         );
         assert_eq!(
             changes_left_label(ChangesLeft::Unknown),
-            "Changes left unknown. This node voted outside Dash Evo Tool."
+            "Changes left unknown. This device has no record of this node's earlier votes."
         );
     }
 
@@ -815,8 +872,29 @@ mod tests {
                 failed: 0,
                 missed_schedules: 2,
             }),
-            "Votes still being checked: 1. Failed votes: 0. Missed scheduled votes: 2."
+            "Votes still being checked: 1. Missed scheduled votes: 2. Do not submit the pending votes again."
         );
+    }
+
+    #[test]
+    fn attention_copy_omits_zero_counts_and_warns_about_pending_votes() {
+        for checking in 0..=1 {
+            for failed in 0..=1 {
+                for missed_schedules in 0..=1 {
+                    let message = needs_attention_line(NeedsAttention {
+                        checking,
+                        failed,
+                        missed_schedules,
+                    });
+                    assert!(!message.contains(": 0."));
+                    assert_eq!(message.contains("Do not submit"), checking > 0);
+                    assert_eq!(
+                        message.is_empty(),
+                        checking + failed + missed_schedules == 0
+                    );
+                }
+            }
+        }
     }
 
     #[test]

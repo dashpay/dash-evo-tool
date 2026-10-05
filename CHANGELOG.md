@@ -159,6 +159,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   refresh every 30 minutes on Mainnet and every 3 minutes on other networks.
   Review shows each node's current and requested choice and remaining vote
   changes, or Unknown when the local history cannot establish the count.
+  Refresh updates the visible contests and vote state. Unnamed nodes use the
+  same shortened ProTxHash throughout voting and progress views. Attention
+  summaries reflect authoritative vote outcomes and warn against resubmitting
+  votes whose results are still uncertain.
   Cast now, choose a UTC time, or schedule shortly before voting ends.
   A progress drawer lets you keep working while votes are sent.
   Uncertain results stay visible and blocked from repeat submission.

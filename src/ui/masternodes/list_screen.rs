@@ -178,8 +178,10 @@ impl MasternodesScreen {
 
     /// Show `segment` and remember it as the last-used one on this network.
     pub fn select_segment(&mut self, segment: MasternodesSegment) {
-        self.votes_arrival_refresh |=
-            segment == MasternodesSegment::Votes && self.segment != segment;
+        if segment == MasternodesSegment::Votes && self.segment != segment {
+            self.votes.refresh_on_arrival();
+            self.votes_arrival_refresh = true;
+        }
         if segment != self.segment {
             self.votes.release_list_focus();
         }

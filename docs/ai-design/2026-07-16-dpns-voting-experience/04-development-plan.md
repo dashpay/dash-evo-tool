@@ -106,10 +106,10 @@ If voting has ended, mark it `FailedBeforeSubmission(VotingEnded)`.
 
 The journal stores no transition hash. Reconciliation uses a proved
 per-identity range query starting at the exact poll ID (#4138 workaround).
-An exact choice match confirms the vote. A proved closed contest with no match
-marks it NotApplied; while the contest can still accept votes, a missing or
-different choice remains Unconfirmed. Transition-based recovery is a future
-integration tracked by dashpay/platform#4137.
+An exact choice match confirms the vote. A missing or different choice remains
+Unconfirmed, including after closure: Platform removes per-voter references when
+resolving contests, so their absence cannot establish whether a vote was counted.
+Transition-based recovery is a future integration tracked by dashpay/platform#4137.
 
 ## Scheduling (built in #901)
 

@@ -7,7 +7,7 @@ use crate::backend_task::contested_names::ScheduledDPNSVote;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::dpns_voting::{
-    DpnsVoteFailure, DpnsVoteOperation, DpnsVoteOperationId, DpnsVoteTargetKey,
+    DpnsVoteFailure, DpnsVoteOperation, DpnsVoteOperationId, DpnsVoteOutcome, DpnsVoteTargetKey,
     DpnsVoteTargetStatus, VoteTiming, authoritative_dpns_vote_outcomes,
 };
 
@@ -61,6 +61,7 @@ pub(crate) fn group_scheduled_rows(rows: Vec<ScheduledDpnsVoteRow>) -> Vec<Sched
 #[derive(Debug, Clone, Default)]
 pub struct DpnsVoteOperationSnapshot {
     operations: Vec<DpnsVoteOperation>,
+    published: Option<Arc<[DpnsVoteOperation]>>,
     dismissed_schedules: BTreeSet<(DpnsVoteOperationId, DpnsVoteTargetKey)>,
     target_statuses: BTreeMap<DpnsVoteTargetKey, DpnsVoteTargetStatus>,
     loaded: bool,
@@ -90,6 +91,44 @@ impl DpnsVoteOperationSnapshot {
         self.dismissed_schedules = dismissals;
         self.read_error = None;
         Ok(())
+    }
+
+    /// Adopt backend progress without reading storage on a render frame.
+    pub(crate) fn sync_progress(
+        &mut self,
+        app_context: &AppContext,
+    ) -> Option<Vec<DpnsVoteOutcome>> {
+        let published = app_context.dpns_vote_progress();
+        if self
+            .published
+            .as_ref()
+            .is_some_and(|previous| Arc::ptr_eq(previous, &published))
+        {
+            return None;
+        }
+        let previous: BTreeMap<_, _> = self
+            .operations
+            .iter()
+            .flat_map(|operation| {
+                operation
+                    .targets
+                    .iter()
+                    .map(move |outcome| ((operation.id, &outcome.target.key), outcome))
+            })
+            .collect();
+        let changed = published
+            .iter()
+            .flat_map(|operation| operation.targets.iter())
+            .filter(|outcome| {
+                previous
+                    .get(&(outcome.operation_id, &outcome.target.key))
+                    .is_none_or(|old| **old != **outcome)
+            })
+            .cloned()
+            .collect();
+        self.replace(published.to_vec());
+        self.published = Some(published);
+        Some(changed)
     }
 
     pub(crate) fn read_error(&self) -> Option<&Arc<TaskError>> {
@@ -159,6 +198,35 @@ mod tests {
     use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
     use dash_sdk::platform::Identifier;
+
+    #[test]
+    fn screen_adopts_live_progress_without_reading_storage() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let store = Arc::new(crate::wallet_backend::kv_test_support::FailingKv::default());
+        ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(store.clone()));
+        let mut snapshot = DpnsVoteOperationSnapshot::load(&ctx);
+        let mut operation = operation(DpnsVoteTargetStatus::Queued);
+        let key = operation.targets[0].target.key.clone();
+        ctx.insert_dpns_vote_operation(&mut operation, None)
+            .unwrap();
+        store.fail_all_reads(true);
+        assert!(snapshot.sync_progress(&ctx).is_some());
+        assert_eq!(
+            snapshot.target_status(&key),
+            Some(DpnsVoteTargetStatus::Queued)
+        );
+        assert!(snapshot.sync_progress(&ctx).is_none());
+        store.fail_all_reads(false);
+        ctx.claim_dpns_vote_target(operation.id, &key).unwrap();
+        store.fail_all_reads(true);
+        assert!(snapshot.sync_progress(&ctx).is_some());
+        assert_eq!(
+            snapshot.target_status(&key),
+            Some(DpnsVoteTargetStatus::Submitting)
+        );
+        assert!(snapshot.read_error().is_none());
+    }
 
     #[test]
     fn voting_ui_dismissed_terminal_row_preserves_siblings() {

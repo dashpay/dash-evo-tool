@@ -458,6 +458,38 @@ impl AppContext {
         Ok((guard, self.det_kv()?))
     }
 
+    /// Serialize a journal mutation and publish its durable result before releasing the guard.
+    fn mutate_dpns_vote_operation<T>(
+        &self,
+        operation_id: DpnsVoteOperationId,
+        mutate: impl FnOnce(&DetKv) -> Result<T, TaskError>,
+    ) -> Result<T, TaskError> {
+        let (_guard, kv) = self.journal()?;
+        let result = mutate(&kv);
+        // A write can fail after the record commits but before index maintenance finishes.
+        match load_operation(&kv, &operation_key(self.network, operation_id)) {
+            Ok(Some(operation)) => {
+                let mut progress = self
+                    .dpns_vote_progress
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some(index) = progress.iter().position(|old| old.id == operation.id) {
+                    if progress[index] != operation {
+                        Arc::make_mut(&mut progress)[index] = operation;
+                    }
+                } else {
+                    let mut operations = progress.to_vec();
+                    operations.push(operation);
+                    *progress = operations.into();
+                }
+                self.egui_ctx().request_repaint();
+            }
+            Ok(None) => {}
+            Err(error) => tracing::warn!(?error, "Could not publish durable vote progress"),
+        }
+        result
+    }
+
     /// Read the exact unstarted target selected by an optimistic schedule edit.
     pub(crate) fn scheduled_dpns_vote_edit_target(
         &self,
@@ -501,8 +533,9 @@ impl AppContext {
         operation_id: DpnsVoteOperationId,
         key: &DpnsVoteTargetKey,
     ) -> Result<bool, TaskError> {
-        let _guard = self.journal_guard();
-        transition_scheduled_target_to_queued(&self.det_kv()?, self.network, operation_id, key)
+        self.mutate_dpns_vote_operation(operation_id, |kv| {
+            transition_scheduled_target_to_queued(kv, self.network, operation_id, key)
+        })
     }
 
     /// Persist a reviewed operation and atomically acquire all unresolved locks.
@@ -511,18 +544,25 @@ impl AppContext {
         operation: &mut DpnsVoteOperation,
         replacing_scheduled_key: Option<&DpnsVoteTargetKey>,
     ) -> Result<(), TaskError> {
-        if operation
-            .targets
-            .iter()
-            .any(|outcome| outcome.target.key.network != self.network)
-        {
-            return Err(TaskError::DpnsVoteTargetBusy);
-        }
-        let (_guard, kv) = self.journal()?;
-        if let Some(key) = replacing_scheduled_key {
-            return replace_scheduled_operation(&kv, self.network, operation, key);
-        }
-        persist_operation(&kv, self.network, operation)
+        self.mutate_dpns_vote_operation(operation.id, |kv| {
+            if operation
+                .targets
+                .iter()
+                .any(|outcome| outcome.target.key.network != self.network)
+            {
+                return Err(TaskError::DpnsVoteTargetBusy);
+            }
+            if let Some(key) = replacing_scheduled_key {
+                replace_scheduled_operation(kv, self.network, operation, key)?;
+                *self
+                    .dpns_vote_progress
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    load_operations_read_only(kv, self.network)?.into();
+                return Ok(());
+            }
+            persist_operation(kv, self.network, operation)
+        })
     }
 
     /// Persist updated target statuses while retaining the original operation ID.
@@ -530,8 +570,9 @@ impl AppContext {
         &self,
         operation: &DpnsVoteOperation,
     ) -> Result<(), TaskError> {
-        let _guard = self.journal_guard();
-        persist_operation(&self.det_kv()?, self.network, operation)
+        self.mutate_dpns_vote_operation(operation.id, |kv| {
+            persist_operation(kv, self.network, operation)
+        })
     }
 
     /// Load every operation for this network, including completed history.
@@ -547,7 +588,12 @@ impl AppContext {
         {
             rebuild_lock_index(&kv, self.network)?;
         }
-        load_operations_read_only(&kv, self.network)
+        let operations = load_operations_read_only(&kv, self.network)?;
+        *self
+            .dpns_vote_progress
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::from(operations.as_slice());
+        Ok(operations)
     }
 
     /// Read dismissed schedule rows without changing their recorded vote outcomes.
@@ -627,19 +673,20 @@ impl AppContext {
         status: DpnsVoteTargetStatus,
         failure: Option<DpnsVoteFailure>,
     ) -> Result<(), TaskError> {
-        let (_guard, kv) = self.journal()?;
-        with_target(&kv, self.network, operation_id, key, |outcome| {
-            if outcome.status == DpnsVoteTargetStatus::Cancelled {
-                return TargetUpdate::Skip(());
-            }
-            outcome.status = status;
-            if status == DpnsVoteTargetStatus::Unconfirmed {
-                outcome.target.current_choice = None;
-            }
-            outcome.failure = failure;
-            TargetUpdate::Persist(())
-        })?;
-        Ok(())
+        self.mutate_dpns_vote_operation(operation_id, |kv| {
+            with_target(kv, self.network, operation_id, key, |outcome| {
+                if outcome.status == DpnsVoteTargetStatus::Cancelled {
+                    return TargetUpdate::Skip(());
+                }
+                outcome.status = status;
+                if status == DpnsVoteTargetStatus::Unconfirmed {
+                    outcome.target.current_choice = None;
+                }
+                outcome.failure = failure;
+                TargetUpdate::Persist(())
+            })?;
+            Ok(())
+        })
     }
 
     /// Atomically persist one corroborated reconciliation observation.
@@ -655,9 +702,8 @@ impl AppContext {
         observed_choice: Option<ResourceVoteChoice>,
         status: DpnsVoteTargetStatus,
     ) -> Result<bool, TaskError> {
-        let (_guard, kv) = self.journal()?;
-        Ok(
-            with_target(&kv, self.network, operation_id, key, |outcome| {
+        self.mutate_dpns_vote_operation(operation_id, |kv| {
+            Ok(with_target(kv, self.network, operation_id, key, |outcome| {
                 if outcome.status != DpnsVoteTargetStatus::Unconfirmed
                     || outcome.target.current_choice != expected_current_choice
                 {
@@ -672,8 +718,8 @@ impl AppContext {
                     .then_some(DpnsVoteFailure::ResultUnconfirmed);
                 TargetUpdate::Persist(true)
             })?
-            .unwrap_or(false),
-        )
+            .unwrap_or(false))
+        })
     }
 
     /// Atomically claim a queued target before any network or nonce work.
@@ -682,9 +728,8 @@ impl AppContext {
         operation_id: DpnsVoteOperationId,
         key: &DpnsVoteTargetKey,
     ) -> Result<bool, TaskError> {
-        let (_guard, kv) = self.journal()?;
-        Ok(
-            with_target(&kv, self.network, operation_id, key, |outcome| {
+        self.mutate_dpns_vote_operation(operation_id, |kv| {
+            Ok(with_target(kv, self.network, operation_id, key, |outcome| {
                 if outcome.status != DpnsVoteTargetStatus::Queued {
                     return TargetUpdate::Skip(false);
                 }
@@ -692,8 +737,8 @@ impl AppContext {
                 outcome.failure = None;
                 TargetUpdate::Persist(true)
             })?
-            .unwrap_or(false),
-        )
+            .unwrap_or(false))
+        })
     }
 
     /// Record that a target is entering the ambiguous broadcast phase.
@@ -702,8 +747,9 @@ impl AppContext {
         operation_id: DpnsVoteOperationId,
         key: &DpnsVoteTargetKey,
     ) -> Result<bool, TaskError> {
-        let _guard = self.journal_guard();
-        mark_target_broadcast(&self.det_kv()?, self.network, operation_id, key)
+        self.mutate_dpns_vote_operation(operation_id, |kv| {
+            mark_target_broadcast(kv, self.network, operation_id, key)
+        })
     }
 
     /// Apply fresh proved state only while the target is still queued.
@@ -716,9 +762,8 @@ impl AppContext {
         key: &DpnsVoteTargetKey,
         state: DpnsCurrentVoteState,
     ) -> Result<bool, TaskError> {
-        let (_guard, kv) = self.journal()?;
-        Ok(
-            with_target(&kv, self.network, operation_id, key, |outcome| {
+        self.mutate_dpns_vote_operation(operation_id, |kv| {
+            Ok(with_target(kv, self.network, operation_id, key, |outcome| {
                 if outcome.status != DpnsVoteTargetStatus::Queued {
                     return TargetUpdate::Skip(false);
                 }
@@ -737,8 +782,8 @@ impl AppContext {
                 }
                 TargetUpdate::Persist(outcome.status == DpnsVoteTargetStatus::Queued)
             })?
-            .unwrap_or(false),
-        )
+            .unwrap_or(false))
+        })
     }
 
     /// Recover interrupted targets according to their durable broadcast phase.
@@ -761,17 +806,18 @@ impl AppContext {
         operation_id: DpnsVoteOperationId,
         keys: &BTreeSet<DpnsVoteTargetKey>,
     ) -> Result<(), TaskError> {
-        let (_guard, kv) = self.journal()?;
-        let Some(mut operation): Option<DpnsVoteOperation> =
-            load_operation(&kv, &operation_key(self.network, operation_id))
-                .map_err(unreadable_operation_err)?
-        else {
-            return Ok(());
-        };
-        if recover_interrupted_target_statuses(&mut operation, |key| keys.contains(key)) {
-            persist_operation(&kv, self.network, &operation)?;
-        }
-        Ok(())
+        self.mutate_dpns_vote_operation(operation_id, |kv| {
+            let Some(mut operation): Option<DpnsVoteOperation> =
+                load_operation(kv, &operation_key(self.network, operation_id))
+                    .map_err(unreadable_operation_err)?
+            else {
+                return Ok(());
+            };
+            if recover_interrupted_target_statuses(&mut operation, |key| keys.contains(key)) {
+                persist_operation(kv, self.network, &operation)?;
+            }
+            Ok(())
+        })
     }
 
     pub(crate) fn record_dpns_vote_diagnostic(
@@ -1062,6 +1108,39 @@ mod tests {
         operation.targets[0].target.key.vote_poll_id = Identifier::from([poll; 32]);
         operation.targets[0].target.contested_name = contested_name.to_owned();
         operation
+    }
+
+    #[test]
+    fn vote_progress_publishes_admission_and_each_target_transition() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        ctx.set_det_kv_override_for_test(kv());
+        let mut operation = operation(DpnsVoteTargetStatus::Queued);
+        let key = operation.targets[0].target.key.clone();
+        ctx.insert_dpns_vote_operation(&mut operation, None)
+            .unwrap();
+        assert_eq!(
+            ctx.dpns_vote_progress()[0].targets[0].status,
+            DpnsVoteTargetStatus::Queued
+        );
+        let admitted = ctx.dpns_vote_progress();
+        assert!(ctx.claim_dpns_vote_target(operation.id, &key).unwrap());
+        assert_eq!(
+            ctx.dpns_vote_progress()[0].targets[0].status,
+            DpnsVoteTargetStatus::Submitting
+        );
+        assert_eq!(admitted[0].targets[0].status, DpnsVoteTargetStatus::Queued);
+        assert!(ctx.mark_dpns_vote_broadcast(operation.id, &key).unwrap());
+        assert_eq!(
+            ctx.dpns_vote_progress()[0].targets[0].status,
+            DpnsVoteTargetStatus::Confirming
+        );
+        ctx.update_dpns_vote_target(operation.id, &key, DpnsVoteTargetStatus::Confirmed, None)
+            .unwrap();
+        assert_eq!(
+            ctx.dpns_vote_progress()[0].targets[0].status,
+            DpnsVoteTargetStatus::Confirmed
+        );
     }
 
     #[test]

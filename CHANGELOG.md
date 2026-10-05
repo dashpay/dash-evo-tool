@@ -206,6 +206,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Closed contests keep uncertain vote outcomes instead of reporting them as failed
+  when Platform has removed the voting records. Progress updates during submission,
+  and entering Votes reloads newly added voting nodes without changing staged choices.
+- Username refreshes skip identities removed while a request was in flight and report
+  local storage errors while retaining successful updates for other identities.
+
 - Username request updates preserve saved requests after a failed startup read, and
   status refreshes complete when the request page is hidden behind registration.
 - Voting confirmation and schedule choices expose full contender identities;

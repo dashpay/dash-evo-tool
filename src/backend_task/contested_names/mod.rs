@@ -168,23 +168,13 @@ fn missing_voter_outcome(
     )
 }
 
-/// Decide whether one reconciliation observation is terminal.
-///
-/// Returns `None` while the outcome stays ambiguous, which keeps the target
-/// locked. A current choice that differs from `requested` is not by itself
-/// evidence against the submitted transition — it may simply predate it — so it
-/// only becomes terminal once `availability` proves the poll can no longer
-/// accept anything.
+/// Only an exact current vote proves the requested choice was applied.
+/// Closed polls lose their per-voter references, so absence cannot prove failure.
 fn classify_reconciled_vote(
     observed: Option<ResourceVoteChoice>,
     requested: ResourceVoteChoice,
-    availability: DpnsVotePollAvailability,
 ) -> Option<DpnsVoteTargetStatus> {
-    match (observed, availability) {
-        (Some(choice), _) if choice == requested => Some(DpnsVoteTargetStatus::Confirmed),
-        (_, DpnsVotePollAvailability::ProvedClosed) => Some(DpnsVoteTargetStatus::NotApplied),
-        (_, DpnsVotePollAvailability::MayAccept) => None,
-    }
+    (observed == Some(requested)).then_some(DpnsVoteTargetStatus::Confirmed)
 }
 
 fn wrap_scheduled_vote_sweep_result<T>(
@@ -950,22 +940,11 @@ impl AppContext {
                 operation_id,
             });
         };
-        // TODO: a wedged target is only released once its contest closes. Restore
-        // the operator-driven "stop waiting and vote again" escape so one can also
-        // be abandoned mid-contest; that needs a control in the DPNS contests screen.
-        let contests = self
-            .all_contested_names()?
-            .into_iter()
-            .map(|contest| (contest.normalized_contested_name.clone(), contest))
-            .collect::<BTreeMap<_, _>>();
         for outcome in operation
             .targets
             .iter()
             .filter(|outcome| outcome.status == DpnsVoteTargetStatus::Unconfirmed)
         {
-            // Targets may carry the label the operator typed; contests are keyed normalized.
-            let normalized = convert_to_homograph_safe_chars(&outcome.target.contested_name);
-            let availability = dpns_vote_poll_availability(contests.get(&normalized));
             let poll_id = outcome.target.key.vote_poll_id;
             let query = ContestedResourceVotesGivenByIdentityQuery {
                 identity_id: outcome.target.key.voter_id,
@@ -980,12 +959,9 @@ impl AppContext {
                         .get(&poll_id)
                         .and_then(Option::as_ref)
                         .map(ResourceVoteGettersV0::resource_vote_choice);
-                    let status = classify_reconciled_vote(
-                        observed,
-                        outcome.target.requested_choice,
-                        availability,
-                    )
-                    .unwrap_or(DpnsVoteTargetStatus::Unconfirmed);
+                    let status =
+                        classify_reconciled_vote(observed, outcome.target.requested_choice)
+                            .unwrap_or(DpnsVoteTargetStatus::Unconfirmed);
                     if !self.update_dpns_vote_reconciliation(
                         operation_id,
                         &outcome.target.key,
@@ -2107,64 +2083,19 @@ mod tests {
     #[test]
     fn exact_reconciliation_confirms_only_the_requested_choice() {
         assert_eq!(
-            classify_reconciled_vote(
-                Some(ResourceVoteChoice::Lock),
-                ResourceVoteChoice::Lock,
-                DpnsVotePollAvailability::MayAccept,
-            ),
+            classify_reconciled_vote(Some(ResourceVoteChoice::Lock), ResourceVoteChoice::Lock,),
             Some(DpnsVoteTargetStatus::Confirmed)
         );
         assert_eq!(
-            classify_reconciled_vote(
-                Some(ResourceVoteChoice::Abstain),
-                ResourceVoteChoice::Lock,
-                DpnsVotePollAvailability::MayAccept,
-            ),
+            classify_reconciled_vote(Some(ResourceVoteChoice::Abstain), ResourceVoteChoice::Lock,),
             None,
             "a mismatched row may predate the submitted transition and remains ambiguous"
         );
         assert_eq!(
-            classify_reconciled_vote(
-                None,
-                ResourceVoteChoice::Lock,
-                DpnsVotePollAvailability::MayAccept,
-            ),
+            classify_reconciled_vote(None, ResourceVoteChoice::Lock,),
             None,
             "an absent exact row remains ambiguous and must not release its lock"
         );
-    }
-
-    /// A closed poll is the terminal evidence that ambiguity alone never supplies.
-    #[test]
-    fn a_closed_poll_turns_an_unreconcilable_vote_into_a_terminal_verdict() {
-        assert_eq!(
-            classify_reconciled_vote(
-                Some(ResourceVoteChoice::Abstain),
-                ResourceVoteChoice::Lock,
-                DpnsVotePollAvailability::ProvedClosed,
-            ),
-            Some(DpnsVoteTargetStatus::NotApplied),
-            "a decided contest can no longer accept the submitted transition"
-        );
-        assert_eq!(
-            classify_reconciled_vote(
-                None,
-                ResourceVoteChoice::Lock,
-                DpnsVotePollAvailability::ProvedClosed,
-            ),
-            Some(DpnsVoteTargetStatus::NotApplied),
-            "an absent row on a closed poll proves the vote never applied"
-        );
-        assert_eq!(
-            classify_reconciled_vote(
-                Some(ResourceVoteChoice::Lock),
-                ResourceVoteChoice::Lock,
-                DpnsVotePollAvailability::ProvedClosed,
-            ),
-            Some(DpnsVoteTargetStatus::Confirmed),
-            "a vote that did apply stays confirmed after the contest closes"
-        );
-        assert!(!DpnsVoteTargetStatus::NotApplied.holds_lock());
     }
 
     #[test]
@@ -2173,11 +2104,9 @@ mod tests {
         context.seed_dpns_contest_for_test("dominguez", Some(1_000), false);
         let contests = context.all_contested_names().unwrap();
         for now in [1_000, 2_000, u64::MAX] {
-            let availability = dpns_vote_poll_availability(contests.first());
             for observed in [None, Some(ResourceVoteChoice::Abstain)] {
-                let status =
-                    classify_reconciled_vote(observed, ResourceVoteChoice::Lock, availability)
-                        .unwrap_or(DpnsVoteTargetStatus::Unconfirmed);
+                let status = classify_reconciled_vote(observed, ResourceVoteChoice::Lock)
+                    .unwrap_or(DpnsVoteTargetStatus::Unconfirmed);
                 assert_eq!(status, DpnsVoteTargetStatus::Unconfirmed);
                 assert!(status.holds_lock());
             }
@@ -2210,107 +2139,50 @@ mod tests {
         }
     }
 
-    /// An unreconcilable target must not hold its lock past the contest it belongs to.
     #[tokio::test]
-    async fn an_unreconcilable_vote_releases_its_lock_once_the_contest_closes() {
+    async fn closed_contest_cleanup_does_not_prove_a_vote_failed() {
         let (_temp, context) = vote_context();
-        let key = DpnsVoteTargetKey {
-            network: Network::Testnet,
-            voter_id: Identifier::from([1; 32]),
-            vote_poll_id: Identifier::from([2; 32]),
-        };
+        context.seed_dpns_contest_for_test("dominguez", Some(1), true);
         let mut operation = AppContext::new_dpns_vote_operation(vec![DpnsVoteTarget {
-            key: key.clone(),
+            key: DpnsVoteTargetKey {
+                network: Network::Testnet,
+                voter_id: Identifier::from([1; 32]),
+                vote_poll_id: context.dpns_vote_poll_id("dominguez").unwrap(),
+            },
             voter_alias: None,
-            contested_name: "dominguez".to_owned(),
-            requested_choice: ResourceVoteChoice::Abstain,
-            current_choice: Some(ResourceVoteChoice::Lock),
+            contested_name: "dominguez".into(),
+            requested_choice: ResourceVoteChoice::Lock,
+            current_choice: None,
             timing: VoteTiming::Now,
         }]);
-        operation.targets[0].status = DpnsVoteTargetStatus::Confirming;
-        let operation_id = operation.id;
+        operation.targets[0].status = DpnsVoteTargetStatus::Unconfirmed;
         context
             .insert_dpns_vote_operation(&mut operation, None)
-            .expect("persist confirming operation");
-        // The broadcast was lost: the node keeps proving its previous choice.
+            .unwrap();
+        let key = &operation.targets[0].target.key;
+        let mut sdk = Sdk::new_mock();
+        sdk.mock().expect_fetch_many::<Identifier, ResourceVote, _, dash_sdk::query_types::ResourceVotesByIdentity>(
+            ContestedResourceVotesGivenByIdentityQuery {
+                identity_id: key.voter_id,
+                offset: None,
+                limit: Some(1),
+                start_at: Some((key.vote_poll_id.to_buffer(), true)),
+                order_ascending: true,
+            },
+            Some(Default::default()),
+        ).await.unwrap();
         context
-            .update_dpns_vote_target(
-                operation_id,
-                &key,
-                DpnsVoteTargetStatus::Unconfirmed,
-                Some(DpnsVoteFailure::ResultUnconfirmed),
-            )
-            .expect("persist unconfirmed operation");
-
-        let observed = Some(ResourceVoteChoice::Lock);
-        let mut expected_current = None;
-        for round in 0..3 {
-            let status = classify_reconciled_vote(
-                observed,
-                ResourceVoteChoice::Abstain,
-                DpnsVotePollAvailability::MayAccept,
-            )
-            .unwrap_or(DpnsVoteTargetStatus::Unconfirmed);
-            assert!(
-                context
-                    .update_dpns_vote_reconciliation(
-                        operation_id,
-                        &key,
-                        expected_current,
-                        observed,
-                        status,
-                    )
-                    .expect("persist observation")
-            );
-            expected_current = observed;
-            assert_eq!(
-                context.dpns_vote_target_status(&key).unwrap(),
-                Some(DpnsVoteTargetStatus::Unconfirmed),
-                "round {round}: an open contest keeps the ambiguous target locked"
-            );
-        }
-
-        let terminal = classify_reconciled_vote(
-            observed,
-            ResourceVoteChoice::Abstain,
-            DpnsVotePollAvailability::ProvedClosed,
-        )
-        .expect("a closed poll must reach a terminal verdict");
-        assert_eq!(terminal, DpnsVoteTargetStatus::NotApplied);
-        assert!(
+            .reconcile_dpns_vote_operation(operation.id, &sdk)
+            .await
+            .unwrap();
+        let saved = context.dpns_vote_operation(operation.id).unwrap().unwrap();
+        assert_eq!(saved.targets[0].status, DpnsVoteTargetStatus::Unconfirmed);
+        assert_eq!(
             context
-                .update_dpns_vote_reconciliation(
-                    operation_id,
-                    &key,
-                    expected_current,
-                    observed,
-                    terminal,
-                )
-                .expect("persist terminal verdict")
+                .dpns_vote_count(key.voter_id, key.vote_poll_id)
+                .unwrap(),
+            None
         );
-
-        assert_eq!(
-            context.dpns_vote_target_status(&key).unwrap(),
-            None,
-            "the exact voter x poll lock must be released"
-        );
-        let persisted = context.dpns_vote_operation(operation_id).unwrap().unwrap();
-        assert_eq!(
-            persisted.targets[0].status,
-            DpnsVoteTargetStatus::NotApplied
-        );
-        assert!(
-            persisted.is_complete(),
-            "a terminal operation must become prunable instead of growing the journal forever"
-        );
-
-        let mut retry = AppContext::new_dpns_vote_operation(vec![DpnsVoteTarget {
-            current_choice: None,
-            ..persisted.targets[0].target.clone()
-        }]);
-        context
-            .insert_dpns_vote_operation(&mut retry, None)
-            .expect("a released target must accept a fresh operation");
     }
 
     #[test]
@@ -2360,12 +2232,8 @@ mod tests {
         );
 
         let observed = Some(ResourceVoteChoice::Abstain);
-        let first_status = classify_reconciled_vote(
-            observed,
-            ResourceVoteChoice::Lock,
-            DpnsVotePollAvailability::MayAccept,
-        )
-        .unwrap_or(DpnsVoteTargetStatus::Unconfirmed);
+        let first_status = classify_reconciled_vote(observed, ResourceVoteChoice::Lock)
+            .unwrap_or(DpnsVoteTargetStatus::Unconfirmed);
         assert!(
             context
                 .update_dpns_vote_reconciliation(operation_id, &key, None, observed, first_status,)
@@ -2374,12 +2242,8 @@ mod tests {
         assert_eq!(first_status, DpnsVoteTargetStatus::Unconfirmed);
 
         let persisted = context.dpns_vote_operation(operation_id).unwrap().unwrap();
-        let second_status = classify_reconciled_vote(
-            observed,
-            ResourceVoteChoice::Lock,
-            DpnsVotePollAvailability::MayAccept,
-        )
-        .unwrap_or(DpnsVoteTargetStatus::Unconfirmed);
+        let second_status = classify_reconciled_vote(observed, ResourceVoteChoice::Lock)
+            .unwrap_or(DpnsVoteTargetStatus::Unconfirmed);
         assert!(
             context
                 .update_dpns_vote_reconciliation(
@@ -2707,7 +2571,7 @@ mod tests {
         );
         for observed in [None, Some(ResourceVoteChoice::Abstain)] {
             assert_eq!(
-                classify_reconciled_vote(observed, ResourceVoteChoice::Lock, availability),
+                classify_reconciled_vote(observed, ResourceVoteChoice::Lock),
                 None,
                 "observed {observed:?}: the unresolved target stays locked"
             );

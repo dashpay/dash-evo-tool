@@ -183,21 +183,13 @@ impl AppContext {
         &self,
         sdk: &Sdk,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        let identities = match self.load_local_user_identities() {
-            Ok(identities) => identities,
-            Err(error) => {
-                tracing::debug!(
-                    ?error,
-                    "Username requests not refreshed: identities unavailable"
-                );
-                return Ok(BackendTaskSuccessResult::MyUsernameRequestsRefreshed);
-            }
-        };
+        let identities = self.load_local_user_identities()?;
         if identities.is_empty() {
             return Ok(BackendTaskSuccessResult::MyUsernameRequestsRefreshed);
         }
         let durations = self.username_contest_durations(sdk);
         let mut checked = BTreeMap::new();
+        let mut first_error = None;
         for identity in &identities {
             let identity_id = identity.identity.id();
             let previous = self.username_requests_for(&identity_id);
@@ -231,16 +223,22 @@ impl AppContext {
                     ));
                 }
             }
-            self.apply_username_refresh(sdk, identity, fresh).await;
+            if let Err(error) = self.apply_username_refresh(sdk, identity, fresh).await {
+                first_error.get_or_insert(error);
+            }
         }
         // TODO(usernames): the SDK scan pages only while a timestamp group holds 100 polls and drops
         // names whose vote state fails; requests made on another device can be missed past that cap.
-        let running = sdk
-            .get_contested_non_resolved_usernames(None)
-            .await
-            .map_err(|source| TaskError::UsernameRequestRefreshFailed {
-                source: Box::new(source),
-            })?;
+        let running = match sdk.get_contested_non_resolved_usernames(None).await {
+            Ok(running) => running,
+            Err(source) => {
+                return Err(first_error.unwrap_or_else(|| {
+                    TaskError::UsernameRequestRefreshFailed {
+                        source: Box::new(source),
+                    }
+                }));
+            }
+        };
         let now = now_ms();
         let snapshots: BTreeMap<&String, (ContestSnapshot, u64)> = running
             .iter()
@@ -273,7 +271,12 @@ impl AppContext {
                     )
                 })
                 .collect();
-            self.apply_username_refresh(sdk, &identity, fresh).await;
+            if let Err(error) = self.apply_username_refresh(sdk, &identity, fresh).await {
+                first_error.get_or_insert(error);
+            }
+        }
+        if let Some(error) = first_error {
+            return Err(error);
         }
         Ok(BackendTaskSuccessResult::MyUsernameRequestsRefreshed)
     }
@@ -283,15 +286,26 @@ impl AppContext {
         sdk: &Sdk,
         identity: &QualifiedIdentity,
         fresh: Vec<UsernameRequest>,
-    ) {
+    ) -> Result<(), TaskError> {
         let identity_id = identity.identity.id();
-        if let Err(error) = self.update_username_requests(&identity_id, |current| {
-            merge_requests(current, fresh, now_ms(), Some(&identity.dpns_names))
-        }) {
-            tracing::warn!(?error, %identity_id, "Username requests could not be stored");
+        {
+            let lock = self.identity_record_lock(identity_id);
+            let _guard = lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !self.is_identity_listed(&identity_id)? {
+                return Ok(());
+            }
+            let Some(current_identity) = self.get_local_qualified_identity(&identity_id)? else {
+                return Ok(());
+            };
+            self.update_username_requests(&identity_id, |current| {
+                merge_requests(current, fresh, now_ms(), Some(&current_identity.dpns_names))
+            })?;
         }
         self.egui_ctx().request_repaint();
         self.record_won_usernames(sdk, identity_id).await;
+        Ok(())
     }
 
     /// Retry saved wins until the owned names are durably reflected in the identity.
@@ -480,6 +494,128 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn removed_identity_ignores_an_awaited_username_refresh() {
+        for phase in [RequestPhase::Joinable, RequestPhase::Won] {
+            let dir = tempfile::tempdir().unwrap();
+            let ctx = crate::context::test_support::test_app_context(dir.path());
+            ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(
+                std::sync::Arc::new(crate::wallet_backend::kv_test_support::InMemoryKv::default()),
+            ));
+            let id = Identifier::from([42; 32]);
+            let captured = bare_identity(id, ctx.network);
+            ctx.insert_local_qualified_identity_sidecar_only(&captured)
+                .unwrap();
+            let sdk = Sdk::new_mock();
+            let mut request = UsernameRequest::submitted(
+                "Alice",
+                now_ms(),
+                ctx.username_contest_durations(&sdk),
+                None,
+            );
+            request.phase = phase;
+            ctx.store_username_requests(&id, vec![request.clone()])
+                .unwrap();
+            ctx.delete_local_qualified_identity(&id).unwrap();
+            ctx.apply_username_refresh(&sdk, &captured, vec![request])
+                .await
+                .unwrap();
+            assert!(ctx.username_requests_for(&id).is_empty());
+            assert!(!ctx.username_requests_need_refresh());
+            ctx.refresh_pending_dpns_usernames().unwrap();
+            assert!(ctx.username_requests_for(&id).is_empty());
+            assert!(!ctx.username_requests_need_refresh());
+        }
+    }
+
+    #[tokio::test]
+    async fn username_refresh_reports_identity_load_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let store =
+            std::sync::Arc::new(crate::wallet_backend::kv_test_support::FailingKv::default());
+        ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(store.clone()));
+        store.fail_next_gets_containing("det:identity_index:v1", 1);
+        assert!(
+            ctx.refresh_my_username_requests(&Sdk::new_mock())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn username_refresh_reports_storage_failure_and_keeps_successful_siblings() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let store =
+            std::sync::Arc::new(crate::wallet_backend::kv_test_support::FailingKv::default());
+        ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(store.clone()));
+        for byte in [42, 43] {
+            let id = Identifier::from([byte; 32]);
+            ctx.insert_local_qualified_identity_sidecar_only(&bare_identity(id, ctx.network))
+                .unwrap();
+            ctx.store_username_requests(
+                &id,
+                vec![UsernameRequest::submitted(
+                    "Alice",
+                    1,
+                    ctx.username_contest_durations(&Sdk::new_mock()),
+                    None,
+                )],
+            )
+            .unwrap();
+        }
+        let mut sdk = Sdk::new_mock();
+        sdk.mock()
+            .expect_fetch_many::<Identifier, ContenderWithSerializedDocument, _, Contenders>(
+                ContestedDocumentVotePollDriveQuery {
+                    vote_poll: crate::model::dpns_voting::dpns_vote_poll(
+                        &ctx.dpns_contract,
+                        &normalize_dpns_label("Alice"),
+                    )
+                    .unwrap(),
+                    result_type:
+                        ContestedDocumentVotePollDriveQueryResultType::DocumentsAndVoteTally,
+                    allow_include_locked_and_abstaining_vote_tally: true,
+                    start_at: None,
+                    limit: None,
+                    offset: None,
+                },
+                Some(Contenders {
+                    winner: Some((
+                        ContestedDocumentVotePollWinnerInfo::Locked,
+                        BlockInfo {
+                            time_ms: now_ms(),
+                            ..Default::default()
+                        },
+                    )),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+        sdk.mock().expect_fetch_many::<u64, dash_sdk::dpp::voting::vote_polls::VotePoll, _, dash_sdk::query_types::VotePollsGroupedByTimestamp>(
+            dash_sdk::drive::query::VotePollsByEndDateDriveQuery {
+                start_time: None, end_time: None, limit: Some(100), offset: None, order_ascending: true,
+            },
+            Some(Default::default()),
+        ).await.unwrap();
+        store.fail_next_puts_containing("det:username_requests:", 1);
+        assert!(matches!(
+            ctx.refresh_my_username_requests(&sdk).await,
+            Err(TaskError::UsernameStorage { .. })
+        ));
+        let phases =
+            [42, 43].map(|byte| ctx.username_requests_for(&Identifier::from([byte; 32]))[0].phase);
+        assert_eq!(
+            phases
+                .iter()
+                .filter(|phase| **phase == RequestPhase::Locked)
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
     async fn won_username_retries_fetch_after_restart() {
         won_username_retries_after_restart(false).await;
     }
@@ -516,7 +652,8 @@ mod tests {
             store.fail_next_puts_containing("det:identity:v1", 1);
         }
         ctx.apply_username_refresh(&sdk, &identity, vec![won.clone()])
-            .await;
+            .await
+            .unwrap();
         assert_eq!(ctx.username_requests_for(&id)[0].phase, RequestPhase::Won);
         assert!(
             ctx.username_requests_need_refresh(),

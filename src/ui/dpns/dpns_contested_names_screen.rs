@@ -60,7 +60,7 @@ use crate::ui::dpns::progress_drawer;
 use crate::ui::state::dpns_contests::ActiveDpnsContestSnapshot;
 use crate::ui::state::dpns_vote_cards::{
     CantVoteReason, CardPlacement, NodeContestState, NodeContestStatus, SHORTCUT_HELP, Shortcut,
-    VoteCard, move_focus, shortcut_for, sort_by_time_left,
+    VoteCard, move_focus, place_card, shortcut_for, sort_by_time_left,
 };
 use crate::ui::state::dpns_vote_operations::{
     DpnsVoteOperationSnapshot, ScheduledDecisionGroup, ScheduledDpnsVoteRow, group_scheduled_rows,
@@ -1870,6 +1870,45 @@ impl DPNSScreen {
             candidate_name_index(&self.active_contests, &self.contested_names.lock_recover());
     }
 
+    fn sync_vote_progress(&mut self) {
+        let Some(changed) = self.vote_operations.sync_progress(&self.app_context) else {
+            return;
+        };
+        self.rebuild_scheduled_vote_rows();
+        let changed: BTreeMap<_, _> = changed
+            .into_iter()
+            .map(|outcome| (outcome.target.key.clone(), outcome))
+            .collect();
+        for card in &mut self.cards {
+            let Some(poll) = card.vote_poll_id else {
+                continue;
+            };
+            for node in &mut card.nodes {
+                let key = DpnsVoteTargetKey {
+                    network: self.app_context.network(),
+                    voter_id: node.node,
+                    vote_poll_id: poll,
+                };
+                let Some(outcome) = changed.get(&key) else {
+                    continue;
+                };
+                let state = if outcome.status == DpnsVoteTargetStatus::Confirmed {
+                    node.current = Some(outcome.target.requested_choice);
+                    node.changes = ChangesLeft::Unknown;
+                    DpnsCurrentVoteState::Available(node.current)
+                } else {
+                    self.vote_state.state(node.node, poll)
+                };
+                node.status = NodeContestStatus::classify(
+                    state,
+                    self.vote_operations.target_status(&key),
+                    node.changes,
+                );
+            }
+            card.placement = place_card(&card.nodes);
+        }
+    }
+
     fn rebuild_scheduled_vote_rows(&mut self) {
         let rows = self.vote_operations.scheduled_vote_rows();
         self.relative_schedule_labels = rows
@@ -2630,6 +2669,7 @@ impl ScreenLike for DPNSScreen {
     /// The Masternodes screen owns the window chrome (top bar, left nav,
     /// segment header); this draws the sub-view chips and the active view.
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        self.sync_vote_progress();
         let ctx = ui.ctx().clone();
         let ctx = &ctx;
         let mut action = AppAction::None;
@@ -3418,6 +3458,106 @@ mod tests {
         let screen = DPNSScreen::new(&ctx, VotesView::ToDecide);
 
         assert_eq!(screen.voting_identities.len(), 1);
+    }
+
+    #[test]
+    fn cards_show_in_flight_and_partial_completion_without_storage_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let store = Arc::new(crate::wallet_backend::kv_test_support::FailingKv::default());
+        ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(store.clone()));
+        ctx.seed_dpns_contest_for_test("alpha", None, false);
+        let poll = ctx.dpns_vote_poll_id("alpha").unwrap();
+        let voter = Identifier::from([1; 32]);
+        let mut screen = DPNSScreen::new(&ctx, VotesView::ToDecide);
+        screen.cards = vec![VoteCard::new(
+            Arc::new(ctx.all_contested_names().unwrap().remove(0)),
+            Some(poll),
+            vec![NodeContestState {
+                node: voter,
+                status: NodeContestStatus::NotVoted,
+                current: None,
+                changes: ChangesLeft::Unknown,
+            }],
+        )];
+        let target = DpnsVoteTarget {
+            key: DpnsVoteTargetKey {
+                network: ctx.network(),
+                voter_id: voter,
+                vote_poll_id: poll,
+            },
+            voter_alias: None,
+            contested_name: "alpha".into(),
+            requested_choice: ResourceVoteChoice::Lock,
+            current_choice: None,
+            timing: VoteTiming::Now,
+        };
+        let key = target.key.clone();
+        let mut sibling = target.clone();
+        sibling.key.vote_poll_id = ctx.dpns_vote_poll_id("beta").unwrap();
+        sibling.contested_name = "beta".into();
+        let mut operation = AppContext::new_dpns_vote_operation(vec![target, sibling]);
+        ctx.insert_dpns_vote_operation(&mut operation, None)
+            .unwrap();
+        store.fail_all_reads(true);
+        screen.sync_vote_progress();
+        assert_eq!(screen.cards[0].nodes[0].status, NodeContestStatus::InFlight);
+        store.fail_all_reads(false);
+        ctx.update_dpns_vote_target(operation.id, &key, DpnsVoteTargetStatus::Confirmed, None)
+            .unwrap();
+        store.fail_all_reads(true);
+        screen.sync_vote_progress();
+        assert_eq!(
+            screen.cards[0].nodes[0].status,
+            NodeContestStatus::Voted(ResourceVoteChoice::Lock)
+        );
+        assert_eq!(
+            screen.cards[0].nodes[0].current,
+            Some(ResourceVoteChoice::Lock)
+        );
+        assert_eq!(
+            screen
+                .vote_operations
+                .operation(operation.id)
+                .unwrap()
+                .targets[1]
+                .status,
+            DpnsVoteTargetStatus::Queued
+        );
+    }
+
+    #[tokio::test]
+    async fn entering_votes_reloads_new_voters_without_expanding_staged_choices() {
+        use crate::model::dpns_voting::operator::MasternodesSegment;
+        use crate::ui::masternodes::list_screen::MasternodesScreen;
+        let (ctx, _temp_dir, _events) = wired_ctx().await;
+        let mut screen = MasternodesScreen::new(&ctx);
+        screen.select_segment(MasternodesSegment::Nodes);
+        assert!(screen.votes_mut().voting_identities.is_empty());
+        let first = masternode_identity(42, "first-node", true, ctx.network());
+        ctx.insert_local_qualified_identity(&first, &None).unwrap();
+        screen.select_segment(MasternodesSegment::Votes);
+        assert_eq!(screen.votes_mut().voting_identities.len(), 1);
+        screen.votes_mut().selected_votes.push(SelectedVote {
+            contested_name: "alpha".into(),
+            vote_choice: ResourceVoteChoice::Lock,
+            end_time: None,
+        });
+        screen.select_segment(MasternodesSegment::Nodes);
+        let second = masternode_identity(43, "second-node", true, ctx.network());
+        ctx.insert_local_qualified_identity(&second, &None).unwrap();
+        screen.select_segment(MasternodesSegment::Votes);
+        assert_eq!(screen.votes_mut().voting_identities.len(), 2);
+        assert_eq!(
+            screen.votes_mut().node_overrides.get(&second.identity.id()),
+            Some(&NodeTiming::DontUse)
+        );
+        assert!(
+            !screen
+                .votes_mut()
+                .node_overrides
+                .contains_key(&first.identity.id())
+        );
     }
 
     /// VOTE-FR-080: with Cancel focused, Enter activates Cancel only and

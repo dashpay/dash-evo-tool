@@ -42,8 +42,7 @@ impl AppContext {
         )
     }
 
-    /// Journal operations as of the last recompute, for the progress drawer
-    /// (cheap; safe to call every frame).
+    /// Live durable journal progress (cheap; safe to call every frame).
     pub fn dpns_vote_progress(&self) -> Arc<[DpnsVoteOperation]> {
         Arc::clone(
             &self
@@ -295,10 +294,6 @@ impl AppContext {
                 return self.dpns_vote_attention();
             }
         };
-        *self
-            .dpns_vote_progress
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::from(operations.as_slice());
         match self.compute_dpns_vote_attention(&operations) {
             Ok(summary) => {
                 let summary = Arc::new(summary);

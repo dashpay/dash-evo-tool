@@ -340,8 +340,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Removing a wallet deletes its cached identity public keys right away, and a
   key-slot load that finishes after the removal no longer stores them again.
-- The dedicated migration CI workflow runs archived-profile checks without
-  repeating the helper tests and bundled migration covered by the main suite.
 
 - Migration fixture coverage skips historical non-SemVer release tags instead
   of failing to parse them and blocking weekly builds. Missing fixtures for
@@ -715,6 +713,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   says plainly that the rate shown is fixed rather than read from the network.
 
 ### Changed
+
+- The Tests workflow incorporates the archived-profile checks from Migration
+  Matrix, sharing one build and running the regular and migration suites in
+  parallel. Monday schedules run only lightweight fixture and pin checks in a
+  separate concurrency group. Weekly releases check push test/Clippy results
+  and scheduled fixture/pin results independently.
 
 - User identities use their DashPay Display name on cards, navigation, and selectors, falling back to a username or shortened identity ID. The identity-list tool reports cached profile display names for User identities and preserves administrative node names.
 

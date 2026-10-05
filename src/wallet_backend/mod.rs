@@ -2089,6 +2089,12 @@ impl WalletBackend {
         self.inner.coordinator_gate.reset();
     }
 
+    /// Hold startup pending so tests can join multiple callers to one flight.
+    #[cfg(test)]
+    pub(crate) async fn lock_start_lifecycle_for_test(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.inner.start_latch.lifecycle.lock().await
+    }
+
     /// Number of wallets currently registered with the backend.
     #[cfg(test)]
     pub async fn wallet_count(&self) -> usize {

@@ -1,8 +1,8 @@
 name: Tests
 
 # Path filters below fire on any change that can affect a build or test result,
-# and on nothing that cannot. `**/*.rs` covers build.rs and every crate's
-# sources; documentation changes deliberately match nothing.
+# plus the migration fixture tooling. `**/*.rs` includes build.rs; fixture
+# documentation changes also exercise the migration gate.
 on:
   push:
     branches:
@@ -14,15 +14,12 @@ on:
       - ".cargo/config.toml"
       - "rust-toolchain.toml"
       - "tests/backend-e2e/**"
-      # Compile-time inputs (include_str!) of migration-matrix tests that only
-      # this workflow runs: the bundled public-identity migration and the
-      # manifest-parsing helper tests. Migration Matrix runs only
-      # `migration_matrix --exact`, so these need a trigger here.
-      - "tests/migration-fixtures/manifest.json"
-      - "tests/migration-fixtures/v0.9.3-public-identities/data.sql"
-      - "tests/migration-fixtures/v0.9.3-public-identities/expected.json"
-      - "tests/migration-fixtures/v11-mainnet-identity/data-with-imported-key.db"
+      - "tests/migration-fixtures/**"
+      - "src/wallet_backend/platform_compatibility/fixtures/**"
+      - "scripts/migration-fixtures/**"
+      - "scripts/ci/**"
       - ".github/workflows/tests.yml"
+      - ".github/workflows/weekly-build.yml"
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     paths: *code_paths
@@ -31,19 +28,53 @@ on:
   # manual run covers them. Note it tests the branch head, not the PR merge
   # commit, so it does not prove the merged result is green.
   workflow_dispatch:
+  # GitHub schedules run from the default branch; only lightweight checks run.
+  schedule:
+    - cron: "0 4 * * 1"
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  test:
-    name: Test Suite
+  pin-ancestry:
+    name: Platform pin guard
     if: github.event.pull_request.draft != true
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check fixture scripts
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          bash scripts/migration-fixtures/test-scripts.sh
+          bash scripts/ci/test-run-tests.sh
+          bash scripts/ci/test-weekly-gate.sh
+
+      # Fetches only the upstream commit graph plus the pinned rev's migration
+      # sources — seconds, not a full platform clone. See the script header for
+      # why ancestry alone is not sufficient.
+      - name: Check platform pin ancestry and migration fingerprint
+        run: scripts/migration-fixtures/check-pin-ancestry.sh
+
+  test:
+    name: Test Suite
+    if: github.event_name != 'schedule' && github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read # Download fixture artifacts from earlier workflow runs.
 
     steps:
       - name: Checkout code
@@ -75,7 +106,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config clang cmake libsqlite3-dev
+          sudo apt-get install -y build-essential pkg-config clang cmake libsqlite3-dev zstd
 
       - name: Install protoc
         run: |
@@ -86,24 +117,51 @@ jobs:
         env:
           PROTOC: /usr/local/bin/protoc
 
-      - name: Run tests
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --all-features --workspace
+      - name: Build all test targets and det-cli once
+        run: cargo test --locked --all-features --workspace --no-run
 
-      - name: Run doc tests
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --doc --all-features --workspace
-      # TODO: Re-enable after backend E2E tests are updated for TaskError migration
-      # - name: Run backend E2E tests
-      #   run: cargo test --test backend-e2e --all-features -- --ignored --nocapture --test-threads=1
-      #   env:
-      #     E2E_WALLET_MNEMONIC: ${{ secrets.E2E_WALLET_MNEMONIC }}
-      # - name: Cleanup E2E test wallets
-      #   if: always()
-      #   run: cargo test --test backend-e2e --all-features -- --ignored --nocapture cleanup_only
-      #   env:
-      #     E2E_WALLET_MNEMONIC: ${{ secrets.E2E_WALLET_MNEMONIC }}
+      # A failed download must fail the migration suite, but still let the
+      # ordinary suite report its result against the shared build.
+      - name: Download migration fixtures
+        id: fixtures
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          dest="$RUNNER_TEMP/migration-fixtures"
+          mkdir -p "$dest"
+          scripts/migration-fixtures/download-fixtures.sh --strict --dest "$dest"
+          count="$(find "$dest" -maxdepth 1 \( -name '*.tar.zst' -o -name '*.tar.gz' \) | wc -l)"
+          if [ "$count" -eq 0 ]; then
+            echo "::error::No migration fixture archives were downloaded."
+            exit 1
+          fi
+          echo "Resolved $count fixture archive(s)."
+          echo "dir=$dest" >>"$GITHUB_OUTPUT"
+
+      - name: Run tests and migration matrix in parallel
+        env:
+          MIGRATION_FIXTURES_DIR: ${{ steps.fixtures.outputs.dir }}
+          MIGRATION_FIXTURES_MANIFEST: ${{ github.workspace }}/tests/migration-fixtures/manifest.json
+          MIGRATION_V093_WALLET_PASSWORD: ${{ secrets.MIGRATION_V093_WALLET_PASSWORD }}
+          MIGRATION_MATRIX_SKIP_PASSWORDS: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+        run: bash scripts/ci/run-tests.sh "$RUNNER_TEMP/test-logs"
+
+  coverage:
+    name: Fixture coverage
+    # Schedule only: a coverage gap is created by cutting a release, never by
+    # editing code, so running this per-PR would fail pull requests for
+    # something no contributor did or can fix.
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check fixture coverage against published releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: scripts/migration-fixtures/check-coverage.sh

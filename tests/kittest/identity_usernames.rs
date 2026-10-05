@@ -1054,3 +1054,69 @@ fn loaded_identities_list_the_main_username_first() {
         assert_eq!(identity.to_string(), "b-name");
     });
 }
+
+#[test]
+fn changing_reviewed_username_requires_new_consent() {
+    with_isolated_data_dir(|| {
+        let (_rt, app_context) = fresh_app_context();
+        seed_username_identity(&app_context, 0x61, "Payer", &[], 0, true);
+        let mut screen = answered(&app_context, "alice-123", UsernameAvailability::Available);
+        screen.open_confirm_for_test();
+        screen.type_label_for_test("alice");
+        assert!(
+            matches!(
+                screen.begin_registration_for_test(&egui::Context::default()),
+                AppAction::None
+            ),
+            "editing the reviewed name must require availability, vote consent and payment review again"
+        );
+    });
+}
+
+#[test]
+fn changing_identity_invalidates_username_payment_review() {
+    with_isolated_data_dir(|| {
+        let (_rt, app_context) = fresh_app_context();
+        seed_username_identity(&app_context, 0x62, "First", &[], 0, true);
+        let mut screen = answered(&app_context, "alice", UsernameAvailability::NeedsVote);
+        screen.open_confirm_for_test();
+        let second = seed_username_identity(&app_context, 0x63, "Second", &[], 0, true);
+        screen.select_identity(second);
+        assert!(
+            matches!(
+                screen.begin_registration_for_test(&egui::Context::default()),
+                AppAction::None
+            ),
+            "a different payer requires a new review"
+        );
+    });
+}
+
+#[test]
+fn registration_dispatch_uses_the_reviewed_name_and_vote_fee() {
+    with_isolated_data_dir(|| {
+        let (_rt, app_context) = fresh_app_context();
+        seed_username_identity(&app_context, 0x64, "Payer", &[], 0, true);
+        let mut screen = answered(&app_context, "Alice", UsernameAvailability::NeedsVote);
+        screen.open_confirm_for_test();
+        let AppAction::BackendTaskWithContext {
+            task: BackendTask::IdentityTask(IdentityTask::RegisterDpnsName(input)),
+            ..
+        } = screen.begin_registration_for_test(&egui::Context::default())
+        else {
+            panic!("expected registration");
+        };
+        assert_eq!(input.name_input, "Alice");
+        assert_eq!(
+            input.approved_contest_fee,
+            contest_fee_credits(app_context.sdk_platform_version())
+        );
+        assert!(
+            matches!(
+                screen.begin_registration_for_test(&egui::Context::default()),
+                AppAction::None
+            ),
+            "a second payment cannot be dispatched while submitting"
+        );
+    });
+}

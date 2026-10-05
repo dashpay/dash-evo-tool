@@ -448,6 +448,8 @@ impl PartialEq for IdentityTopUpInfo {
 pub struct RegisterDpnsNameInput {
     pub qualified_identity: QualifiedIdentity,
     pub name_input: String,
+    /// Community vote fee explicitly approved for this name; zero declines a vote.
+    pub approved_contest_fee: u64,
     /// Authentication key to sign with; `None` picks the identity's default document key.
     pub signing_key_id: Option<KeyID>,
 }

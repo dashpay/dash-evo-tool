@@ -50,6 +50,15 @@ impl AppContext {
             return Err(TaskError::InvalidDpnsName { validation });
         }
 
+        let contest_fee = if crate::model::dpns::is_contested_label(&input.name_input) {
+            crate::model::fee_estimation::contest_fee_credits(sdk.version())
+        } else {
+            0
+        };
+        if input.approved_contest_fee != contest_fee {
+            return Err(TaskError::UsernameRegistrationTermsChanged);
+        }
+
         // Authoritative re-check before any fee is spent: the name may have been
         // taken, locked, or closed to new requests since the user chose it.
         let availability = self
@@ -507,6 +516,32 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn registration_rejects_unapproved_vote_fee_before_network_or_payment() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let sdk = Sdk::new_mock();
+        let fee = crate::model::fee_estimation::contest_fee_credits(sdk.version());
+        for (label, approved_contest_fee) in [("alice", 0), ("alice", fee + 1), ("alice-123", fee)]
+        {
+            let result = ctx
+                .register_dpns_name(
+                    &sdk,
+                    RegisterDpnsNameInput {
+                        qualified_identity: bare_identity(9),
+                        name_input: label.into(),
+                        approved_contest_fee,
+                        signing_key_id: None,
+                    },
+                )
+                .await;
+            assert!(
+                matches!(result, Err(TaskError::UsernameRegistrationTermsChanged)),
+                "{label}: {result:?}"
+            );
+        }
+    }
+
     /// USR-TC-018 backend half: availability is re-checked before anything is
     /// broadcast, so a failed or changed check spends nothing.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -520,6 +555,9 @@ mod tests {
                 RegisterDpnsNameInput {
                     qualified_identity: bare_identity(8),
                     name_input: "alice".to_owned(),
+                    approved_contest_fee: crate::model::fee_estimation::contest_fee_credits(
+                        Sdk::new_mock().version(),
+                    ),
                     signing_key_id: None,
                 },
             )

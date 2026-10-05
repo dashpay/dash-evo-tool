@@ -77,6 +77,16 @@ enum Availability {
     Row { label: String, row: AvailabilityRow },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RegistrationReview {
+    label: String,
+    identity_id: dash_sdk::platform::Identifier,
+    network: dash_sdk::dpp::dashcore::Network,
+    needs_vote: bool,
+    registration_fee: u64,
+    contest_fee: u64,
+}
+
 pub struct RegisterDpnsNameScreen {
     pub app_context: Arc<AppContext>,
     /// The identity the username is for, taken from the app's selected identity.
@@ -85,6 +95,7 @@ pub struct RegisterDpnsNameScreen {
     availability: Availability,
     step: Step,
     consent_dialog: Option<ConfirmationDialog>,
+    review: Option<RegistrationReview>,
     /// Signing key chosen under Advanced; `None` lets the backend pick the default.
     selected_key: Option<IdentityPublicKey>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
@@ -111,6 +122,7 @@ impl RegisterDpnsNameScreen {
             availability: Availability::Idle,
             step: Step::Choose,
             consent_dialog: None,
+            review: None,
             selected_key: None,
             selected_wallet: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
@@ -154,6 +166,7 @@ impl RegisterDpnsNameScreen {
             .and_then(|id| identities.iter().find(|qi| qi.identity.id() == id).cloned())
             .or_else(|| identities.first().cloned());
         if identity.as_ref().map(|qi| qi.identity.id()) != current {
+            self.on_label_changed();
             self.selected_key = None;
             self.selected_wallet = identity.as_ref().and_then(|qi| {
                 get_selected_wallet(qi, Some(&self.app_context), None)
@@ -195,12 +208,11 @@ impl RegisterDpnsNameScreen {
         contest_fee_credits(self.app_context.sdk_platform_version())
     }
 
-    fn total_fee(&self, needs_vote: bool) -> u64 {
-        self.registration_fee() + if needs_vote { self.contest_fee() } else { 0 }
-    }
-
     /// Restart the debounce after the typed label changed.
     fn on_label_changed(&mut self) {
+        self.review = None;
+        self.consent_dialog = None;
+        self.step = Step::Choose;
         let label = self.label().to_owned();
         self.availability = if validate_dpns_name(&label) == DpnsNameValidationResult::Valid {
             Availability::Debouncing {
@@ -244,11 +256,36 @@ impl RegisterDpnsNameScreen {
         ))
     }
 
+    fn payment_review(&self) -> Option<RegistrationReview> {
+        let availability = self.current_availability()?;
+        if !availability.allows_registration() {
+            return None;
+        }
+        Some(RegistrationReview {
+            label: self.label().to_owned(),
+            identity_id: self.selected_qualified_identity.as_ref()?.identity.id(),
+            network: self.app_context.network,
+            needs_vote: availability.needs_vote(),
+            registration_fee: self.registration_fee(),
+            contest_fee: if availability.needs_vote() {
+                self.contest_fee()
+            } else {
+                0
+            },
+        })
+    }
+
+    fn review_is_current(&self) -> bool {
+        self.review.is_some() && self.review == self.payment_review()
+    }
+
     fn continue_clicked(&mut self) {
-        let Some(availability) = self.current_availability() else {
+        let Some(review) = self.payment_review() else {
             return;
         };
-        if !availability.needs_vote() {
+        let needs_vote = review.needs_vote;
+        self.review = Some(review);
+        if !needs_vote {
             self.step = Step::Confirm;
             return;
         }
@@ -274,12 +311,23 @@ impl RegisterDpnsNameScreen {
 
     /// Dispatch the registration and raise the blocking overlay.
     fn begin_registration(&mut self, ctx: &Context) -> AppAction {
+        if self.step != Step::Confirm {
+            return AppAction::None;
+        }
+        if !self.review_is_current() {
+            self.on_label_changed();
+            return AppAction::None;
+        }
+        let Some(review) = &self.review else {
+            return AppAction::None;
+        };
         let Some(identity) = self.selected_qualified_identity.as_ref() else {
             return AppAction::None;
         };
         let task = IdentityTask::RegisterDpnsName(RegisterDpnsNameInput {
             qualified_identity: identity.clone(),
-            name_input: self.label().to_owned(),
+            name_input: review.label.clone(),
+            approved_contest_fee: review.contest_fee,
             signing_key_id: self.selected_key.as_ref().map(|key| key.id()),
         });
         self.step = Step::Submitting;
@@ -329,6 +377,7 @@ impl RegisterDpnsNameScreen {
     /// Test seam: move to the confirm step for the typed label.
     #[doc(hidden)]
     pub fn open_confirm_for_test(&mut self) {
+        self.review = self.payment_review();
         self.step = Step::Confirm;
     }
 
@@ -438,17 +487,22 @@ impl RegisterDpnsNameScreen {
     }
 
     fn render_confirm(&mut self, ui: &mut Ui) -> AppAction {
+        if self.step == Step::Confirm && !self.review_is_current() {
+            self.on_label_changed();
+            return self.render_choose(ui);
+        }
+        let Some(review) = self.review.clone() else {
+            return AppAction::None;
+        };
         let mut action = AppAction::None;
         let dark_mode = ui.style().visuals.dark_mode;
         let Some(identity) = self.selected_qualified_identity.clone() else {
             return action;
         };
-        let name = self.label().to_owned();
-        let needs_vote = self
-            .current_availability()
-            .is_some_and(UsernameAvailability::needs_vote);
-        let registration_fee = self.registration_fee();
-        let total = self.total_fee(needs_vote);
+        let name = review.label;
+        let needs_vote = review.needs_vote;
+        let registration_fee = review.registration_fee;
+        let total = registration_fee.saturating_add(review.contest_fee);
         let balance = identity.identity.balance();
 
         ui.heading("Review and pay");
@@ -483,7 +537,7 @@ impl RegisterDpnsNameScreen {
                         ui.end_row();
                         if needs_vote {
                             ui.label("Community vote fee (not returned)");
-                            ui.label(format_credits_as_dash(self.contest_fee()));
+                            ui.label(format_credits_as_dash(review.contest_fee));
                             ui.end_row();
                         }
                         ui.label(RichText::new("Total").strong());
@@ -725,6 +779,8 @@ impl ScreenLike for RegisterDpnsNameScreen {
                 row: AvailabilityRow::Known(*availability),
             };
             self.registration_error_handled = true;
+        } else if matches!(error, TaskError::UsernameRegistrationTermsChanged) {
+            self.on_label_changed();
         } else {
             self.step = Step::Confirm;
         }
@@ -864,9 +920,16 @@ impl ScreenLike for RegisterDpnsNameScreen {
             match dialog.show(ui).inner.dialog_response {
                 Some(ConfirmationStatus::Confirmed) => {
                     self.consent_dialog = None;
-                    self.step = Step::Confirm;
+                    if self.review_is_current() {
+                        self.step = Step::Confirm;
+                    } else {
+                        self.on_label_changed();
+                    }
                 }
-                Some(ConfirmationStatus::Canceled) => self.consent_dialog = None,
+                Some(ConfirmationStatus::Canceled) => {
+                    self.consent_dialog = None;
+                    self.review = None;
+                }
                 None => {}
             }
         }
@@ -938,10 +1001,5 @@ mod tests {
         let screen = RegisterDpnsNameScreen::new(&ctx, RegisterDpnsNameSource::Identities);
         assert_eq!(screen.contest_fee(), 10_000_000_000);
         assert_eq!(format_credits_as_dash(screen.contest_fee()), "0.1 DASH");
-        assert_eq!(
-            screen.total_fee(true),
-            screen.registration_fee() + 10_000_000_000
-        );
-        assert_eq!(screen.total_fee(false), screen.registration_fee());
     }
 }

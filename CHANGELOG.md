@@ -183,11 +183,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   vote show the non-refundable fee before payment, and availability is
   checked again before registration. Registration prevents duplicate payment;
   returning from a top-up preserves the chosen name and payment review.
+  Changing the name, payer, network or fee requires a fresh review; the backend
+  rejects an unapproved community vote fee before spending funds.
   Request status shows the timeline, tally and outcome, with alternatives
   that need no vote. Saved requests refresh before the wider contest search;
   after the estimated deadline they show “Awaiting result” until the network
   confirms an outcome. Refresh preserves concurrent identity edits and keeps
-  the previous request snapshot when storage cannot be read.
+  the previous request snapshot when storage cannot be read. Won usernames
+  retry failed fetches and identity writes, including after restarting the app.
   Profile → Usernames lists names and requests, with a “Show as main” choice
   for the username displayed when no profile display name is set.
 

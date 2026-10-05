@@ -196,6 +196,17 @@ impl UsernameAvailability {
     }
 }
 
+/// Whether a saved win still needs to be reflected in the identity's owned names.
+pub fn won_username_is_missing(
+    request: &UsernameRequest,
+    names: &[super::qualified_identity::DPNSNameInfo],
+) -> bool {
+    request.phase == RequestPhase::Won
+        && !names
+            .iter()
+            .any(|name| super::dpns::normalize_dpns_label(&name.name) == request.normalized_label)
+}
+
 /// How a finished contest ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContestWinner {
@@ -502,11 +513,13 @@ pub fn username_request_from_contest(
 /// Finished outcomes keep the dates and tally they were last seen with when the
 /// fresh snapshot no longer carries them, and drop out after
 /// [`OUTCOME_RETENTION`]. Pending requests not in `fresh` stay as stored until
-/// their result can be read.
+/// their result can be read. Wins stay until they are reflected in `owned_names`;
+/// `None` keeps wins when the caller has no current owned-name snapshot.
 pub fn merge_requests(
     previous: &[UsernameRequest],
     fresh: Vec<UsernameRequest>,
     now: TimestampMillis,
+    owned_names: Option<&[super::qualified_identity::DPNSNameInfo]>,
 ) -> Vec<UsernameRequest> {
     let mut merged: Vec<UsernameRequest> = fresh
         .into_iter()
@@ -544,6 +557,8 @@ pub fn merge_requests(
     let retention = duration_ms(OUTCOME_RETENTION);
     merged.retain(|r| {
         r.phase.is_pending()
+            || (r.phase == RequestPhase::Won
+                && owned_names.is_none_or(|names| won_username_is_missing(r, names)))
             || r.decided_at
                 .is_none_or(|decided| now.saturating_sub(decided) < retention)
     });
@@ -1078,11 +1093,28 @@ mod tests {
             stored("recent", RequestPhase::Locked, Some(now - 1)),
         ];
         let fresh = vec![stored("c", RequestPhase::Joinable, None)];
-        let labels: Vec<_> = merge_requests(&previous, fresh, now)
+        let labels: Vec<_> = merge_requests(&previous, fresh, now, None)
             .into_iter()
             .map(|r| r.normalized_label)
             .collect();
         assert_eq!(labels, ["b", "c", "recent"]);
+    }
+
+    #[test]
+    fn merge_keeps_old_win_until_owned_names_are_saved() {
+        let now = duration_ms(OUTCOME_RETENTION) + 10;
+        let previous = vec![stored(
+            &super::super::dpns::normalize_dpns_label("alice"),
+            RequestPhase::Won,
+            Some(1),
+        )];
+        assert_eq!(merge_requests(&previous, vec![], now, None).len(), 1);
+        assert_eq!(merge_requests(&previous, vec![], now, Some(&[])).len(), 1);
+        let names = [super::super::qualified_identity::DPNSNameInfo {
+            name: "alice".into(),
+            acquired_at: 1,
+        }];
+        assert!(merge_requests(&previous, vec![], now, Some(&names)).is_empty());
     }
 
     #[test]
@@ -1091,7 +1123,7 @@ mod tests {
         let mut won = stored("b", RequestPhase::Won, None);
         won.tally = RequestTally::default();
         won.end = None;
-        let merged = merge_requests(&previous, vec![won], 100);
+        let merged = merge_requests(&previous, vec![won], 100, None);
         assert_eq!(merged[0].phase, RequestPhase::Won);
         assert_eq!(merged[0].tally.you, 4);
         assert_eq!(merged[0].end, Some(3));

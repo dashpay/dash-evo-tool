@@ -118,9 +118,9 @@ impl IdentityHubScreen {
     fn username_refresh_action(&mut self, ctx: &egui::Context) -> AppAction {
         let arriving = std::mem::take(&mut self.usernames_arriving);
         let network = self.app_context.network;
-        let any_pending = self.app_context.any_pending_username_request();
+        let needs_refresh = self.app_context.username_requests_need_refresh();
         let now = crate::utils::time::now_ms();
-        if any_pending {
+        if needs_refresh {
             ctx.request_repaint_after(crate::model::dpns_usernames::pending_refresh_interval(
                 network,
             ));
@@ -129,7 +129,7 @@ impl IdentityHubScreen {
             now,
             self.usernames_refreshed_at,
             arriving,
-            any_pending,
+            needs_refresh,
             network,
         ) {
             return AppAction::None;

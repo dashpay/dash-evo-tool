@@ -2105,6 +2105,9 @@ pub enum TaskError {
         availability: crate::model::dpns_usernames::UsernameAvailability,
     },
 
+    #[error("The username payment terms changed. Nothing was spent. Review the name and fees again.")]
+    UsernameRegistrationTermsChanged,
+
     /// Username requests or preferences could not be read or written on this device.
     #[error(
         "Your username settings could not be saved on this device. Check available disk space and try again."

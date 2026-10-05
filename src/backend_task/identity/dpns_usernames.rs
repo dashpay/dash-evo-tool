@@ -231,8 +231,7 @@ impl AppContext {
                     ));
                 }
             }
-            self.apply_username_refresh(sdk, identity, &previous, fresh)
-                .await;
+            self.apply_username_refresh(sdk, identity, fresh).await;
         }
         // TODO(usernames): the SDK scan pages only while a timestamp group holds 100 polls and drops
         // names whose vote state fails; requests made on another device can be missed past that cap.
@@ -274,8 +273,7 @@ impl AppContext {
                     )
                 })
                 .collect();
-            self.apply_username_refresh(sdk, &identity, &previous, fresh)
-                .await;
+            self.apply_username_refresh(sdk, &identity, fresh).await;
         }
         Ok(BackendTaskSuccessResult::MyUsernameRequestsRefreshed)
     }
@@ -284,50 +282,59 @@ impl AppContext {
         &self,
         sdk: &Sdk,
         identity: &QualifiedIdentity,
-        previous: &[UsernameRequest],
         fresh: Vec<UsernameRequest>,
     ) {
         let identity_id = identity.identity.id();
-        let newly_won = fresh.iter().any(|request| {
-            request.phase == RequestPhase::Won
-                && !previous.iter().any(|old| {
-                    old.normalized_label == request.normalized_label
-                        && old.phase == RequestPhase::Won
-                })
-        });
         if let Err(error) = self.update_username_requests(&identity_id, |current| {
-            merge_requests(current, fresh, now_ms())
+            merge_requests(current, fresh, now_ms(), Some(&identity.dpns_names))
         }) {
             tracing::warn!(?error, %identity_id, "Username requests could not be stored");
         }
         self.egui_ctx().request_repaint();
-        if newly_won {
-            self.record_won_usernames(sdk, identity).await;
-        }
+        self.record_won_usernames(sdk, identity_id).await;
     }
 
-    /// Re-read the registered names of an identity that just won a vote, so the
-    /// won name is listed and shown at once.
-    async fn record_won_usernames(&self, sdk: &Sdk, identity: &QualifiedIdentity) {
-        match self
-            .fetch_owned_dpns_names(sdk, identity.identity.id())
-            .await
+    /// Retry saved wins until the owned names are durably reflected in the identity.
+    async fn record_won_usernames(&self, sdk: &Sdk, identity_id: Identifier) {
+        let requests = self.username_requests_for(&identity_id);
+        if !requests
+            .iter()
+            .any(|request| request.phase == RequestPhase::Won)
         {
+            self.update_username_hydration_status(identity_id, &[]);
+            return;
+        }
+        let identity = match self.get_local_qualified_identity(&identity_id) {
+            Ok(Some(identity)) => identity,
+            Ok(None) => {
+                return;
+            }
+            Err(error) => {
+                tracing::warn!(?error, %identity_id, "Won username identity could not be read; refresh will retry");
+                self.update_username_hydration_status(identity_id, &[]);
+                return;
+            }
+        };
+        let missing = self.update_username_hydration_status(identity_id, &identity.dpns_names);
+        if !missing {
+            return;
+        }
+        match self.fetch_owned_dpns_names(sdk, identity_id).await {
             Ok(names) => {
-                if let Err(error) =
-                    self.edit_local_qualified_identity(&identity.identity.id(), |fresh| {
-                        fresh.dpns_names = names;
-                        Ok(())
-                    })
-                {
-                    tracing::warn!(?error, "Won username could not be saved on the identity");
+                match self.edit_local_qualified_identity(&identity_id, |fresh| {
+                    fresh.dpns_names = names;
+                    Ok(())
+                }) {
+                    Ok(saved) => {
+                        self.update_username_hydration_status(identity_id, &saved.dpns_names);
+                    }
+                    Err(error) => {
+                        tracing::warn!(?error, %identity_id, "Won username could not be saved; refresh will retry")
+                    }
                 }
             }
             Err(error) => {
-                tracing::debug!(
-                    ?error,
-                    "Registered names could not be re-read after a won vote"
-                )
+                tracing::debug!(?error, %identity_id, "Won username could not be fetched; refresh will retry")
             }
         }
     }
@@ -350,7 +357,7 @@ impl AppContext {
             joined_until,
         );
         self.update_username_requests(identity_id, |current| {
-            merge_requests(current, vec![submitted], now)
+            merge_requests(current, vec![submitted], now, None)
         })
     }
 
@@ -397,15 +404,11 @@ mod tests {
         ContestedDocumentVotePollDriveQuery, ContestedDocumentVotePollDriveQueryResultType,
     };
 
-    #[tokio::test]
-    async fn known_username_outcome_refresh_survives_discovery_failure() {
-        let dir = tempfile::tempdir().unwrap();
-        let ctx = crate::context::test_support::test_app_context(dir.path());
-        ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(
-            std::sync::Arc::new(crate::wallet_backend::kv_test_support::InMemoryKv::default()),
-        ));
-        let id = Identifier::from([42; 32]);
-        let identity = QualifiedIdentity {
+    fn bare_identity(
+        id: Identifier,
+        network: dash_sdk::dpp::dashcore::Network,
+    ) -> QualifiedIdentity {
+        QualifiedIdentity {
             identity: dash_sdk::dpp::identity::Identity::create_basic_identity(
                 id,
                 dash_sdk::dpp::version::PlatformVersion::latest(),
@@ -423,8 +426,139 @@ mod tests {
             wallet_index: None,
             top_ups: Default::default(),
             status: crate::model::qualified_identity::IdentityStatus::Active,
-            network: ctx.network,
+            network,
+        }
+    }
+
+    async fn sdk_with_owned_name(ctx: &AppContext, id: Identifier) -> Sdk {
+        let query = DocumentQuery {
+            sub_queries: vec![],
+            select: SelectProjection::documents(),
+            data_contract: ctx.dpns_contract.clone(),
+            document_type_name: "domain".into(),
+            where_clauses: vec![WhereClause {
+                field: "records.identity".into(),
+                operator: WhereOperator::Equal,
+                value: Value::Identifier(id.into()),
+            }],
+            time_range_clauses: vec![],
+            group_by: vec![],
+            having: vec![],
+            order_by_clauses: vec![],
+            limit: 100,
+            offset: None,
+            start: None,
         };
+        let document = Document::V0(dash_sdk::dpp::document::DocumentV0 {
+            id: Identifier::from([88; 32]),
+            owner_id: id,
+            creator_id: None,
+            properties: BTreeMap::from([("label".into(), Value::Text("Alice".into()))]),
+            revision: None,
+            created_at: Some(100),
+            updated_at: None,
+            transferred_at: None,
+            created_at_block_height: None,
+            updated_at_block_height: None,
+            transferred_at_block_height: None,
+            created_at_core_block_height: None,
+            updated_at_core_block_height: None,
+            transferred_at_core_block_height: None,
+            contract_version: None,
+        });
+        let documents: dash_sdk::query_types::Documents =
+            [(document.id(), Some(document))].into_iter().collect();
+        let mut sdk = Sdk::new_mock();
+        sdk.mock()
+            .expect_fetch_many::<Identifier, Document, _, dash_sdk::query_types::Documents>(
+                query,
+                Some(documents),
+            )
+            .await
+            .unwrap();
+        sdk
+    }
+
+    #[tokio::test]
+    async fn won_username_retries_fetch_after_restart() {
+        won_username_retries_after_restart(false).await;
+    }
+
+    #[tokio::test]
+    async fn won_username_retries_identity_write_after_restart() {
+        won_username_retries_after_restart(true).await;
+    }
+
+    async fn won_username_retries_after_restart(fail_write: bool) {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let store =
+            std::sync::Arc::new(crate::wallet_backend::kv_test_support::FailingKv::default());
+        ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(store.clone()));
+        let id = Identifier::from([43; 32]);
+        let identity = bare_identity(id, ctx.network);
+        ctx.insert_local_qualified_identity_sidecar_only(&identity)
+            .unwrap();
+        let mut won = UsernameRequest::submitted(
+            "Alice",
+            now_ms(),
+            ctx.username_contest_durations(&Sdk::new_mock()),
+            None,
+        );
+        won.phase = RequestPhase::Won;
+        won.decided_at = Some(now_ms());
+        let sdk = if fail_write {
+            sdk_with_owned_name(&ctx, id).await
+        } else {
+            Sdk::new_mock()
+        };
+        if fail_write {
+            store.fail_next_puts_containing("det:identity:v1", 1);
+        }
+        ctx.apply_username_refresh(&sdk, &identity, vec![won.clone()])
+            .await;
+        assert_eq!(ctx.username_requests_for(&id)[0].phase, RequestPhase::Won);
+        assert!(
+            ctx.username_requests_need_refresh(),
+            "a saved win keeps periodic retries active"
+        );
+        assert!(
+            ctx.get_local_qualified_identity(&id)
+                .unwrap()
+                .unwrap()
+                .dpns_names
+                .is_empty()
+        );
+        drop(ctx);
+        let restarted_dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(restarted_dir.path());
+        ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(store));
+        ctx.refresh_pending_dpns_usernames().unwrap();
+        assert!(
+            ctx.username_requests_need_refresh(),
+            "startup restores the retry obligation"
+        );
+        let sdk = sdk_with_owned_name(&ctx, id).await;
+        // Discovery is deliberately unavailable; saved winners must be repaired before it.
+        let _ = ctx.refresh_my_username_requests(&sdk).await;
+        let saved = ctx.get_local_qualified_identity(&id).unwrap().unwrap();
+        assert_eq!(ctx.main_username(&saved).as_deref(), Some("Alice"));
+        assert_eq!(saved.dpns_names.len(), 1);
+        assert!(
+            !ctx.username_requests_need_refresh(),
+            "successful persistence clears the retry obligation"
+        );
+    }
+
+    #[tokio::test]
+    async fn known_username_outcome_refresh_survives_discovery_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(
+            std::sync::Arc::new(crate::wallet_backend::kv_test_support::InMemoryKv::default()),
+        ));
+        let id = Identifier::from([42; 32]);
+        let identity = bare_identity(id, ctx.network);
         ctx.insert_local_qualified_identity_sidecar_only(&identity)
             .unwrap();
         ctx.store_username_requests(

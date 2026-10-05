@@ -44,6 +44,7 @@ async fn test_register_dpns_name() {
     let task = BackendTask::IdentityTask(IdentityTask::RegisterDpnsName(RegisterDpnsNameInput {
         qualified_identity: qualified_identity.clone(),
         name_input: dpns_name.clone(),
+        approved_contest_fee: 0,
         signing_key_id: None,
     }));
     let result = run_task(app_context, task)

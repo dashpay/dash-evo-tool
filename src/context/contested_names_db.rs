@@ -11,7 +11,9 @@ use crate::backend_task::error::TaskError;
 use crate::model::contested_name::{
     ContestState, Contestant, ContestedName, MasternodeVoteStateSummary,
 };
-use crate::model::dpns_usernames::{SeenMarkAttempts, UsernameRequest};
+use crate::model::dpns_usernames::{
+    RequestPhase, SeenMarkAttempts, UsernameRequest, won_username_is_missing,
+};
 use crate::model::dpns_voting::{
     DpnsCurrentVoteState, DpnsVoteOperation, DpnsVoteOperationId, DpnsVoteTargetKey, VoteTiming,
     dpns_vote_authority_rank,
@@ -260,6 +262,12 @@ impl AppContext {
                 .get::<Vec<UsernameRequest>>(DetScope::Global, &key)
                 .map_err(username_err)?
             {
+                if requests
+                    .iter()
+                    .any(|request| request.phase == RequestPhase::Won)
+                {
+                    cache.hydration_pending.insert(id);
+                }
                 cache.requests.insert(id, requests);
             }
         }
@@ -331,6 +339,30 @@ impl AppContext {
             .any(|request| request.phase.is_pending())
     }
 
+    /// Pending contests and saved wins both need periodic refresh until owned names are stored.
+    pub fn username_requests_need_refresh(&self) -> bool {
+        self.any_pending_username_request() || !self.username_cache().hydration_pending.is_empty()
+    }
+
+    pub(crate) fn update_username_hydration_status(
+        &self,
+        identity_id: Identifier,
+        names: &[crate::model::qualified_identity::DPNSNameInfo],
+    ) -> bool {
+        let mut cache = self.username_cache_mut();
+        let pending = cache.requests.get(&identity_id).is_some_and(|requests| {
+            requests
+                .iter()
+                .any(|request| won_username_is_missing(request, names))
+        });
+        if pending {
+            cache.hydration_pending.insert(identity_id);
+        } else {
+            cache.hydration_pending.remove(&identity_id);
+        }
+        pending
+    }
+
     /// Persist `requests` as the full request list of `identity_id`.
     pub fn store_username_requests(
         &self,
@@ -360,9 +392,16 @@ impl AppContext {
         if requests.is_empty() {
             kv.delete(DetScope::Global, &key).map_err(username_err)?;
             cache.requests.remove(identity_id);
+            cache.hydration_pending.remove(identity_id);
         } else {
             kv.put(DetScope::Global, &key, &requests)
                 .map_err(username_err)?;
+            if requests
+                .iter()
+                .any(|request| request.phase == RequestPhase::Won)
+            {
+                cache.hydration_pending.insert(*identity_id);
+            }
             cache.requests.insert(*identity_id, requests);
         }
         Ok(())
@@ -525,6 +564,7 @@ impl AppContext {
                 .map_err(username_err)?;
         }
         cache.requests.remove(identity_id);
+        cache.hydration_pending.remove(identity_id);
         cache.main.remove(identity_id);
         cache.seen.remove(identity_id);
         Ok(())
@@ -844,6 +884,7 @@ const SEEN_OUTCOMES_KEY_PREFIX: &str = "det:username_outcomes_seen:";
 #[derive(Debug, Default)]
 pub(crate) struct UsernameCache {
     requests: HashMap<Identifier, Vec<UsernameRequest>>,
+    hydration_pending: BTreeSet<Identifier>,
     main: HashMap<Identifier, String>,
     seen: HashMap<Identifier, BTreeSet<String>>,
     /// In-memory write bounds for "banner seen"; never persisted.

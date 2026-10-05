@@ -201,7 +201,7 @@ jobs:
 
           Only artifact run pointers and retention metadata change. Archive sizes and SHA-256 digests were verified before upload; actual expiry was read back from GitHub. No wallet capture or migration was performed.
 
-          Review and merge this PR before the old artifacts expire. Run the migration matrix against this branch before merging. If GitHub requests approval for Actions on this bot-created PR, approve those checks.
+          Review and merge this PR before the old artifacts expire. Before merging, dispatch the Tests workflow (tests.yml) on this branch or mark the PR ready for review to run the tests and migration checks. If GitHub requests approval for Actions on this bot-created PR, approve those checks.
 
           <sub>🤖 Co-authored by [Claudius the Magnificent](https://github.com/lklimek/claudius) AI Agent</sub>
           EOF

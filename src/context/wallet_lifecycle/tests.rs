@@ -529,9 +529,14 @@ async fn concurrent_spv_start_failure_is_returned_to_every_caller() {
     std::fs::create_dir(&spv_lock_path)
         .expect("plant a directory where dash-spv expects its lock file");
 
-    let backend_a = Arc::clone(&backend);
-    let backend_b = Arc::clone(&backend);
-    let (result_a, result_b) = tokio::join!(backend_a.start(), backend_b.start());
+    // Both callers must join the flight before the immediate storage error can reset it.
+    let lifecycle = backend.lock_start_lifecycle_for_test().await;
+    let mut start_a = std::pin::pin!(backend.start());
+    let mut start_b = std::pin::pin!(backend.start());
+    assert!(futures::poll!(&mut start_a).is_pending());
+    assert!(futures::poll!(&mut start_b).is_pending());
+    drop(lifecycle);
+    let (result_a, result_b) = tokio::join!(start_a, start_b);
 
     let error_a = result_a.expect_err("first caller must receive the SPV start failure");
     let error_b = result_b.expect_err("second caller must receive the SPV start failure");

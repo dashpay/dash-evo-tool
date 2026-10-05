@@ -792,6 +792,10 @@ where
         step: MigrationStep::Identities,
     });
     let identities = migrate_identities(app_context);
+    // The wallets bootstrapped during the drain, before these identities existed.
+    app_context
+        .reconcile_managed_identities_for_loaded_wallets()
+        .await;
 
     // Both DET-owned passes have now run. A hard failure in either still reaches
     // the user's "Retry now" banner, but only after neither could block the

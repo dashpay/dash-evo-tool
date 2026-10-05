@@ -215,6 +215,10 @@ pub async fn update_profile(
         input.public_message.clone().unwrap_or_default(),
         input.avatar_url.clone().unwrap_or_default(),
     );
+    // An identity loaded after its wallet bootstrapped is not yet known to that wallet.
+    app_context
+        .reconcile_managed_identities_for_loaded_wallets()
+        .await;
     backend
         .dashpay_write_profile(&identity, input, existing.is_none())
         .await?;

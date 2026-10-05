@@ -162,12 +162,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- Weekly releases independently check the latest completed push results for
-  tests and Clippy and scheduled fixture coverage and pin checks. A passing
-  check cannot hide a failure in another gate; absent run history is allowed.
-  Scheduled checks and push tests use separate concurrency groups so they
-  cannot cancel each other.
-
 - Restoring imported keys remains recoverable after interrupted storage writes
   and reports unreadable protected keys. Startup migration preserves existing
   keys, seeds, and their password protection.
@@ -654,8 +648,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- CI shares one build between the regular tests and migration checks, then runs
-  both suites in parallel.
+- The Tests workflow incorporates the archived-profile checks from Migration
+  Matrix, sharing one build and running the regular and migration suites in
+  parallel. Monday schedules run only lightweight fixture and pin checks in a
+  separate concurrency group. Weekly releases check push test/Clippy results
+  and scheduled fixture/pin results independently.
 
 - User identities use their DashPay Display name on cards, navigation, and selectors, falling back to a username or shortened identity ID. The identity-list tool reports cached profile display names for User identities and preserves administrative node names.
 

@@ -12,8 +12,8 @@ use crate::model::dpns_voting::operator::{
 };
 use crate::model::dpns_voting::{
     DpnsCurrentVoteState, DpnsVoteOperation, DpnsVoteOutcome, DpnsVotePollAvailability,
-    DpnsVoteTargetKey, DpnsVoteTargetStatus, authoritative_dpns_vote_outcome,
-    dpns_vote_lock_holders, dpns_vote_poll_availability,
+    DpnsVoteTargetKey, DpnsVoteTargetStatus, dpns_vote_authority_rank, dpns_vote_lock_holders,
+    dpns_vote_poll_availability,
 };
 use crate::model::qualified_identity::IdentityType;
 use crate::utils::time::now_ms;
@@ -25,15 +25,25 @@ use std::sync::Arc;
 
 /// Distinct targets whose authoritative outcome is still `Unconfirmed`.
 pub(crate) fn unresolved_target_count(operations: &[DpnsVoteOperation]) -> usize {
-    let keys: BTreeSet<&DpnsVoteTargetKey> = operations
-        .iter()
-        .flat_map(|operation| operation.targets.iter().map(|outcome| &outcome.target.key))
-        .collect();
-    keys.into_iter()
-        .filter(|key| {
-            authoritative_dpns_vote_outcome(operations, key)
-                .is_some_and(|outcome| outcome.status == DpnsVoteTargetStatus::Unconfirmed)
-        })
+    let mut authoritative = BTreeMap::new();
+    for operation in operations {
+        for outcome in &operation.targets {
+            let rank = dpns_vote_authority_rank(
+                operation.created_at,
+                outcome.operation_id,
+                outcome.status,
+            );
+            let entry = authoritative
+                .entry(&outcome.target.key)
+                .or_insert((rank, outcome.status));
+            if rank >= entry.0 {
+                *entry = (rank, outcome.status);
+            }
+        }
+    }
+    authoritative
+        .values()
+        .filter(|(_, status)| *status == DpnsVoteTargetStatus::Unconfirmed)
         .count()
 }
 
@@ -421,6 +431,46 @@ mod tests {
         ];
         assert_eq!(unresolved_target_count(&operations), 2);
         assert_eq!(unresolved_target_count(&[]), 0);
+    }
+
+    #[test]
+    fn unresolved_count_preserves_authority_order_for_competing_outcomes() {
+        use crate::model::dpns_voting::DpnsVoteOperationId;
+        use DpnsVoteTargetStatus::{Confirmed, Scheduled, Unconfirmed};
+
+        for (first_status, first_time, second_status, second_time, expected) in [
+            (Unconfirmed, 1, Confirmed, 2, 1),
+            (Scheduled, 1, Unconfirmed, 2, 1),
+            (Unconfirmed, 2, Scheduled, 1, 1),
+            (Unconfirmed, 1, Scheduled, 1, 0),
+            (Scheduled, 1, Unconfirmed, 1, 1),
+        ] {
+            let mut first = operation(2, first_status, first_time);
+            first.id = DpnsVoteOperationId::from_bytes([1; 16]);
+            first.targets[0].operation_id = first.id;
+            let mut second = operation(2, second_status, second_time);
+            second.id = DpnsVoteOperationId::from_bytes([2; 16]);
+            second.targets[0].operation_id = second.id;
+            let mut operations = vec![first, second];
+            assert_eq!(unresolved_target_count(&operations), expected);
+            operations.reverse();
+            assert_eq!(unresolved_target_count(&operations), expected);
+        }
+    }
+
+    #[test]
+    fn unresolved_count_handles_bulk_operations_and_distinct_nodes() {
+        let mut bulk = operation(2, DpnsVoteTargetStatus::Confirmed, 1);
+        for poll in 3..=100 {
+            let mut outcome = bulk.targets[0].clone();
+            outcome.target.key.vote_poll_id = Identifier::from([poll; 32]);
+            bulk.targets.push(outcome);
+        }
+        let first_node = operation(2, DpnsVoteTargetStatus::Unconfirmed, 2);
+        let mut second_node = first_node.clone();
+        second_node.targets[0].target.key.voter_id = Identifier::from([2; 32]);
+        assert_eq!(unresolved_target_count(&[bulk.clone()]), 0);
+        assert_eq!(unresolved_target_count(&[bulk, first_node, second_node]), 2);
     }
 
     /// VOTE-TC-094 (node detail half): the node's votes list every open

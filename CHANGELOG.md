@@ -151,44 +151,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   evonode from *Identities → Load Existing Identity → Show Advanced
   Options*, which no longer offers those identity types.
 
-- **Username voting in Masternodes → Votes**: decide name contests across
-  your masternodes in one place, with To decide / Voted / Scheduled / History
-  views, node-set selection, bulk choices, and one confirmation for the batch.
-  Cards show weighted tallies and your nodes' influence. A top-bar indicator
-  and navigation badge highlight contests needing a vote, with background
-  refresh every 30 minutes on Mainnet and every 3 minutes on other networks.
-  Review shows each node's current and requested choice and remaining vote
-  changes, or Unknown when the local history cannot establish the count.
-  Refresh updates the visible contests and vote state. Unnamed nodes use the
-  same shortened ProTxHash throughout voting and progress views. Attention
-  summaries reflect authoritative vote outcomes and warn against resubmitting
-  votes whose results are still uncertain.
-  Cast now, choose a UTC time, or schedule shortly before voting ends.
-  A progress drawer lets you keep working while votes are sent.
-  Decisions staged or changed during submission remain available afterward.
-  Uncertain results stay visible and blocked from repeat submission.
-  Passing the estimated deadline alone does not release an uncertain vote.
-  Unresolved operations remain accessible after a contest closes and are
-  not displaced by newer completed votes. Failed scheduled attempts retain
-  an actionable explanation after restarting the app.
-  Scheduled votes retain the selected UTC time and can be edited before
-  execution starts. New schedules must precede the contest's known deadline;
-  checking older uncertain votes does not discard schedules already due.
-  Removing a node cancels its unstarted scheduled votes.
-  Contests remain readable without a voting key, and a missing voting key
-  can be added from the node's detail page without replacing its other keys.
+- **Username voting in Masternodes → Votes**: decide contests across your
+  masternodes with To decide / Voted / Scheduled / History views, remembered
+  node sets, bulk choices, and one aggregate confirmation for the batch.
+  Cards show weighted tallies and your nodes' influence. The confirmation
+  lists names, choices, node counts and timing. Node details show remaining
+  vote changes (four after the initial vote, or Unknown when this device has
+  no count). If a first vote becomes a change before
+  submission, another review is required. Nodes without available voting
+  information are skipped with a refresh action; missing voting keys can be
+  added from node detail without replacing other keys.
 
-- **Usernames in Identities**: check a name's availability, request it, and
-  follow its status without opening the voting screen. Names that need a
-  community vote show the non-refundable fee before payment; availability
-  is checked again before registration. Request status shows the timeline,
-  tally, and outcome, and suggests alternatives that need no vote.
-  Request refreshes preserve concurrent edits and retain saved requests when
-  storage cannot be read.
-  Profile → Usernames lists your names and requests, with a "Show as main"
-  choice for the username displayed when no profile display name is set.
-  The former DPNS tool entry is removed; old voting shortcuts open
-  Masternodes → Votes, and old username shortcuts open Identities.
+  Cast now, choose a UTC time, or schedule shortly before voting ends.
+  Scheduled decisions can be edited or removed before execution; missed
+  schedules and failed attempts offer recovery actions. Mixed batches report
+  cast and scheduled results together. A progress drawer keeps other work
+  available, and decisions staged or changed during submission survive its
+  completion. Uncertain votes stay visible and blocked from resubmission;
+  passing the estimated deadline alone does not release them. Completed
+  history is bounded without discarding unresolved votes. Removing a node
+  cancels its unstarted scheduled votes.
+
+  A top-bar indicator and navigation badge highlight contests needing a vote,
+  with background refresh every 30 minutes on Mainnet and every 3 minutes on
+  other networks. Refresh bursts yield between frames, and unresolved counts
+  use one pass through the vote journal. History has a final “details” column
+  that opens the contest in Platform Explorer on Mainnet or Testnet.
+
+- **Usernames in Identities**: check availability, request a name, and follow
+  its status without opening the voting screen. Names needing a community
+  vote show the non-refundable fee before payment, and availability is
+  checked again before registration. Registration prevents duplicate payment;
+  returning from a top-up preserves the chosen name and payment review.
+  Request status shows the timeline, tally and outcome, with alternatives
+  that need no vote. Saved requests refresh before the wider contest search;
+  after the estimated deadline they show “Awaiting result” until the network
+  confirms an outcome. Refresh preserves concurrent identity edits and keeps
+  the previous request snapshot when storage cannot be read.
+  Profile → Usernames lists names and requests, with a “Show as main” choice
+  for the username displayed when no profile display name is set.
 
 - **Wallet/identity indicator on more screens (rollout in progress)**: the
   wallet and identity picker previously shown only at the top of the Identity
@@ -201,36 +202,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   follow-up.
 
 ### Fixed
-
-- Large voting refresh bursts yield between frames so the window remains responsive while queued results are delivered.
-
-- Votes distinguishes missing nodes from missing voting keys, and node detail refresh reloads cached votes.
-- Bulk voting reports confirmed and failed targets together while scheduled preflight failures remain retryable.
-- Relative schedule labels follow vote journal retention and clear when the scheduled time changes.
-- Exhausted voting limits consistently describe four changes after the initial vote.
-
-- Refreshing owned usernames preserves concurrent identity alias and key edits.
-- Ambiguous vote broadcasts remain locked while their results are checked. Failed recovery
-  retries only affected targets and cannot release another active voter's claim.
-- Holding Enter cannot submit the vote confirmation. Scheduled vote errors release their
-  own controls during bulk submissions, and card refreshes show the shared progress state.
-- Username request badges reflect the joining and voting phases consistently, and voting
-  choices and feedback use shared labels and complete translation-ready sentences.
-
-- Returning from a successful identity top-up refreshes the balance on
-  "Get a username" without clearing the chosen name or payment review.
-- Username registration stays blocked while its payment is in progress,
-  even when an unrelated background task fails. Username updates preserve
-  concurrent changes to the identity's keys.
-- Vote choices show identity handles to distinguish similar names.
-  "Cast now" leaves other nodes' queued votes untouched, and failed contest
-  refreshes can be retried.
-
-- DPNS vote confirmation now highlights the name and chosen vote in separate
-  blocks, explains Lock and Abstain, and separates the previous vote and timing.
-
-- DPNS scheduled retries keep the selected choice, and simultaneous scheduled votes share fresh voting information without losing their due status. If a first vote becomes a vote change before submission, DET asks for another review. Unavailable voting information stays visible with a refresh action, successful mixed batches report both cast and scheduled votes, and contest refresh remains available when saved voting progress cannot be recovered.
-- DPNS voting now explains missed automatic schedules and unreadable saved progress, with manual recovery actions. Completed scheduled and mixed voting history is bounded without discarding unresolved votes or restoring removed schedules. Adding another node's voting key gives a key-specific error.
 
 - Restoring imported keys remains recoverable after interrupted storage writes
   and reports unreadable protected keys. Startup migration preserves existing
@@ -918,6 +889,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   note-level breakdown is unavailable in this release.
 
 ### Removed
+
+- The standalone DPNS tool and voting controls embedded in node details. Voting now
+  lives in Masternodes → Votes and username management in Identities;
+  existing shortcuts redirect to their replacements.
 
 - Local names for User identities in profile, create, load, and owned-name screens. Existing records remain readable; node administrative names and contact nicknames remain available.
 

@@ -616,7 +616,7 @@ impl AddressInput {
         for qi in identities {
             let id = qi.identity.id();
             let id_str = id.to_string(Encoding::Base58);
-            let dpns_name = qi.dpns_names.first().map(|n| n.name.clone());
+            let dpns_name = app_context.main_username(qi);
             let name_label = Some(app_context.identity_display_label(qi));
             self.all_entries.push(AddressEntry {
                 address_string: id_str,

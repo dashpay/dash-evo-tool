@@ -58,6 +58,11 @@ pub struct IdentityHubScreen {
     /// Settings-tab state. Held on the hub so edit fields, unsaved drafts,
     /// and modal state persist across frames.
     settings_tab: SettingsTab,
+    /// When a username status refresh was last dispatched (Unix ms). The cadence
+    /// keys off dispatch time, so a result routed elsewhere never stalls it.
+    usernames_refreshed_at: Option<u64>,
+    /// The hub was just shown; the next frame applies the arrival refresh rule.
+    usernames_arriving: bool,
     /// Identities this screen dispatched an unload for, each retained until its
     /// own result lands. Neither selection pointer survives that wait: a frame
     /// can render before the result arrives and reconcile both of them onto the
@@ -109,6 +114,32 @@ enum ContactInfoTaskKey {
 }
 
 impl IdentityHubScreen {
+    /// Refresh username request status when due (USR-FR-021); schedules the next check.
+    fn username_refresh_action(&mut self, ctx: &egui::Context) -> AppAction {
+        let arriving = std::mem::take(&mut self.usernames_arriving);
+        let network = self.app_context.network;
+        let needs_refresh = self.app_context.username_requests_need_refresh();
+        let now = crate::utils::time::now_ms();
+        if needs_refresh {
+            ctx.request_repaint_after(crate::model::dpns_usernames::pending_refresh_interval(
+                network,
+            ));
+        }
+        if !crate::model::dpns_usernames::username_refresh_due(
+            now,
+            self.usernames_refreshed_at,
+            arriving,
+            needs_refresh,
+            network,
+        ) {
+            return AppAction::None;
+        }
+        self.usernames_refreshed_at = Some(now);
+        AppAction::BackendTask(BackendTask::IdentityTask(
+            IdentityTask::RefreshMyUsernameRequests,
+        ))
+    }
+
     /// Whether an avatar result still belongs to an outstanding hub request.
     pub(crate) fn is_waiting_for_avatar(&self, url: &str) -> bool {
         self.avatar_cache.is_loading(url)
@@ -125,6 +156,8 @@ impl IdentityHubScreen {
             last_good_landing: HubLanding::Onboarding,
             home_state: HomeState::default(),
             settings_tab: SettingsTab::new(),
+            usernames_refreshed_at: None,
+            usernames_arriving: true,
             pending_unloads: BTreeSet::new(),
             contacts_state: super::contacts::ContactsState::default(),
             profile_cache: super::profile_cache::ProfileCache::default(),
@@ -404,6 +437,7 @@ impl ScreenLike for IdentityHubScreen {
 
     fn refresh_on_arrival(&mut self) {
         self.refresh();
+        self.usernames_arriving = true;
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
@@ -607,6 +641,9 @@ impl ScreenLike for IdentityHubScreen {
                 self.profile_cache.dispatch_pending()
             };
         }
+        if matches!(action, AppAction::None) {
+            action = self.username_refresh_action(ctx);
+        }
         action
     }
 
@@ -641,6 +678,13 @@ impl ScreenLike for IdentityHubScreen {
     }
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
+        if matches!(
+            result,
+            BackendTaskSuccessResult::MyUsernameRequestsRefreshed
+                | BackendTaskSuccessResult::UsernamePreferencesSaved
+        ) {
+            return;
+        }
         if let BackendTaskSuccessResult::DashPayAvatar { url, bytes } = result {
             if self.is_waiting_for_avatar(&url) {
                 self.avatar_cache.store(url, bytes);
@@ -744,6 +788,11 @@ impl ScreenLike for IdentityHubScreen {
     }
 
     fn display_task_error(&mut self, error: &TaskError) -> bool {
+        // The status refresh runs in the background; a failure keeps the stored
+        // status and retries on the next cadence tick instead of raising a banner.
+        if matches!(error, TaskError::UsernameRequestRefreshFailed { .. }) {
+            return true;
+        }
         if self.handle_contact_request_error(error) {
             return matches!(
                 contact_info_read_error_key(error),

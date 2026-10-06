@@ -816,14 +816,12 @@ impl ProfileScreen {
 
                                     // Username from identity
                                     if let Some(identity) = &self.selected_identity
-                                        && !identity.dpns_names.is_empty()
+                                        && let Some(name) =
+                                            self.app_context.main_username(identity)
                                     {
                                         let dark_mode = ui.style().visuals.dark_mode;
                                         ui.label(
-                                            RichText::new(format!(
-                                                "@{}",
-                                                identity.dpns_names[0].name
-                                            ))
+                                            RichText::new(format!("@{name}"))
                                             .color(DashColors::text_secondary(dark_mode)),
                                         );
                                     }

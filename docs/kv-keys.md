@@ -1,6 +1,6 @@
 # DET k/v key reference
 
-`DetKv` wraps the upstream `platform_wallet_storage::KvStore`. Values are encoded as `[ schema_version (1 byte) | bincode(payload) ]` using `bincode::config::standard()`. Keys are colon-separated namespaces. Every `DetKv` call takes a `DetScope` argument: `DetScope::Global` = global slot, `DetScope::Wallet(&seed_hash)` = per-wallet slot (cascades on wallet delete), `DetScope::Identity(&id)` = per-identity slot (active — used for identities, top-ups, scheduled votes, and DashPay `private`/`address_index` overlays), `DetScope::Token { identity_id, token_id }` = per-token slot (defined and mapped, currently unused — token balances are read live from upstream). `DetScope::Identity` and `DetScope::Token` map to the upstream `meta_identity` / `meta_token` tables; an upstream `AFTER DELETE` soft-cascade reaps that metadata only when the parent object row is actually deleted. DET identity unloads do not delete that upstream row, so `delete_local_qualified_identity` explicitly purges the identity scope and owner-scoped Global sidecars. `DetScope` is the DET-side seam over the upstream `ObjectId` enum — the upstream scope type never crosses the wallet-backend boundary.
+`DetKv` wraps the upstream `platform_wallet_storage::KvStore`. Values are encoded as `[ schema_version (1 byte) | bincode(payload) ]` using `bincode::config::standard()`. Keys are colon-separated namespaces. Every `DetKv` call takes a `DetScope` argument: `DetScope::Global` = global slot, `DetScope::Wallet(&seed_hash)` = per-wallet slot (cascades on wallet delete), `DetScope::Identity(&id)` = per-identity slot (active — used for identities, top-ups, and DashPay `private`/`address_index` overlays), `DetScope::Token { identity_id, token_id }` = per-token slot (defined and mapped, currently unused — token balances are read live from upstream). `DetScope::Identity` and `DetScope::Token` map to the upstream `meta_identity` / `meta_token` tables; an upstream `AFTER DELETE` soft-cascade reaps that metadata only when the parent object row is actually deleted. DET identity unloads do not delete that upstream row, so `delete_local_qualified_identity` explicitly purges the identity scope and owner-scoped Global sidecars. `DetScope` is the DET-side seam over the upstream `ObjectId` enum — the upstream scope type never crosses the wallet-backend boundary.
 
 Three backing stores exist:
 
@@ -88,7 +88,7 @@ The identity blob and top-up history are **identity-scoped** (`DetScope::Identit
 | `det:identity_index:v1` | `None` | `det-<net>.sqlite` | `Vec<[u8;32]>` | Complete enumeration index of stored identity ids. Rewritten wholesale on every add/remove, so all read-modify-write access is serialized by one process-wide lock — absence from this roster authorizes the vault-cleanup sweep to delete an identity's private keys, and a lost update would forge that evidence |
 | `det:identity_order:v1` | `None` | `det-<net>.sqlite` | `Vec<[u8;32]>` | User-chosen display ordering of identity ID raw bytes |
 | `det:top_ups:v1` | `DetScope::Identity(&id)` | `det-<net>.sqlite` | `BTreeMap<u32, u64>` | Top-up history: account index → credits |
-| `det:vault_cleanup_pending:v1:<id_base58>` | `None` | `det-<net>.sqlite` | `Vec<(StoredPrivateKeyTarget, KeyID)>` | Durable manifest of the vault-key placements a `delete_local_qualified_identity` call must still clear; persisted before that call's first mutation, cleared once every listed key and the owner's DashPay/token-list sidecars are deleted (a clear that fails leaves a stale manifest, not a failed removal — the sweep re-runs the idempotent deletes and clears it). Global-scoped (not `DetScope::Identity`) so it survives the index removal that unlists `id` — the exact step it exists to protect against. Resumed by the boot-time `AppContext::resume_pending_vault_cleanups` sweep. |
+| `det:vault_cleanup_pending:v1:<id_base58>` | `None` | `det-<net>.sqlite` | `Vec<(StoredPrivateKeyTarget, KeyID)>` | Durable manifest of the vault-key placements a `delete_local_qualified_identity` call must still clear; persisted before that call's first mutation, cleared once every listed key, the owner's DashPay/token-list sidecars and its username records are deleted and its pending DPNS votes are cancelled (a clear that fails leaves a stale manifest, not a failed removal — the sweep re-runs the idempotent deletes and clears it). Global-scoped (not `DetScope::Identity`) so it survives the index removal that unlists `id` — the exact step it exists to protect against. Resumed by the boot-time `AppContext::resume_pending_vault_cleanups` sweep. |
 | `det:identity_unloaded:v1:<id_base58>` | `None` | `det-<net>.sqlite` | `u64` | Presence-only marker that the user unloaded this identity from this device; the stored value is the unload's unix timestamp, kept for diagnostics only and never read for a decision. Written by `delete_local_qualified_identity` **before** `index_remove_identity` delists the identity, and by the devnet wipe for every identity it clears, so no window exists in which the identity is gone and the marker is not yet on file. Consulted by `AppContext::store_discovered_identity` — the single guarded store used by the discovery passes and by the `finish_unwire` migration import — which refuses to store an identity carrying one. That refusal is what makes an unload survive the automatic passes (boot sweep, post-unlock, wallet import, resumed migration), all of which re-derive or re-read the same identity from material that outlives the removal. The absent-record branch of `write_local_qualified_identity_locked` declines the same way, as a backstop covering every update path that could otherwise re-create a record for an identity a removal had already taken away. Global-scoped for the same reason as the manifest above: it must outlive the identity's own scope. Retired only by `insert_local_qualified_identity`, i.e. by the user deliberately loading the identity again. Never expired on a timer — an expiring tombstone is a resurrection with a delay — and never reaped: it grows by one entry per identity the user has actually unloaded on this network, a bound set by user action rather than by anything automatic, which any change letting an automatic path write these would break. |
 
 **Exception to the cascade above**: an identity stored without a wallet association (`wallet_hash: None`) is *also* mirrored into the upstream `identities` table under the **unowned scope** — the all-zero `WalletId`, which upstream stores as a NULL `wallet_id`. Masternode/evonode nodes are the expected case, but any wallet-less identity DET stores takes this path (e.g. a `User` identity looked up by id with no owning wallet). The scope is load-bearing, not incidental: a NULL `wallet_id` activates no foreign key, so no wallet's `ON DELETE CASCADE` reaches the row, and the `cascade_meta_on_identity_delete` trigger — which would delete the identity's `meta_identity` rows, i.e. the `det:identity:v1` record above — never fires for it. That is the whole point: filing the same identity under a real wallet's scope would make removing that unrelated wallet destroy the node's DET record. These rows are also kept out of every wallet's `IdentityManager`, because the `identities` upsert promotes an unowned row to the first wallet that flushes it.
@@ -107,16 +107,61 @@ Source: `src/context/identity_db.rs`, `src/wallet_backend/identity_ops.rs`
 
 ---
 
-## Scheduled votes
+## Scheduled votes (retired)
 
-Scheduled votes are **voter-scoped** (`DetScope::Identity(&voter_id)`); the contested name is the key suffix. A Global `det:scheduled_vote_voters:v1` slot holds the complete set of voter ids that have at least one scheduled vote, driving the network-wide read / clear paths (Identity scope has no cross-voter listing).
+These keys are **retired**. No current code reads or writes them; scheduled votes live only in the DPNS vote journal below. Entries left behind by an earlier development build are ignored: they are neither imported nor reported.
+
+| Key | Scope | Store | Status |
+|-----|-------|-------|--------|
+| `det:scheduled_vote:<contested_name>` | `DetScope::Identity(&voter_id)` | `det-<net>.sqlite` | Retired; never read |
+| `det:scheduled_vote_voters:v1` | `None` | `det-<net>.sqlite` | Retired; never read |
+| `det:migration:unreadable_votes:<network>:v1` | `None` | `det-app.sqlite` | Retired; never read (the storage update no longer inspects legacy scheduled votes) |
+
+Unexecuted schedules in the legacy SQLite `scheduled_votes` table of `data.db` are detected read-only at startup (`src/context/legacy_scheduled_votes.rs`) and raise a notice; they are never imported. One live key bounds that notice:
 
 | Key | Scope | Store | Value type | Notes |
 |-----|-------|-------|------------|-------|
-| `det:scheduled_vote:<contested_name>` | `DetScope::Identity(&voter_id)` | `det-<net>.sqlite` | `StoredScheduledVote` | Fields: `voter_id: [u8;32]`, `contested_name: String`, `choice: StoredVoteChoice`, `unix_timestamp: u64`, `executed_successfully: bool` |
-| `det:scheduled_vote_voters:v1` | `None` | `det-<net>.sqlite` | `Vec<[u8;32]>` | Enumeration index of voter ids with scheduled votes |
+| `det:legacy_scheduled_votes_noticed_at:v1:<network>` | `None` | `det-<net>.sqlite` | `u64` | Unix time in milliseconds when the notice was first due. The notice stops one full contest duration later, when every contest an old schedule could refer to has closed |
 
-Source: `src/context/identity_db.rs`
+Source: `src/context/legacy_scheduled_votes.rs`
+
+---
+
+## DPNS vote journal
+
+The journal is the sole store of immediate and scheduled DPNS votes. Every key is Global-scoped and carries the network in its name, so one network's journal cannot be read as another's. `<network>` is one of `mainnet`, `testnet`, `devnet`, `regtest`; `<operation_id>` is the 16-byte `DpnsVoteOperationId` as lowercase hex.
+
+| Key | Scope | Store | Value type | Notes |
+|-----|-------|-------|------------|-------|
+| `det:dpns_vote_operations:v2:<network>` | `None` | `det-<net>.sqlite` | `Vec<[u8;16]>` | Index of operation ids present in the journal |
+| `det:dpns_vote_operation:v2:<network>:<operation_id>` | `None` | `det-<net>.sqlite` | `DpnsVoteOperation` | One submitted batch: its targets (voter, vote poll, requested choice, timing) with per-target status and failure |
+| `det:dpns_vote_operation_locks:v2:<network>` | `None` | `det-<net>.sqlite` | `BTreeMap<DpnsVoteTargetKey, DpnsVoteOperationId>` | Which operation currently owns each target; rebuilt from the operation records when missing or dirty |
+| `det:dpns_vote_operation_locks_dirty:v2:<network>` | `None` | `det-<net>.sqlite` | `bool` | Set while the lock index is being rewritten, so an interrupted rewrite forces a rebuild |
+| `det:dpns_vote_relative_labels:v1:<network>:<operation_id>` | `None` | `det-<net>.sqlite` | `BTreeMap<DpnsVoteTargetKey, (u64, u64)>` | Display-only record of the relative schedule preset chosen per target; shares the operation's retention |
+| `det:dpns_vote_recovery_times:v1:<network>:<operation_id>` | `None` | `det-<net>.sqlite` | `BTreeMap<DpnsVoteTargetKey, u64>` | Unix time in milliseconds when restart recovery picked up each immediate target of the operation. Written only by restart recovery; shares the operation's retention |
+| `det:dpns_vote_schedule_dismissals:v1:<network>:<operation_id>` | `None` | `det-<net>.sqlite` | `BTreeSet<DpnsVoteTargetKey>` | Scheduled targets the user dismissed from the Scheduled view |
+| `det:dpns_vote_immediate_history:v1:<network>` | `None` | `det-<net>.sqlite` | `Vec<DpnsVoteOperationId>` | Completion order of finished immediate operations, used to bound history |
+| `det:dpns_vote_scheduled_history:v1:<network>` | `None` | `det-<net>.sqlite` | `Vec<DpnsVoteOperationId>` | Completion order of finished scheduled operations, used to bound history |
+| `det:dpns_vote_counts:v1:<network>:<voter_id_base58>:<vote_poll_id_base58>` | `None` | `det-<net>.sqlite` | `u8` | Votes this device saw Platform apply for one node on one contest, used for "changes left". Kept outside the operation records so history pruning does not lose it; dropped only when the contest is proven closed |
+| `det:dpns_vote_counted:v1:<network>:<voter_id_base58>:<vote_poll_id_base58>` | `None` | `det-<net>.sqlite` | `[u8;16]` | Id of the operation whose confirmed vote was last added to the matching `det:dpns_vote_counts:v1:` count, so a repeated confirmation is not counted twice. Dropped together with the count |
+
+Loading the journal fails closed: one unreadable operation record fails every operation that reads the journal. Identity removal is the exception. It deletes the identity's keys regardless and leaves the vote cancellation to the retained `det:vault_cleanup_pending:v1:` manifest, which startup recovery retries.
+
+Source: `src/context/dpns_vote_operations/keys.rs` (key schema), `src/context/dpns_vote_operations/mod.rs`, `src/context/dpns_vote_operations/retention.rs`, `src/context/dpns_vote_operations/counts.rs`
+
+---
+
+## Usernames (identity side)
+
+Per-identity username state. Global-scoped with the identity id in the key, so it outlives the identity's own scope until identity removal clears it explicitly; a failed clear is retried by the vault-cleanup manifest.
+
+| Key | Scope | Store | Value type | Notes |
+|-----|-------|-------|------------|-------|
+| `det:username_requests:<identity_id_base58>` | `None` | `det-<net>.sqlite` | `Vec<UsernameRequest>` (stored as `StoredUsernameRequest`) | The identity's requests for names that need a community vote. Fields per request: `label`, `normalized_label`, `phase`, `requested_at`, `join_end`, `end`, `decided_at`, `tally`, `last_updated`. The layout is positional, so no field can be added: the in-memory flag `reflected_in_owned_names` is stored as the appended `phase` index `WonReflected`, and entries written before it existed load as not reflected |
+| `det:main_username:<identity_id_base58>` | `None` | `det-<net>.sqlite` | `String` | Device-only choice of the username shown as main |
+| `det:username_outcomes_seen:<identity_id_base58>` | `None` | `det-<net>.sqlite` | `BTreeSet<String>` | Outcome banners already shown, as `<normalized_label>:<phase>` |
+
+Source: `src/context/contested_names_db.rs`, `src/model/dpns_usernames.rs`
 
 ---
 

@@ -35,8 +35,8 @@ pub enum MigrationTask {
     /// completion sentinel exists in `det-app.sqlite`, subsequent calls
     /// return `Success` immediately without touching the legacy file.
     FinishUnwire,
-    /// Retire warnings for unreadable scheduled-vote and top-up rows on the
-    /// active network. The legacy rows themselves are never touched.
+    /// Retire the warning for unreadable top-up rows on the active network.
+    /// The legacy rows themselves are never touched.
     AcknowledgeUnreadableAppData,
     /// Retire the "some identities could not be read" warning for the active
     /// network. Same contract as [`Self::AcknowledgeUnreadableAppData`]: the

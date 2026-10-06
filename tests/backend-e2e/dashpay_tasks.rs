@@ -996,6 +996,8 @@ async fn tc_043_reject_contact_request() {
             dash_evo_tool::backend_task::identity::RegisterDpnsNameInput {
                 qualified_identity: qi_c.clone(),
                 name_input: username_c.clone(),
+        approved_contest_fee: 0,
+                signing_key_id: None,
             },
         ),
     );

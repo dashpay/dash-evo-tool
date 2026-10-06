@@ -6,9 +6,6 @@
 
 use std::sync::Arc;
 
-use chrono::{LocalResult, TimeZone, Utc};
-use chrono_humanize::HumanTime;
-use dash_sdk::dpp::identity::TimestampMillis;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 #[cfg(test)]
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
@@ -16,19 +13,16 @@ use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
 use eframe::egui::{self, Color32, RichText, Ui};
 
+#[cfg(test)]
 use std::collections::BTreeMap;
 
-use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
-
 use crate::app::AppAction;
-use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::{IdentityInputToLoad, IdentityLoadMode, IdentityTask};
-use crate::backend_task::{
-    BackendTask, BackendTaskContext, BackendTaskSuccessResult, DPNSVoteOutcome,
-};
+use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
-use crate::model::contested_name::{ContestedName, MasternodeContestSummary};
+use crate::context::identity_load_registry::{IdentityLoadPhase, IdentityLoadToken};
+use crate::model::dpns_voting::operator::{ListMembership, NodeVoteRow, node_weight, time_left};
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::legacy_recovery::RecoveryItem;
 use crate::model::qualified_identity::{IdentityType, MasternodeKeyPresence, QualifiedIdentity};
@@ -38,6 +32,9 @@ use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::legacy_recovery_section::host_offer;
 use crate::ui::components::password_input::PasswordInput;
+use crate::ui::dpns::copy::{
+    NOT_IN_MASTERNODE_LIST, NOT_VOTED_YET, changes_left_label, ends_in_label, voting_weight_label,
+};
 use crate::ui::identity::identity_picker_card::draw_type_badge;
 use crate::ui::identity::identity_pill::shorten_id;
 use crate::ui::identity::keys::key_info_screen::KeyInfoScreen;
@@ -50,15 +47,9 @@ use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::tokens::claim_tokens_screen::ClaimTokensScreen;
 use crate::ui::tokens::tokens_screen::IdentityTokenBasicInfo;
 use crate::ui::{MessageType, Screen, ScreenType};
+use crate::utils::time::now_ms;
 use crate::wallet_backend::IdentityKeyView;
 use crate::wallet_backend::secret_seam::SecretScheme;
-
-/// §7 copy: shown when the node has no voting key loaded. Entering the key is
-/// the only remedy on offer — a voting key held on a separate voter identity
-/// that the node's own record does not link to cannot be restored from the
-/// previous version's saved data (see issue #942).
-const MISSING_VOTER_MESSAGE: &str =
-    "This node has no voting key loaded. Add its voting private key to cast votes.";
 
 const REMOVE_MASTERNODE_CONFIRMATION: &str = "This removes the node and its voting identity, including their private keys, from this device. To load the node again, you need its ProTxHash and a backup of its private keys.";
 
@@ -67,70 +58,6 @@ fn remove_node_action(identity_id: Identifier) -> AppAction {
         identity_id,
     }))
 }
-/// §7 copy: shown when the node has a voter identity but no open contests.
-const NO_OPEN_CONTESTS_MESSAGE: &str =
-    "There are no open name contests for this node to vote on right now.";
-
-/// The collapsible DPNS section header, with the open-contest count (TC-DPNS-02).
-fn dpns_section_header(open_contest_count: usize) -> String {
-    format!("DPNS name contests to vote on ({open_contest_count})")
-}
-
-/// Framing shown once above the per-contest vote controls, so a masternode
-/// owner unfamiliar with DPNS contested voting understands what is being
-/// decided.
-const CONTEST_INTRO_MESSAGE: &str = "Several identities want the same name. Cast this node's vote to help decide who receives it, or to lock the name so no one gets it.";
-/// Nudge shown under a contest that still has no vote picked, so the user knows
-/// why the Cast votes button stays disabled.
-const NO_SELECTION_HINT: &str =
-    "No vote picked yet. Choose Abstain, Lock, or a candidate above to set this node's vote.";
-/// Tooltip on an enabled Cast votes button.
-const CAST_ENABLED_HINT: &str = "Submit this node's vote for every name you picked.";
-/// Tooltip on a disabled Cast votes button, explaining what unlocks it.
-const CAST_DISABLED_HINT: &str =
-    "Pick Abstain, Lock, or a candidate for at least one name to enable this.";
-
-/// The full DPNS domain a contest is fighting over: DPNS names register under
-/// `.dash`, so append it to the normalized label (shown bare elsewhere) to make
-/// clear this is a real domain registration.
-fn contest_display_name(normalized_name: &str) -> String {
-    format!("{normalized_name}.dash")
-}
-
-/// A candidate choice label carrying the candidate's current vote tally, so the
-/// voter sees the standing before picking. Phrased to avoid singular/plural
-/// verb agreement for later translation.
-fn candidate_choice_label(candidate_name: &str, votes: u32) -> String {
-    format!("Vote for {candidate_name} (votes so far: {votes})")
-}
-
-/// Render data for one open contest, snapshotted before the choice-writing
-/// loop so it does not borrow `open_contests` while `vote_selections` mutates.
-struct ContestVoteRow {
-    name: String,
-    end_time: Option<TimestampMillis>,
-    /// `(candidate id, candidate name, votes so far)` for each contestant.
-    candidates: Vec<(dash_sdk::platform::Identifier, String, u32)>,
-}
-
-/// A one-line status for a contest: how many identities are competing and when
-/// voting closes. Keeps the deadline absolute (ISO) plus a relative hint, and
-/// degrades cleanly when the end time has not loaded yet.
-fn contest_status_line(candidate_count: usize, end_time: Option<TimestampMillis>) -> String {
-    let count = format!("Identities competing for this name: {candidate_count}.");
-    match end_time {
-        Some(end_time) => match Utc.timestamp_millis_opt(end_time as i64) {
-            LocalResult::Single(dt) => {
-                let iso = dt.format("%Y-%m-%d %H:%M:%S");
-                let relative = HumanTime::from(dt);
-                format!("{count} Voting ends {iso} UTC ({relative}).")
-            }
-            _ => format!("{count} The voting deadline is unavailable."),
-        },
-        None => format!("{count} The voting deadline is still loading."),
-    }
-}
-
 /// The fixed top→bottom section order. Actions must precede Keys (TC-FR5-01).
 pub const SECTION_ORDER: [&str; 5] = ["Header", "Actions", "Keys", "DPNS", "Remove"];
 
@@ -172,6 +99,8 @@ pub enum DetailOutcome {
     Back,
     /// Push a reused screen / navigate. Boxed because `AppAction` is large.
     Forward(Box<AppAction>),
+    /// Open Votes with this node as the session's node set (VOTE-FR-076).
+    VoteWithNode(Identifier),
 }
 
 enum KeyInfoOpenMode {
@@ -186,21 +115,24 @@ pub struct MasternodeDetailView {
     node_id_hex_full: String,
     node_id_short: String,
     key_presence: MasternodeKeyPresence,
-    contest_summary: MasternodeContestSummary,
-    /// Open contests this node can still vote on (loaded at construction /
-    /// refresh). Active/open only — scheduled/past history lives on the DPNS
-    /// Scheduled Votes screen (§10.7).
-    open_contests: Vec<ContestedName>,
-    /// Per-contest pending vote choice, keyed by normalized contested name.
-    vote_selections: BTreeMap<String, ResourceVoteChoice>,
-    pending_cast: Option<BackendTaskContext>,
-    /// The scoped, in-place "Add voting key" prompt (US-3 / §10.8) — distinct
-    /// from FR-4's load form. `Some` while the prompt is open.
-    voter_key_prompt: Option<PasswordInput>,
     remove_dialog: Option<ConfirmationDialog>,
+    voter_key_prompt: Option<PasswordInput>,
+    /// The `Add voting key` merge this view dispatched and has not yet seen
+    /// finish. Gates Save so a re-click cannot discard the key typed into a
+    /// prompt the first Save already cleared, and so the wait is visible
+    /// instead of arriving as an `IdentityLoadInProgress` banner.
+    ///
+    /// The token names that one load: a later load of this node, dispatched
+    /// from anywhere, can never be mistaken for it. `None` when there is
+    /// nothing to gate — including a node another caller is already loading,
+    /// whose load owns the record and whose rejection the banner explains.
+    pending_voter_key_load: Option<IdentityLoadToken>,
     /// The offer to restore keys this node left behind in the previous
     /// version's saved data (issue #889).
     recovery: LegacyRecoveryState,
+    /// Open contests with this node's choice, reloaded with stored screen data;
+    /// `None` when they could not be read.
+    node_votes: Option<Vec<NodeVoteRow>>,
 }
 
 #[cfg(test)]
@@ -259,6 +191,17 @@ impl MasternodeDetailView {
     }
 }
 
+/// The choice cell of a node vote row.
+fn node_vote_choice_label(row: &NodeVoteRow) -> String {
+    match (row.state_known, row.choice) {
+        (false, _) => "Vote state unavailable".to_owned(),
+        (true, None) => NOT_VOTED_YET.to_owned(),
+        (true, Some(choice)) => {
+            crate::ui::dpns::copy::vote_choice_label(choice, row.contender_name.as_deref())
+        }
+    }
+}
+
 impl MasternodeDetailView {
     pub(crate) fn accepts_recovery_result(
         &self,
@@ -270,16 +213,10 @@ impl MasternodeDetailView {
 
     pub fn new(app_context: &Arc<AppContext>, identity: QualifiedIdentity) -> Self {
         let node_id_hex_full = identity.identity.id().to_string(Encoding::Hex);
-        let node_id_short = shorten_id(&node_id_hex_full);
+        let node_id_short =
+            crate::model::identity_name::masternode_label(identity.identity.id(), None);
         let key_presence = identity.masternode_key_presence();
-        let voter_id = identity
-            .associated_voter_identity
-            .as_ref()
-            .map(|(voter, _)| voter.id());
-        let contest_summary = app_context
-            .masternode_contest_summary(voter_id)
-            .unwrap_or_default();
-        let open_contests = Self::load_open_contests(app_context, voter_id);
+        let identity_id = identity.identity.id();
         let recovery = LegacyRecoveryState::new(app_context, identity.identity.id());
         Self {
             app_context: app_context.clone(),
@@ -287,13 +224,44 @@ impl MasternodeDetailView {
             node_id_hex_full,
             node_id_short,
             key_presence,
-            contest_summary,
-            open_contests,
-            vote_selections: BTreeMap::new(),
-            pending_cast: None,
-            voter_key_prompt: None,
             remove_dialog: None,
+            voter_key_prompt: None,
+            pending_voter_key_load: None,
             recovery,
+            node_votes: app_context
+                .dpns_node_votes(identity_id)
+                .inspect_err(|error| {
+                    tracing::debug!(?error, "Could not list this node's votes");
+                })
+                .ok(),
+        }
+    }
+
+    /// The outstanding `Add voting key` merge, so a rebuilt view can keep
+    /// gating it. Every backend result rebuilds this view; without carrying the
+    /// gate across, a load still in flight would silently re-offer Save.
+    pub(crate) fn pending_voter_key_load(&self) -> Option<IdentityLoadToken> {
+        self.pending_voter_key_load
+    }
+
+    /// Adopt the gate of the view this one replaces, for the same node.
+    pub(crate) fn adopt_pending_voter_key_load(&mut self, token: Option<IdentityLoadToken>) {
+        self.pending_voter_key_load = token;
+    }
+
+    /// Release the gate once the merge's own task reports it finished. Only the
+    /// phase decides: the load is outstanding from the moment it is dispatched,
+    /// before its task claims the identity, so neither a result arriving nor the
+    /// store having changed is a sound proxy.
+    fn reconcile_voter_key_load(&mut self) {
+        let Some(token) = self.pending_voter_key_load else {
+            return;
+        };
+        let phase = self
+            .app_context
+            .identity_load_phase(&self.identity.identity.id(), token);
+        if !phase.is_some_and(IdentityLoadPhase::is_outstanding) {
+            self.pending_voter_key_load = None;
         }
     }
 
@@ -307,9 +275,14 @@ impl MasternodeDetailView {
         self.recovery.absorb_result(ctx, result)
     }
 
-    /// Refresh stored data while preserving prompts, vote selections, and recovery state.
+    /// Refresh stored data while preserving prompts and recovery state.
     pub(crate) fn refresh_from_store(&mut self) {
         let node_id = self.identity.identity.id();
+        self.node_votes = self
+            .app_context
+            .dpns_node_votes(node_id)
+            .inspect_err(|error| tracing::debug!(?error, "Could not reload node votes"))
+            .ok();
         if let Ok(identities) = self.app_context.load_local_masternode_identities()
             && let Some(identity) = identities
                 .into_iter()
@@ -318,7 +291,6 @@ impl MasternodeDetailView {
             self.key_presence = identity.masternode_key_presence();
             self.identity = identity;
         }
-        self.refresh_contests();
     }
 
     /// Re-check recovery on arrival because a pushed Key Info screen may have restored keys.
@@ -327,82 +299,18 @@ impl MasternodeDetailView {
         self.recovery.refresh_on_arrival();
     }
 
-    fn cast_votes(&mut self, votes: Vec<(String, ResourceVoteChoice)>) -> AppAction {
-        let task = BackendTask::ContestedResourceTask(ContestedResourceTask::VoteOnDPNSNames(
-            votes,
-            vec![self.identity.clone()],
-        ));
-        let context = BackendTaskContext::for_dispatch(&task);
-        self.pending_cast = Some(context.clone());
-        AppAction::BackendTaskWithContext { task, context }
-    }
-
-    /// Retire unchanged, successful selections from this view's latest cast.
-    pub(crate) fn consume_cast_votes(
-        &mut self,
-        context: &BackendTaskContext,
-        results: &[DPNSVoteOutcome],
-    ) {
-        if self.pending_cast.as_ref() != Some(context) {
-            return;
-        }
-        self.pending_cast = None;
-        for (contested_name, choice, outcome) in results {
-            if outcome.is_ok() && self.vote_selections.get(contested_name) == Some(choice) {
-                self.vote_selections.remove(contested_name);
-            }
-        }
-    }
-
     /// End this view's recovery operation when the failure that arrived is that
     /// operation's own — every error reaches whichever screen is visible.
     pub(crate) fn absorb_recovery_error(&mut self, context: &BackendTaskContext) {
         self.recovery.absorb_error(context);
     }
 
-    /// Load the contests this node can still vote on. Empty when the node has no
-    /// voting key (no voter id) or the read fails.
-    fn load_open_contests(
-        app_context: &Arc<AppContext>,
-        voter_id: Option<dash_sdk::platform::Identifier>,
-    ) -> Vec<ContestedName> {
-        let Some(voter_id) = voter_id else {
-            return Vec::new();
-        };
-        app_context
-            .ongoing_contested_names()
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|contest| contest.is_open_for_voter(&voter_id))
-            .collect()
-    }
-
-    /// Refresh the DPNS contest summary + open-contest list from the store.
-    fn refresh_contests(&mut self) {
-        let voter_id = self
-            .identity
-            .associated_voter_identity
-            .as_ref()
-            .map(|(voter, _)| voter.id());
-        self.contest_summary = self
-            .app_context
-            .masternode_contest_summary(voter_id)
-            .unwrap_or_default();
-        self.open_contests = Self::load_open_contests(&self.app_context, voter_id);
-    }
-
     /// Build the network re-fetch dispatched by the detail Refresh button:
-    /// refresh this node's identity, plus a DPNS contests re-query
-    /// when the node has a voter identity that can vote.
+    /// refresh this node's identity. The result refreshes stored identity and vote rows.
     fn refresh_from_network(&self) -> AppAction {
-        let mut tasks = vec![BackendTask::IdentityTask(IdentityTask::RefreshIdentity(
+        let tasks = vec![BackendTask::IdentityTask(IdentityTask::RefreshIdentity(
             self.identity.clone(),
         ))];
-        if self.identity.associated_voter_identity.is_some() {
-            tasks.push(BackendTask::ContestedResourceTask(
-                ContestedResourceTask::QueryDPNSContests,
-            ));
-        }
         AppAction::BackendTasks(tasks, crate::app::BackendTasksExecutionMode::Concurrent)
     }
 
@@ -475,10 +383,6 @@ impl MasternodeDetailView {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ComponentStyles::add_toolbar_button(ui, "Refresh", network_accent).clicked() {
-                    // Re-read the local contest cache immediately (optimistic)
-                    // AND dispatch a network re-fetch of this node plus the DPNS
-                    // contests — Refresh must reach the network.
-                    self.refresh_contests();
                     outcome = DetailOutcome::Forward(Box::new(self.refresh_from_network()));
                 }
             });
@@ -496,8 +400,8 @@ impl MasternodeDetailView {
                 outcome = DetailOutcome::Forward(Box::new(action));
             }
             ui.add_space(12.0);
-            if let Some(action) = self.render_dpns_section(ui, dark_mode) {
-                outcome = DetailOutcome::Forward(Box::new(action));
+            if let Some(node) = self.render_dpns_section(ui, dark_mode) {
+                outcome = DetailOutcome::VoteWithNode(node);
             }
             ui.add_space(12.0);
             if let Some(action) = self.render_remove_section(ui, dark_mode) {
@@ -552,6 +456,11 @@ impl MasternodeDetailView {
                 ui.ctx().copy_text(self.node_id_hex_full.clone());
             }
             draw_type_badge(ui, self.badge_label(), dark_mode);
+            let weight = node_weight(self.identity.identity_type.into());
+            ui.label(
+                RichText::new(voting_weight_label(weight))
+                    .color(DashColors::text_secondary(dark_mode)),
+            );
         });
         let balance = format_credits_as_dash(self.identity.identity.balance());
         ui.label(
@@ -756,12 +665,107 @@ impl MasternodeDetailView {
             action = Some(self.open_key_info_with_protection_prompt(&key));
         }
 
+        if !self.identity.can_cast_masternode_vote()
+            && let Some(key_action) = self.render_missing_voter(ui, dark_mode)
+        {
+            action = Some(key_action);
+        }
         if let Some(approved) = self.render_recovery_section(ui)
             && let Some((task, context)) = self.recovery.restore(approved)
         {
             action = Some(AppAction::BackendTaskWithContext { task, context });
         }
         action
+    }
+
+    fn render_missing_voter(&mut self, ui: &mut Ui, dark_mode: bool) -> Option<AppAction> {
+        let mut action = None;
+        ui.label(
+            RichText::new(
+                "This node has no voting key loaded. Add its voting private key to cast votes.",
+            )
+            .color(DashColors::warning_color(dark_mode)),
+        );
+
+        self.reconcile_voter_key_load();
+        if self.pending_voter_key_load.is_some() {
+            // Show the wait rather than re-offering Save: the key that went out
+            // with the first Save is still being applied.
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.add_enabled(false, egui::Button::new("Adding voting key…"));
+            });
+            return None;
+        }
+
+        match self.voter_key_prompt.as_mut() {
+            None => {
+                if ui.button("Add voting key").clicked() {
+                    // Node context is already bound (`self.identity`) — the
+                    // prompt only asks for the voting key, no ProTxHash re-entry.
+                    self.voter_key_prompt = Some(
+                        PasswordInput::new()
+                            .with_hint_text("Voting private key (WIF or hex)")
+                            .with_monospace(),
+                    );
+                }
+            }
+            Some(prompt) => {
+                prompt.show(ui);
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        self.voter_key_prompt = None;
+                    }
+                    let has_key = !self
+                        .voter_key_prompt
+                        .as_ref()
+                        .map(PasswordInput::is_empty)
+                        .unwrap_or(true);
+                    if ui.add_enabled(has_key, egui::Button::new("Save")).clicked() {
+                        action = self.submit_voter_key();
+                    }
+                });
+            }
+        }
+        action
+    }
+
+    /// Close the `Add voting key` prompt, zeroizing the key typed into it. Called
+    /// when the Masternodes tab is left: the tab is a root screen that outlives
+    /// navigation, and an unsubmitted key must not.
+    pub fn clear_secrets(&mut self) {
+        self.voter_key_prompt = None;
+    }
+
+    /// Merge a voting key into this node without replacing its other keys.
+    fn submit_voter_key(&mut self) -> Option<AppAction> {
+        let voting_key = self.voter_key_prompt.as_mut()?.take_secret();
+        self.voter_key_prompt = None;
+        // Mark the dispatch before the task runs: the merge is outstanding from
+        // here, and until its task claims the identity nothing else records that.
+        self.pending_voter_key_load = self
+            .app_context
+            .mark_identity_load_submitted(self.identity.identity.id());
+        let input = IdentityInputToLoad {
+            identity_id_input: self.node_id_hex_full.clone(),
+            identity_type: self.identity.identity_type,
+            alias_input: self.identity.alias.clone().unwrap_or_default(),
+            voting_private_key_input: voting_key,
+            owner_private_key_input: Secret::default(),
+            payout_address_private_key_input: Secret::default(),
+            keys_input: vec![],
+            derive_keys_from_wallets: false,
+            selected_wallet_seed_hash: None,
+            encryption_password: None,
+            // The backend preserves existing keys and their protection tier.
+            load_mode: IdentityLoadMode::MergeIntoExisting,
+            // Send the token with the load, so the task claims the record this
+            // view is waiting on — and so no other load can claim it.
+            load_token: self.pending_voter_key_load,
+        };
+        Some(AppAction::BackendTask(BackendTask::IdentityTask(
+            IdentityTask::LoadIdentity(input),
+        )))
     }
 
     /// Render the offer at the foot of the keys section, returning the items the
@@ -844,209 +848,56 @@ impl MasternodeDetailView {
         AppAction::AddScreen(Screen::KeyInfoScreen(screen.with_masternode_origin()))
     }
 
-    /// Render the collapsible DPNS voting section (collapsed by default,
-    /// open-contest count in the header). Inline voting reuses the existing
-    /// `vote_on_dpns_name` backend (locked decision #1 — not a deep-link).
-    fn render_dpns_section(&mut self, ui: &mut Ui, dark_mode: bool) -> Option<AppAction> {
-        // When the node has no voter key, the "Add voting key" CTA is
-        // the primary next step — render it above, outside the collapsed-by-
-        // default DPNS section, so it is visible without expanding anything.
-        // The empty DPNS section (no contests possible without a voter) is
-        // omitted in that state.
-        if self.identity.associated_voter_identity.is_none() {
-            return self.render_missing_voter(ui, dark_mode);
-        }
-
-        let mut action = None;
-        let header = dpns_section_header(self.contest_summary.open_contest_count);
-        egui::CollapsingHeader::new(header)
-            .default_open(false)
-            .show(ui, |ui| {
-                if self.open_contests.is_empty() {
-                    ui.label(
-                        RichText::new(NO_OPEN_CONTESTS_MESSAGE)
-                            .color(DashColors::text_secondary(dark_mode)),
-                    );
-                } else {
-                    action = self.render_vote_table(ui, dark_mode);
-                }
-            });
-        action
-    }
-
-    /// Missing-voter-identity state (US-3 / §10.9): an actionable message plus a
-    /// scoped in-place `Add voting key` prompt — never the raw error, never
-    /// FR-4's load form.
-    fn render_missing_voter(&mut self, ui: &mut Ui, dark_mode: bool) -> Option<AppAction> {
-        let mut action = None;
-        ui.label(RichText::new(MISSING_VOTER_MESSAGE).color(DashColors::warning_color(dark_mode)));
-
-        match self.voter_key_prompt.as_mut() {
-            None => {
-                if ui.button("Add voting key").clicked() {
-                    // Node context is already bound (`self.identity`) — the
-                    // prompt only asks for the voting key, no ProTxHash re-entry.
-                    self.voter_key_prompt = Some(
-                        PasswordInput::new()
-                            .with_hint_text("Voting private key (WIF or hex)")
-                            .with_monospace(),
-                    );
-                }
-            }
-            Some(prompt) => {
-                prompt.show(ui);
-                ui.horizontal(|ui| {
-                    if ui.button("Cancel").clicked() {
-                        self.voter_key_prompt = None;
-                    }
-                    let has_key = !self
-                        .voter_key_prompt
-                        .as_ref()
-                        .map(PasswordInput::is_empty)
-                        .unwrap_or(true);
-                    if ui.add_enabled(has_key, egui::Button::new("Save")).clicked() {
-                        action = self.submit_voter_key();
-                    }
-                });
-            }
-        }
-        action
-    }
-
-    /// Close the `Add voting key` prompt, zeroizing the key typed into it. Called
-    /// when the Masternodes tab is left: the tab is a root screen that outlives
-    /// navigation, and an unsubmitted key must not.
-    pub fn clear_secrets(&mut self) {
-        self.voter_key_prompt = None;
-    }
-
-    /// Build the scoped voter-key update: re-load THIS node (context pre-bound)
-    /// with just the entered voting key, updating its voter identity in place.
-    /// Distinct from FR-4's load form and exempt from duplicate-ProTxHash
-    /// rejection (§10.8).
-    fn submit_voter_key(&mut self) -> Option<AppAction> {
-        let voting_key = self.voter_key_prompt.as_mut()?.take_secret();
-        self.voter_key_prompt = None;
-        let input = IdentityInputToLoad {
-            identity_id_input: self.node_id_hex_full.clone(),
-            identity_type: self.identity.identity_type,
-            alias_input: self.identity.alias.clone().unwrap_or_default(),
-            voting_private_key_input: voting_key,
-            owner_private_key_input: Secret::default(),
-            payout_address_private_key_input: Secret::default(),
-            keys_input: vec![],
-            derive_keys_from_wallets: false,
-            selected_wallet_seed_hash: None,
-            encryption_password: None,
-            // In-place update: merge the new voting key into the already-loaded
-            // node, preserving its Owner/Payout keys (§10.8). Never overwrite.
-            load_mode: IdentityLoadMode::MergeIntoExisting,
-            // This view gates on nothing: the load opens a record of its own rather
-            // than adopting one another caller is waiting on.
-            load_token: None,
+    /// `This node's votes`, its masternode-list status and `Vote with this
+    /// node` (VOTE-FR-076). Returns the node to vote with when clicked.
+    fn render_dpns_section(&mut self, ui: &mut Ui, dark_mode: bool) -> Option<Identifier> {
+        let node = self.identity.identity.id();
+        ui.label(RichText::new("This node's votes").strong());
+        let membership = match self.app_context.masternode_list_membership(node) {
+            ListMembership::Listed => "In the masternode list.",
+            ListMembership::NotListed => NOT_IN_MASTERNODE_LIST,
+            ListMembership::Unknown => "Masternode list membership unknown.",
         };
-        Some(AppAction::BackendTask(BackendTask::IdentityTask(
-            IdentityTask::LoadIdentity(input),
-        )))
-    }
-
-    /// Per-contest voting choices + Cast votes, dispatching the existing
-    /// `VoteOnDPNSNames` backend for the selected choices.
-    fn render_vote_table(&mut self, ui: &mut Ui, dark_mode: bool) -> Option<AppAction> {
-        let mut action = None;
-        // Collect the render data up front so the choice-writing loop does not
-        // borrow `self.open_contests` while mutating `self.vote_selections`.
-        let contests: Vec<ContestVoteRow> = self
-            .open_contests
-            .iter()
-            .map(|contest| {
-                let candidates = contest
-                    .contestants
-                    .as_ref()
-                    .map(|list| {
-                        list.iter()
-                            .map(|c| (c.id, c.name.clone(), c.votes))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                ContestVoteRow {
-                    name: contest.normalized_contested_name.clone(),
-                    end_time: contest.end_time,
-                    candidates,
-                }
-            })
-            .collect();
-
-        ui.label(RichText::new(CONTEST_INTRO_MESSAGE).color(DashColors::text_secondary(dark_mode)));
-
-        for contest in &contests {
-            ui.separator();
-            ui.label(
-                RichText::new(contest_display_name(&contest.name))
-                    .strong()
-                    .color(DashColors::text_primary(dark_mode)),
-            );
-            ui.label(
-                RichText::new(contest_status_line(
-                    contest.candidates.len(),
-                    contest.end_time,
-                ))
-                .color(DashColors::text_secondary(dark_mode)),
-            );
-            let selected = self.vote_selections.get(&contest.name).copied();
-            ui.horizontal_wrapped(|ui| {
-                if ui
-                    .selectable_label(selected == Some(ResourceVoteChoice::Abstain), "Abstain")
-                    .clicked()
-                {
-                    self.vote_selections
-                        .insert(contest.name.clone(), ResourceVoteChoice::Abstain);
-                }
-                if ui
-                    .selectable_label(selected == Some(ResourceVoteChoice::Lock), "Lock")
-                    .clicked()
-                {
-                    self.vote_selections
-                        .insert(contest.name.clone(), ResourceVoteChoice::Lock);
-                }
-                // Candidate choices are scoped to THIS contest's contestants.
-                for (candidate_id, candidate_name, votes) in &contest.candidates {
-                    let choice = ResourceVoteChoice::TowardsIdentity(*candidate_id);
-                    if ui
-                        .selectable_label(
-                            selected == Some(choice),
-                            candidate_choice_label(candidate_name, *votes),
-                        )
-                        .clicked()
-                    {
-                        self.vote_selections.insert(contest.name.clone(), choice);
-                    }
-                }
-            });
-            if selected.is_none() {
-                ui.label(
-                    RichText::new(NO_SELECTION_HINT).color(DashColors::text_secondary(dark_mode)),
-                );
+        ui.label(RichText::new(membership).color(DashColors::text_secondary(dark_mode)));
+        match &self.node_votes {
+            None => {
+                ui.label("This node's votes could not be read. Refresh to try again.");
+            }
+            Some(rows) if rows.is_empty() => {
+                ui.label("There are no open name contests right now.");
+            }
+            Some(rows) => {
+                let now = now_ms();
+                egui::Grid::new(("node_votes", node))
+                    .num_columns(4)
+                    .striped(true)
+                    .show(ui, |ui| {
+                        for row in rows {
+                            ui.label(format!("{name}.dash", name = row.contested_name));
+                            ui.label(node_vote_choice_label(row));
+                            ui.label(if row.choice.is_some() {
+                                changes_left_label(row.changes)
+                            } else {
+                                String::new()
+                            });
+                            ui.label(match row.end_time {
+                                Some(end) => ends_in_label(time_left(end, now)),
+                                None => String::new(),
+                            });
+                            ui.end_row();
+                        }
+                    });
             }
         }
-
-        ui.separator();
-        let votes: Vec<(String, ResourceVoteChoice)> = self
-            .vote_selections
-            .iter()
-            .filter(|(name, _)| contests.iter().any(|c| &c.name == *name))
-            .map(|(name, choice)| (name.clone(), *choice))
-            .collect();
-        let has_votes = !votes.is_empty();
-        if ui
-            .add_enabled(has_votes, egui::Button::new("Cast votes"))
-            .on_hover_text(CAST_ENABLED_HINT)
-            .on_disabled_hover_text(CAST_DISABLED_HINT)
-            .clicked()
-        {
-            action = Some(self.cast_votes(votes));
-        }
-        action
+        ui.add_space(6.0);
+        let can_vote = self.identity.can_cast_masternode_vote();
+        ui.add_enabled(
+            can_vote,
+            ComponentStyles::secondary_button("Vote with this node", dark_mode),
+        )
+        .disabled_tooltip("Add a voting key to vote with this node.")
+        .clicked()
+        .then_some(node)
     }
 
     fn render_remove_section(&mut self, ui: &mut Ui, _dark_mode: bool) -> Option<AppAction> {
@@ -1086,6 +937,217 @@ impl MasternodeDetailView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::secret::Secret;
+
+    /// A masternode with no voting key loaded — the state that puts the
+    /// `Add voting key` section on screen. Alias is fixed so the merge input's
+    /// carried alias is assertable.
+    fn voteless_masternode(ctx: &Arc<AppContext>, byte: u8) -> QualifiedIdentity {
+        use crate::model::qualified_identity::{IdentityStatus, encrypted_key_storage::KeyStorage};
+        use dash_sdk::dpp::identity::Identity;
+        use dash_sdk::dpp::version::PlatformVersion;
+        QualifiedIdentity {
+            identity: Identity::create_basic_identity(
+                Identifier::from([byte; 32]),
+                PlatformVersion::latest(),
+            )
+            .unwrap(),
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::Masternode,
+            alias: Some("my-node".into()),
+            private_keys: KeyStorage::default(),
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::PendingCreation,
+            network: ctx.network(),
+        }
+    }
+
+    #[tokio::test]
+    async fn blocker_node_detail_refresh_reloads_vote_rows_without_resetting_prompts() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(Arc::new(
+            crate::wallet_backend::kv_test_support::InMemoryKv::default(),
+        )));
+        let (sender, _events) = tokio::sync::mpsc::channel(16);
+        ctx.ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+            sender,
+            ctx.egui_ctx().clone(),
+        ))
+        .await
+        .unwrap();
+        let identity = voteless_masternode(&ctx, 43);
+        let voter = identity.identity.id();
+        ctx.insert_local_qualified_identity(&identity, &None)
+            .unwrap();
+        ctx.seed_dpns_contest_for_test("alice", None, false);
+        let poll = ctx.dpns_vote_poll_id("alice").unwrap();
+        ctx.seed_proved_dpns_votes_for_test(voter, BTreeMap::new())
+            .await
+            .unwrap();
+        let mut detail = MasternodeDetailView::new(&ctx, identity);
+        assert_eq!(detail.node_votes.as_ref().unwrap()[0].choice, None);
+        detail.set_voter_key_prompt_for_test("test-only-input");
+        ctx.seed_proved_dpns_votes_for_test(
+            voter,
+            BTreeMap::from([(
+                poll.to_buffer(),
+                dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice::Lock,
+            )]),
+        )
+        .await
+        .unwrap();
+        detail.refresh_from_store();
+        assert_eq!(
+            detail.node_votes.as_ref().unwrap()[0].choice,
+            Some(
+                dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice::Lock
+            )
+        );
+        assert!(detail.has_voter_key_prompt_for_test());
+    }
+
+    #[test]
+    fn voting_ui_scoped_key_update_merges_into_the_current_node() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let id = Identifier::from([0x47; 32]);
+        let mut detail = MasternodeDetailView::new(&ctx, voteless_masternode(&ctx, 0x47));
+        detail.set_voter_key_prompt_for_test("test-only-input");
+        let Some(AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::LoadIdentity(
+            input,
+        )))) = detail.submit_voter_key()
+        else {
+            panic!("scoped identity merge");
+        };
+        assert_eq!(input.identity_id_input, id.to_string(Encoding::Hex));
+        assert_eq!(input.load_mode, IdentityLoadMode::MergeIntoExisting);
+        assert_eq!(input.alias_input, "my-node");
+        assert!(!input.voting_private_key_input.is_blank());
+        assert!(input.owner_private_key_input.is_blank());
+        assert!(input.payout_address_private_key_input.is_blank());
+        assert!(input.encryption_password.is_none());
+        assert!(!detail.has_voter_key_prompt_for_test());
+        assert_eq!(
+            input.load_token,
+            detail.pending_voter_key_load(),
+            "the merge must travel under the token this view gates on",
+        );
+        assert!(
+            detail.submit_voter_key().is_none(),
+            "a repeated Save cannot dispatch another load"
+        );
+    }
+
+    /// A second Save, while the first merge is still running, must be refused by
+    /// a disabled control rather than by discarding the key and reporting
+    /// `IdentityLoadInProgress`. Save clears the prompt as it dispatches, so an
+    /// offer to press it again is an offer to lose whatever was typed next.
+    #[test]
+    fn a_voting_key_merge_in_flight_gates_a_second_save() {
+        use egui_kittest::kittest::Queryable;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let mut detail = MasternodeDetailView::new(&ctx, voteless_masternode(&ctx, 0x48));
+
+        let dispatched = Arc::new(AtomicUsize::new(0));
+        let observed = dispatched.clone();
+        detail.set_voter_key_prompt_for_test("test-only-input");
+        let mut harness = egui_kittest::Harness::builder().build_ui(move |ui| {
+            if matches!(
+                detail.render_missing_voter(ui, false),
+                Some(AppAction::BackendTask(BackendTask::IdentityTask(
+                    IdentityTask::LoadIdentity(_)
+                )))
+            ) {
+                observed.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+        harness.run();
+        let position = harness.get_by_label("Save").rect().center();
+        harness.get_by_label("Save").click();
+        // Stepped, not `run`: the gate's spinner repaints forever by design, so
+        // `run` would never see the UI settle. One step applies the click and
+        // dispatches, the next renders the gated section.
+        harness.step();
+        harness.step();
+
+        assert!(
+            harness.query_by_label("Save").is_none(),
+            "the dispatched merge must take Save off screen"
+        );
+        assert!(
+            harness.query_by_label("Add voting key").is_none(),
+            "re-offering the prompt invites a submit the backend would reject"
+        );
+        assert!(
+            harness.query_by_label("Adding voting key…").is_some(),
+            "the wait must be visible while the merge runs"
+        );
+        for pressed in [true, false] {
+            harness.event(egui::Event::PointerButton {
+                pos: position,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+        harness.step();
+        assert_eq!(
+            dispatched.load(Ordering::Relaxed),
+            1,
+            "repeated clicks at Save must dispatch only one load"
+        );
+    }
+
+    /// The gate is held by the merge's reported phase, and released by it —
+    /// never by a guess. A failed merge returns the node to an offer the user
+    /// can act on, rather than stranding it behind a spinner for the session.
+    #[test]
+    fn a_finished_voting_key_merge_releases_the_gate() {
+        use egui_kittest::kittest::Queryable;
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let node_id = Identifier::from([0x49; 32]);
+        let mut detail = MasternodeDetailView::new(&ctx, voteless_masternode(&ctx, 0x49));
+        detail.set_voter_key_prompt_for_test("test-only-input");
+        detail.submit_voter_key().expect("the merge dispatches");
+
+        let token = detail
+            .pending_voter_key_load()
+            .expect("the merge is gated while outstanding");
+        let guard = ctx
+            .begin_identity_load(node_id, Some(token))
+            .expect("the task claims the load it was dispatched under");
+        detail.reconcile_voter_key_load();
+        assert!(
+            detail.pending_voter_key_load().is_some(),
+            "a claimed, still-running merge keeps the gate"
+        );
+
+        // Dropping the guard without `loaded()` is how a failed load reports.
+        drop(guard);
+        detail.reconcile_voter_key_load();
+        assert!(
+            detail.pending_voter_key_load().is_none(),
+            "a finished merge must release the gate"
+        );
+
+        let mut harness = egui_kittest::Harness::builder()
+            .build_ui(move |ui| _ = detail.render_missing_voter(ui, false));
+        harness.run();
+        assert!(
+            harness.query_by_label("Add voting key").is_some(),
+            "a released gate must let the user try again"
+        );
+    }
 
     #[test]
     fn masternode_removal_dispatches_the_identity_backend_task() {
@@ -1126,158 +1188,6 @@ mod tests {
         assert_eq!(
             SECTION_ORDER,
             ["Header", "Actions", "Keys", "DPNS", "Remove"]
-        );
-    }
-
-    #[test]
-    fn tc_dpns_02_header_shows_open_contest_count() {
-        assert_eq!(dpns_section_header(3), "DPNS name contests to vote on (3)");
-        assert_eq!(dpns_section_header(0), "DPNS name contests to vote on (0)");
-    }
-
-    #[test]
-    fn contest_name_gets_dash_suffix() {
-        // The normalized label is shown bare elsewhere; the vote section spells
-        // out the full `.dash` domain so the user knows it is a registration.
-        assert_eq!(contest_display_name("det"), "det.dash");
-    }
-
-    /// A cast retires only the selections it actually delivered. The view now
-    /// outlives a backend result, so the votes already on their way must stop
-    /// re-arming `Cast votes`, while a contest whose vote failed keeps its
-    /// choice for a corrected retry.
-    #[test]
-    fn a_cast_retires_only_the_selections_it_delivered() {
-        use crate::backend_task::error::TaskError;
-        use crate::model::qualified_identity::IdentityStatus;
-        use dash_sdk::dpp::dashcore::Network;
-        use dash_sdk::dpp::identity::Identity;
-        use dash_sdk::dpp::version::PlatformVersion;
-
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let app_context = crate::context::test_support::test_app_context(temp_dir.path());
-        let identity = Identity::create_basic_identity(
-            Identifier::from([0x77; 32]),
-            PlatformVersion::latest(),
-        )
-        .expect("basic identity");
-        let qi = QualifiedIdentity {
-            identity,
-            associated_voter_identity: None,
-            associated_operator_identity: None,
-            associated_owner_key_id: None,
-            identity_type: IdentityType::Masternode,
-            alias: None,
-            private_keys: Default::default(),
-            dpns_names: vec![],
-            associated_wallets: BTreeMap::new(),
-            secret_access: None,
-            wallet_index: None,
-            top_ups: BTreeMap::new(),
-            status: IdentityStatus::Active,
-            network: Network::Testnet,
-        };
-        let mut view = MasternodeDetailView::new(&app_context, qi);
-        view.vote_selections
-            .insert("delivered".to_string(), ResourceVoteChoice::Abstain);
-        view.vote_selections
-            .insert("rejected".to_string(), ResourceVoteChoice::Lock);
-        view.vote_selections
-            .insert("changed".to_string(), ResourceVoteChoice::Abstain);
-
-        let AppAction::BackendTaskWithContext { context, .. } = view.cast_votes(vec![
-            ("delivered".to_string(), ResourceVoteChoice::Abstain),
-            ("changed".to_string(), ResourceVoteChoice::Abstain),
-            ("rejected".to_string(), ResourceVoteChoice::Lock),
-        ]) else {
-            panic!("a cast must carry its dispatch context");
-        };
-        view.vote_selections
-            .insert("changed".to_string(), ResourceVoteChoice::Lock);
-        let results = [
-            ("delivered".to_string(), ResourceVoteChoice::Abstain, Ok(())),
-            ("changed".to_string(), ResourceVoteChoice::Abstain, Ok(())),
-            (
-                "rejected".to_string(),
-                ResourceVoteChoice::Lock,
-                Err(Arc::new(TaskError::NoIdentitiesFound)),
-            ),
-        ];
-        view.consume_cast_votes(&BackendTaskContext::Other, &results);
-        let unrelated = BackendTaskContext::for_dispatch(&BackendTask::None);
-        view.consume_cast_votes(&unrelated, &results);
-        assert_eq!(
-            view.vote_selections.len(),
-            3,
-            "unrelated casts change nothing"
-        );
-        view.consume_cast_votes(&context, &results);
-
-        assert!(
-            !view.vote_selections.contains_key("delivered"),
-            "a vote already sent must not stay armed to be sent again",
-        );
-        assert_eq!(
-            view.vote_selections.get("changed"),
-            Some(&ResourceVoteChoice::Lock),
-            "a result for an older choice must preserve the newer selection",
-        );
-        assert_eq!(
-            view.vote_selections.get("rejected"),
-            Some(&ResourceVoteChoice::Lock),
-            "a vote that failed keeps its choice so it can be retried",
-        );
-
-        view.vote_selections
-            .insert("delivered".to_string(), ResourceVoteChoice::Abstain);
-        let AppAction::BackendTaskWithContext { context: next, .. } =
-            view.cast_votes(vec![("delivered".to_string(), ResourceVoteChoice::Abstain)])
-        else {
-            panic!("a cast must carry its dispatch context");
-        };
-        view.consume_cast_votes(&context, &results);
-        assert!(
-            view.vote_selections.contains_key("delivered"),
-            "an older cast cannot retire a new cast's selection"
-        );
-        view.consume_cast_votes(&next, &results);
-        assert!(!view.vote_selections.contains_key("delivered"));
-    }
-
-    #[test]
-    fn candidate_label_carries_current_tally() {
-        let label = candidate_choice_label("alice", 5);
-        assert!(
-            label.contains("Vote for alice"),
-            "names the candidate: {label}"
-        );
-        assert!(label.contains('5'), "shows the running tally: {label}");
-    }
-
-    #[test]
-    fn status_line_reports_candidate_count() {
-        let line = contest_status_line(2, None);
-        assert!(
-            line.contains("Identities competing for this name: 2."),
-            "counts contestants: {line}"
-        );
-        assert!(
-            line.contains("still loading"),
-            "degrades when the deadline is absent: {line}"
-        );
-    }
-
-    #[test]
-    fn status_line_renders_absolute_deadline() {
-        // 2021-01-01T00:00:00Z in milliseconds.
-        let line = contest_status_line(3, Some(1_609_459_200_000));
-        assert!(
-            line.contains("Identities competing for this name: 3."),
-            "counts contestants: {line}"
-        );
-        assert!(
-            line.contains("2021-01-01 00:00:00 UTC"),
-            "shows the absolute ISO deadline: {line}"
         );
     }
 

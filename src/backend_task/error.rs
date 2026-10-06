@@ -115,6 +115,12 @@ pub(crate) const BACKUP_RETENTION_SAVED_CLEANUP_INCOMPLETE: &str = "Your backup 
 /// Shown whenever another window or session holds the wallet database.
 pub(crate) const WALLET_DATA_IN_USE: &str = "Your wallet data is open in another Dash Evo Tool window or command-line session. Close it and try again.";
 
+/// Shown when the network could not be asked whether a username is free: the
+/// message of [`TaskError::UsernameAvailabilityCheckFailed`] and the text of
+/// the availability row that reports the same failure.
+pub(crate) const USERNAME_AVAILABILITY_CHECK_FAILED: &str =
+    "Availability can't be checked right now. Check your internet connection and try again.";
+
 /// App-level error envelope for backend tasks.
 #[derive(Debug, Error)]
 pub enum TaskError {
@@ -971,6 +977,17 @@ pub enum TaskError {
         source: Box<crate::wallet_backend::KvAdapterError>,
     },
 
+    /// A masternode-voting preference (saved node set, last Masternodes
+    /// segment) could not be read or written in the app k/v store. Only the
+    /// convenience preference is lost; voting itself is unaffected.
+    #[error(
+        "Could not save your voting preferences. Check available disk space and try again."
+    )]
+    VotingPreferenceStorage {
+        #[source]
+        source: Box<crate::wallet_backend::KvAdapterError>,
+    },
+
     /// The DET avatar image cache could not be read or written.
     /// Lives in the same cross-network `det-app.sqlite` k/v file as
     /// [`Self::KvSidecarStorage`]; a failure here only costs the offline
@@ -1049,14 +1066,11 @@ pub enum TaskError {
         source: crate::wallet_backend::KvAdapterError,
     },
 
-    /// A scheduled DPNS vote could not be read or written in the per-network
-    /// wallet k/v store.
-    #[error(
-        "Could not access your scheduled vote queue. Check available disk space and try again."
-    )]
-    ScheduledVoteStorage {
+    /// The startup check could not read schedules from the previous version.
+    #[error("Your previous scheduled votes could not be checked. Restart the app and try again.")]
+    LegacyScheduledVotesRead {
         #[source]
-        source: crate::wallet_backend::KvAdapterError,
+        source: rusqlite::Error,
     },
 
     /// A scheduled vote failed inside the otherwise successful per-voter result payload.
@@ -1131,10 +1145,101 @@ pub enum TaskError {
 
     /// A DPNS contest record could not be read or written in the
     /// per-network wallet k/v store.
-    #[error("Could not access your DPNS contest data. Check available disk space and try again.")]
+    #[error("Could not access your name contest data. Check available disk space and try again.")]
     ContestStorage {
         #[source]
         source: crate::wallet_backend::KvAdapterError,
+    },
+
+    /// A DPNS vote operation or current-vote snapshot could not be persisted.
+    #[error(
+        "Could not save voting progress. Check available disk space and try again."
+    )]
+    DpnsVoteOperationStorage {
+        #[source]
+        source: crate::wallet_backend::KvAdapterError,
+    },
+
+    /// An indexed journal row could not be decoded, so unresolved target locks
+    /// cannot be reconstructed safely.
+    #[error(
+        "Saved voting progress is unreadable. Restart the app and try loading your votes again."
+    )]
+    DpnsVoteOperationUnreadable {
+        #[source]
+        source: crate::wallet_backend::KvAdapterError,
+    },
+
+    /// An operation index referenced a missing row, so target locks are unknown.
+    #[error(
+        "Saved voting progress is incomplete. Restart the app and try loading your votes again."
+    )]
+    DpnsVoteOperationRecordMissing,
+
+    /// A non-terminal operation was found under a different network namespace.
+    #[error(
+        "Saved voting progress belongs to another network. Switch back to that network or resolve the pending vote there."
+    )]
+    DpnsVoteJournalNetworkMismatch,
+
+    /// The bounded in-process vote coordinator was shut down unexpectedly.
+    #[error("Voting is stopping. Wait for the app to finish closing, then open it and try again.")]
+    DpnsVoteCoordinatorUnavailable,
+
+    /// Another unresolved operation already owns this exact node and contest.
+    #[error(
+        "This node's vote for this name is already in progress. Wait for its result or check again."
+    )]
+    DpnsVoteTargetBusy,
+
+    /// The journal could not advance the exact claimed target into its
+    /// ambiguous network phase, so broadcasting must not start.
+    #[error(
+        "This vote could not be prepared safely. Check its saved status before trying again."
+    )]
+    DpnsVoteBroadcastPhaseNotMarked,
+
+    /// A cancellation lost the race to execution after the target was claimed.
+    #[error(
+        "This scheduled vote has already started and can no longer be cancelled. Check its result once it finishes."
+    )]
+    DpnsScheduledVoteAlreadyStarted,
+
+    /// The schedule changed or started after the edit dialog opened.
+    #[error("This scheduled vote has changed or already started. Refresh the schedule and try again.")]
+    DpnsScheduledVoteNotEditable,
+
+    /// A requested schedule does not fall inside the remaining voting window.
+    #[error("This voting time is outside the available window. Choose a future time before voting ends.")]
+    DpnsScheduledVoteInvalidTime,
+
+    /// The requested contender is absent from the current contest.
+    #[error("This choice is no longer available. Refresh the contest and choose another option.")]
+    DpnsScheduledVoteInvalidChoice,
+
+    /// The original voter has been removed or lacks an eligible voting key.
+    #[error("This node is no longer available for voting. Load a node with its voting key and try again.")]
+    DpnsScheduledVoteVoterUnavailable,
+
+    /// Current proved state is required to suppress duplicate/no-op votes safely.
+    #[error(
+        "This node's current vote could not be checked. Refresh vote state before submitting."
+    )]
+    DpnsCurrentVoteUnavailable,
+
+    /// A newer refresh or confirmation superseded a submission's proved snapshot.
+    #[error("Newer voting information is available. Refresh vote state and try again.")]
+    DpnsVoteStateChanged,
+
+    /// Fresh preflight discovered a vote change that the operator has not reviewed.
+    #[error("This node has voted since your review. Review its current choice and the vote-change warning before submitting again.")]
+    DpnsVoteReviewRequired,
+
+    /// Retains the per-voter cause of a strict current-vote preflight failure.
+    #[error("This node's current vote could not be checked. Refresh vote state before submitting.")]
+    DpnsVotePreflightFailed {
+        #[source]
+        source: std::sync::Arc<TaskError>,
     },
 
     /// A local identity record could not be read or written in the
@@ -1143,15 +1248,6 @@ pub enum TaskError {
     IdentityStorage {
         #[source]
         source: crate::wallet_backend::KvAdapterError,
-    },
-
-    /// A voter identifier handed to a scheduled-vote operation was not a valid
-    /// 32-byte identity id. Callers always pass an [`Identifier`]'s bytes, so
-    /// this signals an internal inconsistency rather than user input.
-    #[error("Could not read the voter for this scheduled vote. Please refresh and try again.")]
-    InvalidVoterIdentifier {
-        #[source]
-        source: dash_sdk::dpp::platform_value::Error,
     },
 
     /// A stored [`QualifiedIdentity`](crate::model::qualified_identity::QualifiedIdentity)
@@ -1426,6 +1522,10 @@ pub enum TaskError {
     /// The requested identity was not found on the platform.
     #[error("Identity not found on the platform. Please check the ID or name and try again.")]
     IdentityNotFound,
+
+    /// No voter identity exists for the selected node and supplied key address.
+    #[error("This voting key could not be matched to the selected node. Check that node's voting private key and try again.")]
+    MasternodeVotingKeyNotFound,
 
     /// An owner-key withdrawal was directed at an address other than the
     /// masternode's registered payout address, which the network does not allow.
@@ -1940,6 +2040,13 @@ pub enum TaskError {
     )]
     DataContractNotFound,
 
+    /// The loaded username contract cannot identify a voting poll.
+    #[error("The username voting information is incomplete. Refresh and try again.")]
+    DpnsVotePollSchema {
+        #[from]
+        source: crate::model::dpns_voting::DpnsVotePollError,
+    },
+
     // ──────────────────────────────────────────────────────────────────────────
     // Identity creation / parsing errors
     // ──────────────────────────────────────────────────────────────────────────
@@ -1962,6 +2069,10 @@ pub enum TaskError {
         "This node is already being loaded. Wait for that load to finish before loading it again."
     )]
     IdentityLoadInProgress { identity_id: Identifier },
+
+    /// The load was invalidated by removal or a scoped target changed protection.
+    #[error("This identity changed while its key was loading. Open the current identity and try again.")]
+    IdentityLoadSuperseded { identity_id: Identifier },
 
     /// The ProTxHash could not be read as a hex ProTxHash or a Base58 identity
     /// id. Carries the offending input (data, not a message).
@@ -1991,6 +2102,50 @@ pub enum TaskError {
     /// A private key could not be parsed or is invalid.
     #[error("The private key you entered is invalid. Please check the format and try again.")]
     InvalidPrivateKey,
+
+    /// The network could not be asked whether a username is free.
+    #[error("{}", USERNAME_AVAILABILITY_CHECK_FAILED)]
+    UsernameAvailabilityCheckFailed {
+        #[source]
+        source: Box<SdkError>,
+    },
+
+    /// The username stopped being available between choosing it and paying.
+    #[error("This username is no longer available. Nothing was spent. Choose another username.")]
+    UsernameNoLongerAvailable {
+        availability: crate::model::dpns_usernames::UsernameAvailability,
+    },
+
+    #[error("The username payment terms changed. Nothing was spent. Review the name and fees again.")]
+    UsernameRegistrationTermsChanged,
+
+    /// The name request was sent, but nothing proves whether the network applied
+    /// it. It may already be paid for, so this never reads as a plain failure.
+    #[error(
+        "The app could not confirm whether your request for this username went through. Do not pay again yet. Wait a few minutes, then check the Usernames list on your identity. If the name is not there, try again."
+    )]
+    UsernameRegistrationUnconfirmed {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// Username requests or preferences could not be read or written on this device.
+    #[error(
+        "Your username settings could not be saved on this device. Check available disk space and try again."
+    )]
+    UsernameStorage {
+        #[source]
+        source: crate::wallet_backend::KvAdapterError,
+    },
+
+    /// The status of username requests could not be read from the network.
+    #[error(
+        "Username request status can't be updated right now. Check your internet connection and try again."
+    )]
+    UsernameRequestRefreshFailed {
+        #[source]
+        source: Box<SdkError>,
+    },
 
     /// Fetching DPNS names for an identity failed.
     #[error("Could not look up names for this identity. Please check your connection and retry.")]
@@ -2452,6 +2607,17 @@ pub enum TaskError {
         "The contested name \"{name}\" is not currently open for voting. It may have been resolved or may not exist. Refresh the contested names list and try again."
     )]
     VotePollNotFound { name: String },
+
+    /// The masternode has used every vote allowed for a contested name.
+    #[error(
+        "This node has already cast the maximum {max_times_allowed} votes allowed for this contest and can't vote again. Choose another contest to vote on."
+    )]
+    MasternodeVoteLimitReached {
+        times_already_voted: u16,
+        max_times_allowed: u16,
+        #[source]
+        source_error: Box<SdkError>,
+    },
 
     /// The identity does not have an authentication key required to sign documents.
     #[error(
@@ -3703,6 +3869,17 @@ impl From<SdkError> for TaskError {
                             }
                         }))
                     }
+                    ConsensusError::StateError(StateError::MasternodeVotedTooManyTimesError(e)) => {
+                        let (times_already_voted, max_times_allowed) =
+                            (e.times_already_voted(), e.max_times_allowed());
+                        Some(Box::new(move |source_error| {
+                            TaskError::MasternodeVoteLimitReached {
+                                times_already_voted,
+                                max_times_allowed,
+                                source_error,
+                            }
+                        }))
+                    }
                     ConsensusError::BasicError(
                         BasicError::InvalidInstantAssetLockProofSignatureError(_),
                     ) => Some(Box::new(|source_error| {
@@ -3987,6 +4164,7 @@ mod tests {
     use dash_sdk::dpp::consensus::state::identity::duplicated_identity_public_key_state_error::DuplicatedIdentityPublicKeyStateError;
     use dash_sdk::dpp::consensus::state::identity::IdentityInsufficientBalanceError;
     use dash_sdk::dpp::consensus::state::identity::identity_public_key_already_exists_for_unique_contract_bounds_error::IdentityPublicKeyAlreadyExistsForUniqueContractBoundsError;
+    use dash_sdk::dpp::consensus::state::voting::masternode_voted_too_many_times::MasternodeVotedTooManyTimesError;
     use dash_sdk::dpp::identity::Purpose;
     use dash_sdk::platform::Identifier;
 
@@ -5203,6 +5381,63 @@ mod tests {
         assert!(
             msg.contains("top up"),
             "Expected actionable guidance in message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn from_sdk_error_vote_limit_via_consensus_is_specific() {
+        let consensus = ConsensusError::from(MasternodeVotedTooManyTimesError::new(
+            Identifier::random(),
+            6,
+            5,
+        ));
+        let err = TaskError::from(SdkError::from(consensus));
+
+        assert!(
+            matches!(
+                &err,
+                TaskError::MasternodeVoteLimitReached {
+                    times_already_voted: 6,
+                    max_times_allowed: 5,
+                    ..
+                }
+            ),
+            "Expected MasternodeVoteLimitReached, got: {err:?}"
+        );
+        assert_eq!(
+            err.to_string(),
+            "This node has already cast the maximum 5 votes allowed for this contest and can't vote again. Choose another contest to vote on."
+        );
+    }
+
+    #[test]
+    fn from_sdk_error_vote_limit_via_broadcast_is_specific() {
+        let consensus = ConsensusError::from(MasternodeVotedTooManyTimesError::new(
+            Identifier::random(),
+            6,
+            5,
+        ));
+        let broadcast_err = dash_sdk::error::StateTransitionBroadcastError {
+            code: 40303,
+            message: "vote limit reached".to_string(),
+            cause: Some(consensus),
+        };
+        let err = TaskError::from(SdkError::StateTransitionBroadcastError(broadcast_err));
+
+        assert!(
+            matches!(
+                &err,
+                TaskError::MasternodeVoteLimitReached {
+                    times_already_voted: 6,
+                    max_times_allowed: 5,
+                    ..
+                }
+            ),
+            "Expected MasternodeVoteLimitReached, got: {err:?}"
+        );
+        assert_eq!(
+            err.to_string(),
+            "This node has already cast the maximum 5 votes allowed for this contest and can't vote again. Choose another contest to vote on."
         );
     }
 

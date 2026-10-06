@@ -20,7 +20,6 @@ use crate::ui::dashpay::profile_search::ProfileSearchScreen;
 use crate::ui::dashpay::qr_code_generator::QRCodeGeneratorScreen;
 use crate::ui::dashpay::send_payment::SendPaymentScreen;
 use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen};
-use crate::ui::dpns::dpns_contested_names_screen::DPNSScreen;
 use crate::ui::identity::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identity::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::identity::keys::keys_screen::KeysScreen;
@@ -50,11 +49,11 @@ use contracts_documents::register_contract_screen::RegisterDataContractScreen;
 use contracts_documents::update_contract_screen::UpdateDataContractScreen;
 use dash_sdk::dpp::prelude::IdentityPublicKey;
 use dash_sdk::platform::Identifier;
-use dpns::dpns_contested_names_screen::DPNSSubscreen;
 use identity::IdentityHubScreen;
 use identity::add_existing_identity_screen::AddExistingIdentityScreen;
 use identity::add_new_identity_screen::AddNewIdentityScreen;
 use identity::register_dpns_name_screen::{RegisterDpnsNameScreen, RegisterDpnsNameSource};
+use identity::username_request_screen::UsernameRequestScreen;
 use masternodes::MasternodesScreen;
 use std::fmt;
 use std::sync::Arc;
@@ -132,19 +131,44 @@ pub mod welcome_screen;
 
 pub use crate::model::settings::RootScreenType;
 
+/// Where a root route really lands.
+///
+/// Voting lives in Masternodes ▸ Votes, but persisted settings and older
+/// actions still name the retired DPNS root screens: those open the matching
+/// Votes sub-view, and the retired "My usernames" opens the Identities hub.
+/// Every other route is returned unchanged with no sub-view.
+pub fn resolve_root_screen(root: RootScreenType) -> (RootScreenType, Option<dpns::VotesView>) {
+    match root {
+        RootScreenType::RootScreenDPNSActiveContests => (
+            RootScreenType::RootScreenMasternodes,
+            Some(dpns::VotesView::ToDecide),
+        ),
+        RootScreenType::RootScreenDPNSPastContests => (
+            RootScreenType::RootScreenMasternodes,
+            Some(dpns::VotesView::History),
+        ),
+        RootScreenType::RootScreenDPNSScheduledVotes => (
+            RootScreenType::RootScreenMasternodes,
+            Some(dpns::VotesView::Scheduled),
+        ),
+        RootScreenType::RootScreenDPNSOwnedNames => (RootScreenType::RootScreenIdentityHub, None),
+        other => (other, None),
+    }
+}
+
 impl From<RootScreenType> for ScreenType {
     fn from(value: RootScreenType) -> Self {
         match value {
-            RootScreenType::RootScreenDPNSActiveContests => ScreenType::DPNSActiveContests,
-            RootScreenType::RootScreenDPNSPastContests => ScreenType::DPNSPastContests,
-            RootScreenType::RootScreenDPNSOwnedNames => ScreenType::DPNSMyUsernames,
+            RootScreenType::RootScreenDPNSActiveContests
+            | RootScreenType::RootScreenDPNSPastContests
+            | RootScreenType::RootScreenDPNSScheduledVotes => ScreenType::Masternodes,
+            RootScreenType::RootScreenDPNSOwnedNames => ScreenType::IdentityHub,
             RootScreenType::RootScreenToolsTransitionVisualizerScreen => {
                 ScreenType::TransitionVisualizer
             }
             RootScreenType::RootScreenDocumentQuery => ScreenType::DocumentQuery,
             RootScreenType::RootScreenNetworkChooser => ScreenType::NetworkChooser,
             RootScreenType::RootScreenWalletsBalances => ScreenType::WalletsBalances,
-            RootScreenType::RootScreenDPNSScheduledVotes => ScreenType::ScheduledVotes,
             RootScreenType::RootScreenToolsProofVisualizerScreen => ScreenType::ProofVisualizer,
             RootScreenType::RootScreenMyTokenBalances => ScreenType::TokenBalances,
             RootScreenType::RootScreenTokenSearch => ScreenType::TokenSearch,
@@ -171,9 +195,6 @@ impl From<RootScreenType> for ScreenType {
 
 #[derive(Debug, Clone, Default)]
 pub enum ScreenType {
-    DPNSActiveContests,
-    DPNSPastContests,
-    DPNSMyUsernames,
     AddNewIdentity,
     WalletsBalances,
     ImportMnemonic,
@@ -197,10 +218,14 @@ pub enum ScreenType {
     DocumentQuery,
     NetworkChooser,
     RegisterDpnsName(RegisterDpnsNameSource),
+    /// Status of one of an identity's username requests.
+    UsernameRequestStatus {
+        identity_id: Identifier,
+        normalized_label: String,
+    },
     RegisterContract,
     UpdateContract,
     TopUpIdentity(QualifiedIdentity),
-    ScheduledVotes,
     AddContracts,
     ProofVisualizer,
     DocumentsVisualizer,
@@ -275,6 +300,16 @@ impl PartialEq for ScreenType {
             (KeyInfo(a1, a2, a3), KeyInfo(b1, b2, b3)) => a1 == b1 && a2 == b2 && a3 == b3,
             (Keys(a), Keys(b)) => a == b,
             (RegisterDpnsName(a), RegisterDpnsName(b)) => a == b,
+            (
+                UsernameRequestStatus {
+                    identity_id: a1,
+                    normalized_label: a2,
+                },
+                UsernameRequestStatus {
+                    identity_id: b1,
+                    normalized_label: b2,
+                },
+            ) => a1 == b1 && a2 == b2,
             (TopUpIdentity(a), TopUpIdentity(b)) => a == b,
             (TransferTokensScreen(a), TransferTokensScreen(b)) => a == b,
             (MintTokensScreen(a), MintTokensScreen(b)) => a == b,
@@ -310,15 +345,6 @@ impl PartialEq for ScreenType {
 impl ScreenType {
     pub fn create_screen(&self, app_context: &Arc<AppContext>) -> Screen {
         match self {
-            ScreenType::DPNSActiveContests => {
-                Screen::DPNSScreen(DPNSScreen::new(app_context, DPNSSubscreen::Active))
-            }
-            ScreenType::DPNSPastContests => {
-                Screen::DPNSScreen(DPNSScreen::new(app_context, DPNSSubscreen::Past))
-            }
-            ScreenType::DPNSMyUsernames => {
-                Screen::DPNSScreen(DPNSScreen::new(app_context, DPNSSubscreen::Owned))
-            }
             ScreenType::AddNewIdentity => {
                 Screen::AddNewIdentityScreen(AddNewIdentityScreen::new(app_context))
             }
@@ -342,6 +368,14 @@ impl ScreenType {
             ScreenType::RegisterDpnsName(source) => {
                 Screen::RegisterDpnsNameScreen(RegisterDpnsNameScreen::new(app_context, *source))
             }
+            ScreenType::UsernameRequestStatus {
+                identity_id,
+                normalized_label,
+            } => Screen::UsernameRequestScreen(UsernameRequestScreen::new(
+                app_context,
+                *identity_id,
+                normalized_label.clone(),
+            )),
             ScreenType::RegisterContract => {
                 Screen::RegisterDataContractScreen(RegisterDataContractScreen::new(app_context))
             }
@@ -381,9 +415,6 @@ impl ScreenType {
             ScreenType::SingleKeyWalletSendScreen(wallet) => Screen::SingleKeyWalletSendScreen(
                 SingleKeyWalletSendScreen::new(app_context, wallet.clone()),
             ),
-            ScreenType::ScheduledVotes => {
-                Screen::DPNSScreen(DPNSScreen::new(app_context, DPNSSubscreen::ScheduledVotes))
-            }
             ScreenType::AddContracts => {
                 Screen::AddContractsScreen(AddContractsScreen::new(app_context))
             }
@@ -561,7 +592,6 @@ impl ScreenType {
 
 #[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 pub enum Screen {
-    DPNSScreen(DPNSScreen),
     DocumentQueryScreen(DocumentQueryScreen),
     AddNewWalletScreen(AddNewWalletScreen),
     ImportMnemonicScreen(ImportMnemonicScreen),
@@ -570,6 +600,7 @@ pub enum Screen {
     KeyInfoScreen(KeyInfoScreen),
     KeysScreen(KeysScreen),
     RegisterDpnsNameScreen(RegisterDpnsNameScreen),
+    UsernameRequestScreen(UsernameRequestScreen),
     RegisterDataContractScreen(RegisterDataContractScreen),
     UpdateDataContractScreen(UpdateDataContractScreen),
     DocumentActionScreen(DocumentActionScreen),
@@ -743,7 +774,6 @@ impl Screen {
         // The `skip` list must exactly match the explicit match arms above.
         set_ctx!(
             set:
-            DPNSScreen,
             AddExistingIdentityScreen,
             KeyInfoScreen,
             KeysScreen,
@@ -753,6 +783,7 @@ impl Screen {
             AddKeyScreen,
             DocumentQueryScreen,
             RegisterDpnsNameScreen,
+            UsernameRequestScreen,
             RegisterDataContractScreen,
             UpdateDataContractScreen,
             DocumentActionScreen,
@@ -918,22 +949,6 @@ impl Screen {
                 screen.key.clone(),
                 screen.private_key_data.clone(),
             ),
-            Screen::DPNSScreen(DPNSScreen {
-                dpns_subscreen: DPNSSubscreen::Active,
-                ..
-            }) => ScreenType::DPNSActiveContests,
-            Screen::DPNSScreen(DPNSScreen {
-                dpns_subscreen: DPNSSubscreen::Past,
-                ..
-            }) => ScreenType::DPNSPastContests,
-            Screen::DPNSScreen(DPNSScreen {
-                dpns_subscreen: DPNSSubscreen::Owned,
-                ..
-            }) => ScreenType::DPNSMyUsernames,
-            Screen::DPNSScreen(DPNSScreen {
-                dpns_subscreen: DPNSSubscreen::ScheduledVotes,
-                ..
-            }) => ScreenType::ScheduledVotes,
             Screen::TransitionVisualizerScreen(_) => ScreenType::TransitionVisualizer,
             Screen::ContractVisualizerScreen(_) => ScreenType::ContractsVisualizer,
             Screen::WithdrawalScreen(screen) => {
@@ -947,6 +962,10 @@ impl Screen {
                 ScreenType::TopUpIdentity(screen.identity.clone())
             }
             Screen::RegisterDpnsNameScreen(screen) => ScreenType::RegisterDpnsName(screen.source),
+            Screen::UsernameRequestScreen(screen) => ScreenType::UsernameRequestStatus {
+                identity_id: screen.identity_id(),
+                normalized_label: screen.normalized_label().to_owned(),
+            },
             Screen::RegisterDataContractScreen(_) => ScreenType::RegisterContract,
             Screen::UpdateDataContractScreen(_) => ScreenType::UpdateContract,
             Screen::DocumentActionScreen(screen) => match screen.action_type {
@@ -1080,7 +1099,6 @@ impl Screen {
 macro_rules! delegate_to_screen {
     ($self:expr, $screen:ident => $call:expr) => {
         match $self {
-            Screen::DPNSScreen($screen) => $call,
             Screen::DocumentQueryScreen($screen) => $call,
             Screen::AddNewWalletScreen($screen) => $call,
             Screen::ImportMnemonicScreen($screen) => $call,
@@ -1089,6 +1107,7 @@ macro_rules! delegate_to_screen {
             Screen::KeyInfoScreen($screen) => $call,
             Screen::KeysScreen($screen) => $call,
             Screen::RegisterDpnsNameScreen($screen) => $call,
+            Screen::UsernameRequestScreen($screen) => $call,
             Screen::RegisterDataContractScreen($screen) => $call,
             Screen::UpdateDataContractScreen($screen) => $call,
             Screen::DocumentActionScreen($screen) => $call,
@@ -1202,5 +1221,45 @@ impl ScreenLike for Screen {
 
     fn pop_on_success(&mut self) {
         delegate_to_screen!(self, screen => screen.pop_on_success())
+    }
+}
+
+#[cfg(test)]
+mod root_route_tests {
+    use super::*;
+
+    /// VOTE-TC-082 / VOTE-TC-083 (routing half): retired DPNS routes resolve to
+    /// Masternodes ▸ Votes sub-views, owned names to the Identities hub.
+    #[test]
+    fn retired_dpns_routes_resolve_to_votes_and_the_identity_hub() {
+        assert_eq!(
+            resolve_root_screen(RootScreenType::RootScreenDPNSActiveContests),
+            (
+                RootScreenType::RootScreenMasternodes,
+                Some(dpns::VotesView::ToDecide)
+            )
+        );
+        assert_eq!(
+            resolve_root_screen(RootScreenType::RootScreenDPNSPastContests),
+            (
+                RootScreenType::RootScreenMasternodes,
+                Some(dpns::VotesView::History)
+            )
+        );
+        assert_eq!(
+            resolve_root_screen(RootScreenType::RootScreenDPNSScheduledVotes),
+            (
+                RootScreenType::RootScreenMasternodes,
+                Some(dpns::VotesView::Scheduled)
+            )
+        );
+        assert_eq!(
+            resolve_root_screen(RootScreenType::RootScreenDPNSOwnedNames),
+            (RootScreenType::RootScreenIdentityHub, None)
+        );
+        assert_eq!(
+            resolve_root_screen(RootScreenType::RootScreenWalletsBalances),
+            (RootScreenType::RootScreenWalletsBalances, None)
+        );
     }
 }

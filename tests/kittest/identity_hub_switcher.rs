@@ -465,6 +465,34 @@ fn ui_polish_detail_breadcrumb_opens_picker_repeatedly() {
     });
 }
 
+/// The request status page is a pushed screen, so its root crumb has to dismiss
+/// it — selecting the hub underneath would leave the page on screen.
+#[test]
+fn username_request_breadcrumb_dismisses_the_page_and_opens_the_picker() {
+    with_identity_hub(|mut harness, app_context| {
+        let identity = seed_identity(&app_context, 1, "Request Alpha");
+        app_context.set_selected_identity(Some(identity));
+        harness.run_steps(5);
+        harness
+            .state_mut()
+            .screen_stack
+            .push(dash_evo_tool::ui::Screen::UsernameRequestScreen(
+                dash_evo_tool::ui::identity::username_request_screen::UsernameRequestScreen::new(
+                    &app_context,
+                    identity,
+                    "a11ce".to_owned(),
+                ),
+            ));
+        harness.run_steps(5);
+        open_picker(&mut harness);
+        assert!(
+            harness.state().screen_stack.is_empty(),
+            "breadcrumb must dismiss the request status page"
+        );
+        assert!(harness.query_by_label(PICKER_HEADING).is_some());
+    });
+}
+
 #[test]
 fn ui_polish_username_registration_breadcrumb_opens_all_identities() {
     with_identity_hub(|mut harness, app_context| {

@@ -26,10 +26,6 @@ impl StyledButton {
         }
     }
 
-    pub fn primary(text: impl Into<String>) -> Self {
-        Self::new(text)
-    }
-
     pub fn show(self, ui: &mut Ui) -> Response {
         let mut button = Button::new(
             RichText::new(self.text)

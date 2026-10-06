@@ -2467,6 +2467,15 @@ impl WalletBackend {
             })
     }
 
+    /// Masternode identity ids in the current deterministic masternode list,
+    /// each mapped to whether it is an evonode. `None` until the list has synced.
+    pub async fn masternode_list_membership(
+        &self,
+    ) -> Option<std::collections::BTreeMap<dash_sdk::platform::Identifier, bool>> {
+        let summaries = self.inner.pwm.spv().masternode_list_summaries().await?;
+        Some(membership_from_summaries(summaries))
+    }
+
     /// Whether chain sync has not yet reached the tip.
     pub async fn is_syncing(&self) -> bool {
         match self.inner.pwm.spv().sync_progress().await {
@@ -4736,5 +4745,57 @@ mod tests {
             matches!(kind, IdentityOpErrorKind::ConfirmationUnknown),
             "an ambiguous broadcast must not share a bucket with preconditions"
         );
+    }
+}
+
+/// Key list entries by masternode identity id. The summary holds the
+/// proTxHash in wire order; Platform's identity id is the display order
+/// (drive-abci parses the RPC hex into the forward-displayed `ProTxHash`).
+fn membership_from_summaries(
+    summaries: impl IntoIterator<Item = platform_wallet::masternode::MasternodeListSummary>,
+) -> std::collections::BTreeMap<dash_sdk::platform::Identifier, bool> {
+    summaries
+        .into_iter()
+        .map(|summary| {
+            (
+                dash_sdk::platform::Identifier::from(summary.pro_tx_hash_display()),
+                summary.is_evonode,
+            )
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod masternode_membership_tests {
+    use super::*;
+    use dash_sdk::dpp::dashcore::ProTxHash;
+    use dash_sdk::dpp::dashcore::hashes::Hash;
+    use std::str::FromStr;
+
+    const DISPLAY_HEX: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+
+    /// The list key is the id DET loads a masternode under (the explorer /
+    /// `protx list` hex), which is also how Platform derives the identity id.
+    #[test]
+    fn membership_keys_match_the_loaded_masternode_identity_id() {
+        let loaded = crate::model::masternode_input::decode_identity_id(DISPLAY_HEX).unwrap();
+        let platform = ProTxHash::from_str(DISPLAY_HEX).unwrap().to_byte_array();
+        assert_eq!(platform, loaded.to_buffer(), "Platform id = RPC hex bytes");
+
+        let mut wire = loaded.to_buffer();
+        wire.reverse();
+        let summary = platform_wallet::masternode::MasternodeListSummary {
+            pro_tx_hash: wire,
+            service_address: None,
+            platform_http_port: None,
+            operator_public_key: [0; 48],
+            voting_key_id: [0; 20],
+            platform_node_id: None,
+            is_valid: true,
+            is_evonode: true,
+            has_extended_net_info: false,
+        };
+        let membership = membership_from_summaries([summary]);
+        assert_eq!(membership.get(&loaded), Some(&true));
     }
 }

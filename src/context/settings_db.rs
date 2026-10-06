@@ -317,7 +317,7 @@ mod tests {
         let ctx = test_app_context_with_kv(tmp.path(), Arc::new(DetKv::from_store(store.clone())));
         ctx.set_backup_retention(BackupRetention::KeepForever)
             .unwrap();
-        store.fail_reads(true);
+        store.fail_all_reads(true);
         assert!(ctx.backup_retention().is_err());
     }
 
@@ -541,7 +541,7 @@ mod tests {
         let puts_before = store.put_count();
 
         // Every read now fails. Bypass the cache so the load actually hits it.
-        store.fail_reads(true);
+        store.fail_all_reads(true);
         drop(ctx.invalidate_settings_cache());
         let got = ctx.get_app_settings();
 
@@ -556,7 +556,7 @@ mod tests {
         );
 
         // The store recovers: the stored settings must be exactly as they were.
-        store.fail_reads(false);
+        store.fail_all_reads(false);
         drop(ctx.invalidate_settings_cache());
         let recovered = ctx.get_app_settings();
         assert_eq!(
@@ -593,7 +593,7 @@ mod tests {
         ctx.set_app_settings(&stored).unwrap();
 
         // One failing read, with the cache cold so the load actually hits the store.
-        store.fail_reads(true);
+        store.fail_all_reads(true);
         drop(ctx.invalidate_settings_cache());
         assert_eq!(
             ctx.get_app_settings().network,
@@ -602,7 +602,7 @@ mod tests {
         );
 
         // The store recovers on its own; nothing invalidates the cache in between.
-        store.fail_reads(false);
+        store.fail_all_reads(false);
         let recovered = ctx.get_app_settings();
 
         assert_eq!(
@@ -676,7 +676,7 @@ mod tests {
         .unwrap();
         let puts_before = store.put_count();
 
-        store.fail_reads(true);
+        store.fail_all_reads(true);
         drop(ctx.invalidate_settings_cache());
         let result = ctx.update_app_settings(|s| s.auto_start_spv = true);
 
@@ -687,7 +687,7 @@ mod tests {
             "a failed read-modify-write must not commit anything"
         );
 
-        store.fail_reads(false);
+        store.fail_all_reads(false);
         drop(ctx.invalidate_settings_cache());
         let recovered = ctx.get_app_settings();
         assert_eq!(recovered.user_role, Some(UserRole::Developer));
@@ -711,7 +711,7 @@ mod tests {
             .expect("a healthy store persists the role");
         assert_eq!(ctx.user_role(), UserRole::Everyday);
 
-        store.fail_reads(true);
+        store.fail_all_reads(true);
         drop(ctx.invalidate_settings_cache());
         let result = ctx.set_and_persist_user_role(UserRole::Developer);
 
@@ -784,7 +784,7 @@ mod tests {
         // nothing would be indistinguishable from neither fallback firing.
         ctx.set_user_role(UserRole::Developer);
 
-        store.fail_reads(true);
+        store.fail_all_reads(true);
         drop(ctx.invalidate_settings_cache());
         ctx.seed_user_role_from_settings();
 
@@ -801,7 +801,7 @@ mod tests {
 
         // The store recovers. The user's real role is still Everyday — a restart
         // (or re-picking the mode) seeds it, and the failed read left nothing behind.
-        store.fail_reads(false);
+        store.fail_all_reads(false);
         drop(ctx.invalidate_settings_cache());
         ctx.seed_user_role_from_settings();
 

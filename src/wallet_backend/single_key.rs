@@ -2984,7 +2984,7 @@ mod tests {
             network: Network::Testnet,
             app_kv: Some(&kv),
         };
-        failing.fail_reads(true);
+        failing.fail_all_reads(true);
 
         let error = view
             .import_wif_if_absent(known_wif(), AliasSource::Preserved(None))
@@ -3020,7 +3020,7 @@ mod tests {
             network: Network::Testnet,
             app_kv: Some(&kv),
         };
-        failing.fail_next_puts(1);
+        failing.fail_next_puts_containing("", 1);
 
         let error = view
             .import_wif_if_absent(known_wif(), AliasSource::Preserved(None))

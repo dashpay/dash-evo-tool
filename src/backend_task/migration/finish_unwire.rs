@@ -214,18 +214,8 @@ pub enum MigrationError {
         failed: u32,
     },
 
-    /// The decoded scheduled votes could not be written into the k/v store.
-    /// The app-data sentinel stays unwritten so the next launch retries the
-    /// idempotent import rather than leaving the votes behind. It never blocks
-    /// the wallet drain — [`run`] judges this only after the wallets are safe.
-    #[error("could not save scheduled votes from the previous version")]
-    ScheduledVotesWrite {
-        #[source]
-        source: Box<TaskError>,
-    },
-
     /// The app-data pass failed with an error that did not already originate in
-    /// the migration layer (a k/v read while checking which votes exist, say).
+    /// the migration layer (a top-up history write rejected by the k/v store, say).
     /// Wrapped so the combined [`MigrationState::FailedWithUnreadableIdentities`]
     /// banner keeps a typed chain when both DET-owned passes break together.
     #[error("could not import the previous version's app data")]
@@ -253,16 +243,6 @@ pub enum MigrationError {
     TopUpHistoryWrite {
         #[source]
         source: Box<TaskError>,
-    },
-
-    /// Could not read, write or clear the durable unreadable-vote warning. That
-    /// record is what re-raises the warning on every launch until the user
-    /// acknowledges it, so a failure here is surfaced rather than dropped — a
-    /// silently-lost warning is a silently-missed vote deadline.
-    #[error("could not access the unreadable-vote warning")]
-    VoteWarningRecord {
-        #[source]
-        source: KvAdapterError,
     },
 
     /// Could not read, write or clear the durable unreadable-top-up warning.
@@ -589,8 +569,9 @@ fn write_dapi_refresh_completion(
 ///
 /// Three independent recovery passes, each under its own sentinel, in this order:
 ///
-/// 1. **App data** (scheduled votes, top-up history) — DET-owned rows the
-///    wallet drain never touched.
+/// 1. **App data** (top-up history) — DET-owned rows the wallet drain never
+///    touched. Legacy scheduled votes are not read here: they are never
+///    imported, and the startup notice reports the ones that will not run.
 /// 2. **Wallet drain** (single keys, HD seeds, wallet metadata, upstream
 ///    registration) — the pass that restores access to funds.
 /// 3. **Identities** (identity rows and the keys they hold) — last, because it
@@ -600,7 +581,7 @@ fn write_dapi_refresh_completion(
 /// **Neither DET-owned pass gates the other.** The wallet drain runs regardless
 /// of the app-data outcome, and the identity import runs regardless of it too —
 /// both results are held, never propagated on the spot, and judged together at
-/// the end. A legacy vote row that cannot be imported must never stand between
+/// the end. A legacy top-up row that cannot be imported must never stand between
 /// the user and their seeds, nor between the user and their identity keys: an
 /// app-data failure is deterministic, so letting it short-circuit the identity
 /// import would strand those keys outside the vault on every launch, not just
@@ -613,16 +594,15 @@ fn write_dapi_refresh_completion(
 ///
 /// Both DET-owned passes write their sentinel unconditionally, so their counters
 /// exist for exactly one launch. What outlives them are the durable
-/// [`UnreadableVotesWarning`], [`UnreadableTopUpsWarning`] and
-/// [`UnreadableIdentitiesWarning`] records, and
+/// [`UnreadableTopUpsWarning`] and [`UnreadableIdentitiesWarning`] records, and
 /// those — never the counters — are what this function publishes: each is
 /// re-raised on every launch, not only the one that discovered it, until
 /// [`acknowledge_unreadable_app_data`] / [`acknowledge_unreadable_identities`]
 /// retires it. When both are pending they ride one
 /// [`MigrationState::SucceededWithUnreadableData`], so a lone
-/// identity warning can never outrank the vote warning and silently cost the
-/// user a live vote deadline. If reading the vote-warning record fails, the vote
-/// half is withheld until a later launch reads it successfully — the identity
+/// identity warning can never hide the top-up warning. If reading the
+/// top-up-warning record fails, the top-up half is withheld until a later launch
+/// reads it successfully — the identity
 /// half still reaches the user, and neither is reported as a failed migration —
 /// a *hard* app-data failure (not merely a failed later read of this record) is
 /// the only thing that publishes [`MigrationState::FailedWithUnreadableIdentities`]
@@ -748,11 +728,11 @@ where
 
     let status = app_context.migration_status();
 
-    // Scheduled votes and top-up history carry their own sentinel and run
-    // ahead of the wallet-drain gate below: an install that already completed
-    // the wallet drain under an earlier build (which had no app-data import)
-    // still has those rows in `data.db`, and the wallet sentinel would
-    // otherwise short-circuit the launch and strand them.
+    // Top-up history carries its own sentinel and runs ahead of the
+    // wallet-drain gate below: an install that already completed the wallet
+    // drain under an earlier build (which had no app-data import) still has
+    // those rows in `data.db`, and the wallet sentinel would otherwise
+    // short-circuit the launch and strand them.
     status.set_state(MigrationState::Running {
         step: MigrationStep::AppData,
     });
@@ -760,8 +740,8 @@ where
 
     // The app-data result is deliberately held, not propagated: the wallet drain
     // is what restores access to funds, so nothing about DET's own rows may gate
-    // it. Propagating here would let one bad vote row wedge the drain on every
-    // launch, with no user-reachable way out.
+    // it. Propagating here would let a damaged top-up table wedge the drain on
+    // every launch, with no user-reachable way out.
     let wallet_moved = match drain_wallets(app_context, wallet_password).await {
         Ok(moved) => moved,
         Err(drain_error) => {
@@ -783,11 +763,11 @@ where
     // The identity pass needs the drain's output (backend wired, vault reachable,
     // the wallet context's HD registry hydrated) so a wallet-derived key lands against a wallet that
     // exists. It must NOT wait on the app-data result: a hard app-data failure —
-    // one malformed vote-index blob is enough — is deterministic, so unwrapping
-    // it first would skip the identity import on this launch *and every retry*
-    // (the app-data sentinel is never written, so the failure recurs forever).
-    // That would strand a masternode owner's private keys outside the vault
-    // permanently, over a corrupt vote queue.
+    // a structurally damaged top-up table is enough — is deterministic, so
+    // unwrapping it first would skip the identity import on this launch *and
+    // every retry* (the app-data sentinel is never written, so the failure
+    // recurs forever). That would strand a masternode owner's private keys
+    // outside the vault permanently, over a damaged top-up history.
     status.set_state(MigrationState::Running {
         step: MigrationStep::Identities,
     });
@@ -800,7 +780,7 @@ where
     // Both DET-owned passes have now run. A hard failure in either still reaches
     // the user's "Retry now" banner, but only after neither could block the
     // other. The identity failure takes precedence when both fail: keys outrank
-    // votes.
+    // top-up history.
     let identities = match identities {
         Ok(outcome) => outcome,
         Err(identity_error) => {
@@ -842,10 +822,10 @@ where
     };
 
     // Unreadable identities outrank a *readable* app-data pass: an identity that
-    // did not come across took its keys with it, so the user cannot sign — let
-    // alone vote — until it is loaded again. But a *hard* app-data failure on the
+    // did not come across took its keys with it, so the user cannot sign until
+    // it is loaded again. But a *hard* app-data failure on the
     // same launch is not something the identity warning may swallow: it would
-    // leave the user no retry for their scheduled votes, silently and every
+    // leave the user no retry for their top-up history, silently and every
     // launch (the app-data sentinel is never written, so it recurs). So when both
     // break together, a single combined banner names each — the app-data half
     // retryable — instead of one eating the other.
@@ -861,37 +841,35 @@ where
             Ok(outcome) => {
                 let moved_data = wallet_moved || outcome.moved_data() || identities.moved_data();
 
-                // A pending vote warning must ride along, or the identity signal
+                // A pending top-up warning must ride along, or the identity signal
                 // buries it forever: the identity warning is re-published on every
                 // launch until acknowledged, so this branch would otherwise return
-                // ahead of the `read_vote_warning` re-publish below. Both counts
+                // ahead of the top-up warning re-publish below. Both counts
                 // come from storage, not from this launch's counters: after the
                 // discovery run both passes short-circuit on their sentinels and
                 // honestly report zero — exactly on the launches where this branch
                 // is the only one the user ever sees.
                 //
-                // A k/v read that itself fails costs only the vote half of the
+                // A k/v read that itself fails costs only the top-up half of the
                 // banner, never the identity half: the record is durable and this
                 // branch re-runs on every launch (the identity sentinel stays
                 // unwritten), so the next successful read re-publishes it. Reporting
                 // the read error as a *failure* state instead would tell the user the
                 // app-data pass did not finish — it did, and wrote its sentinel — and
                 // offer a retry that re-runs nothing.
-                match read_unreadable_app_data(&app_context.app_kv(), app_context.network) {
-                    Ok(warning) if !warning.is_empty() => {
+                match pending_unreadable_top_ups(&app_context.app_kv(), app_context.network) {
+                    Ok(top_ups_unreadable) if top_ups_unreadable > 0 => {
                         tracing::warn!(
                             target = "migration::finish_unwire",
                             unreadable,
                             imported = identities.imported,
-                            votes_unreadable = warning.votes,
-                            top_ups_unreadable = warning.top_ups,
+                            top_ups_unreadable,
                             network = ?app_context.network,
-                            "Some legacy identities and some legacy scheduled votes could not be decoded; they stay in the previous version's data.db and must be loaded / scheduled again",
+                            "Some legacy identities and some legacy top-up rows could not be decoded; they stay in the previous version's data.db, the identities must be loaded again and the top-up history reviewed",
                         );
                         status.set_state(MigrationState::SucceededWithUnreadableData {
                             identities: unreadable,
-                            votes: warning.votes,
-                            top_ups: warning.top_ups,
+                            top_ups: top_ups_unreadable,
                         });
                     }
                     Ok(_) => {
@@ -904,7 +882,6 @@ where
                         );
                         status.set_state(MigrationState::SucceededWithUnreadableData {
                             identities: unreadable,
-                            votes: 0,
                             top_ups: 0,
                         });
                     }
@@ -915,11 +892,10 @@ where
                             imported = identities.imported,
                             error = ?warning_error,
                             network = ?app_context.network,
-                            "Some legacy identities could not be decoded, and the pending vote-warning record could not be read so any vote notice is withheld until the next launch; the identity rows stay in the previous version's data.db and must be loaded again",
+                            "Some legacy identities could not be decoded, and the pending top-up-warning record could not be read so any top-up notice is withheld until the next launch; the identity rows stay in the previous version's data.db and must be loaded again",
                         );
                         status.set_state(MigrationState::SucceededWithUnreadableData {
                             identities: unreadable,
-                            votes: 0,
                             top_ups: 0,
                         });
                     }
@@ -952,22 +928,20 @@ where
 
     // The warnings are read back from storage rather than taken from this pass's
     // counters: on every launch after the discovery run the import short-circuits
-    // on its sentinel and reports zero, yet unreadable votes still need
-    // re-scheduling and unreadable top-up history still needs review. Re-published
-    // until the user acknowledges it.
-    let warning = read_unreadable_app_data(&app_context.app_kv(), app_context.network)?;
-    if !warning.is_empty() {
+    // on its sentinel and reports zero, yet unreadable top-up history still
+    // needs review. Re-published until the user acknowledges it.
+    let top_ups_unreadable =
+        pending_unreadable_top_ups(&app_context.app_kv(), app_context.network)?;
+    if top_ups_unreadable > 0 {
         tracing::warn!(
             target = "migration::finish_unwire",
-            votes_unreadable = warning.votes,
-            top_ups_unreadable = warning.top_ups,
+            top_ups_unreadable,
             network = ?app_context.network,
-            "Some legacy scheduled votes or top-up rows could not be decoded; they stay in the previous version's data.db and require user review",
+            "Some legacy top-up rows could not be decoded; they stay in the previous version's data.db and require user review",
         );
         status.set_state(MigrationState::SucceededWithUnreadableData {
             identities: 0,
-            votes: warning.votes,
-            top_ups: warning.top_ups,
+            top_ups: top_ups_unreadable,
         });
         return Ok(moved_data);
     }
@@ -1273,77 +1247,15 @@ fn unlock_with_supplied_password(
     Ok(())
 }
 
-/// Per-network sentinel for the DET app-data import (scheduled votes and
-/// top-up history). Separate from the wallet-drain sentinel on purpose: an
-/// install that already completed the wallet drain under an earlier build
-/// still has its votes sitting in `data.db`, and a shared sentinel would
-/// declare that install "done" and drop them.
+/// Per-network completion marker for top-up import and unreadable-data checks.
 pub fn app_data_sentinel_key_for(network: Network) -> String {
     format!("det:migration:app_data:{}:v1", network_prefix(network))
 }
 
-/// Per-network key of the un-acknowledged unreadable-vote warning. Distinct
-/// from the app-data sentinel: the sentinel records that the import *ran*, this
-/// record that the user has not yet been *told* what it could not carry across.
-fn vote_warning_key_for(network: Network) -> String {
-    format!(
-        "det:migration:unreadable_votes:{}:v1",
-        network_prefix(network)
-    )
-}
-
-/// Durable "some scheduled votes could not be read" warning.
-///
-/// The import runs once (the app-data sentinel short-circuits every later
-/// launch), so the pass counters exist for exactly one launch. A user who was
-/// away, or who dismissed the banner without reading it, would never hear about
-/// it again — while the vote it names may still have a live deadline. This
-/// record outlives the pass: [`run`] re-publishes it on every launch until
-/// [`acknowledge_unreadable_app_data`] clears it.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct UnreadableVotesWarning {
-    /// Legacy vote rows the import could not decode. Never `0` — a zero-count
-    /// warning is not written at all.
-    pub count: u32,
-}
-
-/// The pending unreadable-vote warning for `network`, if the user has not
-/// acknowledged it yet.
-fn read_vote_warning(
-    app_kv: &crate::wallet_backend::DetKv,
-    network: Network,
-) -> Result<Option<UnreadableVotesWarning>, MigrationError> {
-    app_kv
-        .get::<UnreadableVotesWarning>(DetScope::Global, &vote_warning_key_for(network))
-        .map_err(|source| MigrationError::VoteWarningRecord { source })
-}
-
-/// Record `count` unreadable vote rows as a pending warning. A zero count
-/// writes nothing — there is nothing to tell the user.
-///
-/// Written BEFORE the app-data sentinel: a crash between the two re-runs the
-/// idempotent import, whereas the reverse order would lose the warning for good.
-fn write_vote_warning(
-    app_kv: &crate::wallet_backend::DetKv,
-    network: Network,
-    count: u32,
-) -> Result<(), MigrationError> {
-    if count == 0 {
-        return Ok(());
-    }
-    app_kv
-        .put(
-            DetScope::Global,
-            &vote_warning_key_for(network),
-            &UnreadableVotesWarning { count },
-        )
-        .map_err(|source| MigrationError::VoteWarningRecord { source })
-}
-
-/// Retire the unreadable-vote warning for the active network: the user has read
-/// it. Clears the durable record so later launches stay quiet, and drops the
-/// banner. The legacy rows in `data.db` are untouched — only the notice is
-/// retired, so a build with a better decoder can still recover the votes.
+/// Retire the unreadable top-up warning for the active network: the user has
+/// read it. Clears the durable record so later launches stay quiet, and drops
+/// the banner. The legacy rows in `data.db` are untouched — only the notice is
+/// retired, so a build with a better decoder can still recover the history.
 pub fn acknowledge_unreadable_app_data(app_context: &Arc<AppContext>) -> Result<(), TaskError> {
     let network = app_context.network;
     clear_unreadable_app_data(&app_context.app_kv(), network)?;
@@ -1363,12 +1275,8 @@ fn clear_unreadable_app_data(
     network: Network,
 ) -> Result<(), MigrationError> {
     app_kv
-        .delete(DetScope::Global, &vote_warning_key_for(network))
-        .map_err(|source| MigrationError::VoteWarningRecord { source })?;
-    app_kv
         .delete(DetScope::Global, &top_up_warning_key_for(network))
-        .map_err(|source| MigrationError::TopUpWarningRecord { source })?;
-    Ok(())
+        .map_err(|source| MigrationError::TopUpWarningRecord { source })
 }
 
 fn top_up_warning_key_for(network: Network) -> String {
@@ -1410,26 +1318,13 @@ fn write_top_up_warning(
         .map_err(|source| MigrationError::TopUpWarningRecord { source })
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-struct UnreadableAppData {
-    votes: u32,
-    top_ups: u32,
-}
-
-impl UnreadableAppData {
-    fn is_empty(self) -> bool {
-        self.votes == 0 && self.top_ups == 0
-    }
-}
-
-fn read_unreadable_app_data(
+/// Unreadable legacy top-up rows the user has not acknowledged yet; `0` when
+/// no warning is pending.
+fn pending_unreadable_top_ups(
     app_kv: &crate::wallet_backend::DetKv,
     network: Network,
-) -> Result<UnreadableAppData, MigrationError> {
-    Ok(UnreadableAppData {
-        votes: read_vote_warning(app_kv, network)?.map_or(0, |warning| warning.count),
-        top_ups: read_top_up_warning(app_kv, network)?.map_or(0, |warning| warning.count),
-    })
+) -> Result<u32, MigrationError> {
+    Ok(read_top_up_warning(app_kv, network)?.map_or(0, |warning| warning.count))
 }
 
 /// Per-network key of the un-acknowledged unreadable-identity warning. Distinct
@@ -1515,23 +1410,7 @@ pub fn acknowledge_unreadable_identities(app_context: &Arc<AppContext>) -> Resul
     Ok(())
 }
 
-/// Import the DET-owned rows the wallet drain never touched: scheduled DPNS
-/// votes (deadline-critical) and top-up history (audit trail).
-///
-/// Returns the pass counters, including `votes_unreadable` — rows that could
-/// not be decoded. Those are *not* an error: a corrupt row decodes no better on
-/// a retry, so failing here would only wedge the launch. [`run`] reports the
-/// count to the user instead, and the legacy rows are never deleted.
-///
-/// Idempotent — votes already in the k/v store are left alone, so a retry can
-/// never overwrite a vote the user has since cast with its stale legacy
-/// `executed` flag.
-///
-/// # Errors
-///
-/// [`TaskError::MigrationFailed`] when the legacy file cannot be opened or read,
-/// or the decoded votes cannot be written to the k/v store. The app-data
-/// sentinel stays unwritten in those cases, so the next launch retries.
+/// Import top-up history and report unreadable records from the previous version.
 fn migrate_app_data(app_context: &Arc<AppContext>) -> Result<AppDataMigrationOutcome, TaskError> {
     let app_kv = app_context.app_kv();
     let network = app_context.network;
@@ -1558,7 +1437,7 @@ fn migrate_app_data(app_context: &Arc<AppContext>) -> Result<AppDataMigrationOut
     // import (a fresh one, or any build after C5 stopped creating these tables)
     // must complete without the backend being wired, or a cold start with no
     // legacy data would fail on a dependency it never actually needs.
-    if !table_has_rows(&conn, "scheduled_votes")? && !table_has_rows(&conn, "top_up")? {
+    if !table_has_rows(&conn, "top_up")? {
         write_completion_sentinel(&app_kv, &sentinel_key, 1)?;
         return Ok(AppDataMigrationOutcome::default());
     }
@@ -1570,34 +1449,12 @@ fn migrate_app_data(app_context: &Arc<AppContext>) -> Result<AppDataMigrationOut
         .wallet_backend()
         .map_err(|_| MigrationError::WalletBackendUnavailable)?;
 
-    // Votes already in the k/v store win over their legacy row: a retry must
-    // not push a stale `executed = 0` over a vote the user has since cast.
-    //
-    // The read is typed into `AppDataImport` rather than propagated raw: every
-    // error leaving this pass must be a `MigrationError`, or the terminal banner
-    // has no typed chain to render.
-    let existing_votes: std::collections::BTreeSet<([u8; 32], String)> = app_context
-        .get_scheduled_votes()
-        .map_err(|source| MigrationError::AppDataImport {
-            source: Box::new(source),
-        })?
-        .into_iter()
-        .map(|v| (v.voter_id.to_buffer(), v.contested_name))
-        .collect();
-
-    let outcome = migrate_app_data_from_conn(
-        &conn,
-        network,
-        &existing_votes,
-        |votes| app_context.insert_scheduled_votes(votes),
-        |id, top_ups| app_context.save_top_ups(id, top_ups),
-    )?;
+    let outcome = migrate_app_data_from_conn(&conn, network, |id, top_ups| {
+        app_context.save_top_ups(id, top_ups)
+    })?;
 
     tracing::info!(
         target = "migration::finish_unwire",
-        votes_imported = outcome.votes_imported,
-        votes_skipped_existing = outcome.votes_skipped_existing,
-        votes_unreadable = outcome.votes_unreadable,
         top_up_identities_imported = outcome.top_up_identities_imported,
         top_ups_unreadable = outcome.top_ups_unreadable,
         network = ?network,
@@ -1609,13 +1466,9 @@ fn migrate_app_data(app_context: &Arc<AppContext>) -> Result<AppDataMigrationOut
     // launch), so the count has to outlive it or the user gets one banner and no
     // second chance. Ordered before the sentinel so a crash in between re-runs the
     // idempotent import rather than losing the warning.
-    write_vote_warning(&app_kv, network, outcome.votes_unreadable)?;
     write_top_up_warning(&app_kv, network, outcome.top_ups_unreadable)?;
 
-    // The sentinel is written even when rows were unreadable: every *importable*
-    // row is now in the k/v store, and the undecodable ones will never decode. A
-    // withheld sentinel would re-run this import on every launch, which would
-    // resurrect votes the user has since cast and cleared from the queue.
+    // Undecodable rows are reported separately and must not repeat the import.
     write_completion_sentinel(&app_kv, &sentinel_key, 1)?;
 
     Ok(outcome)
@@ -1646,18 +1499,14 @@ fn write_completion_sentinel(
 
 /// Pure app-data migration body (testable without an `AppContext`).
 ///
-/// `existing_votes` holds the `(voter, contested_name)` pairs already in the
-/// k/v store; those rows are skipped so a retry cannot overwrite a vote the
-/// user has since cast with the stale legacy `executed` flag.
-fn migrate_app_data_from_conn<I, T>(
+/// Imports top-up history only. The legacy `scheduled_votes` table is never
+/// read, so damage in it cannot fail this pass.
+fn migrate_app_data_from_conn<T>(
     conn: &Connection,
     network: dash_sdk::dpp::dashcore::Network,
-    existing_votes: &std::collections::BTreeSet<([u8; 32], String)>,
-    insert_votes: I,
     mut save_top_ups: T,
 ) -> Result<AppDataMigrationOutcome, MigrationError>
 where
-    I: FnOnce(&[crate::backend_task::contested_names::ScheduledDPNSVote]) -> Result<(), TaskError>,
     T: FnMut(
         &dash_sdk::platform::Identifier,
         &std::collections::BTreeMap<u32, u64>,
@@ -1665,40 +1514,6 @@ where
 {
     let mut outcome = AppDataMigrationOutcome::default();
 
-    let legacy_votes = crate::database::legacy_import::read_scheduled_votes(conn, network)
-        .map_err(|source| MigrationError::LegacyDbRead {
-            table: "scheduled_votes",
-            source,
-        })?;
-    outcome.votes_unreadable = legacy_votes.unreadable;
-
-    let to_import: Vec<_> = legacy_votes
-        .votes
-        .into_iter()
-        .filter(|v| {
-            let known =
-                existing_votes.contains(&(v.voter_id.to_buffer(), v.contested_name.clone()));
-            if known {
-                outcome.votes_skipped_existing = outcome.votes_skipped_existing.saturating_add(1);
-            }
-            !known
-        })
-        .collect();
-
-    if !to_import.is_empty() {
-        insert_votes(&to_import).map_err(|source| MigrationError::ScheduledVotesWrite {
-            source: Box::new(source),
-        })?;
-        outcome.votes_imported = u32::try_from(to_import.len()).unwrap_or(u32::MAX);
-    }
-
-    // Top-ups are audit trail, not funds, so a failure never blocks the votes that
-    // already landed — every identity is attempted before the pass gives up. But it
-    // is not swallowed either: the caller withholds the app-data sentinel on `Err`,
-    // so the next launch retries the idempotent import. Swallowing would freeze a
-    // one-off k/v error into permanent loss, because the sentinel short-circuits
-    // every later launch. Undecodable *rows* never reach here — the reader skips
-    // and logs them — so an error here is structural and a retry is worth taking.
     let failure = match crate::database::legacy_import::read_top_ups(conn, network) {
         Ok(top_ups) => {
             outcome.top_ups_unreadable = top_ups.unreadable;
@@ -2109,17 +1924,6 @@ fn table_has_rows(conn: &Connection, table: &'static str) -> Result<bool, Migrat
 /// Outcome counters from one [`migrate_app_data`] pass.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct AppDataMigrationOutcome {
-    /// Scheduled votes written into the per-network k/v store.
-    votes_imported: u32,
-    /// Scheduled votes already present in the k/v store and therefore left
-    /// alone. A retry must not resurrect a stale `executed` flag over a vote
-    /// the user has since cast.
-    votes_skipped_existing: u32,
-    /// Legacy vote rows that could not be decoded (corrupt voter id or vote
-    /// choice). Non-fatal — a corrupt row decodes no better on a retry, and
-    /// failing the pass would wedge the wallet drain behind it. Surfaced to the
-    /// user by [`run`] instead, so a vote is never lost in silence.
-    votes_unreadable: u32,
     /// Identities whose top-up history was written into the k/v store.
     top_up_identities_imported: u32,
     /// Legacy top-up rows that could not be decoded. Non-fatal and surfaced
@@ -2131,7 +1935,7 @@ impl AppDataMigrationOutcome {
     /// Whether this pass actually carried data across — the signal [`run`] uses
     /// to decide whether the launch earns a completion banner.
     fn moved_data(&self) -> bool {
-        self.votes_imported > 0 || self.top_up_identities_imported > 0
+        self.top_up_identities_imported > 0
     }
 }
 
@@ -3467,15 +3271,13 @@ mod tests {
         );
     }
 
-    // ── App-data import: scheduled votes + top-up history ────────────
+    // ── App-data import: top-up history ────────────
 
     mod app_data {
         use super::*;
         use dash_sdk::dpp::dashcore::Network;
-        use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
-        use dash_sdk::platform::Identifier;
         use std::cell::RefCell;
-        use std::collections::{BTreeMap, BTreeSet};
+        use std::collections::BTreeMap;
 
         const VOTER: [u8; 32] = [0x11u8; 32];
 
@@ -3522,129 +3324,62 @@ mod tests {
             conn
         }
 
-        /// The core promise: a queued vote survives the upgrade. Losing it
-        /// means a masternode voter silently misses a vote window.
         #[test]
-        fn imports_scheduled_votes_and_top_ups() {
+        fn imports_top_ups_without_importing_scheduled_votes() {
             let conn = legacy_conn();
-            let votes = RefCell::new(Vec::new());
             let top_ups = RefCell::new(Vec::new());
 
-            let outcome = migrate_app_data_from_conn(
-                &conn,
-                Network::Testnet,
-                &BTreeSet::new(),
-                |v| {
-                    votes.borrow_mut().extend_from_slice(v);
-                    Ok(())
-                },
-                |id, map| {
-                    top_ups.borrow_mut().push((*id, map.clone()));
-                    Ok(())
-                },
-            )
+            let outcome = migrate_app_data_from_conn(&conn, Network::Testnet, |id, map| {
+                top_ups.borrow_mut().push((*id, map.clone()));
+                Ok(())
+            })
             .expect("import");
 
-            assert_eq!(outcome.votes_imported, 1);
-            assert_eq!(outcome.votes_unreadable, 0);
             assert_eq!(outcome.top_up_identities_imported, 1);
             assert_eq!(outcome.top_ups_unreadable, 0);
-
-            let votes = votes.borrow();
-            assert_eq!(votes.len(), 1);
-            assert_eq!(votes[0].contested_name, "alice");
-            assert_eq!(votes[0].choice, ResourceVoteChoice::Lock);
-            assert_eq!(votes[0].voter_id, Identifier::from(VOTER));
-            assert!(!votes[0].executed_successfully);
 
             let top_ups = top_ups.borrow();
             assert_eq!(top_ups.len(), 1);
             assert_eq!(top_ups[0].1, BTreeMap::from([(0, 5000)]));
         }
 
-        /// A retry must not overwrite a vote the user already cast in the new
-        /// build — the legacy row still says `executed = 0`, so re-importing
-        /// it would queue the vote a second time.
+        /// Scheduled votes are never imported, so a structurally damaged
+        /// `scheduled_votes` table (here: no `vote_choice` column) must not
+        /// stand between the user and their top-up history.
         #[test]
-        fn skips_votes_already_present_in_the_kv_store() {
+        fn damaged_scheduled_votes_table_does_not_block_top_up_import() {
             let conn = legacy_conn();
-            let existing = BTreeSet::from([(VOTER, "alice".to_string())]);
-            let votes = RefCell::new(Vec::new());
-
-            let outcome = migrate_app_data_from_conn(
-                &conn,
-                Network::Testnet,
-                &existing,
-                |v| {
-                    votes.borrow_mut().extend_from_slice(v);
-                    Ok(())
-                },
-                |_, _| Ok(()),
+            conn.execute_batch(
+                "DROP TABLE scheduled_votes;
+                 CREATE TABLE scheduled_votes (
+                    identity_id BLOB NOT NULL,
+                    network TEXT NOT NULL
+                 );",
             )
-            .expect("import");
+            .expect("damaged schema");
+            let saved = RefCell::new(Vec::new());
 
-            assert_eq!(outcome.votes_imported, 0);
-            assert_eq!(outcome.votes_skipped_existing, 1);
-            assert!(
-                votes.borrow().is_empty(),
-                "an already-migrated vote must not be re-queued",
-            );
-        }
+            let outcome = migrate_app_data_from_conn(&conn, Network::Testnet, |_, history| {
+                saved.borrow_mut().push(history.clone());
+                Ok(())
+            })
+            .expect("a damaged vote table must not fail the top-up import");
 
-        /// An undecodable vote row is counted and reported — never dropped in
-        /// silence, and never fatal. Fatal would be worse than useless: the row
-        /// decodes no better on a retry, so it would wedge every launch, and the
-        /// wallet drain behind it (QA-101). The readable votes around it still
-        /// import.
-        #[test]
-        fn unreadable_vote_row_is_counted_without_failing_the_import() {
-            let conn = legacy_conn();
-            conn.execute(
-                "INSERT INTO scheduled_votes
-                 (identity_id, contested_name, vote_choice, time, executed, network)
-                 VALUES (?1, 'corrupt', 'Nonsense', 1, 0, 'testnet')",
-                rusqlite::params![VOTER.as_slice()],
-            )
-            .expect("corrupt vote");
-
-            let votes = RefCell::new(Vec::new());
-            let outcome = migrate_app_data_from_conn(
-                &conn,
-                Network::Testnet,
-                &BTreeSet::new(),
-                |v| {
-                    votes.borrow_mut().extend_from_slice(v);
-                    Ok(())
-                },
-                |_, _| Ok(()),
-            )
-            .expect("an unreadable vote must not fail the import");
-
-            assert_eq!(outcome.votes_imported, 1, "the readable vote still lands");
-            assert_eq!(
-                outcome.votes_unreadable, 1,
-                "the corrupt row must be reported, not swallowed",
-            );
-            assert_eq!(votes.borrow().len(), 1);
-            assert_eq!(votes.borrow()[0].contested_name, "alice");
+            assert_eq!(outcome.top_up_identities_imported, 1);
+            assert_eq!(saved.borrow()[0], BTreeMap::from([(0, 5_000)]));
         }
 
         /// A top-up write failure must fail the pass. It is audit trail, so it
         /// never blocks the wallet drain — but swallowing it would let the
         /// app-data sentinel record "done" over a history that never landed,
-        /// making a transient k/v error permanent. The votes that already
-        /// imported stay imported; the retry is idempotent.
+        /// making a transient k/v error permanent. The retry is idempotent.
         #[test]
         fn top_up_write_failure_fails_the_pass() {
             let conn = legacy_conn();
 
-            let result = migrate_app_data_from_conn(
-                &conn,
-                Network::Testnet,
-                &BTreeSet::new(),
-                |_| Ok(()),
-                |_, _| Err(TaskError::WalletNotFound),
-            );
+            let result = migrate_app_data_from_conn(&conn, Network::Testnet, |_, _| {
+                Err(TaskError::WalletNotFound)
+            });
 
             assert!(
                 matches!(result, Err(MigrationError::TopUpHistoryWrite { .. })),
@@ -3662,16 +3397,10 @@ mod tests {
             .expect("corrupt top up");
             let saved = RefCell::new(Vec::new());
 
-            let outcome = migrate_app_data_from_conn(
-                &conn,
-                Network::Testnet,
-                &BTreeSet::new(),
-                |_| Ok(()),
-                |_, history| {
-                    saved.borrow_mut().push(history.clone());
-                    Ok(())
-                },
-            )
+            let outcome = migrate_app_data_from_conn(&conn, Network::Testnet, |_, history| {
+                saved.borrow_mut().push(history.clone());
+                Ok(())
+            })
             .expect("row-level damage is non-fatal");
 
             assert_eq!(outcome.top_ups_unreadable, 1);
@@ -3693,13 +3422,7 @@ mod tests {
             )
             .expect("schema");
 
-            let result = migrate_app_data_from_conn(
-                &conn,
-                Network::Testnet,
-                &BTreeSet::new(),
-                |_| Ok(()),
-                |_, _| Ok(()),
-            );
+            let result = migrate_app_data_from_conn(&conn, Network::Testnet, |_, _| Ok(()));
 
             assert!(
                 matches!(
@@ -3718,21 +3441,15 @@ mod tests {
         fn missing_tables_are_a_no_op() {
             let conn = Connection::open_in_memory().expect("open");
 
-            let outcome = migrate_app_data_from_conn(
-                &conn,
-                Network::Testnet,
-                &BTreeSet::new(),
-                |_| Ok(()),
-                |_, _| Ok(()),
-            )
-            .expect("import");
+            let outcome =
+                migrate_app_data_from_conn(&conn, Network::Testnet, |_, _| Ok(())).expect("import");
 
             assert_eq!(outcome, AppDataMigrationOutcome::default());
         }
 
         /// The app-data sentinel is per network and distinct from the
         /// wallet-drain sentinel: an install that already drained its wallets
-        /// under an earlier build must still import its votes.
+        /// under an earlier build must still import its top-up history.
         #[test]
         fn sentinel_is_per_network_and_distinct_from_the_wallet_sentinel() {
             let testnet = app_data_sentinel_key_for(Network::Testnet);
@@ -6673,15 +6390,14 @@ mod tests {
         .expect("corrupt identity row");
     }
 
-    /// QA-101 — the headline funds regression. A single undecodable legacy vote
-    /// row must NOT stand between the user and their wallet: the drain runs to
-    /// completion (seeds copied, wallet hydrated AND upstream-registered, the
-    /// completion sentinel written), while the corrupt row is still surfaced —
-    /// counted on the terminal state and left in `data.db` — rather than
-    /// silently dropped. Before the fix the vote import ran first, unconditionally
-    /// and fatally, so this wallet stayed unreachable on every launch forever.
+    /// The headline funds regression. A single undecodable legacy vote row must
+    /// NOT stand between the user and their wallet: the drain runs to completion
+    /// (seeds copied, wallet hydrated AND upstream-registered, the completion
+    /// sentinel written). The migration reports nothing about the row itself —
+    /// it stays in `data.db`, where the startup notice for old schedules finds
+    /// it — so the launch ends as a plain success.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn run_completes_the_wallet_drain_despite_an_unreadable_vote_row() {
+    async fn run_completes_the_wallet_drain_and_leaves_legacy_votes_to_the_startup_notice() {
         use dash_sdk::dpp::dashcore::Network;
 
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -6726,23 +6442,17 @@ mod tests {
             "the completion sentinel must be written once the drain succeeds",
         );
 
-        // No silent loss: the readable vote came across, and the unreadable one is
-        // reported on the terminal state (the banner the user sees), not swallowed.
-        let votes = ctx.get_scheduled_votes().expect("read scheduled votes");
-        assert_eq!(votes.len(), 1, "the readable vote must still be imported");
-        assert_eq!(votes[0].contested_name, "alice");
+        // Votes remain in the old database, un-queued, for the startup notice to
+        // report; the migration itself raises no vote warning of its own.
+        assert!(ctx.dpns_vote_operations().unwrap().is_empty());
+        assert!(ctx.has_legacy_scheduled_votes().unwrap());
         assert_eq!(
             *ctx.migration_status().state(),
-            MigrationState::SucceededWithUnreadableData {
-                identities: 0,
-                votes: 1,
-                top_ups: 0,
-            },
-            "the corrupt vote row must be surfaced to the user, not dropped in silence",
+            MigrationState::Success,
+            "old schedules are reported by the startup notice, not by the storage update",
         );
 
-        // The legacy rows survive, so a build with a better decoder can still get
-        // the vote back.
+        // The legacy rows survive, so the startup notice keeps finding them.
         let conn = Connection::open(tmp.path().join("data.db")).expect("open data.db");
         let remaining: i64 = conn
             .query_row("SELECT COUNT(*) FROM scheduled_votes", [], |r| r.get(0))
@@ -6778,20 +6488,16 @@ mod tests {
         );
         wait_for_dapi_refresh(&ctx).await;
         assert!(backend.is_wallet_registered(&seed_hash));
-        assert_eq!(ctx.get_scheduled_votes().expect("read votes").len(), 1);
+        assert!(ctx.has_legacy_scheduled_votes().unwrap());
         let sentinel_after_first = read_sentinel(&ctx.app_kv(), network)
             .expect("read sentinel")
             .expect("sentinel written by the first run");
-
-        // The user casts the vote, so the app drops it from the queue. The legacy
-        // row still says `executed = 0` — a re-import would queue it a second time.
-        ctx.clear_all_scheduled_votes().expect("clear vote queue");
 
         let did_work = run(&ctx).await.expect("second run");
 
         assert!(!did_work, "the second launch must move nothing");
         assert!(
-            ctx.get_scheduled_votes().expect("read votes").is_empty(),
+            ctx.dpns_vote_operations().unwrap().is_empty(),
             "a re-run must not resurrect a vote the user has already dealt with",
         );
         assert_eq!(
@@ -6977,7 +6683,7 @@ mod tests {
         backend.shutdown().await;
     }
 
-    /// A failed *vote-warning read* is not an app-data failure, and the banner may
+    /// A failed *top-up-warning read* is not an app-data failure, and the banner may
     /// not say it is. Here the app-data pass SUCCEEDS (its sentinel is written) and
     /// only the follow-up warning-record read fails, alongside an undecodable
     /// identity row. `FailedWithUnreadableIdentities` tells the user "updating the
@@ -6987,7 +6693,7 @@ mod tests {
     /// honest `SucceededWithUnreadableIdentities` and the unreadable notice record
     /// is left for the next launch to re-read.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn an_unreadable_vote_warning_record_does_not_claim_the_app_data_pass_failed() {
+    async fn an_unreadable_top_up_warning_record_does_not_claim_the_app_data_pass_failed() {
         use dash_sdk::dpp::dashcore::Network;
 
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -7006,14 +6712,14 @@ mod tests {
         }
 
         // Poison the warning record: a unit value encodes to an empty bincode body,
-        // so decoding it back as an `UnreadableVotesWarning` hits an unexpected end
-        // of input. The app-data pass decodes zero unreadable votes and therefore
+        // so decoding it back as an `UnreadableTopUpsWarning` hits an unexpected end
+        // of input. The app-data pass decodes zero unreadable top-ups and therefore
         // never overwrites it.
         ctx.app_kv()
-            .put(DetScope::Global, &vote_warning_key_for(network), &())
-            .expect("poison the vote-warning record");
+            .put(DetScope::Global, &top_up_warning_key_for(network), &())
+            .expect("poison the top-up-warning record");
         assert!(
-            read_vote_warning(&ctx.app_kv(), network).is_err(),
+            read_top_up_warning(&ctx.app_kv(), network).is_err(),
             "precondition: the poisoned record must make the warning read fail, \
              otherwise this test would pass for the wrong reason",
         );
@@ -7028,7 +6734,6 @@ mod tests {
             *ctx.migration_status().state(),
             MigrationState::SucceededWithUnreadableData {
                 identities: 1,
-                votes: 0,
                 top_ups: 0,
             },
             "an unreadable notice record must not be reported as an app-data failure",
@@ -7047,13 +6752,13 @@ mod tests {
         backend.shutdown().await;
     }
 
-    /// Fix-8 — the unreadable-vote warning is durable. The discovery run records
-    /// it; every later launch re-publishes it from that record even though both
-    /// sentinels short-circuit the passes, so a user who was away when the
-    /// migration finished still learns that a vote with a live deadline needs
-    /// re-scheduling. Only an explicit acknowledgement retires it.
+    /// The unreadable top-up warning is durable. Every launch re-publishes it
+    /// from its record even though both sentinels short-circuit the passes, so a
+    /// user who was away when the migration finished still learns that part of
+    /// the top-up history needs review. Only an explicit acknowledgement retires
+    /// it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn unreadable_vote_warning_is_republished_until_acknowledged() {
+    async fn unreadable_top_up_warning_is_republished_until_acknowledged() {
         use dash_sdk::dpp::dashcore::Network;
 
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -7061,7 +6766,8 @@ mod tests {
         let network = Network::Testnet;
 
         seed_legacy_wallet(&ctx, &[0xC5u8; 64], "funds", network);
-        seed_legacy_votes(&ctx, &[0x33u8; 32], &[("corrupt", "Nonsense")], network);
+        // The record a discovery pass leaves behind for one undecodable row.
+        write_top_up_warning(&ctx.app_kv(), network, 1).expect("pending top-up warning");
 
         wire_backend(&ctx).await;
         let backend = ctx.wallet_backend().expect("backend wired");
@@ -7071,10 +6777,9 @@ mod tests {
             *ctx.migration_status().state(),
             MigrationState::SucceededWithUnreadableData {
                 identities: 0,
-                votes: 1,
-                top_ups: 0,
+                top_ups: 1,
             },
-            "the discovery run surfaces the warning",
+            "a pending warning is surfaced",
         );
 
         // A later launch starts from a fresh in-memory status, and both sentinels
@@ -7085,8 +6790,7 @@ mod tests {
             *ctx.migration_status().state(),
             MigrationState::SucceededWithUnreadableData {
                 identities: 0,
-                votes: 1,
-                top_ups: 0,
+                top_ups: 1,
             },
             "a warning the user may have missed must survive a restart",
         );
@@ -7107,16 +6811,15 @@ mod tests {
         backend.shutdown().await;
     }
 
-    /// An unreadable identity must not permanently hide an unreadable *vote*.
-    /// Both damaged on the same launch is the trap: the identity branch returns
-    /// early, ahead of the durable vote-warning read, so a lone identity signal
-    /// would bury the vote half — and the user would silently miss a vote whose
-    /// deadline is still live. Both counts ride one terminal state instead, both
-    /// halves survive a restart (each re-read from its own durable record, since
-    /// both sentinels short-circuit their passes by then), and acknowledging the
-    /// vote half retires only that half.
+    /// An unreadable identity must not permanently hide unreadable *top-up
+    /// history*. Both pending on the same launch is the trap: the identity branch
+    /// returns early, ahead of the durable top-up-warning read, so a lone
+    /// identity signal would bury the top-up half. Both counts ride one terminal
+    /// state instead, both halves survive a restart (each re-read from its own
+    /// durable record, since both sentinels short-circuit their passes by then),
+    /// and acknowledging the top-up half retires only that half.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn unreadable_identities_do_not_hide_the_unreadable_vote_warning() {
+    async fn unreadable_identities_do_not_hide_the_unreadable_top_up_warning() {
         use dash_sdk::dpp::dashcore::Network;
 
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -7124,14 +6827,8 @@ mod tests {
         let network = Network::Testnet;
 
         seed_legacy_wallet(&ctx, &[0xE7u8; 64], "funds", network);
-        // One vote decodes, one does not → the app-data pass succeeds AND records
-        // a durable unreadable-vote warning.
-        seed_legacy_votes(
-            &ctx,
-            &[0x55u8; 32],
-            &[("alice", "Lock"), ("corrupt", "Nonsense")],
-            network,
-        );
+        // The record a discovery pass leaves behind for one undecodable top-up row.
+        write_top_up_warning(&ctx.app_kv(), network, 1).expect("pending top-up warning");
         {
             // A corrupt identity blob → the identity pass counts it unreadable and
             // records a durable warning, so the identity branch recurs on every launch.
@@ -7147,16 +6844,11 @@ mod tests {
             *ctx.migration_status().state(),
             MigrationState::SucceededWithUnreadableData {
                 identities: 1,
-                votes: 1,
-                top_ups: 0,
+                top_ups: 1,
             },
-            "the discovery run must name BOTH remedies — the identity warning may \
-             not swallow a vote with a live deadline",
+            "the run must name BOTH remedies — the identity warning may not swallow \
+             the top-up one",
         );
-
-        // The readable vote still came across; only the corrupt one did not.
-        let votes = ctx.get_scheduled_votes().expect("read scheduled votes");
-        assert_eq!(votes.len(), 1, "the readable vote must still be imported");
 
         // Both sentinels are now written, which is what makes the next launch a
         // real test of the durable reads: both passes short-circuit and report
@@ -7186,13 +6878,12 @@ mod tests {
             *ctx.migration_status().state(),
             MigrationState::SucceededWithUnreadableData {
                 identities: 1,
-                votes: 1,
-                top_ups: 0,
+                top_ups: 1,
             },
-            "the vote warning must survive a restart even while identities stay unreadable",
+            "the top-up warning must survive a restart even while identities stay unreadable",
         );
 
-        // Acknowledging retires the vote half only: the identities are still
+        // Acknowledging retires the top-up half only: the identities are still
         // unreadable, so their warning must keep coming back on its own.
         acknowledge_unreadable_app_data(&ctx).expect("acknowledge");
         ctx.migration_status().set_state(MigrationState::Idle);
@@ -7201,10 +6892,9 @@ mod tests {
             *ctx.migration_status().state(),
             MigrationState::SucceededWithUnreadableData {
                 identities: 1,
-                votes: 0,
                 top_ups: 0,
             },
-            "an acknowledged vote warning must not come back, but the identity one must",
+            "an acknowledged top-up warning must not come back, but the identity one must",
         );
 
         backend.shutdown().await;
@@ -7261,7 +6951,6 @@ mod tests {
             *ctx.migration_status().state(),
             MigrationState::SucceededWithUnreadableData {
                 identities: 1,
-                votes: 0,
                 top_ups: 0,
             },
             "precondition: the corrupt row is reported to the user",
@@ -7295,7 +6984,6 @@ mod tests {
             *ctx.migration_status().state(),
             MigrationState::SucceededWithUnreadableData {
                 identities: 1,
-                votes: 0,
                 top_ups: 0,
             },
             "the unreadable row is still reported once the import itself is complete",
@@ -7332,7 +7020,6 @@ mod tests {
             *ctx.migration_status().state(),
             MigrationState::SucceededWithUnreadableData {
                 identities: 1,
-                votes: 0,
                 top_ups: 0,
             },
             "the discovery run surfaces the warning",
@@ -7355,7 +7042,6 @@ mod tests {
             *ctx.migration_status().state(),
             MigrationState::SucceededWithUnreadableData {
                 identities: 1,
-                votes: 0,
                 top_ups: 0,
             },
             "a warning the user may have missed must survive a restart",

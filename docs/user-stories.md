@@ -751,9 +751,9 @@ As a user, I want the identities I loaded before an upgrade — and the keys the
 
 - Identities stored before the upgrade are imported from the previous version's storage on the first launch afterward, keeping each identity's keys, alias, and wallet link. Progress is shown as its own step.
 - An identity that cannot be read is reported in a banner naming the recovery action (load it again), rather than dropped silently. The previous version's data is never deleted, so a later build can still import it.
-- A single unreadable identity costs only itself: the readable identities in the same batch still import, and neither the wallet migration that restores access to funds nor the scheduled-vote import is blocked by it.
+- A single unreadable identity costs only itself: the readable identities in the same batch still import, and the wallet migration that restores access to funds is not blocked by it.
 - The report of unreadable identities returns on every launch until it is explicitly acknowledged, so a user who stepped away cannot lose the only notice that some of their keys were not carried over.
-- When identities and scheduled votes are both unreadable on the same launch, one banner names both remedies, and acknowledging it retires both reports — neither report can bury the other.
+- When identities and records of earlier balance top-ups are both unreadable on the same launch, one banner names both remedies, and acknowledging it retires both reports — neither report can bury the other. Scheduled votes are not part of this import; DPN-009 covers them.
 - An identity the user deletes after the upgrade stays deleted. The import runs once, so a later launch never restores a removed identity, its alias, or its keys.
 
 ### IDN-020: Restore keys an upgrade left behind, without re-entering them [Implemented]
@@ -792,66 +792,93 @@ As a user, I want to remove an identity from this device from the identity's own
 - A removal that cannot be completed at all leaves the identity's private keys intact, so a retry still has everything it needs; no identity is ever left listed without its keys, and no identity is ever reported as still removable once it is already gone from every list.
 - The unload sticks. The wallet that derives the identity stays loaded, and the app re-derives and looks up that wallet's identities on its own — at start-up, after a wallet is unlocked, and when a wallet is imported — but none of those automatic passes put back an identity the user unloaded, whether the pass starts before, during, or after the removal. The same holds for the developer-only devnet "clear all identities" sweep.
 - Adding a key to an identity that is unloaded while the key is being registered on the network does not leave that key's private half on this device. The key exists on Dash Platform and the app says so plainly, naming what to do — load the identity again, then add the key again — rather than reporting a save that did not happen.
-- Loading the identity again ends the exclusion, so later automatic passes keep its public record up to date. Loading does not restore private keys deleted by the unload: using the identity for signed actions again requires the user's own backup, either an unlocked wallet that can derive a matching key or a key the user imports.
+- Loading the identity again ends the exclusion, so later automatic passes keep its public record up to date. Loading does not restore private keys deleted by the unload: using the identity for signed actions again requires the user's own backup, either an unlocked wallet that can derive a matching key or a key the user imports. Loading does not bring back DPNS votes reviewed before the unload either, including votes that were still being checked when the identity was unloaded: they end as cancelled and are sent only if the user reviews them again.
 
 ---
 
 ## DPNS (DPN)
 
-### DPN-001: Register a DPNS username [Implemented]
+### DPN-001: Register a username [Implemented]
 **Persona:** Alex, Priya
 
-As a user, I want to register a human-readable username on DPNS so that others can send me Dash using a name instead of an address.
+As a user, I want to register a username for one of my identities so that others can send me Dash using a name instead of an address.
 
-- Choose identity, enter desired name.
-- Cost estimate displayed before confirmation.
-- While registration runs, a full-window blocking overlay (UX-001) is shown so the same name cannot be submitted twice; it lowers automatically on success or error.
-- Completion feedback distinguishes a username registered for immediate use from a request submitted for community voting.
+- Started from the identity (Profile ▸ Usernames ▸ Get another username, Home checklist, or header). No identity picker; the signing key is chosen automatically, and Power users can change it under Advanced.
+- Availability is checked live before paying: available · needs a community vote · others already asked (joinable until a shown time) · taken · locked for good · request window closed · already requested by this identity · can't check. Only the first three allow continuing. Contested and locked names are never reported as available.
+- Names that need a vote show a consent step: other people can ask during the join window (7 days on Mainnet, 45 minutes on Testnet), the vote lasts 14 days (90 minutes on Testnet) even without a rival, the community vote fee (read from the network: 0.2 DASH before protocol 14, 0.1 DASH from 14) is never returned, and a lock vote means no one gets the name.
+- The confirm step shows the registration fee, the community vote fee, the total, and the identity balance it is paid from. A low balance offers Top up and returns with the name kept. Availability is re-checked on Pay.
+- Changing the name, identity, network or fees invalidates the payment review and vote consent. The backend rejects an unapproved community vote fee before spending funds.
+- While registration runs, a full-window blocking progress overlay prevents a duplicate submission.
+- Completion distinguishes a username registered for immediate use from a request submitted for a community vote.
+- If the app cannot confirm whether a paid request went through, it says so, asks me not to pay again until I have checked the Usernames list, and does not put the Pay step back with the same review.
 
-### DPN-002: View owned usernames [Implemented]
+### DPN-002: View my usernames [Implemented]
 **Persona:** Alex, Priya
 
-As a user, I want to see all DPNS usernames I own so that I can manage my registered names.
+As a user, I want to see each identity's usernames and their state so that I know which names I have and which are still being decided.
 
-- Lists all usernames tied to the current wallet's identities.
+- Profile ▸ Usernames lists the main name, other active names, every pending request (also when the identity already owns a name), and outcomes from the last 30 days (went to someone else, locked for good, no one got it).
+- Saved requests refresh before the wider contest search. After the estimated deadline, Home, the identity badge, and the status page show “Awaiting result” until the network confirms an outcome; elapsed time alone never awards or rejects a name.
+- Refreshing preserves concurrent requests, main-name choices, and seen outcomes. A failed storage read keeps the last complete snapshot available for later updates.
+- Won usernames keep retrying failed fetches and local writes after a restart until the identity records the owned name.
+- A won username that the identity recorded and that later leaves the identity (for example after a transfer) is no longer listed as one of its usernames.
+- Row actions: Copy username, Show QR code, Show as main. Usernames can't be deleted, so no delete action is offered.
+- The identity switcher and "See all identities" show each identity's usernames. There is no separate cross-identity usernames table.
 
-### DPN-003: View active name contests [Implemented]
+### DPN-003: See name contests my nodes can vote on [Implemented]
 **Persona:** Priya
 
-As a power user, I want to view active DPNS name contests so that I can participate in voting on contested names.
+As a masternode operator, I want to see the name contests that need a decision from my nodes so that I can vote before they end.
 
-- Lists all contests with status and vote counts.
+- Masternodes ▸ Votes (first segment) lists contests under To decide, sorted by time left. Contests where only some of my nodes voted stay in To decide. Contests none of my nodes can vote on are grouped separately, with the reason.
+- Each card shows a weighted tally (evonodes count as 4), the deadline with network-correct durations, and how my nodes currently voted.
+- Contest refresh remains available if saved voting progress cannot be recovered.
+- Tools no longer has a DPNS entry.
 
 ### DPN-004: View past name contests [Implemented]
 **Persona:** Priya
 
-As a power user, I want to review past DPNS contests so that I can see outcomes and historical voting data.
+As a power user, I want to review past contests so that I can see outcomes and how my nodes voted.
 
-- Lists completed contests with results.
+- Votes ▸ History lists finished contests with the outcome in words (went to a named requester with a copyable identifier, or locked for good), and a final “details” column with a link that opens the contest in Platform Explorer for the active Mainnet or Testnet network.
 
 ### DPN-005: Vote on contested names [Implemented]
 **Persona:** Priya
 
-As a masternode operator, I want to vote on contested DPNS name registrations so that I can participate in network governance.
+As a masternode operator, I want to make one decision per contest and have all my chosen nodes cast it so that voting with many nodes takes seconds.
 
-- Cast, change, or abstain votes (max 4 vote changes per contest).
-- Evonode/masternode identity required.
-- Note: The max 4 vote changes constraint is enforced at the Platform protocol level, not validated in the app UI.
+- One choice per card (Vote for a requester, Lock name, Abstain) applies to every node in the remembered node set. Cast opens one confirm step for all decisions.
+- Each node votes in its own transaction (Platform has no batching). The confirm shows decisions × nodes = transactions, warns once when votes change earlier choices, and lists skipped nodes with reasons (already voted this way, no changes left, vote state unavailable, not in the masternode list).
+- A node may vote five times per contest: the initial vote plus four changes. Changes left are shown per node, counted on this device, or marked unknown when the node voted outside Dash Evo Tool. Nodes with none left are skipped.
+- Choosing the current choice submits nothing. The node's proved current choice is shown before casting.
+- An uncertain vote stays locked after the estimated deadline until authoritative network evidence resolves it; the local clock cannot establish that the vote failed.
+- Unavailable voting information leaves the affected nodes out and offers Refresh voting. Other nodes can still vote.
+- If a first vote becomes a change during preflight, the confirm reopens with the change warning.
 
 ### DPN-006: Schedule votes [Implemented]
 **Persona:** Priya
 
-As a masternode operator, I want to schedule votes for later execution so that I can plan my voting strategy in advance.
+As a masternode operator, I want to schedule votes so that they are cast before the deadline without my watching.
 
-- Set vote to be cast at a future time.
-- View and manage scheduled votes.
+- Timing: Now, When voting is about to end (default 6 hours before the end on Mainnet, 10 minutes on Testnet), or At a specific time. The absolute UTC time is stored and shown next to the relative label.
+- Votes ▸ Scheduled groups rows by decision with an expandable node list. Edit changes the choice or time before execution starts. Remove is permanent. Times at or after the deadline are rejected.
+- Scheduled and immediate votes share the same target locks and result states. An ambiguous result is never rebroadcast automatically.
+- Missed votes (more than 120 seconds past due) explain why and offer Cast now, Edit, and Remove.
+- Completed scheduled and mixed batches retain the latest 256 operations per network, without discarding unresolved votes or bringing removed schedules back.
 
-### DPN-007: Batch voting across contests [Implemented]
+### DPN-007: Vote with many nodes and contests at once [Implemented]
 **Persona:** Priya
 
-As a masternode operator, I want to apply voting choices across multiple contests in bulk so that I do not have to vote on each contest individually.
+As a masternode operator, I want to choose which nodes vote and decide many contests quickly so that I do not repeat work per node or per contest.
 
-- "Set all" option for batch vote assignment.
+- A node-set selector (All my nodes, Evonodes only, Masternodes only, Custom) shows node count and total weight, is saved per network, and lists nodes that can't vote with the reason.
+- Keyboard: J/K move between cards, 1–9 vote for a requester, L lock, A abstain, Space select, Enter cast. Shortcuts act only in the contest list. Selecting several cards shows a bulk bar (Lock name, Abstain, Clear).
+- Adjust nodes in the confirm step shows every node × contest target (current → new choice, timing, changes left) and allows per-node timing or Don't use this node.
+- A vote for a requester shows their name and a shortened identity ID, or the ID alone when the name is unavailable, so similar names remain distinguishable.
+- Switching networks clears drafts and open dialogs.
+- A successful mixed batch reports cast and scheduled counts.
+- A node loaded after decisions were staged is left out of them in the confirm step until the operator includes it under Adjust nodes; decisions staged after the earlier ones were cast or cleared use it.
+- Decisions staged or changed while a batch is submitting remain in the tray when that batch finishes. Another batch can be submitted after the pending submission returns.
 
 ### DPN-008: Recognise an identity by its profile name [Implemented]
 **Persona:** Alex, Priya
@@ -859,28 +886,102 @@ As a masternode operator, I want to apply voting choices across multiple contest
 As a user, I want my identity's Display name to identify it throughout the app so that I recognise it consistently.
 
 - Change Display name in the identity profile.
-- Lists and navigation use Display name, then a registered username, then a shortened identity ID.
-- My usernames lists registered names without assigning local identity aliases.
+- Lists and navigation use Display name, then the main username (DPN-018), then a shortened identity ID.
+- Profile → Usernames lists registered names without assigning local identity aliases.
 
-### DPN-009: Scheduled votes preserved across an app upgrade [Implemented]
+### DPN-009: Notice schedules that need a fresh decision after an upgrade [Implemented]
 **Persona:** Priya
 
-As a masternode operator, I want my previously scheduled DPNS votes to survive an app upgrade so that I do not miss a contest's vote window after updating.
+As a masternode operator, I want to be told when an upgrade cannot carry over my scheduled votes so that I can cast or schedule them again.
 
-- Scheduled votes stored before the upgrade remain visible and executable afterward.
-- The first launch after the upgrade imports them from the previous version's storage, keeping each vote's choice, timestamp, and already-cast state. A vote that cannot be read is reported in a banner, with the recovery action, rather than dropped silently — and never blocks the wallet migration that restores access to funds.
-- A single unreadable vote row costs only itself: the readable votes in the same batch still import.
-- The report of unreadable votes returns on every launch until it is explicitly acknowledged, so a vote whose deadline is still open cannot lose its only notice to a missed or dismissed banner.
+- Startup checks for unexecuted schedules in the previous SQLite storage on the selected network.
+- A dismissible notice says the old schedules were not carried over and directs me to Masternodes → Votes to schedule the ones I still want. It does not list them.
+- The notice returns on each launch until one contest duration after it first appeared (14 days on Mainnet, 90 minutes on Testnet), when no contest an old schedule could refer to can still be open.
+- Old schedules are neither imported, listed, nor executed automatically; their source records remain untouched.
+- Executed schedules and votes already represented in the voting journal do not raise the notice.
+- New schedules use only the voting journal, including editing, cancellation, execution and recovery.
 
-### DPN-010: See a pending username registration [Implemented]
+### DPN-010: See a pending username request [Implemented]
 **Persona:** Alex
 
-As a user who has requested a username that is not yet awarded, I want to see that the request is pending so that I am not told to "pick a username" for a name I have already chosen.
+As a user who has requested a username that is not yet awarded, I want to see that the request is pending so that I am not told to pick a username I have already chosen.
 
-- A requested-but-unawarded name shows a "Pending" pill next to the identity — on both the Identity Home hero card and the Identity Settings tab.
-- The hero card shows the requested name with the pill instead of the "No username yet — Pick a username" prompt.
-- The onboarding checklist counts the submitted request as completing "Pick a username" while clearly stating that Dash masternodes are voting.
-- The pill's tooltip explains that Dash masternodes decide who receives the username and, when the decision time is known, gives an estimated decision time.
+- When the identity has no active name, the header subtitle shows `@name` with the request's status: `Open for other requests` while others can still join, `Waiting for vote` after that, `Awaiting result` once the estimated end has passed. The Home card and Profile row show every pending request.
+- The onboarding checklist counts a submitted request as completing "Pick a username" while stating that Dash masternodes are voting.
+- The status refreshes on its own: on hub arrival when older than 5 minutes, and every 15 minutes (2 minutes on Testnet) while a request is pending. It doesn't depend on visiting a voting screen.
+
+### DPN-011: Recover an ambiguous vote result [Implemented]
+**Persona:** Priya
+
+As a masternode operator, I want DET to keep checking a submitted vote whose result was temporarily unavailable so that I do not spend a vote change by submitting the same vote again.
+
+- The exact network, node, and contest remain locked while the result is unconfirmed.
+- Navigation and restart preserve the operation and its target-level progress.
+- If saved voting progress cannot be read, show a persistent incomplete-history notice with a retry action, preserve cached progress, and keep unknown vote locks protected.
+- DET reconciles against proved current vote state without rebroadcasting. The progress drawer and Needs-attention row offer Check again, never Submit again.
+- A confirmed match updates the current vote and releases the target lock.
+
+### DPN-012: Follow my username request to a result [Implemented]
+**Persona:** Alex
+
+As a user waiting for a community vote, I want to see how my request is doing and what happens next so that I know whether I'm likely to get the name.
+
+- The Request status page shows a timeline (requested, open for other requests until, voting until, result), a weighted tally (me, other requests, lock, abstain) with Leading/Tied, and the last update time.
+- Plain rules: if I'm leading at the end the name becomes mine; ties go to the most recent request; more lock votes than any request means no one can ever register the name; the fee is never returned.
+- Outcomes (won, went to someone else, locked, ended without a winner) are announced once with a banner and stay in Profile for 30 days.
+- Power users with a loaded node that can vote get a link to Masternodes ▸ Votes for that name.
+
+### DPN-013: Know from anywhere that a vote is needed [Implemented]
+**Persona:** Priya
+
+As a masternode operator, I want the app to tell me when my nodes have contests to decide so that I never miss a deadline.
+
+- A top-bar chip `{count} names need your vote` appears on every screen for Power users with at least one voting node. It turns amber with the soonest deadline within 24 hours (30 minutes on Testnet). A separate chip shows votes still being checked.
+- The Masternodes nav item shows a badge, and Masternodes opens on Votes when something needs a decision.
+- A background refresh keeps the signal current: every 30 minutes on Mainnet and every 3 minutes on Testnet while voting nodes are loaded.
+
+### DPN-014: See my voting weight and remaining changes [Implemented]
+**Persona:** Priya
+
+As a masternode operator, I want to see how much my votes matter and how many changes each node has left so that I use my votes well.
+
+- Cards state my node-set weight and, when it can change the leader, say so.
+- Node detail lists the node's votes with changes left and its masternode-list status. A node removed from the masternode list is excluded, with the explanation that its votes don't count.
+
+### DPN-015: Keep working while votes are cast [Implemented]
+**Persona:** Priya
+
+As a masternode operator, I want votes to go out in the background with per-node progress so that a large batch doesn't block the app.
+
+- A progress drawer shows totals (done, sending, being checked) and per node × name rows with their status and the one valid action. It persists across screens and can be collapsed.
+- Only the contests and nodes being sent are locked. Everything else stays usable.
+- Votes not sent before their contest ends are reported as not cast because voting ended.
+
+### DPN-016: Avoid a community vote when I just need a name [Implemented]
+**Persona:** Alex, Jordan
+
+As a user, I want suggestions that need no vote so that I can get a working username right away.
+
+- When a name needs a vote, has open requests, or is taken, three suggestions that need no vote are offered (for example by adding a digit from 2 to 9).
+- The username rules are available in a collapsed section and are consistent: 3–63 characters; letters, numbers and hyphens; no hyphen at the start or end; capital letters treated as lowercase; and which names need a vote.
+
+### DPN-017: Usernames stay with the identity [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want my usernames managed on my identity, apart from masternode voting, so that I never need a governance tool to see my own name.
+
+- No voting controls appear in the Identities hub, and no "My usernames" list appears in voting.
+- Old shortcuts to the former "My usernames" screen open the Identities hub.
+- The former "Aliases" block and its disabled Make primary, Remove and Add an alias controls are removed. Adding another name uses "Get another username".
+
+### DPN-018: Choose which username is shown [Implemented]
+**Persona:** Alex, Priya
+
+As a user with several usernames on one identity, I want to choose the one shown by default so that people and lists see the name I prefer.
+
+- Show as main (Profile ▸ Usernames row menu) is stored on this device only. Platform has no main-name concept.
+- Where the identity has no Display name, the header, identity pills and switcher use the chosen name.
+- Replaces the former "Set Alias" action, which wrote a username into the device-only identity name.
 
 ---
 
@@ -1475,7 +1576,7 @@ As an expert user, I want to clear the cached SPV headers and filter data for a 
 As a user, I want my saved settings — selected network, theme, onboarding state, and paths — to survive an app upgrade so that I do not silently relaunch into the wrong network or a reset configuration.
 
 - Settings stored before the upgrade remain applied afterward.
-- The first launch after the upgrade imports the saved network, start screen, theme, onboarding state, Dash-Qt path, and the remaining toggles before the network is selected, so a testnet user is never relaunched on Mainnet. Top-up history is imported alongside the scheduled votes of DPN-009.
+- The first launch after the upgrade imports the saved network, start screen, theme, onboarding state, Dash-Qt path, and the remaining toggles before the network is selected, so a testnet user is never relaunched on Mainnet. Top-up history is imported; schedules from the previous storage are reported as described in DPN-009.
 
 ---
 
@@ -1671,11 +1772,12 @@ As a masternode operator, I want a card list of my loaded masternodes showing ty
 ### MN-003: Open a masternode and vote [Implemented]
 **Persona:** Priya
 
-As a masternode operator, I want to open a node and vote on the DPNS contests it can vote on, so that I can fulfil my node's governance role.
+As a masternode operator, I want to open a node, see its votes, and vote with just that node when needed, so that I can fulfil and check my node's governance role.
 
-- Clicking a card opens a detail view with a keys summary, the voter identity, and a collapsible DPNS-voting section (collapsed by default, open-contest count shown in its header).
-- Votes (Abstain, Lock, or a candidate) are cast inline through the existing DPNS voting backend.
-- A node with no voter identity is told a voting key is required, with a way to add one, instead of a raw error.
+- Clicking a card opens a detail view with the keys summary, node actions, the node's type and voting weight, its masternode-list status, and a "This node's votes" table (name, choice, changes left, deadline).
+- `Vote with this node` opens Masternodes ▸ Votes with the node set limited to that node, shown on the node-set chip. No draft is carried.
+- Voting uses the shared durable voting-operation path.
+- When no loaded node has a voting key, Votes explains what is missing and offers `Add a voting key` (or `Load a masternode` when no node is loaded).
 
 ### MN-004: Remove a masternode [Implemented]
 **Persona:** Priya
@@ -1741,10 +1843,11 @@ As a masternode operator, I want the Masternodes tab to reset to a clean state w
 ### MN-011: Refresh masternode and voting state [Implemented]
 **Persona:** Priya
 
-As a masternode operator, I want a Refresh control on the Masternodes tab, so that I can pull the latest identity and DPNS-contest state without leaving the page.
+As a masternode operator, I want a Refresh control on the Masternodes tab, so that I can pull the latest node identity and voting state without leaving the page.
 
-- The card-list toolbar and a node's detail view each expose a Refresh action that re-reads the local cache immediately and dispatches a network re-fetch — one identity refresh per loaded node (or the single open node on the detail view) plus a DPNS-contest re-query so vote counts update too.
-- Refresh is a no-op when no node is loaded, and the detail-view re-query is skipped for a node that has no voter identity.
+- The Nodes list and a node's detail view each expose a Refresh action that re-reads the local cache immediately and dispatches one identity refresh per loaded node (or for the single open node on the detail view).
+- The Nodes-list Refresh also queries contests and node vote state when at least one node is loaded. The detail-view Refresh updates only that node. Refresh is a no-op when no node is loaded. Votes has its own refresh action.
+- A background refresh keeps contest and vote state current while voting nodes are loaded (see DPN-013).
 
 ### MN-012: Switch wallet/identity from the Masternodes header [Implemented]
 **Persona:** Priya

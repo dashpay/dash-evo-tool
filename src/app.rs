@@ -1,3 +1,6 @@
+#[cfg(test)]
+use crate::model::dpns_voting::{DpnsVoteOperation, DpnsVoteTargetStatus};
+use crate::ui::dpns::copy::{DPNS_ALL_VOTES_ALREADY_CAST, dpns_vote_feedback};
 mod reconcilers;
 use reconcilers::{
     AccessibilityActivator, ConnectionBanner, GateEvent, MigrationReconciler, PendingConfirmation,
@@ -24,7 +27,8 @@ use crate::ui::components::secret_prompt_host::{ActivePrompt, EguiSecretPromptHo
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ProgressOverlay};
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
 use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen, ProfileSearchScreen};
-use crate::ui::dpns::dpns_contested_names_screen::{DPNSScreen, DPNSSubscreen};
+use crate::ui::dpns::copy::scheduled_vote_clear_feedback;
+use crate::ui::dpns::dpns_contested_names_screen::DPNSScreen;
 use crate::ui::identity::identity_pill::shorten_id;
 use crate::ui::network_chooser_screen::{NetworkChooserScreen, chooser_network_label};
 use crate::ui::theme::ThemeMode;
@@ -61,11 +65,11 @@ use tokio::sync::mpsc as tokiompsc;
 /// risking a typo collision. Exposed for kittest coverage.
 pub const MIGRATION_RETRY_ACTION_ID: &str = "migration:retry:finish_unwire";
 
-/// Banner action id pushed when the user acknowledges the unreadable-vote
-/// warning. Until it fires, the warning is re-raised on every launch — a
-/// dismissed banner is not an acknowledgement, because the vote it names may
-/// still have a live deadline. Exposed for kittest coverage.
-pub const MIGRATION_VOTES_ACK_ACTION_ID: &str = "migration:ack:unreadable_votes";
+/// Banner action id pushed when the user acknowledges the warning about
+/// unreadable balance top-up records. Until it fires, the warning is re-raised
+/// on every launch — a dismissed banner is not an acknowledgement. Exposed for
+/// kittest coverage.
+pub const MIGRATION_APP_DATA_ACK_ACTION_ID: &str = "migration:ack:unreadable_app_data";
 
 /// Banner action id pushed when the user acknowledges the unreadable-identity
 /// warning. Until it fires, the warning is re-raised on every launch — a
@@ -75,13 +79,14 @@ pub const MIGRATION_VOTES_ACK_ACTION_ID: &str = "migration:ack:unreadable_votes"
 pub const MIGRATION_IDENTITIES_ACK_ACTION_ID: &str = "migration:ack:unreadable_identities";
 
 /// Banner action id pushed when the user acknowledges the combined warning — the
-/// launch where both unreadable identities and unreadable votes were left behind.
+/// launch where both unreadable identities and unreadable top-up records were
+/// left behind.
 /// One banner names both problems, so its single acknowledgement retires both
 /// records: re-raising either half after the user has read and dismissed the
 /// sentence describing it would be a notice they have already acted on. Exposed
 /// for kittest coverage.
 pub const MIGRATION_UNREADABLE_ACK_ACTION_ID: &str =
-    "migration:ack:unreadable_identities_and_votes";
+    "migration:ack:unreadable_identities_and_app_data";
 
 const WALLET_BACKEND_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 const SHUTDOWN_DEADLINE_MARGIN: Duration = Duration::from_secs(5);
@@ -222,6 +227,33 @@ fn show_legacy_settings_import_warning(ctx: &egui::Context, error: &impl std::fm
     handle.with_details(error);
 }
 
+/// Startup notice for schedules left behind by an earlier version. They are
+/// neither imported nor listed, so the copy says so instead of offering a review.
+fn legacy_scheduled_votes_notice(network: Network) -> String {
+    let network = chooser_network_label(network);
+    format!(
+        "Votes you scheduled in an earlier version of the app on {network} were not carried over and will not be cast. They are not listed in this version. Open Masternodes > Votes and schedule the ones you still want."
+    )
+}
+
+fn notify_legacy_scheduled_votes(app_context: &AppContext) {
+    let ctx = app_context.egui_ctx();
+    match app_context.legacy_scheduled_votes_notice_due() {
+        Ok(true) => {
+            MessageBanner::set_global(
+                ctx,
+                legacy_scheduled_votes_notice(app_context.network),
+                MessageType::Warning,
+            )
+            .disable_auto_dismiss();
+        }
+        Ok(false) => {}
+        Err(error) => {
+            MessageBanner::set_global(ctx, "Your previous scheduled votes could not be checked. Restart the app and try again.", MessageType::Warning).with_details(error);
+        }
+    }
+}
+
 fn legacy_settings_import_requires_network_selection(
     _error: &crate::backend_task::migration::legacy_settings::SettingsImportError,
 ) -> bool {
@@ -302,6 +334,57 @@ fn clear_profile_saving_banner_after_success(
     }
 }
 
+/// How often local state re-derives the voting attention summary.
+const DPNS_ATTENTION_RECOMPUTE_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Sweeps that re-check unconfirmed votes right after startup or vote activity.
+const UNCONFIRMED_VOTE_QUICK_CHECKS: u8 = 3;
+
+/// How often unconfirmed votes are re-checked once the quick checks are used.
+const UNCONFIRMED_VOTE_RECHECK_INTERVAL: Duration = Duration::from_secs(10 * 60);
+
+/// Paces the sweep's re-check of unconfirmed votes. A vote can stay
+/// unconfirmed until its contest closes, so it is queried on a few sweeps and
+/// then only every [`UNCONFIRMED_VOTE_RECHECK_INTERVAL`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UnconfirmedVoteChecks {
+    quick_left: u8,
+    last_check: Option<Instant>,
+}
+
+impl Default for UnconfirmedVoteChecks {
+    fn default() -> Self {
+        Self {
+            quick_left: UNCONFIRMED_VOTE_QUICK_CHECKS,
+            last_check: None,
+        }
+    }
+}
+
+impl UnconfirmedVoteChecks {
+    /// Whether the sweep starting at `now` re-checks; records the check if so.
+    fn take_due(&mut self, now: Instant) -> bool {
+        let due = self.quick_left > 0
+            || self
+                .last_check
+                .is_none_or(|last| now.duration_since(last) >= UNCONFIRMED_VOTE_RECHECK_INTERVAL);
+        if due {
+            self.quick_left = self.quick_left.saturating_sub(1);
+            self.last_check = Some(now);
+        }
+        due
+    }
+}
+
+/// Whether `result` reports vote activity that can leave a vote unconfirmed.
+fn restarts_unconfirmed_vote_checks(result: &BackendTaskSuccessResult) -> bool {
+    matches!(
+        result,
+        BackendTaskSuccessResult::DpnsVoteOperationUpdated { .. }
+            | BackendTaskSuccessResult::ScheduledVotesInProgress(_)
+    )
+}
+
 fn unix_time_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -362,6 +445,32 @@ pub(crate) const FALLBACK_ROOT_SCREEN: RootScreenType = RootScreenType::RootScre
 
 fn identity_hub_is_visible(selected: RootScreenType, screen_stack_is_empty: bool) -> bool {
     selected == RootScreenType::RootScreenIdentityHub && screen_stack_is_empty
+}
+
+/// The root screen hosting the voting workspace (Masternodes ▸ Votes).
+const VOTING_ROOT_SCREEN: RootScreenType = RootScreenType::RootScreenMasternodes;
+
+/// Whether a DPNS root screen is currently out of view, either because another
+/// root screen is selected or because a modal covers it. Shared by success and
+/// error routing so both agree on what "hidden" means.
+fn dpns_screen_is_hidden(
+    target: RootScreenType,
+    selected: RootScreenType,
+    screen_stack_is_empty: bool,
+) -> bool {
+    selected != target || !screen_stack_is_empty
+}
+
+fn dpns_result_needs_hidden_route(
+    target: RootScreenType,
+    selected: RootScreenType,
+    screen_stack_is_empty: bool,
+    result: &BackendTaskSuccessResult,
+) -> bool {
+    // The voting panel says which results it acts on, so it receives each of
+    // them even while its root screen is hidden.
+    DPNSScreen::handles_result(result)
+        && dpns_screen_is_hidden(target, selected, screen_stack_is_empty)
 }
 
 /// Plain, jargon-free descriptions for the SPV-sync block (Everyday-User rule:
@@ -707,7 +816,7 @@ mod backend_task_join_tests {
 
         let unavailable_result = TaskError::ScheduledVoteSweepFailed {
             network: Network::Regtest,
-            source: Box::new(TaskError::ScheduledVoteResultUnavailable),
+            source: Box::new(TaskError::DpnsCurrentVoteUnavailable),
         };
         assert!(!scheduled_vote_sweep_is_quiet(&unavailable_result));
 
@@ -756,7 +865,7 @@ pub fn migration_running_text(step: MigrationStep) -> &'static str {
     match step {
         MigrationStep::Wiring => "The app is opening your saved data.",
         MigrationStep::Detecting => "The app is checking your wallet data.",
-        MigrationStep::AppData => "The app is restoring your scheduled votes.",
+        MigrationStep::AppData => "The app is restoring your identity balance history.",
         MigrationStep::SingleKey => "The app is updating your imported keys.",
         MigrationStep::Shielded => "The app is verifying your shielded balance.",
         MigrationStep::WalletSeeds => "The app is moving your wallets into secure storage.",
@@ -767,25 +876,12 @@ pub fn migration_running_text(step: MigrationStep) -> &'static str {
 }
 
 /// User-facing banner copy for a migration that finished the wallet drain but
-/// left `count` undecodable scheduled votes behind. The votes stay in the
-/// previous version's storage (nothing is deleted), but they will not be cast,
-/// so the sentence names the one action that recovers them. No "Retry now" —
-/// a corrupt row decodes no better on a second pass. Exposed for kittest
-/// coverage.
-pub fn migration_unreadable_votes_text(count: u32) -> String {
-    format!(
-        "Some scheduled votes from the previous version could not be read and were not carried \
-         over ({count} in total). Schedule them again on the Scheduled Votes screen."
-    )
-}
-
-/// User-facing banner copy for a migration that finished the wallet drain but
 /// could not decode `count` identities. Their keys are therefore not loaded, so
 /// the sentence names both the screen and the control that restore them — a user
-/// who has never opened that flow cannot act on "load them again" alone. Kept
-/// separate from the scheduled-votes copy because the remedy is different — load
-/// an identity, not re-schedule a vote. The previous version's data is never
-/// deleted, so the re-import is always possible. Exposed for kittest coverage.
+/// who has never opened that flow cannot act on "load them again" alone. The
+/// previous version's data is never deleted, so the re-import is always
+/// possible. No "Retry now": a corrupt row decodes no better on a second pass.
+/// Exposed for kittest coverage.
 pub fn migration_unreadable_identities_text(count: u32) -> String {
     format!(
         "Some identities from the previous version could not be read and were not carried over \
@@ -795,26 +891,9 @@ pub fn migration_unreadable_identities_text(count: u32) -> String {
     )
 }
 
-/// User-facing banner copy for the launch where both DET-owned passes left rows
-/// behind: `identities` identities and `votes` scheduled votes could not be read.
-/// One sentence per problem, each naming its own remedy — the remedies differ
-/// (load an identity vs re-schedule a vote), and the identity warning recurs on
-/// every launch, so it must never be the reason the deadline-critical vote notice
-/// goes unseen. No "Retry now": neither corrupt row decodes better on a second
-/// pass. Exposed for kittest coverage.
-pub fn migration_unreadable_identities_and_votes_text(identities: u32, votes: u32) -> String {
-    format!(
-        "Some identities ({identities} in total) and some scheduled votes ({votes} in total) from \
-         the previous version could not be read and were not carried over. Your previous data is \
-         untouched. For a user identity, choose Load Identity on the Identities screen. For a \
-         masternode or evonode identity, choose + Load on the Masternodes tab. Schedule the votes \
-         again on the Scheduled Votes screen."
-    )
-}
-
 /// User-facing banner copy for the rare launch where both DET-owned passes broke:
 /// `count` identities could not be read AND updating the rest of the previous
-/// version's data (such as scheduled votes) hit a hard error. Names each problem
+/// version's data (such as balance top-up records) hit a hard error. Names each problem
 /// in its own sentence and offers the retry the app-data half needs — the
 /// identity half recovers by loading the identities again. The previous version's
 /// data is never deleted, so both are recoverable. Exposed for kittest coverage.
@@ -828,44 +907,26 @@ pub fn migration_failed_with_unreadable_identities_text(count: u32) -> String {
     )
 }
 
-/// User-facing banner copy for every non-empty combination of unreadable
-/// legacy identity, scheduled-vote and top-up rows.
-pub fn migration_unreadable_data_text(identities: u32, votes: u32, top_ups: u32) -> String {
-    match (identities > 0, votes > 0, top_ups > 0) {
-        (true, false, false) => migration_unreadable_identities_text(identities),
-        (false, true, false) => migration_unreadable_votes_text(votes),
-        (true, true, false) => {
-            migration_unreadable_identities_and_votes_text(identities, votes)
-        }
-        (false, false, true) => format!(
+/// User-facing banner copy for every combination of unreadable legacy identity
+/// and top-up rows. One sentence per problem, each naming its own remedy.
+/// Exposed for kittest coverage.
+pub fn migration_unreadable_data_text(identities: u32, top_ups: u32) -> String {
+    match (identities > 0, top_ups > 0) {
+        (true, false) => migration_unreadable_identities_text(identities),
+        (false, true) => format!(
             "Some records of earlier additions to identity balances from the previous version \
              could not be read and were not carried over ({top_ups} in total). Check each \
              identity's balance history before adding more funds."
         ),
-        (true, false, true) => format!(
+        (true, true) => format!(
             "Some identities ({identities} in total) and some records of earlier additions to \
              identity balances ({top_ups} in total) from the previous version could not be read \
              and were not carried over. For a user identity, choose Load Identity on the \
              Identities screen. For a masternode or evonode identity, choose + Load on the \
              Masternodes tab. Check each identity's balance history before adding more funds."
         ),
-        (false, true, true) => format!(
-            "Some scheduled votes ({votes} in total) and some records of earlier additions to \
-             identity balances ({top_ups} in total) from the previous version could not be read \
-             and were not carried over. Schedule the votes again on the Scheduled Votes screen. \
-             Check each identity's balance history before adding more funds."
-        ),
-        (true, true, true) => format!(
-            "Some identities ({identities} in total), some scheduled votes ({votes} in total), \
-             and some records of earlier additions to identity balances ({top_ups} in total) \
-             from the previous version could not be read and were not carried over. For a user \
-             identity, choose Load Identity on the Identities screen. For a masternode or \
-             evonode identity, choose + Load on the Masternodes tab. Schedule the votes again on \
-             the Scheduled Votes screen, and check each identity's balance history before adding \
-             more funds."
-        ),
-        (false, false, false) => {
-            "Some data from the previous version could not be read. Check your identities, scheduled votes, and identity balance history before continuing.".to_string()
+        (false, false) => {
+            "Some data from the previous version could not be read. Check your identities and identity balance history before continuing.".to_string()
         }
     }
 }
@@ -1210,6 +1271,17 @@ pub struct AppState {
     scheduled_vote_sweep_deferred_since_ms: BTreeMap<Network, u64>,
     /// Networks with a scheduled-vote sweep currently running.
     scheduled_vote_sweeps_in_progress: BTreeSet<Network>,
+    /// Per-network pacing of the sweep's re-check of unconfirmed votes.
+    unconfirmed_vote_checks: BTreeMap<Network, UnconfirmedVoteChecks>,
+    /// Unix ms of the last background contest refresh dispatched per network.
+    dpns_background_refresh_dispatched_at_ms: BTreeMap<Network, u64>,
+    /// Unix ms at which an incomplete background refresh is retried per network.
+    dpns_background_refresh_retry_at_ms: BTreeMap<Network, u64>,
+    /// When the voting attention summary was last recomputed per network, so
+    /// nodes loaded or keys added elsewhere reach the chip, badge and timer.
+    dpns_attention_recomputed_at: BTreeMap<Network, Instant>,
+    /// The vote progress drawer shown over every screen (VOTE-FR-083).
+    dpns_progress_drawer: crate::ui::dpns::progress_drawer::DrawerState,
     /// Last recovery-sweep attempt per network, used to throttle retries while
     /// retaining the original eligibility cutoff.
     scheduled_vote_recovery_last_attempt: BTreeMap<Network, Instant>,
@@ -1461,6 +1533,24 @@ impl BackendInitReason {
                 );
                 handle.disable_auto_dismiss();
                 handle.with_details(error);
+            }
+        }
+    }
+}
+
+fn route_username_refresh_to_hidden_screens(
+    stack: &mut [Screen],
+    context: &BackendTaskContext,
+    result: Result<&BackendTaskSuccessResult, &TaskError>,
+) {
+    let Some((_, hidden)) = stack.split_last_mut() else {
+        return;
+    };
+    for screen in hidden {
+        if let Screen::UsernameRequestScreen(screen) = screen {
+            match result {
+                Ok(result) => screen.display_backend_task_result(context, result.clone()),
+                Err(error) => screen.display_backend_task_error(context, error),
             }
         }
     }
@@ -1770,6 +1860,11 @@ impl AppState {
             last_scheduled_vote_check: Instant::now(),
             scheduled_vote_sweep_deferred_since_ms: BTreeMap::new(),
             scheduled_vote_sweeps_in_progress: BTreeSet::new(),
+            unconfirmed_vote_checks: BTreeMap::new(),
+            dpns_background_refresh_dispatched_at_ms: BTreeMap::new(),
+            dpns_background_refresh_retry_at_ms: BTreeMap::new(),
+            dpns_attention_recomputed_at: BTreeMap::new(),
+            dpns_progress_drawer: crate::ui::dpns::progress_drawer::DrawerState::new(unix_time_ms()),
             scheduled_vote_recovery_last_attempt: BTreeMap::new(),
             last_repaint_request: Instant::now(),
             subtasks,
@@ -1874,11 +1969,6 @@ impl AppState {
     /// before the gate: an install that cannot determine its network has to
     /// render it to get one.
     fn build_main_screens(active_context: &Arc<AppContext>) -> BTreeMap<RootScreenType, Screen> {
-        let dpns_active_contests_screen = DPNSScreen::new(active_context, DPNSSubscreen::Active);
-        let dpns_past_contests_screen = DPNSScreen::new(active_context, DPNSSubscreen::Past);
-        let dpns_my_usernames_screen = DPNSScreen::new(active_context, DPNSSubscreen::Owned);
-        let dpns_scheduled_votes_screen =
-            DPNSScreen::new(active_context, DPNSSubscreen::ScheduledVotes);
         let transition_visualizer_screen = TransitionVisualizerScreen::new(active_context);
         let proof_visualizer_screen = ProofVisualizerScreen::new(active_context);
         let document_visualizer_screen = DocumentVisualizerScreen::new(active_context);
@@ -1902,22 +1992,6 @@ impl AppState {
         let wallets_balances_screen = WalletsBalancesScreen::new(active_context);
 
         [
-            (
-                RootScreenType::RootScreenDPNSActiveContests,
-                Screen::DPNSScreen(dpns_active_contests_screen),
-            ),
-            (
-                RootScreenType::RootScreenDPNSPastContests,
-                Screen::DPNSScreen(dpns_past_contests_screen),
-            ),
-            (
-                RootScreenType::RootScreenDPNSOwnedNames,
-                Screen::DPNSScreen(dpns_my_usernames_screen),
-            ),
-            (
-                RootScreenType::RootScreenDPNSScheduledVotes,
-                Screen::DPNSScreen(dpns_scheduled_votes_screen),
-            ),
             (
                 RootScreenType::RootScreenWalletsBalances,
                 Screen::WalletsBalancesScreen(wallets_balances_screen),
@@ -2095,6 +2169,7 @@ impl AppState {
     /// alongside it.
     fn finish_boot_phase(&mut self, start_spv: bool, arm_spv_block: bool) {
         let active_context = self.current_app_context().clone();
+        notify_legacy_scheduled_votes(&active_context);
         let first_screen_build = self.main_screens.len() == 1
             && self
                 .main_screens
@@ -2105,12 +2180,19 @@ impl AppState {
             }
 
             // Now that the map exists, an unregistered persisted route can finally
-            // be detected and replaced.
+            // be detected and replaced. Retired DPNS routes resolve to Votes first.
+            let (persisted, votes_view) = crate::ui::resolve_root_screen(self.selected_main_screen);
             self.selected_main_screen = initial_root_screen(
-                self.selected_main_screen,
-                self.main_screens.contains_key(&self.selected_main_screen),
+                persisted,
+                self.main_screens.contains_key(&persisted),
                 self.network_selection_required,
             );
+            if let Some(view) = votes_view
+                && self.selected_main_screen == RootScreenType::RootScreenMasternodes
+                && let Some(masternodes) = self.masternodes_screen_mut()
+            {
+                masternodes.open_votes(view);
+            }
 
             // Every root screen refreshes, not just the visible one, so screens the
             // user has not opened yet (e.g. DashPay Profile) already hold their data.
@@ -2605,6 +2687,71 @@ impl AppState {
         }
     }
 
+    /// Called when a background contest refresh ends: if it failed, or left a
+    /// contest unread or a node's vote state unchecked, try again soon instead
+    /// of a whole interval later.
+    fn retry_incomplete_dpns_background_refresh(&mut self, network: Network) {
+        use crate::model::dpns_voting::operator::{
+            background_refresh_incomplete, background_refresh_retry_delay,
+        };
+        let Some(dispatched_at) = self
+            .dpns_background_refresh_dispatched_at_ms
+            .get(&network)
+            .copied()
+        else {
+            return;
+        };
+        let completed_at = self
+            .network_contexts
+            .get(&network)
+            .and_then(|context| context.dpns_contests_refreshed_at_ms());
+        if background_refresh_incomplete(completed_at, dispatched_at) {
+            let delay = u64::try_from(background_refresh_retry_delay(network).as_millis())
+                .unwrap_or(u64::MAX);
+            self.dpns_background_refresh_retry_at_ms
+                .insert(network, unix_time_ms().saturating_add(delay));
+        }
+    }
+
+    /// Deliver a vote result to the voting panel while Masternodes is hidden.
+    /// While it is visible, the Masternodes screen forwards it itself.
+    fn route_dpns_vote_result_to_hidden_screens(
+        &mut self,
+        context: &BackendTaskContext,
+        result: &BackendTaskSuccessResult,
+    ) {
+        if dpns_result_needs_hidden_route(
+            VOTING_ROOT_SCREEN,
+            self.selected_main_screen,
+            self.screen_stack.is_empty(),
+            result,
+        ) && let Some(masternodes) = self.masternodes_screen_mut()
+        {
+            let votes = masternodes.votes_mut();
+            votes.display_backend_task_result(context, result.clone());
+        }
+    }
+
+    fn route_dpns_vote_error_to_hidden_screens(
+        &mut self,
+        context: &BackendTaskContext,
+        error: &TaskError,
+    ) {
+        if !context.is_dpns_vote_task() {
+            return;
+        }
+        if dpns_screen_is_hidden(
+            VOTING_ROOT_SCREEN,
+            self.selected_main_screen,
+            self.screen_stack.is_empty(),
+        ) && let Some(masternodes) = self.masternodes_screen_mut()
+        {
+            let votes = masternodes.votes_mut();
+            votes.display_backend_task_error(context, error);
+            votes.display_task_error(error);
+        }
+    }
+
     /// Promote at most one queued passphrase request before overlay handling.
     fn activate_secret_prompt(&mut self, ctx: &egui::Context) {
         if self.active_secret_prompt.is_none()
@@ -2628,6 +2775,7 @@ impl AppState {
     }
 
     fn set_main_screen(&mut self, root_screen_type: RootScreenType) {
+        let (root_screen_type, votes_view) = crate::ui::resolve_root_screen(root_screen_type);
         if !network_selection_allows_root(self.network_selection_required, root_screen_type) {
             return;
         }
@@ -2635,9 +2783,25 @@ impl AppState {
         let active_screen = self.active_root_screen_mut();
         active_screen.reset_to_root_view();
         active_screen.refresh_on_arrival();
+        if let Some(view) = votes_view
+            && let Some(masternodes) = self.masternodes_screen_mut()
+        {
+            masternodes.open_votes(view);
+        }
         self.current_app_context()
             .update_settings(root_screen_type)
             .ok();
+    }
+
+    /// The Masternodes root screen, which hosts the voting workspace.
+    fn masternodes_screen_mut(&mut self) -> Option<&mut crate::ui::masternodes::MasternodesScreen> {
+        match self
+            .main_screens
+            .get_mut(&RootScreenType::RootScreenMasternodes)?
+        {
+            Screen::MasternodesScreen(screen) => Some(screen),
+            _ => None,
+        }
     }
 
     /// Auto-start chain sync for the active context when the user opted in.
@@ -2967,8 +3131,21 @@ impl App for AppState {
         let active_context = self.current_app_context().clone();
         let migration_state = active_context.migration_status().state();
 
-        // Poll the receiver for any new task results
-        while let Ok(task_result) = self.task_result_receiver.try_recv() {
+        // Bound result work so refresh bursts cannot starve window input and painting.
+        let result_work_started = Instant::now();
+        let mut refresh_pending = false;
+        for processed in 0..64 {
+            if processed > 0 && result_work_started.elapsed() >= Duration::from_millis(8) {
+                break;
+            }
+            let Ok(task_result) = self.task_result_receiver.try_recv() else {
+                break;
+            };
+            // Merge adjacent cache invalidations without moving refreshes past typed results.
+            if refresh_pending && !matches!(task_result, TaskResult::Refresh) {
+                self.visible_screen_mut().refresh();
+                refresh_pending = false;
+            }
             active_context
                 .connection_status()
                 .handle_task_result(&task_result, active_context.network);
@@ -2989,8 +3166,20 @@ impl App for AppState {
                     result: message,
                 } => {
                     let unboxed_message = *message;
+                    if let BackendTaskContext::DpnsBackgroundRefresh { network } = &context {
+                        self.retry_incomplete_dpns_background_refresh(*network);
+                    }
                     clear_profile_saving_banner_after_success(ctx, &context, &unboxed_message);
+                    route_username_refresh_to_hidden_screens(
+                        &mut self.screen_stack,
+                        &context,
+                        Ok(&unboxed_message),
+                    );
                     self.route_identity_result_to_hidden_hub(&context, &unboxed_message);
+                    self.route_dpns_vote_result_to_hidden_screens(&context, &unboxed_message);
+                    if restarts_unconfirmed_vote_checks(&unboxed_message) {
+                        self.unconfirmed_vote_checks.clear();
+                    }
                     match unboxed_message {
                         BackendTaskSuccessResult::RemovedIdentities { .. } => {
                             deliver_identity_removal_result(
@@ -3141,19 +3330,61 @@ impl App for AppState {
                                 MessageType::Success,
                             );
                         }
-                        BackendTaskSuccessResult::CastScheduledVote(ref vote) => {
-                            let _ = self.current_app_context().mark_vote_executed(
-                                vote.voter_id.as_slice(),
-                                vote.contested_name.clone(),
-                            );
-                            MessageBanner::set_global(
-                                ctx,
-                                "Successfully cast scheduled vote",
-                                MessageType::Success,
-                            );
-                            self.visible_screen_mut().display_message(
-                                "Successfully cast scheduled vote",
-                                MessageType::Success,
+                        BackendTaskSuccessResult::DpnsVoteOperationUpdated {
+                            network,
+                            operation_id,
+                        } => {
+                            let operation_context = self.network_contexts.get(&network).cloned();
+                            match operation_context
+                                .as_ref()
+                                .map(|context| context.dpns_vote_operation(operation_id))
+                            {
+                                Some(Ok(Some(operation))) => {
+                                    let diagnostics = operation_context
+                                        .as_ref()
+                                        .map(|context| {
+                                            context.dpns_vote_operation_diagnostics(operation_id)
+                                        })
+                                        .unwrap_or_default();
+                                    let (message, message_type, keep_visible) =
+                                        dpns_vote_feedback(&operation);
+                                    let handle =
+                                        MessageBanner::set_global(ctx, message, message_type);
+                                    if !diagnostics.is_empty() {
+                                        handle.with_details(&diagnostics);
+                                    }
+                                    if keep_visible {
+                                        handle.disable_auto_dismiss();
+                                    }
+                                }
+                                // A submit whose targets were all no-ops never
+                                // persists an operation, so the skipped count is
+                                // not recoverable here: use the plural copy.
+                                Some(Ok(None)) => {
+                                    MessageBanner::set_global(
+                                        ctx,
+                                        DPNS_ALL_VOTES_ALREADY_CAST,
+                                        MessageType::Info,
+                                    );
+                                }
+                                Some(Err(error)) => tracing::warn!(
+                                    ?error,
+                                    ?network,
+                                    operation_id = %operation_id,
+                                    "Could not load DPNS vote operation feedback"
+                                ),
+                                None => tracing::warn!(
+                                    ?network,
+                                    operation_id = %operation_id,
+                                    "Could not find the originating network for DPNS vote feedback"
+                                ),
+                            }
+                            self.visible_screen_mut().display_backend_task_result(
+                                &context,
+                                BackendTaskSuccessResult::DpnsVoteOperationUpdated {
+                                    network,
+                                    operation_id,
+                                },
                             );
                             self.visible_screen_mut().refresh();
                         }
@@ -3169,6 +3400,22 @@ impl App for AppState {
                             ) {
                                 self.scheduled_vote_recovery_last_attempt.remove(&network);
                             }
+                            self.visible_screen_mut().display_backend_task_result(
+                                &context,
+                                BackendTaskSuccessResult::ScheduledVoteSweepCompleted {
+                                    network,
+                                    preserve_eligibility_since_ms,
+                                },
+                            );
+                        }
+                        BackendTaskSuccessResult::ScheduledVotesCleared(outcomes) => {
+                            let (message, message_type) = scheduled_vote_clear_feedback(&outcomes);
+                            MessageBanner::set_global(ctx, message, message_type);
+                            self.visible_screen_mut().display_backend_task_result(
+                                &context,
+                                BackendTaskSuccessResult::ScheduledVotesCleared(outcomes),
+                            );
+                            self.visible_screen_mut().refresh();
                         }
                         BackendTaskSuccessResult::NetworkContextCreated {
                             network,
@@ -3245,6 +3492,15 @@ impl App for AppState {
                     // recovery path, so suppress the duplicate generic banner.
                 }
                 TaskResult::Error {
+                    context: BackendTaskContext::DpnsBackgroundRefresh { network },
+                    error,
+                } => {
+                    // A background refresh retries by itself; the voting
+                    // panel's Refresh is where failures are reported.
+                    tracing::debug!(?error, ?network, "Background contest refresh failed");
+                    self.retry_incomplete_dpns_background_refresh(network);
+                }
+                TaskResult::Error {
                     context,
                     error:
                         err @ (TaskError::ScheduledVoteSweepFailed { .. }
@@ -3255,6 +3511,7 @@ impl App for AppState {
                         &context,
                         &err,
                     );
+                    self.route_dpns_vote_error_to_hidden_screens(&context, &err);
                     self.visible_screen_mut()
                         .display_backend_task_error(&context, &err);
                     let handled = self.visible_screen_mut().display_task_error(&err);
@@ -3277,7 +3534,13 @@ impl App for AppState {
                         &context,
                         &err,
                     );
+                    route_username_refresh_to_hidden_screens(
+                        &mut self.screen_stack,
+                        &context,
+                        Err(&err),
+                    );
                     self.route_identity_error_to_hidden_hub(&context, &err);
+                    self.route_dpns_vote_error_to_hidden_screens(&context, &err);
                     let chooser_owned = network_chooser_owns_task(&context);
                     let suppress_stale_error = !chooser_owned
                         && !recovery_delivered
@@ -3342,13 +3605,20 @@ impl App for AppState {
                     }
                 }
                 TaskResult::Refresh => {
-                    self.visible_screen_mut().refresh();
+                    refresh_pending = true;
                 }
                 TaskResult::Repaint => {
                     // SenderAsync/SenderSync already requested a repaint when sending; avoid
                     // state-clearing screen refreshes for ambient events such as sync ticks.
                 }
             }
+        }
+
+        if refresh_pending {
+            self.visible_screen_mut().refresh();
+        }
+        if !self.task_result_receiver.is_empty() {
+            ctx.request_repaint();
         }
 
         // Schedule a periodic repaint every ~1 second so timed messages update
@@ -3360,11 +3630,11 @@ impl App for AppState {
         }
 
         // Periodically cast any scheduled masternode votes that have come due.
-        // The poll itself — the DB query, local-identity load, and per-vote
+        // The poll itself — the journal read, local-identity load, and per-vote
         // casting — runs off the UI thread in the `CastDueScheduledVotes`
-        // backend task; this tick only dispatches it. The DPNS Scheduled Votes
-        // screen learns which votes are in progress / cast via
-        // `display_task_result`, so a slow or failing query never stalls a frame.
+        // backend task; this tick only dispatches it. The voting panel learns
+        // which votes are in progress / cast via `display_task_result`, so a
+        // slow or failing query never stalls a frame.
         let now = Instant::now();
         let network = active_context.network;
         if !migration_allows_scheduled_vote_sweep(migration_state.as_ref()) {
@@ -3392,13 +3662,69 @@ impl App for AppState {
                         .insert(network, now);
                 }
                 self.scheduled_vote_sweeps_in_progress.insert(network);
+                let reconcile_unconfirmed = self
+                    .unconfirmed_vote_checks
+                    .entry(network)
+                    .or_default()
+                    .take_due(now);
                 self.handle_backend_task_with_context(
                     BackendTask::ContestedResourceTask(
                         ContestedResourceTask::CastDueScheduledVotes {
                             preserve_eligibility_since_ms,
+                            reconcile_unconfirmed,
                         },
                     ),
                     BackendTaskContext::ScheduledVoteSweep { network },
+                );
+            }
+        }
+
+        // Prime and periodically re-derive the attention summary from local
+        // state (no network); the timer below depends on its voting-node count.
+        if self.boot.phase().renders_screens()
+            && !self.network_selection_required
+            && FeatureGate::Masternodes.is_available(&active_context)
+            && active_context.wallet_backend().is_ok()
+            && self
+                .dpns_attention_recomputed_at
+                .get(&network)
+                .is_none_or(|at| at.elapsed() >= DPNS_ATTENTION_RECOMPUTE_INTERVAL)
+        {
+            self.dpns_attention_recomputed_at
+                .insert(network, Instant::now());
+            active_context.recompute_dpns_vote_attention();
+        }
+
+        // Background contest + vote-state refresh feeding the attention chip and
+        // the Masternodes badge (VOTE-FR-074): only while voting nodes are loaded.
+        if self.boot.phase().renders_screens()
+            && !self.network_selection_required
+            && FeatureGate::Masternodes.is_available(&active_context)
+            && active_context.dpns_vote_attention().voting_nodes > 0
+        {
+            let now_ms = unix_time_ms();
+            let retry_due = self
+                .dpns_background_refresh_retry_at_ms
+                .get(&network)
+                .is_some_and(|retry_at| now_ms >= *retry_at);
+            if retry_due
+                || crate::model::dpns_voting::operator::background_refresh_due(
+                    active_context.dpns_contests_refreshed_at_ms(),
+                    self.dpns_background_refresh_dispatched_at_ms
+                        .get(&network)
+                        .copied(),
+                    now_ms,
+                    crate::model::dpns_voting::operator::background_refresh_interval(network),
+                )
+            {
+                self.dpns_background_refresh_retry_at_ms.remove(&network);
+                self.dpns_background_refresh_dispatched_at_ms
+                    .insert(network, now_ms);
+                self.handle_backend_task_with_context(
+                    BackendTask::ContestedResourceTask(
+                        ContestedResourceTask::RefreshContestsInBackground,
+                    ),
+                    BackendTaskContext::DpnsBackgroundRefresh { network },
                 );
             }
         }
@@ -3488,6 +3814,15 @@ impl App for AppState {
             actions.push(welcome_screen.ui(ui));
         } else {
             actions.push(self.visible_screen_mut().ui(ui));
+            if !self.network_selection_required
+                && FeatureGate::Masternodes.is_available(&active_context)
+            {
+                actions.push(crate::ui::dpns::progress_drawer::show(
+                    ctx,
+                    &active_context,
+                    &mut self.dpns_progress_drawer,
+                ));
+            }
         };
 
         // A blocking progress overlay remains active underneath a secret prompt,
@@ -3685,6 +4020,353 @@ impl App for AppState {
 #[cfg(test)]
 mod migration_banner_tests {
     use super::*;
+    use crate::model::dpns_voting::{DpnsVoteTarget, DpnsVoteTargetKey, VoteTiming};
+    use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
+
+    fn feedback_operation(statuses: &[DpnsVoteTargetStatus]) -> DpnsVoteOperation {
+        let mut operation = AppContext::new_dpns_vote_operation(
+            statuses
+                .iter()
+                .enumerate()
+                .map(|(index, _)| DpnsVoteTarget {
+                    key: DpnsVoteTargetKey {
+                        network: Network::Testnet,
+                        voter_id: Identifier::from([1; 32]),
+                        vote_poll_id: Identifier::from([index as u8; 32]),
+                    },
+                    voter_alias: Some("Eve".to_owned()),
+                    contested_name: format!("contest-{index}"),
+                    requested_choice: ResourceVoteChoice::Lock,
+                    current_choice: None,
+                    timing: VoteTiming::Now,
+                })
+                .collect(),
+        );
+        for (outcome, status) in operation.targets.iter_mut().zip(statuses) {
+            outcome.status = *status;
+        }
+        operation
+    }
+
+    #[test]
+    fn review_fixes_mixed_immediate_and_scheduled_success_is_successful() {
+        let mut operation = feedback_operation(&[
+            DpnsVoteTargetStatus::Confirmed,
+            DpnsVoteTargetStatus::Scheduled,
+        ]);
+        operation.targets[1].target.timing = VoteTiming::Scheduled(u64::MAX);
+        let (message, kind, persistent) = dpns_vote_feedback(&operation);
+        assert_eq!(kind, MessageType::Success);
+        assert_eq!(message, "Votes cast successfully: 1. Votes scheduled: 1.");
+        assert!(!persistent);
+    }
+
+    #[test]
+    fn vote_feedback_uses_copy_for_each_complete_outcome() {
+        let cases = [
+            (
+                vec![DpnsVoteTargetStatus::Confirmed],
+                0,
+                "Vote cast successfully.",
+                MessageType::Success,
+                false,
+            ),
+            (
+                vec![
+                    DpnsVoteTargetStatus::Confirmed,
+                    DpnsVoteTargetStatus::Confirmed,
+                ],
+                0,
+                "1 node voted on 2 names.",
+                MessageType::Success,
+                false,
+            ),
+            (
+                vec![
+                    DpnsVoteTargetStatus::Confirmed,
+                    DpnsVoteTargetStatus::Confirmed,
+                ],
+                1,
+                "1 node voted on 2 names.",
+                MessageType::Success,
+                false,
+            ),
+            (
+                vec![
+                    DpnsVoteTargetStatus::Scheduled,
+                    DpnsVoteTargetStatus::Scheduled,
+                ],
+                0,
+                "2 votes were scheduled.",
+                MessageType::Success,
+                false,
+            ),
+            (
+                vec![
+                    DpnsVoteTargetStatus::Scheduled,
+                    DpnsVoteTargetStatus::Scheduled,
+                ],
+                1,
+                "2 votes were scheduled.",
+                MessageType::Success,
+                false,
+            ),
+            (
+                vec![DpnsVoteTargetStatus::Unconfirmed],
+                0,
+                "The vote was submitted, but the result could not be confirmed yet. Dash Evo Tool will keep checking. Do not submit it again.",
+                MessageType::Warning,
+                true,
+            ),
+            (
+                vec![
+                    DpnsVoteTargetStatus::Unconfirmed,
+                    DpnsVoteTargetStatus::Unconfirmed,
+                ],
+                0,
+                "2 votes were submitted, but their results could not be confirmed yet. Dash Evo Tool will keep checking. Do not submit them again.",
+                MessageType::Warning,
+                true,
+            ),
+            (
+                vec![DpnsVoteTargetStatus::Rejected],
+                0,
+                "The vote was rejected. Review the vote and try again.",
+                MessageType::Error,
+                false,
+            ),
+            (
+                vec![DpnsVoteTargetStatus::FailedBeforeSubmission],
+                0,
+                "This vote was not submitted. Check your connection and try again.",
+                MessageType::Error,
+                false,
+            ),
+            (
+                Vec::new(),
+                1,
+                "The selected node already has the requested vote. Nothing was submitted.",
+                MessageType::Info,
+                false,
+            ),
+            (
+                Vec::new(),
+                4,
+                "Every selected node already has the requested vote. Nothing was submitted.",
+                MessageType::Info,
+                false,
+            ),
+        ];
+
+        for (statuses, no_op_count, expected_message, expected_type, expected_visibility) in cases {
+            let mut operation = feedback_operation(&statuses);
+            operation.no_op_count = no_op_count;
+
+            assert_eq!(
+                dpns_vote_feedback(&operation),
+                (
+                    expected_message.to_owned(),
+                    expected_type,
+                    expected_visibility
+                )
+            );
+        }
+    }
+
+    /// Single and batch outcomes each get a complete sentence with matching
+    /// number, never a count spliced into singular or plural copy.
+    #[test]
+    fn vote_feedback_matches_singular_and_plural_copy_to_the_count() {
+        use DpnsVoteTargetStatus as S;
+        let cases = [
+            (S::Scheduled, 1, "Vote scheduled successfully."),
+            (S::Scheduled, 3, "3 votes were scheduled."),
+            (
+                S::Rejected,
+                2,
+                "The votes were rejected. Review the votes and try again.",
+            ),
+            (
+                S::FailedBeforeSubmission,
+                2,
+                "These votes were not submitted. Check your connection and try again.",
+            ),
+            (
+                S::NotApplied,
+                2,
+                "The submitted votes were not applied. Review the votes and try again.",
+            ),
+            (
+                S::Cancelled,
+                2,
+                "The scheduled votes were cancelled. Nothing was submitted.",
+            ),
+        ];
+        for (status, count, expected) in cases {
+            let (message, _, _) = dpns_vote_feedback(&feedback_operation(&vec![status; count]));
+            assert_eq!(message, expected, "{count} × {status:?}");
+        }
+    }
+
+    #[test]
+    fn mixed_vote_feedback_reports_partial_result_and_unconfirmed_guidance() {
+        let operation = feedback_operation(&[
+            DpnsVoteTargetStatus::Confirmed,
+            DpnsVoteTargetStatus::Scheduled,
+            DpnsVoteTargetStatus::Unconfirmed,
+            DpnsVoteTargetStatus::Rejected,
+            DpnsVoteTargetStatus::FailedBeforeSubmission,
+            DpnsVoteTargetStatus::Cancelled,
+            DpnsVoteTargetStatus::NotApplied,
+        ]);
+
+        let (message, message_type, keep_visible) = dpns_vote_feedback(&operation);
+
+        assert_eq!(message_type, MessageType::Warning);
+        assert!(keep_visible);
+        assert_eq!(
+            message,
+            "Votes confirmed: 1. Votes scheduled: 1. Votes needing review: 3. Votes cancelled: 1. Votes still being checked: 1. Review failed votes before retrying. Wait for votes in progress or still being checked. Do not submit those votes again."
+        );
+    }
+
+    /// The banner must name the real cause: retrying over a good connection
+    /// cannot cast a vote on a closed contest or without a voting key.
+    #[test]
+    fn not_submitted_feedback_names_the_cause_and_a_possible_action() {
+        use crate::model::dpns_voting::DpnsVoteFailure as F;
+        let connection_single = "This vote was not submitted. Check your connection and try again.";
+        let connection_plural =
+            "These votes were not submitted. Check your connection and try again.";
+        let cases: [(&[Option<F>], &str, MessageType); 9] = [
+            (
+                &[Some(F::VotingEnded)],
+                "This vote was not submitted because voting on the name has already ended. No further action is needed.",
+                MessageType::Warning,
+            ),
+            (
+                &[Some(F::VotingEnded), Some(F::VotingEnded)],
+                "These votes were not submitted because voting on the names has already ended. No further action is needed.",
+                MessageType::Warning,
+            ),
+            (
+                &[Some(F::VotingKeyMissing)],
+                "This vote was not submitted because the node's voting key is not loaded. Load the key on the Nodes tab, then cast the vote again.",
+                MessageType::Error,
+            ),
+            (
+                &[Some(F::VotingKeyMissing), Some(F::VotingKeyMissing)],
+                "These votes were not submitted because the voting keys of the nodes are not loaded. Load the keys on the Nodes tab, then cast the votes again.",
+                MessageType::Error,
+            ),
+            (
+                &[Some(F::VotingEnded), Some(F::VotingKeyMissing)],
+                "These votes were not submitted for different reasons. Open the vote progress list to see what to do for each vote.",
+                MessageType::Error,
+            ),
+            (
+                &[Some(F::VotingEnded), Some(F::SubmissionFailed)],
+                "These votes were not submitted for different reasons. Open the vote progress list to see what to do for each vote.",
+                MessageType::Error,
+            ),
+            (
+                &[Some(F::SubmissionFailed)],
+                connection_single,
+                MessageType::Error,
+            ),
+            (
+                &[Some(F::CurrentVoteUnavailable), Some(F::SubmissionFailed)],
+                connection_plural,
+                MessageType::Error,
+            ),
+            (&[None, None], connection_plural, MessageType::Error),
+        ];
+        for (failures, expected_message, expected_type) in cases {
+            let mut operation = feedback_operation(&vec![
+                DpnsVoteTargetStatus::FailedBeforeSubmission;
+                failures.len()
+            ]);
+            for (outcome, failure) in operation.targets.iter_mut().zip(failures) {
+                outcome.failure = *failure;
+            }
+            assert_eq!(
+                dpns_vote_feedback(&operation),
+                (expected_message.to_owned(), expected_type, false),
+                "{failures:?}"
+            );
+        }
+    }
+
+    /// Counts drive which sentence is built, so no single template has to carry
+    /// a verb that is only correct for one of them.
+    /// VOTE-FR-061: confirmed plus still-checking targets read as nodes × names
+    /// and keep the banner up with the do-not-resubmit guidance.
+    #[test]
+    fn batch_feedback_counts_nodes_names_and_checking() {
+        let operation = feedback_operation(&[
+            DpnsVoteTargetStatus::Confirmed,
+            DpnsVoteTargetStatus::Confirmed,
+            DpnsVoteTargetStatus::Unconfirmed,
+        ]);
+        let (message, message_type, keep_visible) = dpns_vote_feedback(&operation);
+        assert_eq!(message_type, MessageType::Warning);
+        assert!(keep_visible);
+        assert_eq!(
+            message,
+            "Participating nodes: 1. Names with confirmed votes: 2. Votes still being checked: 1. Dash Evo Tool will keep checking. Do not submit the pending votes again."
+        );
+    }
+
+    #[test]
+    fn mixed_vote_feedback_matches_its_verbs_to_the_counts() {
+        let operation = feedback_operation(&[
+            DpnsVoteTargetStatus::Confirmed,
+            DpnsVoteTargetStatus::Confirmed,
+            DpnsVoteTargetStatus::Rejected,
+        ]);
+
+        let (message, message_type, keep_visible) = dpns_vote_feedback(&operation);
+
+        assert_eq!(message_type, MessageType::Warning);
+        assert!(!keep_visible);
+        assert_eq!(
+            message,
+            "Votes confirmed: 2. Votes needing review: 1. Review failed votes before retrying."
+        );
+    }
+
+    #[test]
+    fn vote_feedback_reports_mixed_failures_without_confirmations() {
+        let operation = feedback_operation(&[
+            DpnsVoteTargetStatus::Rejected,
+            DpnsVoteTargetStatus::NotApplied,
+        ]);
+
+        let (message, _, _) = dpns_vote_feedback(&operation);
+
+        assert_eq!(
+            message,
+            "Votes needing review: 2. Review failed votes before retrying."
+        );
+    }
+
+    #[test]
+    fn mixed_vote_feedback_omits_empty_outcomes_and_unneeded_guidance() {
+        let operation = feedback_operation(&[
+            DpnsVoteTargetStatus::Scheduled,
+            DpnsVoteTargetStatus::Submitting,
+        ]);
+
+        let (message, message_type, keep_visible) = dpns_vote_feedback(&operation);
+
+        assert_eq!(message_type, MessageType::Warning);
+        assert!(!keep_visible);
+        assert_eq!(
+            message,
+            "Votes scheduled: 1. Votes in progress: 1. Wait for votes in progress or still being checked. Do not submit those votes again."
+        );
+        assert!(!message.contains(": 0"));
+    }
 
     /// A frame owns one migration snapshot even if the task publishes mid-frame.
     #[test]
@@ -3735,10 +4417,57 @@ mod migration_banner_tests {
         assert!(migration_allows_scheduled_vote_sweep(
             &MigrationState::SucceededWithUnreadableData {
                 identities: 1,
-                votes: 1,
                 top_ups: 1,
             },
         ));
+    }
+
+    #[test]
+    fn startup_reports_old_schedules_without_queueing_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        context.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(Arc::new(
+            crate::wallet_backend::kv_test_support::InMemoryKv::default(),
+        )));
+        MessageBanner::clear_all_global(context.egui_ctx());
+        notify_legacy_scheduled_votes(&context);
+        assert!(!MessageBanner::has_global(context.egui_ctx()));
+        crate::database::test_helpers::create_legacy_scheduled_votes_table(&context.db).unwrap();
+        crate::database::test_helpers::seed_legacy_scheduled_vote_row(
+            &context.db,
+            &[1; 32],
+            "alice",
+            "Lock",
+            context.network,
+        )
+        .unwrap();
+        notify_legacy_scheduled_votes(&context);
+        assert!(MessageBanner::has_global(context.egui_ctx()));
+        assert!(context.dpns_vote_operations().unwrap().is_empty());
+    }
+
+    /// Old schedules are not listed anywhere, so the notice must not promise a
+    /// review, and it names the network the way the rest of the app does.
+    #[test]
+    fn legacy_schedule_notice_is_truthful_about_what_the_user_can_do() {
+        let notice = legacy_scheduled_votes_notice(Network::Mainnet);
+        assert_eq!(
+            notice,
+            "Votes you scheduled in an earlier version of the app on Mainnet were not carried over and will not be cast. They are not listed in this version. Open Masternodes > Votes and schedule the ones you still want."
+        );
+        assert!(!notice.contains("review"));
+    }
+
+    /// Scheduled votes are never imported or inspected by the storage update:
+    /// no migration copy may claim otherwise.
+    #[test]
+    fn migration_copy_does_not_mention_scheduled_votes() {
+        let progress = MigrationStep::ALL.map(|step| migration_running_text(step).to_owned());
+        let warnings = [(0, 0), (1, 0), (0, 2), (1, 2)]
+            .map(|(identities, top_ups)| migration_unreadable_data_text(identities, top_ups));
+        for text in progress.iter().chain(&warnings) {
+            assert!(!text.to_lowercase().contains("scheduled vote"), "{text}");
+        }
     }
 
     #[test]
@@ -3854,7 +4583,7 @@ mod migration_banner_tests {
 
     #[test]
     fn unreadable_top_up_copy_is_actionable() {
-        let text = migration_unreadable_data_text(0, 0, 2);
+        let text = migration_unreadable_data_text(0, 2);
         assert!(text.contains("balance history"));
         assert!(text.contains("before adding more funds"));
         assert!(text.ends_with('.'));
@@ -3904,7 +4633,7 @@ mod migration_banner_tests {
     fn migration_action_ids_are_distinct() {
         let ids = [
             MIGRATION_RETRY_ACTION_ID,
-            MIGRATION_VOTES_ACK_ACTION_ID,
+            MIGRATION_APP_DATA_ACK_ACTION_ID,
             MIGRATION_IDENTITIES_ACK_ACTION_ID,
             MIGRATION_UNREADABLE_ACK_ACTION_ID,
         ];
@@ -4029,6 +4758,313 @@ mod contact_request_routing_tests {
             RootScreenType::RootScreenIdentityHub,
             true
         ));
+    }
+}
+
+#[cfg(test)]
+mod dpns_result_routing_tests {
+    use super::*;
+    use crate::model::dpns_voting::{
+        DpnsScheduledVoteClearDisposition, DpnsScheduledVoteClearOutcome, DpnsScheduledVoteKey,
+        DpnsVoteOperationId,
+    };
+
+    #[test]
+    fn username_refresh_completes_under_registration_and_after_pop() {
+        use crate::ui::identity::register_dpns_name_screen::{
+            RegisterDpnsNameScreen, RegisterDpnsNameSource,
+        };
+        use crate::ui::identity::username_request_screen::UsernameRequestScreen;
+        for fail in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let app_context = crate::context::test_support::test_app_context(dir.path());
+            let mut status =
+                UsernameRequestScreen::new(&app_context, Identifier::from([1; 32]), "alice".into());
+            let AppAction::BackendTaskWithContext { context, .. } = status.begin_refresh() else {
+                panic!("expected refresh dispatch");
+            };
+            let mut stack = vec![
+                Screen::UsernameRequestScreen(status),
+                Screen::RegisterDpnsNameScreen(RegisterDpnsNameScreen::new(
+                    &app_context,
+                    RegisterDpnsNameSource::Identities,
+                )),
+            ];
+            let completed = BackendTaskSuccessResult::MyUsernameRequestsRefreshed;
+            let error = TaskError::DataContractNotFound;
+            let result = if fail { Err(&error) } else { Ok(&completed) };
+            route_username_refresh_to_hidden_screens(
+                &mut stack,
+                &BackendTaskContext::Unknown,
+                result,
+            );
+            let Screen::UsernameRequestScreen(status) = &mut stack[0] else {
+                unreachable!()
+            };
+            assert!(
+                matches!(status.begin_refresh(), AppAction::None),
+                "unrelated completions must not release the pending refresh"
+            );
+            route_username_refresh_to_hidden_screens(&mut stack, &context, result);
+            stack.pop();
+            let Screen::UsernameRequestScreen(status) = &mut stack[0] else {
+                unreachable!()
+            };
+            assert!(
+                matches!(
+                    status.begin_refresh(),
+                    AppAction::BackendTaskWithContext { .. }
+                ),
+                "refresh must be enabled after returning to the status page"
+            );
+        }
+    }
+
+    /// A vote can stay unconfirmed until its contest closes: it is re-checked
+    /// on a few sweeps, then rarely, and promptly again after vote activity.
+    #[test]
+    fn unconfirmed_votes_are_rechecked_a_few_times_then_rarely() {
+        let start = Instant::now();
+        let minute = Duration::from_secs(60);
+        let mut checks = UnconfirmedVoteChecks::default();
+        let due: Vec<bool> = (0..15u32)
+            .map(|sweep| checks.take_due(start + minute * sweep))
+            .collect();
+        let mut expected = vec![false; 15];
+        expected[..usize::from(UNCONFIRMED_VOTE_QUICK_CHECKS)].fill(true);
+        // The last quick check ran at minute 2; the next is one interval later.
+        expected[12] = true;
+        assert_eq!(due, expected);
+
+        assert!(restarts_unconfirmed_vote_checks(
+            &BackendTaskSuccessResult::DpnsVoteOperationUpdated {
+                network: Network::Testnet,
+                operation_id: DpnsVoteOperationId::from_bytes([7; 16]),
+            }
+        ));
+        assert!(restarts_unconfirmed_vote_checks(
+            &BackendTaskSuccessResult::ScheduledVotesInProgress(Vec::new())
+        ));
+        assert!(!restarts_unconfirmed_vote_checks(
+            &BackendTaskSuccessResult::ScheduledVoteSweepCompleted {
+                network: Network::Testnet,
+                preserve_eligibility_since_ms: None,
+            }
+        ));
+    }
+
+    #[test]
+    fn voting_ui_results_route_to_the_hidden_voting_panel_only_once() {
+        let result = BackendTaskSuccessResult::ScheduledVoteSweepCompleted {
+            network: Network::Testnet,
+            preserve_eligibility_since_ms: None,
+        };
+        let root = VOTING_ROOT_SCREEN;
+        assert_eq!(root, RootScreenType::RootScreenMasternodes);
+        assert!(!dpns_result_needs_hidden_route(root, root, true, &result));
+        assert!(dpns_result_needs_hidden_route(root, root, false, &result));
+        assert!(dpns_result_needs_hidden_route(
+            root,
+            RootScreenType::RootScreenIdentityHub,
+            true,
+            &result
+        ));
+        assert!(!dpns_result_needs_hidden_route(
+            root,
+            RootScreenType::RootScreenIdentityHub,
+            true,
+            &BackendTaskSuccessResult::None
+        ));
+    }
+
+    #[test]
+    fn correlated_vote_result_routes_when_masternodes_is_hidden() {
+        let result = BackendTaskSuccessResult::DpnsVoteOperationUpdated {
+            network: Network::Testnet,
+            operation_id: DpnsVoteOperationId::from_bytes([7; 16]),
+        };
+
+        assert!(dpns_result_needs_hidden_route(
+            VOTING_ROOT_SCREEN,
+            RootScreenType::RootScreenWalletsBalances,
+            true,
+            &result,
+        ));
+        assert!(dpns_result_needs_hidden_route(
+            VOTING_ROOT_SCREEN,
+            VOTING_ROOT_SCREEN,
+            false,
+            &result,
+        ));
+        assert!(!dpns_result_needs_hidden_route(
+            VOTING_ROOT_SCREEN,
+            VOTING_ROOT_SCREEN,
+            true,
+            &result,
+        ));
+    }
+
+    #[test]
+    fn refreshed_contests_route_when_masternodes_is_hidden() {
+        assert!(dpns_result_needs_hidden_route(
+            VOTING_ROOT_SCREEN,
+            RootScreenType::RootScreenWalletsBalances,
+            true,
+            &BackendTaskSuccessResult::RefreshedDpnsContests,
+        ));
+    }
+
+    #[test]
+    fn scheduled_vote_sweep_completion_routes_when_masternodes_is_hidden() {
+        let result = BackendTaskSuccessResult::ScheduledVoteSweepCompleted {
+            network: Network::Testnet,
+            preserve_eligibility_since_ms: None,
+        };
+
+        assert!(dpns_result_needs_hidden_route(
+            VOTING_ROOT_SCREEN,
+            RootScreenType::RootScreenWalletsBalances,
+            true,
+            &result,
+        ));
+        assert!(dpns_result_needs_hidden_route(
+            VOTING_ROOT_SCREEN,
+            VOTING_ROOT_SCREEN,
+            false,
+            &result,
+        ));
+        assert!(!dpns_result_needs_hidden_route(
+            VOTING_ROOT_SCREEN,
+            VOTING_ROOT_SCREEN,
+            true,
+            &result,
+        ));
+    }
+
+    #[test]
+    fn cleared_scheduled_votes_route_when_masternodes_is_hidden() {
+        assert!(dpns_result_needs_hidden_route(
+            VOTING_ROOT_SCREEN,
+            RootScreenType::RootScreenIdentityHub,
+            true,
+            &BackendTaskSuccessResult::ScheduledVotesCleared(Vec::new()),
+        ));
+    }
+
+    /// The panel itself says which results it handles, so routing follows the
+    /// handler: every such result reaches a hidden panel, and nothing else does.
+    #[test]
+    fn hidden_routing_follows_the_results_the_voting_panel_handles() {
+        let hidden = |result: &BackendTaskSuccessResult| {
+            dpns_result_needs_hidden_route(
+                VOTING_ROOT_SCREEN,
+                RootScreenType::RootScreenIdentityHub,
+                true,
+                result,
+            )
+        };
+        for handled in [
+            BackendTaskSuccessResult::DpnsVoteOperationUpdated {
+                network: Network::Testnet,
+                operation_id: DpnsVoteOperationId::from_bytes([5; 16]),
+            },
+            BackendTaskSuccessResult::ScheduledVoteSweepCompleted {
+                network: Network::Testnet,
+                preserve_eligibility_since_ms: None,
+            },
+            BackendTaskSuccessResult::ScheduledVotesInProgress(Vec::new()),
+            BackendTaskSuccessResult::ScheduledVotesCleared(Vec::new()),
+            BackendTaskSuccessResult::RefreshedDpnsContests,
+        ] {
+            assert!(DPNSScreen::handles_result(&handled));
+            assert!(hidden(&handled));
+        }
+        for unrelated in [
+            BackendTaskSuccessResult::None,
+            BackendTaskSuccessResult::Refresh,
+            BackendTaskSuccessResult::MyUsernameRequestsRefreshed,
+        ] {
+            assert!(!DPNSScreen::handles_result(&unrelated));
+            assert!(!hidden(&unrelated));
+        }
+    }
+
+    #[test]
+    fn scheduled_votes_in_progress_route_when_masternodes_is_hidden() {
+        assert!(dpns_result_needs_hidden_route(
+            VOTING_ROOT_SCREEN,
+            RootScreenType::RootScreenWalletsBalances,
+            true,
+            &BackendTaskSuccessResult::ScheduledVotesInProgress(Vec::new()),
+        ));
+    }
+
+    /// The visibility rule both `route_dpns_vote_result_to_hidden_screens` and
+    /// `route_dpns_vote_error_to_hidden_screens` route on.
+    #[test]
+    fn the_voting_panel_is_hidden_behind_another_root_screen_or_a_modal() {
+        let target = VOTING_ROOT_SCREEN;
+
+        assert!(!dpns_screen_is_hidden(target, target, true));
+        assert!(dpns_screen_is_hidden(target, target, false));
+        assert!(dpns_screen_is_hidden(
+            target,
+            RootScreenType::RootScreenWalletsBalances,
+            true
+        ));
+    }
+
+    #[test]
+    fn scheduled_vote_clear_feedback_reports_removed_and_retained_counts() {
+        let outcome = |name: &str, disposition| DpnsScheduledVoteClearOutcome {
+            operation_id: None,
+            key: DpnsScheduledVoteKey {
+                network: Network::Testnet,
+                voter_id: Identifier::from([name.len() as u8; 32]),
+                contested_name: name.to_owned(),
+            },
+            disposition,
+        };
+        let outcomes = vec![
+            outcome("removed", DpnsScheduledVoteClearDisposition::Cleared),
+            outcome(
+                "queued",
+                DpnsScheduledVoteClearDisposition::InFlight(DpnsVoteTargetStatus::Queued),
+            ),
+            outcome(
+                "submitting",
+                DpnsScheduledVoteClearDisposition::InFlight(DpnsVoteTargetStatus::Submitting),
+            ),
+        ];
+
+        assert_eq!(
+            scheduled_vote_clear_feedback(&outcomes),
+            (
+                "Scheduled votes removed: 1. Votes already in progress: 2. Wait for voting to finish before trying again.".to_owned(),
+                MessageType::Info,
+            )
+        );
+        assert_eq!(
+            scheduled_vote_clear_feedback(&outcomes[..1]),
+            (
+                "Scheduled votes removed: 1.".to_owned(),
+                MessageType::Success,
+            )
+        );
+        assert_eq!(
+            scheduled_vote_clear_feedback(&outcomes[1..]),
+            (
+                "No scheduled votes were removed. Votes already in progress: 2. Wait for voting to finish before trying again.".to_owned(),
+                MessageType::Info,
+            )
+        );
+        assert_eq!(
+            scheduled_vote_clear_feedback(&[]),
+            (
+                "No scheduled votes were removed.".to_owned(),
+                MessageType::Info
+            )
+        );
     }
 }
 

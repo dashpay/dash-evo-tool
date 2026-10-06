@@ -221,6 +221,13 @@ fn decode_value<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, KvAdapterError> 
 }
 
 impl DetKv {
+    #[cfg(test)]
+    pub(crate) fn failing_store(&self) -> Arc<super::kv_test_support::FailingKv> {
+        Arc::new(super::kv_test_support::FailingKv::from_store(
+            self.store.clone(),
+        ))
+    }
+
     /// Encode and upsert the value bound to `(scope, key)`.
     pub fn put<T: Serialize>(
         &self,

@@ -18,6 +18,7 @@ Concise catalog of all reusable UI components. Consult before creating new UI el
 | `PasswordInput` | `password_input.rs` | N/A (security) | Masked input with hold-to-reveal, zeroizes on drop; `with_read_only()` for display-only secrets. NOT ComponentResponse |
 | `AliasInput` | `alias_input.rs` | `String` | Wallet/key name field. Optional label wired as the field's accessible name, live counter of the cleaned length (`model::wallet::alias::alias_char_count`), truncation at 64 characters on a grapheme-cluster boundary, helper text. Collects raw text only — cleaning, default naming, and uniqueness are resolved by the backend on save |
 | `IdentitySelector` | `identity_selector.rs` | N/A (Widget) | ComboBox dropdown for identity selection |
+| `UtcScheduleInput` | `utc_schedule_input.rs` | `u64` (Unix ms) | Labelled ISO date field + hour/minute spinners read as UTC. Parses only — reports whether the entry is a real instant; range rules ("in the future", "before the deadline") stay with the caller. Builders: `with_label`, `with_time`. Used by the DPNS review-and-cast sheet and the scheduled-vote editor |
 
 ## Breadcrumb Components
 

@@ -83,7 +83,7 @@ Use `StyledButton` from `src/ui/components/styled.rs`. Never use bare `ui.button
 - Disabled fill: `DISABLED`
 - Hover: pointing hand cursor
 - Min click target: WCAG AA compliant
-- Usage: `StyledButton::primary("Label").show(ui)`
+- Usage: `StyledButton::new("Label").show(ui)`
 - **Styling**: Use `ComponentStyles` helpers -- `primary_button_fill()`, `primary_button_text()`, `primary_button_stroke()`, `secondary_button_fill()`, `secondary_button_text()`, `secondary_button_stroke()`, `danger_button_fill()`, `danger_button_text()`. Never style buttons ad-hoc at call sites.
 
 ## 4. Dialogs and Modals

@@ -524,7 +524,7 @@ fn render_app_global_identity_pill(
 
     let label = app_context.identity_display_label(active_qi);
     let kind: HeroIdentityKind = active_qi.identity_type.into();
-    let dpns = active_qi.dpns_names.first().map(|n| n.name.clone());
+    let dpns = app_context.main_username(active_qi);
     let id_b58 = active_qi.identity.id().to_string(Encoding::Base58);
 
     if let PillConsumption::Unwired { tooltip } = consumption {

@@ -1,5 +1,15 @@
 //! Shared identity label resolution.
 
+/// Resolve a masternode alias or its shortened hexadecimal ProTxHash.
+pub fn masternode_label(id: dash_sdk::platform::Identifier, alias: Option<&str>) -> String {
+    alias
+        .filter(|alias| !alias.trim().is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| {
+            shorten_id(&id.to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Hex))
+        })
+}
+
 /// Resolve a profile name, username, or shortened identity identifier.
 pub fn display_label(display_name: Option<&str>, username: Option<&str>, id: &str) -> String {
     [display_name, username]
@@ -33,7 +43,7 @@ pub(super) fn is_safe_display_character(character: char) -> bool {
         )
 }
 
-/// Shorten a Base58 identifier while preserving both ends.
+/// Shorten an identifier while preserving both ends.
 pub fn shorten_id(id: &str) -> String {
     let chars: Vec<char> = id.chars().collect();
     if chars.len() <= 10 {

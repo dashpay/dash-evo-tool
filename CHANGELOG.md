@@ -139,16 +139,66 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Masternodes tab**: a new "Masternodes" entry in the left nav (visible when
   Expert mode is on) for loading and managing masternode and evonode (HP
   masternode) identities by ProTxHash. Loaded nodes appear as a card list
-  showing type, voter-key readiness, key status, and DPNS-voting status;
-  opening a card shows a detail view with inline DPNS contested-name voting,
-  Withdraw / Top up / Transfer actions, key management, and — for evonodes
-  only — a link to claim token rewards. The load form accepts an optional
-  password to encrypt the entered voting/owner/payout keys immediately
-  instead of only after a separate step; leaving it blank keeps today's
-  behavior, and protection can always be added later from the key screen.
-  This replaces loading a masternode or evonode from *Identities → Load
-  Existing Identity → Show Advanced Options*, which no longer offers those
-  identity types.
+  showing type, voter-key readiness, key status, and username-voting status;
+  opening a card shows a detail view with Withdraw / Top up / Transfer
+  actions, key management, "This node's votes", a "Vote with this node"
+  button that opens Masternodes → Votes with that node selected, and — for
+  evonodes only — a link to claim token rewards.
+  The load form accepts an optional password to encrypt the entered
+  voting/owner/payout keys immediately instead of only after a separate
+  step; leaving it blank keeps today's behavior, and protection can always
+  be added later from the key screen. This replaces loading a masternode or
+  evonode from *Identities → Load Existing Identity → Show Advanced
+  Options*, which no longer offers those identity types.
+
+- **Username voting in Masternodes → Votes**: decide contests across your
+  masternodes with To decide / Voted / Scheduled / History views, remembered
+  node sets, bulk choices, and one aggregate confirmation for the batch.
+  Cards show weighted tallies and your nodes' influence. The confirmation
+  lists names, choices with full contender identities, node counts and timing
+  (scheduled times as explicit UTC timestamps). Node details show remaining
+  vote changes (four after the initial vote, or Unknown when this device has
+  no count). If a first vote becomes a change before
+  submission, another review is required. Nodes without available voting
+  information are skipped with a refresh action; missing voting keys can be
+  added from node detail without replacing other keys.
+
+  Cast now, choose a UTC time, or schedule shortly before voting ends.
+  Scheduled decisions can be edited or removed before execution; missed
+  schedules and failed attempts offer recovery actions. Mixed batches report
+  cast and scheduled results together. A progress drawer shows live results.
+  Decisions staged or changed during submission survive its completion, and
+  entering Votes picks up newly added voting nodes without changing staged
+  choices: such a node stays out of them until it is included in the confirm
+  step. Uncertain votes stay visible and blocked from resubmission; neither
+  passing the estimated deadline nor the contest closing releases them.
+  Completed history is bounded without discarding unresolved votes. Removing a
+  node cancels its unstarted scheduled votes.
+
+  A top-bar indicator and navigation badge highlight contests needing a vote,
+  with background refresh every 30 minutes on Mainnet and every 3 minutes on
+  other networks. History has a final “details” column that opens the contest
+  in Platform Explorer on Mainnet or Testnet.
+
+- **Usernames in Identities**: check availability, request a name, and follow
+  its status without opening the voting screen. Names needing a community
+  vote show the non-refundable fee before payment, and availability is
+  checked again before registration. Registration prevents duplicate payment;
+  if the app cannot confirm that a paid request went through, it says so
+  instead of reporting a failure and asks you to check the Usernames list
+  before paying again. Returning from a top-up preserves the chosen name and
+  payment review.
+  Changing the name, payer, network or fee requires a fresh review; the backend
+  rejects an unapproved community vote fee before spending funds.
+  Request status shows the timeline, tally and outcome, with alternatives
+  that need no vote. Saved requests refresh before the wider contest search;
+  after the estimated deadline they show “Awaiting result” until the network
+  confirms an outcome. Removed identities disappear immediately from username
+  views; failed record cleanup is retried after restarting.
+  Won usernames retry failed fetches and identity writes, including after
+  restarting the app.
+  Profile → Usernames lists names and requests, with a “Show as main” choice
+  for the username displayed when no profile display name is set.
 
 - **Wallet/identity indicator on more screens (rollout in progress)**: the
   wallet and identity picker previously shown only at the top of the Identity
@@ -853,6 +903,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Removed
 
+- Scheduled votes now use only the voting journal. Schedules from the previous
+  SQLite storage are no longer imported or executed automatically; a startup
+  notice asks you to schedule them again in Masternodes → Votes. The notice
+  lists no votes, returns on each launch, and stops once no contest such a
+  schedule could refer to can still be open (14 days after it first appeared
+  on Mainnet, 90 minutes on Testnet).
+  Votes scheduled with an earlier development (pre-release) build of this
+  version were saved in a storage format that is no longer read: they are not
+  carried over and raise no notice, so schedule them again in
+  Masternodes → Votes.
+
+- The standalone DPNS tool and voting controls embedded in node details. Voting now
+  lives in Masternodes → Votes and username management in Identities;
+  existing shortcuts redirect to their replacements.
+
 - Local names for User identities in profile, create, load, and owned-name screens. Existing records remain readable; node administrative names and contact nicknames remain available.
 
 - Proof log screen (internal developer tool, not part of the public feature set).
@@ -947,16 +1012,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   hidden. Switching Identity Hub tabs also keeps paid request actions disabled until their original
   task finishes.
 
-- **Your settings and scheduled votes now survive an upgrade**: upgrading from an
-  earlier version no longer starts the app with a blank configuration. The first
-  launch after the upgrade brings across your selected network, start screen,
-  theme, onboarding state, Dash-Qt path and the remaining toggles — so a testnet
-  user is no longer relaunched on Mainnet — along with your scheduled DPNS votes
-  (choice, time and already-cast state) and your identities' top-up history.
-  Scheduled votes are imported even on an install whose wallets were already
-  moved by a previous launch. If a scheduled vote cannot be read, the app says so
-  in a banner with a "Retry now" action instead of dropping it silently; the
-  original data is never deleted from the previous version's storage.
+- **Your settings and top-up history now survive an upgrade**: upgrading from an
+  earlier version restores your selected network, start screen, theme,
+  onboarding state, Dash-Qt path and the remaining toggles, together with your
+  identities' top-up history. Scheduled votes from the previous SQLite storage
+  require a new decision; a startup notice asks you to cast or schedule them again.
 
 - **Expert mode now reveals the Masternodes tab without a restart**: turning on
   Expert mode in Settings immediately shows the "Masternodes" entry in the left

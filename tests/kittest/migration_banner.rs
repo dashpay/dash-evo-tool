@@ -6,11 +6,10 @@
 //! needing a full `AppState` harness.
 
 use dash_evo_tool::app::{
-    MIGRATION_IDENTITIES_ACK_ACTION_ID, MIGRATION_RETRY_ACTION_ID,
-    MIGRATION_UNREADABLE_ACK_ACTION_ID, MIGRATION_VOTES_ACK_ACTION_ID,
+    MIGRATION_APP_DATA_ACK_ACTION_ID, MIGRATION_IDENTITIES_ACK_ACTION_ID,
+    MIGRATION_RETRY_ACTION_ID, MIGRATION_UNREADABLE_ACK_ACTION_ID,
     migration_failed_with_unreadable_identities_text, migration_running_text,
-    migration_unreadable_identities_and_votes_text, migration_unreadable_identities_text,
-    migration_unreadable_votes_text,
+    migration_unreadable_data_text, migration_unreadable_identities_text,
 };
 use dash_evo_tool::context::migration_status::MigrationStep;
 use dash_evo_tool::ui::MessageType;
@@ -150,13 +149,13 @@ fn tc_a11y_004_failure_banner_uses_icon_and_text() {
     );
 }
 
-/// QA-101 — a migration that drained the wallets but could not read some legacy
-/// scheduled votes surfaces a Warning banner naming the recovery action, and
+/// QA-101 — a migration that drained the wallets but could not read some
+/// balance top-up records surfaces a Warning banner naming what to check, and
 /// offers NO "Retry now": the drain is done and a corrupt row decodes no better
 /// on a second pass, so a retry button would be a dead end.
 #[test]
-fn unreadable_votes_banner_warns_without_a_retry_action() {
-    let text = migration_unreadable_votes_text(2);
+fn unreadable_top_ups_banner_warns_without_a_retry_action() {
+    let text = migration_unreadable_data_text(0, 2);
     assert!(
         text.ends_with('.'),
         "banner copy must be a complete sentence for i18n extraction: `{text}`",
@@ -173,7 +172,7 @@ fn unreadable_votes_banner_warns_without_a_retry_action() {
 
     assert!(
         harness.query_by_label(text.as_str()).is_some(),
-        "the warning banner must render the unreadable-votes copy verbatim",
+        "the warning banner must render the unreadable top-up copy verbatim",
     );
     assert!(
         harness.query_by_label("Retry now").is_none(),
@@ -183,17 +182,16 @@ fn unreadable_votes_banner_warns_without_a_retry_action() {
 
 /// Fix-8 — the warning carries an explicit acknowledgement, and clicking it
 /// enqueues the ack action id. The app loop drains that id and clears the
-/// durable warning record; until then the banner returns on every launch, so a
-/// vote whose deadline still matters cannot lose its only notice to a stray
-/// dismissal.
+/// durable warning record; until then the banner returns on every launch, so
+/// the notice cannot be lost to a stray dismissal.
 #[test]
-fn unreadable_votes_banner_acknowledgement_enqueues_action() {
-    let text = migration_unreadable_votes_text(2);
+fn unreadable_top_ups_banner_acknowledgement_enqueues_action() {
+    let text = migration_unreadable_data_text(0, 2);
     let mut harness = Harness::builder()
         .with_size(egui::vec2(600.0, 220.0))
         .build_ui(move |ui| {
             let handle = MessageBanner::set_global(ui.ctx(), text.clone(), MessageType::Warning);
-            handle.with_action("Got it", MIGRATION_VOTES_ACK_ACTION_ID);
+            handle.with_action("Got it", MIGRATION_APP_DATA_ACK_ACTION_ID);
             MessageBanner::show_global(ui);
         });
     harness.run();
@@ -204,7 +202,7 @@ fn unreadable_votes_banner_acknowledgement_enqueues_action() {
 
     assert_eq!(
         MessageBanner::take_action(&harness.ctx).as_deref(),
-        Some(MIGRATION_VOTES_ACK_ACTION_ID),
+        Some(MIGRATION_APP_DATA_ACK_ACTION_ID),
     );
 }
 
@@ -213,13 +211,12 @@ fn unreadable_votes_banner_acknowledgement_enqueues_action() {
 /// screen and no control, which leaves the Everyday User hunting for a flow they
 /// may never have opened — the repo's error-message rules require a concrete,
 /// self-serviceable action. The remedy lives behind "Load Identity" on the
-/// Identities screen, so all three variants name both, exactly as the vote copy
-/// names the Scheduled Votes screen.
+/// Identities screen, so all three variants name both.
 #[test]
 fn every_unreadable_identity_message_names_where_to_load_them_again() {
     for text in [
         migration_unreadable_identities_text(2),
-        migration_unreadable_identities_and_votes_text(2, 3),
+        migration_unreadable_data_text(2, 3),
         migration_failed_with_unreadable_identities_text(1),
     ] {
         assert!(
@@ -285,12 +282,10 @@ fn unreadable_identities_banner_acknowledgement_enqueues_action() {
 /// The combined banner names both problems, so its single "Got it" must enqueue
 /// the combined acknowledgement — the one that retires BOTH durable records.
 /// Routing it to either single-signal ack would leave the other half to re-raise
-/// on the next launch, as a notice the user has already read. Supersedes the
-/// pre-fix coverage that routed this banner's "Got it" to the vote-only ack —
-/// that routing no longer matches the combined-ack design this ships.
+/// on the next launch, as a notice the user has already read.
 #[test]
 fn combined_unreadable_banner_acknowledgement_enqueues_the_combined_action() {
-    let text = migration_unreadable_identities_and_votes_text(2, 3);
+    let text = migration_unreadable_data_text(2, 3);
     let label = text.clone();
     let mut harness = Harness::builder()
         .with_size(egui::vec2(600.0, 260.0))

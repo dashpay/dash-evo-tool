@@ -10,14 +10,85 @@ use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::drive::query::vote_polls_by_document_type_query::VotePollsByDocumentTypeQuery;
 use dash_sdk::platform::FetchMany;
 use dash_sdk::query_types::ContestedResource;
+use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::task::JoinHandle;
+
+/// Extra attempts one contest page query gets after a retryable failure.
+const MAX_PAGE_RETRIES: usize = 3;
+/// Pause before the first retry of a page query; each later retry waits longer.
+const PAGE_RETRY_DELAY: Duration = Duration::from_millis(500);
+
+/// Whether asking again, likely on another node, can answer a failed page query.
+fn page_query_is_retryable(error: &dash_sdk::Error) -> bool {
+    // TODO(#875): replace substring match once the SDK exposes a
+    // structural "contract not found" variant.
+    matches!(error, dash_sdk::Error::StaleNode(_))
+        || error
+            .to_string()
+            .contains("contract not found when querying from value with contract info")
+}
+
+/// Run one contest page query, retrying a retryable failure at most
+/// [`MAX_PAGE_RETRIES`] times with a growing pause in between.
+async fn fetch_page_with_retries<T, Fut>(
+    retry_delay: Duration,
+    mut fetch: impl FnMut() -> Fut,
+) -> Result<T, TaskError>
+where
+    Fut: Future<Output = Result<T, dash_sdk::Error>>,
+{
+    let mut retries: u32 = 0;
+    loop {
+        let error = match fetch().await {
+            Ok(page) => return Ok(page),
+            Err(error) => error,
+        };
+        tracing::error!("Error fetching contested resources: {}", error);
+        super::log_contested_proof_error(&error, RequestType::GetContestedResources);
+        if !page_query_is_retryable(&error) {
+            return Err(TaskError::from(error));
+        }
+        if retries as usize >= MAX_PAGE_RETRIES {
+            tracing::error!("Max retries reached for query: {}", error);
+            return Err(TaskError::from(error));
+        }
+        retries += 1;
+        tokio::time::sleep(retry_delay.saturating_mul(retries)).await;
+    }
+}
+
+/// Wait for every contest query of a pass and tell whether all of them
+/// succeeded. One that failed, or did not run to its end, left its contest
+/// data stale.
+async fn every_contest_query_succeeded(queries: Vec<JoinHandle<bool>>) -> bool {
+    let mut succeeded = true;
+    for query in queries {
+        match query.await {
+            Ok(refreshed) => succeeded &= refreshed,
+            Err(e) => {
+                tracing::error!("Task failed: {:?}", e);
+                succeeded = false;
+            }
+        }
+    }
+    succeeded
+}
 
 impl AppContext {
+    /// Refresh the contest cache, contenders, end times and every loaded node's
+    /// proved votes as one snapshot.
+    ///
+    /// `quiet` (the background timer) logs per-contest failures instead of
+    /// sending them to the UI, so an offline app does not raise a banner every
+    /// few minutes.
     pub(super) async fn query_dpns_contested_resources(
         self: &Arc<Self>,
         sdk: &Sdk,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
+        quiet: bool,
     ) -> Result<(), TaskError> {
         let data_contract = self.dpns_contract.as_ref();
         let document_type = data_contract
@@ -30,7 +101,6 @@ impl AppContext {
                 detail: "No contested index found on DPNS domain document type",
             });
         };
-        const MAX_RETRIES: usize = 3;
         let mut start_at_value = None;
         let mut names_to_be_updated = Vec::new();
         loop {
@@ -45,33 +115,10 @@ impl AppContext {
                 order_ascending: true,
             };
 
-            let mut retries = 0;
-
-            let contested_resources = match ContestedResource::fetch_many(sdk, query.clone()).await
-            {
-                Ok(contested_resources) => contested_resources,
-                Err(e) => {
-                    tracing::error!("Error fetching contested resources: {}", e);
-                    super::log_contested_proof_error(&e, RequestType::GetContestedResources);
-                    // TODO(#875): replace substring match once the SDK exposes a
-                    // structural "contract not found" variant.
-                    if matches!(e, dash_sdk::Error::StaleNode(_))
-                        || e.to_string().contains(
-                            "contract not found when querying from value with contract info",
-                        )
-                    {
-                        retries += 1;
-                        if retries > MAX_RETRIES {
-                            tracing::error!("Max retries reached for query: {}", e);
-                            return Err(TaskError::from(e));
-                        } else {
-                            continue;
-                        }
-                    } else {
-                        return Err(TaskError::from(e));
-                    }
-                }
-            };
+            let contested_resources = fetch_page_with_retries(PAGE_RETRY_DELAY, || {
+                ContestedResource::fetch_many(sdk, query.clone())
+            })
+            .await?;
             let contested_resources_len = contested_resources.0.len();
 
             if contested_resources_len == 0 {
@@ -128,7 +175,7 @@ impl AppContext {
                     Ok(permit) => permit,
                     Err(e) => {
                         tracing::error!("Semaphore closed while querying dpns end times: {}", e);
-                        return;
+                        return false;
                     }
                 };
 
@@ -143,6 +190,11 @@ impl AppContext {
                                 e
                             );
                         }
+                        true
+                    }
+                    Err(e) if quiet => {
+                        tracing::debug!(error = ?e, "Background refresh could not query contest end times");
+                        false
                     }
                     Err(e) => {
                         tracing::error!("Error querying dpns end times: {}", e);
@@ -156,6 +208,7 @@ impl AppContext {
                                 send_err
                             );
                         }
+                        false
                     }
                 }
             })
@@ -178,7 +231,7 @@ impl AppContext {
                             name,
                             e
                         );
-                        return;
+                        return false;
                     }
                 };
 
@@ -194,6 +247,11 @@ impl AppContext {
                                 e
                             );
                         }
+                        true
+                    }
+                    Err(e) if quiet => {
+                        tracing::debug!(error = ?e, %name, "Background refresh could not query contenders");
+                        false
                     }
                     Err(e) => {
                         tracing::error!("Error querying dpns vote contenders for {}: {}", name, e);
@@ -208,6 +266,7 @@ impl AppContext {
                                 send_err
                             );
                         }
+                        false
                     }
                 }
             });
@@ -215,13 +274,28 @@ impl AppContext {
             handles.push(handle);
         }
 
-        for handle in handles {
-            if let Err(e) = handle.await {
-                tracing::error!("Task failed: {:?}", e);
-            }
-        }
+        let contests_refreshed = every_contest_query_succeeded(handles).await;
 
+        // Publish contests and every loaded node's proved current votes as one
+        // completed refresh snapshot. Per-node failures are stored explicitly
+        // as unavailable instead of being mistaken for "Not voted".
+        let vote_states_refreshed = match self.refresh_dpns_vote_states(sdk).await {
+            Ok(results) => super::refresh_vote_states::every_voter_refreshed(&results),
+            Err(error) => {
+                tracing::warn!(?error, "Could not refresh DPNS current votes with contests");
+                false
+            }
+        };
+        self.refresh_masternode_list_membership().await;
+        self.forget_closed_dpns_vote_counts();
+        self.recompute_dpns_vote_attention();
         self.refresh_pending_dpns_usernames()?;
+        // A pass that left a contest stale or a node unchecked is not a
+        // completed refresh: the timer and the Votes-arrival refresh must be
+        // free to try again soon.
+        if contests_refreshed && vote_states_refreshed {
+            self.mark_dpns_contests_refreshed();
+        }
 
         sender
             .send(TaskResult::unattributed_success(
@@ -230,5 +304,77 @@ impl AppContext {
             .await
             .map_err(|_| TaskError::InternalSendError)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dash_sdk::error::StaleNodeError;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn stale_node() -> dash_sdk::Error {
+        dash_sdk::Error::StaleNode(StaleNodeError::Height {
+            expected_height: 10,
+            received_height: 1,
+            tolerance_blocks: 1,
+        })
+    }
+
+    /// A node that keeps answering as stale must end the query, not loop on it.
+    #[tokio::test]
+    async fn a_persistently_stale_node_ends_the_page_query_after_bounded_retries() {
+        let attempts = AtomicUsize::new(0);
+        let result: Result<(), _> = fetch_page_with_retries(Duration::ZERO, || async {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            Err(stale_node())
+        })
+        .await;
+
+        assert!(matches!(result, Err(TaskError::DapiStaleNode { .. })));
+        assert_eq!(attempts.load(Ordering::SeqCst), MAX_PAGE_RETRIES + 1);
+    }
+
+    #[tokio::test]
+    async fn a_page_query_recovers_when_a_retry_succeeds() {
+        let attempts = AtomicUsize::new(0);
+        let result = fetch_page_with_retries(Duration::ZERO, || async {
+            if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                Err(stale_node())
+            } else {
+                Ok(7)
+            }
+        })
+        .await;
+
+        assert!(matches!(result, Ok(7)));
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    /// A pass is complete only when every contest query ran to its end and
+    /// succeeded.
+    #[tokio::test]
+    async fn contest_queries_succeed_only_when_every_one_of_them_did() {
+        let query = |refreshed: bool| tokio::spawn(async move { refreshed });
+        assert!(every_contest_query_succeeded(vec![]).await);
+        assert!(every_contest_query_succeeded(vec![query(true), query(true)]).await);
+        assert!(!every_contest_query_succeeded(vec![query(false), query(true)]).await);
+
+        let stopped = tokio::spawn(std::future::pending::<bool>());
+        stopped.abort();
+        assert!(!every_contest_query_succeeded(vec![stopped, query(true)]).await);
+    }
+
+    #[tokio::test]
+    async fn a_failure_another_node_cannot_fix_is_not_retried() {
+        let attempts = AtomicUsize::new(0);
+        let result: Result<(), _> = fetch_page_with_retries(Duration::ZERO, || async {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            Err(dash_sdk::Error::Generic("unreachable".to_owned()))
+        })
+        .await;
+
+        assert!(result.is_err());
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
     }
 }

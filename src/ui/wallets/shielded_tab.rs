@@ -949,19 +949,17 @@ mod tests {
             derive_shielded_indicator(
                 &MigrationState::SucceededWithUnreadableData {
                     identities: 0,
-                    votes: 1,
-                    top_ups: 0,
+                    top_ups: 1,
                 },
                 false,
             ),
             ShieldedIndicator::Verified,
-            "an unreadable vote row says nothing about shielded data — the drain completed",
+            "an unreadable top-up row says nothing about shielded data — the drain completed",
         );
         assert_eq!(
             derive_shielded_indicator(
                 &MigrationState::SucceededWithUnreadableData {
                     identities: 1,
-                    votes: 0,
                     top_ups: 0,
                 },
                 false,
@@ -973,8 +971,7 @@ mod tests {
             derive_shielded_indicator(
                 &MigrationState::SucceededWithUnreadableData {
                     identities: 1,
-                    votes: 2,
-                    top_ups: 0,
+                    top_ups: 2,
                 },
                 false,
             ),

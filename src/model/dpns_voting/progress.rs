@@ -78,8 +78,18 @@ pub fn progress_counts<'a>(
     counts
 }
 
-/// Operations the drawer lists: anything still in flight, plus settled
-/// operations created since `since_ms` that the operator has not dismissed.
+/// When a target was sent: its scheduled time for a scheduled vote, otherwise
+/// when its operation was created. A vote scheduled in an earlier session
+/// therefore counts as recent once it runs in this one.
+fn sent_at(operation: &DpnsVoteOperation, outcome: &DpnsVoteOutcome) -> u64 {
+    match outcome.target.timing {
+        VoteTiming::Scheduled(at) => at.max(operation.created_at),
+        VoteTiming::Now => operation.created_at,
+    }
+}
+
+/// Operations the drawer lists: anything still in flight, plus operations
+/// with a target sent since `since_ms` that the operator has not dismissed.
 pub fn drawer_operations<'a>(
     operations: &'a [DpnsVoteOperation],
     since_ms: u64,
@@ -93,7 +103,10 @@ pub fn drawer_operations<'a>(
                 return false;
             }
             counts.in_flight()
-                || (operation.created_at >= since_ms && !dismissed.contains(&operation.id))
+                || (!dismissed.contains(&operation.id)
+                    && operation.targets.iter().any(|outcome| {
+                        progress_phase(outcome).is_some() && sent_at(operation, outcome) >= since_ms
+                    }))
         })
         .collect()
 }
@@ -114,10 +127,10 @@ impl NeedsAttention {
 
 /// Targets that need the operator: unconfirmed, failed, or schedules missed.
 ///
-/// A failure counts only while it is the latest outcome for its target, its
-/// operation was created since `since_ms` and the operator has not dismissed
-/// it in the progress drawer. Unconfirmed and missed targets still hold their
-/// lock and always count.
+/// A failure counts only while it is the latest outcome for its target, the
+/// target was sent since `since_ms` and the operator has not dismissed it in
+/// the progress drawer. Unconfirmed and missed targets still hold their lock
+/// and always count.
 pub fn needs_attention(
     operations: &[DpnsVoteOperation],
     since_ms: u64,
@@ -134,7 +147,7 @@ pub fn needs_attention(
             {
                 attention.missed_schedules += 1;
             }
-            _ if operation.created_at >= since_ms
+            _ if sent_at(operation, outcome) >= since_ms
                 && !dismissed.contains(&operation.id)
                 && progress_phase(outcome) == Some(ProgressPhase::Failed) =>
             {
@@ -285,6 +298,53 @@ mod tests {
         );
         let dismissed = BTreeSet::from([failed.id]);
         assert_eq!(needs_attention(&[failed], 0, &dismissed, 300).failed, 0);
+    }
+
+    /// A scheduled vote is created long before it runs, usually in an earlier
+    /// session. Its rejection must still reach the operator when it runs now.
+    #[test]
+    fn a_vote_scheduled_in_an_earlier_session_is_surfaced_when_it_fails_now() {
+        let session_start = 1_000;
+        let due_this_session = VoteTiming::Scheduled(session_start + 500);
+        let due_before_session = VoteTiming::Scheduled(session_start - 500);
+        let rejected_now = operation(10, &[(S::Rejected, due_this_session)]);
+        let ended_now = operation(
+            11,
+            &[
+                (S::FailedBeforeSubmission, due_this_session),
+                (S::Scheduled, VoteTiming::Scheduled(session_start + 900_000)),
+            ],
+        );
+        let stale = operation(12, &[(S::Rejected, due_before_session)]);
+        let mut operations = vec![rejected_now.clone(), ended_now.clone(), stale];
+        // Distinct nodes, so no outcome supersedes another.
+        for (node, outcome) in operations
+            .iter_mut()
+            .flat_map(|operation| &mut operation.targets)
+            .enumerate()
+        {
+            outcome.target.key.voter_id = Identifier::from([node as u8 + 10; 32]);
+        }
+        let none = BTreeSet::new();
+
+        let now = session_start + 1_000;
+        assert_eq!(
+            needs_attention(&operations, session_start, &none, now),
+            NeedsAttention {
+                checking: 0,
+                failed: 2,
+                missed_schedules: 0,
+            }
+        );
+        let shown: Vec<_> = drawer_operations(&operations, session_start, &none)
+            .into_iter()
+            .map(|operation| operation.id)
+            .collect();
+        assert_eq!(shown, vec![rejected_now.id, ended_now.id]);
+
+        let dismissed = BTreeSet::from([rejected_now.id, ended_now.id]);
+        assert!(needs_attention(&operations, session_start, &dismissed, now).is_empty());
+        assert!(drawer_operations(&operations, session_start, &dismissed).is_empty());
     }
 
     #[test]

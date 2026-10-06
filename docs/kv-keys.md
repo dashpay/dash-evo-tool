@@ -138,10 +138,12 @@ The journal is the sole store of immediate and scheduled DPNS votes. Every key i
 | `det:dpns_vote_operation_locks:v2:<network>` | `None` | `det-<net>.sqlite` | `BTreeMap<DpnsVoteTargetKey, DpnsVoteOperationId>` | Which operation currently owns each target; rebuilt from the operation records when missing or dirty |
 | `det:dpns_vote_operation_locks_dirty:v2:<network>` | `None` | `det-<net>.sqlite` | `bool` | Set while the lock index is being rewritten, so an interrupted rewrite forces a rebuild |
 | `det:dpns_vote_relative_labels:v1:<network>:<operation_id>` | `None` | `det-<net>.sqlite` | `BTreeMap<DpnsVoteTargetKey, (u64, u64)>` | Display-only record of the relative schedule preset chosen per target; shares the operation's retention |
+| `det:dpns_vote_recovery_times:v1:<network>:<operation_id>` | `None` | `det-<net>.sqlite` | `BTreeMap<DpnsVoteTargetKey, u64>` | Unix time in milliseconds when restart recovery picked up each immediate target of the operation. Written only by restart recovery; shares the operation's retention |
 | `det:dpns_vote_schedule_dismissals:v1:<network>:<operation_id>` | `None` | `det-<net>.sqlite` | `BTreeSet<DpnsVoteTargetKey>` | Scheduled targets the user dismissed from the Scheduled view |
 | `det:dpns_vote_immediate_history:v1:<network>` | `None` | `det-<net>.sqlite` | `Vec<DpnsVoteOperationId>` | Completion order of finished immediate operations, used to bound history |
 | `det:dpns_vote_scheduled_history:v1:<network>` | `None` | `det-<net>.sqlite` | `Vec<DpnsVoteOperationId>` | Completion order of finished scheduled operations, used to bound history |
 | `det:dpns_vote_counts:v1:<network>:<voter_id_base58>:<vote_poll_id_base58>` | `None` | `det-<net>.sqlite` | `u8` | Votes this device saw Platform apply for one node on one contest, used for "changes left". Kept outside the operation records so history pruning does not lose it; dropped only when the contest is proven closed |
+| `det:dpns_vote_counted:v1:<network>:<voter_id_base58>:<vote_poll_id_base58>` | `None` | `det-<net>.sqlite` | `[u8;16]` | Id of the operation whose confirmed vote was last added to the matching `det:dpns_vote_counts:v1:` count, so a repeated confirmation is not counted twice. Dropped together with the count |
 
 Loading the journal fails closed: one unreadable operation record fails every operation that reads the journal. Identity removal is the exception. It deletes the identity's keys regardless and leaves the vote cancellation to the retained `det:vault_cleanup_pending:v1:` manifest, which startup recovery retries.
 

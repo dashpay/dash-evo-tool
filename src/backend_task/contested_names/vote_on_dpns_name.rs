@@ -18,7 +18,9 @@ use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoic
 use dash_sdk::dpp::voting::vote_polls::contested_document_resource_vote_poll::ContestedDocumentResourceVotePoll;
 use dash_sdk::dpp::voting::votes::Vote;
 use dash_sdk::dpp::voting::votes::resource_vote::ResourceVote;
+use dash_sdk::dpp::voting::votes::resource_vote::accessors::v0::ResourceVoteGettersV0;
 use dash_sdk::dpp::voting::votes::resource_vote::v0::ResourceVoteV0;
+use dash_sdk::drive::query::contested_resource_votes_given_by_identity_query::ContestedResourceVotesGivenByIdentityQuery;
 use dash_sdk::drive::query::vote_polls_by_document_type_query::VotePollsByDocumentTypeQuery;
 use dash_sdk::platform::FetchMany;
 use dash_sdk::platform::Identifier;
@@ -97,6 +99,51 @@ fn classify_broadcast_journal_result(
             TaskError::DpnsVoteBroadcastPhaseNotMarked,
         )),
         Err(error) => Err(DpnsVoteAttempt::FailedBeforeSubmission(error)),
+    }
+}
+
+/// Read one node's proved current vote on one contest.
+pub(super) async fn proved_dpns_vote_choice(
+    key: &DpnsVoteTargetKey,
+    sdk: &Sdk,
+) -> Result<Option<ResourceVoteChoice>, dash_sdk::Error> {
+    let query = ContestedResourceVotesGivenByIdentityQuery {
+        identity_id: key.voter_id,
+        offset: None,
+        limit: Some(1),
+        start_at: Some((key.vote_poll_id.to_buffer(), true)),
+        order_ascending: true,
+    };
+    let votes = ResourceVote::fetch_many(sdk, query).await?;
+    Ok(votes
+        .get(&key.vote_poll_id)
+        .and_then(Option::as_ref)
+        .map(ResourceVoteGettersV0::resource_vote_choice))
+}
+
+/// Settle a rejection that `broadcast` reported.
+///
+/// `broadcast` retries internally and reports only its last attempt, so the
+/// rejection can follow an earlier attempt that Platform applied (a repeated
+/// transition is refused once the first one is in a block). A proved current
+/// vote equal to the requested choice shows the vote went in. Anything else,
+/// including a failed read, leaves the rejection standing: the next vote on
+/// the target starts from a fresh proved read anyway.
+fn settle_broadcast_rejection(
+    rejection: TaskError,
+    requested: ResourceVoteChoice,
+    proved_current: Result<Option<ResourceVoteChoice>, dash_sdk::Error>,
+) -> DpnsVoteAttempt {
+    match proved_current {
+        Ok(Some(current)) if current == requested => DpnsVoteAttempt::Confirmed,
+        Ok(_) => DpnsVoteAttempt::Rejected(rejection),
+        Err(read_error) => {
+            tracing::debug!(
+                ?read_error,
+                "Could not read the current vote after a rejected DPNS vote broadcast"
+            );
+            DpnsVoteAttempt::Rejected(rejection)
+        }
     }
 }
 
@@ -205,7 +252,14 @@ impl AppContext {
         )
         .await
         {
-            return Ok(attempt);
+            return Ok(match attempt {
+                DpnsVoteAttempt::Rejected(rejection) => settle_broadcast_rejection(
+                    rejection,
+                    vote_choice,
+                    proved_dpns_vote_choice(key, sdk).await,
+                ),
+                attempt => attempt,
+            });
         }
 
         match Vote::wait_for_response(sdk, state_transition, Some(settings)).await {
@@ -266,6 +320,29 @@ mod tests {
         ));
 
         assert!(matches!(attempt, DpnsVoteAttempt::Rejected(_)));
+    }
+
+    /// A rejection reported by a retried broadcast does not prove the vote
+    /// was not applied by an earlier attempt; the proved current vote does.
+    #[test]
+    fn a_rejected_broadcast_is_confirmed_when_platform_shows_the_requested_vote() {
+        let lock = ResourceVoteChoice::Lock;
+        let rejection = || TaskError::DpnsVoteTargetBusy;
+
+        assert!(matches!(
+            settle_broadcast_rejection(rejection(), lock, Ok(Some(lock))),
+            DpnsVoteAttempt::Confirmed
+        ));
+        for proved_current in [
+            Ok(None),
+            Ok(Some(ResourceVoteChoice::Abstain)),
+            Err(dash_sdk::Error::Generic("unreachable".to_owned())),
+        ] {
+            assert!(matches!(
+                settle_broadcast_rejection(rejection(), lock, proved_current),
+                DpnsVoteAttempt::Rejected(TaskError::DpnsVoteTargetBusy)
+            ));
+        }
     }
 
     #[test]

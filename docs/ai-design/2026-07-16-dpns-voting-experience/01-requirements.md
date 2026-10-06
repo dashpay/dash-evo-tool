@@ -259,7 +259,11 @@ Validation floor: 24 nodes on one voting key, 6 open contests, 2 ending today.
 ### Confirmation and recovery
 
 - **VOTE-FR-040** — Structured Platform consensus causes are treated as
-  confirmed rejection.
+  confirmed rejection. A rejection reported by the broadcast step is checked
+  once against the proved current vote first, because that step retries and
+  reports only its last attempt: when Platform already shows the requested
+  choice, the target is `Confirmed`. Any other read, or a failed read, keeps
+  the rejection.
 - **VOTE-FR-041** — A cause-less post-broadcast wait failure is treated as
   `Unconfirmed`, never as rejection.
 - **VOTE-FR-042** — Unconfirmed targets are reconciled against the proved

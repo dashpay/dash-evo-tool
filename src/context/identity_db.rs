@@ -63,7 +63,8 @@ const VAULT_CLEANUP_PENDING_PREFIX: &str = "det:vault_cleanup_pending:v1:";
 /// this record needs to start existing.
 const IDENTITY_UNLOADED_PREFIX: &str = "det:identity_unloaded:v1:";
 
-/// Whether every owner-scoped DashPay and token-list sidecar was removed.
+/// Whether all secondary local data of a removed identity was cleared: its
+/// DashPay and token-list sidecars, username records and pending votes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum IdentitySidecarCleanup {
     Complete,
@@ -1496,12 +1497,21 @@ impl AppContext {
             .dpns_vote_operation_guard
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        super::dpns_vote_operations::cancel_removed_identity_votes(&kv, self.network, *identifier)?;
+        // A journal that cannot be read must not keep keys on the device. No
+        // vote runs from an unreadable journal, and a re-import cancels before
+        // it relists, so the cancellation is deferred: the retained manifest
+        // makes startup recovery retry it.
+        let vote_cancellation = super::dpns_vote_operations::cancel_removed_identity_votes(
+            &kv,
+            self.network,
+            *identifier,
+        );
         index_remove_identity(&kv, &id)?;
         self.invalidate_identity_load(*identifier);
         purge_identity_scope(&kv, &id)?;
         self.save_identity_profile_name(*identifier, None);
-        let sidecar_cleanup = self.finish_identity_removal_cleanup(&kv, &id, vault_keys)?;
+        let sidecar_cleanup =
+            self.finish_identity_removal_cleanup(&kv, &id, vault_keys, vote_cancellation)?;
         // Mirror removal into the upstream unowned scope; wallet-owned identities are unaffected.
         if let Ok(backend) = self.wallet_backend()
             && let Err(error) = backend.remove_unowned_identity(identifier)
@@ -1520,6 +1530,7 @@ impl AppContext {
         kv: &DetKv,
         id: &[u8; 32],
         vault_keys: impl IntoIterator<Item = (PrivateKeyTarget, KeyID)>,
+        vote_cancellation: std::result::Result<(), TaskError>,
     ) -> std::result::Result<IdentitySidecarCleanup, TaskError> {
         let identifier = Identifier::from(*id);
         let username_cleanup = self.forget_identity_usernames(kv, &identifier);
@@ -1541,6 +1552,11 @@ impl AppContext {
         if let Err(error) = username_cleanup {
             tracing::warn!(identity_id = %identifier, ?error,
                 "Removed identity's username records could not be cleared; cleanup will retry");
+            sidecar_cleanup = IdentitySidecarCleanup::Incomplete;
+        }
+        if let Err(error) = vote_cancellation {
+            tracing::warn!(identity_id = %identifier, ?error,
+                "Removed identity's pending votes could not be cancelled; cleanup will retry");
             sidecar_cleanup = IdentitySidecarCleanup::Incomplete;
         }
         if !sidecar_cleanup.is_incomplete() {
@@ -1694,13 +1710,14 @@ impl AppContext {
                 .dpns_vote_operation_guard
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Err(error) = super::dpns_vote_operations::cancel_removed_identity_votes(
+            // As in the removal itself: an unreadable journal defers only the
+            // vote cancellation, never the key deletion below.
+            let vote_cancellation = super::dpns_vote_operations::cancel_removed_identity_votes(
                 &kv,
                 self.network,
                 Identifier::from(id),
-            )
-            .and_then(|()| purge_identity_scope(&kv, &id))
-            {
+            );
+            if let Err(error) = purge_identity_scope(&kv, &id) {
                 tracing::warn!(
                     identity = %Identifier::from(id),
                     %error,
@@ -1711,7 +1728,7 @@ impl AppContext {
             let vault_keys = placements
                 .into_iter()
                 .map(|(target, key_id)| (target.into(), key_id));
-            match self.finish_identity_removal_cleanup(&kv, &id, vault_keys) {
+            match self.finish_identity_removal_cleanup(&kv, &id, vault_keys, vote_cancellation) {
                 Ok(IdentitySidecarCleanup::Complete) => resumed += 1,
                 Ok(IdentitySidecarCleanup::Incomplete) => {}
                 Err(error) => tracing::warn!(
@@ -5331,6 +5348,72 @@ mod tests {
             kv.list(DetScope::Global, Some("det:username_requests:"))
                 .unwrap()
                 .is_empty()
+        );
+        assert!(
+            kv.list(DetScope::Global, Some(VAULT_CLEANUP_PENDING_PREFIX))
+                .unwrap()
+                .is_empty()
+        );
+        staged.ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
+    /// An unreadable voting journal must not keep an identity's keys on the
+    /// device. Removal still delists the identity and deletes its keys; the
+    /// retained manifest makes startup recovery cancel its votes once the
+    /// journal can be read again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn identity_removal_deletes_keys_when_the_vote_journal_is_unreadable() {
+        let staged = stage_identity_with_vaulted_keys([0x33; 32], [0x44; 32]).await;
+        let kv = staged.ctx.det_kv().unwrap();
+        let failing = kv.failing_store();
+        staged
+            .ctx
+            .set_det_kv_override_for_test(DetKv::from_store(failing.clone()));
+        let mut scheduled =
+            scheduled_operation(staged.id, 7, "unreadable", DpnsVoteTargetStatus::Scheduled);
+        staged
+            .ctx
+            .insert_dpns_vote_operation(&mut scheduled, None)
+            .unwrap();
+
+        failing.fail_next_gets_containing("det:dpns_vote_operation:v2:", 1);
+        let cleanup = staged
+            .ctx
+            .delete_local_qualified_identity_with_outcome(&staged.id)
+            .expect("an unreadable vote journal must not block identity removal");
+
+        assert!(
+            cleanup.is_incomplete(),
+            "the vote cancellation is still owed"
+        );
+        assert!(!staged.ctx.is_identity_listed(&staged.id).unwrap());
+        let view = IdentityKeyView::new(&staged.store, staged.id.to_buffer());
+        for key in [1, 2] {
+            assert!(
+                view.get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, key)
+                    .unwrap()
+                    .is_none(),
+                "key {key} must be deleted even though the journal could not be read"
+            );
+        }
+        assert!(
+            !kv.list(DetScope::Global, Some(VAULT_CLEANUP_PENDING_PREFIX))
+                .unwrap()
+                .is_empty(),
+            "the manifest is kept so recovery retries the cancellation"
+        );
+
+        // The journal reads again at the next start.
+        staged.ctx.resume_pending_vault_cleanups();
+        assert_eq!(
+            staged
+                .ctx
+                .dpns_vote_operation(scheduled.id)
+                .unwrap()
+                .unwrap()
+                .targets[0]
+                .status,
+            DpnsVoteTargetStatus::Cancelled
         );
         assert!(
             kv.list(DetScope::Global, Some(VAULT_CLEANUP_PENDING_PREFIX))

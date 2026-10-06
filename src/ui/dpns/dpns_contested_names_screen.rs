@@ -250,12 +250,6 @@ impl ReviewPlan {
         self.aggregate.node_count()
     }
 
-    fn has_immediate(&self) -> bool {
-        self.targets()
-            .iter()
-            .any(|target| matches!(target.timing, VoteTiming::Now))
-    }
-
     fn has_scheduled(&self) -> bool {
         self.targets()
             .iter()
@@ -352,17 +346,6 @@ pub enum VoteSubmissionError {
     NoTargets,
     #[error("Every selected node already has the requested vote. Nothing will be submitted.")]
     AllNoOps,
-    /// A dispatched submission came back as a failure.
-    ///
-    /// Fieldless on purpose: `display_task_error` only borrows the `TaskError`,
-    /// and the alternative — stashing its rendered sentence — is the very thing
-    /// a typed error exists to avoid. The specific failure still reaches the
-    /// user in full, through the global banner AppState raises for every failed
-    /// task with the technical chain in its details.
-    #[error(
-        "The votes could not be submitted. Check your connection and voting key, then review and submit them again."
-    )]
-    TaskFailed,
 }
 
 fn platform_explorer_contest_url(network: Network, normalized_label: &str) -> Option<String> {
@@ -403,10 +386,13 @@ pub struct SelectedVote {
     pub end_time: Option<u64>,
 }
 
+/// What the open confirm step has to show about its last submit click.
+///
+/// A dispatched submission closes the confirm step, so being in flight is
+/// `pending_vote_operation`, not a state of this window.
 pub enum VoteHandlingStatus {
     NotStarted,
-    CastingVotes,
-    SchedulingVotes,
+    /// The click produced nothing to send; the window stays open on the reason.
     Failed(VoteSubmissionError),
 }
 
@@ -2087,21 +2073,9 @@ impl DPNSScreen {
             .default_open(false)
             .show(ui, |ui| self.render_adjust_nodes(ui, plan.as_ref().ok()));
 
-        let operation_in_progress = matches!(
-            self.bulk_vote_handling_status,
-            VoteHandlingStatus::CastingVotes | VoteHandlingStatus::SchedulingVotes
-        );
-        if operation_in_progress {
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.label("Submitting votes…");
-            });
-        }
         let transactions = plan.as_ref().map_or(0, ReviewPlan::effective_count);
         let all_now = plan.as_ref().is_ok_and(|plan| !plan.has_scheduled());
-        let submit_disabled_reason = if operation_in_progress {
-            "The selected votes are already being submitted."
-        } else if plan.is_err() {
+        let submit_disabled_reason = if plan.is_err() {
             "These votes cannot be submitted yet. Fix the problem shown above and try again."
         } else {
             "Nothing can be submitted. Choose at least one node and a vote it has not already cast."
@@ -2121,26 +2095,18 @@ impl DPNSScreen {
                 )
             })
         });
-        let can_submit = !operation_in_progress && transactions > 0 && !repeated_enter;
+        let can_submit = transactions > 0 && !repeated_enter;
         let (mut submit_clicked, mut cancel_clicked) = ui
             .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let submit_clicked = ComponentStyles::add_primary_button_enabled(
                     ui,
                     can_submit,
-                    if operation_in_progress {
-                        "Submitting votes…".to_owned()
-                    } else {
-                        confirm_button_label(transactions, all_now)
-                    },
+                    confirm_button_label(transactions, all_now),
                 )
                 .disabled_tooltip(submit_disabled_reason)
                 .clicked();
                 let cancel_clicked = ui
-                    .add_enabled(
-                        !operation_in_progress,
-                        ComponentStyles::secondary_button("Cancel", dark_mode),
-                    )
-                    .disabled_tooltip("Submitted votes cannot be cancelled.")
+                    .add(ComponentStyles::secondary_button("Cancel", dark_mode))
                     .clicked();
                 (submit_clicked, cancel_clicked)
             })
@@ -2151,19 +2117,14 @@ impl DPNSScreen {
                 if can_submit && input.consume_key(egui::Modifiers::NONE, egui::Key::Enter) {
                     submit_clicked = true;
                 }
-                if !operation_in_progress
-                    && input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
-                {
+                if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
                     cancel_clicked = true;
                 }
             });
         }
         if submit_clicked {
             action = self.bulk_apply_votes();
-            if matches!(
-                self.bulk_vote_handling_status,
-                VoteHandlingStatus::CastingVotes | VoteHandlingStatus::SchedulingVotes
-            ) {
+            if matches!(action, AppAction::BackendTask(_)) {
                 // The confirm step closes at once; the drawer tracks progress
                 // and the staged decisions clear when the operation reports.
                 self.show_bulk_schedule_popup = false;
@@ -2420,7 +2381,6 @@ impl DPNSScreen {
                 return AppAction::None;
             }
         };
-        let has_immediate = plan.has_immediate();
         if plan.aggregate.targets.is_empty() {
             let all_no_ops = !plan.aggregate.skipped.is_empty()
                 && plan
@@ -2449,11 +2409,7 @@ impl DPNSScreen {
                     .collect(),
             });
         self.submission_error_banner.take_and_clear();
-        self.bulk_vote_handling_status = if has_immediate {
-            VoteHandlingStatus::CastingVotes
-        } else {
-            VoteHandlingStatus::SchedulingVotes
-        };
+        self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
         self.retry_voter = None;
         self.pending_vote_operation = Some(operation.id);
         self.submitted_votes = self
@@ -2570,23 +2526,14 @@ impl ScreenLike for DPNSScreen {
             self.submitted_votes.clear();
             self.submitted_cards.clear();
             self.release_pending_on_error = false;
-            // The review window disables both Submit and Cancel while a
-            // submission is in flight, so a failed submission must leave that
-            // state here. Otherwise the window stays on "Submitting votes…"
-            // with no way to retry or close it.
+            // The confirm step closed when the submission was dispatched and
+            // AppState banners the error; the decisions stay staged, so the
+            // operator can confirm them again.
             if matches!(error, TaskError::DpnsVoteReviewRequired) {
                 // A first vote became a change during preflight: reopen the
                 // confirm on fresh vote state so it shows the change warning.
                 self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
                 self.show_bulk_schedule_popup = !self.selected_votes.is_empty();
-            } else if matches!(
-                self.bulk_vote_handling_status,
-                VoteHandlingStatus::CastingVotes | VoteHandlingStatus::SchedulingVotes
-            ) {
-                // AppState banners the borrowed `TaskError` itself, so the
-                // window only has to leave its in-flight state.
-                self.bulk_vote_handling_status =
-                    VoteHandlingStatus::Failed(VoteSubmissionError::TaskFailed);
             }
         }
         if let Err(refresh_error) = self.vote_operations.refresh(&self.app_context) {
@@ -3365,54 +3312,51 @@ mod tests {
         ));
     }
 
-    /// A failed submission must release the review window's in-flight state.
-    /// While it is held, the window disables Submit *and* Cancel and offers no
-    /// close control, so a stuck status leaves the user with no way out.
+    /// A failed submission must release the pending submission and keep the
+    /// staged decisions, so the operator can confirm them again from the tray.
     #[test]
-    fn failed_submission_releases_the_review_window() {
-        let (ctx, _temp_dir) = offline_ctx();
-        let mut screen = DPNSScreen::new(&ctx, VotesView::ToDecide);
-        let operation_id = DpnsVoteOperationId::from_bytes([11; 16]);
-        let context = BackendTaskContext::DpnsVoteOperation {
-            network: ctx.network(),
-            operation_id,
-        };
+    fn failed_submission_frees_the_staged_decisions_for_another_confirm() {
+        let (mut screen, _dir) = voting_ui_review_fixture();
+        let staged = screen.selected_votes.clone();
+        assert!(matches!(
+            screen.bulk_apply_votes(),
+            AppAction::BackendTask(_)
+        ));
+        let operation_id = screen.pending_vote_operation.unwrap();
+        screen.show_bulk_schedule_popup = false;
         let error = TaskError::DpnsCurrentVoteUnavailable;
 
-        for in_progress in [
-            VoteHandlingStatus::CastingVotes,
-            VoteHandlingStatus::SchedulingVotes,
-        ] {
-            screen.show_bulk_schedule_popup = true;
-            screen.bulk_vote_handling_status = in_progress;
-            screen.pending_vote_operation = Some(operation_id);
+        screen.display_backend_task_error(
+            &BackendTaskContext::DpnsVoteOperation {
+                network: screen.app_context.network(),
+                operation_id,
+            },
+            &error,
+        );
+        screen.display_task_error(&error);
 
-            screen.display_backend_task_error(&context, &error);
-            screen.display_task_error(&error);
-
-            assert_eq!(screen.pending_vote_operation, None);
-            let VoteHandlingStatus::Failed(failure) = &screen.bulk_vote_handling_status else {
-                panic!(
-                    "the review window must leave its in-flight state so Submit and Cancel work again"
-                );
-            };
-            assert!(matches!(failure, VoteSubmissionError::TaskFailed));
-            assert!(
-                failure.to_string().contains("review and submit them again"),
-                "the window must name a recovery step the operator can take"
-            );
-        }
+        assert_eq!(screen.pending_vote_operation, None);
+        assert_eq!(screen.selected_votes, staged);
+        assert!(!staged.is_empty());
+        assert!(!screen.show_bulk_schedule_popup);
+        screen.open_review_for_node_set();
+        assert!(
+            screen.show_bulk_schedule_popup,
+            "the confirm step must open again once the failed submission is released"
+        );
+        assert!(matches!(
+            screen.bulk_vote_handling_status,
+            VoteHandlingStatus::NotStarted
+        ));
     }
 
-    /// An error belonging to a different operation must not disturb the review
-    /// window of the submission this screen is still waiting on.
+    /// An error belonging to a different operation must not release the
+    /// submission this screen is still waiting on.
     #[test]
     fn unrelated_error_keeps_the_pending_submission_in_progress() {
         let (ctx, _temp_dir) = offline_ctx();
         let mut screen = DPNSScreen::new(&ctx, VotesView::ToDecide);
         let error = TaskError::DpnsCurrentVoteUnavailable;
-        screen.show_bulk_schedule_popup = true;
-        screen.bulk_vote_handling_status = VoteHandlingStatus::CastingVotes;
         screen.pending_vote_operation = Some(DpnsVoteOperationId::from_bytes([11; 16]));
 
         screen.display_backend_task_error(
@@ -3428,10 +3372,6 @@ mod tests {
             screen.pending_vote_operation,
             Some(DpnsVoteOperationId::from_bytes([11; 16]))
         );
-        assert!(matches!(
-            screen.bulk_vote_handling_status,
-            VoteHandlingStatus::CastingVotes
-        ));
     }
 
     /// VOTE-TC-013: a masternode loaded without its voting key must not reach the
@@ -3784,10 +3724,6 @@ mod tests {
         screen.show_bulk_schedule_popup = false;
         screen.open_review_for_node_set();
         assert!(!screen.show_bulk_schedule_popup);
-        assert!(matches!(
-            screen.bulk_vote_handling_status,
-            VoteHandlingStatus::CastingVotes
-        ));
         assert!(matches!(screen.bulk_apply_votes(), AppAction::None));
         assert_eq!(screen.pending_vote_operation, operation_id);
     }
@@ -4172,7 +4108,6 @@ mod tests {
             .insert(key.clone(), dispatch.clone());
         let bulk_id = DpnsVoteOperationId::from_bytes([13; 16]);
         screen.pending_vote_operation = Some(bulk_id);
-        screen.bulk_vote_handling_status = VoteHandlingStatus::CastingVotes;
         screen.display_backend_task_error(&dispatch, &error);
         screen.display_task_error(&error);
         assert!(screen.pending_scheduled_actions.is_empty());
@@ -4180,10 +4115,6 @@ mod tests {
             .pending_scheduled_actions
             .insert(key, dispatch.clone());
         assert_eq!(screen.pending_vote_operation, Some(bulk_id));
-        assert!(matches!(
-            screen.bulk_vote_handling_status,
-            VoteHandlingStatus::CastingVotes
-        ));
         screen.reset_for_network_switch();
         assert!(screen.pending_scheduled_actions.is_empty());
         assert!(!screen.finish_scheduled_dispatch(&dispatch));
@@ -4837,7 +4768,6 @@ mod tests {
             "two nodes across two contests, two already as requested"
         );
         assert_eq!(plan.node_count(), 2);
-        assert!(plan.has_immediate());
         assert!(plan.has_scheduled());
         let retained = plan
             .targets()

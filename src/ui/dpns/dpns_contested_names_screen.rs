@@ -2064,7 +2064,9 @@ impl DPNSScreen {
                     ui.label(row);
                 }
                 ui.add_space(6.0);
-                ui.label(confirm_transactions_line(plan.transaction_count()));
+                if let Some(line) = confirm_transactions_line(plan.transaction_count()) {
+                    ui.label(line);
+                }
                 if plan.recheck_count() > 0 {
                     ui.label(confirm_recheck_line(plan.recheck_count()));
                 }
@@ -5032,7 +5034,6 @@ mod tests {
             });
         harness.run();
         for label in [
-            "0 transactions, one per node and name. Voting is free for your nodes.",
             "1 vote is already shown as cast. Dash Evo Tool checks it again first and sends nothing if the node still holds this choice.",
             "Check 1 vote",
         ] {
@@ -5041,6 +5042,10 @@ mod tests {
                 "Missing confirm detail: {label}"
             );
         }
+        assert!(
+            harness.query_by_label_contains("transaction").is_none(),
+            "a batch that sends nothing must not show a transaction sentence"
+        );
         for label in ["Cast 1 vote", "Cast 0 votes"] {
             assert!(
                 harness.query_by_label(label).is_none(),

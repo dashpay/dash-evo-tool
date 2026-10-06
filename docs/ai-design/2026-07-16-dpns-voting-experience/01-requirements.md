@@ -208,7 +208,8 @@ Validation floor: 24 nodes on one voting key, 6 open contests, 2 ending today.
   - title `Cast {d} decisions with {n} nodes`;
   - a decision list (name, choice, nodes, deadline);
   - `{t} transactions, one per node and name. Voting is free for your nodes.`;
-    `{t}` leaves out votes that are only checked again (VOTE-FR-074);
+    `{t}` leaves out votes that are only checked again (VOTE-FR-074), and the
+    line is not shown when `{t}` is 0;
   - when there are such votes: `{r} votes are already shown as cast. Dash Evo
     Tool checks them again first and sends nothing for nodes that still hold
     their choice.`;
@@ -228,7 +229,8 @@ Validation floor: 24 nodes on one voting key, 6 open contests, 2 ending today.
   transactions, one per node and name` with `Clear` and `Cast`. Votes that are
   only checked again (VOTE-FR-074) are left out of `{t}` and shown beside it as
   `{r} votes already shown as cast will be checked again`; `Cast` stays
-  available for them.
+  available for them. When `{t}` is 0 the tray reads `{d} decisions ready`
+  without the transaction half.
 
 ### Operation lifecycle
 

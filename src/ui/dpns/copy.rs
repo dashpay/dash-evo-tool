@@ -263,9 +263,12 @@ pub fn sending_with_label(count: usize) -> String {
     }
 }
 
-/// Tray summary (VOTE-FR-086).
+/// Tray summary (VOTE-FR-086). With no transaction to send it names the
+/// staged decisions alone.
 pub fn tray_label(decisions: usize, transactions: usize) -> String {
     match (decisions, transactions) {
+        (1, 0) => "1 decision ready".to_owned(),
+        (decisions, 0) => format!("{decisions} decisions ready"),
         (1, 1) => "1 decision ready · 1 transaction, one per node and name".to_owned(),
         (1, transactions) => {
             format!("1 decision ready · {transactions} transactions, one per node and name")
@@ -415,13 +418,16 @@ pub fn confirm_title(decisions: usize, nodes: usize) -> String {
     }
 }
 
-/// Confirm transaction line (VOTE-FR-080).
-pub fn confirm_transactions_line(transactions: usize) -> String {
+/// Confirm transaction line (VOTE-FR-080); none when nothing is sent.
+pub fn confirm_transactions_line(transactions: usize) -> Option<String> {
     match transactions {
-        1 => "1 transaction, one per node and name. Voting is free for your nodes.".to_owned(),
-        count => {
-            format!("{count} transactions, one per node and name. Voting is free for your nodes.")
+        0 => None,
+        1 => {
+            Some("1 transaction, one per node and name. Voting is free for your nodes.".to_owned())
         }
+        count => Some(format!(
+            "{count} transactions, one per node and name. Voting is free for your nodes."
+        )),
     }
 }
 
@@ -892,6 +898,8 @@ mod tests {
             tray_label(1, 3),
             "1 decision ready · 3 transactions, one per node and name"
         );
+        assert_eq!(tray_label(1, 0), "1 decision ready");
+        assert_eq!(tray_label(2, 0), "2 decisions ready");
         assert_eq!(
             node_set_chip_label("All my nodes", 24, 51),
             "Vote with: All my nodes · 24 nodes · 51 votes"
@@ -944,8 +952,13 @@ mod tests {
     fn confirm_copy_follows_the_spec() {
         assert_eq!(confirm_title(3, 24), "Cast 3 decisions with 24 nodes");
         assert_eq!(
-            confirm_transactions_line(72),
-            "72 transactions, one per node and name. Voting is free for your nodes."
+            confirm_transactions_line(72).as_deref(),
+            Some("72 transactions, one per node and name. Voting is free for your nodes.")
+        );
+        assert_eq!(
+            confirm_transactions_line(0),
+            None,
+            "a batch that sends nothing has no transaction sentence"
         );
         assert_eq!(
             confirm_change_warning(4),

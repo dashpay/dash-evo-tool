@@ -35,9 +35,9 @@ use crate::model::dpns_voting::operator::{
 };
 use crate::model::dpns_voting::progress::needs_attention;
 use crate::model::dpns_voting::{
-    DpnsCurrentVoteState, DpnsScheduledVoteKey, DpnsVoteFailure, DpnsVoteOperationId,
-    DpnsVoteOutcome, DpnsVoteTarget, DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming,
-    dpns_schedule_is_overdue,
+    DpnsCurrentVoteState, DpnsScheduledVoteKey, DpnsVoteFailure, DpnsVoteOperation,
+    DpnsVoteOperationId, DpnsVoteOutcome, DpnsVoteTarget, DpnsVoteTargetKey, DpnsVoteTargetStatus,
+    VoteTiming, dpns_schedule_is_overdue,
 };
 use crate::model::qualified_identity::IdentityType;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -2067,7 +2067,7 @@ impl DPNSScreen {
                         .add(egui::DragValue::new(&mut minutes).range(1..=7 * 24 * 60))
                         .changed()
                     {
-                        self.relative_preset = std::time::Duration::from_secs(minutes * 60);
+                        self.set_relative_preset(std::time::Duration::from_secs(minutes * 60));
                     }
                     ui.label(before_end_phrase(self.relative_preset));
                 });
@@ -2151,6 +2151,41 @@ impl DPNSScreen {
             ui.colored_label(DashColors::error_color(dark_mode), error.to_string());
         }
         action
+    }
+
+    /// Change the "before the end" lead time. Nodes set to it under `Adjust
+    /// nodes` follow, so the header and every node use one lead time.
+    fn set_relative_preset(&mut self, preset: std::time::Duration) {
+        self.relative_preset = preset;
+        for timing in self.node_overrides.values_mut() {
+            if let NodeTiming::Override(BatchTiming::BeforeEnd(lead)) = timing {
+                *lead = preset;
+            }
+        }
+    }
+
+    /// Targets of `operation` placed "before the end" and the lead time they
+    /// used: nodes following a `When voting is about to end` batch and nodes
+    /// set to it under `Adjust nodes`.
+    fn relative_schedule_labels_for(
+        &self,
+        operation: &DpnsVoteOperation,
+    ) -> Option<RelativeScheduleLabels> {
+        let targets: BTreeSet<DpnsVoteTargetKey> = operation
+            .targets
+            .iter()
+            .map(|outcome| &outcome.target.key)
+            .filter(|key| match self.node_overrides.get(&key.voter_id) {
+                Some(NodeTiming::Override(timing)) => matches!(timing, BatchTiming::BeforeEnd(_)),
+                Some(NodeTiming::DontUse) => false,
+                Some(NodeTiming::Batch) | None => self.confirm_timing == ConfirmTiming::BeforeEnd,
+            })
+            .cloned()
+            .collect();
+        (!targets.is_empty()).then(|| RelativeScheduleLabels {
+            preset: self.relative_preset,
+            targets,
+        })
     }
 
     /// `Adjust nodes`: per-node timing and the full node × name list.
@@ -2410,17 +2445,7 @@ impl DPNSScreen {
         }
         let voters = self.casting_voters(&plan);
         let operation = AppContext::new_dpns_vote_operation(plan.aggregate.targets);
-        let labels =
-            (self.confirm_timing == ConfirmTiming::BeforeEnd).then(|| RelativeScheduleLabels {
-                preset: self.relative_preset,
-                targets: operation
-                    .targets
-                    .iter()
-                    .map(|outcome| &outcome.target.key)
-                    .filter(|key| !self.node_overrides.contains_key(&key.voter_id))
-                    .cloned()
-                    .collect(),
-            });
+        let labels = self.relative_schedule_labels_for(&operation);
         self.submission_error_banner.take_and_clear();
         self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
         self.submitted_retry = self.retry.take();
@@ -4824,6 +4849,55 @@ mod tests {
         assert_eq!(
             screen.scheduled_votes.lock_recover()[0].status,
             DpnsVoteTargetStatus::Confirmed
+        );
+    }
+
+    /// A node set to "when voting is about to end" must use the lead time the
+    /// confirm step shows, and be labelled with it, after the lead time changes.
+    #[test]
+    fn a_node_set_to_before_the_end_follows_a_changed_lead_time() {
+        let (mut screen, _dir) = voting_ui_review_fixture();
+        let voter = screen.voting_identities[0].identity.id();
+        let now = Utc::now();
+        let end = now.timestamp_millis() as u64 + 24 * 3_600_000;
+        screen.selected_votes[0].end_time = Some(end);
+        screen.confirm_timing = ConfirmTiming::Now;
+        screen.node_overrides.insert(
+            voter,
+            NodeTiming::Override(BatchTiming::BeforeEnd(screen.relative_preset)),
+        );
+
+        let lead = std::time::Duration::from_secs(90 * 60);
+        assert_ne!(screen.relative_preset, lead);
+        screen.set_relative_preset(lead);
+
+        assert_eq!(
+            screen.node_overrides.get(&voter),
+            Some(&NodeTiming::Override(BatchTiming::BeforeEnd(lead)))
+        );
+        let plan = screen.build_review_plan_at(now).unwrap();
+        assert_eq!(
+            plan.aggregate.targets[0].timing,
+            VoteTiming::Scheduled(end - 90 * 60_000)
+        );
+        let operation = AppContext::new_dpns_vote_operation(plan.aggregate.targets);
+        let labels = screen
+            .relative_schedule_labels_for(&operation)
+            .expect("the node placed before the end is labelled relative to the end");
+        assert_eq!(labels.preset, lead);
+        assert_eq!(
+            labels.targets,
+            BTreeSet::from([operation.targets[0].target.key.clone()])
+        );
+
+        screen
+            .node_overrides
+            .insert(voter, NodeTiming::Override(BatchTiming::Now));
+        screen.confirm_timing = ConfirmTiming::BeforeEnd;
+        assert_eq!(
+            screen.relative_schedule_labels_for(&operation),
+            None,
+            "a node told to vote now is not labelled relative to the end"
         );
     }
 

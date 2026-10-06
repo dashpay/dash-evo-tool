@@ -1002,6 +1002,7 @@ mod tests {
             UsernameAvailability::JoinClosed,
             UsernameAvailability::Taken,
             UsernameAvailability::Locked,
+            UsernameAvailability::AlreadyRequested,
         ] {
             assert!(!blocked.allows_registration(), "{blocked:?}");
         }

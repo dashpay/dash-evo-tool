@@ -804,19 +804,20 @@ As a user, I want to remove an identity from this device from the identity's own
 As a user, I want to register a username for one of my identities so that others can send me Dash using a name instead of an address.
 
 - Started from the identity (Profile ▸ Usernames ▸ Get another username, Home checklist, or header). No identity picker; the signing key is chosen automatically, and Power users can change it under Advanced.
-- Availability is checked live before paying: available · needs a community vote · others already asked (joinable until a shown time) · taken · locked for good · request window closed · can't check. Only the first three allow continuing. Contested and locked names are never reported as available.
+- Availability is checked live before paying: available · needs a community vote · others already asked (joinable until a shown time) · taken · locked for good · request window closed · already requested by this identity · can't check. Only the first three allow continuing. Contested and locked names are never reported as available.
 - Names that need a vote show a consent step: other people can ask during the join window (7 days on Mainnet, 45 minutes on Testnet), the vote lasts 14 days (90 minutes on Testnet) even without a rival, the community vote fee (read from the network: 0.2 DASH before protocol 14, 0.1 DASH from 14) is never returned, and a lock vote means no one gets the name.
 - The confirm step shows the registration fee, the community vote fee, the total, and the identity balance it is paid from. A low balance offers Top up and returns with the name kept. Availability is re-checked on Pay.
 - Changing the name, identity, network or fees invalidates the payment review and vote consent. The backend rejects an unapproved community vote fee before spending funds.
 - While registration runs, a full-window blocking progress overlay prevents a duplicate submission.
 - Completion distinguishes a username registered for immediate use from a request submitted for a community vote.
+- If the app cannot confirm whether a paid request went through, it says so, asks me not to pay again until I have checked the Usernames list, and does not put the Pay step back with the same review.
 
 ### DPN-002: View my usernames [Implemented]
 **Persona:** Alex, Priya
 
 As a user, I want to see each identity's usernames and their state so that I know which names I have and which are still being decided.
 
-- Profile ▸ Usernames lists the main name, other active names, every pending request (also when the identity already owns a name), and outcomes from the last 30 days (went to someone else, locked for good).
+- Profile ▸ Usernames lists the main name, other active names, every pending request (also when the identity already owns a name), and outcomes from the last 30 days (went to someone else, locked for good, no one got it).
 - Saved requests refresh before the wider contest search. After the estimated deadline, Home, the identity badge, and the status page show “Awaiting result” until the network confirms an outcome; elapsed time alone never awards or rejects a name.
 - Refreshing preserves concurrent requests, main-name choices, and seen outcomes. A failed storage read keeps the last complete snapshot available for later updates.
 - Won usernames keep retrying failed fetches and local writes after a restart until the identity records the owned name.
@@ -902,7 +903,7 @@ As a masternode operator, I want to be told when an upgrade cannot carry over my
 
 As a user who has requested a username that is not yet awarded, I want to see that the request is pending so that I am not told to pick a username I have already chosen.
 
-- The header subtitle reads `@name · Waiting for vote` when the identity has no active name. The Home card and Profile row show every pending request.
+- When the identity has no active name, the header subtitle shows `@name` with the request's status: `Open for other requests` while others can still join, `Waiting for vote` after that, `Awaiting result` once the estimated end has passed. The Home card and Profile row show every pending request.
 - The onboarding checklist counts a submitted request as completing "Pick a username" while stating that Dash masternodes are voting.
 - The status refreshes on its own: on hub arrival when older than 5 minutes, and every 15 minutes (2 minutes on Testnet) while a request is pending. It doesn't depend on visiting a voting screen.
 
@@ -924,8 +925,8 @@ As a user waiting for a community vote, I want to see how my request is doing an
 
 - The Request status page shows a timeline (requested, open for other requests until, voting until, result), a weighted tally (me, other requests, lock, abstain) with Leading/Tied, and the last update time.
 - Plain rules: if I'm leading at the end the name becomes mine; ties go to the most recent request; more lock votes than any request means no one can ever register the name; the fee is never returned.
-- Outcomes (won, went to someone else, locked) are announced once with a banner and stay in Profile for 30 days.
-- Power users whose nodes can vote on the contest get a link to Masternodes ▸ Votes for that name.
+- Outcomes (won, went to someone else, locked, ended without a winner) are announced once with a banner and stay in Profile for 30 days.
+- Power users with a loaded node that can vote get a link to Masternodes ▸ Votes for that name.
 
 ### DPN-013: Know from anywhere that a vote is needed [Implemented]
 **Persona:** Priya

@@ -26,8 +26,11 @@ Stream V test cases live in `../2026-07-16-dpns-voting-experience/03-test-case-s
 | USR-TC-014 | Taken | Awarded domain exists | `Taken` | FR-031 | B |
 | USR-TC-015 | Locked | Vote state winner = Locked; `is_dpns_name_available` returns true | `Locked` (SDK helper not trusted) | FR-031 | B |
 | USR-TC-016 | Multiple requests | Identity owns `@a`, contender in `b`, `c` | `RefreshMyUsernameRequests` returns 2 requests for it | FR-020 | B |
-| USR-TC-017 | Outcomes | Finished contests: won, lost, locked | Phases Won / Lost / Locked with dates | FR-020 | B |
-| USR-TC-018 | Re-check on pay | Check said NeedsVote; at pay time Locked | Registration not dispatched; U4 shows locked row | FR-037 | B+K |
+| USR-TC-017 | Outcomes | Finished contests: won, lost, locked, no winner | Phases Won / Lost / Locked / NoWinner with dates | FR-020 | B |
+| USR-TC-018 | Re-check on pay | Check said NeedsVote; at pay time Taken, Locked, JoinClosed or AlreadyRequested | Nothing is broadcast; U4 shows the matching row | FR-037 | B+K |
+| USR-TC-041 | Already requested | Running vote lists the asking identity | `AlreadyRequested`; Continue disabled | FR-031, FR-032 | U+B |
+| USR-TC-042 | Awaiting result | Saved pending request, estimated end passed, no confirmed outcome | Phase `AwaitingOutcome`; never Won/Lost by the clock alone | FR-020 | U |
+| USR-TC-043 | Unconfirmed request | Name request fails without a refusal; request not readable / readable | `UsernameRegistrationUnconfirmed`, Pay step not restored / registration continues as success | FR-038 | B+K |
 
 ## UI (kittest)
 
@@ -38,7 +41,7 @@ Stream V test cases live in `../2026-07-16-dpns-voting-experience/03-test-case-s
 | USR-TC-022 | No stubs | Any identity | Open Profile | No `Aliases`, `Make primary`, `Remove`, `Add an alias`, `View all usernames` | FR-006 |
 | USR-TC-023 | Empty state | No names | Open Profile | Empty copy + `Get a username` enabled | FR-005 |
 | USR-TC-024 | View-only | Identity without auth key | Open Profile | Button disabled with tooltip; `Add a key` link | FR-005 |
-| USR-TC-025 | Header pending | No active name, 1 request | Open hub | Subtitle `@{name} · Waiting for vote` | FR-010 |
+| USR-TC-025 | Header pending | No active name, 1 request | Open hub | Subtitle `@{name}` with the request's status: `Open for other requests` in the join window, `Waiting for vote` after it | FR-010 |
 | USR-TC-026 | Home card copy | Leading / no rival / trailing | Open Home | Matching second sentence | FR-011 |
 | USR-TC-027 | Banner once | Request becomes Won | Open hub twice | Success banner first time only | FR-012 |
 | USR-TC-028 | Refresh cadence | Last refresh 2 min ago | Arrive at hub | No refresh dispatched; at 6 min, dispatched | FR-021 |

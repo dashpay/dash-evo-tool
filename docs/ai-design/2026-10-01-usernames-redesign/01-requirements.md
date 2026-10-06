@@ -31,9 +31,10 @@ Scope: identity-side usernames. Voting is Stream V in
   this order:
   - main name, then other active names;
   - pending requests: `Open for other requests` during the join window,
-    `Waiting for vote` after it;
+    `Waiting for vote` after it, and `Awaiting result` once the estimated end
+    has passed but the network has not confirmed an outcome;
   - finished outcomes from the last 30 days: `Went to someone else`,
-    `Locked for good`.
+    `Locked for good`, `No one got it`.
   - **AC:**
     - Given an identity owning `@a` with a pending request `@b`, both rows
       render.
@@ -57,8 +58,9 @@ Scope: identity-side usernames. Voting is Stream V in
   offer delete (PF §2). Transfer/sale is deferred; reserve no visible control.
 
 ### Header, Home, banners — U2
-- **USR-FR-010** — Header subtitle: the main name, or `@{name} · Waiting for vote`
-  when the identity has no active name.
+- **USR-FR-010** — Header subtitle: the main name, or, when the identity has no
+  active name, `@{name}` with the request's current status (`Open for other
+  requests`, `Waiting for vote` or `Awaiting result`).
 - **USR-FR-011** — Home card for each pending request: `@{name} is waiting for a
   community vote. It ends around {date}.` plus one of `You're leading right
   now.` / `No one else has asked so far.` / `Another request is leading.`
@@ -70,18 +72,28 @@ Scope: identity-side usernames. Voting is Stream V in
     username.` [Choose another username]
   - locked: Info `No one can register @{name} anymore. The community vote locked
     it.`
+  - no winner: Info `The vote for @{name} ended without a winner. You can choose
+    a different username.` [Choose another username]
 - **USR-FR-013** — Onboarding checklist and hero card keep DPN-010 behaviour
   (pending counts as done), sourced from USR-FR-020.
 
 ### Own-request status — U3
 - **USR-FR-020** — New backend op `RefreshMyUsernameRequests` (all loaded
   identities):
-  - uses `get_non_resolved_dpns_contests_for_identity` + `get_contested_dpns_vote_state`;
-  - returns per identity a `Vec<UsernameRequest { name, phase (Joinable|Voting|Won|Lost|Locked),
-    join_end, end, tally (you, others[], lock, abstain), last_updated }>`;
+  - first re-reads each saved pending request with
+    `get_contested_dpns_vote_state`, then discovers further requests with
+    `get_contested_non_resolved_usernames`, keeping the contests the identity
+    is a contender in;
+  - returns per identity a `Vec<UsernameRequest { label, normalized_label,
+    phase (Joinable|Voting|AwaitingOutcome|Won|Lost|Locked|NoWinner),
+    requested_at, join_end, end, decided_at, tally (you, others[], lock,
+    abstain), last_updated }>`;
+  - `AwaitingOutcome` is a local reading of the clock only: the estimated end
+    has passed and no outcome is confirmed. Elapsed time never awards or
+    rejects a name;
   - persists it and replaces the single-`Option` pending API.
   - **AC:** an identity owning a name still reports its pending requests. A
-    finished contest yields Won/Lost/Locked.
+    finished contest yields Won/Lost/Locked/NoWinner.
 - **USR-FR-021** — Refresh cadence: on hub arrival when the last refresh is
   > 5 min old; while ≥ 1 request is pending, every 15 min (testnet/devnet:
   2 min); and on the `Refresh status` button. It is triggered from the hub
@@ -92,7 +104,8 @@ Scope: identity-side usernames. Voting is Stream V in
     Community vote until {end} · Result;
   - a read-only weighted tally (You · Other request ({short_id}) · Lock, so no
     one gets it · Abstain) with the words `Leading` / `Tied`, and the note
-    `Evonodes count as 4 votes. Last updated {time}.`;
+    `Evonodes count as 4 votes. Votes can change until the vote ends. Last
+    updated {time}.`;
   - `What happens next` with exactly these rules (PF §3):
     - lone/leading request wins at the end;
     - a tie goes to the most recent request;
@@ -109,7 +122,9 @@ Scope: identity-side usernames. Voting is Stream V in
   keeps the 2026-09-22 create flow.
 - **USR-FR-031** — New backend op `CheckUsernameAvailability(label)` → typed
   `Available | NeedsVote | Joinable { contenders, join_end } | JoinClosed |
-  Taken | Locked`. It combines the awarded-domain lookup with
+  Taken | Locked | AlreadyRequested` (the asking identity is already in the
+  running vote; Platform rejects a second request). It combines the
+  awarded-domain lookup with
   `get_contested_dpns_vote_state` and never relies on `is_dpns_name_available`
   alone (PF §5a). The UI debounces 400 ms. Network failure → `CantCheck` UI
   state (retry).
@@ -124,6 +139,8 @@ Scope: identity-side usernames. Voting is Stream V in
   - `@{name} is already taken. Try another name.`
   - `@{name} can't be registered. A community vote locked this name for good.`
   - `Others can no longer join the vote for @{name}. Try another name.`
+  - `You already asked for @{name}. Its status is on your identity's Usernames
+    list.`
   - `Availability can't be checked right now. Check your internet connection and
     try again.` [Try again]
   - Continue is enabled only for Available / NeedsVote / Joinable.
@@ -160,7 +177,8 @@ Scope: identity-side usernames. Voting is Stream V in
     to continue.` [Top up], which returns here with the name kept.
   - Not synced: Pay disabled, tooltip `Available after sync finishes.`
 - **USR-FR-037** — On Pay, re-run the availability check. If it changed to
-  Taken/Locked/JoinClosed, return to U4 with that row; nothing is spent.
+  Taken/Locked/JoinClosed/AlreadyRequested, return to U4 with that row; nothing
+  is spent.
 - **USR-FR-038** — Progress: blocking overlay `Registering @{name}.` `Keep Dash
   Evo Tool open until this finishes.` Results:
   - registered: `You're @{name}`;
@@ -168,7 +186,15 @@ Scope: identity-side usernames. Voting is Stream V in
     votes to lock it, @{name} becomes yours then.` [View request status]
     [Go to my identity];
   - failure: errors per AGENTS.md (no jargon, an action, details via
-    `with_details`).
+    `with_details`);
+  - unconfirmed: when the name request was sent but neither a refusal nor the
+    request itself can be read back from the network, the fee may already be
+    spent. The app first re-reads the vote (or the owned names) and continues
+    as a success if the request is there. Otherwise it reports `The app could
+    not confirm whether your request for this username went through. Do not
+    pay again yet. Wait a few minutes, then check the Usernames list on your
+    identity. If the name is not there, try again.` and returns to U4 with a
+    fresh availability check, never to the Pay step.
 
 ### Model/shared (Stream U owns; Stream V consumes durations)
 - **USR-FR-040** — `model/dpns.rs`: `is_contested_label(label)` delegating to

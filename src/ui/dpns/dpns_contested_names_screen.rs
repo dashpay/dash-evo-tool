@@ -48,10 +48,10 @@ use crate::ui::dpns::contest_card::node_label;
 use crate::ui::dpns::contest_card::{CardEvent, CardView};
 use crate::ui::dpns::copy::needs_attention_line;
 use crate::ui::dpns::copy::{
-    JOURNAL_UNAVAILABLE_MESSAGE, LOCKED_FOR_GOOD, before_end_phrase, changes_left_label,
-    confirm_button_label, confirm_change_warning, confirm_title, confirm_transactions_line,
-    decision_row, ends_in_label, relative_schedule_label, scheduled_nodes_label, skipped_header,
-    skipped_reason_line, went_to_label,
+    JOURNAL_UNAVAILABLE_MESSAGE, LOCKED_FOR_GOOD, NAME_FILTER_LOOKALIKES_HINT, NOT_VOTED_YET,
+    before_end_phrase, changes_left_label, confirm_button_label, confirm_change_warning,
+    confirm_title, confirm_transactions_line, decision_row, ends_in_label, relative_schedule_label,
+    scheduled_nodes_label, skipped_header, skipped_reason_line, went_to_label,
 };
 use crate::ui::dpns::copy::{
     confirm_recheck_line, review_choice_line, review_recheck_line, tray_label, tray_recheck_label,
@@ -323,7 +323,7 @@ fn review_current_choice_label(
 ) -> String {
     match current {
         Some(choice) => vote_choice_label(choice, candidate_name),
-        None => "Not voted yet".to_owned(),
+        None => NOT_VOTED_YET.to_owned(),
     }
 }
 
@@ -1036,9 +1036,7 @@ impl DPNSScreen {
                             .hint_text("Filter by name")
                             .desired_width(180.0),
                     )
-                    .on_hover_text(
-                        "The letters i and l match the digit 1, and the letter o matches 0.",
-                    );
+                    .on_hover_text(NAME_FILTER_LOOKALIKES_HINT);
                 if filter.has_focus() {
                     self.list_focused = false;
                 }
@@ -1468,9 +1466,7 @@ impl DPNSScreen {
             let dark_mode = ui.style().visuals.dark_mode;
             ui.label(RichText::new("Filter by name:").color(DashColors::text_primary(dark_mode)));
             ui.text_edit_singleline(&mut self.past_filter_term)
-                .on_hover_text(
-                    "The letters i and l match the digit 1, and the letter o matches 0.",
-                );
+                .on_hover_text(NAME_FILTER_LOOKALIKES_HINT);
         });
 
         let contested_names = {

@@ -1,6 +1,7 @@
 //! Editing a schedule keeps its original target and submits an optimistic update.
 
 use super::*;
+use crate::model::dpns_voting::DpnsScheduledVoteEdit;
 use crate::ui::components::modal_chrome::{ModalChromeConfig, modal_chrome};
 
 pub(super) struct ScheduledVoteEditor {
@@ -71,14 +72,16 @@ impl ScheduledVoteEditor {
         {
             return None;
         }
-        Some(ContestedResourceTask::EditScheduledDpnsVote {
-            operation_id: self.original.journal_target.0,
-            key: self.key.clone(),
-            expected_choice: self.original.vote.choice,
-            expected_timestamp: self.original.vote.unix_timestamp,
-            choice: self.choice,
-            unix_timestamp: timestamp,
-        })
+        Some(ContestedResourceTask::EditScheduledDpnsVote(
+            DpnsScheduledVoteEdit {
+                operation_id: self.original.journal_target.0,
+                key: self.key.clone(),
+                expected_choice: self.original.vote.choice,
+                expected_timestamp: self.original.vote.unix_timestamp,
+                choice: self.choice,
+                unix_timestamp: timestamp,
+            },
+        ))
     }
 
     pub(super) fn show(&mut self, ctx: &egui::Context) -> EditOutcome {
@@ -180,14 +183,14 @@ mod tests {
         )
         .unwrap();
         editor.choice = ResourceVoteChoice::Abstain;
-        let ContestedResourceTask::EditScheduledDpnsVote {
+        let ContestedResourceTask::EditScheduledDpnsVote(DpnsScheduledVoteEdit {
             operation_id,
             key: edited_key,
             expected_choice,
             expected_timestamp,
             choice,
             unix_timestamp,
-        } = editor.task(1).unwrap()
+        }) = editor.task(1).unwrap()
         else {
             panic!("expected edit");
         };
@@ -208,8 +211,10 @@ mod tests {
                 .expect("valid test instant")
                 .and_utc(),
         );
-        let ContestedResourceTask::EditScheduledDpnsVote { unix_timestamp, .. } =
-            editor.task(1).unwrap()
+        let ContestedResourceTask::EditScheduledDpnsVote(DpnsScheduledVoteEdit {
+            unix_timestamp,
+            ..
+        }) = editor.task(1).unwrap()
         else {
             panic!("expected edit");
         };

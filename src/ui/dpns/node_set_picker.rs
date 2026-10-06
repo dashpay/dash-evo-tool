@@ -5,7 +5,7 @@ use crate::model::dpns_voting::operator::{
     node_exclusion,
 };
 use crate::ui::dpns::contest_card::node_label;
-use crate::ui::dpns::copy::node_set_chip_label;
+use crate::ui::dpns::copy::{NOT_IN_MASTERNODE_LIST, node_set_chip_label};
 use eframe::egui::{self, RichText, Ui};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -23,9 +23,7 @@ pub fn node_set_name(set: &NodeSet) -> &'static str {
 pub fn node_row_note(node: &VotingNode) -> Option<&'static str> {
     match node_exclusion(node) {
         Some(NodeExclusion::NoVotingKey) => Some("No voting key is loaded for this node."),
-        Some(NodeExclusion::NotInMasternodeList) => {
-            Some("Not in the masternode list. Its votes don't count.")
-        }
+        Some(NodeExclusion::NotInMasternodeList) => Some(NOT_IN_MASTERNODE_LIST),
         None if node.membership == ListMembership::Unknown => {
             Some("Masternode list membership unknown.")
         }

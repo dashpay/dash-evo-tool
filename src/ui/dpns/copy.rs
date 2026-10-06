@@ -12,6 +12,16 @@ use crate::model::dpns_voting::{
 use crate::ui::MessageType;
 use std::collections::BTreeSet;
 
+/// A node with no vote on a contest.
+pub const NOT_VOTED_YET: &str = "Not voted yet";
+
+/// A node outside the current masternode list (VOTE-FR-079).
+pub const NOT_IN_MASTERNODE_LIST: &str = "Not in the masternode list. Its votes don't count.";
+
+/// Tooltip of a name filter: which look-alike characters it treats as equal.
+pub const NAME_FILTER_LOOKALIKES_HINT: &str =
+    "The letters i and l match the digit 1, and the letter o matches 0.";
+
 /// Recovery guidance while saved voting progress is unreadable.
 pub const JOURNAL_UNAVAILABLE_MESSAGE: &str = "Saved voting progress could not be read. The displayed history may be incomplete or out of date. Do not submit votes again until you have retried loading and checked their status.";
 

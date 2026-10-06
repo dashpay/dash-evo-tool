@@ -410,10 +410,11 @@ impl BackendTaskContext {
                 network,
                 operation: Box::new(Self::from(task)),
             },
-            BackendTask::ContestedResourceTask(ContestedResourceTask::EditScheduledDpnsVote {
-                key,
-                ..
-            }) => Self::DpnsScheduledVoteEdit { key: key.clone() },
+            BackendTask::ContestedResourceTask(ContestedResourceTask::EditScheduledDpnsVote(
+                edit,
+            )) => Self::DpnsScheduledVoteEdit {
+                key: edit.key.clone(),
+            },
             BackendTask::ContestedResourceTask(ContestedResourceTask::CastScheduledVote(
                 vote,
                 _,

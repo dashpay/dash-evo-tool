@@ -180,24 +180,29 @@ pub enum VoteTiming {
     Scheduled(TimestampMillis),
 }
 
-pub(crate) fn unavailable_preflight_outcome(
+/// Where a target lands when nothing was broadcast for it: a scheduled vote
+/// stays scheduled for another attempt, an immediate one has failed.
+fn not_broadcast_outcome(
     timing: VoteTiming,
+    failure: DpnsVoteFailure,
 ) -> (DpnsVoteTargetStatus, Option<DpnsVoteFailure>) {
     let status = match timing {
         VoteTiming::Scheduled(_) => DpnsVoteTargetStatus::Scheduled,
         VoteTiming::Now => DpnsVoteTargetStatus::FailedBeforeSubmission,
     };
-    (status, Some(DpnsVoteFailure::CurrentVoteUnavailable))
+    (status, Some(failure))
+}
+
+pub(crate) fn unavailable_preflight_outcome(
+    timing: VoteTiming,
+) -> (DpnsVoteTargetStatus, Option<DpnsVoteFailure>) {
+    not_broadcast_outcome(timing, DpnsVoteFailure::CurrentVoteUnavailable)
 }
 
 pub(crate) fn failed_before_broadcast_outcome(
     timing: VoteTiming,
 ) -> (DpnsVoteTargetStatus, Option<DpnsVoteFailure>) {
-    let status = match timing {
-        VoteTiming::Scheduled(_) => DpnsVoteTargetStatus::Scheduled,
-        VoteTiming::Now => DpnsVoteTargetStatus::FailedBeforeSubmission,
-    };
-    (status, Some(DpnsVoteFailure::SubmissionFailed))
+    not_broadcast_outcome(timing, DpnsVoteFailure::SubmissionFailed)
 }
 
 /// One reviewed node × contest action.

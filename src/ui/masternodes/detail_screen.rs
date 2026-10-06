@@ -32,7 +32,9 @@ use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::legacy_recovery_section::host_offer;
 use crate::ui::components::password_input::PasswordInput;
-use crate::ui::dpns::copy::{changes_left_label, ends_in_label, voting_weight_label};
+use crate::ui::dpns::copy::{
+    NOT_IN_MASTERNODE_LIST, NOT_VOTED_YET, changes_left_label, ends_in_label, voting_weight_label,
+};
 use crate::ui::identity::identity_picker_card::draw_type_badge;
 use crate::ui::identity::identity_pill::shorten_id;
 use crate::ui::identity::keys::key_info_screen::KeyInfoScreen;
@@ -193,7 +195,7 @@ impl MasternodeDetailView {
 fn node_vote_choice_label(row: &NodeVoteRow) -> String {
     match (row.state_known, row.choice) {
         (false, _) => "Vote state unavailable".to_owned(),
-        (true, None) => "Not voted yet".to_owned(),
+        (true, None) => NOT_VOTED_YET.to_owned(),
         (true, Some(choice)) => {
             crate::ui::dpns::copy::vote_choice_label(choice, row.contender_name.as_deref())
         }
@@ -853,7 +855,7 @@ impl MasternodeDetailView {
         ui.label(RichText::new("This node's votes").strong());
         let membership = match self.app_context.masternode_list_membership(node) {
             ListMembership::Listed => "In the masternode list.",
-            ListMembership::NotListed => "Not in the masternode list. Its votes don't count.",
+            ListMembership::NotListed => NOT_IN_MASTERNODE_LIST,
             ListMembership::Unknown => "Masternode list membership unknown.",
         };
         ui.label(RichText::new(membership).color(DashColors::text_secondary(dark_mode)));

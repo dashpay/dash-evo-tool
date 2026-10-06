@@ -11,12 +11,12 @@ use crate::backend_task::error::{DapiAddressAvailability, TaskError};
 use crate::context::{AppContext, MAX_CONCURRENT_DPNS_VOTERS};
 use crate::model::contested_name::ContestedName;
 use crate::model::dpns_voting::{
-    DpnsCurrentVoteState, DpnsScheduleEditValidationError, DpnsVoteFailure, DpnsVoteOperation,
-    DpnsVoteOperationId, DpnsVoteOutcome, DpnsVotePollAvailability, DpnsVoteTarget,
-    DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming, authoritative_dpns_vote_outcome,
-    dpns_schedule_is_overdue, dpns_vote_lock_holders, dpns_vote_poll_availability,
-    failed_before_broadcast_outcome, unavailable_preflight_outcome, validate_dpns_schedule_edit,
-    validate_dpns_schedule_time,
+    DpnsCurrentVoteState, DpnsScheduleEditValidationError, DpnsScheduledVoteEdit, DpnsVoteFailure,
+    DpnsVoteOperation, DpnsVoteOperationId, DpnsVoteOutcome, DpnsVotePollAvailability,
+    DpnsVoteTarget, DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming,
+    authoritative_dpns_vote_outcome, dpns_schedule_is_overdue, dpns_vote_lock_holders,
+    dpns_vote_poll_availability, failed_before_broadcast_outcome, unavailable_preflight_outcome,
+    validate_dpns_schedule_edit, validate_dpns_schedule_time,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::request_type::RequestType;
@@ -71,14 +71,7 @@ pub enum ContestedResourceTask {
         operation_id: DpnsVoteOperationId,
         key: DpnsVoteTargetKey,
     },
-    EditScheduledDpnsVote {
-        operation_id: DpnsVoteOperationId,
-        key: DpnsVoteTargetKey,
-        expected_choice: ResourceVoteChoice,
-        expected_timestamp: u64,
-        choice: ResourceVoteChoice,
-        unix_timestamp: u64,
-    },
+    EditScheduledDpnsVote(DpnsScheduledVoteEdit),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -320,27 +313,8 @@ impl AppContext {
                 self.cancel_scheduled_dpns_vote_target(operation_id, &key)?;
                 Ok(BackendTaskSuccessResult::Refresh)
             }
-            ContestedResourceTask::EditScheduledDpnsVote {
-                operation_id,
-                key,
-                expected_choice,
-                expected_timestamp,
-                choice,
-                unix_timestamp,
-            } => {
-                self.edit_scheduled_dpns_vote(
-                    crate::model::dpns_voting::DpnsScheduledVoteEdit {
-                        operation_id,
-                        key,
-                        expected_choice,
-                        expected_timestamp,
-                        choice,
-                        unix_timestamp,
-                    },
-                    sdk,
-                    sender,
-                )
-                .await
+            ContestedResourceTask::EditScheduledDpnsVote(edit) => {
+                self.edit_scheduled_dpns_vote(edit, sdk, sender).await
             }
         }
     }

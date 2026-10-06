@@ -1580,21 +1580,15 @@ impl DPNSScreen {
 
     /// Scheduled view grouped by decision (VOTE-FR-088): one row per name ×
     /// choice × time with an expandable node list carrying per-node status
-    /// and actions.
+    /// and actions. The order is fixed (name, then time): the view has no
+    /// sort control, and the History sort must not reach it.
     fn render_table_scheduled_votes(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
         let mut show_cast_progress = false;
         let groups = Arc::clone(&self.scheduled_groups);
-        let descending = self.sort_order == SortOrder::Descending;
         let now = Utc::now().timestamp_millis().max(0) as u64;
         egui::ScrollArea::both().show(ui, |ui| {
-            for offset in 0..groups.len() {
-                let index = if descending {
-                    groups.len() - 1 - offset
-                } else {
-                    offset
-                };
-                let group = &groups[index];
+            for (index, group) in groups.iter().enumerate() {
                 let dark_mode = ui.visuals().dark_mode;
                 let choice = vote_choice_label(
                     group.choice,

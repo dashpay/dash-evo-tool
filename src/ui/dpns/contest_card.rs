@@ -16,6 +16,12 @@ use std::time::Duration;
 /// Shortcut keys shown next to contender pills, in contender order.
 pub const CONTENDER_KEYS: [&str; 9] = ["1", "2", "3", "4", "5", "6", "7", "8", "9"];
 
+const TALLY_BAR_WIDTH: f32 = 140.0;
+
+/// A narrower card stacks the tally above the decision: half of it cannot
+/// hold a contender's full identifier on one line beside its tally bar.
+const TWO_COLUMN_MIN_WIDTH: f32 = 960.0;
+
 /// What the operator did to a card this frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CardEvent {
@@ -183,10 +189,16 @@ impl CardView<'_> {
             .stroke(stroke)
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
-                ui.columns(2, |columns| {
-                    self.show_tally(&mut columns[0], &mut events);
-                    self.show_decision(&mut columns[1], &mut events);
-                });
+                if ui.available_width() < TWO_COLUMN_MIN_WIDTH {
+                    self.show_tally(ui, &mut events);
+                    ui.add_space(8.0);
+                    self.show_decision(ui, &mut events);
+                } else {
+                    ui.columns(2, |columns| {
+                        self.show_tally(&mut columns[0], &mut events);
+                        self.show_decision(&mut columns[1], &mut events);
+                    });
+                }
             });
         if self.scroll_into_view {
             ui.scroll_to_rect(frame.response.rect, None);
@@ -262,14 +274,19 @@ impl CardView<'_> {
             .max()
             .unwrap_or(0)
             .max(1);
+        // A grid column grows with its text unless bounded, and `ui.columns`
+        // reserves twice the wider half: an unbounded label widens the card.
+        let label_width = (ui.available_width() - TALLY_BAR_WIDTH - ui.spacing().item_spacing.x)
+            .max(ui.spacing().interact_size.x);
         egui::Grid::new(("tally", card.name()))
             .num_columns(2)
+            .max_col_width(label_width)
             .show(ui, |ui| {
                 for (label, votes) in rows {
                     ui.label(label);
                     ui.add(
                         egui::ProgressBar::new(votes as f32 / max as f32)
-                            .desired_width(140.0)
+                            .desired_width(TALLY_BAR_WIDTH)
                             .text(votes.to_string()),
                     );
                     ui.end_row();

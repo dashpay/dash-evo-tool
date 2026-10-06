@@ -71,6 +71,9 @@ pub enum SkipReason {
     AlreadyInProgress,
     /// The operator chose `Don't use this node`.
     NotUsed,
+    /// The vote was to be cast shortly before voting ends, but the contest's
+    /// deadline has not been read yet.
+    DeadlineUnknown,
 }
 
 /// One skipped node × decision.
@@ -136,27 +139,28 @@ impl AggregatePlan {
 }
 
 /// Resolve a timing for one decision. "Before the end" on a contest already
-/// inside the lead time votes now; the flag reports that fallback.
+/// inside the lead time votes now; the flag reports that fallback. `None`
+/// means "before the end" cannot be placed because the deadline is unknown.
 fn resolve_timing(
     timing: BatchTiming,
     decision: &Decision,
     now_ms: u64,
-) -> Result<(VoteTiming, bool), ComposeError> {
-    let outlasts = || ComposeError::ScheduleOutlastsContest {
-        contested_name: decision.contested_name.clone(),
-    };
+) -> Result<Option<(VoteTiming, bool)>, ComposeError> {
     match timing {
-        BatchTiming::Now => Ok((VoteTiming::Now, false)),
+        BatchTiming::Now => Ok(Some((VoteTiming::Now, false))),
         BatchTiming::BeforeEnd(preset) => {
-            let end = decision.end_time.ok_or_else(outlasts)?;
-            Ok(match relative_schedule(end, preset, now_ms) {
-                Ok(at) => (VoteTiming::Scheduled(at), false),
-                Err(_) => (VoteTiming::Now, true),
-            })
+            Ok(decision
+                .end_time
+                .map(|end| match relative_schedule(end, preset, now_ms) {
+                    Ok(at) => (VoteTiming::Scheduled(at), false),
+                    Err(_) => (VoteTiming::Now, true),
+                }))
         }
         BatchTiming::At(at) => validate_dpns_schedule_time(at, now_ms, decision.end_time)
-            .map(|()| (VoteTiming::Scheduled(at), false))
-            .map_err(|_| outlasts()),
+            .map(|()| Some((VoteTiming::Scheduled(at), false)))
+            .map_err(|_| ComposeError::ScheduleOutlastsContest {
+                contested_name: decision.contested_name.clone(),
+            }),
     }
 }
 
@@ -185,7 +189,7 @@ pub fn compose(
                 contested_name: decision.contested_name.clone(),
             });
         }
-        // The batch timing must fit every decision, whichever nodes end up voting.
+        // A fixed batch time must fit every decision, whichever nodes end up voting.
         let batch_timing = resolve_timing(batch, decision, now_ms)?;
         for node in nodes {
             let skip = |reason| SkippedTarget {
@@ -218,6 +222,15 @@ pub fn compose(
                 plan.skipped.push(skip(SkipReason::NoChangesLeft));
                 continue;
             }
+            let resolved = match timing {
+                Some(timing) => resolve_timing(timing, decision, now_ms)?,
+                None => batch_timing,
+            };
+            let Some((timing, ends_soon)) = resolved else {
+                plan.skipped.push(skip(SkipReason::DeadlineUnknown));
+                continue;
+            };
+            plan.ends_soon_now += usize::from(ends_soon);
             plan.targets.push(DpnsVoteTarget {
                 key: DpnsVoteTargetKey {
                     network,
@@ -228,14 +241,7 @@ pub fn compose(
                 contested_name: decision.contested_name.clone(),
                 requested_choice: decision.choice,
                 current_choice: current,
-                timing: {
-                    let (timing, ends_soon) = match timing {
-                        Some(timing) => resolve_timing(timing, decision, now_ms)?,
-                        None => batch_timing,
-                    };
-                    plan.ends_soon_now += usize::from(ends_soon);
-                    timing
-                },
+                timing,
             });
         }
     }
@@ -414,6 +420,53 @@ mod tests {
             ]
         );
         assert!(!plan.all_now());
+    }
+
+    /// "Before the end" needs a deadline. A contest whose deadline has not
+    /// been read yet is skipped with a reason; it must not block the rest of
+    /// the batch, and a node told to vote now still votes on it.
+    #[test]
+    fn before_end_skips_only_the_contest_with_an_unknown_deadline() {
+        let lock = ResourceVoteChoice::Lock;
+        let unknown_deadline = Decision {
+            end_time: None,
+            ..decision("bob", 11, lock, 0)
+        };
+        let overrides = BTreeMap::from([(id(2), NodeTiming::Override(BatchTiming::Now))]);
+        let plan = compose(
+            Network::Testnet,
+            &[decision("alice", 10, lock, 60 * MIN), unknown_deadline],
+            &nodes(&[1, 2]),
+            |_, _| available(None),
+            BatchTiming::BeforeEnd(Duration::from_secs(10 * 60)),
+            &overrides,
+            0,
+        )
+        .unwrap();
+
+        assert_eq!(
+            plan.targets
+                .iter()
+                .map(|target| (
+                    target.key.voter_id.to_buffer()[0],
+                    target.contested_name.as_str(),
+                    target.timing,
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (1, "alice", VoteTiming::Scheduled(50 * MIN)),
+                (2, "alice", VoteTiming::Now),
+                (2, "bob", VoteTiming::Now),
+            ]
+        );
+        assert_eq!(
+            plan.skipped,
+            vec![SkippedTarget {
+                voter_id: id(1),
+                contested_name: "bob".to_owned(),
+                reason: SkipReason::DeadlineUnknown,
+            }]
+        );
     }
 
     /// VOTE-FR-081: a time at or after the deadline is refused.

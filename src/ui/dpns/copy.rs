@@ -465,6 +465,9 @@ pub fn skipped_reason_line(count: usize, reason: SkipReason) -> String {
             format!("Votes skipped: {count}. Earlier votes on these names are still being sent.")
         }
         SkipReason::NotUsed => format!("Votes skipped: {count}. You chose not to use these nodes."),
+        SkipReason::DeadlineUnknown => format!(
+            "Votes skipped: {count}. The end of voting is not known yet for these names. Refresh the contests, or choose to vote now or at a fixed time."
+        ),
     }
 }
 

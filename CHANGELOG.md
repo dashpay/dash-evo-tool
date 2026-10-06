@@ -212,6 +212,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Emphasized text is readable in light mode. Section headings, usernames,
+  totals and the labels of a few buttons were drawn in white on a light
+  background, and so were some loading spinners.
+
 - Restoring imported keys remains recoverable after interrupted storage writes
   and reports unreadable protected keys. Startup migration preserves existing
   keys, seeds, and their password protection.

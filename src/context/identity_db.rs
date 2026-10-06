@@ -3795,6 +3795,14 @@ mod tests {
         let staged = stage_identity_with_vaulted_keys([0x77; 32], [0x88; 32]).await;
         let kv = staged.ctx.det_kv().unwrap();
         let id = staged.id.to_buffer();
+        // The vote is scheduled while the identity is still loaded, so the
+        // interrupted removal below leaves it for the cleanup to cancel.
+        let mut scheduled =
+            scheduled_operation(staged.id, 9, "interrupted", DpnsVoteTargetStatus::Scheduled);
+        staged
+            .ctx
+            .insert_dpns_vote_operation(&mut scheduled, None)
+            .unwrap();
         let placements = staged.ctx.pending_vault_key_placements(&kv, &id).unwrap();
         staged
             .ctx
@@ -3802,12 +3810,6 @@ mod tests {
             .unwrap();
         staged.ctx.mark_identity_unloaded(&kv, &id).unwrap();
         index_remove_identity(&kv, &id).unwrap();
-        let mut scheduled =
-            scheduled_operation(staged.id, 9, "interrupted", DpnsVoteTargetStatus::Scheduled);
-        staged
-            .ctx
-            .insert_dpns_vote_operation(&mut scheduled, None)
-            .unwrap();
 
         staged.ctx.resume_pending_vault_cleanups();
 

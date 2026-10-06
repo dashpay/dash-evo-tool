@@ -106,8 +106,9 @@ pub struct AggregatePlan {
     /// transactions the operator can count on.
     pub recheck: BTreeSet<DpnsVoteTargetKey>,
     pub skipped: Vec<SkippedTarget>,
-    /// Targets asked to vote "when voting is about to end" whose contest is
-    /// already inside the lead time, so they are sent now.
+    /// Votes asked for "when voting is about to end" whose contest is already
+    /// inside the lead time, so they are sent now. Targets only checked again
+    /// are left out: they are not votes the operator is told will be sent.
     pub ends_soon_now: usize,
 }
 
@@ -260,7 +261,7 @@ pub fn compose(
                 plan.skipped.push(skip(SkipReason::DeadlineUnknown));
                 continue;
             };
-            plan.ends_soon_now += usize::from(ends_soon);
+            plan.ends_soon_now += usize::from(ends_soon && !unverified_no_op);
             let key = DpnsVoteTargetKey {
                 network,
                 voter_id: node.voter_id,
@@ -650,6 +651,47 @@ mod tests {
         assert_eq!(timing("far"), vec![VoteTiming::Scheduled(234 * hour); 2]);
         assert_eq!(timing("urgent"), vec![VoteTiming::Now; 2]);
         assert_eq!(plan.ends_soon_now, 2);
+    }
+
+    /// Inside the lead time a vote is sent now and the confirm step says so.
+    /// A node only checked again sends nothing, so it is not part of that count.
+    #[test]
+    fn a_vote_only_checked_again_is_not_announced_as_sent_now() {
+        let lock = ResourceVoteChoice::Lock;
+        let hour = 60 * MIN;
+        let standing = |voter: Identifier, _| match voter.to_buffer()[0] {
+            1 => NodeStanding {
+                proof_can_decide: false,
+                ..available(Some(lock))
+            },
+            _ => available(None),
+        };
+        let plan_for = |voters: &[u8]| {
+            compose(
+                Network::Mainnet,
+                &[decision("urgent", 11, lock, 3 * hour)],
+                &nodes(voters),
+                standing,
+                BatchTiming::BeforeEnd(Duration::from_secs(6 * 3600)),
+                &BTreeMap::new(),
+                0,
+            )
+            .expect("a contest inside the lead time is voted now")
+        };
+
+        let checked_only = plan_for(&[1]);
+        assert_eq!(checked_only.targets.len(), 1);
+        assert!(checked_only.all_now());
+        assert_eq!(checked_only.recheck.len(), 1);
+        assert_eq!(checked_only.ends_soon_now, 0);
+
+        let mixed = plan_for(&[1, 2]);
+        assert_eq!(mixed.targets.len(), 2);
+        assert_eq!(mixed.transaction_count(), 1);
+        assert_eq!(
+            mixed.ends_soon_now, 1,
+            "only the vote that is really sent is announced"
+        );
     }
 
     /// VOTE-TC-103 (compose half): a decision whose voting ended is refused.

@@ -34,8 +34,8 @@ pub enum MigrationStep {
     Wiring,
     /// Sniffing `data.db` for legacy rows.
     Detecting,
-    /// Importing DET-owned rows the wallet drain never touched: scheduled
-    /// DPNS votes and top-up history.
+    /// Importing DET-owned rows the wallet drain never touched: top-up
+    /// history. Legacy scheduled DPNS votes are not imported.
     AppData,
     /// Copying `single_key_wallet` rows into the upstream `SecretStore`.
     SingleKey,
@@ -124,6 +124,10 @@ pub enum MigrationState {
     /// identifies the recovery instructions the banner must show.
     SucceededWithUnreadableData {
         identities: u32,
+        /// Always `0`: the storage update does not read legacy scheduled votes;
+        /// the startup notice for old schedules reports them instead.
+        // TODO(dpns): remove this counter together with its banner copy and
+        // the MCP `votes` field; nothing produces a non-zero value.
         votes: u32,
         top_ups: u32,
     },

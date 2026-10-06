@@ -869,7 +869,6 @@ where
                         );
                         status.set_state(MigrationState::SucceededWithUnreadableData {
                             identities: unreadable,
-                            votes: 0,
                             top_ups: top_ups_unreadable,
                         });
                     }
@@ -883,7 +882,6 @@ where
                         );
                         status.set_state(MigrationState::SucceededWithUnreadableData {
                             identities: unreadable,
-                            votes: 0,
                             top_ups: 0,
                         });
                     }
@@ -898,7 +896,6 @@ where
                         );
                         status.set_state(MigrationState::SucceededWithUnreadableData {
                             identities: unreadable,
-                            votes: 0,
                             top_ups: 0,
                         });
                     }
@@ -944,7 +941,6 @@ where
         );
         status.set_state(MigrationState::SucceededWithUnreadableData {
             identities: 0,
-            votes: 0,
             top_ups: top_ups_unreadable,
         });
         return Ok(moved_data);
@@ -6738,7 +6734,6 @@ mod tests {
             *ctx.migration_status().state(),
             MigrationState::SucceededWithUnreadableData {
                 identities: 1,
-                votes: 0,
                 top_ups: 0,
             },
             "an unreadable notice record must not be reported as an app-data failure",
@@ -6782,7 +6777,6 @@ mod tests {
             *ctx.migration_status().state(),
             MigrationState::SucceededWithUnreadableData {
                 identities: 0,
-                votes: 0,
                 top_ups: 1,
             },
             "a pending warning is surfaced",
@@ -6796,7 +6790,6 @@ mod tests {
             *ctx.migration_status().state(),
             MigrationState::SucceededWithUnreadableData {
                 identities: 0,
-                votes: 0,
                 top_ups: 1,
             },
             "a warning the user may have missed must survive a restart",
@@ -6851,7 +6844,6 @@ mod tests {
             *ctx.migration_status().state(),
             MigrationState::SucceededWithUnreadableData {
                 identities: 1,
-                votes: 0,
                 top_ups: 1,
             },
             "the run must name BOTH remedies — the identity warning may not swallow \
@@ -6886,7 +6878,6 @@ mod tests {
             *ctx.migration_status().state(),
             MigrationState::SucceededWithUnreadableData {
                 identities: 1,
-                votes: 0,
                 top_ups: 1,
             },
             "the top-up warning must survive a restart even while identities stay unreadable",
@@ -6901,7 +6892,6 @@ mod tests {
             *ctx.migration_status().state(),
             MigrationState::SucceededWithUnreadableData {
                 identities: 1,
-                votes: 0,
                 top_ups: 0,
             },
             "an acknowledged top-up warning must not come back, but the identity one must",
@@ -6961,7 +6951,6 @@ mod tests {
             *ctx.migration_status().state(),
             MigrationState::SucceededWithUnreadableData {
                 identities: 1,
-                votes: 0,
                 top_ups: 0,
             },
             "precondition: the corrupt row is reported to the user",
@@ -6995,7 +6984,6 @@ mod tests {
             *ctx.migration_status().state(),
             MigrationState::SucceededWithUnreadableData {
                 identities: 1,
-                votes: 0,
                 top_ups: 0,
             },
             "the unreadable row is still reported once the import itself is complete",
@@ -7032,7 +7020,6 @@ mod tests {
             *ctx.migration_status().state(),
             MigrationState::SucceededWithUnreadableData {
                 identities: 1,
-                votes: 0,
                 top_ups: 0,
             },
             "the discovery run surfaces the warning",
@@ -7055,7 +7042,6 @@ mod tests {
             *ctx.migration_status().state(),
             MigrationState::SucceededWithUnreadableData {
                 identities: 1,
-                votes: 0,
                 top_ups: 0,
             },
             "a warning the user may have missed must survive a restart",

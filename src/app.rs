@@ -64,11 +64,11 @@ use tokio::sync::mpsc as tokiompsc;
 /// risking a typo collision. Exposed for kittest coverage.
 pub const MIGRATION_RETRY_ACTION_ID: &str = "migration:retry:finish_unwire";
 
-/// Banner action id pushed when the user acknowledges the unreadable-vote
-/// warning. Until it fires, the warning is re-raised on every launch — a
-/// dismissed banner is not an acknowledgement, because the vote it names may
-/// still have a live deadline. Exposed for kittest coverage.
-pub const MIGRATION_VOTES_ACK_ACTION_ID: &str = "migration:ack:unreadable_votes";
+/// Banner action id pushed when the user acknowledges the warning about
+/// unreadable balance top-up records. Until it fires, the warning is re-raised
+/// on every launch — a dismissed banner is not an acknowledgement. Exposed for
+/// kittest coverage.
+pub const MIGRATION_APP_DATA_ACK_ACTION_ID: &str = "migration:ack:unreadable_app_data";
 
 /// Banner action id pushed when the user acknowledges the unreadable-identity
 /// warning. Until it fires, the warning is re-raised on every launch — a
@@ -78,13 +78,14 @@ pub const MIGRATION_VOTES_ACK_ACTION_ID: &str = "migration:ack:unreadable_votes"
 pub const MIGRATION_IDENTITIES_ACK_ACTION_ID: &str = "migration:ack:unreadable_identities";
 
 /// Banner action id pushed when the user acknowledges the combined warning — the
-/// launch where both unreadable identities and unreadable votes were left behind.
+/// launch where both unreadable identities and unreadable top-up records were
+/// left behind.
 /// One banner names both problems, so its single acknowledgement retires both
 /// records: re-raising either half after the user has read and dismissed the
 /// sentence describing it would be a notice they have already acted on. Exposed
 /// for kittest coverage.
 pub const MIGRATION_UNREADABLE_ACK_ACTION_ID: &str =
-    "migration:ack:unreadable_identities_and_votes";
+    "migration:ack:unreadable_identities_and_app_data";
 
 const WALLET_BACKEND_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 const SHUTDOWN_DEADLINE_MARGIN: Duration = Duration::from_secs(5);
@@ -887,25 +888,12 @@ pub fn migration_running_text(step: MigrationStep) -> &'static str {
 }
 
 /// User-facing banner copy for a migration that finished the wallet drain but
-/// left `count` undecodable scheduled votes behind. The votes stay in the
-/// previous version's storage (nothing is deleted), but they will not be cast,
-/// so the sentence names the one action that recovers them. No "Retry now" —
-/// a corrupt row decodes no better on a second pass. Exposed for kittest
-/// coverage.
-pub fn migration_unreadable_votes_text(count: u32) -> String {
-    format!(
-        "Some scheduled votes from the previous version could not be read and were not carried \
-         over ({count} in total). Schedule them again under Masternodes > Votes."
-    )
-}
-
-/// User-facing banner copy for a migration that finished the wallet drain but
 /// could not decode `count` identities. Their keys are therefore not loaded, so
 /// the sentence names both the screen and the control that restore them — a user
-/// who has never opened that flow cannot act on "load them again" alone. Kept
-/// separate from the scheduled-votes copy because the remedy is different — load
-/// an identity, not re-schedule a vote. The previous version's data is never
-/// deleted, so the re-import is always possible. Exposed for kittest coverage.
+/// who has never opened that flow cannot act on "load them again" alone. The
+/// previous version's data is never deleted, so the re-import is always
+/// possible. No "Retry now": a corrupt row decodes no better on a second pass.
+/// Exposed for kittest coverage.
 pub fn migration_unreadable_identities_text(count: u32) -> String {
     format!(
         "Some identities from the previous version could not be read and were not carried over \
@@ -915,26 +903,9 @@ pub fn migration_unreadable_identities_text(count: u32) -> String {
     )
 }
 
-/// User-facing banner copy for the launch where both DET-owned passes left rows
-/// behind: `identities` identities and `votes` scheduled votes could not be read.
-/// One sentence per problem, each naming its own remedy — the remedies differ
-/// (load an identity vs re-schedule a vote), and the identity warning recurs on
-/// every launch, so it must never be the reason the deadline-critical vote notice
-/// goes unseen. No "Retry now": neither corrupt row decodes better on a second
-/// pass. Exposed for kittest coverage.
-pub fn migration_unreadable_identities_and_votes_text(identities: u32, votes: u32) -> String {
-    format!(
-        "Some identities ({identities} in total) and some scheduled votes ({votes} in total) from \
-         the previous version could not be read and were not carried over. Your previous data is \
-         untouched. For a user identity, choose Load Identity on the Identities screen. For a \
-         masternode or evonode identity, choose + Load on the Masternodes tab. Schedule the votes \
-         again under Masternodes > Votes."
-    )
-}
-
 /// User-facing banner copy for the rare launch where both DET-owned passes broke:
 /// `count` identities could not be read AND updating the rest of the previous
-/// version's data (such as scheduled votes) hit a hard error. Names each problem
+/// version's data (such as balance top-up records) hit a hard error. Names each problem
 /// in its own sentence and offers the retry the app-data half needs — the
 /// identity half recovers by loading the identities again. The previous version's
 /// data is never deleted, so both are recoverable. Exposed for kittest coverage.
@@ -948,44 +919,26 @@ pub fn migration_failed_with_unreadable_identities_text(count: u32) -> String {
     )
 }
 
-/// User-facing banner copy for every non-empty combination of unreadable
-/// legacy identity, scheduled-vote and top-up rows.
-pub fn migration_unreadable_data_text(identities: u32, votes: u32, top_ups: u32) -> String {
-    match (identities > 0, votes > 0, top_ups > 0) {
-        (true, false, false) => migration_unreadable_identities_text(identities),
-        (false, true, false) => migration_unreadable_votes_text(votes),
-        (true, true, false) => {
-            migration_unreadable_identities_and_votes_text(identities, votes)
-        }
-        (false, false, true) => format!(
+/// User-facing banner copy for every combination of unreadable legacy identity
+/// and top-up rows. One sentence per problem, each naming its own remedy.
+/// Exposed for kittest coverage.
+pub fn migration_unreadable_data_text(identities: u32, top_ups: u32) -> String {
+    match (identities > 0, top_ups > 0) {
+        (true, false) => migration_unreadable_identities_text(identities),
+        (false, true) => format!(
             "Some records of earlier additions to identity balances from the previous version \
              could not be read and were not carried over ({top_ups} in total). Check each \
              identity's balance history before adding more funds."
         ),
-        (true, false, true) => format!(
+        (true, true) => format!(
             "Some identities ({identities} in total) and some records of earlier additions to \
              identity balances ({top_ups} in total) from the previous version could not be read \
              and were not carried over. For a user identity, choose Load Identity on the \
              Identities screen. For a masternode or evonode identity, choose + Load on the \
              Masternodes tab. Check each identity's balance history before adding more funds."
         ),
-        (false, true, true) => format!(
-            "Some scheduled votes ({votes} in total) and some records of earlier additions to \
-             identity balances ({top_ups} in total) from the previous version could not be read \
-             and were not carried over. Schedule the votes again under Masternodes > Votes. \
-             Check each identity's balance history before adding more funds."
-        ),
-        (true, true, true) => format!(
-            "Some identities ({identities} in total), some scheduled votes ({votes} in total), \
-             and some records of earlier additions to identity balances ({top_ups} in total) \
-             from the previous version could not be read and were not carried over. For a user \
-             identity, choose Load Identity on the Identities screen. For a masternode or \
-             evonode identity, choose + Load on the Masternodes tab. Schedule the votes again \
-             under Masternodes > Votes, and check each identity's balance history before adding \
-             more funds."
-        ),
-        (false, false, false) => {
-            "Some data from the previous version could not be read. Check your identities, scheduled votes, and identity balance history before continuing.".to_string()
+        (false, false) => {
+            "Some data from the previous version could not be read. Check your identities and identity balance history before continuing.".to_string()
         }
     }
 }
@@ -4476,7 +4429,6 @@ mod migration_banner_tests {
         assert!(migration_allows_scheduled_vote_sweep(
             &MigrationState::SucceededWithUnreadableData {
                 identities: 1,
-                votes: 1,
                 top_ups: 1,
             },
         ));
@@ -4518,22 +4470,15 @@ mod migration_banner_tests {
         assert!(!notice.contains("review"));
     }
 
-    /// Scheduled votes are never imported, and the Scheduled Votes screen is
-    /// gone: no migration copy may claim otherwise.
+    /// Scheduled votes are never imported or inspected by the storage update:
+    /// no migration copy may claim otherwise.
     #[test]
-    fn migration_copy_does_not_mention_importing_votes_or_a_removed_screen() {
-        for step in MigrationStep::ALL {
-            let text = migration_running_text(step);
-            assert!(!text.contains("scheduled votes"), "{text}");
-        }
-        for text in [
-            migration_unreadable_votes_text(2),
-            migration_unreadable_identities_and_votes_text(1, 2),
-            migration_unreadable_data_text(0, 2, 3),
-            migration_unreadable_data_text(1, 2, 3),
-        ] {
-            assert!(!text.contains("Scheduled Votes screen"), "{text}");
-            assert!(text.contains("Masternodes > Votes"), "{text}");
+    fn migration_copy_does_not_mention_scheduled_votes() {
+        let progress = MigrationStep::ALL.map(|step| migration_running_text(step).to_owned());
+        let warnings = [(0, 0), (1, 0), (0, 2), (1, 2)]
+            .map(|(identities, top_ups)| migration_unreadable_data_text(identities, top_ups));
+        for text in progress.iter().chain(&warnings) {
+            assert!(!text.to_lowercase().contains("scheduled vote"), "{text}");
         }
     }
 
@@ -4650,7 +4595,7 @@ mod migration_banner_tests {
 
     #[test]
     fn unreadable_top_up_copy_is_actionable() {
-        let text = migration_unreadable_data_text(0, 0, 2);
+        let text = migration_unreadable_data_text(0, 2);
         assert!(text.contains("balance history"));
         assert!(text.contains("before adding more funds"));
         assert!(text.ends_with('.'));
@@ -4700,7 +4645,7 @@ mod migration_banner_tests {
     fn migration_action_ids_are_distinct() {
         let ids = [
             MIGRATION_RETRY_ACTION_ID,
-            MIGRATION_VOTES_ACK_ACTION_ID,
+            MIGRATION_APP_DATA_ACK_ACTION_ID,
             MIGRATION_IDENTITIES_ACK_ACTION_ID,
             MIGRATION_UNREADABLE_ACK_ACTION_ID,
         ];

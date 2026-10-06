@@ -35,14 +35,14 @@ use crate::ui::components::{
 };
 
 use super::{
-    AppAction, BootPhase, MAX_PENDING_WATCHES, MIGRATION_IDENTITIES_ACK_ACTION_ID,
-    MIGRATION_RETRY_ACTION_ID, MIGRATION_UNREADABLE_ACK_ACTION_ID, MIGRATION_VOTES_ACK_ACTION_ID,
-    PENDING_POLL_INTERVAL, PENDING_STALE_MESSAGE, PendingStep, SPV_CANCEL_ACTION_ID,
-    SPV_CANCEL_CONFIRM_ACTION_ID, SPV_CANCEL_KEEP_ACTION_ID, SPV_CANCEL_QUESTION,
-    SPV_CONNECTING_DESCRIPTION, SPV_SYNCING_DESCRIPTION, STORAGE_PREP_CLOSE_ACTION_ID,
-    STORAGE_PREP_FAILED_MESSAGE, STORAGE_PREP_PASSWORD_DESCRIPTION, STORAGE_PREP_RETRY_ACTION_ID,
-    STORAGE_PREP_STUCK_MESSAGE, STORAGE_PREP_STUCK_TIMEOUT, SpvBlockStep,
-    migration_failed_with_unreadable_identities_text, migration_running_text,
+    AppAction, BootPhase, MAX_PENDING_WATCHES, MIGRATION_APP_DATA_ACK_ACTION_ID,
+    MIGRATION_IDENTITIES_ACK_ACTION_ID, MIGRATION_RETRY_ACTION_ID,
+    MIGRATION_UNREADABLE_ACK_ACTION_ID, PENDING_POLL_INTERVAL, PENDING_STALE_MESSAGE, PendingStep,
+    SPV_CANCEL_ACTION_ID, SPV_CANCEL_CONFIRM_ACTION_ID, SPV_CANCEL_KEEP_ACTION_ID,
+    SPV_CANCEL_QUESTION, SPV_CONNECTING_DESCRIPTION, SPV_SYNCING_DESCRIPTION,
+    STORAGE_PREP_CLOSE_ACTION_ID, STORAGE_PREP_FAILED_MESSAGE, STORAGE_PREP_PASSWORD_DESCRIPTION,
+    STORAGE_PREP_RETRY_ACTION_ID, STORAGE_PREP_STUCK_MESSAGE, STORAGE_PREP_STUCK_TIMEOUT,
+    SpvBlockStep, migration_failed_with_unreadable_identities_text, migration_running_text,
     migration_unreadable_data_text, pending_confirmed_message, pending_step, spv_block_step,
 };
 
@@ -991,21 +991,20 @@ impl MigrationReconciler {
             }
             MigrationState::SucceededWithUnreadableData {
                 identities,
-                votes,
                 top_ups,
             } => {
                 let handle = MessageBanner::set_global(
                     ctx,
-                    migration_unreadable_data_text(identities, votes, top_ups),
+                    migration_unreadable_data_text(identities, top_ups),
                     MessageType::Warning,
                 );
                 handle.disable_auto_dismiss();
-                let action = if identities > 0 && (votes > 0 || top_ups > 0) {
+                let action = if identities > 0 && top_ups > 0 {
                     MIGRATION_UNREADABLE_ACK_ACTION_ID
                 } else if identities > 0 {
                     MIGRATION_IDENTITIES_ACK_ACTION_ID
                 } else {
-                    MIGRATION_VOTES_ACK_ACTION_ID
+                    MIGRATION_APP_DATA_ACK_ACTION_ID
                 };
                 handle.with_action("Got it", action);
                 self.banner_handle = Some(handle);
@@ -1160,7 +1159,7 @@ impl MigrationReconciler {
                 // overwrites the stale Failed one.
                 self.last_state = None;
                 task = Some(BackendTask::MigrationTask(MigrationTask::FinishUnwire));
-            } else if action_id == MIGRATION_VOTES_ACK_ACTION_ID {
+            } else if action_id == MIGRATION_APP_DATA_ACK_ACTION_ID {
                 tracing::info!(
                     target = "migration::cold_start",
                     ?network,
@@ -2119,7 +2118,6 @@ mod tests {
         let task = click_banner_action(
             MigrationState::SucceededWithUnreadableData {
                 identities: 2,
-                votes: 0,
                 top_ups: 0,
             },
             "Got it",
@@ -2142,8 +2140,7 @@ mod tests {
         let task = click_banner_action(
             MigrationState::SucceededWithUnreadableData {
                 identities: 2,
-                votes: 3,
-                top_ups: 0,
+                top_ups: 3,
             },
             "Got it",
         );
@@ -2156,15 +2153,14 @@ mod tests {
         );
     }
 
-    /// The vote warning keeps its own acknowledgement — the identity work above
+    /// The top-up warning keeps its own acknowledgement — the identity work above
     /// must not have re-routed the sibling banner to the wrong task.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn unreadable_votes_banner_acknowledgement_routes_to_its_task() {
+    async fn unreadable_top_ups_banner_acknowledgement_routes_to_its_task() {
         let task = click_banner_action(
             MigrationState::SucceededWithUnreadableData {
                 identities: 0,
-                votes: 2,
-                top_ups: 0,
+                top_ups: 2,
             },
             "Got it",
         );

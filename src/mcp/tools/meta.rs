@@ -133,6 +133,8 @@ pub struct NetworkSentinels {
 #[derive(Serialize, schemars::JsonSchema)]
 pub struct UnreadableCounts {
     identities: u32,
+    /// Always `0`. The upgrade does not read scheduled votes from the previous
+    /// version; the field stays so existing clients keep parsing the summary.
     votes: u32,
     top_ups: u32,
 }
@@ -516,12 +518,11 @@ fn summarize_migration(state: &MigrationState) -> MigrationSummary {
         MigrationState::Success => summary("success"),
         MigrationState::SucceededWithUnreadableData {
             identities,
-            votes,
             top_ups,
         } => MigrationSummary {
             unreadable: Some(UnreadableCounts {
                 identities: *identities,
-                votes: *votes,
+                votes: 0,
                 top_ups: *top_ups,
             }),
             ..summary("succeeded_with_unreadable_data")
@@ -678,14 +679,13 @@ mod tests {
     fn succeeded_with_unreadable_data_reports_every_counter() {
         let summary = summarize_migration(&MigrationState::SucceededWithUnreadableData {
             identities: 1,
-            votes: 2,
             top_ups: 3,
         });
 
         assert_eq!(summary.state, "succeeded_with_unreadable_data");
         assert!(summary.error.is_none());
         let counts = summary.unreadable.expect("counts");
-        assert_eq!((counts.identities, counts.votes, counts.top_ups), (1, 2, 3));
+        assert_eq!((counts.identities, counts.votes, counts.top_ups), (1, 0, 3));
     }
 
     /// A profile with no app store is a legitimate "nothing applied yet", not a

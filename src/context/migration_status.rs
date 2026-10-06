@@ -122,15 +122,7 @@ pub enum MigrationState {
     /// The storage update completed, but one or more legacy rows could not be
     /// decoded. Each non-zero counter is backed by a durable warning record and
     /// identifies the recovery instructions the banner must show.
-    SucceededWithUnreadableData {
-        identities: u32,
-        /// Always `0`: the storage update does not read legacy scheduled votes;
-        /// the startup notice for old schedules reports them instead.
-        // TODO(dpns): remove this counter together with its banner copy and
-        // the MCP `votes` field; nothing produces a non-zero value.
-        votes: u32,
-        top_ups: u32,
-    },
+    SucceededWithUnreadableData { identities: u32, top_ups: u32 },
     /// Both DET-owned passes are damaged on the same launch: the wallet drain
     /// landed, but `count` legacy identities could not be decoded AND the
     /// app-data import hit a hard failure. Rendered as a single retryable error
@@ -174,15 +166,13 @@ impl PartialEq for MigrationState {
             (
                 MigrationState::SucceededWithUnreadableData {
                     identities: ia,
-                    votes: va,
                     top_ups: ta,
                 },
                 MigrationState::SucceededWithUnreadableData {
                     identities: ib,
-                    votes: vb,
                     top_ups: tb,
                 },
-            ) => ia == ib && va == vb && ta == tb,
+            ) => ia == ib && ta == tb,
             (MigrationState::Running { step: a }, MigrationState::Running { step: b }) => a == b,
             (
                 MigrationState::AwaitingWalletPasswords { wallets: a },

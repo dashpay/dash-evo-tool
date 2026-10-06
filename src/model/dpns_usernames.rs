@@ -194,6 +194,14 @@ impl UsernameAvailability {
     pub fn needs_vote(self) -> bool {
         matches!(self, Self::NeedsVote | Self::Joinable { .. })
     }
+
+    /// When a running vote stops accepting new requests, if registering joins one.
+    pub fn join_deadline(self) -> Option<TimestampMillis> {
+        match self {
+            Self::Joinable { join_end, .. } => Some(join_end),
+            _ => None,
+        }
+    }
 }
 
 /// Whether a saved win still needs to be reflected in the identity's owned names.
@@ -955,6 +963,28 @@ mod tests {
             classify_availability(id(9), "alice", false, Some(&contest), 0, durations()),
             UsernameAvailability::Locked
         );
+    }
+
+    #[test]
+    fn only_a_joinable_vote_carries_a_join_deadline() {
+        assert_eq!(
+            UsernameAvailability::Joinable {
+                contenders: 2,
+                join_end: 42,
+            }
+            .join_deadline(),
+            Some(42)
+        );
+        for availability in [
+            UsernameAvailability::Available,
+            UsernameAvailability::NeedsVote,
+            UsernameAvailability::JoinClosed,
+            UsernameAvailability::Taken,
+            UsernameAvailability::Locked,
+            UsernameAvailability::AlreadyRequested,
+        ] {
+            assert_eq!(availability.join_deadline(), None, "{availability:?}");
+        }
     }
 
     #[test]

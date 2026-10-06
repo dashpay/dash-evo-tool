@@ -87,8 +87,9 @@ impl AppContext {
         })
     }
 
-    async fn dpns_domain_exists(&self, sdk: &Sdk, normalized: &str) -> Result<bool, TaskError> {
-        let query = DocumentQuery {
+    /// The lookup for a registered name with this normalized label.
+    pub(super) fn dpns_domain_query(&self, normalized: &str) -> DocumentQuery {
+        DocumentQuery {
             sub_queries: Vec::new(),
             select: SelectProjection::documents(),
             data_contract: self.dpns_contract.clone(),
@@ -112,8 +113,11 @@ impl AppContext {
             limit: 1,
             offset: None,
             start: None,
-        };
-        let documents = Document::fetch_many(sdk, query)
+        }
+    }
+
+    async fn dpns_domain_exists(&self, sdk: &Sdk, normalized: &str) -> Result<bool, TaskError> {
+        let documents = Document::fetch_many(sdk, self.dpns_domain_query(normalized))
             .await
             .map_err(availability_error)?;
         Ok(documents.values().any(Option::is_some))

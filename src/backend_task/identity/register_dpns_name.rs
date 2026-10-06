@@ -31,9 +31,7 @@ use dash_sdk::{
 };
 
 use super::{BackendTaskSuccessResult, RegisterDpnsNameInput};
-use crate::model::dpns_usernames::{
-    UsernameAvailability, dpns_signing_requirement, key_can_sign_documents,
-};
+use crate::model::dpns_usernames::{dpns_signing_requirement, key_can_sign_documents};
 
 fn rebrand_dpns_domain_conflict(error: TaskError) -> TaskError {
     match error {
@@ -184,10 +182,7 @@ impl AppContext {
         if !availability.allows_registration() {
             return Err(TaskError::UsernameNoLongerAvailable { availability });
         }
-        let joined_until = match availability {
-            UsernameAvailability::Joinable { join_end, .. } => Some(join_end),
-            _ => None,
-        };
+        let joined_until = availability.join_deadline();
 
         let public_key = match input.signing_key_id {
             Some(key_id) => qualified_identity
@@ -344,6 +339,21 @@ impl AppContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::dpns::normalize_dpns_label;
+    use crate::model::dpns_usernames::UsernameAvailability;
+    use dash_sdk::dpp::block::block_info::BlockInfo;
+    use dash_sdk::dpp::consensus::ConsensusError::StateError as ConsensusStateError;
+    use dash_sdk::dpp::consensus::state::state_error::StateError;
+    use dash_sdk::dpp::document::DocumentV0Getters;
+    use dash_sdk::dpp::voting::contender_structs::{
+        ContenderWithSerializedDocument, ContenderWithSerializedDocumentV0,
+    };
+    use dash_sdk::dpp::voting::vote_info_storage::contested_document_vote_poll_winner_info::ContestedDocumentVotePollWinnerInfo;
+    use dash_sdk::drive::query::vote_poll_vote_state_query::{
+        ContestedDocumentVotePollDriveQuery, ContestedDocumentVotePollDriveQueryResultType,
+    };
+    use dash_sdk::platform::Identifier;
+    use dash_sdk::query_types::{Contenders, Documents};
 
     #[test]
     fn dpns_registration_needs_a_high_or_critical_key() {
@@ -357,8 +367,6 @@ mod tests {
         .expect("DPNS");
         assert_eq!(dpns_signing_requirement(&contract), SecurityLevel::HIGH);
     }
-    use dash_sdk::dpp::consensus::ConsensusError::StateError as ConsensusStateError;
-    use dash_sdk::dpp::consensus::state::state_error::StateError;
 
     fn duplicate_unique_index_conflict(properties: Vec<&str>) -> TaskError {
         let source_error = Box::new(crate::test_support::duplicate_unique_index_broadcast_error(
@@ -566,6 +574,194 @@ mod tests {
             required_contest_fee(DpnsRegistrationOutcome::Registered, version),
             0
         );
+    }
+
+    /// A registered-name document as the network returns it for `label`.
+    fn domain_document(owner: Identifier, label: &str) -> Document {
+        Document::V0(DocumentV0 {
+            id: Identifier::from([0x5D; 32]),
+            owner_id: owner,
+            creator_id: None,
+            properties: BTreeMap::from([("label".to_string(), label.into())]),
+            revision: None,
+            created_at: Some(100),
+            updated_at: None,
+            transferred_at: None,
+            created_at_block_height: None,
+            updated_at_block_height: None,
+            transferred_at_block_height: None,
+            created_at_core_block_height: None,
+            updated_at_core_block_height: None,
+            transferred_at_core_block_height: None,
+            contract_version: None,
+        })
+    }
+
+    fn documents(found: Option<Document>) -> Documents {
+        found
+            .map(|document| (document.id(), Some(document)))
+            .into_iter()
+            .collect()
+    }
+
+    /// Mock the registered-name lookup for `label`.
+    async fn expect_domain_lookup(sdk: &mut Sdk, ctx: &AppContext, label: &str, found: bool) {
+        let found = found.then(|| domain_document(Identifier::from([0x5E; 32]), label));
+        sdk.mock()
+            .expect_fetch_many::<Identifier, Document, _, Documents>(
+                ctx.dpns_domain_query(&normalize_dpns_label(label)),
+                Some(documents(found)),
+            )
+            .await
+            .expect("domain lookup expectation");
+    }
+
+    /// Mock the community-vote state for `label`.
+    async fn expect_vote_state(sdk: &mut Sdk, ctx: &AppContext, label: &str, state: Contenders) {
+        sdk.mock()
+            .expect_fetch_many::<Identifier, ContenderWithSerializedDocument, _, Contenders>(
+                ContestedDocumentVotePollDriveQuery {
+                    vote_poll: crate::model::dpns_voting::dpns_vote_poll(
+                        &ctx.dpns_contract,
+                        &normalize_dpns_label(label),
+                    )
+                    .expect("vote poll"),
+                    result_type:
+                        ContestedDocumentVotePollDriveQueryResultType::DocumentsAndVoteTally,
+                    allow_include_locked_and_abstaining_vote_tally: true,
+                    start_at: None,
+                    limit: None,
+                    offset: None,
+                },
+                Some(state),
+            )
+            .await
+            .expect("vote state expectation");
+    }
+
+    /// A running vote whose requests come from `requesters`.
+    fn running_vote(requesters: &[Identifier]) -> Contenders {
+        Contenders {
+            contenders: requesters
+                .iter()
+                .map(|id| {
+                    (
+                        *id,
+                        ContenderWithSerializedDocument::V0(ContenderWithSerializedDocumentV0 {
+                            identity_id: *id,
+                            serialized_document: None,
+                            vote_tally: Some(0),
+                        }),
+                    )
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    /// The pay-time re-check must stop a registration the network no longer
+    /// accepts before the preorder or the name request is paid for. No broadcast
+    /// is mocked, so reaching one would fail with a different error.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn registration_stops_before_paying_when_the_name_is_no_longer_available() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let requester = bare_identity(8);
+        let requester_id = requester.identity.id();
+        let fee = contest_fee_credits(Sdk::new_mock().version());
+        let locked = Contenders {
+            winner: Some((
+                ContestedDocumentVotePollWinnerInfo::Locked,
+                BlockInfo::default(),
+            )),
+            ..Default::default()
+        };
+        let cases = [
+            ("alice-123", 0, true, None, UsernameAvailability::Taken),
+            (
+                "alice",
+                fee,
+                false,
+                Some(locked),
+                UsernameAvailability::Locked,
+            ),
+            (
+                "alice",
+                fee,
+                false,
+                Some(running_vote(&[Identifier::from([0x77; 32])])),
+                UsernameAvailability::JoinClosed,
+            ),
+            (
+                "alice",
+                fee,
+                false,
+                Some(running_vote(&[requester_id])),
+                UsernameAvailability::AlreadyRequested,
+            ),
+        ];
+        for (label, approved_contest_fee, registered, vote, expected) in cases {
+            let mut sdk = Sdk::new_mock();
+            expect_domain_lookup(&mut sdk, &ctx, label, registered).await;
+            if let Some(vote) = vote {
+                expect_vote_state(&mut sdk, &ctx, label, vote).await;
+            }
+            let result = ctx
+                .register_dpns_name(
+                    &sdk,
+                    RegisterDpnsNameInput {
+                        qualified_identity: requester.clone(),
+                        name_input: label.to_owned(),
+                        approved_contest_fee,
+                        signing_key_id: None,
+                    },
+                )
+                .await;
+            assert!(
+                matches!(
+                    &result,
+                    Err(TaskError::UsernameNoLongerAvailable { availability })
+                        if *availability == expected
+                ),
+                "{label}: expected {expected:?}, got {result:?}"
+            );
+        }
+    }
+
+    /// A request that joins a running vote is saved with that vote's deadlines,
+    /// not with ones counted from the moment of payment.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn joined_request_is_saved_with_the_running_vote_deadlines() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(
+            std::sync::Arc::new(crate::wallet_backend::kv_test_support::InMemoryKv::default()),
+        ));
+        let sdk = Sdk::new_mock();
+        let identity = bare_identity(6);
+        let id = identity.identity.id();
+        ctx.update_local_qualified_identity(&identity).unwrap();
+        let durations = crate::model::dpns::contest_durations(ctx.network, sdk.version());
+        let join = u64::try_from(durations.join.as_millis()).unwrap();
+        let total = u64::try_from(durations.total.as_millis()).unwrap();
+        // The vote opened ten minutes ago, so its join window closes that much sooner.
+        let join_end = crate::utils::time::now_ms() + join - 600_000;
+
+        ctx.finish_username_registration(
+            &sdk,
+            identity,
+            "alice",
+            DpnsRegistrationOutcome::PendingCommunityVote,
+            Some(join_end),
+            1_000,
+            200,
+        )
+        .await;
+
+        let requests = ctx.username_requests_for(&id);
+        assert_eq!(requests.len(), 1, "the paid request must be listed");
+        assert_eq!(requests[0].join_end, Some(join_end));
+        assert_eq!(requests[0].end, Some(join_end - join + total));
     }
 
     /// USR-TC-018 backend half: availability is re-checked before anything is

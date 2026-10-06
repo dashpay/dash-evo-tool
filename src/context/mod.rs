@@ -222,7 +222,8 @@ pub struct AppContext {
     /// until the SPV masternode list is available.
     masternode_list_membership: RwLock<Option<Arc<BTreeMap<Identifier, bool>>>>,
     /// Journal operations published after executor transitions (progress drawer).
-    dpns_vote_progress: RwLock<Arc<[crate::model::dpns_voting::DpnsVoteOperation]>>,
+    /// Each is shared, so publishing one change copies no other operation.
+    dpns_vote_progress: RwLock<Arc<[Arc<crate::model::dpns_voting::DpnsVoteOperation>]>>,
     /// A `Review again` request from the progress drawer for the voting panel.
     dpns_vote_review_request: std::sync::Mutex<Option<crate::model::dpns_voting::DpnsVoteOutcome>>,
     /// Vote operations dismissed in the progress drawer this session.

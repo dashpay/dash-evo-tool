@@ -61,7 +61,7 @@ pub(crate) fn group_scheduled_rows(rows: Vec<ScheduledDpnsVoteRow>) -> Vec<Sched
 #[derive(Debug, Clone, Default)]
 pub struct DpnsVoteOperationSnapshot {
     operations: Vec<DpnsVoteOperation>,
-    published: Option<Arc<[DpnsVoteOperation]>>,
+    published: Option<Arc<[Arc<DpnsVoteOperation>]>>,
     dismissed_schedules: BTreeSet<(DpnsVoteOperationId, DpnsVoteTargetKey)>,
     target_statuses: BTreeMap<DpnsVoteTargetKey, DpnsVoteTargetStatus>,
     loaded: bool,
@@ -128,7 +128,20 @@ impl DpnsVoteOperationSnapshot {
                     .then(|| (old.map(|old| old.status), outcome.clone()))
             })
             .collect();
-        self.replace(published.to_vec());
+        // Keep this snapshot's copy of every operation the publication left as
+        // it was; only a changed operation is copied.
+        let mut kept: BTreeMap<_, _> = std::mem::take(&mut self.operations)
+            .into_iter()
+            .map(|operation| (operation.id, operation))
+            .collect();
+        let operations = published
+            .iter()
+            .map(|operation| match kept.remove(&operation.id) {
+                Some(current) if current == **operation => current,
+                _ => operation.as_ref().clone(),
+            })
+            .collect();
+        self.replace(operations);
         self.published = Some(published);
         Some(changed)
     }
@@ -228,6 +241,41 @@ mod tests {
             Some(DpnsVoteTargetStatus::Submitting)
         );
         assert!(snapshot.read_error().is_none());
+    }
+
+    /// Adopting one operation's progress keeps the snapshot's copy of every
+    /// operation that did not change.
+    #[test]
+    fn adopting_progress_copies_only_the_changed_operation() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(Arc::new(
+            crate::wallet_backend::kv_test_support::InMemoryKv::default(),
+        )));
+        let mut changed = operation(DpnsVoteTargetStatus::Queued);
+        let mut untouched = operation(DpnsVoteTargetStatus::Queued);
+        untouched.targets[0].target.key.vote_poll_id = Identifier::from([3; 32]);
+        let key = changed.targets[0].target.key.clone();
+        ctx.insert_dpns_vote_operation(&mut changed, None).unwrap();
+        ctx.insert_dpns_vote_operation(&mut untouched, None)
+            .unwrap();
+        let mut snapshot = DpnsVoteOperationSnapshot::default();
+        assert!(snapshot.sync_progress(&ctx).is_some());
+        let kept = snapshot.operation(untouched.id).unwrap().targets.as_ptr();
+
+        ctx.claim_dpns_vote_target(changed.id, &key).unwrap();
+        let changes = snapshot.sync_progress(&ctx).expect("new progress");
+
+        assert_eq!(changes.len(), 1);
+        assert_eq!(
+            snapshot.operation(changed.id).unwrap().targets[0].status,
+            DpnsVoteTargetStatus::Submitting
+        );
+        assert_eq!(
+            snapshot.operation(untouched.id).unwrap().targets.as_ptr(),
+            kept,
+            "the unchanged operation is kept, not copied again"
+        );
     }
 
     #[test]

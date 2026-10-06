@@ -43,7 +43,7 @@ impl AppContext {
     }
 
     /// Live durable journal progress (cheap; safe to call every frame).
-    pub fn dpns_vote_progress(&self) -> Arc<[DpnsVoteOperation]> {
+    pub fn dpns_vote_progress(&self) -> Arc<[Arc<DpnsVoteOperation>]> {
         Arc::clone(
             &self
                 .dpns_vote_progress

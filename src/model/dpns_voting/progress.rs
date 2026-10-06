@@ -95,12 +95,12 @@ fn sent_at(operation: &DpnsVoteOperation, outcome: &DpnsVoteOutcome) -> u64 {
 /// Operations the drawer lists: anything still in flight, plus operations
 /// with a target sent since `since_ms` that the operator has not dismissed.
 pub fn drawer_operations<'a>(
-    operations: &'a [DpnsVoteOperation],
+    operations: impl IntoIterator<Item = &'a DpnsVoteOperation>,
     since_ms: u64,
     dismissed: &BTreeSet<DpnsVoteOperationId>,
 ) -> Vec<&'a DpnsVoteOperation> {
     operations
-        .iter()
+        .into_iter()
         .filter(|operation| {
             let counts = progress_counts([*operation]);
             if counts.total == 0 {

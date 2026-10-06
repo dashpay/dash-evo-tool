@@ -99,7 +99,11 @@ fn paint_segments(ui: &mut Ui, counts: ProgressCounts) {
 pub fn show(ctx: &egui::Context, app_context: &AppContext, state: &mut DrawerState) -> AppAction {
     let operations = app_context.dpns_vote_progress();
     let dismissed = app_context.dismissed_dpns_vote_operations();
-    let shown = drawer_operations(&operations, state.since_ms, &dismissed);
+    let shown = drawer_operations(
+        operations.iter().map(std::sync::Arc::as_ref),
+        state.since_ms,
+        &dismissed,
+    );
     if shown.is_empty() {
         return AppAction::None;
     }

@@ -527,13 +527,16 @@ impl AppContext {
                     .write()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if let Some(index) = progress.iter().position(|old| old.id == operation.id) {
-                    if progress[index] != operation {
-                        Arc::make_mut(&mut progress)[index] = operation;
+                    if *progress[index] != operation {
+                        Arc::make_mut(&mut progress)[index] = Arc::new(operation);
                     }
                 } else {
-                    let mut operations = progress.to_vec();
-                    operations.push(operation);
-                    *progress = operations.into();
+                    let operations = progress
+                        .iter()
+                        .cloned()
+                        .chain([Arc::new(operation)])
+                        .collect();
+                    *progress = operations;
                 }
                 self.egui_ctx().request_repaint();
             }
@@ -611,7 +614,10 @@ impl AppContext {
                     .dpns_vote_progress
                     .write()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                    load_operations_read_only(kv, self.network)?.into();
+                    load_operations_read_only(kv, self.network)?
+                        .into_iter()
+                        .map(Arc::new)
+                        .collect();
                 return Ok(());
             }
             // A stored record under this ID may hold targets an executor has
@@ -683,7 +689,8 @@ impl AppContext {
         *self
             .dpns_vote_progress
             .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::from(operations.as_slice());
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            operations.iter().cloned().map(Arc::new).collect();
         Ok(operations)
     }
 
@@ -1270,6 +1277,51 @@ mod tests {
         assert_eq!(
             ctx.dpns_vote_progress()[0].targets[0].status,
             DpnsVoteTargetStatus::Confirmed
+        );
+    }
+
+    /// A reader holding the publication must not make one target's transition
+    /// copy the other retained operations.
+    #[test]
+    fn a_target_transition_shares_every_other_published_operation() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        ctx.set_det_kv_override_for_test(kv());
+        let mut changed = operation(DpnsVoteTargetStatus::Queued);
+        let mut untouched = operation(DpnsVoteTargetStatus::Queued);
+        untouched.targets[0].target.key.vote_poll_id = Identifier::from([3; 32]);
+        let key = changed.targets[0].target.key.clone();
+        ctx.insert_dpns_vote_operation(&mut changed, None).unwrap();
+        ctx.insert_dpns_vote_operation(&mut untouched, None)
+            .unwrap();
+        let published = |progress: &[Arc<DpnsVoteOperation>], id: DpnsVoteOperationId| {
+            Arc::clone(
+                progress
+                    .iter()
+                    .find(|operation| operation.id == id)
+                    .expect("published operation"),
+            )
+        };
+
+        let before = ctx.dpns_vote_progress();
+        assert!(ctx.claim_dpns_vote_target(changed.id, &key).unwrap());
+        let after = ctx.dpns_vote_progress();
+
+        assert_eq!(
+            published(&after, changed.id).targets[0].status,
+            DpnsVoteTargetStatus::Submitting
+        );
+        assert_eq!(
+            published(&before, changed.id).targets[0].status,
+            DpnsVoteTargetStatus::Queued,
+            "the reader's publication is left as it was"
+        );
+        assert!(
+            Arc::ptr_eq(
+                &published(&before, untouched.id),
+                &published(&after, untouched.id)
+            ),
+            "the untouched operation is shared, not copied"
         );
     }
 

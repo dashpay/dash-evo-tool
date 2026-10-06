@@ -294,7 +294,7 @@ fn persist_operation(
     }
 
     for key in counts::newly_spent_targets(previous.as_ref(), operation) {
-        counts::bump_vote_count(kv, key)?;
+        counts::bump_vote_count(kv, key, operation.id)?;
     }
 
     let mut ids = load_operation_ids(kv, network)?;
@@ -1909,6 +1909,37 @@ mod tests {
             None,
             "a queued target confirmed as a no-op spent no vote"
         );
+    }
+
+    /// A confirmation whose record write fails leaves the target unresolved,
+    /// and the next check confirms it again. That is still one vote.
+    #[test]
+    fn a_vote_confirmed_again_after_a_failed_record_write_is_counted_once() {
+        let store = Arc::new(FailingKv::default());
+        let kv = DetKv::from_store(store.clone());
+        let mut sent = operation(DpnsVoteTargetStatus::Confirming);
+        let key = sent.targets[0].target.key.clone();
+        persist_operation(&kv, Network::Testnet, &sent).unwrap();
+        let count =
+            || counts::vote_count(&kv, Network::Testnet, key.voter_id, key.vote_poll_id).unwrap();
+
+        sent.targets[0].status = DpnsVoteTargetStatus::Confirmed;
+        store.fail_next_puts_containing(OPERATION_KEY_PREFIX, 1);
+        assert!(persist_operation(&kv, Network::Testnet, &sent).is_err());
+        // The executor's error path leaves the stored target unconfirmed.
+        sent.targets[0].status = DpnsVoteTargetStatus::Unconfirmed;
+        sent.targets[0].failure = Some(DpnsVoteFailure::ResultUnconfirmed);
+        persist_operation(&kv, Network::Testnet, &sent).unwrap();
+        sent.targets[0].status = DpnsVoteTargetStatus::Confirmed;
+        sent.targets[0].failure = None;
+        persist_operation(&kv, Network::Testnet, &sent).unwrap();
+        assert_eq!(count(), Some(1), "the same vote must not count twice");
+
+        let mut change = operation(DpnsVoteTargetStatus::Confirming);
+        persist_operation(&kv, Network::Testnet, &change).unwrap();
+        change.targets[0].status = DpnsVoteTargetStatus::Confirmed;
+        persist_operation(&kv, Network::Testnet, &change).unwrap();
+        assert_eq!(count(), Some(2), "a later change is another vote");
     }
 
     #[test]

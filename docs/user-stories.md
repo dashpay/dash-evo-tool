@@ -890,12 +890,12 @@ As a user, I want my identity's Display name to identify it throughout the app s
 ### DPN-009: Notice schedules that need a fresh decision after an upgrade [Implemented]
 **Persona:** Priya
 
-As a masternode operator, I want to be told when an upgrade cannot carry over my scheduled votes so that I can review and cast or schedule them again.
+As a masternode operator, I want to be told when an upgrade cannot carry over my scheduled votes so that I can cast or schedule them again.
 
 - Startup checks for unexecuted schedules in the previous SQLite storage on the selected network.
-- A persistent, dismissible notice directs me to Masternodes → Votes to make a new decision.
-- The notice stops appearing one full voting period after it was first shown, because every vote an old schedule could refer to has ended by then.
-- Old schedules are neither imported nor executed automatically; their source records remain untouched.
+- A dismissible notice says the old schedules were not carried over and directs me to Masternodes → Votes to schedule the ones I still want. It does not list them.
+- The notice returns on each launch until one contest duration after it first appeared (14 days on Mainnet, 90 minutes on Testnet), when no contest an old schedule could refer to can still be open.
+- Old schedules are neither imported, listed, nor executed automatically; their source records remain untouched.
 - Executed schedules and votes already represented in the voting journal do not raise the notice.
 - New schedules use only the voting journal, including editing, cancellation, execution and recovery.
 

@@ -904,10 +904,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Scheduled votes now use only the voting journal. Schedules from the previous
   SQLite storage are no longer imported or executed automatically; a startup
-  notice asks users to review and cast or schedule those votes again.
+  notice asks you to schedule them again in Masternodes → Votes. The notice
+  lists no votes, returns on each launch, and stops once no contest such a
+  schedule could refer to can still be open (14 days after it first appeared
+  on Mainnet, 90 minutes on Testnet).
   Votes scheduled with an earlier development (pre-release) build of this
   version were saved in a storage format that is no longer read: they are not
-  carried over and that notice does not list them, so schedule them again in
+  carried over and raise no notice, so schedule them again in
   Masternodes → Votes.
 
 - The standalone DPNS tool and voting controls embedded in node details. Voting now

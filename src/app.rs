@@ -28,6 +28,7 @@ use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, Progre
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
 use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen, ProfileSearchScreen};
 use crate::ui::dpns::copy::scheduled_vote_clear_feedback;
+use crate::ui::dpns::dpns_contested_names_screen::DPNSScreen;
 use crate::ui::identity::identity_pill::shorten_id;
 use crate::ui::network_chooser_screen::{NetworkChooserScreen, chooser_network_label};
 use crate::ui::theme::ThemeMode;
@@ -449,22 +450,6 @@ fn identity_hub_is_visible(selected: RootScreenType, screen_stack_is_empty: bool
 /// The root screen hosting the voting workspace (Masternodes ▸ Votes).
 const VOTING_ROOT_SCREEN: RootScreenType = RootScreenType::RootScreenMasternodes;
 
-/// Every result `DPNSScreen::display_task_result` acts on, so that the voting
-/// panel receives it even while its root screen is hidden. Dropping a variant here without
-/// dropping its handler arm strands the screen in the state that result would
-/// have cleared. `dpns_result_routing_tests` reads the handler's source and
-/// fails if the two sets drift apart.
-fn is_dpns_vote_result(result: &BackendTaskSuccessResult) -> bool {
-    matches!(
-        result,
-        BackendTaskSuccessResult::DpnsVoteOperationUpdated { .. }
-            | BackendTaskSuccessResult::RefreshedDpnsContests
-            | BackendTaskSuccessResult::ScheduledVoteSweepCompleted { .. }
-            | BackendTaskSuccessResult::ScheduledVotesCleared(_)
-            | BackendTaskSuccessResult::ScheduledVotesInProgress(_)
-    )
-}
-
 /// Whether a DPNS root screen is currently out of view, either because another
 /// root screen is selected or because a modal covers it. Shared by success and
 /// error routing so both agree on what "hidden" means.
@@ -482,7 +467,10 @@ fn dpns_result_needs_hidden_route(
     screen_stack_is_empty: bool,
     result: &BackendTaskSuccessResult,
 ) -> bool {
-    is_dpns_vote_result(result) && dpns_screen_is_hidden(target, selected, screen_stack_is_empty)
+    // The voting panel says which results it acts on, so it receives each of
+    // them even while its root screen is hidden.
+    DPNSScreen::handles_result(result)
+        && dpns_screen_is_hidden(target, selected, screen_stack_is_empty)
 }
 
 /// Plain, jargon-free descriptions for the SPV-sync block (Everyday-User rule:
@@ -4963,71 +4951,41 @@ mod dpns_result_routing_tests {
         ));
     }
 
-    /// The DPNS screen's own source, read at compile time so the guard below
-    /// tracks the handler instead of a hand-copied list of variant names.
-    const DPNS_SCREEN_SOURCE: &str = include_str!("ui/dpns/dpns_contested_names_screen.rs");
-
-    /// Result variant names `DPNSScreen::display_task_result` matches on.
-    fn variants_the_dpns_screen_handles() -> Vec<String> {
-        const MARKER: &str = "BackendTaskSuccessResult::";
-        let start = DPNS_SCREEN_SOURCE
-            .find("fn display_task_result(")
-            .expect("DPNSScreen::display_task_result was renamed; update this guard");
-        let handler = &DPNS_SCREEN_SOURCE[start..];
-        let end = handler[1..]
-            .find("\n    fn ")
-            .map_or(handler.len(), |offset| offset + 1);
-        let handler = &handler[..end];
-
-        let mut variants: Vec<String> = Vec::new();
-        for (index, _) in handler.match_indices(MARKER) {
-            let name: String = handler[index + MARKER.len()..]
-                .chars()
-                .take_while(|character| character.is_alphanumeric() || *character == '_')
-                .collect();
-            if !name.is_empty() && !variants.contains(&name) {
-                variants.push(name);
-            }
-        }
-        assert!(
-            !variants.is_empty(),
-            "no handled variants found; the guard no longer locates DPNSScreen::display_task_result"
-        );
-        variants
-    }
-
-    fn sample_result(variant: &str) -> BackendTaskSuccessResult {
-        match variant {
-            "DpnsVoteOperationUpdated" => BackendTaskSuccessResult::DpnsVoteOperationUpdated {
+    /// The panel itself says which results it handles, so routing follows the
+    /// handler: every such result reaches a hidden panel, and nothing else does.
+    #[test]
+    fn hidden_routing_follows_the_results_the_voting_panel_handles() {
+        let hidden = |result: &BackendTaskSuccessResult| {
+            dpns_result_needs_hidden_route(
+                VOTING_ROOT_SCREEN,
+                RootScreenType::RootScreenIdentityHub,
+                true,
+                result,
+            )
+        };
+        for handled in [
+            BackendTaskSuccessResult::DpnsVoteOperationUpdated {
                 network: Network::Testnet,
                 operation_id: DpnsVoteOperationId::from_bytes([5; 16]),
             },
-            "ScheduledVoteSweepCompleted" => {
-                BackendTaskSuccessResult::ScheduledVoteSweepCompleted {
-                    network: Network::Testnet,
-                    preserve_eligibility_since_ms: None,
-                }
-            }
-            "ScheduledVotesInProgress" => {
-                BackendTaskSuccessResult::ScheduledVotesInProgress(Vec::new())
-            }
-            "ScheduledVotesCleared" => BackendTaskSuccessResult::ScheduledVotesCleared(Vec::new()),
-            "RefreshedDpnsContests" => BackendTaskSuccessResult::RefreshedDpnsContests,
-            unknown => panic!(
-                "DPNSScreen::display_task_result now handles {unknown}; add a sample here and route it in is_dpns_vote_result"
-            ),
+            BackendTaskSuccessResult::ScheduledVoteSweepCompleted {
+                network: Network::Testnet,
+                preserve_eligibility_since_ms: None,
+            },
+            BackendTaskSuccessResult::ScheduledVotesInProgress(Vec::new()),
+            BackendTaskSuccessResult::ScheduledVotesCleared(Vec::new()),
+            BackendTaskSuccessResult::RefreshedDpnsContests,
+        ] {
+            assert!(DPNSScreen::handles_result(&handled));
+            assert!(hidden(&handled));
         }
-    }
-
-    /// A result the DPNS screen acts on but `is_dpns_vote_result` rejects is
-    /// dropped whenever that screen is hidden, so the two sets must agree.
-    #[test]
-    fn every_result_the_dpns_screen_handles_is_routed_to_hidden_screens() {
-        for variant in variants_the_dpns_screen_handles() {
-            assert!(
-                is_dpns_vote_result(&sample_result(&variant)),
-                "DPNSScreen::display_task_result handles {variant} but is_dpns_vote_result drops it while the screen is hidden"
-            );
+        for unrelated in [
+            BackendTaskSuccessResult::None,
+            BackendTaskSuccessResult::Refresh,
+            BackendTaskSuccessResult::MyUsernameRequestsRefreshed,
+        ] {
+            assert!(!DPNSScreen::handles_result(&unrelated));
+            assert!(!hidden(&unrelated));
         }
     }
 

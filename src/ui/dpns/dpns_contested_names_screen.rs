@@ -347,6 +347,48 @@ pub enum ReviewPlanError {
     Compose(#[from] ComposeError),
 }
 
+/// A backend result the votes panel acts on.
+///
+/// The one place that names them: `AppState` routes exactly these to the
+/// panel while it is hidden (via [`DPNSScreen::handles_result`]) and
+/// `display_task_result` matches on this type, so a result cannot be handled
+/// without also being routed.
+enum VotesPanelResult {
+    OperationUpdated {
+        network: Network,
+        operation_id: DpnsVoteOperationId,
+    },
+    ScheduledSweepCompleted {
+        network: Network,
+    },
+    ScheduledVotesInProgress,
+    ScheduledVotesCleared,
+    ContestsRefreshed,
+}
+
+impl VotesPanelResult {
+    fn of(result: &BackendTaskSuccessResult) -> Option<Self> {
+        match result {
+            BackendTaskSuccessResult::DpnsVoteOperationUpdated {
+                network,
+                operation_id,
+            } => Some(Self::OperationUpdated {
+                network: *network,
+                operation_id: *operation_id,
+            }),
+            BackendTaskSuccessResult::ScheduledVoteSweepCompleted { network, .. } => {
+                Some(Self::ScheduledSweepCompleted { network: *network })
+            }
+            BackendTaskSuccessResult::ScheduledVotesInProgress(_) => {
+                Some(Self::ScheduledVotesInProgress)
+            }
+            BackendTaskSuccessResult::ScheduledVotesCleared(_) => Some(Self::ScheduledVotesCleared),
+            BackendTaskSuccessResult::RefreshedDpnsContests => Some(Self::ContestsRefreshed),
+            _ => None,
+        }
+    }
+}
+
 /// Why a submit click produced nothing to send.
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum VoteSubmissionError {
@@ -523,6 +565,13 @@ pub struct DPNSScreen {
 }
 
 impl DPNSScreen {
+    /// Whether `display_task_result` acts on `result`. `AppState` delivers
+    /// such results even while the panel is hidden; a missed one would strand
+    /// the panel in the state that result was meant to clear.
+    pub(crate) fn handles_result(result: &BackendTaskSuccessResult) -> bool {
+        VotesPanelResult::of(result).is_some()
+    }
+
     pub fn new(app_context: &Arc<AppContext>, view: VotesView) -> Self {
         let vote_operations = DpnsVoteOperationSnapshot::load(app_context);
         let scheduled_votes = Arc::new(Mutex::new(vote_operations.scheduled_vote_rows()));
@@ -2633,11 +2682,16 @@ impl ScreenLike for DPNSScreen {
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        match backend_task_success_result {
-            BackendTaskSuccessResult::DpnsVoteOperationUpdated {
-                network,
-                operation_id,
-            } if network == self.app_context.network() => {
+        let Some(result) = VotesPanelResult::of(&backend_task_success_result) else {
+            return;
+        };
+        let current_network = self.app_context.network();
+        match result {
+            // A result for another network is not this panel's to apply.
+            VotesPanelResult::OperationUpdated { network, .. }
+            | VotesPanelResult::ScheduledSweepCompleted { network }
+                if network != current_network => {}
+            VotesPanelResult::OperationUpdated { operation_id, .. } => {
                 if let Err(error) = self.vote_state.reload(&self.app_context) {
                     tracing::warn!(
                         ?error,
@@ -2673,18 +2727,16 @@ impl ScreenLike for DPNSScreen {
                 self.rebuild_cards();
                 self.app_context.recompute_dpns_vote_attention();
             }
-            BackendTaskSuccessResult::ScheduledVoteSweepCompleted { network, .. }
-                if network == self.app_context.network() =>
-            {
+            VotesPanelResult::ScheduledSweepCompleted { .. } => {
                 self.refresh();
             }
-            BackendTaskSuccessResult::ScheduledVotesInProgress(_) => {
+            VotesPanelResult::ScheduledVotesInProgress => {
                 if let Err(error) = self.vote_operations.refresh(&self.app_context) {
                     tracing::warn!(?error, "Could not refresh scheduled-vote operation state");
                 }
                 self.rebuild_scheduled_vote_rows();
             }
-            BackendTaskSuccessResult::ScheduledVotesCleared(_) => {
+            VotesPanelResult::ScheduledVotesCleared => {
                 if let Err(error) = self.vote_operations.refresh(&self.app_context) {
                     tracing::warn!(
                         ?error,
@@ -2693,12 +2745,11 @@ impl ScreenLike for DPNSScreen {
                 }
                 self.rebuild_scheduled_vote_rows();
             }
-            BackendTaskSuccessResult::RefreshedDpnsContests => {
+            VotesPanelResult::ContestsRefreshed => {
                 self.refresh();
                 self.refresh_banner.take_and_clear();
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
             }
-            _ => {}
         }
     }
 

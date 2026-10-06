@@ -779,7 +779,13 @@ impl ScreenLike for RegisterDpnsNameScreen {
                 row: AvailabilityRow::Known(*availability),
             };
             self.registration_error_handled = true;
-        } else if matches!(error, TaskError::UsernameRegistrationTermsChanged) {
+        } else if matches!(
+            error,
+            // An unconfirmed request may be paid for: Pay must not come back
+            // without a fresh availability check and a fresh review.
+            TaskError::UsernameRegistrationTermsChanged
+                | TaskError::UsernameRegistrationUnconfirmed { .. }
+        ) {
             self.on_label_changed();
         } else {
             self.step = Step::Confirm;

@@ -53,7 +53,29 @@ impl AppContext {
         sdk: &dash_sdk::Sdk,
         identity_id: Identifier,
     ) -> Result<Vec<DPNSNameInfo>, TaskError> {
-        let query = DocumentQuery {
+        let documents = Document::fetch_many(sdk, self.owned_dpns_names_query(identity_id))
+            .await
+            .map_err(|e| TaskError::DpnsFetchError {
+                source: Box::new(e),
+            })?;
+        Ok(documents
+            .values()
+            .flatten()
+            .filter_map(|doc| {
+                let name = doc.get("label")?.to_str().ok()?.to_owned();
+                let acquired_at = doc
+                    .created_at()
+                    .into_iter()
+                    .chain(doc.transferred_at())
+                    .max()?;
+                Some(DPNSNameInfo { name, acquired_at })
+            })
+            .collect())
+    }
+
+    /// The lookup for every DPNS name whose records point at `identity_id`.
+    pub(super) fn owned_dpns_names_query(&self, identity_id: Identifier) -> DocumentQuery {
+        DocumentQuery {
             sub_queries: Vec::new(),
             select: SelectProjection::documents(),
             data_contract: self.dpns_contract.clone(),
@@ -70,26 +92,7 @@ impl AppContext {
             limit: 100,
             offset: None,
             start: None,
-        };
-        let documents =
-            Document::fetch_many(sdk, query)
-                .await
-                .map_err(|e| TaskError::DpnsFetchError {
-                    source: Box::new(e),
-                })?;
-        Ok(documents
-            .values()
-            .flatten()
-            .filter_map(|doc| {
-                let name = doc.get("label")?.to_str().ok()?.to_owned();
-                let acquired_at = doc
-                    .created_at()
-                    .into_iter()
-                    .chain(doc.transferred_at())
-                    .max()?;
-                Some(DPNSNameInfo { name, acquired_at })
-            })
-            .collect())
+        }
     }
 }
 

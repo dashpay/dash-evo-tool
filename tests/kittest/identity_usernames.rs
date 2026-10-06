@@ -211,6 +211,34 @@ fn pay_time_recheck_returns_to_choose_with_locked_row() {
     });
 }
 
+/// A registration whose outcome could not be confirmed may already be paid for,
+/// so the screen must not put the Pay step back with the same review.
+#[test]
+fn unconfirmed_registration_does_not_return_to_the_pay_step() {
+    with_isolated_data_dir(|| {
+        let (_rt, app_context) = fresh_app_context();
+        seed_username_identity(&app_context, 0x19, "Alice Novak", &[], 0, true);
+        let mut screen = answered(&app_context, "alice", UsernameAvailability::NeedsVote);
+        screen.open_confirm_for_test();
+        let ctx = egui::Context::default();
+        let AppAction::BackendTaskWithContext { context, .. } =
+            screen.begin_registration_for_test(&ctx)
+        else {
+            panic!("expected registration");
+        };
+        let error = TaskError::UsernameRegistrationUnconfirmed {
+            source_error: Box::new(dash_sdk::Error::Generic("no answer".to_owned())),
+        };
+        screen.display_backend_task_error(&context, &error);
+        assert!(
+            !screen.display_task_error(&error),
+            "the warning is shown to the user, not swallowed by the screen"
+        );
+        assert!(!ProgressOverlay::has_global(&ctx));
+        assert!(!screen.is_confirming_for_test());
+    });
+}
+
 /// USR-TC-035 / 036 / 037: confirm rows, low balance, and the sync gate.
 #[test]
 fn confirm_step_shows_fees_low_balance_and_sync_gate() {

@@ -2115,6 +2115,16 @@ pub enum TaskError {
     #[error("The username payment terms changed. Nothing was spent. Review the name and fees again.")]
     UsernameRegistrationTermsChanged,
 
+    /// The name request was sent, but nothing proves whether the network applied
+    /// it. It may already be paid for, so this never reads as a plain failure.
+    #[error(
+        "The app could not confirm whether your request for this username went through. Do not pay again yet. Wait a few minutes, then check the Usernames list on your identity. If the name is not there, try again."
+    )]
+    UsernameRegistrationUnconfirmed {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
     /// Username requests or preferences could not be read or written on this device.
     #[error(
         "Your username settings could not be saved on this device. Check available disk space and try again."

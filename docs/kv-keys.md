@@ -141,10 +141,11 @@ The journal is the sole store of immediate and scheduled DPNS votes. Every key i
 | `det:dpns_vote_schedule_dismissals:v1:<network>:<operation_id>` | `None` | `det-<net>.sqlite` | `BTreeSet<DpnsVoteTargetKey>` | Scheduled targets the user dismissed from the Scheduled view |
 | `det:dpns_vote_immediate_history:v1:<network>` | `None` | `det-<net>.sqlite` | `Vec<DpnsVoteOperationId>` | Completion order of finished immediate operations, used to bound history |
 | `det:dpns_vote_scheduled_history:v1:<network>` | `None` | `det-<net>.sqlite` | `Vec<DpnsVoteOperationId>` | Completion order of finished scheduled operations, used to bound history |
+| `det:dpns_vote_counts:v1:<network>:<voter_id_base58>:<vote_poll_id_base58>` | `None` | `det-<net>.sqlite` | `u8` | Votes this device saw Platform apply for one node on one contest, used for "changes left". Kept outside the operation records so history pruning does not lose it; dropped only when the contest is proven closed |
 
 Loading the journal fails closed: one unreadable operation record fails every operation that reads the journal. Identity removal is the exception. It deletes the identity's keys regardless and leaves the vote cancellation to the retained `det:vault_cleanup_pending:v1:` manifest, which startup recovery retries.
 
-Source: `src/context/dpns_vote_operations/keys.rs` (key schema), `src/context/dpns_vote_operations/mod.rs`, `src/context/dpns_vote_operations/retention.rs`
+Source: `src/context/dpns_vote_operations/keys.rs` (key schema), `src/context/dpns_vote_operations/mod.rs`, `src/context/dpns_vote_operations/retention.rs`, `src/context/dpns_vote_operations/counts.rs`
 
 ---
 

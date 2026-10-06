@@ -122,7 +122,10 @@ Validation floor: 24 nodes on one voting key, 6 open contests, 2 ending today.
   needing a decision from ≥ 1 node-set node + unresolved targets.
 - **VOTE-FR-074** **[New]** — A background refresh of contests and node vote state
   feeds VOTE-FR-072/073 while voting nodes are loaded: every 30 min on mainnet,
-  every 3 min on testnet/devnet, and immediately on Votes arrival.
+  every 3 min on testnet/devnet, and immediately on Votes arrival. Proved vote
+  state stays valid for display and for VOTE-FR-072/073 for two refresh
+  intervals, so the signal does not blank between refreshes. Submission never
+  relies on it: preflight fetches its own proof and accepts it for 120 seconds.
 - **VOTE-FR-076** **[New]** — Node detail shows `This node's votes` (name, choice,
   changes left, deadline), its masternode-list status, and `Vote with this node`
   (VOTE-FR-075 node set = that node).
@@ -157,7 +160,8 @@ Validation floor: 24 nodes on one voting key, 6 open contests, 2 ending today.
 - **VOTE-FR-078** **[New]** — Changes left per node per contest: with n =
   confirmed votes for that proTxHash × contest in the journal, it is 4 when n = 0,
   otherwise 5 − n. Label it `counted on this device`. If proved state shows a vote not present in the
-  journal, show `Changes left unknown. This node voted outside Dash Evo Tool.`
+  journal, show `Changes left unknown. This device has no record of this node's
+  earlier votes.`
   A node with 0 left is skipped with the reason `no changes left (4 of 4 changes
   used)`.
 - **VOTE-FR-079** **[New]** — A node not in the current masternode list is
@@ -210,9 +214,11 @@ Validation floor: 24 nodes on one voting key, 6 open contests, 2 ending today.
   ID/name, requested choice, and typed status.
 - **VOTE-FR-032** — Target statuses are `Scheduled`, `Queued`, `Submitting`,
   `Confirming`, `Confirmed`, `Unconfirmed`, `Rejected`, and
-  `Failed before submission`, plus `Not applied` after definitive
-  post-broadcast reconciliation and `Cancelled` when the user cancels a
-  scheduled target before it is submitted (see VOTE-FR-055).
+  `Failed before submission`, plus `Cancelled` when the user cancels a
+  scheduled target before it is submitted (see VOTE-FR-055). `Not applied`
+  (definitive post-broadcast reconciliation) is **not implemented — blocked on
+  [dashpay/platform#4137](https://github.com/dashpay/platform/issues/4137)**:
+  the status is reserved in the journal encoding, and nothing produces it.
 - **VOTE-FR-033** — Same-node targets execute sequentially to preserve nonce
   order. Different nodes may execute concurrently with a fixed bound.
 - **VOTE-FR-034** — A target lock prevents a second operation for the same
@@ -232,10 +238,11 @@ Validation floor: 24 nodes on one voting key, 6 open contests, 2 ending today.
   interactive.
 - **VOTE-FR-084** **[New]** — A `Needs attention` row at the top of Votes appears
   when any target is Unconfirmed, Rejected, Failed before submission, or a missed
-  schedule. It summarizes and links to the drawer or Scheduled.
+  schedule. It summarizes and links to the drawer (`Show progress`) or Scheduled
+  (`Open Scheduled`).
 - **VOTE-FR-087** **[New]** — Targets not yet submitted when their contest's
-  voting ends become `Failed before submission` with the reason `Not cast. Voting
-  ended.`
+  voting ends become `Failed before submission` with the reason `Not submitted.
+  Voting ended.`
 
 ### Confirmation and recovery
 
@@ -244,14 +251,23 @@ Validation floor: 24 nodes on one voting key, 6 open contests, 2 ending today.
 - **VOTE-FR-041** — A cause-less post-broadcast wait failure is treated as
   `Unconfirmed`, never as rejection.
 - **VOTE-FR-042** — Unconfirmed targets are reconciled against the proved
-  current vote and, when available, retried by transition hash through the
-  Platform SDK.
+  current vote: an exact match confirms the target, and a missing or different
+  vote leaves it Unconfirmed and locked. The scheduled-vote sweep re-checks them
+  after it has executed the due votes — on the three sweeps after startup or
+  vote activity, then every 10 minutes — and reports a result only when a vote
+  was confirmed. Targets of a decided contest are not queried, because Platform
+  has dropped their vote references. `Check again` re-checks on demand. Retry
+  by transition hash is **not implemented — blocked on
+  [dashpay/platform#4137](https://github.com/dashpay/platform/issues/4137)**.
 - **VOTE-FR-043** — A target becomes `Confirmed` when authoritative state
   matches the requested choice.
 - **VOTE-FR-044** — DET never offers `Submit again` while the result remains
   ambiguous. It offers `Check again`.
-- **VOTE-FR-045** — A retry becomes available only after authoritative
-  reconciliation proves the requested change was not applied.
+- **VOTE-FR-045** — **Not implemented — blocked on
+  [dashpay/platform#4137](https://github.com/dashpay/platform/issues/4137).**
+  A retry would become available only after authoritative reconciliation proves
+  the requested change was not applied. No reconciliation result proves that
+  today, so an Unconfirmed target keeps its lock.
 - **VOTE-FR-046** — If saved voting-operation progress cannot be read, DET
   shows a persistent notice that the displayed history may be incomplete,
   offers `Retry loading`, and keeps cached progress and existing target
@@ -268,8 +284,10 @@ Validation floor: 24 nodes on one voting key, 6 open contests, 2 ending today.
 - **VOTE-FR-053** — Unconfirmed scheduled targets are not automatically
   rebroadcast.
 - **VOTE-FR-054** — Schedules use only the voting journal. Startup reports
-  unexecuted schedules in previous SQLite storage and asks the user to cast or
-  schedule them again; it neither imports nor executes them automatically.
+  unexecuted schedules in previous SQLite storage and asks the user to schedule
+  them again; it neither imports, lists, nor executes them. The notice stops
+  one contest duration after it first appeared, when no such contest can still
+  be open.
 - **VOTE-FR-055** — A scheduled target can be edited or cancelled until
   execution begins. Once submitting, it follows normal operation locking.
 - **VOTE-FR-056** — A target still `Scheduled` more than 120 seconds past its
@@ -291,8 +309,13 @@ Validation floor: 24 nodes on one voting key, 6 open contests, 2 ending today.
 
 - **VOTE-FR-060** — One confirmed target shows a concise success banner.
 - **VOTE-FR-061** **[Changed 2026-10-01]** — Batch feedback is the drawer plus one
-  final banner summarizing counts (`{n} nodes voted on {d} names.` or `…; {k} are
-  still being checked.`).
+  final banner summarizing counts: `{n} nodes voted on {d} names.`, or, while
+  some are unconfirmed, `Participating nodes: {n}. Names with confirmed votes:
+  {d}. Votes still being checked: {k}. Dash Evo Tool will keep checking. Do not
+  submit the pending votes again.` A batch with several different outcomes
+  lists one `{Outcome}: {count}.` unit per non-empty outcome. A batch in which
+  nothing was submitted names the cause: a connection problem, voting ended, or
+  a voting key that is not loaded.
 - **VOTE-FR-062** — Messages name node aliases and contested names where useful.
 - **VOTE-FR-063** — Technical errors stay in banner details.
 - **VOTE-FR-064** — Unconfirmed copy explicitly says DET will keep checking and

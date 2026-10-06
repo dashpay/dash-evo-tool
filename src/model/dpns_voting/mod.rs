@@ -246,7 +246,9 @@ pub enum DpnsVoteTargetStatus {
     Unconfirmed,
     Rejected,
     FailedBeforeSubmission,
-    /// Reconciliation proved that a submitted vote was not applied.
+    /// Reserved: nothing produces it, because reconciliation cannot prove a
+    /// submitted vote was not applied (dashpay/platform#4137). Kept because
+    /// journal records are positionally encoded.
     NotApplied,
     /// The user cancelled a scheduled vote before it was submitted.
     Cancelled,

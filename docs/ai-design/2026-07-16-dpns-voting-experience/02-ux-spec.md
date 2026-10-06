@@ -48,8 +48,8 @@ Tools — DPNS entry removed. My usernames → Identity hub (Stream U).
 ## Votes ▸ To decide (frame V1)
 
 Header row: sub-view chips · node-set chip `Vote with: All my nodes · 24 nodes ·
-51 votes ▾` · `Find a name` (homoglyph tooltip: `Search ignores look-alike
-characters the way usernames do, so o matches 0 and l matches 1.`).
+51 votes ▾` · a `Filter by name` field (homoglyph tooltip: `The letters i and l
+match the digit 1, and the letter o matches 0.`).
 
 Card (two columns):
 - Left, read-only:
@@ -75,7 +75,9 @@ Tray (outside scroll): `{d} decisions ready · {t} transactions, one per node an
 name` [Clear] [Cast ⏎].
 
 Needs-attention row (warning style, only when present): `Votes still being checked: 1.
-Missed scheduled votes: 1. Do not submit the pending votes again.` [Show].
+Missed scheduled votes: 1. Do not submit the pending votes again.`
+[Show progress] while votes are being checked or have failed, [Open Scheduled]
+when a scheduled vote was missed.
 
 ## Node set (frame V1b)
 
@@ -113,10 +115,15 @@ Rules (unchanged from #901, now in the confirm step):
 As specified in VOTE-FR-083.
 - Row copy by status: `Confirmed` · `Submitting` · `Confirming` ·
   `Still being checked. Do not submit it again.` [Check again] ·
-  `Not applied` [Review again] · `Not submitted` + saved reason.
+  `Rejected` [Review again] · `Not submitted` [Review again] ·
+  `Not submitted. The voting key is not loaded.` [Add voting key] ·
+  `Not submitted. Voting ended.` (no action). A `Not applied` row is not
+  implemented (VOTE-FR-032).
 - A different current vote does not prove that an ambiguous submission failed.
   Checking retains the duplicate-prevention lock until a conclusive result.
-- Collapsed state: a chip `Casting 44 votes · 33 done` above the network chip.
+- The drawer is a fixed 360 px panel anchored bottom-right. Collapsed, it
+  keeps its header (`Casting 44 votes · 33 done · …`) with [Show]; expanded,
+  the header offers [Hide], and [Dismiss] once nothing is in flight.
 - The final banner is defined in VOTE-FR-061.
 
 ## Scheduled (frame V3)
@@ -143,7 +150,7 @@ or Testnet network. Devnet and Regtest have no public explorer link.
 
 | State | Copy | Action |
 |---|---|---|
-| No nodes loaded | `Load a masternode with its voting key to vote on name contests.` (contests shown read-only; choice tooltip `Load a masternode with a voting key to vote.`) | Load a masternode |
+| No nodes loaded | `No masternodes are loaded.` · `Load a masternode with its voting key to cast votes.` | Load a masternode |
 | Nodes, no voting key | `None of your nodes has a voting key on this device. Add a voting key to vote. One key can serve several nodes.` | Add a voting key |
 | No open contests | `There are no open name contests right now. New contests appear here automatically.` | Refresh |
 | Journal unreadable | `Saved voting progress could not be read. The displayed history may be incomplete or out of date. Do not submit votes again until you have retried loading and checked their status.` | Retry loading |
@@ -151,9 +158,9 @@ or Testnet network. Devnet and Regtest have no public explorer link.
 ## Node detail (frame V6)
 
 Header: node alias, `Voting ready`, a type badge `Evonode · 4 votes`, and the
-masternode-list status. Primary [Vote with this node]. The `This node's votes`
-table shows Name · Vote · Changes left · Voting ends, with the footer `Changes
-left are counted on this device.`
+masternode-list status. Primary [Vote with this node]. `This node's votes` is a
+grid without a header row: name · vote · changes left · time left. Each row
+with a vote carries its own `{n} of 4 changes left, counted on this device`.
 
 ## Top-bar chip (frame V0)
 
@@ -167,5 +174,5 @@ below the Power role or when no node has a voting key.
 - Shortcut rules are in VOTE-NFR-010.
 - Status is always text plus icon; color is supplementary.
 - The drawer never steals focus.
-- Narrow widths: tally stacks above choices; the drawer becomes a bottom sheet;
-  the tray stays outside the scroll area.
+- Narrow widths: tally stacks above choices; the drawer keeps its fixed-width
+  bottom-right panel; the tray stays outside the scroll area.

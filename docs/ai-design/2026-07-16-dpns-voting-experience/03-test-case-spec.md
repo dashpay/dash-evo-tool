@@ -60,7 +60,7 @@ K = kittest, B = backend test with fake SDK seam.
 | VOTE-TC-051 | Structured rejection | Platform returns typed consensus cause | Complete target | Status Rejected with actionable typed message | FR-040 |
 | VOTE-TC-052 | Cause-less wait failure | Broadcast succeeds; wait returns no cause | Complete target | Status Unconfirmed; warning forbids resubmission | FR-041, FR-044, FR-064 |
 | VOTE-TC-053 | Reconcile to success | Unconfirmed target; proved vote matches request | Check again | Status changes to Confirmed without rebroadcast | FR-042, FR-043 |
-| VOTE-TC-054 | Reconcile to safe retry | Unconfirmed target; definitive reconciliation proves absence | Check again | Status allows reviewed resubmission | FR-045 |
+| VOTE-TC-054 | Reconcile to safe retry — **not implemented, blocked on dashpay/platform#4137** | Unconfirmed target; proved vote absent or different | Check again | Target stays Unconfirmed and locked; no resubmission is offered | FR-045 |
 | VOTE-TC-055 | Reconciliation unavailable | DAPI remains unavailable | Check again | Target stays Unconfirmed and locked; no false failure/success | FR-044 |
 | VOTE-TC-056 **[Changed]** | Partial batch | Two confirmed, one unconfirmed, one rejected | Complete batch | Drawer maps every target; final banner shows counts | FR-061, FR-062, FR-083 |
 | VOTE-TC-057 | Journal read failure stays visible until retried | Saved vote-operation progress cannot be read | Open Votes ▸ Scheduled, then click `Retry loading` once the read succeeds | Persistent notice and `Retry loading` remain visible across renders until a successful refresh, then clear | FR-046 |
@@ -99,15 +99,15 @@ K = kittest, B = backend test with fake SDK seam.
 | VOTE-TC-092 | Weighted influence | Leader margin 6; node set weight 51 | Render card | Influence line shown; hidden when weight < margin | FR-077 | U |
 | VOTE-TC-093 | Tie copy | Two contenders equal | Render | `If still tied at the end, the most recent request wins.` | FR-077 | K |
 | VOTE-TC-094 | Changes left count | Journal: 3 confirmed votes for node × contest | Render node detail | `2 of 4` (5 − 3) | FR-078 | U |
-| VOTE-TC-095 | Changes unknown | Proved vote exists, journal empty | Render | `Changes left unknown. This node voted outside Dash Evo Tool.` | FR-078 | U |
+| VOTE-TC-095 | Changes unknown | Proved vote exists, journal empty | Render | `Changes left unknown. This device has no record of this node's earlier votes.` | FR-078 | U |
 | VOTE-TC-096 | Out of changes skipped | Journal 5 votes | Confirm | Node under Skipped with `no changes left (4 of 4 changes used)`; not submitted | FR-078, FR-025 | B |
 | VOTE-TC-097 | Not in list excluded | Node absent from masternode list | Node set | Row disabled with reason; not submitted | FR-079 | K |
 | VOTE-TC-098 | Keyboard flow | 2 cards | J, 2, J, L, Enter | Choices set, confirm opens; shortcuts ignored while filter field focused | FR-082, NFR-010 | K |
 | VOTE-TC-099 | Bulk bar | 3 cards selected | Click Abstain | All three drafts = Abstain | FR-082 | K |
 | VOTE-TC-100 | Drawer non-blocking | Batch sending | Interact with another card, navigate | Other controls enabled; drawer persists; no full-window overlay | FR-035, FR-083 | K |
 | VOTE-TC-101 | Drawer statuses | Mixed outcomes | Inspect | Each row has typed status and the single valid action; unconfirmed never offers resubmit | FR-083, FR-044 | K |
-| VOTE-TC-102 | Needs-attention row | One Unconfirmed + one missed | Open Votes | Row summarises both; Show opens drawer / Scheduled | FR-084 | K |
-| VOTE-TC-103 | Contest ends mid-batch | Queued targets past end | Execute | `Failed before submission` + `Not cast. Voting ended.` | FR-087 | B |
+| VOTE-TC-102 | Needs-attention row | One Unconfirmed + one missed | Open Votes | Row summarises both; `Show progress` opens the drawer, `Open Scheduled` opens Scheduled | FR-084 | K |
+| VOTE-TC-103 | Contest ends mid-batch | Queued targets past end | Execute | `Failed before submission` + `Not submitted. Voting ended.` | FR-087 | B |
 | VOTE-TC-104 | Background refresh cadence | Voting nodes loaded | Advance clock | Contest + vote-state refresh at 30 min mainnet / 3 min testnet; one query per node | FR-074, NFR-007 | U |
 | VOTE-TC-105 | Votes stub not used | — | Code search / seam test | Vote state uses `ResourceVote::fetch_many` by proTxHash | FR-010 | B |
 

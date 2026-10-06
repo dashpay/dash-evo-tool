@@ -92,7 +92,7 @@ pub struct SkippedTarget {
 pub enum ComposeError {
     #[error("Choose a future time before the contest ends for {contested_name}.dash.")]
     ScheduleOutlastsContest { contested_name: String },
-    #[error("Voting has ended for {contested_name}.dash. Remove it from your decisions.")]
+    #[error("Voting has ended for {contested_name}.dash. Clear it from your decisions.")]
     VotingEnded { contested_name: String },
 }
 

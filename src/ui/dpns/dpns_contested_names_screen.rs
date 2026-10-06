@@ -337,26 +337,14 @@ pub enum ReviewPlanError {
     ScheduleIsNotInTheFuture,
     #[error("Choose a valid UTC date and time.")]
     ScheduleIsNotAValidTime,
-    #[error("Choose a future time before the contest ends for {contested_name}.dash.")]
-    ScheduleOutlastsContest { contested_name: String },
     #[error("This vote could not be prepared. Refresh the contests and try again.")]
     VotePollUnavailable {
         #[source]
         source: Arc<TaskError>,
     },
-    #[error("Voting has ended for {contested_name}.dash. Clear it from your decisions.")]
-    VotingEnded { contested_name: String },
-}
-
-impl From<ComposeError> for ReviewPlanError {
-    fn from(error: ComposeError) -> Self {
-        match error {
-            ComposeError::ScheduleOutlastsContest { contested_name } => {
-                Self::ScheduleOutlastsContest { contested_name }
-            }
-            ComposeError::VotingEnded { contested_name } => Self::VotingEnded { contested_name },
-        }
-    }
+    /// The composer refused the selection; the sentence is the composer's.
+    #[error(transparent)]
+    Compose(#[from] ComposeError),
 }
 
 /// Why a submit click produced nothing to send.
@@ -4116,7 +4104,8 @@ mod tests {
         };
         assert!(matches!(
             error,
-            ReviewPlanError::ScheduleOutlastsContest { contested_name } if contested_name == "beta"
+            ReviewPlanError::Compose(ComposeError::ScheduleOutlastsContest { contested_name })
+                if contested_name == "beta"
         ));
     }
 
@@ -5199,6 +5188,26 @@ mod tests {
         assert_eq!(
             review_current_choice_label(Some(ResourceVoteChoice::Lock), None),
             "Lock name"
+        );
+    }
+
+    /// The composer words its own refusals; the confirm step and the
+    /// submission banner show them unchanged.
+    #[test]
+    fn composer_refusals_reach_the_operator_word_for_word() {
+        let ended = ComposeError::VotingEnded {
+            contested_name: "alpha".to_owned(),
+        };
+        let outlasts = ComposeError::ScheduleOutlastsContest {
+            contested_name: "alpha".to_owned(),
+        };
+        assert_eq!(
+            VoteSubmissionError::from(ReviewPlanError::from(ended)).to_string(),
+            "Voting has ended for alpha.dash. Clear it from your decisions."
+        );
+        assert_eq!(
+            VoteSubmissionError::from(ReviewPlanError::from(outlasts)).to_string(),
+            "Choose a future time before the contest ends for alpha.dash."
         );
     }
 

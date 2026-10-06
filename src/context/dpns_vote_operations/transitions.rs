@@ -116,6 +116,29 @@ pub(super) fn recover_interrupted_target_statuses(
     changed
 }
 
+/// Settle the immediate targets among `includes` that are still queued after
+/// their executor ended with an error.
+///
+/// Nothing claimed them, so nothing was broadcast, but left queued they would
+/// hold their lock with no executor until the next start. A queued schedule
+/// is left alone: the sweep sends it again.
+pub(super) fn fail_abandoned_queued_targets(
+    operation: &mut DpnsVoteOperation,
+    includes: impl Fn(&DpnsVoteTargetKey) -> bool,
+) -> bool {
+    let mut changed = false;
+    for outcome in &mut operation.targets {
+        if outcome.status == DpnsVoteTargetStatus::Queued
+            && outcome.target.timing == VoteTiming::Now
+            && includes(&outcome.target.key)
+        {
+            (outcome.status, outcome.failure) = failed_before_broadcast_outcome(VoteTiming::Now);
+            changed = true;
+        }
+    }
+    changed
+}
+
 /// Keep restart recovery from sending a queued target nobody is waiting for.
 ///
 /// A queued target was never claimed, so nothing was broadcast. An immediate

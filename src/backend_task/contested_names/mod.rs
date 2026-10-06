@@ -1893,6 +1893,74 @@ mod tests {
         );
     }
 
+    /// When an executor ends with an error, the immediate votes it had not
+    /// reached yet must not stay queued: nothing would send them, and their
+    /// lock would refuse every new vote on those names until a restart.
+    #[tokio::test]
+    async fn an_executor_error_releases_its_immediate_votes_that_were_still_queued() {
+        let (_temp, context) = vote_context();
+        context.dpns_vote_recovery.lock().await.initialized = true;
+        let immediate = |name: &str| DpnsVoteTarget {
+            timing: VoteTiming::Now,
+            ..scheduled_operation_for(&context, name, 42).targets[0]
+                .target
+                .clone()
+        };
+        let schedule = scheduled_operation_for(&context, "carol", now_ms() + 600_000).targets[0]
+            .target
+            .clone();
+        let mut operation = AppContext::new_dpns_vote_operation(vec![
+            immediate("alice"),
+            immediate("bob"),
+            schedule,
+        ]);
+        operation.targets[2].status = DpnsVoteTargetStatus::Queued;
+        context
+            .insert_dpns_vote_operation(&mut operation, None)
+            .unwrap();
+        let keys: BTreeSet<DpnsVoteTargetKey> = operation
+            .targets
+            .iter()
+            .map(|outcome| outcome.target.key.clone())
+            .collect();
+        let [claimed, unreached, queued_schedule] =
+            [0, 1, 2].map(|index| operation.targets[index].target.key.clone());
+        // The executor claimed the first vote, then failed before the second.
+        assert!(
+            context
+                .claim_dpns_vote_target(operation.id, &claimed)
+                .unwrap()
+        );
+
+        context
+            .recover_failed_dpns_vote_operation(operation.id, &keys, &TaskError::DpnsVoteTargetBusy)
+            .await;
+
+        let saved = context.dpns_vote_operation(operation.id).unwrap().unwrap();
+        for index in [0, 1] {
+            assert_eq!(
+                saved.targets[index].status,
+                DpnsVoteTargetStatus::FailedBeforeSubmission,
+                "target {index}"
+            );
+            assert_eq!(
+                saved.targets[index].failure,
+                Some(DpnsVoteFailure::SubmissionFailed)
+            );
+        }
+        assert_eq!(context.dpns_vote_target_status(&claimed).unwrap(), None);
+        assert_eq!(
+            context.dpns_vote_target_status(&unreached).unwrap(),
+            None,
+            "the vote the executor never reached must be free to cast again"
+        );
+        assert_eq!(
+            context.dpns_vote_target_status(&queued_schedule).unwrap(),
+            Some(DpnsVoteTargetStatus::Queued),
+            "a queued schedule stays for the sweep to send"
+        );
+    }
+
     /// Replacing one scheduled target must not pull the stored operation's
     /// other targets into the run, where a queued one would be claimed
     /// without its voter.

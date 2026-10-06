@@ -83,6 +83,33 @@ fn stoppable_by_recovery(outcome: &DpnsVoteOutcome) -> bool {
         && outcome.target.timing == VoteTiming::Now
 }
 
+/// Keys of the immediate targets recovery has already stopped.
+fn stopped_immediate_targets(operation: &DpnsVoteOperation) -> BTreeSet<DpnsVoteTargetKey> {
+    operation
+        .targets
+        .iter()
+        .filter(|outcome| stoppable_by_recovery(outcome))
+        .map(|outcome| outcome.target.key.clone())
+        .collect()
+}
+
+/// Persist an operation recovery has changed, and date the immediate targets
+/// it stopped beyond those in `already_stopped`.
+fn persist_recovered_operation(
+    kv: &DetKv,
+    network: Network,
+    operation: &DpnsVoteOperation,
+    already_stopped: &BTreeSet<DpnsVoteTargetKey>,
+) -> Result<(), TaskError> {
+    persist_operation(kv, network, operation)?;
+    let stopped: Vec<DpnsVoteTargetKey> = stopped_immediate_targets(operation)
+        .into_iter()
+        .filter(|key| !already_stopped.contains(key))
+        .collect();
+    save_recovery_stops(kv, network, operation.id, &stopped, now_ms());
+    Ok(())
+}
+
 /// Record that restart recovery stopped `keys` of an operation at `at_ms`.
 ///
 /// Display metadata, like the relative labels: a failed write is logged and
@@ -880,24 +907,11 @@ impl AppContext {
         let (_guard, kv) = self.journal()?;
         let now_ms = now_ms();
         for mut operation in load_operations(&kv, self.network)? {
-            let already_stopped: BTreeSet<DpnsVoteTargetKey> = operation
-                .targets
-                .iter()
-                .filter(|outcome| stoppable_by_recovery(outcome))
-                .map(|outcome| outcome.target.key.clone())
-                .collect();
+            let already_stopped = stopped_immediate_targets(&operation);
             let interrupted = recover_interrupted_target_statuses(&mut operation, |_| true);
             let expired = expire_stale_queued_targets(&mut operation, now_ms);
             if interrupted || expired {
-                persist_operation(&kv, self.network, &operation)?;
-                let stopped: Vec<DpnsVoteTargetKey> = operation
-                    .targets
-                    .iter()
-                    .filter(|outcome| stoppable_by_recovery(outcome))
-                    .map(|outcome| outcome.target.key.clone())
-                    .filter(|key| !already_stopped.contains(key))
-                    .collect();
-                save_recovery_stops(&kv, self.network, operation.id, &stopped, now_ms);
+                persist_recovered_operation(&kv, self.network, &operation, &already_stopped)?;
             }
         }
         prune_completed_history(&kv, self.network, None, HistoryKind::Immediate)?;
@@ -907,6 +921,10 @@ impl AppContext {
     }
 
     /// Conservatively recover one operation after its executor has returned.
+    ///
+    /// `keys` are the targets that executor ran with. Besides normalising the
+    /// ones it had claimed, this settles its immediate targets still queued:
+    /// their executor is gone, and nothing else would ever send or release them.
     pub(crate) fn recover_interrupted_dpns_vote_operation(
         &self,
         operation_id: DpnsVoteOperationId,
@@ -919,8 +937,12 @@ impl AppContext {
             else {
                 return Ok(());
             };
-            if recover_interrupted_target_statuses(&mut operation, |key| keys.contains(key)) {
-                persist_operation(kv, self.network, &operation)?;
+            let already_stopped = stopped_immediate_targets(&operation);
+            let interrupted =
+                recover_interrupted_target_statuses(&mut operation, |key| keys.contains(key));
+            let abandoned = fail_abandoned_queued_targets(&mut operation, |key| keys.contains(key));
+            if interrupted || abandoned {
+                persist_recovered_operation(kv, self.network, &operation, &already_stopped)?;
             }
             Ok(())
         })

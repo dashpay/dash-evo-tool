@@ -526,6 +526,10 @@ pub struct DPNSScreen {
     confirm_open: bool,
     /// Per-node overrides under `Adjust nodes`; absent means "same as above".
     node_overrides: BTreeMap<Identifier, NodeTiming>,
+    /// Nodes loaded after decisions were staged. The confirm step opens with
+    /// them on `Don't use this node` until the operator picks another option
+    /// for them or a fresh set of decisions is staged.
+    late_nodes: BTreeSet<Identifier>,
     /// Set by `Review again`: the confirm step covers only this target.
     retry: Option<RetryReview>,
     /// The retried target of the pending submission, kept so a submission
@@ -643,6 +647,7 @@ impl DPNSScreen {
             // Vote handling
             confirm_open: false,
             node_overrides: BTreeMap::new(),
+            late_nodes: BTreeSet::new(),
             retry: None,
             submitted_retry: None,
             confirm_status: VoteHandlingStatus::NotStarted,
@@ -691,6 +696,7 @@ impl DPNSScreen {
         self.confirm_open = false;
         self.confirm_status = VoteHandlingStatus::NotStarted;
         self.node_overrides.clear();
+        self.late_nodes.clear();
         self.retry = None;
         self.submitted_retry = None;
         self.confirm_timing = ConfirmTiming::Now;
@@ -1193,11 +1199,17 @@ impl DPNSScreen {
             .find(|vote| vote.contested_name == contest.normalized_contested_name)
         {
             Some(vote) => vote.vote_choice = choice,
-            None => self.selected_votes.push(SelectedVote {
-                contested_name: contest.normalized_contested_name.clone(),
-                vote_choice: choice,
-                end_time: contest.end_time,
-            }),
+            None => {
+                // A fresh set of decisions starts with every loaded node.
+                if self.selected_votes.is_empty() {
+                    self.late_nodes.clear();
+                }
+                self.selected_votes.push(SelectedVote {
+                    contested_name: contest.normalized_contested_name.clone(),
+                    vote_choice: choice,
+                    end_time: contest.end_time,
+                });
+            }
         }
     }
 
@@ -1370,8 +1382,25 @@ impl DPNSScreen {
         }
         self.retry = None;
         self.node_overrides.clear();
+        for node in &self.late_nodes {
+            self.node_overrides.insert(*node, NodeTiming::DontUse);
+        }
         self.confirm_status = VoteHandlingStatus::NotStarted;
         self.confirm_open = true;
+    }
+
+    /// Apply an `Adjust nodes` choice for one node. Any choice other than
+    /// `Don't use this node` includes a node loaded after the decisions were
+    /// staged.
+    fn set_node_timing(&mut self, voter: Identifier, timing: NodeTiming) {
+        if timing == NodeTiming::Batch {
+            self.node_overrides.remove(&voter);
+        } else {
+            self.node_overrides.insert(voter, timing);
+        }
+        if timing != NodeTiming::DontUse {
+            self.late_nodes.remove(&voter);
+        }
     }
 
     /// Stage `choice` for a contest, or clear it when it is already staged.
@@ -2261,6 +2290,7 @@ impl DPNSScreen {
                 .get(&node.voter_id)
                 .copied()
                 .unwrap_or(NodeTiming::Batch);
+            let mut picked = None;
             ui.horizontal(|ui| {
                 ui.label(node_label(node.voter_id, &self.node_labels));
                 ComboBox::from_id_salt(("adjust_node", node.voter_id))
@@ -2276,15 +2306,14 @@ impl DPNSScreen {
                                 .selectable_label(current == option, node_timing_label(option))
                                 .clicked()
                             {
-                                if option == NodeTiming::Batch {
-                                    self.node_overrides.remove(&node.voter_id);
-                                } else {
-                                    self.node_overrides.insert(node.voter_id, option);
-                                }
+                                picked = Some(option);
                             }
                         }
                     });
             });
+            if let Some(option) = picked {
+                self.set_node_timing(node.voter_id, option);
+            }
         }
         let Some(plan) = plan else {
             return;
@@ -2590,6 +2619,8 @@ impl ScreenLike for DPNSScreen {
     }
 
     fn refresh_on_arrival(&mut self) {
+        // After a failed read the earlier nodes are unknown, so none is new.
+        let nodes_were_known = self.voting_identity_load_error.is_none();
         let previous_voters: BTreeSet<Identifier> = self
             .voting_identities
             .iter()
@@ -2607,10 +2638,11 @@ impl ScreenLike for DPNSScreen {
             }
         }
         // A node loaded after decisions were staged never joins them silently.
-        if !self.selected_votes.is_empty() {
+        if nodes_were_known && !self.selected_votes.is_empty() {
             for identity in &self.voting_identities {
                 let id = identity.identity.id();
                 if !previous_voters.contains(&id) {
+                    self.late_nodes.insert(id);
                     self.node_overrides.entry(id).or_insert(NodeTiming::DontUse);
                 }
             }
@@ -4660,6 +4692,133 @@ mod tests {
             screen.node_overrides.get(&newly_loaded.identity.id()),
             Some(&NodeTiming::DontUse),
             "a node loaded after decisions were staged does not join them"
+        );
+        ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
+    /// A Votes panel with `Lock` staged on `alpha` while only `first-node` is
+    /// loaded. Both nodes hold `Abstain` there; `late-node` is not loaded yet.
+    fn panel_with_a_staged_decision(
+        ctx: &Arc<AppContext>,
+    ) -> (DPNSScreen, QualifiedIdentity, QualifiedIdentity) {
+        ctx.seed_dpns_contest_for_test("alpha", None, false);
+        let poll = ctx.dpns_vote_poll_id("alpha").unwrap();
+        let first = masternode_identity(1, "first-node", true, ctx.network());
+        let late = masternode_identity(2, "late-node", true, ctx.network());
+        for node in [&first, &late] {
+            ctx.cache_confirmed_dpns_vote(node.identity.id(), poll, ResourceVoteChoice::Abstain)
+                .unwrap();
+        }
+        ctx.insert_local_qualified_identity(&first, &None).unwrap();
+        let mut screen = DPNSScreen::new(ctx, VotesView::ToDecide);
+        screen.selected_votes = vec![SelectedVote {
+            contested_name: "alpha".into(),
+            vote_choice: ResourceVoteChoice::Lock,
+            end_time: None,
+        }];
+        (screen, first, late)
+    }
+
+    /// The nodes the confirm step would submit with.
+    fn casting_nodes(screen: &DPNSScreen) -> BTreeSet<Identifier> {
+        screen
+            .build_review_plan()
+            .expect("review plan")
+            .targets()
+            .iter()
+            .map(|target| target.key.voter_id)
+            .collect()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_node_loaded_after_staging_stays_out_of_the_confirm_step_until_included() {
+        let (ctx, _dir, _events) = wired_ctx().await;
+        let (mut screen, first, late) = panel_with_a_staged_decision(&ctx);
+        ctx.insert_local_qualified_identity(&late, &None).unwrap();
+        let (first, late) = (first.identity.id(), late.identity.id());
+
+        screen.refresh_on_arrival();
+        assert_eq!(screen.voting_identities.len(), 2);
+        screen.open_review_for_node_set();
+        assert!(screen.confirm_open);
+        assert_eq!(
+            casting_nodes(&screen),
+            BTreeSet::from([first]),
+            "opening the confirm step must not add the node loaded after staging"
+        );
+        assert_eq!(
+            screen
+                .build_review_plan()
+                .unwrap()
+                .aggregate
+                .skipped_by_reason(),
+            BTreeMap::from([(SkipReason::NotUsed, 1)]),
+            "the confirm step reports the node as not used"
+        );
+
+        screen.confirm_open = false;
+        screen.open_review_for_node_set();
+        assert_eq!(
+            casting_nodes(&screen),
+            BTreeSet::from([first]),
+            "cancelling and opening the confirm step again keeps the node out"
+        );
+
+        screen.set_node_timing(late, NodeTiming::Batch);
+        assert_eq!(casting_nodes(&screen), BTreeSet::from([first, late]));
+        screen.confirm_open = false;
+        screen.open_review_for_node_set();
+        assert_eq!(
+            casting_nodes(&screen),
+            BTreeSet::from([first, late]),
+            "a node the operator included stays included"
+        );
+        ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_fresh_set_of_decisions_uses_a_node_loaded_during_the_previous_set() {
+        let (ctx, _dir, _events) = wired_ctx().await;
+        let (mut screen, first, late) = panel_with_a_staged_decision(&ctx);
+        ctx.insert_local_qualified_identity(&late, &None).unwrap();
+        let (first, late) = (first.identity.id(), late.identity.id());
+        screen.refresh_on_arrival();
+        screen.open_review_for_node_set();
+        assert_eq!(casting_nodes(&screen), BTreeSet::from([first]));
+        screen.confirm_open = false;
+
+        screen.selected_votes.clear();
+        let contest = Arc::clone(&screen.cards[0].contest);
+        screen.stage_choice(&contest, ResourceVoteChoice::Lock);
+        screen.open_review_for_node_set();
+        assert_eq!(
+            casting_nodes(&screen),
+            BTreeSet::from([first, late]),
+            "decisions staged after the node was loaded include it"
+        );
+        ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
+    /// Nodes read again after a failed read were loaded before the decisions
+    /// were staged, so the confirm step leaves none of them out.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn nodes_read_again_after_a_failed_read_stay_in_the_staged_decisions() {
+        let (ctx, _dir, _events) = wired_ctx().await;
+        let store = Arc::new(crate::wallet_backend::kv_test_support::FailingKv::default());
+        ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(store.clone()));
+        let (mut screen, first, _late) = panel_with_a_staged_decision(&ctx);
+
+        store.fail_all_reads(true);
+        screen.refresh_on_arrival();
+        assert!(screen.voting_identity_load_error.is_some());
+        store.fail_all_reads(false);
+        screen.refresh_on_arrival();
+        assert!(screen.voting_identity_load_error.is_none());
+
+        screen.open_review_for_node_set();
+        assert_eq!(
+            casting_nodes(&screen),
+            BTreeSet::from([first.identity.id()])
         );
         ctx.wallet_backend().unwrap().shutdown().await;
     }

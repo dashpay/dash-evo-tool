@@ -187,7 +187,11 @@ Validation floor: 24 nodes on one voting key, 6 open contests, 2 ending today.
   nodes.
 - **VOTE-FR-022** **[Changed 2026-10-01]** — A single timing applies to the whole
   batch, and individual nodes can be overridden under `Adjust nodes` in the
-  confirm step.
+  confirm step. A node loaded after decisions were staged starts on
+  `Don't use this node` every time the confirm step opens for those decisions,
+  until the operator picks another option for it under `Adjust nodes`.
+  Decisions staged after all earlier ones were cast or cleared use every
+  loaded node again.
 - **VOTE-FR-023** **[Changed 2026-10-01]** — Timing choices: `Now`,
   `When voting is about to end` (VOTE-FR-081), `At a specific time`, and per node
   `Don't use this node`.

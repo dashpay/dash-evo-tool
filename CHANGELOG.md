@@ -169,7 +169,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   cast and scheduled results together. A progress drawer shows live results.
   Decisions staged or changed during submission survive its completion, and
   entering Votes picks up newly added voting nodes without changing staged
-  choices. Uncertain votes stay visible and blocked from resubmission; neither
+  choices: such a node stays out of them until it is included in the confirm
+  step. Uncertain votes stay visible and blocked from resubmission; neither
   passing the estimated deadline nor the contest closing releases them.
   Completed history is bounded without discarding unresolved votes. Removing a
   node cancels its unstarted scheduled votes.

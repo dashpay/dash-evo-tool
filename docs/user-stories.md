@@ -877,6 +877,7 @@ As a masternode operator, I want to choose which nodes vote and decide many cont
 - A vote for a requester shows their name and a shortened identity ID, or the ID alone when the name is unavailable, so similar names remain distinguishable.
 - Switching networks clears drafts and open dialogs.
 - A successful mixed batch reports cast and scheduled counts.
+- A node loaded after decisions were staged is left out of them in the confirm step until the operator includes it under Adjust nodes; decisions staged after the earlier ones were cast or cleared use it.
 - Decisions staged or changed while a batch is submitting remain in the tray when that batch finishes. Another batch can be submitted after the pending submission returns.
 
 ### DPN-008: Recognise an identity by its profile name [Implemented]

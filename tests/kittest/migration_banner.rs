@@ -213,8 +213,7 @@ fn unreadable_votes_banner_acknowledgement_enqueues_action() {
 /// screen and no control, which leaves the Everyday User hunting for a flow they
 /// may never have opened — the repo's error-message rules require a concrete,
 /// self-serviceable action. The remedy lives behind "Load Identity" on the
-/// Identities screen, so all three variants name both, exactly as the vote copy
-/// names the Scheduled Votes screen.
+/// Identities screen, so all three variants name both.
 #[test]
 fn every_unreadable_identity_message_names_where_to_load_them_again() {
     for text in [

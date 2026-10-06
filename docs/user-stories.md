@@ -753,7 +753,7 @@ As a user, I want the identities I loaded before an upgrade — and the keys the
 - An identity that cannot be read is reported in a banner naming the recovery action (load it again), rather than dropped silently. The previous version's data is never deleted, so a later build can still import it.
 - A single unreadable identity costs only itself: the readable identities in the same batch still import, and the wallet migration that restores access to funds is not blocked by it.
 - The report of unreadable identities returns on every launch until it is explicitly acknowledged, so a user who stepped away cannot lose the only notice that some of their keys were not carried over.
-- When identities and scheduled votes are both unreadable on the same launch, one banner names both remedies, and acknowledging it retires both reports — neither report can bury the other.
+- When identities and records of earlier balance top-ups are both unreadable on the same launch, one banner names both remedies, and acknowledging it retires both reports — neither report can bury the other. Scheduled votes are not part of this import; DPN-009 covers them.
 - An identity the user deletes after the upgrade stays deleted. The import runs once, so a later launch never restores a removed identity, its alias, or its keys.
 
 ### IDN-020: Restore keys an upgrade left behind, without re-entering them [Implemented]

@@ -266,9 +266,10 @@ impl AppContext {
     /// Decide what a failed name-request broadcast means, given it may be paid for.
     ///
     /// `Ok(())` when the network already shows the request, so the registration
-    /// carries on as a success, even after a refusal. A refusal the network
-    /// does not contradict keeps its own error. Anything else is reported as
-    /// unconfirmed, never as a plain failure that invites paying again.
+    /// carries on as a success, even after a refusal. A refusal keeps its own
+    /// error only when a successful read does not show the request. Anything
+    /// else, a failed read included, is reported as unconfirmed, never as a
+    /// plain failure that invites paying again.
     async fn resolve_failed_domain_broadcast(
         &self,
         sdk: &Sdk,
@@ -277,43 +278,56 @@ impl AppContext {
         outcome: DpnsRegistrationOutcome,
         error: SdkError,
     ) -> Result<(), TaskError> {
-        if self
+        match self
             .username_request_reached_network(sdk, identity_id, name, outcome)
             .await
         {
-            tracing::warn!(
-                ?error,
+            Ok(true) => {
+                tracing::warn!(
+                    ?error,
+                    %identity_id,
+                    "Username registration reported an error, but the network shows the request; continuing as submitted"
+                );
+                return Ok(());
+            }
+            Ok(false) if broadcast_was_rejected(&error) => {
+                return Err(rebrand_dpns_domain_conflict(TaskError::from(error)));
+            }
+            Ok(false) => {}
+            Err(read_error) => tracing::warn!(
+                ?read_error,
                 %identity_id,
-                "Username registration reported an error, but the network shows the request; continuing as submitted"
-            );
-            return Ok(());
-        }
-        if broadcast_was_rejected(&error) {
-            return Err(rebrand_dpns_domain_conflict(TaskError::from(error)));
+                "Username request could not be looked up after its broadcast failed; reporting the registration as unconfirmed"
+            ),
         }
         Err(TaskError::UsernameRegistrationUnconfirmed {
             source_error: Box::new(error),
         })
     }
 
-    /// Whether the network shows `identity_id`'s request for `name`. A failed
-    /// read counts as not shown.
+    /// Whether the network shows `identity_id`'s request for `name`.
+    ///
+    /// # Errors
+    ///
+    /// The read failed, which says nothing about the request either way.
     async fn username_request_reached_network(
         &self,
         sdk: &Sdk,
         identity_id: Identifier,
         name: &str,
         outcome: DpnsRegistrationOutcome,
-    ) -> bool {
+    ) -> Result<bool, TaskError> {
         match outcome {
-            DpnsRegistrationOutcome::PendingCommunityVote => sdk
-                .get_contested_dpns_vote_state(&normalize_dpns_label(name), None)
-                .await
-                .is_ok_and(|vote| vote.contenders.contains_key(&identity_id)),
-            DpnsRegistrationOutcome::Registered => self
-                .fetch_owned_dpns_names(sdk, identity_id)
-                .await
-                .is_ok_and(|names| names.iter().any(|owned| owned.name == name)),
+            DpnsRegistrationOutcome::PendingCommunityVote => {
+                let vote = sdk
+                    .get_contested_dpns_vote_state(&normalize_dpns_label(name), None)
+                    .await?;
+                Ok(vote.contenders.contains_key(&identity_id))
+            }
+            DpnsRegistrationOutcome::Registered => {
+                let names = self.fetch_owned_dpns_names(sdk, identity_id).await?;
+                Ok(names.iter().any(|owned| owned.name == name))
+            }
         }
     }
 
@@ -974,6 +988,41 @@ mod tests {
             let message = error.to_string();
             assert!(message.contains("Do not pay again yet."), "{message}");
             assert!(!message.contains("failed"), "{message}");
+        }
+    }
+
+    /// A refusal is only the last attempt's answer. When the read that would
+    /// show whether an earlier attempt was applied fails, the request may be
+    /// paid for, so the refusal is not reported as a plain failure.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn refused_name_request_is_unconfirmed_when_the_network_cannot_be_read() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let id = Identifier::from([8; 32]);
+
+        for (name, outcome) in [
+            ("alice", DpnsRegistrationOutcome::PendingCommunityVote),
+            ("alice-123", DpnsRegistrationOutcome::Registered),
+        ] {
+            // No expectations: the reconciling read itself fails.
+            let unreachable = Sdk::new_mock();
+            let result = ctx
+                .resolve_failed_domain_broadcast(
+                    &unreachable,
+                    id,
+                    name,
+                    outcome,
+                    refused_broadcast(),
+                )
+                .await;
+            let error = match result {
+                Err(error @ TaskError::UsernameRegistrationUnconfirmed { .. }) => error,
+                other => panic!("{name}: expected an unconfirmed registration, got {other:?}"),
+            };
+            assert!(
+                error.to_string().contains("Do not pay again yet."),
+                "{error}"
+            );
         }
     }
 

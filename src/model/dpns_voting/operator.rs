@@ -210,6 +210,19 @@ impl ChangesLeft {
     pub fn is_exhausted(self) -> bool {
         self == Self::Known(0)
     }
+
+    /// Changes left once this device saw Platform apply one more vote.
+    ///
+    /// `had_vote` is whether the node already had a vote on the contest: the
+    /// first vote is not a change. An unknown remainder becomes known, because
+    /// the device now holds its first record (see [`changes_left`]).
+    pub fn after_applied_vote(self, had_vote: bool) -> Self {
+        match self {
+            Self::Unknown => Self::Known(MAX_VOTES_PER_NODE_PER_CONTEST - 1),
+            Self::Known(left) if had_vote => Self::Known(left.saturating_sub(1)),
+            Self::Known(left) => Self::Known(left),
+        }
+    }
 }
 
 /// Changes left for one node × contest.
@@ -729,6 +742,25 @@ mod tests {
         assert_eq!(
             background_refresh_interval(Network::Devnet),
             Duration::from_secs(180)
+        );
+    }
+
+    /// The live card must agree with what a recount would show after the vote.
+    #[test]
+    fn an_applied_vote_updates_changes_left_like_a_recount() {
+        // (votes counted before, vote present before)
+        for (counted, had_vote) in [(0, false), (0, true), (1, true), (2, true), (5, true)] {
+            let before = changes_left(Some(counted), had_vote);
+            assert_eq!(
+                before.after_applied_vote(had_vote),
+                changes_left(Some(counted + 1), true),
+                "counted {counted}, had_vote {had_vote}"
+            );
+        }
+        assert_eq!(
+            ChangesLeft::Unknown.after_applied_vote(true),
+            ChangesLeft::Known(4),
+            "the device has a record now, so the remainder is no longer unknown"
         );
     }
 

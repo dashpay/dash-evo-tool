@@ -94,10 +94,13 @@ impl DpnsVoteOperationSnapshot {
     }
 
     /// Adopt backend progress without reading storage on a render frame.
+    ///
+    /// Returns each changed outcome with the status it had before, `None` for
+    /// a target seen for the first time.
     pub(crate) fn sync_progress(
         &mut self,
         app_context: &AppContext,
-    ) -> Option<Vec<DpnsVoteOutcome>> {
+    ) -> Option<Vec<(Option<DpnsVoteTargetStatus>, DpnsVoteOutcome)>> {
         let published = app_context.dpns_vote_progress();
         if self
             .published
@@ -119,12 +122,11 @@ impl DpnsVoteOperationSnapshot {
         let changed = published
             .iter()
             .flat_map(|operation| operation.targets.iter())
-            .filter(|outcome| {
-                previous
-                    .get(&(outcome.operation_id, &outcome.target.key))
-                    .is_none_or(|old| **old != **outcome)
+            .filter_map(|outcome| {
+                let old = previous.get(&(outcome.operation_id, &outcome.target.key));
+                old.is_none_or(|old| **old != *outcome)
+                    .then(|| (old.map(|old| old.status), outcome.clone()))
             })
-            .cloned()
             .collect();
         self.replace(published.to_vec());
         self.published = Some(published);

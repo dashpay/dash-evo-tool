@@ -36,7 +36,8 @@ use crate::model::dpns_voting::operator::{
 use crate::model::dpns_voting::progress::needs_attention;
 use crate::model::dpns_voting::{
     DpnsCurrentVoteState, DpnsScheduledVoteKey, DpnsVoteFailure, DpnsVoteOperationId,
-    DpnsVoteTarget, DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming, dpns_schedule_is_overdue,
+    DpnsVoteOutcome, DpnsVoteTarget, DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming,
+    dpns_schedule_is_overdue,
 };
 use crate::model::qualified_identity::IdentityType;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -148,6 +149,20 @@ fn target_outcome_label(
         "Not submitted"
     } else {
         target_status_label(status)
+    }
+}
+
+/// Whether a target this panel last saw as `previous` was applied by Platform
+/// on its way to `Confirmed`, as opposed to being confirmed as an exact no-op.
+///
+/// A broadcast target keeps the choice it replaced, so it is not a no-op; a
+/// reconciled one records the observed choice, but was `Unconfirmed` before.
+/// A target first seen already confirmed is history the cards already count.
+fn newly_applied_vote(previous: Option<DpnsVoteTargetStatus>, outcome: &DpnsVoteOutcome) -> bool {
+    match previous {
+        None | Some(DpnsVoteTargetStatus::Confirmed) => false,
+        Some(DpnsVoteTargetStatus::Unconfirmed) => true,
+        Some(_) => !outcome.target.is_no_op(),
     }
 }
 
@@ -1324,7 +1339,7 @@ impl DPNSScreen {
         }
     }
 
-    fn review_failed_target(&mut self, outcome: &crate::model::dpns_voting::DpnsVoteOutcome) {
+    fn review_failed_target(&mut self, outcome: &DpnsVoteOutcome) {
         self.selected_votes.clear();
         self.set_selected_vote_from_outcome(outcome);
         self.retry_voter = Some(outcome.target.key.voter_id);
@@ -1369,10 +1384,7 @@ impl DPNSScreen {
         ui.add_space(6.0);
     }
 
-    fn set_selected_vote_from_outcome(
-        &mut self,
-        outcome: &crate::model::dpns_voting::DpnsVoteOutcome,
-    ) {
+    fn set_selected_vote_from_outcome(&mut self, outcome: &DpnsVoteOutcome) {
         let name = outcome.target.contested_name.clone();
         if let Some(vote) = self
             .selected_votes
@@ -1877,7 +1889,7 @@ impl DPNSScreen {
         self.rebuild_scheduled_vote_rows();
         let changed: BTreeMap<_, _> = changed
             .into_iter()
-            .map(|outcome| (outcome.target.key.clone(), outcome))
+            .map(|(previous, outcome)| (outcome.target.key.clone(), (previous, outcome)))
             .collect();
         for card in &mut self.cards {
             let Some(poll) = card.vote_poll_id else {
@@ -1889,12 +1901,14 @@ impl DPNSScreen {
                     voter_id: node.node,
                     vote_poll_id: poll,
                 };
-                let Some(outcome) = changed.get(&key) else {
+                let Some((previous, outcome)) = changed.get(&key) else {
                     continue;
                 };
                 let state = if outcome.status == DpnsVoteTargetStatus::Confirmed {
+                    if newly_applied_vote(*previous, outcome) {
+                        node.changes = node.changes.after_applied_vote(node.current.is_some());
+                    }
                     node.current = Some(outcome.target.requested_choice);
-                    node.changes = ChangesLeft::Unknown;
                     DpnsCurrentVoteState::Available(node.current)
                 } else {
                     self.vote_state.state(node.node, poll)
@@ -3523,6 +3537,72 @@ mod tests {
                 .targets[1]
                 .status,
             DpnsVoteTargetStatus::Queued
+        );
+    }
+
+    /// A vote this device just saw applied leaves a record, so the card must
+    /// show the new remainder instead of claiming it has none.
+    #[test]
+    fn a_vote_confirmed_in_live_progress_updates_changes_left() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let store = Arc::new(crate::wallet_backend::kv_test_support::FailingKv::default());
+        ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(store.clone()));
+        ctx.seed_dpns_contest_for_test("alpha", None, false);
+        let poll = ctx.dpns_vote_poll_id("alpha").unwrap();
+        let voter = Identifier::from([1; 32]);
+        let mut screen = DPNSScreen::new(&ctx, VotesView::ToDecide);
+        screen.cards = vec![VoteCard::new(
+            Arc::new(ctx.all_contested_names().unwrap().remove(0)),
+            Some(poll),
+            vec![NodeContestState {
+                node: voter,
+                status: NodeContestStatus::Voted(ResourceVoteChoice::Abstain),
+                current: Some(ResourceVoteChoice::Abstain),
+                changes: ChangesLeft::Known(3),
+            }],
+        )];
+        let key = DpnsVoteTargetKey {
+            network: ctx.network(),
+            voter_id: voter,
+            vote_poll_id: poll,
+        };
+        let mut operation = AppContext::new_dpns_vote_operation(vec![DpnsVoteTarget {
+            key: key.clone(),
+            voter_alias: None,
+            contested_name: "alpha".into(),
+            requested_choice: ResourceVoteChoice::Lock,
+            current_choice: Some(ResourceVoteChoice::Abstain),
+            timing: VoteTiming::Now,
+        }]);
+        ctx.insert_dpns_vote_operation(&mut operation, None)
+            .unwrap();
+        assert!(ctx.claim_dpns_vote_target(operation.id, &key).unwrap());
+        assert!(ctx.mark_dpns_vote_broadcast(operation.id, &key).unwrap());
+        store.fail_all_reads(true);
+        screen.sync_vote_progress();
+        assert_eq!(screen.cards[0].nodes[0].status, NodeContestStatus::InFlight);
+        assert_eq!(screen.cards[0].nodes[0].changes, ChangesLeft::Known(3));
+        store.fail_all_reads(false);
+        ctx.update_dpns_vote_target(operation.id, &key, DpnsVoteTargetStatus::Confirmed, None)
+            .unwrap();
+        store.fail_all_reads(true);
+        screen.sync_vote_progress();
+        let node = screen.cards[0].nodes[0];
+        assert_eq!(
+            node.status,
+            NodeContestStatus::Voted(ResourceVoteChoice::Lock)
+        );
+        assert_eq!(
+            node.changes,
+            ChangesLeft::Known(2),
+            "the change this device just saw applied must be counted, not unknown"
+        );
+        store.fail_all_reads(false);
+        assert_eq!(
+            ctx.dpns_changes_left(voter, poll, DpnsCurrentVoteState::Available(node.current)),
+            ChangesLeft::Known(4),
+            "the durable count holds this one vote; the card started from an older count"
         );
     }
 

@@ -2,6 +2,7 @@
 
 use super::AppContext;
 use crate::backend_task::error::TaskError;
+use crate::model::dpns_voting::operator::vote_state_display_max_age;
 use crate::model::dpns_voting::{DpnsCurrentVoteState, dpns_vote_poll};
 use crate::utils::time::now_ms;
 use crate::wallet_backend::{DetKv, DetScope, KvAdapterError, network_prefix};
@@ -16,6 +17,8 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const CURRENT_VOTES_KEY_PREFIX: &str = "det:dpns_current_votes:v3:";
+/// Oldest proof that may authorise a submission. Display and the attention
+/// signal use the longer `vote_state_display_max_age` instead.
 const CURRENT_VOTE_MAX_AGE_MS: u64 = 120_000;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -84,6 +87,7 @@ impl RefreshedDpnsVotes {
             Some(&self.snapshot),
             poll_id,
             now_ms(),
+            CURRENT_VOTE_MAX_AGE_MS,
         )))
     }
 
@@ -131,22 +135,23 @@ fn save_snapshot(
     .map_err(vote_state_err)
 }
 
+/// One poll's state from a stored snapshot; proof older than `max_age_ms`
+/// reads as `Checking`.
 fn snapshot_vote_state(
     snapshot: Option<&StoredCurrentVotes>,
     vote_poll_id: Identifier,
     checked_at_ms: u64,
+    max_age_ms: u64,
 ) -> DpnsCurrentVoteState {
     if let Some((updated_at, choice)) =
         snapshot.and_then(|snapshot| snapshot.confirmed.get(&vote_poll_id.to_buffer()))
-        && checked_at_ms.saturating_sub(*updated_at) <= CURRENT_VOTE_MAX_AGE_MS
+        && checked_at_ms.saturating_sub(*updated_at) <= max_age_ms
     {
         return DpnsCurrentVoteState::Available(Some(*choice));
     }
     match snapshot {
         None => DpnsCurrentVoteState::Checking,
-        Some(snapshot)
-            if checked_at_ms.saturating_sub(snapshot.updated_at) > CURRENT_VOTE_MAX_AGE_MS =>
-        {
+        Some(snapshot) if checked_at_ms.saturating_sub(snapshot.updated_at) > max_age_ms => {
             DpnsCurrentVoteState::Checking
         }
         Some(snapshot) if !snapshot.available => DpnsCurrentVoteState::Unavailable,
@@ -190,7 +195,12 @@ impl AppContext {
             Some(snapshot),
             poll_id,
             now_ms(),
+            CURRENT_VOTE_MAX_AGE_MS,
         )))
+    }
+
+    fn dpns_vote_display_max_age_ms(&self) -> u64 {
+        u64::try_from(vote_state_display_max_age(self.network).as_millis()).unwrap_or(u64::MAX)
     }
 
     /// Publish a deterministic proof failure without network I/O.
@@ -208,6 +218,27 @@ impl AppContext {
         )
         .await
         .map(|_| ())
+    }
+
+    /// Store a successful proof stamped at `updated_at`, as an earlier refresh left it.
+    #[cfg(test)]
+    pub(crate) fn seed_proved_dpns_votes_at_for_test(
+        &self,
+        voter_id: Identifier,
+        votes: BTreeMap<[u8; 32], ResourceVoteChoice>,
+        updated_at: u64,
+    ) -> Result<(), TaskError> {
+        save_snapshot(
+            &self.det_kv()?,
+            self.network,
+            &voter_id,
+            &StoredCurrentVotes {
+                available: true,
+                updated_at,
+                votes,
+                confirmed: BTreeMap::new(),
+            },
+        )
     }
 
     #[cfg(test)]
@@ -293,7 +324,8 @@ impl AppContext {
             })
     }
 
-    /// Read the latest proved state without performing network I/O in the frame loop.
+    /// Read the latest proved state for display, without network I/O. Never
+    /// authorises a submission: preflight fetches and checks its own proof.
     pub fn dpns_current_vote_state(
         &self,
         voter_id: Identifier,
@@ -304,10 +336,12 @@ impl AppContext {
             snapshot.as_ref(),
             vote_poll_id,
             now_ms(),
+            self.dpns_vote_display_max_age_ms(),
         ))
     }
 
-    /// Read one node's current choices for many polls with a single storage read.
+    /// Read one node's current choices for many polls with a single storage
+    /// read. Display-only, like [`Self::dpns_current_vote_state`].
     pub fn dpns_current_vote_states(
         &self,
         voter_id: Identifier,
@@ -315,12 +349,13 @@ impl AppContext {
     ) -> Result<BTreeMap<Identifier, DpnsCurrentVoteState>, TaskError> {
         let snapshot = load_snapshot(&self.det_kv()?, self.network, &voter_id)?;
         let checked_at_ms = now_ms();
+        let max_age_ms = self.dpns_vote_display_max_age_ms();
         Ok(vote_poll_ids
             .into_iter()
             .map(|vote_poll_id| {
                 (
                     vote_poll_id,
-                    snapshot_vote_state(snapshot.as_ref(), vote_poll_id, checked_at_ms),
+                    snapshot_vote_state(snapshot.as_ref(), vote_poll_id, checked_at_ms, max_age_ms),
                 )
             })
             .collect())
@@ -349,9 +384,12 @@ impl AppContext {
         let kv = self.det_kv()?;
         let mut snapshot = load_snapshot(&kv, self.network, &voter_id)?.unwrap_or_default();
         let confirmed_at = now_ms();
-        snapshot.confirmed.retain(|_, (updated_at, _)| {
-            confirmed_at.saturating_sub(*updated_at) <= CURRENT_VOTE_MAX_AGE_MS
-        });
+        // Keep confirmations as long as any reader may still use them; each
+        // reader applies its own age cap.
+        let max_age_ms = self.dpns_vote_display_max_age_ms();
+        snapshot
+            .confirmed
+            .retain(|_, (updated_at, _)| confirmed_at.saturating_sub(*updated_at) <= max_age_ms);
         snapshot
             .confirmed
             .insert(vote_poll_id.to_buffer(), (confirmed_at, choice));
@@ -833,15 +871,20 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            snapshot_vote_state(Some(&snapshot), poll, 11),
+            snapshot_vote_state(Some(&snapshot), poll, 11, CURRENT_VOTE_MAX_AGE_MS),
             DpnsCurrentVoteState::Available(Some(ResourceVoteChoice::Lock))
         );
         assert_eq!(
-            snapshot_vote_state(Some(&snapshot), other, 11),
+            snapshot_vote_state(Some(&snapshot), other, 11, CURRENT_VOTE_MAX_AGE_MS),
             DpnsCurrentVoteState::Unavailable
         );
         assert_eq!(
-            snapshot_vote_state(Some(&snapshot), poll, 11 + CURRENT_VOTE_MAX_AGE_MS),
+            snapshot_vote_state(
+                Some(&snapshot),
+                poll,
+                11 + CURRENT_VOTE_MAX_AGE_MS,
+                CURRENT_VOTE_MAX_AGE_MS
+            ),
             DpnsCurrentVoteState::Checking
         );
     }
@@ -1002,8 +1045,144 @@ mod tests {
         };
 
         assert_eq!(
-            snapshot_vote_state(Some(&snapshot), poll, CURRENT_VOTE_MAX_AGE_MS + 2),
+            snapshot_vote_state(
+                Some(&snapshot),
+                poll,
+                CURRENT_VOTE_MAX_AGE_MS + 2,
+                CURRENT_VOTE_MAX_AGE_MS
+            ),
             DpnsCurrentVoteState::Checking
+        );
+    }
+
+    /// The attention signal reads snapshots between background refreshes, which
+    /// are far apart; only proof older than two refresh intervals is dropped.
+    #[test]
+    fn displayed_state_survives_between_background_refreshes() {
+        let voted = Identifier::from([2; 32]);
+        let not_voted = Identifier::from([3; 32]);
+        let snapshot = StoredCurrentVotes {
+            available: true,
+            updated_at: 1,
+            votes: BTreeMap::from([(voted.to_buffer(), ResourceVoteChoice::Lock)]),
+            ..Default::default()
+        };
+        let ten_minutes_later = 1 + 10 * 60_000;
+        for network in [Network::Mainnet, Network::Testnet] {
+            let display_max_age =
+                u64::try_from(vote_state_display_max_age(network).as_millis()).unwrap();
+            let one_interval_later = 1 + display_max_age / 2;
+            assert_eq!(
+                snapshot_vote_state(
+                    Some(&snapshot),
+                    not_voted,
+                    one_interval_later,
+                    display_max_age
+                ),
+                DpnsCurrentVoteState::Available(None),
+                "{network}: a contest must keep needing a vote until the next refresh"
+            );
+            assert_eq!(
+                snapshot_vote_state(Some(&snapshot), voted, one_interval_later, display_max_age),
+                DpnsCurrentVoteState::Available(Some(ResourceVoteChoice::Lock))
+            );
+            assert_eq!(
+                snapshot_vote_state(
+                    Some(&snapshot),
+                    not_voted,
+                    2 + display_max_age,
+                    display_max_age
+                ),
+                DpnsCurrentVoteState::Checking,
+                "{network}: proof older than two refresh intervals is not shown"
+            );
+        }
+        let mainnet_max_age =
+            u64::try_from(vote_state_display_max_age(Network::Mainnet).as_millis()).unwrap();
+        assert_eq!(
+            snapshot_vote_state(
+                Some(&snapshot),
+                not_voted,
+                ten_minutes_later,
+                mainnet_max_age
+            ),
+            DpnsCurrentVoteState::Available(None)
+        );
+        assert_eq!(
+            snapshot_vote_state(
+                Some(&snapshot),
+                not_voted,
+                ten_minutes_later,
+                CURRENT_VOTE_MAX_AGE_MS
+            ),
+            DpnsCurrentVoteState::Checking,
+            "the same proof is too old to authorise a submission"
+        );
+    }
+
+    #[test]
+    fn stored_state_older_than_the_submission_cap_is_still_displayed() {
+        let temp = tempfile::tempdir().unwrap();
+        let kv = kv();
+        let context = crate::context::test_support::test_app_context(temp.path());
+        context.set_det_kv_override_for_test(kv.clone());
+        let voter = Identifier::from([1; 32]);
+        let poll = Identifier::from([2; 32]);
+        context
+            .seed_proved_dpns_votes_at_for_test(
+                voter,
+                BTreeMap::new(),
+                now_ms() - 2 * CURRENT_VOTE_MAX_AGE_MS,
+            )
+            .unwrap();
+
+        assert_eq!(
+            context.dpns_current_vote_state(voter, poll).unwrap(),
+            DpnsCurrentVoteState::Available(None)
+        );
+        assert_eq!(
+            context
+                .dpns_current_vote_states(voter, [poll])
+                .unwrap()
+                .get(&poll),
+            Some(&DpnsCurrentVoteState::Available(None))
+        );
+    }
+
+    #[test]
+    fn an_earlier_confirmation_survives_a_later_one_for_display() {
+        let temp = tempfile::tempdir().unwrap();
+        let kv = kv();
+        let context = crate::context::test_support::test_app_context(temp.path());
+        context.set_det_kv_override_for_test(kv.clone());
+        let voter = Identifier::from([1; 32]);
+        let earlier = Identifier::from([2; 32]);
+        let later = Identifier::from([3; 32]);
+        let earlier_confirmed_at = now_ms() - 2 * CURRENT_VOTE_MAX_AGE_MS;
+        save_snapshot(
+            &kv,
+            context.network(),
+            &voter,
+            &StoredCurrentVotes {
+                available: true,
+                updated_at: earlier_confirmed_at,
+                confirmed: BTreeMap::from([(
+                    earlier.to_buffer(),
+                    (earlier_confirmed_at, ResourceVoteChoice::Abstain),
+                )]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        context
+            .cache_confirmed_dpns_vote(voter, later, ResourceVoteChoice::Lock)
+            .unwrap();
+
+        assert_eq!(
+            context.dpns_current_vote_state(voter, earlier).unwrap(),
+            DpnsCurrentVoteState::Available(Some(ResourceVoteChoice::Abstain)),
+            "a vote confirmed minutes ago must not read as not voted"
         );
     }
 

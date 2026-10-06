@@ -318,6 +318,19 @@ impl AppContext {
             .saved_dpns_node_set()
             .unwrap_or_default()
             .resolve(&self.dpns_voting_nodes()?);
+        Ok(AttentionSummary::new(
+            &self.dpns_contest_attention(&resolved.included, operations)?,
+            unresolved_target_count(operations),
+            resolved.included.len(),
+        ))
+    }
+
+    /// Every open contest and whether one of `voters` still has to decide on it.
+    fn dpns_contest_attention(
+        &self,
+        voters: &[Identifier],
+        operations: &[DpnsVoteOperation],
+    ) -> Result<Vec<ContestAttention>, TaskError> {
         let now = now_ms();
         let contests: Vec<(String, Option<u64>, Identifier)> = self
             .ongoing_contested_names()?
@@ -332,7 +345,7 @@ impl AppContext {
             .collect();
         let polls: Vec<Identifier> = contests.iter().map(|(_, _, poll)| *poll).collect();
         let mut states = BTreeMap::new();
-        for voter in &resolved.included {
+        for voter in voters {
             let voter_states = self
                 .dpns_current_vote_states(*voter, polls.iter().copied())
                 .unwrap_or_default();
@@ -340,36 +353,30 @@ impl AppContext {
         }
 
         let network = self.network();
-        let attention: Vec<ContestAttention> = contests
+        Ok(contests
             .into_iter()
             .map(|(name, end_time, poll)| {
-                let needs_decision =
-                    contest_needs_decision(resolved.included.iter().map(|voter| {
-                        let state = states
-                            .get(voter)
-                            .and_then(|voter_states| voter_states.get(&poll))
-                            .copied()
-                            .unwrap_or(DpnsCurrentVoteState::Unavailable);
-                        let key = DpnsVoteTargetKey {
-                            network,
-                            voter_id: *voter,
-                            vote_poll_id: poll,
-                        };
-                        let locked = dpns_vote_lock_holders(operations, &key).next().is_some();
-                        (state, locked, self.dpns_changes_left(*voter, poll, state))
-                    }));
+                let needs_decision = contest_needs_decision(voters.iter().map(|voter| {
+                    let state = states
+                        .get(voter)
+                        .and_then(|voter_states| voter_states.get(&poll))
+                        .copied()
+                        .unwrap_or(DpnsCurrentVoteState::Unavailable);
+                    let key = DpnsVoteTargetKey {
+                        network,
+                        voter_id: *voter,
+                        vote_poll_id: poll,
+                    };
+                    let locked = dpns_vote_lock_holders(operations, &key).next().is_some();
+                    (state, locked, self.dpns_changes_left(*voter, poll, state))
+                }));
                 ContestAttention {
                     name,
                     end_time,
                     needs_decision,
                 }
             })
-            .collect();
-        Ok(AttentionSummary::new(
-            &attention,
-            unresolved_target_count(operations),
-            resolved.included.len(),
-        ))
+            .collect())
     }
 }
 
@@ -490,6 +497,37 @@ mod tests {
             ChangesLeft::Unknown,
             "a proved vote this device never counted"
         );
+    }
+
+    /// The background refresh runs minutes apart; a contest must keep needing
+    /// a vote in between, long after the proof is too old to submit with.
+    #[test]
+    fn a_contest_keeps_needing_a_vote_between_background_refreshes() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let kv = crate::wallet_backend::DetKv::from_store(Arc::new(
+            crate::wallet_backend::kv_test_support::InMemoryKv::default(),
+        ));
+        let context = crate::context::test_support::test_app_context_with_kv(
+            temp_dir.path(),
+            Arc::new(kv.clone()),
+        );
+        context.set_det_kv_override_for_test(kv);
+        context.seed_dpns_contest_for_test("alpha", Some(now_ms() + 600_000), false);
+        let node = Identifier::from([1; 32]);
+        let four_minutes_ago = now_ms() - 240_000;
+        context
+            .seed_proved_dpns_votes_at_for_test(node, BTreeMap::new(), four_minutes_ago)
+            .unwrap();
+
+        let attention = context.dpns_contest_attention(&[node], &[]).unwrap();
+        assert_eq!(attention.len(), 1);
+        assert!(
+            attention[0].needs_decision,
+            "a proved not-voted node must keep the contest in the attention signal"
+        );
+        let summary = AttentionSummary::new(&attention, 0, 1);
+        assert_eq!(summary.needs_decision, 1);
+        assert!(summary.soonest_end.is_some());
     }
 
     #[test]

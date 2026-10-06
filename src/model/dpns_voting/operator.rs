@@ -356,6 +356,13 @@ pub fn background_refresh_interval(network: Network) -> Duration {
     }
 }
 
+/// How long a proved vote-state snapshot stays valid for display and for the
+/// attention signal: two refresh intervals, so one late or failed background
+/// refresh does not blank them. Authorising a submission needs fresher proof.
+pub fn vote_state_display_max_age(network: Network) -> Duration {
+    background_refresh_interval(network) * 2
+}
+
 /// Whether a contest still needs a decision from at least one node-set node.
 ///
 /// Each item is one node's proved state, whether its target is locked by an
@@ -723,6 +730,16 @@ mod tests {
             background_refresh_interval(Network::Devnet),
             Duration::from_secs(180)
         );
+    }
+
+    #[test]
+    fn displayed_vote_state_outlives_one_missed_background_refresh() {
+        for network in [Network::Mainnet, Network::Testnet, Network::Devnet] {
+            assert_eq!(
+                vote_state_display_max_age(network),
+                background_refresh_interval(network) * 2
+            );
+        }
     }
 
     #[test]

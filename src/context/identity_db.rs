@@ -609,6 +609,9 @@ impl AppContext {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             super::dpns_vote_operations::cancel_removed_identity_votes(&kv, self.network, id)?;
+            // Votes still waiting to be stored were reviewed before the removal
+            // too, and no marker will say so once it is retired below.
+            self.begin_dpns_voter_lifecycle(id);
         }
         self.clear_identity_unloaded(&kv, &id.to_buffer())?;
         self.insert_local_qualified_identity_locked(qualified_identity, wallet_and_identity_id_info)

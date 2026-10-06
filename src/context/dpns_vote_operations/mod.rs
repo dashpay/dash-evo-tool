@@ -35,6 +35,9 @@ type DpnsVoteDiagnosticMap =
 
 type RelativeSchedulePresets = BTreeMap<DpnsVoteTargetKey, (u64, u64)>;
 
+/// How many times each voter was loaded again after a removal in this session.
+pub(crate) type DpnsVoterLifecycles = BTreeMap<dash_sdk::platform::Identifier, u64>;
+
 /// Display metadata never changes the interpretation of a vote record or its locks.
 fn load_operation(
     kv: &DetKv,
@@ -594,11 +597,45 @@ impl AppContext {
         })
     }
 
+    /// The voter lifecycles as they stand now. Vote work reads them when it is
+    /// submitted and hands them to [`Self::admit_dpns_vote_operation`].
+    pub(crate) fn dpns_voter_lifecycles(&self) -> DpnsVoterLifecycles {
+        self.dpns_voter_lifecycles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Record that `voter` is being loaded again after a removal. The caller
+    /// holds the journal guard, so no admission runs between the cancellation
+    /// of the voter's stored votes and this.
+    pub(super) fn begin_dpns_voter_lifecycle(&self, voter: dash_sdk::platform::Identifier) {
+        let mut lifecycles = self
+            .dpns_voter_lifecycles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let lifecycle = lifecycles.entry(voter).or_default();
+        *lifecycle = lifecycle.wrapping_add(1);
+    }
+
     /// Persist a reviewed operation and atomically acquire all unresolved locks.
     pub fn insert_dpns_vote_operation(
         &self,
         operation: &mut DpnsVoteOperation,
         replacing_scheduled_key: Option<&DpnsVoteTargetKey>,
+    ) -> Result<(), TaskError> {
+        let submitted = self.dpns_voter_lifecycles();
+        self.admit_dpns_vote_operation(operation, replacing_scheduled_key, &submitted)
+    }
+
+    /// [`Self::insert_dpns_vote_operation`] for work that waited after it was
+    /// submitted. `submitted` is [`Self::dpns_voter_lifecycles`] read before
+    /// the wait: a voter loaded again since then has its votes cancelled.
+    pub(crate) fn admit_dpns_vote_operation(
+        &self,
+        operation: &mut DpnsVoteOperation,
+        replacing_scheduled_key: Option<&DpnsVoteTargetKey>,
+        submitted: &DpnsVoterLifecycles,
     ) -> Result<(), TaskError> {
         self.mutate_dpns_vote_operation(operation.id, |kv| {
             if operation
@@ -608,7 +645,16 @@ impl AppContext {
             {
                 return Err(TaskError::DpnsVoteTargetBusy);
             }
+            // Removing an identity cancels its votes under this guard, but it
+            // sees only those already stored. A vote reviewed before the
+            // removal and arriving after it must end the same way.
+            let removed = self.removed_dpns_voters(kv, operation, submitted)?;
             if let Some(key) = replacing_scheduled_key {
+                // A schedule stored for a voter loaded again was reviewed
+                // afresh; it is not this work's to replace.
+                if removed.contains(&key.voter_id) {
+                    return Err(TaskError::DpnsScheduledVoteNotEditable);
+                }
                 replace_scheduled_operation(kv, self.network, operation, key)?;
                 *self
                     .dpns_vote_progress
@@ -629,32 +675,33 @@ impl AppContext {
             {
                 return Err(TaskError::DpnsVoteTargetBusy);
             }
-            // Removing an identity cancels its votes under this guard, but it
-            // sees only those already stored. A vote reviewed before the
-            // removal and arriving after it must end the same way.
-            let removed = self.removed_dpns_voters(kv, operation)?;
             cancel_executable_targets(operation, |voter| removed.contains(&voter));
             persist_operation(kv, self.network, operation)
         })
     }
 
-    /// Voters of `operation` that were removed from this device and not
-    /// loaded again. The caller holds the journal guard, which a removal
-    /// keeps from cancelling the voter's votes until the voter is delisted.
+    /// Voters of `operation` removed from this device since its votes were
+    /// reviewed: either not loaded again, or loaded again after `submitted`
+    /// was read. The caller holds the journal guard, which a removal keeps
+    /// from cancelling the voter's votes until the voter is delisted, and
+    /// which loading the voter again keeps until its lifecycle has moved on.
     fn removed_dpns_voters(
         &self,
         kv: &DetKv,
         operation: &DpnsVoteOperation,
+        submitted: &DpnsVoterLifecycles,
     ) -> Result<BTreeSet<dash_sdk::platform::Identifier>, TaskError> {
         let voters: BTreeSet<_> = operation
             .targets
             .iter()
             .map(|outcome| outcome.target.key.voter_id)
             .collect();
+        let current = self.dpns_voter_lifecycles();
         let mut removed = BTreeSet::new();
         for voter in voters {
-            if self.is_identity_unloaded(kv, &voter.to_buffer())?
-                && !self.is_identity_listed(&voter)?
+            if submitted.get(&voter) != current.get(&voter)
+                || (self.is_identity_unloaded(kv, &voter.to_buffer())?
+                    && !self.is_identity_listed(&voter)?)
             {
                 removed.insert(voter);
             }

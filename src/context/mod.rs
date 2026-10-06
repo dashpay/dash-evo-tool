@@ -6,6 +6,7 @@ mod dpns_vote_operations;
 mod dpns_vote_preferences;
 mod dpns_vote_state;
 mod legacy_scheduled_votes;
+pub(crate) use dpns_vote_operations::DpnsVoterLifecycles;
 pub(crate) use dpns_vote_state::DpnsVoteRefreshResults;
 pub mod feature_gate;
 mod identity_db;
@@ -273,6 +274,9 @@ pub struct AppContext {
     contact_request_actions_in_flight: Mutex<HashSet<Identifier>>,
     /// Serializes operation journal writes and target-lock acquisition.
     dpns_vote_operation_guard: Mutex<()>,
+    /// Bumped under `dpns_vote_operation_guard` when a removed voter is loaded
+    /// again; see [`AppContext::dpns_voter_lifecycles`].
+    dpns_voter_lifecycles: Mutex<DpnsVoterLifecycles>,
     /// Coordinates proof publication and short state-to-journal validation.
     dpns_vote_state_publications: dpns_vote_state::DpnsVoteStatePublications,
     /// Serializes all nonce-consuming vote submissions per voter across tasks,
@@ -623,6 +627,7 @@ impl AppContext {
             storage_prepared: AtomicBool::new(false),
             contact_request_actions_in_flight: Mutex::new(HashSet::new()),
             dpns_vote_operation_guard: Mutex::new(()),
+            dpns_voter_lifecycles: Mutex::default(),
             dpns_vote_dispatch: DpnsVoteDispatchCoordinator::default(),
             dpns_vote_refresh_permits: tokio::sync::Semaphore::new(MAX_CONCURRENT_DPNS_VOTERS),
             dpns_vote_state_publications: dpns_vote_state::DpnsVoteStatePublications::default(),

@@ -8,7 +8,7 @@ mod vote_on_dpns_name;
 use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::{DapiAddressAvailability, TaskError};
-use crate::context::{AppContext, MAX_CONCURRENT_DPNS_VOTERS};
+use crate::context::{AppContext, DpnsVoterLifecycles, MAX_CONCURRENT_DPNS_VOTERS};
 use crate::model::contested_name::ContestedName;
 use crate::model::dpns_voting::{
     DpnsCurrentVoteState, DpnsScheduleEditValidationError, DpnsScheduledVoteEdit, DpnsVoteFailure,
@@ -225,6 +225,9 @@ impl AppContext {
         sdk: &Sdk,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
+        // Read before the first wait: a node removed and loaded again during
+        // one must not have the votes this task carries stored afterwards.
+        let submitted = self.dpns_voter_lifecycles();
         let is_scheduled_sweep =
             matches!(&task, ContestedResourceTask::CastDueScheduledVotes { .. });
         if !is_scheduled_sweep
@@ -272,6 +275,7 @@ impl AppContext {
                     operation,
                     voters,
                     replacing_scheduled_key,
+                    &submitted,
                     sdk,
                 )
                 .await
@@ -281,8 +285,14 @@ impl AppContext {
             }
             ContestedResourceTask::CastScheduledVote(scheduled_vote, voter) => {
                 let operation = self.operation_for_scheduled_vote(&scheduled_vote, &voter)?;
-                self.execute_dpns_vote_operation_with_recovery(operation, vec![*voter], None, sdk)
-                    .await
+                self.execute_dpns_vote_operation_with_recovery(
+                    operation,
+                    vec![*voter],
+                    None,
+                    &submitted,
+                    sdk,
+                )
+                .await
             }
             ContestedResourceTask::CastDueScheduledVotes {
                 preserve_eligibility_since_ms,
@@ -525,11 +535,33 @@ impl AppContext {
         Ok(())
     }
 
+    /// Execute an operation handed over with no wait since it was submitted.
     async fn execute_dpns_vote_operation(
+        self: &Arc<Self>,
+        operation: DpnsVoteOperation,
+        voters: Vec<QualifiedIdentity>,
+        replacing_scheduled_key: Option<DpnsVoteTargetKey>,
+        sdk: &Sdk,
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
+        let submitted = self.dpns_voter_lifecycles();
+        self.execute_submitted_dpns_vote_operation(
+            operation,
+            voters,
+            replacing_scheduled_key,
+            &submitted,
+            sdk,
+        )
+        .await
+    }
+
+    /// Preflight, store and send an operation. `submitted` is
+    /// [`Self::dpns_voter_lifecycles`] as read when the work was submitted.
+    async fn execute_submitted_dpns_vote_operation(
         self: &Arc<Self>,
         mut operation: DpnsVoteOperation,
         voters: Vec<QualifiedIdentity>,
         replacing_scheduled_key: Option<DpnsVoteTargetKey>,
+        submitted: &DpnsVoterLifecycles,
         sdk: &Sdk,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         if operation.targets.is_empty() {
@@ -635,7 +667,11 @@ impl AppContext {
                 .retain(|outcome| requested_keys.contains(&outcome.target.key));
         } else {
             self.validate_new_dpns_schedules(&new_schedules)?;
-            self.insert_dpns_vote_operation(&mut operation, replacing_scheduled_key.as_ref())?;
+            self.admit_dpns_vote_operation(
+                &mut operation,
+                replacing_scheduled_key.as_ref(),
+                submitted,
+            )?;
             // A replacement comes back as the whole stored operation; only the
             // requested targets belong to this run.
             operation
@@ -851,6 +887,7 @@ impl AppContext {
         operation: DpnsVoteOperation,
         voters: Vec<QualifiedIdentity>,
         replacing_scheduled_key: Option<DpnsVoteTargetKey>,
+        submitted: &DpnsVoterLifecycles,
         sdk: &Sdk,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let operation_id = operation.id;
@@ -860,7 +897,13 @@ impl AppContext {
             .map(|outcome| outcome.target.key.clone())
             .collect();
         let result = self
-            .execute_dpns_vote_operation(operation, voters, replacing_scheduled_key, sdk)
+            .execute_submitted_dpns_vote_operation(
+                operation,
+                voters,
+                replacing_scheduled_key,
+                submitted,
+                sdk,
+            )
             .await;
         if let Err(error) = &result {
             self.recover_failed_dpns_vote_operation(operation_id, &keys, error)
@@ -1209,8 +1252,12 @@ impl AppContext {
                 let voters = voters.clone();
                 let operation_id = operation.id;
                 async move {
+                    // Due operations are stored already; nothing is admitted.
+                    let submitted = app_context.dpns_voter_lifecycles();
                     let result = app_context
-                        .execute_dpns_vote_operation_with_recovery(operation, voters, None, &sdk)
+                        .execute_dpns_vote_operation_with_recovery(
+                            operation, voters, None, &submitted, &sdk,
+                        )
                         .await
                         .map(|_| ());
                     (operation_id, result)
@@ -1533,6 +1580,7 @@ mod tests {
                     selected,
                     vec![qualified_identity(1)],
                     None,
+                    &context.dpns_voter_lifecycles(),
                     &Sdk::new_mock(),
                 )
                 .await;
@@ -1954,6 +2002,174 @@ mod tests {
             reviewed_again.targets[0].status,
             DpnsVoteTargetStatus::Scheduled,
             "a vote reviewed after the node was loaded again is accepted"
+        );
+        context.wallet_backend().unwrap().shutdown().await;
+    }
+
+    /// A node removed and loaded again while its reviewed votes wait for their
+    /// proof must not have them stored. The removal cancels only votes the
+    /// journal already holds, and loading the node again retires the record
+    /// that it was removed, so nothing else stops them.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn votes_waiting_for_proof_while_their_node_is_removed_and_loaded_again_are_cancelled() {
+        use dash_sdk::query_types::ResourceVotesByIdentity;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let context = crate::context::test_support::test_app_context(temp.path());
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(8);
+        context
+            .ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+                tx,
+                context.egui_ctx().clone(),
+            ))
+            .await
+            .expect("wire wallet backend offline");
+        let [reloaded, kept] = [1, 2].map(|byte| {
+            let mut node = qualified_identity(byte);
+            node.identity_type = IdentityType::Masternode;
+            context
+                .insert_local_qualified_identity(&node, &None)
+                .expect("load node");
+            node
+        });
+        let now = now_ms();
+        context.seed_dpns_contest_for_test("alice", Some(now + 600_000), false);
+        let mut sdk = Sdk::new_mock();
+        sdk.mock()
+            .expect_fetch_many::<Identifier, ResourceVote, _, ResourceVotesByIdentity>(
+                ContestedResourceVotesGivenByIdentityQuery {
+                    identity_id: reloaded.identity.id(),
+                    offset: None,
+                    limit: Some(100),
+                    start_at: None,
+                    order_ascending: true,
+                },
+                Some(ResourceVotesByIdentity::default()),
+            )
+            .await
+            .expect("mock vote query");
+        let target = |node: &QualifiedIdentity, name: &str, timing| {
+            context
+                .dpns_vote_target(node, name, ResourceVoteChoice::Lock, timing, false)
+                .unwrap()
+        };
+        let later = VoteTiming::Scheduled(now + 60_000);
+        let operation = AppContext::new_dpns_vote_operation(vec![
+            target(&reloaded, "alice", later),
+            target(&reloaded, "bob", VoteTiming::Now),
+            target(&kept, "alice", later),
+        ]);
+        let operation_id = operation.id;
+
+        // With every refresh permit taken, the run parks on its proof query.
+        let permits = context
+            .dpns_vote_refresh_permits
+            .acquire_many(u32::try_from(MAX_CONCURRENT_DPNS_VOTERS).expect("permit count"))
+            .await
+            .expect("refresh permits");
+        let mut run = std::pin::pin!(context.execute_dpns_vote_operation(
+            operation,
+            vec![reloaded.clone(), kept.clone()],
+            None,
+            &sdk,
+        ));
+        assert!(
+            futures::poll!(&mut run).is_pending(),
+            "the run must be waiting for the vote proof"
+        );
+        context
+            .delete_local_qualified_identity(&reloaded.identity.id())
+            .expect("remove node");
+        context
+            .insert_local_qualified_identity(&reloaded, &None)
+            .expect("load the node again");
+        drop(permits);
+        let result = run.await;
+
+        assert!(result.is_ok(), "{result:?}");
+        let stored = context
+            .dpns_vote_operation(operation_id)
+            .unwrap()
+            .expect("the operation is journaled");
+        assert_eq!(
+            stored
+                .targets
+                .iter()
+                .map(|outcome| outcome.status)
+                .collect::<Vec<_>>(),
+            vec![
+                DpnsVoteTargetStatus::Cancelled,
+                DpnsVoteTargetStatus::Cancelled,
+                DpnsVoteTargetStatus::Scheduled,
+            ],
+            "the reloaded node's votes are cancelled, the other node's vote is kept"
+        );
+        context.wallet_backend().unwrap().shutdown().await;
+    }
+
+    /// A schedule stored after the node was loaded again was reviewed afresh.
+    /// A replacement submitted before the removal must not overwrite it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_replacement_submitted_before_its_node_was_removed_and_loaded_again_is_refused() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let context = crate::context::test_support::test_app_context(temp.path());
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(8);
+        context
+            .ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+                tx,
+                context.egui_ctx().clone(),
+            ))
+            .await
+            .expect("wire wallet backend offline");
+        let mut node = qualified_identity(1);
+        node.identity_type = IdentityType::Masternode;
+        context
+            .insert_local_qualified_identity(&node, &None)
+            .expect("load node");
+        let later = now_ms() + 600_000;
+        let schedule = |timestamp| {
+            AppContext::new_dpns_vote_operation(vec![
+                context
+                    .dpns_vote_target(
+                        &node,
+                        "alice",
+                        ResourceVoteChoice::Lock,
+                        VoteTiming::Scheduled(timestamp),
+                        false,
+                    )
+                    .unwrap(),
+            ])
+        };
+        let mut original = schedule(later);
+        context
+            .insert_dpns_vote_operation(&mut original, None)
+            .unwrap();
+        let key = original.targets[0].target.key.clone();
+        let mut replacement = schedule(later + 60_000);
+        let submitted = context.dpns_voter_lifecycles();
+
+        context
+            .delete_local_qualified_identity(&node.identity.id())
+            .expect("remove node");
+        context
+            .insert_local_qualified_identity(&node, &None)
+            .expect("load the node again");
+        let mut reviewed_again = schedule(later);
+        context
+            .insert_dpns_vote_operation(&mut reviewed_again, None)
+            .unwrap();
+
+        assert!(matches!(
+            context.admit_dpns_vote_operation(&mut replacement, Some(&key), &submitted),
+            Err(TaskError::DpnsScheduledVoteNotEditable)
+        ));
+        let stored = context
+            .dpns_vote_operation(reviewed_again.id)
+            .unwrap()
+            .expect("the schedule reviewed again is journaled");
+        assert_eq!(
+            stored.targets[0].target.timing,
+            VoteTiming::Scheduled(later),
+            "the schedule reviewed after the node was loaded again is untouched"
         );
         context.wallet_backend().unwrap().shutdown().await;
     }

@@ -267,9 +267,10 @@ mod tests {
             for open in [false, true] {
                 ctx.data_mut(|data| data.insert_temp(Id::new(OPEN_ID), open));
                 let reads = store.read_count();
-                let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+                ctx.run_ui(egui::RawInput::default(), |ui| {
                     show(ui.ctx(), &app, &mut state);
-                });
+                })
+                .drop_without_applying_deltas();
                 assert_eq!(store.read_count(), reads, "drawer must use only memory");
             }
         }

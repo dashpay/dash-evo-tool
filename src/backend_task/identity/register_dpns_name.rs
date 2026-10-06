@@ -42,10 +42,12 @@ fn rebrand_dpns_domain_conflict(error: TaskError) -> TaskError {
     }
 }
 
-/// Whether the network refused the transition, which proves it was not applied.
+/// Whether the network refused the last broadcast attempt.
 ///
-/// Any other failure (a timeout, a dropped connection, no reachable node) can
-/// follow a broadcast that did arrive, so it proves nothing either way.
+/// `broadcast` re-sends the same signed transition and reports only its last
+/// attempt, so a refusal can follow an attempt that was applied: it is believed
+/// only once the network does not show the request. Any other failure (a
+/// timeout, a dropped connection, no reachable node) proves nothing either way.
 fn broadcast_was_rejected(error: &SdkError) -> bool {
     match error {
         SdkError::Protocol(dash_sdk::dpp::ProtocolError::ConsensusError(_)) => true,
@@ -264,8 +266,9 @@ impl AppContext {
     /// Decide what a failed name-request broadcast means, given it may be paid for.
     ///
     /// `Ok(())` when the network already shows the request, so the registration
-    /// carries on as a success. A refusal keeps its own error. Anything else is
-    /// reported as unconfirmed, never as a plain failure that invites paying again.
+    /// carries on as a success, even after a refusal. A refusal the network
+    /// does not contradict keeps its own error. Anything else is reported as
+    /// unconfirmed, never as a plain failure that invites paying again.
     async fn resolve_failed_domain_broadcast(
         &self,
         sdk: &Sdk,
@@ -274,9 +277,6 @@ impl AppContext {
         outcome: DpnsRegistrationOutcome,
         error: SdkError,
     ) -> Result<(), TaskError> {
-        if broadcast_was_rejected(&error) {
-            return Err(rebrand_dpns_domain_conflict(TaskError::from(error)));
-        }
         if self
             .username_request_reached_network(sdk, identity_id, name, outcome)
             .await
@@ -287,6 +287,9 @@ impl AppContext {
                 "Username registration reported an error, but the network shows the request; continuing as submitted"
             );
             return Ok(());
+        }
+        if broadcast_was_rejected(&error) {
+            return Err(rebrand_dpns_domain_conflict(TaskError::from(error)));
         }
         Err(TaskError::UsernameRegistrationUnconfirmed {
             source_error: Box::new(error),
@@ -845,24 +848,38 @@ mod tests {
         SdkError::TimeoutReached(std::time::Duration::from_secs(1), "no answer".to_owned())
     }
 
-    /// A refusal by the network proves nothing was paid, so it keeps its own
-    /// error and is not turned into an "unconfirmed" warning.
+    fn refused_broadcast() -> SdkError {
+        crate::test_support::duplicate_unique_index_broadcast_error(vec![
+            "normalizedParentDomainName",
+            "normalizedLabel",
+        ])
+    }
+
+    /// A refusal the network does not contradict keeps its own error and is not
+    /// turned into an "unconfirmed" warning.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn refused_name_request_keeps_its_own_error() {
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = crate::context::test_support::test_app_context(dir.path());
-        let refused = crate::test_support::duplicate_unique_index_broadcast_error(vec![
-            "normalizedParentDomainName",
-            "normalizedLabel",
-        ]);
+        let id = Identifier::from([8; 32]);
+
+        // The vote is readable and shows only someone else's request.
+        let mut sdk = Sdk::new_mock();
+        expect_vote_state(
+            &mut sdk,
+            &ctx,
+            "alice",
+            running_vote(&[Identifier::from([0x77; 32])]),
+        )
+        .await;
 
         let result = ctx
             .resolve_failed_domain_broadcast(
-                &Sdk::new_mock(),
-                Identifier::from([8; 32]),
+                &sdk,
+                id,
                 "alice",
                 DpnsRegistrationOutcome::PendingCommunityVote,
-                refused,
+                refused_broadcast(),
             )
             .await;
 
@@ -870,6 +887,31 @@ mod tests {
             matches!(result, Err(TaskError::DpnsUsernameAlreadyTaken { .. })),
             "{result:?}"
         );
+    }
+
+    /// The broadcast is re-sent and only its last attempt is reported, so a
+    /// refusal can follow an attempt that was applied and paid for. When the
+    /// network shows the request, the registration carries on as submitted.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn refused_name_request_continues_when_the_request_is_on_the_network() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let id = Identifier::from([8; 32]);
+
+        let mut sdk = Sdk::new_mock();
+        expect_vote_state(&mut sdk, &ctx, "alice", running_vote(&[id])).await;
+
+        let result = ctx
+            .resolve_failed_domain_broadcast(
+                &sdk,
+                id,
+                "alice",
+                DpnsRegistrationOutcome::PendingCommunityVote,
+                refused_broadcast(),
+            )
+            .await;
+
+        assert!(result.is_ok(), "{result:?}");
     }
 
     /// A broadcast failure that proves nothing is reconciled first: when the

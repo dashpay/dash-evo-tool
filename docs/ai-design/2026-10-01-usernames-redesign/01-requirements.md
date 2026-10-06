@@ -187,10 +187,12 @@ Scope: identity-side usernames. Voting is Stream V in
     [Go to my identity];
   - failure: errors per AGENTS.md (no jargon, an action, details via
     `with_details`);
-  - unconfirmed: when the name request was sent but neither a refusal nor the
-    request itself can be read back from the network, the fee may already be
-    spent. The app first re-reads the vote (or the owned names) and continues
-    as a success if the request is there. Otherwise it reports `The app could
+  - unconfirmed: a failed send of the name request does not prove the fee was
+    not spent, because the same signed request is re-sent and only the last
+    attempt is reported. The app therefore first re-reads the vote (or the
+    owned names) after any failed send, a refusal included, and continues as a
+    success if the request is there. A refusal the network does not contradict
+    keeps its own error. Otherwise it reports `The app could
     not confirm whether your request for this username went through. Do not
     pay again yet. Wait a few minutes, then check the Usernames list on your
     identity. If the name is not there, try again.` and returns to U4 with a

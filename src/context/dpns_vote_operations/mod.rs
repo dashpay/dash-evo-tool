@@ -57,65 +57,32 @@ fn load_operation(
         Ok(None) => {}
         Err(error) => tracing::debug!(?error, "Relative schedule labels unreadable"),
     }
-    if operation.targets.iter().any(stoppable_by_recovery) {
-        match kv.get::<RecoveryStops>(DetScope::Global, &recovery_stops_key(key)) {
-            Ok(Some(stops)) => {
-                for outcome in &mut operation.targets {
-                    if stoppable_by_recovery(outcome) {
-                        outcome.stopped_by_recovery_at_ms = stops.get(&outcome.target.key).copied();
-                    }
+    if operation.targets.iter().any(is_immediate) {
+        match kv.get::<RecoveryTimes>(DetScope::Global, &recovery_times_key(key)) {
+            Ok(Some(times)) => {
+                for outcome in operation.targets.iter_mut().filter(|o| is_immediate(o)) {
+                    outcome.recovered_at_ms = times.get(&outcome.target.key).copied();
                 }
             }
             Ok(None) => {}
-            Err(error) => tracing::debug!(?error, "Vote recovery stop times unreadable"),
+            Err(error) => tracing::debug!(?error, "Vote recovery times unreadable"),
         }
     }
     Ok(Some(operation))
 }
 
-/// When restart recovery stopped each immediate target of one operation, Unix ms.
-type RecoveryStops = BTreeMap<DpnsVoteTargetKey, u64>;
+/// When restart recovery picked up each immediate target of one operation, Unix ms.
+type RecoveryTimes = BTreeMap<DpnsVoteTargetKey, u64>;
 
-/// Whether `outcome` is in the state restart recovery leaves a stopped
-/// immediate vote in.
-fn stoppable_by_recovery(outcome: &DpnsVoteOutcome) -> bool {
-    outcome.status == DpnsVoteTargetStatus::FailedBeforeSubmission
-        && outcome.target.timing == VoteTiming::Now
+fn is_immediate(outcome: &DpnsVoteOutcome) -> bool {
+    outcome.target.timing == VoteTiming::Now
 }
 
-/// Keys of the immediate targets recovery has already stopped.
-fn stopped_immediate_targets(operation: &DpnsVoteOperation) -> BTreeSet<DpnsVoteTargetKey> {
-    operation
-        .targets
-        .iter()
-        .filter(|outcome| stoppable_by_recovery(outcome))
-        .map(|outcome| outcome.target.key.clone())
-        .collect()
-}
-
-/// Persist an operation recovery has changed, and date the immediate targets
-/// it stopped beyond those in `already_stopped`.
-fn persist_recovered_operation(
-    kv: &DetKv,
-    network: Network,
-    operation: &DpnsVoteOperation,
-    already_stopped: &BTreeSet<DpnsVoteTargetKey>,
-) -> Result<(), TaskError> {
-    persist_operation(kv, network, operation)?;
-    let stopped: Vec<DpnsVoteTargetKey> = stopped_immediate_targets(operation)
-        .into_iter()
-        .filter(|key| !already_stopped.contains(key))
-        .collect();
-    save_recovery_stops(kv, network, operation.id, &stopped, now_ms());
-    Ok(())
-}
-
-/// Record that restart recovery stopped `keys` of an operation at `at_ms`.
+/// Record that restart recovery picked up `keys` of an operation at `at_ms`.
 ///
 /// Display metadata, like the relative labels: a failed write is logged and
-/// never fails the journal transition it describes. Callers hold the journal
-/// guard.
-fn save_recovery_stops(
+/// never fails the recovery it describes. Callers hold the journal guard.
+fn save_recovery_times(
     kv: &DetKv,
     network: Network,
     operation_id: DpnsVoteOperationId,
@@ -125,16 +92,16 @@ fn save_recovery_stops(
     if keys.is_empty() {
         return;
     }
-    let key = recovery_stops_key(&operation_key(network, operation_id));
+    let key = recovery_times_key(&operation_key(network, operation_id));
     let result = kv
-        .get::<RecoveryStops>(DetScope::Global, &key)
-        .and_then(|stops| {
-            let mut stops = stops.unwrap_or_default();
-            stops.extend(keys.iter().cloned().map(|key| (key, at_ms)));
-            kv.put(DetScope::Global, &key, &stops)
+        .get::<RecoveryTimes>(DetScope::Global, &key)
+        .and_then(|times| {
+            let mut times = times.unwrap_or_default();
+            times.extend(keys.iter().cloned().map(|key| (key, at_ms)));
+            kv.put(DetScope::Global, &key, &times)
         });
     if let Err(error) = result {
-        tracing::debug!(?error, "Could not save vote recovery stop times");
+        tracing::debug!(?error, "Could not save vote recovery times");
     }
 }
 
@@ -851,8 +818,7 @@ impl AppContext {
         state: DpnsCurrentVoteState,
     ) -> Result<bool, TaskError> {
         self.mutate_dpns_vote_operation(operation_id, |kv| {
-            let mut stopped = false;
-            let still_queued = with_target(kv, self.network, operation_id, key, |outcome| {
+            Ok(with_target(kv, self.network, operation_id, key, |outcome| {
                 if outcome.status != DpnsVoteTargetStatus::Queued {
                     return TargetUpdate::Skip(false);
                 }
@@ -879,22 +845,9 @@ impl AppContext {
                             unavailable_preflight_outcome(outcome.target.timing);
                     }
                 }
-                stopped = stoppable_by_recovery(outcome);
                 TargetUpdate::Persist(outcome.status == DpnsVoteTargetStatus::Queued)
             })?
-            .unwrap_or(false);
-            if stopped {
-                // An immediate target is only ever revalidated here when a
-                // restart left it queued, so its operation predates the session.
-                save_recovery_stops(
-                    kv,
-                    self.network,
-                    operation_id,
-                    std::slice::from_ref(key),
-                    now_ms(),
-                );
-            }
-            Ok(still_queued)
+            .unwrap_or(false))
         })
     }
 
@@ -907,12 +860,26 @@ impl AppContext {
         let (_guard, kv) = self.journal()?;
         let now_ms = now_ms();
         for mut operation in load_operations(&kv, self.network)? {
-            let already_stopped = stopped_immediate_targets(&operation);
+            // Whatever becomes of these from here on happens in this session,
+            // however long ago the operation was reviewed.
+            let picked_up: Vec<DpnsVoteTargetKey> = operation
+                .targets
+                .iter()
+                .filter(|outcome| {
+                    is_immediate(outcome)
+                        && matches!(
+                            outcome.status,
+                            DpnsVoteTargetStatus::Queued | DpnsVoteTargetStatus::Submitting
+                        )
+                })
+                .map(|outcome| outcome.target.key.clone())
+                .collect();
             let interrupted = recover_interrupted_target_statuses(&mut operation, |_| true);
             let expired = expire_stale_queued_targets(&mut operation, now_ms);
             if interrupted || expired {
-                persist_recovered_operation(&kv, self.network, &operation, &already_stopped)?;
+                persist_operation(&kv, self.network, &operation)?;
             }
+            save_recovery_times(&kv, self.network, operation.id, &picked_up, now_ms);
         }
         prune_completed_history(&kv, self.network, None, HistoryKind::Immediate)?;
         prune_completed_history(&kv, self.network, None, HistoryKind::Scheduled)?;
@@ -937,12 +904,11 @@ impl AppContext {
             else {
                 return Ok(());
             };
-            let already_stopped = stopped_immediate_targets(&operation);
             let interrupted =
                 recover_interrupted_target_statuses(&mut operation, |key| keys.contains(key));
             let abandoned = fail_abandoned_queued_targets(&mut operation, |key| keys.contains(key));
             if interrupted || abandoned {
-                persist_recovered_operation(kv, self.network, &operation, &already_stopped)?;
+                persist_operation(kv, self.network, &operation)?;
             }
             Ok(())
         })
@@ -2517,8 +2483,8 @@ mod tests {
         );
         assert!(
             recovered.targets[0]
-                .stopped_by_recovery_at_ms
-                .is_some_and(|stopped| stopped >= session_start),
+                .recovered_at_ms
+                .is_some_and(|recovered_at| recovered_at >= session_start),
             "the stop is dated in this session, not by the operation's age"
         );
         let operations = ctx.dpns_vote_operations().unwrap();
@@ -2585,6 +2551,7 @@ mod tests {
         let key = first_vote.targets[0].target.key.clone();
         ctx.insert_dpns_vote_operation(&mut first_vote, None)
             .unwrap();
+        ctx.recover_interrupted_dpns_vote_operations().unwrap();
         assert!(
             !ctx.revalidate_queued_dpns_vote_target(first_vote.id, &key, observed)
                 .unwrap()
@@ -2595,8 +2562,8 @@ mod tests {
             DpnsVoteTargetStatus::FailedBeforeSubmission
         );
         assert!(
-            saved.targets[0].stopped_by_recovery_at_ms.is_some(),
-            "the operator must be told the vote was stopped"
+            saved.targets[0].recovered_at_ms.is_some(),
+            "the stop is dated by the recovery that queued the vote again"
         );
         assert_eq!(ctx.dpns_vote_target_status(&key).unwrap(), None);
 

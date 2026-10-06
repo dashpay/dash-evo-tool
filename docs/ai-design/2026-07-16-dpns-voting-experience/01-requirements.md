@@ -251,7 +251,11 @@ Validation floor: 24 nodes on one voting key, 6 open contests, 2 ending today.
 - **VOTE-FR-084** **[New]** — A `Needs attention` row at the top of Votes appears
   when any target is Unconfirmed, Rejected, Failed before submission, or a missed
   schedule. It summarizes and links to the drawer (`Show progress`) or Scheduled
-  (`Open Scheduled`).
+  (`Open Scheduled`). Unconfirmed targets and missed schedules always count. A
+  failure counts while it is the latest outcome for its target, has not been
+  dismissed in the drawer, and was sent in this session — for a scheduled vote
+  that is its scheduled time, so a vote scheduled days ago that fails today is
+  shown.
 - **VOTE-FR-087** **[New]** — Targets not yet submitted when their contest's
   voting ends become `Failed before submission` with the reason `Not submitted.
   Voting ended.`
@@ -324,7 +328,8 @@ Validation floor: 24 nodes on one voting key, 6 open contests, 2 ending today.
   rejected (existing rule).
 - **VOTE-FR-088** **[New]** — The Scheduled view groups rows by decision (name ×
   choice × time) with an expandable node list (`24 nodes ▾`). Per-node status
-  shows inside the expansion.
+  shows inside the expansion. Groups are listed by name, then time; the view
+  has no sort control and does not follow the History sort.
 
 ### Feedback
 

@@ -8,14 +8,14 @@ use super::AppContext;
 use crate::backend_task::error::TaskError;
 use crate::model::dpns_voting::operator::{
     AttentionSummary, ChangesLeft, ContestAttention, ListMembership, NodeVoteRow, VotingNode,
-    VotingNodeKind, changes_left, contest_needs_decision,
+    changes_left, contest_needs_decision,
 };
 use crate::model::dpns_voting::{
     DpnsCurrentVoteState, DpnsVoteOperation, DpnsVoteOutcome, DpnsVotePollAvailability,
     DpnsVoteTargetKey, DpnsVoteTargetStatus, authoritative_dpns_vote_outcomes,
     dpns_vote_lock_holders, dpns_vote_poll_availability,
 };
-use crate::model::qualified_identity::IdentityType;
+use crate::model::qualified_identity::QualifiedIdentity;
 use crate::utils::time::now_ms;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
@@ -185,25 +185,24 @@ impl AppContext {
         }
     }
 
+    /// One loaded masternode/evonode as the node-set resolver sees it.
+    pub fn dpns_voting_node(&self, identity: &QualifiedIdentity) -> VotingNode {
+        let id = identity.identity.id();
+        VotingNode {
+            id,
+            kind: identity.identity_type.into(),
+            has_voting_key: identity.can_cast_masternode_vote(),
+            membership: self.masternode_list_membership(id),
+            alias: identity.alias.clone(),
+        }
+    }
+
     /// Every loaded masternode/evonode as the node-set resolver sees it.
     pub fn dpns_voting_nodes(&self) -> Result<Vec<VotingNode>, TaskError> {
         Ok(self
             .load_local_masternode_identities()?
-            .into_iter()
-            .map(|identity| {
-                let id = identity.identity.id();
-                VotingNode {
-                    id,
-                    kind: if identity.identity_type == IdentityType::Evonode {
-                        VotingNodeKind::Evonode
-                    } else {
-                        VotingNodeKind::Masternode
-                    },
-                    has_voting_key: identity.can_cast_masternode_vote(),
-                    membership: self.masternode_list_membership(id),
-                    alias: identity.alias.clone(),
-                }
-            })
+            .iter()
+            .map(|identity| self.dpns_voting_node(identity))
             .collect())
     }
 

@@ -30,8 +30,8 @@ use crate::model::dpns_voting::composer::{
 };
 use crate::model::dpns_voting::operator::NodeExclusion;
 use crate::model::dpns_voting::operator::{
-    ChangesLeft, NodeSet, ResolvedNodeSet, VotingNode, VotingNodeKind, relative_schedule_preset,
-    time_left, vote_proof_can_decide,
+    ChangesLeft, NodeSet, ResolvedNodeSet, VotingNode, relative_schedule_preset, time_left,
+    vote_proof_can_decide,
 };
 use crate::model::dpns_voting::progress::needs_attention;
 use crate::model::dpns_voting::{
@@ -39,7 +39,6 @@ use crate::model::dpns_voting::{
     DpnsVoteOperationId, DpnsVoteOutcome, DpnsVoteTarget, DpnsVoteTargetKey, DpnsVoteTargetStatus,
     VoteTiming, dpns_schedule_is_overdue, validate_dpns_schedule_time,
 };
-use crate::model::qualified_identity::IdentityType;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
@@ -813,20 +812,7 @@ impl DPNSScreen {
         let mut nodes: Vec<VotingNode> = self
             .voting_identities
             .iter()
-            .map(|identity| {
-                let id = identity.identity.id();
-                VotingNode {
-                    id,
-                    kind: if identity.identity_type == IdentityType::Evonode {
-                        VotingNodeKind::Evonode
-                    } else {
-                        VotingNodeKind::Masternode
-                    },
-                    has_voting_key: true,
-                    membership: self.app_context.masternode_list_membership(id),
-                    alias: identity.alias.clone(),
-                }
-            })
+            .map(|identity| self.app_context.dpns_voting_node(identity))
             .collect();
         match self.app_context.dpns_voting_nodes() {
             Ok(all) => {

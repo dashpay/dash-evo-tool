@@ -6,6 +6,7 @@
 //! masternode-list membership.
 
 use super::{DpnsCurrentVoteState, DpnsScheduleEditValidationError, validate_dpns_schedule_time};
+use crate::model::qualified_identity::IdentityType;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::TimestampMillis;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
@@ -47,6 +48,17 @@ pub const MAX_VOTES_PER_NODE_PER_CONTEST: u8 = 5;
 pub enum VotingNodeKind {
     Masternode,
     Evonode,
+}
+
+/// An evonode votes as one; every other loaded node votes as a regular
+/// masternode.
+impl From<IdentityType> for VotingNodeKind {
+    fn from(identity_type: IdentityType) -> Self {
+        match identity_type {
+            IdentityType::Evonode => Self::Evonode,
+            IdentityType::Masternode | IdentityType::User => Self::Masternode,
+        }
+    }
 }
 
 /// Platform vote weight of one node.

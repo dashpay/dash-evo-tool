@@ -39,7 +39,7 @@ use std::sync::Arc;
 fn screen_with_context() -> RegisterDpnsNameScreen {
     let app_state = AppState::new(egui::Context::default()).expect("AppState builds");
     let app_context = app_state.current_app_context().clone();
-    RegisterDpnsNameScreen::new(&app_context, RegisterDpnsNameSource::Dpns)
+    RegisterDpnsNameScreen::new(&app_context, RegisterDpnsNameSource::Identities)
 }
 
 /// Dispatching the registration raises the global blocking overlay.
@@ -177,7 +177,7 @@ fn dpns_registration_defaults_to_app_scoped_identity() {
 
         app_context.set_selected_identity(Some(second));
 
-        let screen = RegisterDpnsNameScreen::new(&app_context, RegisterDpnsNameSource::Dpns);
+        let screen = RegisterDpnsNameScreen::new(&app_context, RegisterDpnsNameSource::Identities);
 
         assert_eq!(
             screen
@@ -197,7 +197,8 @@ fn dpns_registration_error_clears_overlay() {
         let (_rt, app_context) = fresh_app_context();
         let identity_id = seed_identity_for_dpns(&app_context, 0x33, "Alice");
         app_context.set_selected_identity(Some(identity_id));
-        let mut screen = RegisterDpnsNameScreen::new(&app_context, RegisterDpnsNameSource::Dpns);
+        let mut screen =
+            RegisterDpnsNameScreen::new(&app_context, RegisterDpnsNameSource::Identities);
         screen.type_label_for_test("alice");
         let _ = screen.flush_debounce_for_test();
         screen.display_task_result(BackendTaskSuccessResult::UsernameAvailability {

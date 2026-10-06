@@ -49,11 +49,11 @@ use super::get_selected_wallet;
 /// Wait after the last keystroke before asking the network about a name.
 const AVAILABILITY_DEBOUNCE: Duration = Duration::from_millis(400);
 
-/// Tracks where the user navigated from to reach this screen
+/// Where the user navigated from to reach this screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RegisterDpnsNameSource {
+    /// The Identities hub, the only place that opens this screen.
     #[default]
-    Dpns,
     Identities,
 }
 
@@ -861,26 +861,13 @@ impl ScreenLike for RegisterDpnsNameScreen {
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
         let ctx = ui.ctx().clone();
         let identity_label = self.identity_label();
-        let breadcrumbs = match self.source {
-            RegisterDpnsNameSource::Dpns => vec![
-                (
-                    "DPNS",
-                    AppAction::SetMainScreen(RootScreenType::RootScreenDPNSActiveContests),
-                ),
-                ("Get a username", AppAction::None),
-            ],
-            RegisterDpnsNameSource::Identities => vec![
-                ("Identities", AppAction::OpenIdentityPicker),
-                (identity_label.as_str(), AppAction::PopScreen),
-                ("Get a username", AppAction::None),
-            ],
-        };
+        let breadcrumbs = vec![
+            ("Identities", AppAction::OpenIdentityPicker),
+            (identity_label.as_str(), AppAction::PopScreen),
+            ("Get a username", AppAction::None),
+        ];
         let mut action = add_top_panel(ui, &self.app_context, breadcrumbs, vec![]);
-        let root_screen = match self.source {
-            RegisterDpnsNameSource::Dpns => RootScreenType::RootScreenDPNSActiveContests,
-            RegisterDpnsNameSource::Identities => RootScreenType::RootScreenIdentityHub,
-        };
-        action |= add_left_panel(ui, &self.app_context, root_screen);
+        action |= add_left_panel(ui, &self.app_context, RootScreenType::RootScreenIdentityHub);
 
         action |= island_central_panel(ui, |ui| {
             let mut inner = AppAction::None;

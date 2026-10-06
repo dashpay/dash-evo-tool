@@ -14,6 +14,7 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::task::JoinHandle;
 
 /// Extra attempts one contest page query gets after a retryable failure.
 const MAX_PAGE_RETRIES: usize = 3;
@@ -57,6 +58,23 @@ where
         retries += 1;
         tokio::time::sleep(retry_delay.saturating_mul(retries)).await;
     }
+}
+
+/// Wait for every contest query of a pass and tell whether all of them
+/// succeeded. One that failed, or did not run to its end, left its contest
+/// data stale.
+async fn every_contest_query_succeeded(queries: Vec<JoinHandle<bool>>) -> bool {
+    let mut succeeded = true;
+    for query in queries {
+        match query.await {
+            Ok(refreshed) => succeeded &= refreshed,
+            Err(e) => {
+                tracing::error!("Task failed: {:?}", e);
+                succeeded = false;
+            }
+        }
+    }
+    succeeded
 }
 
 impl AppContext {
@@ -157,7 +175,7 @@ impl AppContext {
                     Ok(permit) => permit,
                     Err(e) => {
                         tracing::error!("Semaphore closed while querying dpns end times: {}", e);
-                        return;
+                        return false;
                     }
                 };
 
@@ -172,9 +190,11 @@ impl AppContext {
                                 e
                             );
                         }
+                        true
                     }
                     Err(e) if quiet => {
                         tracing::debug!(error = ?e, "Background refresh could not query contest end times");
+                        false
                     }
                     Err(e) => {
                         tracing::error!("Error querying dpns end times: {}", e);
@@ -188,6 +208,7 @@ impl AppContext {
                                 send_err
                             );
                         }
+                        false
                     }
                 }
             })
@@ -210,7 +231,7 @@ impl AppContext {
                             name,
                             e
                         );
-                        return;
+                        return false;
                     }
                 };
 
@@ -226,9 +247,11 @@ impl AppContext {
                                 e
                             );
                         }
+                        true
                     }
                     Err(e) if quiet => {
                         tracing::debug!(error = ?e, %name, "Background refresh could not query contenders");
+                        false
                     }
                     Err(e) => {
                         tracing::error!("Error querying dpns vote contenders for {}: {}", name, e);
@@ -243,6 +266,7 @@ impl AppContext {
                                 send_err
                             );
                         }
+                        false
                     }
                 }
             });
@@ -250,11 +274,7 @@ impl AppContext {
             handles.push(handle);
         }
 
-        for handle in handles {
-            if let Err(e) = handle.await {
-                tracing::error!("Task failed: {:?}", e);
-            }
-        }
+        let contests_refreshed = every_contest_query_succeeded(handles).await;
 
         // Publish contests and every loaded node's proved current votes as one
         // completed refresh snapshot. Per-node failures are stored explicitly
@@ -269,12 +289,13 @@ impl AppContext {
         self.refresh_masternode_list_membership().await;
         self.forget_closed_dpns_vote_counts();
         self.recompute_dpns_vote_attention();
-        // A pass that left a node unchecked is not a completed refresh: the
-        // timer and the Votes-arrival refresh must be free to try again soon.
-        if vote_states_refreshed {
+        self.refresh_pending_dpns_usernames()?;
+        // A pass that left a contest stale or a node unchecked is not a
+        // completed refresh: the timer and the Votes-arrival refresh must be
+        // free to try again soon.
+        if contests_refreshed && vote_states_refreshed {
             self.mark_dpns_contests_refreshed();
         }
-        self.refresh_pending_dpns_usernames()?;
 
         sender
             .send(TaskResult::unattributed_success(
@@ -328,6 +349,20 @@ mod tests {
 
         assert!(matches!(result, Ok(7)));
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    /// A pass is complete only when every contest query ran to its end and
+    /// succeeded.
+    #[tokio::test]
+    async fn contest_queries_succeed_only_when_every_one_of_them_did() {
+        let query = |refreshed: bool| tokio::spawn(async move { refreshed });
+        assert!(every_contest_query_succeeded(vec![]).await);
+        assert!(every_contest_query_succeeded(vec![query(true), query(true)]).await);
+        assert!(!every_contest_query_succeeded(vec![query(false), query(true)]).await);
+
+        let stopped = tokio::spawn(std::future::pending::<bool>());
+        stopped.abort();
+        assert!(!every_contest_query_succeeded(vec![stopped, query(true)]).await);
     }
 
     #[tokio::test]

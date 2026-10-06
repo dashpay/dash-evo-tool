@@ -123,8 +123,9 @@ Validation floor: 24 nodes on one voting key, 6 open contests, 2 ending today.
 - **VOTE-FR-074** **[New]** — A background refresh of contests and node vote state
   feeds VOTE-FR-072/073 while voting nodes are loaded: every 30 min on mainnet,
   every 3 min on testnet/devnet, and immediately on Votes arrival. A refresh
-  that fails, or leaves any node's vote state unchecked, does not count as
-  completed and is retried after a sixth of the interval. Proved vote
+  that fails, or leaves any contest's contenders or end time unread or any
+  node's vote state unchecked, does not count as completed and is retried
+  after a sixth of the interval. Proved vote
   state stays valid for display and for VOTE-FR-072/073 for two refresh
   intervals, so the signal does not blank between refreshes. Submission never
   relies on it: preflight fetches its own proof and accepts it for 120 seconds.

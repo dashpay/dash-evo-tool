@@ -381,8 +381,9 @@ pub fn background_refresh_interval(network: Network) -> Duration {
     }
 }
 
-/// How soon a background refresh that failed, or left a node's vote state
-/// unchecked, is tried again instead of waiting a whole interval.
+/// How soon a background refresh that failed, or left a contest unread or a
+/// node's vote state unchecked, is tried again instead of waiting a whole
+/// interval.
 pub fn background_refresh_retry_delay(network: Network) -> Duration {
     background_refresh_interval(network) / 6
 }

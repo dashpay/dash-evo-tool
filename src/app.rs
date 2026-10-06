@@ -2687,9 +2687,9 @@ impl AppState {
         }
     }
 
-    /// Called when a background contest refresh ends: if it failed or left a
-    /// node's vote state unchecked, try again soon instead of a whole interval
-    /// later.
+    /// Called when a background contest refresh ends: if it failed, or left a
+    /// contest unread or a node's vote state unchecked, try again soon instead
+    /// of a whole interval later.
     fn retry_incomplete_dpns_background_refresh(&mut self, network: Network) {
         use crate::model::dpns_voting::operator::{
             background_refresh_incomplete, background_refresh_retry_delay,

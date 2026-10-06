@@ -2322,6 +2322,70 @@ mod tests {
         assert!(!every_voter_refreshed(&results));
     }
 
+    /// A background pass whose contest end times could not be read must not
+    /// count as a completed refresh either. The mock answers only the contest
+    /// list, so the end-time query fails; the pass still ends quietly.
+    #[tokio::test]
+    async fn a_refresh_pass_with_a_failed_contest_query_is_not_complete() {
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+        use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
+        use dash_sdk::drive::query::vote_polls_by_document_type_query::VotePollsByDocumentTypeQuery;
+        use dash_sdk::query_types::{ContestedResource, ContestedResources};
+        let (_temp, context) = vote_context();
+        let mut sdk = Sdk::new_mock();
+        let document_type = context
+            .dpns_contract
+            .document_type_for_name("domain")
+            .unwrap();
+        sdk.mock()
+            .expect_fetch_many::<Identifier, ContestedResource, _, ContestedResources>(
+                VotePollsByDocumentTypeQuery {
+                    contract_id: context.dpns_contract.id(),
+                    document_type_name: document_type.name().to_owned(),
+                    index_name: document_type.find_contested_index().unwrap().name.clone(),
+                    start_at_value: None,
+                    start_index_values: vec!["dash".into()],
+                    end_index_values: vec![],
+                    limit: Some(100),
+                    order_ascending: true,
+                },
+                Some(ContestedResources::default()),
+            )
+            .await
+            .unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, context.egui_ctx().clone());
+
+        let result = context
+            .run_contested_resource_task(
+                ContestedResourceTask::RefreshContestsInBackground,
+                &sdk,
+                sender,
+            )
+            .await;
+
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(
+            context.dpns_contests_refreshed_at_ms(),
+            None,
+            "a pass with unread end times must stay open to an early retry"
+        );
+        let sent: Vec<TaskResult> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert!(
+            sent.iter().any(|sent| matches!(
+                sent, TaskResult::Success { result, .. }
+                    if matches!(**result, BackendTaskSuccessResult::RefreshedDpnsContests)
+            )),
+            "what the pass did refresh is still published"
+        );
+        assert!(
+            !sent
+                .iter()
+                .any(|sent| matches!(sent, TaskResult::Error { .. })),
+            "a background pass reports no error to the UI"
+        );
+    }
+
     fn unconfirmed_operation_for(context: &AppContext, name: &str) -> DpnsVoteOperation {
         let mut target = scheduled_operation_for(context, name, 42).targets[0]
             .target

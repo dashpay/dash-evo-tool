@@ -508,7 +508,7 @@ pub fn username_request_from_contest(
     })
 }
 
-/// Combine a fresh read with what was stored before.
+/// Merge observations without regressing a newer or finished request.
 ///
 /// Finished outcomes keep the dates and tally they were last seen with when the
 /// fresh snapshot no longer carries them, and drop out after
@@ -528,6 +528,11 @@ pub fn merge_requests(
                 .iter()
                 .find(|old| old.normalized_label == request.normalized_label)
             {
+                if request.last_updated < old.last_updated
+                    || (!old.phase.is_pending() && request.phase.is_pending())
+                {
+                    return old.clone();
+                }
                 if !request.phase.is_pending() {
                     if request.tally == RequestTally::default() {
                         request.tally = old.tally.clone();
@@ -1115,6 +1120,29 @@ mod tests {
             acquired_at: 1,
         }];
         assert!(merge_requests(&previous, vec![], now, Some(&names)).is_empty());
+    }
+
+    #[test]
+    fn merge_rejects_stale_observations_and_preserves_finished_requests() {
+        for phase in [RequestPhase::Won, RequestPhase::Lost, RequestPhase::Locked] {
+            let mut finished = stored("alice", phase, Some(50));
+            finished.last_updated = 60;
+            for observed_at in [40, 70] {
+                let mut pending = stored("alice", RequestPhase::Voting, None);
+                pending.last_updated = observed_at;
+                assert_eq!(
+                    merge_requests(std::slice::from_ref(&finished), vec![pending], 80, None),
+                    vec![finished.clone()]
+                );
+            }
+        }
+        let mut current = stored("alice", RequestPhase::Voting, None);
+        current.last_updated = 60;
+        let older = stored("alice", RequestPhase::Joinable, None);
+        assert_eq!(
+            merge_requests(std::slice::from_ref(&current), vec![older], 80, None),
+            vec![current]
+        );
     }
 
     #[test]

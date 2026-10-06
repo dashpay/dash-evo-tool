@@ -123,6 +123,7 @@ pub(crate) struct FailingKv {
     fail_all_reads: AtomicBool,
     fail_all_deletes: AtomicBool,
     puts: AtomicUsize,
+    reads: AtomicUsize,
     get_countdown: CountdownFailure,
     put_countdown: CountdownFailure,
     delete_countdown: CountdownFailure,
@@ -141,6 +142,7 @@ impl FailingKv {
             fail_all_reads: AtomicBool::new(false),
             fail_all_deletes: AtomicBool::new(false),
             puts: AtomicUsize::new(0),
+            reads: AtomicUsize::new(0),
             get_countdown: CountdownFailure::default(),
             put_countdown: CountdownFailure::default(),
             delete_countdown: CountdownFailure::default(),
@@ -166,6 +168,11 @@ impl FailingKv {
         self.fail_all_deletes.store(fail, Ordering::Relaxed);
     }
 
+    /// Number of persistent reads, including namespace enumeration.
+    pub(crate) fn read_count(&self) -> usize {
+        self.reads.load(Ordering::Relaxed)
+    }
+
     /// How many `put` calls have reached the store.
     pub(crate) fn put_count(&self) -> usize {
         self.puts.load(Ordering::Relaxed)
@@ -184,6 +191,7 @@ impl FailingKv {
 
 impl KvStore for FailingKv {
     fn get(&self, scope: &ObjectId, key: &str) -> Result<Option<Vec<u8>>, KvError> {
+        self.reads.fetch_add(1, Ordering::Relaxed);
         // Blanket first: a read already failing for everything must not spend
         // the countdown budget a test armed for one keyspace.
         if self.fail_all_reads.load(Ordering::Relaxed) || self.get_countdown.should_fail(key) {
@@ -213,6 +221,7 @@ impl KvStore for FailingKv {
     }
 
     fn list_keys(&self, scope: &ObjectId, prefix: Option<&str>) -> Result<Vec<String>, KvError> {
+        self.reads.fetch_add(1, Ordering::Relaxed);
         self.inner.list_keys(scope, prefix)
     }
 }

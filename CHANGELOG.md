@@ -165,9 +165,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Cast now, choose a UTC time, or schedule shortly before voting ends.
   Scheduled decisions can be edited or removed before execution; missed
   schedules and failed attempts offer recovery actions. Mixed batches report
-  cast and scheduled results together. A progress drawer keeps other work
-  available, and decisions staged or changed during submission survive its
-  completion. Uncertain votes stay visible and blocked from resubmission;
+  cast and scheduled results together. A progress drawer shows live results
+  without reading storage during rendering. Decisions staged or changed during
+  submission survive its completion. Uncertain votes stay visible and blocked from resubmission;
   passing the estimated deadline alone does not release them. Completed
   history is bounded without discarding unresolved votes. Removing a node
   cancels its unstarted scheduled votes.
@@ -188,9 +188,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Request status shows the timeline, tally and outcome, with alternatives
   that need no vote. Saved requests refresh before the wider contest search;
   after the estimated deadline they show “Awaiting result” until the network
-  confirms an outcome. Refresh preserves concurrent identity edits and keeps
-  the previous request snapshot when storage cannot be read. Won usernames
-  retry failed fetches and identity writes, including after restarting the app.
+  confirms an outcome. Refresh preserves concurrent identity edits and finished
+  outcomes when an older refresh completes, and keeps the previous request
+  snapshot when storage cannot be read. Removed identities disappear immediately
+  from username views; failed record cleanup is retried after restarting.
+  Won usernames retry failed fetches and identity writes, including after
+  restarting the app.
   Profile → Usernames lists names and requests, with a “Show as main” choice
   for the username displayed when no profile display name is set.
 

@@ -1500,13 +1500,6 @@ impl AppContext {
         index_remove_identity(&kv, &id)?;
         self.invalidate_identity_load(*identifier);
         purge_identity_scope(&kv, &id)?;
-        if let Err(error) = self.forget_identity_usernames(&kv, identifier) {
-            tracing::warn!(
-                identity_id = %identifier,
-                ?error,
-                "Removed identity's username records could not be cleared"
-            );
-        }
         self.save_identity_profile_name(*identifier, None);
         let sidecar_cleanup = self.finish_identity_removal_cleanup(&kv, &id, vault_keys)?;
         // Mirror removal into the upstream unowned scope; wallet-owned identities are unaffected.
@@ -1529,6 +1522,7 @@ impl AppContext {
         vault_keys: impl IntoIterator<Item = (PrivateKeyTarget, KeyID)>,
     ) -> std::result::Result<IdentitySidecarCleanup, TaskError> {
         let identifier = Identifier::from(*id);
+        let username_cleanup = self.forget_identity_usernames(kv, &identifier);
         // Both callers hold the record lock through inventory retirement.
         // Failed re-imports can add keys after the removal manifest was saved.
         let mut vault_keys: std::collections::BTreeSet<_> = vault_keys.into_iter().collect();
@@ -1542,7 +1536,13 @@ impl AppContext {
             .wallet_backend()
             .and_then(|backend| backend.dashpay_clear_owner_overlays(&identifier));
         let token_cleanup = super::contract_token_db::forget_identity_token_state(kv, &identifier);
-        let sidecar_cleanup = sidecar_cleanup_outcome(dashpay_cleanup, token_cleanup, &identifier);
+        let mut sidecar_cleanup =
+            sidecar_cleanup_outcome(dashpay_cleanup, token_cleanup, &identifier);
+        if let Err(error) = username_cleanup {
+            tracing::warn!(identity_id = %identifier, ?error,
+                "Removed identity's username records could not be cleared; cleanup will retry");
+            sidecar_cleanup = IdentitySidecarCleanup::Incomplete;
+        }
         if !sidecar_cleanup.is_incomplete() {
             clear_vault_cleanup_manifest(kv, id);
         }
@@ -1830,7 +1830,7 @@ impl AppContext {
 
     /// Whether `id` was deliberately unloaded and not deliberately re-loaded
     /// since.
-    fn is_identity_unloaded(
+    pub(super) fn is_identity_unloaded(
         &self,
         kv: &DetKv,
         id: &[u8; 32],
@@ -5275,6 +5275,69 @@ mod tests {
                 .is_empty()
         );
         backend.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn username_cleanup_failure_is_hidden_and_retried_without_skipping_vault_cleanup() {
+        use crate::model::dpns_usernames::{RequestPhase, UsernameRequest};
+        let staged = stage_identity_with_vaulted_keys([0x33; 32], [0x44; 32]).await;
+        let kv = staged.ctx.det_kv().unwrap();
+        let failing = kv.failing_store();
+        staged
+            .ctx
+            .set_det_kv_override_for_test(DetKv::from_store(failing.clone()));
+        let mut request = UsernameRequest::submitted(
+            "Alice",
+            100,
+            crate::model::dpns::contest_durations(
+                staged.ctx.network,
+                staged.ctx.platform_version(),
+            ),
+            None,
+        );
+        request.phase = RequestPhase::Won;
+        staged
+            .ctx
+            .store_username_requests(&staged.id, vec![request])
+            .unwrap();
+        failing.fail_next_deletes_containing("det:username_requests:", 2);
+        let cleanup = staged
+            .ctx
+            .delete_local_qualified_identity_with_outcome(&staged.id)
+            .unwrap();
+        assert!(cleanup.is_incomplete());
+        assert!(!staged.ctx.is_identity_listed(&staged.id).unwrap());
+        let view = IdentityKeyView::new(&staged.store, staged.id.to_buffer());
+        for key in [1, 2] {
+            assert!(
+                view.get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, key)
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        assert!(staged.ctx.username_requests_for(&staged.id).is_empty());
+        assert!(!staged.ctx.username_requests_need_refresh());
+        staged.ctx.refresh_pending_dpns_usernames().unwrap();
+        assert!(staged.ctx.username_requests_for(&staged.id).is_empty());
+        assert!(!staged.ctx.username_requests_need_refresh());
+        staged.ctx.resume_pending_vault_cleanups();
+        assert!(
+            !kv.list(DetScope::Global, Some(VAULT_CLEANUP_PENDING_PREFIX))
+                .unwrap()
+                .is_empty()
+        );
+        staged.ctx.resume_pending_vault_cleanups();
+        assert!(
+            kv.list(DetScope::Global, Some("det:username_requests:"))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            kv.list(DetScope::Global, Some(VAULT_CLEANUP_PENDING_PREFIX))
+                .unwrap()
+                .is_empty()
+        );
+        staged.ctx.wallet_backend().unwrap().shutdown().await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

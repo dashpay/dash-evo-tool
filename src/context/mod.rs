@@ -213,13 +213,15 @@ pub struct AppContext {
     cached_settings: RwLock<Option<AppSettings>>,
     /// Frame-safe identity username state (requests, main name, seen outcomes).
     pending_dpns_usernames: RwLock<contested_names_db::UsernameCache>,
+    /// Contestant labels read by the progress drawer without storage access.
+    dpns_candidate_labels: RwLock<BTreeMap<String, BTreeMap<Identifier, String>>>,
     /// What needs the masternode operator's vote, recomputed on refresh and on
     /// coordinator updates (never per frame). Read by the top-bar chip and nav badge.
     dpns_vote_attention: RwLock<Arc<crate::model::dpns_voting::operator::AttentionSummary>>,
     /// Current masternode-list membership (ProTxHash → is evonode); `None`
     /// until the SPV masternode list is available.
     masternode_list_membership: RwLock<Option<Arc<BTreeMap<Identifier, bool>>>>,
-    /// Journal operations as of the last attention recompute (progress drawer).
+    /// Journal operations published after executor transitions (progress drawer).
     dpns_vote_progress: RwLock<Arc<[crate::model::dpns_voting::DpnsVoteOperation]>>,
     /// A `Review again` request from the progress drawer for the voting panel.
     dpns_vote_review_request: std::sync::Mutex<Option<crate::model::dpns_voting::DpnsVoteOutcome>>,
@@ -600,6 +602,7 @@ impl AppContext {
             animations_disabled: AtomicBool::new(false),
             cached_settings: RwLock::new(None),
             pending_dpns_usernames: RwLock::new(Default::default()),
+            dpns_candidate_labels: RwLock::new(Default::default()),
             dpns_vote_attention: RwLock::new(Default::default()),
             masternode_list_membership: RwLock::new(None),
             dpns_contests_refreshed_at_ms: std::sync::atomic::AtomicU64::new(0),
@@ -1308,6 +1311,9 @@ impl AppContext {
                 ?error,
                 "Pending DPNS username cache could not be warmed from stored contests"
             );
+        }
+        if let Err(error) = self.refresh_dpns_candidate_labels() {
+            tracing::warn!(?error, "DPNS candidate labels could not be loaded");
         }
         self.restore_selected_wallet_from_kv();
         self.restore_selected_identity_from_kv();

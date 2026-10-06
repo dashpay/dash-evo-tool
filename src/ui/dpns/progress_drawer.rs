@@ -13,10 +13,7 @@ use crate::ui::RootScreenType;
 use crate::ui::dpns::copy::{drawer_header, progress_row_status};
 use crate::ui::theme::DashColors;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
-use dash_sdk::platform::Identifier;
 use eframe::egui::{self, Align2, Id, RichText, Sense, Ui};
-use std::collections::BTreeMap;
-use std::sync::Arc;
 
 const OPEN_ID: &str = "dpns_vote_progress_drawer_open";
 
@@ -26,17 +23,11 @@ const OPEN_ID: &str = "dpns_vote_progress_drawer_open";
 pub struct DrawerState {
     /// Settled operations created before this time are not listed.
     since_ms: u64,
-    operations: Option<Arc<[crate::model::dpns_voting::DpnsVoteOperation]>>,
-    candidates: BTreeMap<(String, Identifier), String>,
 }
 
 impl DrawerState {
     pub fn new(since_ms: u64) -> Self {
-        Self {
-            since_ms,
-            operations: None,
-            candidates: BTreeMap::new(),
-        }
+        Self { since_ms }
     }
 
     /// Settled operations created before this moment are not listed.
@@ -113,30 +104,6 @@ pub fn show(ctx: &egui::Context, app_context: &AppContext, state: &mut DrawerSta
         return AppAction::None;
     }
     let counts = progress_counts(shown.iter().copied());
-    if !state
-        .operations
-        .as_ref()
-        .is_some_and(|previous| Arc::ptr_eq(previous, &operations))
-    {
-        state.candidates = app_context
-            .all_contested_names()
-            .unwrap_or_default()
-            .into_iter()
-            .flat_map(|contest| {
-                contest
-                    .contestants
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(move |candidate| {
-                        (
-                            (contest.normalized_contested_name.clone(), candidate.id),
-                            candidate.name,
-                        )
-                    })
-            })
-            .collect();
-        state.operations = Some(Arc::clone(&operations));
-    }
     let mut open = is_open(ctx);
     let mut action = AppAction::None;
     egui::Area::new(Id::new("dpns_vote_progress_drawer"))
@@ -178,18 +145,17 @@ pub fn show(ctx: &egui::Context, app_context: &AppContext, state: &mut DrawerSta
                                     outcome.target.key.voter_id,
                                     outcome.target.voter_alias.as_deref(),
                                 );
+                                let candidate = match outcome.target.requested_choice {
+                                    ResourceVoteChoice::TowardsIdentity(id) => app_context
+                                        .dpns_candidate_label(&outcome.target.contested_name, id),
+                                    _ => None,
+                                };
                                 ui.label(format!(
                                     "{node} · {name}.dash · {choice}",
                                     name = outcome.target.contested_name,
                                     choice = crate::ui::dpns::copy::vote_choice_label(
                                         outcome.target.requested_choice,
-                                        match outcome.target.requested_choice {
-                                            ResourceVoteChoice::TowardsIdentity(id) => state
-                                                .candidates
-                                                .get(&(outcome.target.contested_name.clone(), id))
-                                                .map(String::as_str),
-                                            _ => None,
-                                        },
+                                        candidate.as_deref(),
                                     ),
                                 ));
                                 let color = match progress_phase(outcome) {
@@ -266,6 +232,47 @@ mod tests {
         outcome.status = status;
         outcome.failure = failure;
         outcome
+    }
+
+    #[test]
+    fn live_progress_drawer_never_reads_persistent_contests() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = crate::context::test_support::test_app_context(dir.path());
+        let store =
+            std::sync::Arc::new(crate::wallet_backend::kv_test_support::FailingKv::default());
+        app.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(store.clone()));
+        app.seed_dpns_contest_for_test("alice", None, false);
+        app.refresh_dpns_candidate_labels().unwrap();
+        assert_eq!(
+            app.dpns_candidate_label("alice", Identifier::from([3; 32]))
+                .as_deref(),
+            Some("alice")
+        );
+        let mut target = outcome(DpnsVoteTargetStatus::Queued, None).target;
+        target.requested_choice = ResourceVoteChoice::TowardsIdentity(Identifier::from([3; 32]));
+        target.key.network = app.network;
+        let mut operation = AppContext::new_dpns_vote_operation(vec![target]);
+        app.insert_dpns_vote_operation(&mut operation, None)
+            .unwrap();
+        let key = operation.targets[0].target.key.clone();
+        let ctx = egui::Context::default();
+        let mut state = DrawerState::new(0);
+        for status in [
+            DpnsVoteTargetStatus::Queued,
+            DpnsVoteTargetStatus::Confirming,
+            DpnsVoteTargetStatus::Confirmed,
+        ] {
+            app.update_dpns_vote_target(operation.id, &key, status, None)
+                .unwrap();
+            for open in [false, true] {
+                ctx.data_mut(|data| data.insert_temp(Id::new(OPEN_ID), open));
+                let reads = store.read_count();
+                let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+                    show(ui.ctx(), &app, &mut state);
+                });
+                assert_eq!(store.read_count(), reads, "drawer must use only memory");
+            }
+        }
     }
 
     /// VOTE-FR-044/083: ambiguity offers only Check again; ended voting offers nothing.

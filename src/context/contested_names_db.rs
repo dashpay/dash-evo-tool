@@ -174,6 +174,40 @@ impl AppContext {
         self.sdk.load().version()
     }
 
+    /// Warm contestant labels once storage becomes available.
+    pub(crate) fn refresh_dpns_candidate_labels(&self) -> Result<(), TaskError> {
+        let mut labels = self
+            .dpns_candidate_labels
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *labels = self
+            .all_contested_names()?
+            .into_iter()
+            .map(|contest| {
+                (
+                    contest.normalized_contested_name,
+                    contest
+                        .contestants
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|candidate| (candidate.id, candidate.name))
+                        .collect(),
+                )
+            })
+            .collect();
+        Ok(())
+    }
+
+    /// Return a cached display label without reading persistent storage.
+    pub(crate) fn dpns_candidate_label(&self, name: &str, candidate: Identifier) -> Option<String> {
+        self.dpns_candidate_labels
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(name)?
+            .get(&candidate)
+            .cloned()
+    }
+
     /// Fetches every DPNS contest cached in the per-network k/v store.
     pub fn all_contested_names(&self) -> std::result::Result<Vec<ContestedName>, TaskError> {
         let kv = self.det_kv()?;
@@ -236,6 +270,9 @@ impl AppContext {
             let Some(id) = identity_from_key(&key, USERNAME_REQUESTS_KEY_PREFIX) else {
                 continue;
             };
+            if self.is_identity_unloaded(&kv, &id.to_buffer())? && !self.is_identity_listed(&id)? {
+                continue;
+            }
             if let Some(requests) = kv
                 .get::<Vec<UsernameRequest>>(DetScope::Global, &key)
                 .map_err(username_err)?
@@ -254,6 +291,8 @@ impl AppContext {
             .map_err(username_err)?
         {
             if let Some(id) = identity_from_key(&key, MAIN_USERNAME_KEY_PREFIX)
+                && !(self.is_identity_unloaded(&kv, &id.to_buffer())?
+                    && !self.is_identity_listed(&id)?)
                 && let Some(name) = kv
                     .get::<String>(DetScope::Global, &key)
                     .map_err(username_err)?
@@ -266,6 +305,8 @@ impl AppContext {
             .map_err(username_err)?
         {
             if let Some(id) = identity_from_key(&key, SEEN_OUTCOMES_KEY_PREFIX)
+                && !(self.is_identity_unloaded(&kv, &id.to_buffer())?
+                    && !self.is_identity_listed(&id)?)
                 && let Some(seen) = kv
                     .get::<BTreeSet<String>>(DetScope::Global, &key)
                     .map_err(username_err)?
@@ -538,19 +579,22 @@ impl AppContext {
         identity_id: &Identifier,
     ) -> Result<(), TaskError> {
         let mut cache = self.username_cache_mut();
+        cache.requests.remove(identity_id);
+        cache.hydration_pending.remove(identity_id);
+        cache.main.remove(identity_id);
+        cache.seen.remove(identity_id);
+        cache.seen_marks.remove(identity_id);
+        let mut first_error = None;
         for prefix in [
             USERNAME_REQUESTS_KEY_PREFIX,
             MAIN_USERNAME_KEY_PREFIX,
             SEEN_OUTCOMES_KEY_PREFIX,
         ] {
-            kv.delete(DetScope::Global, &identity_key(prefix, identity_id))
-                .map_err(username_err)?;
+            if let Err(error) = kv.delete(DetScope::Global, &identity_key(prefix, identity_id)) {
+                first_error.get_or_insert(error);
+            }
         }
-        cache.requests.remove(identity_id);
-        cache.hydration_pending.remove(identity_id);
-        cache.main.remove(identity_id);
-        cache.seen.remove(identity_id);
-        Ok(())
+        first_error.map_or(Ok(()), |error| Err(username_err(error)))
     }
 
     /// Seed a current contest through the persisted shape for backend contract tests.
@@ -735,6 +779,10 @@ impl AppContext {
         dpns_domain_document_type: DocumentTypeRef,
     ) -> std::result::Result<(), TaskError> {
         let kv = self.det_kv()?;
+        let mut labels = self
+            .dpns_candidate_labels
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let key = contested_name_key(normalized_contested_name);
         let last_updated = chrono::Utc::now().timestamp() as u64;
 
@@ -764,6 +812,14 @@ impl AppContext {
                         .map_err(contest_err)?;
                 }
             }
+            labels.insert(
+                normalized_contested_name.to_owned(),
+                stored
+                    .contestants
+                    .iter()
+                    .map(|candidate| (Identifier::from(candidate.id), candidate.name.clone()))
+                    .collect(),
+            );
             return Ok(());
         }
 
@@ -821,6 +877,14 @@ impl AppContext {
 
         kv.put(DetScope::Global, &key, &stored)
             .map_err(contest_err)?;
+        labels.insert(
+            normalized_contested_name.to_owned(),
+            stored
+                .contestants
+                .iter()
+                .map(|candidate| (Identifier::from(candidate.id), candidate.name.clone()))
+                .collect(),
+        );
         Ok(())
     }
 

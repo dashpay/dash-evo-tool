@@ -183,6 +183,7 @@ impl AppContext {
         &self,
         sdk: &Sdk,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
+        let now = now_ms();
         let identities = self.load_local_user_identities()?;
         if identities.is_empty() {
             return Ok(BackendTaskSuccessResult::MyUsernameRequestsRefreshed);
@@ -218,7 +219,7 @@ impl AppContext {
                         &old.normalized_label,
                         snapshot,
                         old.end,
-                        now_ms(),
+                        now,
                         durations,
                     ));
                 }
@@ -239,7 +240,6 @@ impl AppContext {
                 }));
             }
         };
-        let now = now_ms();
         let snapshots: BTreeMap<&String, (ContestSnapshot, u64)> = running
             .iter()
             .map(|(name, info)| {
@@ -371,7 +371,12 @@ impl AppContext {
             joined_until,
         );
         self.update_username_requests(identity_id, |current| {
-            merge_requests(current, vec![submitted], now, None)
+            let previous: Vec<_> = current
+                .iter()
+                .filter(|request| request.normalized_label != submitted.normalized_label)
+                .cloned()
+                .collect();
+            merge_requests(&previous, vec![submitted], now, None)
         })
     }
 
@@ -494,6 +499,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stale_pending_refresh_preserves_saved_win_and_hydration_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(
+            std::sync::Arc::new(crate::wallet_backend::kv_test_support::InMemoryKv::default()),
+        ));
+        let id = Identifier::from([42; 32]);
+        let identity = bare_identity(id, ctx.network);
+        ctx.insert_local_qualified_identity_sidecar_only(&identity)
+            .unwrap();
+        let sdk = Sdk::new_mock();
+        let pending =
+            UsernameRequest::submitted("Alice", 100, ctx.username_contest_durations(&sdk), None);
+        let mut won = pending.clone();
+        won.phase = RequestPhase::Won;
+        won.last_updated = 200;
+        won.decided_at = Some(200);
+        ctx.store_username_requests(&id, vec![won.clone()]).unwrap();
+        ctx.apply_username_refresh(&sdk, &identity, vec![pending])
+            .await
+            .unwrap();
+        assert_eq!(ctx.username_requests_for(&id), vec![won.clone()]);
+        assert!(ctx.username_requests_need_refresh());
+        ctx.refresh_pending_dpns_usernames().unwrap();
+        assert_eq!(ctx.username_requests_for(&id), vec![won]);
+        assert!(ctx.username_requests_need_refresh());
+
+        ctx.record_submitted_username_request(&sdk, &id, "Alice", None)
+            .unwrap();
+        assert_eq!(
+            ctx.username_requests_for(&id)[0].phase,
+            RequestPhase::Joinable
+        );
+        assert!(ctx.username_requests_for(&id)[0].requested_at.unwrap() > 200);
+    }
+
+    #[tokio::test]
     async fn removed_identity_ignores_an_awaited_username_refresh() {
         for phase in [RequestPhase::Joinable, RequestPhase::Won] {
             let dir = tempfile::tempdir().unwrap();
@@ -515,7 +557,11 @@ mod tests {
             request.phase = phase;
             ctx.store_username_requests(&id, vec![request.clone()])
                 .unwrap();
-            ctx.delete_local_qualified_identity(&id).unwrap();
+            let cleanup = ctx
+                .delete_local_qualified_identity_with_outcome(&id)
+                .unwrap();
+            assert!(cleanup.is_incomplete(), "the fixture has no wallet backend");
+            assert!(!ctx.is_identity_listed(&id).unwrap());
             ctx.apply_username_refresh(&sdk, &captured, vec![request])
                 .await
                 .unwrap();

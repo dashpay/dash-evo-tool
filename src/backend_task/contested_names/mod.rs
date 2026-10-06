@@ -1893,6 +1893,97 @@ mod tests {
         );
     }
 
+    /// Removing a node cancels its votes already in the journal. A vote
+    /// reviewed before the removal but stored after it, once its proof came
+    /// back, must end the same way: otherwise loading the node again would let
+    /// the sweep send a schedule the removal was meant to drop.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn votes_stored_after_their_node_was_removed_are_cancelled() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let context = crate::context::test_support::test_app_context(temp.path());
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(8);
+        context
+            .ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+                tx,
+                context.egui_ctx().clone(),
+            ))
+            .await
+            .expect("wire wallet backend offline");
+        let [removed, kept] = [1, 2].map(|byte| {
+            let mut node = qualified_identity(byte);
+            node.identity_type = IdentityType::Masternode;
+            context
+                .insert_local_qualified_identity(&node, &None)
+                .expect("load node");
+            node
+        });
+        let later = now_ms() + 600_000;
+        let target = |node: &QualifiedIdentity, name: &str, timing| {
+            context
+                .dpns_vote_target(node, name, ResourceVoteChoice::Lock, timing, false)
+                .unwrap()
+        };
+        // Reviewed while both nodes were loaded.
+        let mut operation = AppContext::new_dpns_vote_operation(vec![
+            target(&removed, "alice", VoteTiming::Scheduled(later)),
+            target(&removed, "bob", VoteTiming::Now),
+            target(&kept, "alice", VoteTiming::Scheduled(later)),
+        ]);
+        let schedule_key = operation.targets[0].target.key.clone();
+
+        context
+            .delete_local_qualified_identity(&removed.identity.id())
+            .expect("remove node");
+        context
+            .insert_dpns_vote_operation(&mut operation, None)
+            .unwrap();
+
+        let saved = context.dpns_vote_operation(operation.id).unwrap().unwrap();
+        for stored in [&saved, &operation] {
+            assert_eq!(
+                stored
+                    .targets
+                    .iter()
+                    .map(|outcome| outcome.status)
+                    .collect::<Vec<_>>(),
+                vec![
+                    DpnsVoteTargetStatus::Cancelled,
+                    DpnsVoteTargetStatus::Cancelled,
+                    DpnsVoteTargetStatus::Scheduled,
+                ],
+                "the removed node's votes are cancelled, the other node's vote is kept"
+            );
+        }
+        assert_eq!(
+            context.dpns_vote_target_status(&schedule_key).unwrap(),
+            None
+        );
+
+        context
+            .insert_local_qualified_identity(&removed, &None)
+            .expect("load the node again");
+        assert!(
+            !context
+                .queue_scheduled_dpns_vote_target(operation.id, &schedule_key)
+                .unwrap(),
+            "loading the node again must not revive the schedule"
+        );
+        let mut reviewed_again = AppContext::new_dpns_vote_operation(vec![target(
+            &removed,
+            "carol",
+            VoteTiming::Scheduled(later),
+        )]);
+        context
+            .insert_dpns_vote_operation(&mut reviewed_again, None)
+            .unwrap();
+        assert_eq!(
+            reviewed_again.targets[0].status,
+            DpnsVoteTargetStatus::Scheduled,
+            "a vote reviewed after the node was loaded again is accepted"
+        );
+        context.wallet_backend().unwrap().shutdown().await;
+    }
+
     /// When an executor ends with an error, the immediate votes it had not
     /// reached yet must not stay queued: nothing would send them, and their
     /// lock would refuse every new vote on those names until a restart.

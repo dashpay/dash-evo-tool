@@ -352,26 +352,33 @@ pub(super) fn cancel_removed_identity_votes(
     voter_id: dash_sdk::platform::Identifier,
 ) -> Result<(), TaskError> {
     for mut operation in load_operations(kv, network)? {
-        let mut changed = false;
-        for outcome in &mut operation.targets {
-            if outcome.target.key.voter_id == voter_id
-                && matches!(
-                    outcome.status,
-                    DpnsVoteTargetStatus::Scheduled
-                        | DpnsVoteTargetStatus::Queued
-                        | DpnsVoteTargetStatus::Submitting
-                )
-            {
-                outcome.status = DpnsVoteTargetStatus::Cancelled;
-                outcome.failure = None;
-                changed = true;
-            }
-        }
-        if changed {
+        if cancel_executable_targets(&mut operation, |voter| voter == voter_id) {
             persist_operation(kv, network, &operation)?;
         }
     }
     Ok(())
+}
+
+/// Cancel the targets that could still be sent for the voters `is_removed` names.
+fn cancel_executable_targets(
+    operation: &mut DpnsVoteOperation,
+    is_removed: impl Fn(dash_sdk::platform::Identifier) -> bool,
+) -> bool {
+    let mut changed = false;
+    for outcome in &mut operation.targets {
+        if matches!(
+            outcome.status,
+            DpnsVoteTargetStatus::Scheduled
+                | DpnsVoteTargetStatus::Queued
+                | DpnsVoteTargetStatus::Submitting
+        ) && is_removed(outcome.target.key.voter_id)
+        {
+            outcome.status = DpnsVoteTargetStatus::Cancelled;
+            outcome.failure = None;
+            changed = true;
+        }
+    }
+    changed
 }
 
 fn insert_diagnostic(
@@ -616,8 +623,37 @@ impl AppContext {
             {
                 return Err(TaskError::DpnsVoteTargetBusy);
             }
+            // Removing an identity cancels its votes under this guard, but it
+            // sees only those already stored. A vote reviewed before the
+            // removal and arriving after it must end the same way.
+            let removed = self.removed_dpns_voters(kv, operation)?;
+            cancel_executable_targets(operation, |voter| removed.contains(&voter));
             persist_operation(kv, self.network, operation)
         })
+    }
+
+    /// Voters of `operation` that were removed from this device and not
+    /// loaded again. The caller holds the journal guard, which a removal
+    /// keeps from cancelling the voter's votes until the voter is delisted.
+    fn removed_dpns_voters(
+        &self,
+        kv: &DetKv,
+        operation: &DpnsVoteOperation,
+    ) -> Result<BTreeSet<dash_sdk::platform::Identifier>, TaskError> {
+        let voters: BTreeSet<_> = operation
+            .targets
+            .iter()
+            .map(|outcome| outcome.target.key.voter_id)
+            .collect();
+        let mut removed = BTreeSet::new();
+        for voter in voters {
+            if self.is_identity_unloaded(kv, &voter.to_buffer())?
+                && !self.is_identity_listed(&voter)?
+            {
+                removed.insert(voter);
+            }
+        }
+        Ok(removed)
     }
 
     /// Persist updated target statuses while retaining the original operation ID.

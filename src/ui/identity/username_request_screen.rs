@@ -301,10 +301,7 @@ impl ScreenLike for UsernameRequestScreen {
             .map_or_else(|| self.normalized_label.clone(), |r| r.label);
         let crumb = format!("@{name}");
         let breadcrumbs = vec![
-            (
-                "Identities",
-                AppAction::SetMainScreen(RootScreenType::RootScreenIdentityHub),
-            ),
+            ("Identities", AppAction::OpenIdentityPicker),
             (identity_label.as_str(), AppAction::PopScreen),
             (crumb.as_str(), AppAction::None),
         ];

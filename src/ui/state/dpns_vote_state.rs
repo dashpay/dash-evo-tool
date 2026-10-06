@@ -157,6 +157,7 @@ mod tests {
         let poll = Identifier::from([2; 32]);
         let snapshot = DpnsVoteStateSnapshot {
             states: BTreeMap::from([((voter, poll), DpnsCurrentVoteState::Available(None))]),
+            proved_at: BTreeMap::new(),
             loaded: true,
         };
 

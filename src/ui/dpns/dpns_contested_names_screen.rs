@@ -37,7 +37,7 @@ use crate::model::dpns_voting::progress::needs_attention;
 use crate::model::dpns_voting::{
     DpnsCurrentVoteState, DpnsScheduledVoteKey, DpnsVoteFailure, DpnsVoteOperation,
     DpnsVoteOperationId, DpnsVoteOutcome, DpnsVoteTarget, DpnsVoteTargetKey, DpnsVoteTargetStatus,
-    VoteTiming, dpns_schedule_is_overdue,
+    VoteTiming, dpns_schedule_is_overdue, validate_dpns_schedule_time,
 };
 use crate::model::qualified_identity::IdentityType;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -1837,8 +1837,13 @@ impl DPNSScreen {
         if !choices.iter().any(|(choice, _)| *choice == row.vote.choice) {
             choices.push((row.vote.choice, vote_choice_label(row.vote.choice, None)));
         }
-        self.scheduled_vote_editor =
-            ScheduledVoteEditor::new(row.clone(), key, node_label, choices);
+        self.scheduled_vote_editor = ScheduledVoteEditor::new(
+            row.clone(),
+            key,
+            node_label,
+            choices,
+            self.contest_end_time(&row.vote.contested_name),
+        );
     }
 
     /// The batch timing the confirm step resolves targets with.
@@ -1851,9 +1856,9 @@ impl DPNSScreen {
                     .simple_schedule
                     .current_value()
                     .ok_or(ReviewPlanError::ScheduleIsNotAValidTime)?;
-                if at <= now_ms {
-                    return Err(ReviewPlanError::ScheduleIsNotInTheFuture);
-                }
+                // Each contest's deadline is checked when the plan is composed.
+                validate_dpns_schedule_time(at, now_ms, None)
+                    .map_err(|_| ReviewPlanError::ScheduleIsNotInTheFuture)?;
                 Ok(BatchTiming::At(at))
             }
         }

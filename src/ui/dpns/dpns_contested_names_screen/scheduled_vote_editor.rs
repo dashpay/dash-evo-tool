@@ -9,6 +9,8 @@ pub(super) struct ScheduledVoteEditor {
     node_label: String,
     choices: Vec<(ResourceVoteChoice, String)>,
     choice: ResourceVoteChoice,
+    /// The contest's voting deadline, when the contest list has read it.
+    end_time: Option<u64>,
     schedule: UtcScheduleInput,
     time_changed: bool,
 }
@@ -25,6 +27,7 @@ impl ScheduledVoteEditor {
         key: DpnsVoteTargetKey,
         node_label: String,
         choices: Vec<(ResourceVoteChoice, String)>,
+        end_time: Option<u64>,
     ) -> Option<Self> {
         let timestamp = i64::try_from(original.vote.unix_timestamp).ok()?;
         let time = DateTime::from_timestamp_millis(timestamp)?;
@@ -34,6 +37,7 @@ impl ScheduledVoteEditor {
             key,
             node_label,
             choices,
+            end_time,
             schedule: UtcScheduleInput::new().with_time(time),
             time_changed: false,
         })
@@ -57,11 +61,13 @@ impl ScheduledVoteEditor {
         } else {
             self.original.vote.unix_timestamp
         };
-        if timestamp <= now_ms
-            || !self
-                .choices
-                .iter()
-                .any(|(choice, _)| *choice == self.choice)
+        // Instant feedback only: the backend re-reads the contest and enforces
+        // the full edit rules, including the choice, before it stores anything.
+        validate_dpns_schedule_time(timestamp, now_ms, self.end_time).ok()?;
+        if !self
+            .choices
+            .iter()
+            .any(|(choice, _)| *choice == self.choice)
         {
             return None;
         }
@@ -112,7 +118,7 @@ impl ScheduledVoteEditor {
                 let task = self.task(Utc::now().timestamp_millis() as u64);
                 if task.is_none() {
                     ui.colored_label(DashColors::warning_color(ui.visuals().dark_mode),
-                    "Choose a future date and time. Only votes that have not started can be edited.");
+                    "Choose a future date and time before voting ends. Only votes that have not started can be edited.");
                 }
                 ui.horizontal(|ui| {
                     if ui.button("Cancel").clicked() {
@@ -170,6 +176,7 @@ mod tests {
                 (ResourceVoteChoice::Lock, "Lock".into()),
                 (ResourceVoteChoice::Abstain, "Abstain".into()),
             ],
+            None,
         )
         .unwrap();
         editor.choice = ResourceVoteChoice::Abstain;
@@ -209,6 +216,48 @@ mod tests {
         assert_eq!(
             unix_timestamp,
             crate::model::dpns_vote_schedule::parse_utc_schedule("2031-02-03", 4, 5).unwrap()
+        );
+    }
+
+    /// The backend refuses a time at or after the contest deadline, so the
+    /// editor must not offer to save one.
+    #[test]
+    fn a_time_at_or_after_the_contest_deadline_cannot_be_saved() {
+        let key = DpnsVoteTargetKey {
+            network: dash_sdk::dpp::dashcore::Network::Testnet,
+            voter_id: Identifier::from([1; 32]),
+            vote_poll_id: Identifier::from([2; 32]),
+        };
+        let scheduled_at = 1_900_000_000_000;
+        let row = ScheduledDpnsVoteRow {
+            failure: None,
+            vote: ScheduledDPNSVote {
+                voter_id: key.voter_id,
+                contested_name: "alice".into(),
+                choice: ResourceVoteChoice::Lock,
+                unix_timestamp: scheduled_at,
+                executed_successfully: false,
+            },
+            journal_target: (DpnsVoteOperationId::from_bytes([3; 16]), key.clone()),
+            status: DpnsVoteTargetStatus::Scheduled,
+        };
+        let editor = |end_time| {
+            ScheduledVoteEditor::new(
+                row.clone(),
+                key.clone(),
+                "node-one".into(),
+                vec![(ResourceVoteChoice::Lock, "Lock".into())],
+                end_time,
+            )
+            .unwrap()
+        };
+
+        assert!(editor(Some(scheduled_at + 1)).task(1).is_some());
+        assert!(editor(Some(scheduled_at)).task(1).is_none());
+        assert!(editor(Some(scheduled_at - 1)).task(1).is_none());
+        assert!(
+            editor(None).task(1).is_some(),
+            "an unread deadline leaves the bound to the backend"
         );
     }
 }

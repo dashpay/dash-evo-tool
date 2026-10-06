@@ -2181,7 +2181,7 @@ impl DPNSScreen {
             })
             .cloned()
             .collect();
-        (!targets.is_empty()).then(|| RelativeScheduleLabels {
+        (!targets.is_empty()).then_some(RelativeScheduleLabels {
             preset: self.relative_preset,
             targets,
         })

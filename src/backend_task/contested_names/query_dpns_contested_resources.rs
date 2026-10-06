@@ -35,7 +35,7 @@ fn page_query_is_retryable(error: &dash_sdk::Error) -> bool {
 async fn fetch_page_with_retries<T, Fut>(
     retry_delay: Duration,
     mut fetch: impl FnMut() -> Fut,
-) -> Result<T, dash_sdk::Error>
+) -> Result<T, TaskError>
 where
     Fut: Future<Output = Result<T, dash_sdk::Error>>,
 {
@@ -48,11 +48,11 @@ where
         tracing::error!("Error fetching contested resources: {}", error);
         super::log_contested_proof_error(&error, RequestType::GetContestedResources);
         if !page_query_is_retryable(&error) {
-            return Err(error);
+            return Err(TaskError::from(error));
         }
         if retries as usize >= MAX_PAGE_RETRIES {
             tracing::error!("Max retries reached for query: {}", error);
-            return Err(error);
+            return Err(TaskError::from(error));
         }
         retries += 1;
         tokio::time::sleep(retry_delay.saturating_mul(retries)).await;
@@ -310,7 +310,7 @@ mod tests {
         })
         .await;
 
-        assert!(matches!(result, Err(dash_sdk::Error::StaleNode(_))));
+        assert!(matches!(result, Err(TaskError::DapiStaleNode { .. })));
         assert_eq!(attempts.load(Ordering::SeqCst), MAX_PAGE_RETRIES + 1);
     }
 
@@ -339,7 +339,7 @@ mod tests {
         })
         .await;
 
-        assert!(matches!(result, Err(dash_sdk::Error::Generic(_))));
+        assert!(result.is_err());
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
     }
 }

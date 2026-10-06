@@ -106,7 +106,7 @@ fn classify_broadcast_journal_result(
 pub(super) async fn proved_dpns_vote_choice(
     key: &DpnsVoteTargetKey,
     sdk: &Sdk,
-) -> Result<Option<ResourceVoteChoice>, dash_sdk::Error> {
+) -> Result<Option<ResourceVoteChoice>, TaskError> {
     let query = ContestedResourceVotesGivenByIdentityQuery {
         identity_id: key.voter_id,
         offset: None,
@@ -114,7 +114,9 @@ pub(super) async fn proved_dpns_vote_choice(
         start_at: Some((key.vote_poll_id.to_buffer(), true)),
         order_ascending: true,
     };
-    let votes = ResourceVote::fetch_many(sdk, query).await?;
+    let votes = ResourceVote::fetch_many(sdk, query)
+        .await
+        .map_err(TaskError::from)?;
     Ok(votes
         .get(&key.vote_poll_id)
         .and_then(Option::as_ref)
@@ -132,7 +134,7 @@ pub(super) async fn proved_dpns_vote_choice(
 fn settle_broadcast_rejection(
     rejection: TaskError,
     requested: ResourceVoteChoice,
-    proved_current: Result<Option<ResourceVoteChoice>, dash_sdk::Error>,
+    proved_current: Result<Option<ResourceVoteChoice>, TaskError>,
 ) -> DpnsVoteAttempt {
     match proved_current {
         Ok(Some(current)) if current == requested => DpnsVoteAttempt::Confirmed,
@@ -336,7 +338,7 @@ mod tests {
         for proved_current in [
             Ok(None),
             Ok(Some(ResourceVoteChoice::Abstain)),
-            Err(dash_sdk::Error::Generic("unreachable".to_owned())),
+            Err(TaskError::DpnsCurrentVoteUnavailable),
         ] {
             assert!(matches!(
                 settle_broadcast_rejection(rejection(), lock, proved_current),

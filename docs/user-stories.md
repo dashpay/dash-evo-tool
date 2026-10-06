@@ -821,6 +821,7 @@ As a user, I want to see each identity's usernames and their state so that I kno
 - Saved requests refresh before the wider contest search. After the estimated deadline, Home, the identity badge, and the status page show “Awaiting result” until the network confirms an outcome; elapsed time alone never awards or rejects a name.
 - Refreshing preserves concurrent requests, main-name choices, and seen outcomes. A failed storage read keeps the last complete snapshot available for later updates.
 - Won usernames keep retrying failed fetches and local writes after a restart until the identity records the owned name.
+- A won username that the identity recorded and that later leaves the identity (for example after a transfer) is no longer listed as one of its usernames.
 - Row actions: Copy username, Show QR code, Show as main. Usernames can't be deleted, so no delete action is offered.
 - The identity switcher and "See all identities" show each identity's usernames. There is no separate cross-identity usernames table.
 

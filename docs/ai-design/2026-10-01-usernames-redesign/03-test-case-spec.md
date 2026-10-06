@@ -32,6 +32,7 @@ Stream V test cases live in `../2026-07-16-dpns-voting-experience/03-test-case-s
 | USR-TC-042 | Awaiting result | Saved pending request, estimated end passed, no confirmed outcome | Phase `AwaitingOutcome`; never Won/Lost by the clock alone | FR-020 | U |
 | USR-TC-043 | Unconfirmed request | Name request fails without a refusal; request not readable / readable | `UsernameRegistrationUnconfirmed`, Pay step not restored / registration continues as success | FR-038 | B+K |
 | USR-TC-044 | Refusal after an applied send | Name request is refused; the vote shows / does not show this identity's request | Registration continues as success / the refusal keeps its own error | FR-038 | B |
+| USR-TC-045 | Won name leaves the identity | Saved win recorded in the identity's names; a later refresh no longer lists the name | Not listed as an owned username; no further read-back; request ages out with other outcomes | FR-020, FR-001 | U+B |
 
 ## UI (kittest)
 

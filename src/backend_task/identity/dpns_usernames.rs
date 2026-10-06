@@ -21,7 +21,8 @@ use crate::model::dpns::{
 };
 use crate::model::dpns_usernames::{
     ContenderTally, ContestSnapshot, ContestWinner, RequestPhase, UsernameAvailability,
-    UsernameRequest, classify_availability, merge_requests, username_request_from_contest,
+    UsernameRequest, classify_availability, mark_wins_reflected, merge_requests,
+    username_request_from_contest,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::utils::time::now_ms;
@@ -344,6 +345,15 @@ impl AppContext {
                     Ok(())
                 }) {
                     Ok(saved) => {
+                        // Recorded at once: a name transferred away before the
+                        // next refresh must not look like a win still to read back.
+                        if let Err(error) = self.update_username_requests(&identity_id, |current| {
+                            let mut requests = current.to_vec();
+                            mark_wins_reflected(&mut requests, &saved.dpns_names);
+                            requests
+                        }) {
+                            tracing::warn!(?error, %identity_id, "Won username was saved but could not be marked as read back; the next refresh will mark it");
+                        }
                         self.update_username_hydration_status(identity_id, &saved.dpns_names);
                     }
                     Err(error) => {
@@ -735,6 +745,53 @@ mod tests {
             !ctx.username_requests_need_refresh(),
             "successful persistence clears the retry obligation"
         );
+    }
+
+    /// A won name is marked as read back the moment the identity stores it, so
+    /// its later disappearance (the name left the identity) is not taken for a
+    /// win still waiting to be read back, and is not fetched again.
+    #[tokio::test]
+    async fn saved_win_is_marked_once_the_identity_lists_the_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(
+            std::sync::Arc::new(crate::wallet_backend::kv_test_support::InMemoryKv::default()),
+        ));
+        let id = Identifier::from([44; 32]);
+        let identity = bare_identity(id, ctx.network);
+        ctx.insert_local_qualified_identity_sidecar_only(&identity)
+            .unwrap();
+        let mut won = UsernameRequest::submitted(
+            "Alice",
+            now_ms(),
+            ctx.username_contest_durations(&Sdk::new_mock()),
+            None,
+        );
+        won.phase = RequestPhase::Won;
+        won.decided_at = Some(now_ms());
+        let sdk = sdk_with_owned_name(&ctx, id).await;
+
+        ctx.apply_username_refresh(&sdk, &identity, vec![won])
+            .await
+            .unwrap();
+
+        assert!(ctx.username_requests_for(&id)[0].reflected_in_owned_names);
+        assert!(!ctx.username_requests_need_refresh());
+
+        // The name has since left the identity; no owned-names read is mocked,
+        // so a renewed attempt to read the win back would keep the retry alive.
+        let without_name = ctx
+            .edit_local_qualified_identity(&id, |identity| {
+                identity.dpns_names.clear();
+                Ok(())
+            })
+            .unwrap();
+        ctx.apply_username_refresh(&Sdk::new_mock(), &without_name, vec![])
+            .await
+            .unwrap();
+
+        assert!(ctx.username_requests_for(&id)[0].reflected_in_owned_names);
+        assert!(!ctx.username_requests_need_refresh());
     }
 
     #[tokio::test]

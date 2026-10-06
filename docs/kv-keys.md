@@ -154,7 +154,7 @@ Per-identity username state. Global-scoped with the identity id in the key, so i
 
 | Key | Scope | Store | Value type | Notes |
 |-----|-------|-------|------------|-------|
-| `det:username_requests:<identity_id_base58>` | `None` | `det-<net>.sqlite` | `Vec<UsernameRequest>` | The identity's requests for names that need a community vote. Fields per request: `label`, `normalized_label`, `phase`, `requested_at`, `join_end`, `end`, `decided_at`, `tally`, `last_updated` |
+| `det:username_requests:<identity_id_base58>` | `None` | `det-<net>.sqlite` | `Vec<UsernameRequest>` (stored as `StoredUsernameRequest`) | The identity's requests for names that need a community vote. Fields per request: `label`, `normalized_label`, `phase`, `requested_at`, `join_end`, `end`, `decided_at`, `tally`, `last_updated`. The layout is positional, so no field can be added: the in-memory flag `reflected_in_owned_names` is stored as the appended `phase` index `WonReflected`, and entries written before it existed load as not reflected |
 | `det:main_username:<identity_id_base58>` | `None` | `det-<net>.sqlite` | `String` | Device-only choice of the username shown as main |
 | `det:username_outcomes_seen:<identity_id_base58>` | `None` | `det-<net>.sqlite` | `BTreeSet<String>` | Outcome banners already shown, as `<normalized_label>:<phase>` |
 

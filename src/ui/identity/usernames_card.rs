@@ -52,14 +52,18 @@ pub fn username_rows(
     requests: &[UsernameRequest],
 ) -> Vec<UsernameRow> {
     // Registered names, plus names won in a vote that the identity's stored
-    // names do not list yet (they are re-read in the background).
+    // names have not listed yet (they are re-read in the background). A win the
+    // stored names listed before and no longer do has left the identity.
     let mut names: Vec<(String, TimestampMillis)> = identity
         .dpns_names
         .iter()
         .filter(|n| !n.name.trim().is_empty())
         .map(|n| (n.name.clone(), n.acquired_at))
         .collect();
-    for won in requests.iter().filter(|r| r.phase == RequestPhase::Won) {
+    for won in requests
+        .iter()
+        .filter(|r| r.phase == RequestPhase::Won && !r.reflected_in_owned_names)
+    {
         if !names.iter().any(|(name, _)| same_name(name, &won.label)) {
             names.push((won.label.clone(), won.decided_at.unwrap_or(0)));
         }
@@ -458,6 +462,23 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    /// A won name is listed while it waits to be read back into the identity's
+    /// names. Once those names listed it and no longer do, it has left the
+    /// identity and must not be offered as an owned, shareable username.
+    #[test]
+    fn win_that_left_the_identity_is_not_listed_as_owned() {
+        let mut won = request("carol", RequestPhase::Won);
+        let waiting = username_rows(&identity(&["alice"]), None, std::slice::from_ref(&won));
+        assert_eq!(
+            waiting.iter().map(row_label).collect::<Vec<_>>(),
+            ["alice*", "carol"]
+        );
+
+        won.reflected_in_owned_names = true;
+        let left = username_rows(&identity(&["alice"]), None, &[won]);
+        assert_eq!(left.iter().map(row_label).collect::<Vec<_>>(), ["alice*"]);
     }
 
     #[test]

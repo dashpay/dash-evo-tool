@@ -1035,6 +1035,7 @@ mod tests {
             decided_at: None,
             tally: Default::default(),
             last_updated: 0,
+            reflected_in_owned_names: false,
         }
     }
 

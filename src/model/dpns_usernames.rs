@@ -205,14 +205,37 @@ impl UsernameAvailability {
 }
 
 /// Whether a saved win still needs to be reflected in the identity's owned names.
+///
+/// A win that was reflected once is never missing again: if the name is gone
+/// afterwards, it left the identity.
 pub fn won_username_is_missing(
     request: &UsernameRequest,
     names: &[super::qualified_identity::DPNSNameInfo],
 ) -> bool {
     request.phase == RequestPhase::Won
-        && !names
-            .iter()
-            .any(|name| super::dpns::normalize_dpns_label(&name.name) == request.normalized_label)
+        && !request.reflected_in_owned_names
+        && !owned_names_include(request, names)
+}
+
+fn owned_names_include(
+    request: &UsernameRequest,
+    names: &[super::qualified_identity::DPNSNameInfo],
+) -> bool {
+    names
+        .iter()
+        .any(|name| super::dpns::normalize_dpns_label(&name.name) == request.normalized_label)
+}
+
+/// Record, on every saved win that `names` lists, that the owned names reflected it.
+pub fn mark_wins_reflected(
+    requests: &mut [UsernameRequest],
+    names: &[super::qualified_identity::DPNSNameInfo],
+) {
+    for request in requests.iter_mut() {
+        if request.phase == RequestPhase::Won && owned_names_include(request, names) {
+            request.reflected_in_owned_names = true;
+        }
+    }
 }
 
 /// How a finished contest ended.
@@ -393,6 +416,7 @@ impl RequestTally {
 
 /// An identity's request for a username that needs a community vote.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "StoredUsernameRequest", into = "StoredUsernameRequest")]
 pub struct UsernameRequest {
     /// The label as requested.
     pub label: String,
@@ -412,6 +436,99 @@ pub struct UsernameRequest {
     pub tally: RequestTally,
     /// When this status was last read from the network.
     pub last_updated: TimestampMillis,
+    /// Whether the identity's owned names listed this won name at least once.
+    ///
+    /// Tells a win that has not been read back yet from one whose name has
+    /// since left the identity. Only meaningful for [`RequestPhase::Won`].
+    pub reflected_in_owned_names: bool,
+}
+
+/// Stored form of [`UsernameRequest`].
+///
+/// The store is positional, so the field order here and the variant order of
+/// [`StoredRequestPhase`] are the on-disk layout: fields cannot be added, and
+/// variants may only be appended.
+#[derive(Serialize, Deserialize)]
+struct StoredUsernameRequest {
+    label: String,
+    normalized_label: String,
+    phase: StoredRequestPhase,
+    requested_at: Option<TimestampMillis>,
+    join_end: Option<TimestampMillis>,
+    end: Option<TimestampMillis>,
+    decided_at: Option<TimestampMillis>,
+    tally: RequestTally,
+    last_updated: TimestampMillis,
+}
+
+/// Stored form of [`RequestPhase`], in the same variant order.
+#[derive(Serialize, Deserialize)]
+enum StoredRequestPhase {
+    Joinable,
+    Voting,
+    Won,
+    Lost,
+    Locked,
+    NoWinner,
+    AwaitingOutcome,
+    /// A win with [`UsernameRequest::reflected_in_owned_names`] set. Appended
+    /// so requests stored before the flag existed still load, as not reflected.
+    WonReflected,
+}
+
+impl From<UsernameRequest> for StoredUsernameRequest {
+    fn from(request: UsernameRequest) -> Self {
+        let phase = match request.phase {
+            RequestPhase::Joinable => StoredRequestPhase::Joinable,
+            RequestPhase::Voting => StoredRequestPhase::Voting,
+            RequestPhase::Won if request.reflected_in_owned_names => {
+                StoredRequestPhase::WonReflected
+            }
+            RequestPhase::Won => StoredRequestPhase::Won,
+            RequestPhase::Lost => StoredRequestPhase::Lost,
+            RequestPhase::Locked => StoredRequestPhase::Locked,
+            RequestPhase::NoWinner => StoredRequestPhase::NoWinner,
+            RequestPhase::AwaitingOutcome => StoredRequestPhase::AwaitingOutcome,
+        };
+        Self {
+            label: request.label,
+            normalized_label: request.normalized_label,
+            phase,
+            requested_at: request.requested_at,
+            join_end: request.join_end,
+            end: request.end,
+            decided_at: request.decided_at,
+            tally: request.tally,
+            last_updated: request.last_updated,
+        }
+    }
+}
+
+impl From<StoredUsernameRequest> for UsernameRequest {
+    fn from(stored: StoredUsernameRequest) -> Self {
+        let (phase, reflected_in_owned_names) = match stored.phase {
+            StoredRequestPhase::Joinable => (RequestPhase::Joinable, false),
+            StoredRequestPhase::Voting => (RequestPhase::Voting, false),
+            StoredRequestPhase::Won => (RequestPhase::Won, false),
+            StoredRequestPhase::Lost => (RequestPhase::Lost, false),
+            StoredRequestPhase::Locked => (RequestPhase::Locked, false),
+            StoredRequestPhase::NoWinner => (RequestPhase::NoWinner, false),
+            StoredRequestPhase::AwaitingOutcome => (RequestPhase::AwaitingOutcome, false),
+            StoredRequestPhase::WonReflected => (RequestPhase::Won, true),
+        };
+        Self {
+            label: stored.label,
+            normalized_label: stored.normalized_label,
+            phase,
+            requested_at: stored.requested_at,
+            join_end: stored.join_end,
+            end: stored.end,
+            decided_at: stored.decided_at,
+            tally: stored.tally,
+            last_updated: stored.last_updated,
+            reflected_in_owned_names,
+        }
+    }
 }
 
 impl UsernameRequest {
@@ -452,6 +569,7 @@ impl UsernameRequest {
             decided_at: None,
             tally: RequestTally::default(),
             last_updated: now,
+            reflected_in_owned_names: false,
         }
     }
 }
@@ -513,6 +631,7 @@ pub fn username_request_from_contest(
         decided_at: contest.decided_at,
         tally,
         last_updated: now,
+        reflected_in_owned_names: false,
     })
 }
 
@@ -521,8 +640,10 @@ pub fn username_request_from_contest(
 /// Finished outcomes keep the dates and tally they were last seen with when the
 /// fresh snapshot no longer carries them, and drop out after
 /// [`OUTCOME_RETENTION`]. Pending requests not in `fresh` stay as stored until
-/// their result can be read. Wins stay until they are reflected in `owned_names`;
-/// `None` keeps wins when the caller has no current owned-name snapshot.
+/// their result can be read. Wins stay until they are reflected in `owned_names`,
+/// which is recorded on the request: a name that later leaves the identity is
+/// then not mistaken for a win still waiting to be read back. `None` keeps
+/// unreflected wins when the caller has no current owned-name snapshot.
 pub fn merge_requests(
     previous: &[UsernameRequest],
     fresh: Vec<UsernameRequest>,
@@ -549,6 +670,7 @@ pub fn merge_requests(
                     request.join_end = request.join_end.or(old.join_end);
                     request.end = request.end.or(old.end);
                     request.decided_at = request.decided_at.or(old.end).or(Some(now));
+                    request.reflected_in_owned_names |= old.reflected_in_owned_names;
                 }
                 if request.label == request.normalized_label && old.label != old.normalized_label {
                     request.label = old.label.clone();
@@ -567,11 +689,13 @@ pub fn merge_requests(
             merged.push(old.clone());
         }
     }
+    if let Some(names) = owned_names {
+        mark_wins_reflected(&mut merged, names);
+    }
     let retention = duration_ms(OUTCOME_RETENTION);
     merged.retain(|r| {
         r.phase.is_pending()
-            || (r.phase == RequestPhase::Won
-                && owned_names.is_none_or(|names| won_username_is_missing(r, names)))
+            || (r.phase == RequestPhase::Won && !r.reflected_in_owned_names)
             || r.decided_at
                 .is_none_or(|decided| now.saturating_sub(decided) < retention)
     });
@@ -1117,6 +1241,7 @@ mod tests {
                 ..Default::default()
             },
             last_updated: 0,
+            reflected_in_owned_names: false,
         }
     }
 
@@ -1151,6 +1276,110 @@ mod tests {
             acquired_at: 1,
         }];
         assert!(merge_requests(&previous, vec![], now, Some(&names)).is_empty());
+    }
+
+    fn owned(name: &str) -> super::super::qualified_identity::DPNSNameInfo {
+        super::super::qualified_identity::DPNSNameInfo {
+            name: name.into(),
+            acquired_at: 1,
+        }
+    }
+
+    /// Once the owned names listed a won name, its later absence means the name
+    /// left the identity: the win stops waiting to be read back and ages out.
+    #[test]
+    fn win_reflected_once_is_not_missing_after_the_name_leaves() {
+        let label = super::super::dpns::normalize_dpns_label("alice");
+        let decided = 1_000;
+        let previous = vec![stored(&label, RequestPhase::Won, Some(decided))];
+
+        let hydrated = merge_requests(&previous, vec![], decided + 1, Some(&[owned("alice")]));
+        assert_eq!(hydrated.len(), 1);
+        assert!(hydrated[0].reflected_in_owned_names);
+
+        // Within the retention window the win is kept, but no longer as missing.
+        let gone = merge_requests(&hydrated, vec![], decided + 2, Some(&[]));
+        assert_eq!(gone.len(), 1);
+        assert!(!won_username_is_missing(&gone[0], &[]));
+
+        let later = decided + duration_ms(OUTCOME_RETENTION) + 1;
+        assert!(merge_requests(&hydrated, vec![], later, Some(&[])).is_empty());
+        assert!(merge_requests(&hydrated, vec![], later, None).is_empty());
+    }
+
+    /// A fresh observation of the same win must not forget that it was reflected.
+    #[test]
+    fn fresh_win_observation_keeps_the_reflected_mark() {
+        let mut saved = stored("b", RequestPhase::Won, Some(5));
+        saved.reflected_in_owned_names = true;
+        let mut fresh = stored("b", RequestPhase::Won, Some(5));
+        fresh.last_updated = 10;
+
+        let merged = merge_requests(&[saved], vec![fresh], 20, None);
+
+        assert!(merged[0].reflected_in_owned_names);
+    }
+
+    /// Requests stored before the reflected mark existed must still load, and
+    /// an unmarked request must keep its stored bytes.
+    #[test]
+    fn stored_requests_from_before_the_reflected_mark_still_load() {
+        #[derive(Serialize)]
+        struct BeforeTheMark {
+            label: String,
+            normalized_label: String,
+            phase: RequestPhase,
+            requested_at: Option<TimestampMillis>,
+            join_end: Option<TimestampMillis>,
+            end: Option<TimestampMillis>,
+            decided_at: Option<TimestampMillis>,
+            tally: RequestTally,
+            last_updated: TimestampMillis,
+        }
+        let config = bincode::config::standard();
+
+        for phase in [
+            RequestPhase::Joinable,
+            RequestPhase::Voting,
+            RequestPhase::Won,
+            RequestPhase::Lost,
+            RequestPhase::Locked,
+            RequestPhase::NoWinner,
+            RequestPhase::AwaitingOutcome,
+        ] {
+            let current = stored("alice", phase, Some(7));
+            let old_bytes = bincode::serde::encode_to_vec(
+                vec![BeforeTheMark {
+                    label: current.label.clone(),
+                    normalized_label: current.normalized_label.clone(),
+                    phase,
+                    requested_at: current.requested_at,
+                    join_end: current.join_end,
+                    end: current.end,
+                    decided_at: current.decided_at,
+                    tally: current.tally.clone(),
+                    last_updated: current.last_updated,
+                }],
+                config,
+            )
+            .expect("encode the earlier layout");
+
+            let (loaded, _): (Vec<UsernameRequest>, _) =
+                bincode::serde::decode_from_slice(&old_bytes, config).expect("load");
+            assert_eq!(loaded, vec![current.clone()], "{phase:?}");
+            assert_eq!(
+                bincode::serde::encode_to_vec(vec![current], config).expect("encode"),
+                old_bytes,
+                "{phase:?}"
+            );
+        }
+
+        let mut reflected = stored("alice", RequestPhase::Won, Some(7));
+        reflected.reflected_in_owned_names = true;
+        let bytes = bincode::serde::encode_to_vec(vec![reflected.clone()], config).expect("encode");
+        let (loaded, _): (Vec<UsernameRequest>, _) =
+            bincode::serde::decode_from_slice(&bytes, config).expect("load");
+        assert_eq!(loaded, vec![reflected]);
     }
 
     #[test]

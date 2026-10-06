@@ -91,7 +91,11 @@ Scope: identity-side usernames. Voting is Stream V in
   - `AwaitingOutcome` is a local reading of the clock only: the estimated end
     has passed and no outcome is confirmed. Elapsed time never awards or
     rejects a name;
-  - persists it and replaces the single-`Option` pending API.
+  - persists it and replaces the single-`Option` pending API;
+  - a won name is listed as owned while it waits to be read back into the
+    identity's names. Once those names listed it, the request records that;
+    if the name is missing afterwards it has left the identity and is not
+    listed or read back again.
   - **AC:** an identity owning a name still reports its pending requests. A
     finished contest yields Won/Lost/Locked/NoWinner.
 - **USR-FR-021** — Refresh cadence: on hub arrival when the last refresh is

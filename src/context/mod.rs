@@ -1820,6 +1820,28 @@ mod tests {
         }
     }
 
+    /// Contest timing is read from this pin on the voting side and from the live
+    /// SDK version on the identity side. The SDK only ratchets upward from the
+    /// pin, so both sides describe one contest as long as every newer version
+    /// this build knows keeps the pinned windows.
+    #[test]
+    fn contest_durations_match_the_pin_for_every_version_the_sdk_can_report() {
+        use crate::model::dpns::contest_durations;
+
+        let newest = PlatformVersion::latest().protocol_version;
+        for network in [Network::Mainnet, Network::Testnet] {
+            let pinned = contest_durations(network, default_platform_version(&network));
+            for protocol_version in DET_PLATFORM_VERSION.protocol_version..=newest {
+                let live = PlatformVersion::get(protocol_version).expect("known version");
+                assert_eq!(
+                    contest_durations(network, live),
+                    pinned,
+                    "protocol {protocol_version} on {network}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn install_secret_prompt_recovers_poisoned_slot() {
         use crate::context::test_support::test_app_context;

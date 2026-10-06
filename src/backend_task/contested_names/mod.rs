@@ -1888,6 +1888,44 @@ mod tests {
         );
     }
 
+    /// A pass in which one node's proof query failed must not count as a
+    /// completed refresh, or its retry waits a whole refresh interval.
+    #[tokio::test]
+    async fn a_refresh_pass_with_an_unchecked_node_is_not_complete() {
+        use super::refresh_vote_states::every_voter_refreshed;
+        use dash_sdk::dapi_client::{DapiClientError, transport::TransportError};
+
+        let (_temp, context) = vote_context();
+        let kv = context.det_kv().unwrap();
+        let checked = Identifier::from([1; 32]);
+        let unchecked = Identifier::from([2; 32]);
+        let mut results = BTreeMap::new();
+        results.insert(
+            checked,
+            context
+                .publish_dpns_vote_state(&kv, checked, async { Ok(BTreeMap::new()) })
+                .await
+                .map_err(Arc::new),
+        );
+        assert!(every_voter_refreshed(&results));
+        assert!(every_voter_refreshed(&BTreeMap::new()));
+
+        results.insert(
+            unchecked,
+            context
+                .publish_dpns_vote_state(&kv, unchecked, async {
+                    Err(Box::new(dash_sdk::Error::DapiClientError(
+                        DapiClientError::Transport(TransportError::Grpc(
+                            dash_sdk::dapi_grpc::tonic::Status::unavailable("tcp connect error"),
+                        )),
+                    )))
+                })
+                .await
+                .map_err(Arc::new),
+        );
+        assert!(!every_voter_refreshed(&results));
+    }
+
     fn unconfirmed_operation_for(context: &AppContext, name: &str) -> DpnsVoteOperation {
         let mut target = scheduled_operation_for(context, name, 42).targets[0]
             .target

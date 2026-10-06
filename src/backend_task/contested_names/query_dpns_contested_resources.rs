@@ -237,13 +237,21 @@ impl AppContext {
         // Publish contests and every loaded node's proved current votes as one
         // completed refresh snapshot. Per-node failures are stored explicitly
         // as unavailable instead of being mistaken for "Not voted".
-        if let Err(error) = self.refresh_dpns_vote_states(sdk).await {
-            tracing::warn!(?error, "Could not refresh DPNS current votes with contests");
-        }
+        let vote_states_refreshed = match self.refresh_dpns_vote_states(sdk).await {
+            Ok(results) => super::refresh_vote_states::every_voter_refreshed(&results),
+            Err(error) => {
+                tracing::warn!(?error, "Could not refresh DPNS current votes with contests");
+                false
+            }
+        };
         self.refresh_masternode_list_membership().await;
         self.forget_closed_dpns_vote_counts();
         self.recompute_dpns_vote_attention();
-        self.mark_dpns_contests_refreshed();
+        // A pass that left a node unchecked is not a completed refresh: the
+        // timer and the Votes-arrival refresh must be free to try again soon.
+        if vote_states_refreshed {
+            self.mark_dpns_contests_refreshed();
+        }
         self.refresh_pending_dpns_usernames()?;
 
         sender

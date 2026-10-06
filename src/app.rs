@@ -1334,6 +1334,8 @@ pub struct AppState {
     unconfirmed_vote_checks: BTreeMap<Network, UnconfirmedVoteChecks>,
     /// Unix ms of the last background contest refresh dispatched per network.
     dpns_background_refresh_dispatched_at_ms: BTreeMap<Network, u64>,
+    /// Unix ms at which an incomplete background refresh is retried per network.
+    dpns_background_refresh_retry_at_ms: BTreeMap<Network, u64>,
     /// When the voting attention summary was last recomputed per network, so
     /// nodes loaded or keys added elsewhere reach the chip, badge and timer.
     dpns_attention_recomputed_at: BTreeMap<Network, Instant>,
@@ -1919,6 +1921,7 @@ impl AppState {
             scheduled_vote_sweeps_in_progress: BTreeSet::new(),
             unconfirmed_vote_checks: BTreeMap::new(),
             dpns_background_refresh_dispatched_at_ms: BTreeMap::new(),
+            dpns_background_refresh_retry_at_ms: BTreeMap::new(),
             dpns_attention_recomputed_at: BTreeMap::new(),
             dpns_progress_drawer: crate::ui::dpns::progress_drawer::DrawerState::new(unix_time_ms()),
             scheduled_vote_recovery_last_attempt: BTreeMap::new(),
@@ -2743,6 +2746,32 @@ impl AppState {
         }
     }
 
+    /// Called when a background contest refresh ends: if it failed or left a
+    /// node's vote state unchecked, try again soon instead of a whole interval
+    /// later.
+    fn retry_incomplete_dpns_background_refresh(&mut self, network: Network) {
+        use crate::model::dpns_voting::operator::{
+            background_refresh_incomplete, background_refresh_retry_delay,
+        };
+        let Some(dispatched_at) = self
+            .dpns_background_refresh_dispatched_at_ms
+            .get(&network)
+            .copied()
+        else {
+            return;
+        };
+        let completed_at = self
+            .network_contexts
+            .get(&network)
+            .and_then(|context| context.dpns_contests_refreshed_at_ms());
+        if background_refresh_incomplete(completed_at, dispatched_at) {
+            let delay = u64::try_from(background_refresh_retry_delay(network).as_millis())
+                .unwrap_or(u64::MAX);
+            self.dpns_background_refresh_retry_at_ms
+                .insert(network, unix_time_ms().saturating_add(delay));
+        }
+    }
+
     /// Deliver a vote result to the voting panel while Masternodes is hidden.
     /// While it is visible, the Masternodes screen forwards it itself.
     fn route_dpns_vote_result_to_hidden_screens(
@@ -3196,6 +3225,9 @@ impl App for AppState {
                     result: message,
                 } => {
                     let unboxed_message = *message;
+                    if let BackendTaskContext::DpnsBackgroundRefresh { network } = &context {
+                        self.retry_incomplete_dpns_background_refresh(*network);
+                    }
                     clear_profile_saving_banner_after_success(ctx, &context, &unboxed_message);
                     route_username_refresh_to_hidden_screens(
                         &mut self.screen_stack,
@@ -3522,9 +3554,10 @@ impl App for AppState {
                     context: BackendTaskContext::DpnsBackgroundRefresh { network },
                     error,
                 } => {
-                    // A background refresh retries on its own cadence; the
-                    // voting panel's Refresh is where failures are reported.
+                    // A background refresh retries by itself; the voting
+                    // panel's Refresh is where failures are reported.
                     tracing::debug!(?error, ?network, "Background contest refresh failed");
+                    self.retry_incomplete_dpns_background_refresh(network);
                 }
                 TaskResult::Error {
                     context,
@@ -3729,14 +3762,21 @@ impl App for AppState {
             && active_context.dpns_vote_attention().voting_nodes > 0
         {
             let now_ms = unix_time_ms();
-            if crate::model::dpns_voting::operator::background_refresh_due(
-                active_context.dpns_contests_refreshed_at_ms(),
-                self.dpns_background_refresh_dispatched_at_ms
-                    .get(&network)
-                    .copied(),
-                now_ms,
-                crate::model::dpns_voting::operator::background_refresh_interval(network),
-            ) {
+            let retry_due = self
+                .dpns_background_refresh_retry_at_ms
+                .get(&network)
+                .is_some_and(|retry_at| now_ms >= *retry_at);
+            if retry_due
+                || crate::model::dpns_voting::operator::background_refresh_due(
+                    active_context.dpns_contests_refreshed_at_ms(),
+                    self.dpns_background_refresh_dispatched_at_ms
+                        .get(&network)
+                        .copied(),
+                    now_ms,
+                    crate::model::dpns_voting::operator::background_refresh_interval(network),
+                )
+            {
+                self.dpns_background_refresh_retry_at_ms.remove(&network);
                 self.dpns_background_refresh_dispatched_at_ms
                     .insert(network, now_ms);
                 self.handle_backend_task_with_context(

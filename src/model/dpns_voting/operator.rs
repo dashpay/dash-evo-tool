@@ -369,6 +369,18 @@ pub fn background_refresh_interval(network: Network) -> Duration {
     }
 }
 
+/// How soon a background refresh that failed, or left a node's vote state
+/// unchecked, is tried again instead of waiting a whole interval.
+pub fn background_refresh_retry_delay(network: Network) -> Duration {
+    background_refresh_interval(network) / 6
+}
+
+/// Whether the refresh dispatched at `dispatched_ms` ended without completing:
+/// a complete refresh stamps a completion time at or after its dispatch.
+pub fn background_refresh_incomplete(last_completed_ms: Option<u64>, dispatched_ms: u64) -> bool {
+    last_completed_ms.is_none_or(|completed| completed < dispatched_ms)
+}
+
 /// How long a proved vote-state snapshot stays valid for display and for the
 /// attention signal: two refresh intervals, so one late or failed background
 /// refresh does not blank them. Authorising a submission needs fresher proof.
@@ -772,6 +784,25 @@ mod tests {
                 background_refresh_interval(network) * 2
             );
         }
+    }
+
+    #[test]
+    fn an_incomplete_background_refresh_is_retried_well_before_the_next_interval() {
+        assert_eq!(
+            background_refresh_retry_delay(Network::Mainnet),
+            Duration::from_secs(300)
+        );
+        assert_eq!(
+            background_refresh_retry_delay(Network::Testnet),
+            Duration::from_secs(30)
+        );
+        assert!(background_refresh_incomplete(None, 1_000));
+        assert!(
+            background_refresh_incomplete(Some(999), 1_000),
+            "an older completion stamp belongs to an earlier refresh"
+        );
+        assert!(!background_refresh_incomplete(Some(1_000), 1_000));
+        assert!(!background_refresh_incomplete(Some(5_000), 1_000));
     }
 
     #[test]

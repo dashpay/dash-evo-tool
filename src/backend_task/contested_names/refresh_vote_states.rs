@@ -15,6 +15,11 @@ use std::sync::Arc;
 
 const VOTE_QUERY_PAGE_SIZE: u16 = 100;
 
+/// Whether a refresh pass proved the vote state of every voter it covered.
+pub(super) fn every_voter_refreshed(results: &DpnsVoteRefreshResults) -> bool {
+    results.values().all(Result::is_ok)
+}
+
 impl AppContext {
     /// Refresh proved vote state once per loaded masternode, paging only as needed.
     pub(crate) async fn refresh_dpns_vote_states(

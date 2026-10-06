@@ -48,12 +48,14 @@ use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::dpns::contest_card::node_label;
 use crate::ui::dpns::contest_card::{CardEvent, CardView};
 use crate::ui::dpns::copy::needs_attention_line;
-use crate::ui::dpns::copy::tray_label;
 use crate::ui::dpns::copy::{
     JOURNAL_UNAVAILABLE_MESSAGE, LOCKED_FOR_GOOD, before_end_phrase, changes_left_label,
     confirm_button_label, confirm_change_warning, confirm_title, confirm_transactions_line,
     decision_row, ends_in_label, relative_schedule_label, scheduled_nodes_label, skipped_header,
     skipped_reason_line, went_to_label,
+};
+use crate::ui::dpns::copy::{
+    confirm_recheck_line, review_choice_line, review_recheck_line, tray_label, tray_recheck_label,
 };
 use crate::ui::dpns::copy::{ends_soon_now_line, excluded_nodes_line};
 use crate::ui::dpns::node_set_picker;
@@ -227,8 +229,8 @@ fn loaded_voting_identities(app_context: &AppContext) -> Result<Vec<QualifiedIde
         .collect())
 }
 
-/// Exactly what a confirm click would send, resolved before the confirm step
-/// is shown.
+/// Exactly what a confirm click would submit, resolved before the confirm
+/// step is shown.
 struct ReviewPlan {
     aggregate: AggregatePlan,
     /// One line per staged decision: name, choice, and the nodes casting it.
@@ -241,8 +243,20 @@ impl ReviewPlan {
         &self.aggregate.targets
     }
 
+    /// Every submitted target, including the ones only checked again.
     fn effective_count(&self) -> usize {
         self.aggregate.targets.len()
+    }
+
+    /// Targets that send a vote.
+    fn transaction_count(&self) -> usize {
+        self.aggregate.transaction_count()
+    }
+
+    /// Targets whose node already shows the requested choice: submitted to be
+    /// checked again, sending a vote only if the choice is not in place.
+    fn recheck_count(&self) -> usize {
+        self.aggregate.recheck.len()
     }
 
     fn node_count(&self) -> usize {
@@ -254,6 +268,16 @@ impl ReviewPlan {
             .iter()
             .any(|target| matches!(target.timing, VoteTiming::Scheduled(_)))
     }
+}
+
+/// What the staged decisions would submit, as the tray counts it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct TrayCounts {
+    /// Votes that would be sent.
+    transactions: usize,
+    /// Nodes shown on the staged choice by proof too old to decide: the
+    /// backend's fresh proof settles whether their vote is really in place.
+    rechecks: usize,
 }
 
 /// The batch timing picked in the confirm step (VOTE-FR-023).
@@ -880,35 +904,32 @@ impl DPNSScreen {
             .retain(|name| names.contains(name.as_str()));
     }
 
-    /// Votes a staged decision would send: submittable nodes not already on
-    /// it. A node shown on the choice by proof too old to decide still counts;
-    /// the backend's fresh proof settles whether its vote is really in place.
-    fn transaction_count(&self) -> usize {
+    /// What the staged decisions would submit across their submittable
+    /// nodes: votes for nodes not on the choice, and checks for nodes shown on
+    /// it by proof too old to decide. Nodes proved on it recently count as
+    /// neither.
+    fn tray_counts(&self) -> TrayCounts {
         let now = now_ms();
-        self.selected_votes
-            .iter()
-            .filter_map(|vote| {
-                let card = self
-                    .cards
-                    .iter()
-                    .find(|card| card.name() == vote.contested_name)?;
-                Some(
-                    card.nodes
-                        .iter()
-                        .filter(|node| node.status.can_submit())
-                        .filter(|node| {
-                            node.current != Some(vote.vote_choice)
-                                || !card.vote_poll_id.is_some_and(|poll| {
-                                    vote_proof_can_decide(
-                                        self.vote_state.proved_at(node.node, poll),
-                                        now,
-                                    )
-                                })
-                        })
-                        .count(),
-                )
-            })
-            .sum()
+        let mut counts = TrayCounts::default();
+        for vote in &self.selected_votes {
+            let Some(card) = self
+                .cards
+                .iter()
+                .find(|card| card.name() == vote.contested_name)
+            else {
+                continue;
+            };
+            for node in card.nodes.iter().filter(|node| node.status.can_submit()) {
+                if node.current != Some(vote.vote_choice) {
+                    counts.transactions += 1;
+                } else if !card.vote_poll_id.is_some_and(|poll| {
+                    vote_proof_can_decide(self.vote_state.proved_at(node.node, poll), now)
+                }) {
+                    counts.rechecks += 1;
+                }
+            }
+        }
+        counts
     }
 
     /// Show one contest by normalized label: the view holding its card, the
@@ -1288,14 +1309,20 @@ impl DPNSScreen {
         if decisions == 0 {
             return;
         }
-        let transactions = self.transaction_count();
+        let TrayCounts {
+            transactions,
+            rechecks,
+        } = self.tray_counts();
         ui.separator();
         ui.horizontal(|ui| {
             ui.label(RichText::new(tray_label(decisions, transactions)).strong());
+            if rechecks > 0 {
+                ui.label(tray_recheck_label(rechecks));
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ComponentStyles::add_primary_button_enabled(
                     ui,
-                    transactions > 0 && self.pending_vote_operation.is_none(),
+                    transactions + rechecks > 0 && self.pending_vote_operation.is_none(),
                     "Cast",
                 )
                 .disabled_tooltip(if self.pending_vote_operation.is_some() {
@@ -2017,7 +2044,10 @@ impl DPNSScreen {
                     ui.label(row);
                 }
                 ui.add_space(6.0);
-                ui.label(confirm_transactions_line(plan.effective_count()));
+                ui.label(confirm_transactions_line(plan.transaction_count()));
+                if plan.recheck_count() > 0 {
+                    ui.label(confirm_recheck_line(plan.recheck_count()));
+                }
                 let changes = plan.aggregate.change_count();
                 if changes > 0 {
                     ui.colored_label(
@@ -2093,7 +2123,9 @@ impl DPNSScreen {
             .default_open(false)
             .show(ui, |ui| self.render_adjust_nodes(ui, plan.as_ref().ok()));
 
-        let transactions = plan.as_ref().map_or(0, ReviewPlan::effective_count);
+        let submitted = plan.as_ref().map_or(0, ReviewPlan::effective_count);
+        let transactions = plan.as_ref().map_or(0, ReviewPlan::transaction_count);
+        let rechecks = plan.as_ref().map_or(0, ReviewPlan::recheck_count);
         let all_now = plan.as_ref().is_ok_and(|plan| !plan.has_scheduled());
         let submit_disabled_reason = if plan.is_err() {
             "These votes cannot be submitted yet. Fix the problem shown above and try again."
@@ -2115,13 +2147,13 @@ impl DPNSScreen {
                 )
             })
         });
-        let can_submit = transactions > 0 && !repeated_enter;
+        let can_submit = submitted > 0 && !repeated_enter;
         let (mut submit_clicked, mut cancel_clicked) = ui
             .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let submit_clicked = ComponentStyles::add_primary_button_enabled(
                     ui,
                     can_submit,
-                    confirm_button_label(transactions, all_now),
+                    confirm_button_label(transactions, rechecks, all_now),
                 )
                 .disabled_tooltip(submit_disabled_reason)
                 .clicked();
@@ -2243,19 +2275,7 @@ impl DPNSScreen {
                 for target in plan.targets() {
                     ui.label(node_label(target.key.voter_id, &self.node_labels));
                     ui.label(format!("{name}.dash", name = target.contested_name));
-                    let requested = vote_choice_label(
-                        target.requested_choice,
-                        self.candidate_name(&target.contested_name, target.requested_choice),
-                    );
-                    let current = review_current_choice_label(
-                        target.current_choice,
-                        target
-                            .current_choice
-                            .and_then(|choice| self.candidate_name(&target.contested_name, choice)),
-                    );
-                    ui.label(format!(
-                        "Current choice: {current}. Requested choice: {requested}."
-                    ));
+                    ui.label(self.review_choice_line(plan, target));
                     let timing = match target.timing {
                         VoteTiming::Now => "Now".to_owned(),
                         VoteTiming::Scheduled(at) => format!("{when} UTC", when = utc_minute(at)),
@@ -2279,6 +2299,27 @@ impl DPNSScreen {
                     ui.end_row();
                 }
             });
+    }
+
+    /// One `Adjust nodes` row: the choice the node holds and the requested one.
+    ///
+    /// A target only checked again carries no reviewed current choice, so it
+    /// is worded from the plan instead of being read as a node that never voted.
+    fn review_choice_line(&self, plan: &ReviewPlan, target: &DpnsVoteTarget) -> String {
+        let requested = vote_choice_label(
+            target.requested_choice,
+            self.candidate_name(&target.contested_name, target.requested_choice),
+        );
+        if plan.aggregate.is_recheck(&target.key) {
+            return review_recheck_line(&requested);
+        }
+        let current = review_current_choice_label(
+            target.current_choice,
+            target
+                .current_choice
+                .and_then(|choice| self.candidate_name(&target.contested_name, choice)),
+        );
+        review_choice_line(&current, &requested)
     }
 
     /// Record a failed submission and surface it the way the rest of the app
@@ -4868,17 +4909,40 @@ mod tests {
 
     /// The cards may show proof far older than a submission may rest on. A
     /// node shown on the requested choice by such proof must still be sent to
-    /// the backend's fresh check instead of being skipped as already voted.
+    /// the backend's fresh check instead of being skipped as already voted —
+    /// and the operator must read it as a vote to check again, not as a first
+    /// vote or a transaction.
     #[test]
     fn a_vote_matching_only_stale_proof_is_sent_for_a_fresh_check() {
+        use egui_kittest::kittest::Queryable;
         let (mut screen, _dir) = voting_ui_review_fixture();
         let voter = screen.voting_identities[0].identity.id();
         let poll = screen.app_context.dpns_vote_poll_id("alpha").unwrap();
         screen.selected_votes[0].vote_choice = ResourceVoteChoice::Lock;
+        screen.active_contests = ActiveDpnsContestSnapshot::new(
+            &screen.app_context,
+            vec![ContestedName {
+                normalized_contested_name: "alpha".into(),
+                contestants: None,
+                locked_votes: Some(1),
+                abstain_votes: Some(0),
+                awarded_to: None,
+                end_time: None,
+                state: ContestState::Ongoing,
+                last_updated: None,
+                my_votes: BTreeMap::new(),
+            }],
+        );
+        screen.rebuild_cards();
         assert_eq!(
             screen.build_review_plan().unwrap().effective_count(),
             0,
             "control: fresh proof of the same choice is an exact no-op"
+        );
+        assert_eq!(
+            screen.tray_counts(),
+            TrayCounts::default(),
+            "control: the tray offers nothing for a vote proved in place just now"
         );
 
         let four_minutes_ago = now_ms() - 4 * 60_000;
@@ -4898,10 +4962,55 @@ mod tests {
             "the proof is still fresh enough to display"
         );
 
+        screen.rebuild_cards();
+
         let plan = screen.build_review_plan().unwrap();
         assert_eq!(plan.effective_count(), 1);
         assert!(plan.aggregate.skipped.is_empty());
         assert_eq!(plan.aggregate.targets[0].current_choice, None);
+
+        assert_eq!(
+            plan.transaction_count(),
+            0,
+            "a vote that is only checked again is not a promised transaction"
+        );
+        assert_eq!(plan.recheck_count(), 1);
+        assert_eq!(
+            screen.review_choice_line(&plan, &plan.aggregate.targets[0]),
+            "Current choice: Lock name, as requested. It will be checked again before a vote is sent.",
+            "the row must show the choice the card shows, not a node that never voted"
+        );
+        assert_eq!(
+            screen.tray_counts(),
+            TrayCounts {
+                transactions: 0,
+                rechecks: 1,
+            },
+            "the tray keeps the vote submittable without counting a transaction"
+        );
+
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1000.0, 800.0))
+            .build_ui(move |ui| {
+                screen.show_confirm_step(ui);
+            });
+        harness.run();
+        for label in [
+            "0 transactions, one per node and name. Voting is free for your nodes.",
+            "1 vote is already shown as cast. Dash Evo Tool checks it again first and sends nothing if the node still holds this choice.",
+            "Check 1 vote",
+        ] {
+            assert!(
+                harness.query_by_label(label).is_some(),
+                "Missing confirm detail: {label}"
+            );
+        }
+        for label in ["Cast 1 vote", "Cast 0 votes"] {
+            assert!(
+                harness.query_by_label(label).is_none(),
+                "the confirm step must not promise a transaction: {label}"
+            );
+        }
     }
 
     /// A node set to "when voting is about to end" must use the lead time the

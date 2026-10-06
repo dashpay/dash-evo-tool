@@ -132,6 +132,8 @@ Validation floor: 24 nodes on one voting key, 6 open contests, 2 ending today.
   step skips a node as already voted only on proof within 120 seconds. On older
   proof the vote is sent to preflight, which confirms it without broadcasting
   when the choice is in place, or asks for another review when it changed.
+  The tray and the confirm step present such a vote as one to check again
+  (VOTE-FR-080/086): never as `Not voted yet`, and never as a transaction.
 - **VOTE-FR-076** **[New]** — Node detail shows `This node's votes` (name, choice,
   changes left, deadline), its masternode-list status, and `Vote with this node`
   (VOTE-FR-075 node set = that node).
@@ -188,6 +190,9 @@ Validation floor: 24 nodes on one voting key, 6 open contests, 2 ending today.
 - **VOTE-FR-024** **[Changed 2026-10-01]** — Before submission, the confirm step
   shows an aggregate (VOTE-FR-080). The full node × contest list (current →
   requested choice, timing, changes left) is available under `Adjust nodes`.
+  A node already shown on the requested choice whose vote is only checked again
+  (VOTE-FR-074) reads `Current choice: {choice}, as requested. It will be
+  checked again before a vote is sent.`
 - **VOTE-FR-025** — The confirm step removes no-op targets and explains why
   (counted under `Skipped`).
 - **VOTE-FR-075** **[New]** — Persistent node-set selector per network: `All my
@@ -199,11 +204,16 @@ Validation floor: 24 nodes on one voting key, 6 open contests, 2 ending today.
   - title `Cast {d} decisions with {n} nodes`;
   - a decision list (name, choice, nodes, deadline);
   - `{t} transactions, one per node and name. Voting is free for your nodes.`;
+    `{t}` leaves out votes that are only checked again (VOTE-FR-074);
+  - when there are such votes: `{r} votes are already shown as cast. Dash Evo
+    Tool checks them again first and sends nothing for nodes that still hold
+    their choice.`;
   - the change warning, once: `{c} of these change an earlier vote. Each node can
     change its vote 4 times per name.`;
   - `Skipped: {s} votes` with reasons;
   - the timing selector and `Adjust nodes`;
-  - primary `Cast {t} votes` / `Schedule {t} votes`.
+  - primary `Cast {t} votes` / `Schedule {t} votes`; when every vote is only
+    checked again, `Check {r} votes` / `Schedule {r} checks`.
   - Enter confirms and Esc cancels.
   Relative schedule display presets are stored in one network-scoped metadata record per vote operation, without changing the vote journal binary format. Changing the absolute scheduled time clears the preset; cancellation and identity removal retain metadata only with its journal owner under the same retention rules. Network-data clearing retains journal history and uncertain locks under existing rules, and display metadata follows those owners. Reads never create or delete metadata.
 - **VOTE-FR-082** **[New]** — Keyboard (only when focus is in the contest list):
@@ -211,7 +221,10 @@ Validation floor: 24 nodes on one voting key, 6 open contests, 2 ending today.
   0 clear · Space select · Enter open confirm. Selecting ≥ 2 cards shows a bulk
   bar: `Lock name` · `Abstain` · `Clear`. A `Shortcuts` popover lists the keys.
 - **VOTE-FR-086** **[New]** — The tray reads `{d} decisions ready · {t}
-  transactions, one per node and name` with `Clear` and `Cast`.
+  transactions, one per node and name` with `Clear` and `Cast`. Votes that are
+  only checked again (VOTE-FR-074) are left out of `{t}` and shown beside it as
+  `{r} votes already shown as cast will be checked again`; `Cast` stays
+  available for them.
 
 ### Operation lifecycle
 

@@ -269,6 +269,16 @@ pub fn tray_label(decisions: usize, transactions: usize) -> String {
     }
 }
 
+/// Tray note beside the summary (VOTE-FR-086): staged votes on nodes that
+/// already show the choice are checked again instead of counted as
+/// transactions.
+pub fn tray_recheck_label(rechecks: usize) -> String {
+    match rechecks {
+        1 => "1 vote already shown as cast will be checked again".to_owned(),
+        count => format!("{count} votes already shown as cast will be checked again"),
+    }
+}
+
 /// Node-set chip (VOTE-FR-075).
 pub fn node_set_chip_label(set_name: &str, nodes: usize, weight: u32) -> String {
     match (nodes, weight) {
@@ -405,6 +415,32 @@ pub fn confirm_transactions_line(transactions: usize) -> String {
     }
 }
 
+/// Confirm line for votes on nodes that already show the requested choice
+/// (VOTE-FR-080): they are checked again, not promised as transactions.
+pub fn confirm_recheck_line(rechecks: usize) -> String {
+    match rechecks {
+        1 => "1 vote is already shown as cast. Dash Evo Tool checks it again first and sends nothing if the node still holds this choice."
+            .to_owned(),
+        count => format!(
+            "{count} votes are already shown as cast. Dash Evo Tool checks them again first and sends nothing for nodes that still hold their choice."
+        ),
+    }
+}
+
+/// `Adjust nodes` row of a node that holds another choice, or none
+/// (VOTE-FR-024).
+pub fn review_choice_line(current: &str, requested: &str) -> String {
+    format!("Current choice: {current}. Requested choice: {requested}.")
+}
+
+/// `Adjust nodes` row of a node that already shows the requested choice
+/// (VOTE-FR-024).
+pub fn review_recheck_line(choice: &str) -> String {
+    format!(
+        "Current choice: {choice}, as requested. It will be checked again before a vote is sent."
+    )
+}
+
 /// Confirm change warning, shown once per batch (VOTE-FR-015/080).
 pub fn confirm_change_warning(changes: usize) -> String {
     match changes {
@@ -471,13 +507,18 @@ pub fn skipped_reason_line(count: usize, reason: SkipReason) -> String {
     }
 }
 
-/// Confirm primary button (VOTE-FR-080).
-pub fn confirm_button_label(transactions: usize, all_now: bool) -> String {
-    match (transactions, all_now) {
-        (1, true) => "Cast 1 vote".to_owned(),
-        (count, true) => format!("Cast {count} votes"),
-        (1, false) => "Schedule 1 vote".to_owned(),
-        (count, false) => format!("Schedule {count} votes"),
+/// Confirm primary button (VOTE-FR-080). `transactions` leaves out the
+/// `rechecks`; those name the button only when nothing else is sent.
+pub fn confirm_button_label(transactions: usize, rechecks: usize, all_now: bool) -> String {
+    match (transactions, rechecks, all_now) {
+        (0, 1, true) => "Check 1 vote".to_owned(),
+        (0, rechecks @ 2.., true) => format!("Check {rechecks} votes"),
+        (0, 1, false) => "Schedule 1 check".to_owned(),
+        (0, rechecks @ 2.., false) => format!("Schedule {rechecks} checks"),
+        (1, _, true) => "Cast 1 vote".to_owned(),
+        (count, _, true) => format!("Cast {count} votes"),
+        (1, _, false) => "Schedule 1 vote".to_owned(),
+        (count, _, false) => format!("Schedule {count} votes"),
     }
 }
 
@@ -851,6 +892,43 @@ mod tests {
         );
     }
 
+    /// A node already shown on the requested choice is neither a first vote
+    /// nor a promised transaction: the copy says it is checked again.
+    #[test]
+    fn votes_only_checked_again_are_worded_apart_from_transactions() {
+        assert_eq!(
+            tray_recheck_label(1),
+            "1 vote already shown as cast will be checked again"
+        );
+        assert_eq!(
+            tray_recheck_label(3),
+            "3 votes already shown as cast will be checked again"
+        );
+        assert_eq!(
+            confirm_recheck_line(1),
+            "1 vote is already shown as cast. Dash Evo Tool checks it again first and sends nothing if the node still holds this choice."
+        );
+        assert_eq!(
+            confirm_recheck_line(3),
+            "3 votes are already shown as cast. Dash Evo Tool checks them again first and sends nothing for nodes that still hold their choice."
+        );
+        assert_eq!(
+            review_recheck_line("Lock name"),
+            "Current choice: Lock name, as requested. It will be checked again before a vote is sent."
+        );
+        assert_eq!(
+            review_choice_line("Not voted yet", "Abstain"),
+            "Current choice: Not voted yet. Requested choice: Abstain."
+        );
+        // The button counts transactions; checks name it only on their own.
+        assert_eq!(confirm_button_label(2, 3, true), "Cast 2 votes");
+        assert_eq!(confirm_button_label(1, 3, false), "Schedule 1 vote");
+        assert_eq!(confirm_button_label(0, 1, true), "Check 1 vote");
+        assert_eq!(confirm_button_label(0, 3, true), "Check 3 votes");
+        assert_eq!(confirm_button_label(0, 1, false), "Schedule 1 check");
+        assert_eq!(confirm_button_label(0, 3, false), "Schedule 3 checks");
+    }
+
     /// VOTE-TC-006/094/095/096 (copy half): the confirm lines follow VOTE-FR-080.
     #[test]
     fn confirm_copy_follows_the_spec() {
@@ -868,8 +946,8 @@ mod tests {
             skipped_reason_line(1, SkipReason::NoChangesLeft),
             "Votes skipped: 1. The selected nodes have no changes left (4 of 4 changes used)."
         );
-        assert_eq!(confirm_button_label(72, true), "Cast 72 votes");
-        assert_eq!(confirm_button_label(1, false), "Schedule 1 vote");
+        assert_eq!(confirm_button_label(72, 0, true), "Cast 72 votes");
+        assert_eq!(confirm_button_label(1, 0, false), "Schedule 1 vote");
         assert_eq!(
             relative_schedule_label(std::time::Duration::from_secs(6 * 3600), "2026-10-03 12:00"),
             "6 hours before the end · 2026-10-03 12:00 UTC"

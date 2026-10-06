@@ -96,10 +96,15 @@ pub enum ComposeError {
     VotingEnded { contested_name: String },
 }
 
-/// Exactly what a confirm click sends.
+/// Exactly what a confirm click submits.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct AggregatePlan {
     pub targets: Vec<DpnsVoteTarget>,
+    /// Targets whose node is shown on the requested choice by proof too old
+    /// to decide. They are submitted for a fresh check, which sends a vote
+    /// only when the choice is not in place: neither first votes nor
+    /// transactions the operator can count on.
+    pub recheck: BTreeSet<DpnsVoteTargetKey>,
     pub skipped: Vec<SkippedTarget>,
     /// Targets asked to vote "when voting is about to end" whose contest is
     /// already inside the lead time, so they are sent now.
@@ -112,6 +117,20 @@ impl AggregatePlan {
         self.targets
             .iter()
             .filter(|target| target.current_choice.is_some())
+            .count()
+    }
+
+    /// Whether `key` is submitted only to check again a choice its node
+    /// already shows.
+    pub fn is_recheck(&self, key: &DpnsVoteTargetKey) -> bool {
+        self.recheck.contains(key)
+    }
+
+    /// Targets that send a vote: every target but the ones only checked again.
+    pub fn transaction_count(&self) -> usize {
+        self.targets
+            .iter()
+            .filter(|target| !self.is_recheck(&target.key))
             .count()
     }
 
@@ -221,6 +240,8 @@ pub fn compose(
             // goes out without a reviewed current choice, and the backend's
             // fresh proof either confirms the no-op without broadcasting or
             // asks for another review because the vote changed elsewhere.
+            // `recheck` keeps what the node shows, so the review does not
+            // present it as a first vote.
             let unverified_no_op = current == Some(decision.choice) && !standing.proof_can_decide;
             if current == Some(decision.choice) && !unverified_no_op {
                 plan.skipped.push(skip(SkipReason::AlreadyVoted));
@@ -240,12 +261,16 @@ pub fn compose(
                 continue;
             };
             plan.ends_soon_now += usize::from(ends_soon);
+            let key = DpnsVoteTargetKey {
+                network,
+                voter_id: node.voter_id,
+                vote_poll_id: decision.vote_poll_id,
+            };
+            if unverified_no_op {
+                plan.recheck.insert(key.clone());
+            }
             plan.targets.push(DpnsVoteTarget {
-                key: DpnsVoteTargetKey {
-                    network,
-                    voter_id: node.voter_id,
-                    vote_poll_id: decision.vote_poll_id,
-                },
+                key,
                 voter_alias: node.alias.clone(),
                 contested_name: decision.contested_name.clone(),
                 requested_choice: decision.choice,
@@ -313,6 +338,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(plan.targets.len(), 6);
+        assert_eq!(plan.transaction_count(), 6);
+        assert!(plan.recheck.is_empty());
         assert_eq!(plan.node_count(), 3);
         assert_eq!(plan.change_count(), 0);
         assert!(plan.all_now());
@@ -470,6 +497,42 @@ mod tests {
         );
         assert!(!plan.targets[0].is_no_op());
         assert_eq!(plan.change_count(), 0);
+        assert!(
+            plan.is_recheck(&plan.targets[0].key),
+            "the review must still know the node is shown on the requested choice"
+        );
+        assert_eq!(
+            plan.transaction_count(),
+            0,
+            "a vote that is only checked again is not a promised transaction"
+        );
+    }
+
+    /// A vote that replaces another choice is a transaction however old the
+    /// proof is: only a node shown on the requested choice is merely checked.
+    #[test]
+    fn stale_proof_of_another_choice_is_still_a_counted_change() {
+        let plan = compose(
+            Network::Testnet,
+            &[decision("alice", 10, ResourceVoteChoice::Lock, 100 * MIN)],
+            &nodes(&[1]),
+            |_, _| NodeStanding {
+                proof_can_decide: false,
+                ..available(Some(ResourceVoteChoice::Abstain))
+            },
+            BatchTiming::Now,
+            &BTreeMap::new(),
+            0,
+        )
+        .unwrap();
+
+        assert!(plan.recheck.is_empty());
+        assert_eq!(plan.transaction_count(), 1);
+        assert_eq!(plan.change_count(), 1);
+        assert_eq!(
+            plan.targets[0].current_choice,
+            Some(ResourceVoteChoice::Abstain)
+        );
     }
 
     /// "Before the end" needs a deadline. A contest whose deadline has not

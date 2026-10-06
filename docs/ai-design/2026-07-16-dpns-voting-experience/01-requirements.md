@@ -230,7 +230,14 @@ Validation floor: 24 nodes on one voting key, 6 open contests, 2 ending today.
   in the non-blocking drawer (VOTE-FR-083), never in a full-window overlay.
 - **VOTE-FR-036** — Navigation does not cancel an operation or lose its state.
 - **VOTE-FR-037** — Restart restores scheduled and unresolved operations before
-  enabling conflicting actions.
+  enabling conflicting actions. A vote that was still queued (never claimed, so
+  never broadcast) when the app stopped is sent after restart only while it is
+  fresh: within 2 minutes of the review for an immediate vote, or of its time
+  for an admitted schedule. Older ones are not sent by themselves — an
+  immediate vote becomes `Not submitted` with `Review again`, a schedule is
+  shown as missed. A recovered immediate vote that was reviewed as a first
+  vote is likewise not sent when Platform now shows a different vote for the
+  node.
 - **VOTE-FR-083** **[New]** — The progress drawer (bottom-right, collapsible,
   persists across screens) has the header `Casting {t} votes · {done} done ·
   {sending} sending · {checking} being checked`, a segmented progress bar, and

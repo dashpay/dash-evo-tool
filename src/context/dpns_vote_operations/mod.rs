@@ -17,7 +17,8 @@ use crate::model::dpns_voting::{
     DpnsCurrentVoteState, DpnsScheduledVoteClearDisposition, DpnsScheduledVoteClearOutcome,
     DpnsScheduledVoteEdit, DpnsScheduledVoteKey, DpnsVoteFailure, DpnsVoteOperation,
     DpnsVoteOperationId, DpnsVoteTarget, DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming,
-    authoritative_dpns_vote_outcomes, unavailable_preflight_outcome,
+    authoritative_dpns_vote_outcomes, failed_before_broadcast_outcome,
+    unavailable_preflight_outcome,
 };
 use crate::utils::time::now_ms;
 use crate::wallet_backend::{DetKv, DetScope};
@@ -768,6 +769,16 @@ impl AppContext {
                     return TargetUpdate::Skip(false);
                 }
                 match state {
+                    // Reviewed as a first vote, but Platform now shows another
+                    // one: sending it would spend a change nobody reviewed.
+                    DpnsCurrentVoteState::Available(Some(current))
+                        if outcome.target.timing == VoteTiming::Now
+                            && outcome.target.current_choice.is_none()
+                            && current != outcome.target.requested_choice =>
+                    {
+                        (outcome.status, outcome.failure) =
+                            failed_before_broadcast_outcome(VoteTiming::Now);
+                    }
                     DpnsCurrentVoteState::Available(current) => {
                         outcome.target.current_choice = current;
                         if current == Some(outcome.target.requested_choice) {
@@ -786,11 +797,18 @@ impl AppContext {
         })
     }
 
-    /// Recover interrupted targets according to their durable broadcast phase.
+    /// Recover interrupted targets according to their durable broadcast phase,
+    /// and stop queued targets that are too old to send without another look.
+    ///
+    /// Runs once per process, before any executor, so every non-terminal
+    /// status it sees was left behind by an earlier run.
     pub(crate) fn recover_interrupted_dpns_vote_operations(&self) -> Result<(), TaskError> {
         let (_guard, kv) = self.journal()?;
+        let now_ms = now_ms();
         for mut operation in load_operations(&kv, self.network)? {
-            if recover_interrupted_target_statuses(&mut operation, |_| true) {
+            let interrupted = recover_interrupted_target_statuses(&mut operation, |_| true);
+            let expired = expire_stale_queued_targets(&mut operation, now_ms);
+            if interrupted || expired {
                 persist_operation(&kv, self.network, &operation)?;
             }
         }
@@ -2316,6 +2334,116 @@ mod tests {
 
         assert!(!diagnostics.contains_key(&first_key));
         assert!(diagnostics.contains_key(&second_key));
+    }
+
+    /// A vote still queued from an earlier run must not go out by itself long
+    /// after it was reviewed; one queued moments ago is still sent.
+    #[test]
+    fn restart_recovery_does_not_send_an_immediate_vote_queued_long_ago() {
+        use crate::model::dpns_voting::SCHEDULED_VOTE_MAX_LATENESS_MS;
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        ctx.set_det_kv_override_for_test(kv());
+        let mut stale = operation(DpnsVoteTargetStatus::Queued);
+        stale.created_at = now_ms() - SCHEDULED_VOTE_MAX_LATENESS_MS - 1_000;
+        let stale_key = stale.targets[0].target.key.clone();
+        ctx.insert_dpns_vote_operation(&mut stale, None).unwrap();
+        let mut fresh = operation(DpnsVoteTargetStatus::Queued);
+        fresh.targets[0].target.key.voter_id = Identifier::from([7; 32]);
+        let fresh_key = fresh.targets[0].target.key.clone();
+        ctx.insert_dpns_vote_operation(&mut fresh, None).unwrap();
+
+        ctx.recover_interrupted_dpns_vote_operations().unwrap();
+
+        let recovered = ctx.dpns_vote_operation(stale.id).unwrap().unwrap();
+        assert_eq!(
+            recovered.targets[0].status,
+            DpnsVoteTargetStatus::FailedBeforeSubmission
+        );
+        assert_eq!(
+            recovered.targets[0].failure,
+            Some(DpnsVoteFailure::SubmissionFailed)
+        );
+        assert_eq!(
+            ctx.dpns_vote_target_status(&stale_key).unwrap(),
+            None,
+            "nothing was broadcast, so the target is free to be voted again"
+        );
+        assert_eq!(
+            ctx.dpns_vote_target_status(&fresh_key).unwrap(),
+            Some(DpnsVoteTargetStatus::Queued)
+        );
+    }
+
+    /// An admitted schedule interrupted by a restart is redriven only close
+    /// to its time; later it is a missed schedule the operator decides on.
+    #[test]
+    fn restart_recovery_returns_an_overdue_admitted_schedule_to_scheduled() {
+        let now = 10_000_000;
+        let mut overdue = scheduled_operation(DpnsVoteTargetStatus::Queued, 2, "dominguez");
+        let mut due = scheduled_operation(DpnsVoteTargetStatus::Queued, 3, "other");
+        due.targets[0].target.timing = VoteTiming::Scheduled(now - 1_000);
+        let mut running = scheduled_operation(DpnsVoteTargetStatus::Confirming, 4, "third");
+        let running_before = running.clone();
+
+        assert!(expire_stale_queued_targets(&mut overdue, now));
+        assert_eq!(overdue.targets[0].status, DpnsVoteTargetStatus::Scheduled);
+        assert_eq!(
+            overdue.targets[0].failure,
+            Some(DpnsVoteFailure::SubmissionFailed)
+        );
+        assert!(!expire_stale_queued_targets(&mut due, now));
+        assert_eq!(due.targets[0].status, DpnsVoteTargetStatus::Queued);
+        assert!(!expire_stale_queued_targets(&mut running, now));
+        assert_eq!(running, running_before);
+    }
+
+    /// A recovered vote reviewed as a first vote must not be sent as a change
+    /// when Platform now shows a different vote for the node.
+    #[test]
+    fn a_recovered_first_vote_that_became_a_change_is_not_sent() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        ctx.set_det_kv_override_for_test(kv());
+        let observed = DpnsCurrentVoteState::Available(Some(ResourceVoteChoice::Abstain));
+
+        let mut first_vote = operation(DpnsVoteTargetStatus::Queued);
+        let key = first_vote.targets[0].target.key.clone();
+        ctx.insert_dpns_vote_operation(&mut first_vote, None)
+            .unwrap();
+        assert!(
+            !ctx.revalidate_queued_dpns_vote_target(first_vote.id, &key, observed)
+                .unwrap()
+        );
+        let saved = ctx.dpns_vote_operation(first_vote.id).unwrap().unwrap();
+        assert_eq!(
+            saved.targets[0].status,
+            DpnsVoteTargetStatus::FailedBeforeSubmission
+        );
+        assert_eq!(ctx.dpns_vote_target_status(&key).unwrap(), None);
+
+        let mut reviewed_change = operation(DpnsVoteTargetStatus::Queued);
+        reviewed_change.targets[0].target.key.voter_id = Identifier::from([7; 32]);
+        reviewed_change.targets[0].target.current_choice = Some(
+            ResourceVoteChoice::TowardsIdentity(Identifier::from([9; 32])),
+        );
+        let change_key = reviewed_change.targets[0].target.key.clone();
+        ctx.insert_dpns_vote_operation(&mut reviewed_change, None)
+            .unwrap();
+        assert!(
+            ctx.revalidate_queued_dpns_vote_target(reviewed_change.id, &change_key, observed)
+                .unwrap(),
+            "a vote reviewed as a change stays queued"
+        );
+        let saved = ctx
+            .dpns_vote_operation(reviewed_change.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.targets[0].status, DpnsVoteTargetStatus::Queued);
+        assert_eq!(
+            saved.targets[0].target.current_choice,
+            Some(ResourceVoteChoice::Abstain)
+        );
     }
 
     #[test]

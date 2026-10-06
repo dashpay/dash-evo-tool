@@ -8,7 +8,7 @@ use super::{load_operation, persist_operation};
 use crate::backend_task::error::TaskError;
 use crate::model::dpns_voting::{
     DpnsVoteFailure, DpnsVoteOperation, DpnsVoteOperationId, DpnsVoteOutcome, DpnsVoteTargetKey,
-    DpnsVoteTargetStatus, failed_before_broadcast_outcome,
+    DpnsVoteTargetStatus, VoteTiming, dpns_schedule_is_overdue, failed_before_broadcast_outcome,
 };
 use crate::wallet_backend::DetKv;
 use dash_sdk::dpp::dashcore::Network;
@@ -111,6 +111,33 @@ pub(super) fn recover_interrupted_target_statuses(
                 changed = true;
             }
             _ => {}
+        }
+    }
+    changed
+}
+
+/// Keep restart recovery from sending a queued target nobody is waiting for.
+///
+/// A queued target was never claimed, so nothing was broadcast. An immediate
+/// vote reviewed longer ago than the lateness bound, or an admitted schedule
+/// that far past its time, ends like an interrupted submission: a failure the
+/// operator reviews, or a schedule shown as missed. Fresher targets stay
+/// queued and are sent.
+pub(super) fn expire_stale_queued_targets(operation: &mut DpnsVoteOperation, now_ms: u64) -> bool {
+    let created_at = operation.created_at;
+    let mut changed = false;
+    for outcome in &mut operation.targets {
+        if outcome.status != DpnsVoteTargetStatus::Queued {
+            continue;
+        }
+        let due_at = match outcome.target.timing {
+            VoteTiming::Now => created_at,
+            VoteTiming::Scheduled(at) => at,
+        };
+        if dpns_schedule_is_overdue(due_at, now_ms) {
+            (outcome.status, outcome.failure) =
+                failed_before_broadcast_outcome(outcome.target.timing);
+            changed = true;
         }
     }
     changed

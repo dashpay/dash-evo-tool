@@ -460,7 +460,8 @@ impl UsernameRequest {
 ///
 /// Returns `None` when a running contest does not include the identity.
 /// `end_time` is the network-reported end, used in preference to the
-/// computed one. `label` is the fallback when no contender document carries it.
+/// computed one. `normalized_label` stands in for the label when no contender
+/// document carries it.
 pub fn username_request_from_contest(
     identity_id: Identifier,
     normalized_label: &str,
@@ -473,6 +474,8 @@ pub fn username_request_from_contest(
         .contenders
         .iter()
         .find(|c| c.identity_id == identity_id);
+    let start = contest.started_at();
+    let join_end = start.map(|s| s.saturating_add(duration_ms(durations.join)));
     let phase = match contest.winner {
         Some(ContestWinner::Identity(winner)) if winner == identity_id => RequestPhase::Won,
         Some(ContestWinner::Locked) => RequestPhase::Locked,
@@ -480,8 +483,6 @@ pub fn username_request_from_contest(
         Some(ContestWinner::Identity(_)) => RequestPhase::Lost,
         None => {
             mine?;
-            let start = contest.started_at();
-            let join_end = start.map(|s| s.saturating_add(duration_ms(durations.join)));
             if join_end.is_some_and(|end| now < end) {
                 RequestPhase::Joinable
             } else {
@@ -489,7 +490,6 @@ pub fn username_request_from_contest(
             }
         }
     };
-    let start = contest.started_at();
     let tally = RequestTally {
         you: mine.map_or(0, |c| c.votes),
         others: contest
@@ -508,7 +508,7 @@ pub fn username_request_from_contest(
         normalized_label: normalized_label.to_owned(),
         phase,
         requested_at: mine.and_then(|c| c.created_at),
-        join_end: start.map(|s| s.saturating_add(duration_ms(durations.join))),
+        join_end,
         end: end_time.or_else(|| start.map(|s| s.saturating_add(duration_ms(durations.total)))),
         decided_at: contest.decided_at,
         tally,

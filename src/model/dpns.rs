@@ -137,8 +137,9 @@ const MAX_LABEL_LEN: usize = 63;
 
 /// Up to three valid labels close to `label` that do not need a community vote.
 ///
-/// Each suggestion appends a digit from 2 to 9, which takes the name out of the
-/// contested rule. Returns an empty list when `label` has no usable base.
+/// Each suggestion appends a short suffix from [`UNCONTESTED_SUFFIXES`] that
+/// takes the name out of the contested rule. Returns an empty list when `label`
+/// has no usable base.
 pub fn suggest_uncontested(label: &str) -> Vec<String> {
     let base = strip_dash_suffix(label).to_ascii_lowercase();
     let base = base.trim_end_matches('-');

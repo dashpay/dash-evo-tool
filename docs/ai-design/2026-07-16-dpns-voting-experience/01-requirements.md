@@ -235,7 +235,10 @@ Validation floor: 24 nodes on one voting key, 6 open contests, 2 ending today.
   persists across screens) has the header `Casting {t} votes · {done} done ·
   {sending} sending · {checking} being checked`, a segmented progress bar, and
   per node × name rows with typed status and the valid action (`Check again`,
-  `Review again`, `Add voting key`). Cards whose targets are in flight show
+  `Review again`, `Add voting key`). `Review again` opens the confirm step for
+  that one node × name only; decisions staged in the tray are not part of it
+  and are still staged when it is confirmed or cancelled. Cards whose targets
+  are in flight show
   `Sending with {n} nodes…` and lock their choices. Everything else stays
   interactive.
 - **VOTE-FR-084** **[New]** — A `Needs attention` row at the top of Votes appears
@@ -301,8 +304,13 @@ Validation floor: 24 nodes on one voting key, 6 open contests, 2 ending today.
   · {abs UTC}`. A contest already inside the lead time is voted now instead of
   rejecting the batch; the confirm step says so with a count: `{n} of these
   votes will be sent now because voting ends soon.` Every other contest is
-  scheduled as above. Absolute times (`At a specific time`) at or after the
-  deadline are still rejected (existing rule).
+  scheduled as above. A contest whose deadline has not been read yet cannot be
+  placed: its votes are listed under Skipped (`The end of voting is not known
+  yet for these names. …`) and the rest of the batch goes ahead; a node set to
+  `Now` under `Adjust nodes` still votes on it. Deadlines are read from the
+  contest list when the confirm step is built, not when a choice was staged.
+  Absolute times (`At a specific time`) at or after the deadline are still
+  rejected (existing rule).
 - **VOTE-FR-088** **[New]** — The Scheduled view groups rows by decision (name ×
   choice × time) with an expandable node list (`24 nodes ▾`). Per-node status
   shows inside the expansion.

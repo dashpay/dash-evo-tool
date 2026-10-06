@@ -386,6 +386,16 @@ pub struct SelectedVote {
     pub end_time: Option<u64>,
 }
 
+/// A failed target under review from the progress drawer (`Review again`).
+///
+/// The confirm step covers this one node and decision instead of the staged
+/// decisions, which stay in the tray untouched.
+#[derive(Clone, Debug, PartialEq)]
+struct RetryReview {
+    voter: Identifier,
+    vote: SelectedVote,
+}
+
 /// What the open confirm step has to show about its last submit click.
 ///
 /// A dispatched submission closes the confirm step, so being in flight is
@@ -464,8 +474,11 @@ pub struct DPNSScreen {
     show_bulk_schedule_popup: bool,
     /// Per-node overrides under `Adjust nodes`; absent means "same as above".
     node_overrides: BTreeMap<Identifier, NodeTiming>,
-    /// Set by `Review again`: the confirm step covers only this node.
-    retry_voter: Option<Identifier>,
+    /// Set by `Review again`: the confirm step covers only this target.
+    retry: Option<RetryReview>,
+    /// The retried target of the pending submission, kept so a submission
+    /// that needs another review reopens on it.
+    submitted_retry: Option<RetryReview>,
     bulk_vote_handling_status: VoteHandlingStatus,
     submission_error_banner: Option<BannerHandle>,
     confirm_timing: ConfirmTiming,
@@ -571,7 +584,8 @@ impl DPNSScreen {
             // Vote handling
             show_bulk_schedule_popup: false,
             node_overrides: BTreeMap::new(),
-            retry_voter: None,
+            retry: None,
+            submitted_retry: None,
             bulk_vote_handling_status: VoteHandlingStatus::NotStarted,
             submission_error_banner: None,
             confirm_timing: ConfirmTiming::Now,
@@ -618,7 +632,8 @@ impl DPNSScreen {
         self.show_bulk_schedule_popup = false;
         self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
         self.node_overrides.clear();
-        self.retry_voter = None;
+        self.retry = None;
+        self.submitted_retry = None;
         self.confirm_timing = ConfirmTiming::Now;
         self.relative_preset = relative_schedule_preset(self.app_context.network());
         self.pending_backend_task = None;
@@ -1299,36 +1314,54 @@ impl DPNSScreen {
         if self.pending_vote_operation.is_some() {
             return;
         }
-        self.retry_voter = None;
+        self.retry = None;
         self.node_overrides.clear();
         self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
         self.show_bulk_schedule_popup = true;
     }
 
+    /// Stage `choice` for a contest, or clear it when it is already staged.
     fn set_selected_vote(&mut self, contest: &ContestedName, choice: ResourceVoteChoice) {
-        if let Some(index) = self
+        let name = &contest.normalized_contested_name;
+        if self
             .selected_votes
             .iter()
-            .position(|vote| vote.contested_name == contest.normalized_contested_name)
+            .any(|vote| vote.contested_name == *name && vote.vote_choice == choice)
         {
-            if self.selected_votes[index].vote_choice == choice {
-                self.selected_votes.remove(index);
-            } else {
-                self.selected_votes[index].vote_choice = choice;
-            }
+            self.clear_choice(name);
         } else {
-            self.selected_votes.push(SelectedVote {
-                contested_name: contest.normalized_contested_name.clone(),
-                vote_choice: choice,
-                end_time: contest.end_time,
-            });
+            self.stage_choice(contest, choice);
         }
     }
 
+    /// The contest's voting deadline as the cards last read it.
+    fn contest_end_time(&self, contested_name: &str) -> Option<u64> {
+        self.cards
+            .iter()
+            .find(|card| card.name() == contested_name)
+            .and_then(|card| card.contest.end_time)
+    }
+
+    /// Decisions the confirm step covers: the retried one alone, else every
+    /// staged one.
+    fn review_votes(&self) -> &[SelectedVote] {
+        match &self.retry {
+            Some(retry) => std::slice::from_ref(&retry.vote),
+            None => &self.selected_votes,
+        }
+    }
+
+    /// `Review again` on a failed drawer row: confirm that one node × name
+    /// again. The staged decisions are not part of it and stay in the tray.
     fn review_failed_target(&mut self, outcome: &DpnsVoteOutcome) {
-        self.selected_votes.clear();
-        self.set_selected_vote_from_outcome(outcome);
-        self.retry_voter = Some(outcome.target.key.voter_id);
+        self.retry = Some(RetryReview {
+            voter: outcome.target.key.voter_id,
+            vote: SelectedVote {
+                contested_name: outcome.target.contested_name.clone(),
+                vote_choice: outcome.target.requested_choice,
+                end_time: self.contest_end_time(&outcome.target.contested_name),
+            },
+        });
         self.node_overrides.clear();
         self.confirm_timing = ConfirmTiming::Now;
         self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
@@ -1368,23 +1401,6 @@ impl DPNSScreen {
                 });
             });
         ui.add_space(6.0);
-    }
-
-    fn set_selected_vote_from_outcome(&mut self, outcome: &DpnsVoteOutcome) {
-        let name = outcome.target.contested_name.clone();
-        if let Some(vote) = self
-            .selected_votes
-            .iter_mut()
-            .find(|vote| vote.contested_name == name)
-        {
-            vote.vote_choice = outcome.target.requested_choice;
-        } else {
-            self.selected_votes.push(SelectedVote {
-                contested_name: name,
-                vote_choice: outcome.target.requested_choice,
-                end_time: None,
-            });
-        }
     }
 
     /// Progress shows in the non-blocking drawer, never a window overlay
@@ -1961,7 +1977,7 @@ impl DPNSScreen {
             });
             return action;
         }
-        if self.selected_votes.is_empty() {
+        if self.review_votes().is_empty() {
             ui.colored_label(
                 DashColors::warning_color(dark_mode),
                 "No decisions are staged. Pick a choice on at least one name, then try again.",
@@ -2128,7 +2144,7 @@ impl DPNSScreen {
         if cancel_clicked {
             // Cancel closes the confirm step; staged decisions stay in the tray.
             self.show_bulk_schedule_popup = false;
-            self.retry_voter = None;
+            self.retry = None;
             self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
         }
         if let VoteHandlingStatus::Failed(error) = &self.bulk_vote_handling_status {
@@ -2258,8 +2274,8 @@ impl DPNSScreen {
         self.voting_identities
             .iter()
             .map(|identity| identity.identity.id())
-            .filter(|id| match self.retry_voter {
-                Some(voter) => *id == voter,
+            .filter(|id| match &self.retry {
+                Some(retry) => *id == retry.voter,
                 None => included.contains(id),
             })
             .map(|voter_id| ComposerNode {
@@ -2276,7 +2292,7 @@ impl DPNSScreen {
     fn build_review_plan_at(&self, now: DateTime<Utc>) -> Result<ReviewPlan, ReviewPlanError> {
         let now_ms = now.timestamp_millis() as u64;
         let decisions = self
-            .selected_votes
+            .review_votes()
             .iter()
             .map(|vote| {
                 let vote_poll_id = self
@@ -2296,7 +2312,10 @@ impl DPNSScreen {
                     contested_name: vote.contested_name.clone(),
                     vote_poll_id,
                     choice: vote.vote_choice,
-                    end_time: vote.end_time,
+                    // The deadline may have been read after the choice was staged.
+                    end_time: self
+                        .contest_end_time(&vote.contested_name)
+                        .or(vote.end_time),
                 })
             })
             .collect::<Result<Vec<_>, ReviewPlanError>>()?;
@@ -2404,15 +2423,22 @@ impl DPNSScreen {
             });
         self.submission_error_banner.take_and_clear();
         self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
-        self.retry_voter = None;
+        self.submitted_retry = self.retry.take();
         self.pending_vote_operation = Some(operation.id);
-        self.submitted_votes = self
-            .selected_votes
-            .iter()
-            .cloned()
-            .map(|vote| (vote.contested_name.clone(), vote))
-            .collect();
-        self.submitted_cards = self.selected_cards.clone();
+        if self.submitted_retry.is_some() {
+            // A retried target is not one of the staged decisions, so its
+            // result must not clear any of them from the tray.
+            self.submitted_votes.clear();
+            self.submitted_cards.clear();
+        } else {
+            self.submitted_votes = self
+                .selected_votes
+                .iter()
+                .cloned()
+                .map(|vote| (vote.contested_name.clone(), vote))
+                .collect();
+            self.submitted_cards = self.selected_cards.clone();
+        }
         AppAction::BackendTask(BackendTask::ContestedResourceTask(
             ContestedResourceTask::SubmitDpnsVoteOperation {
                 operation,
@@ -2520,6 +2546,7 @@ impl ScreenLike for DPNSScreen {
             self.submitted_votes.clear();
             self.submitted_cards.clear();
             self.release_pending_on_error = false;
+            let retried = self.submitted_retry.take();
             // The confirm step closed when the submission was dispatched and
             // AppState banners the error; the decisions stay staged, so the
             // operator can confirm them again.
@@ -2527,7 +2554,8 @@ impl ScreenLike for DPNSScreen {
                 // A first vote became a change during preflight: reopen the
                 // confirm on fresh vote state so it shows the change warning.
                 self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
-                self.show_bulk_schedule_popup = !self.selected_votes.is_empty();
+                self.retry = retried;
+                self.show_bulk_schedule_popup = !self.review_votes().is_empty();
             }
         }
         if let Err(refresh_error) = self.vote_operations.refresh(&self.app_context) {
@@ -2565,6 +2593,7 @@ impl ScreenLike for DPNSScreen {
                 let owns_result = self.pending_vote_operation == Some(operation_id);
                 if owns_result {
                     self.pending_vote_operation = None;
+                    self.submitted_retry = None;
                     self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
                     self.selected_votes.retain(|vote| {
                         self.submitted_votes.get(&vote.contested_name) != Some(vote)
@@ -4552,12 +4581,107 @@ mod tests {
             vote_choice: ResourceVoteChoice::Lock,
             end_time: None,
         });
+        let staged = screen.selected_votes.clone();
         screen.review_failed_target(&operation.targets[0]);
         let plan = screen.build_review_plan().unwrap();
         assert_eq!(plan.effective_count(), 1);
         assert_eq!(
             plan.aggregate.targets[0].key,
             operation.targets[0].target.key
+        );
+        assert_eq!(
+            screen.selected_votes, staged,
+            "reviewing a failed vote again must not discard the staged decisions"
+        );
+
+        assert!(matches!(
+            screen.bulk_apply_votes(),
+            AppAction::BackendTask(_)
+        ));
+        let operation_id = screen.pending_vote_operation.unwrap();
+        screen.display_task_result(BackendTaskSuccessResult::DpnsVoteOperationUpdated {
+            network: screen.app_context.network(),
+            operation_id,
+        });
+        assert!(screen.pending_vote_operation.is_none());
+        assert_eq!(
+            screen.selected_votes, staged,
+            "the retried vote's result must leave the staged decisions in the tray"
+        );
+        assert_eq!(screen.retry, None);
+    }
+
+    /// A retried vote that needs another review reopens the confirm step on
+    /// that same target, not on the unrelated staged decisions.
+    #[test]
+    fn a_retry_needing_another_review_reopens_on_the_retried_target() {
+        let (mut screen, _dir) = voting_ui_review_fixture();
+        let operation = AppContext::new_dpns_vote_operation(vec![
+            screen
+                .build_review_plan()
+                .unwrap()
+                .aggregate
+                .targets
+                .remove(0),
+        ]);
+        screen.selected_votes = vec![SelectedVote {
+            contested_name: "unrelated".into(),
+            vote_choice: ResourceVoteChoice::Lock,
+            end_time: None,
+        }];
+        screen.review_failed_target(&operation.targets[0]);
+        let retried = screen.retry.clone();
+        assert!(retried.is_some());
+        assert!(matches!(
+            screen.bulk_apply_votes(),
+            AppAction::BackendTask(_)
+        ));
+        screen.show_bulk_schedule_popup = false;
+        let error = TaskError::DpnsVoteReviewRequired;
+        screen.display_backend_task_error(
+            &BackendTaskContext::DpnsVoteOperation {
+                network: screen.app_context.network(),
+                operation_id: screen.pending_vote_operation.unwrap(),
+            },
+            &error,
+        );
+        screen.display_task_error(&error);
+
+        assert!(screen.show_bulk_schedule_popup);
+        assert_eq!(screen.retry, retried);
+        assert_eq!(screen.selected_votes.len(), 1);
+        assert_eq!(screen.selected_votes[0].contested_name, "unrelated");
+    }
+
+    /// `Review again` must carry the contest's deadline, or "when voting is
+    /// about to end" has nothing to count back from.
+    #[test]
+    fn review_again_schedules_against_the_contest_deadline() {
+        let (mut screen, _dir) = voting_ui_review_fixture();
+        let now = Utc::now();
+        let deadline = now.timestamp_millis() as u64 + 60 * 60_000;
+        screen
+            .app_context
+            .seed_dpns_contest_for_test("alpha", Some(deadline), false);
+        screen.refresh();
+        let operation = AppContext::new_dpns_vote_operation(vec![
+            screen
+                .build_review_plan_at(now)
+                .unwrap()
+                .aggregate
+                .targets
+                .remove(0),
+        ]);
+
+        screen.review_failed_target(&operation.targets[0]);
+        screen.confirm_timing = ConfirmTiming::BeforeEnd;
+        screen.relative_preset = std::time::Duration::from_secs(10 * 60);
+        let plan = screen.build_review_plan_at(now).unwrap();
+
+        assert_eq!(plan.decisions[0].0.end_time, Some(deadline));
+        assert_eq!(
+            plan.aggregate.targets[0].timing,
+            VoteTiming::Scheduled(deadline - 10 * 60_000)
         );
     }
 

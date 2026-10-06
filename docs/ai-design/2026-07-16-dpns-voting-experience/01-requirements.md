@@ -235,7 +235,9 @@ Validation floor: 24 nodes on one voting key, 6 open contests, 2 ending today.
   fresh: within 2 minutes of the review for an immediate vote, or of its time
   for an admitted schedule. Older ones are not sent by themselves — an
   immediate vote becomes `Not submitted` with `Review again`, a schedule is
-  shown as missed. A recovered immediate vote that was reviewed as a first
+  shown as missed. The stopped immediate vote is dated by when recovery stopped
+  it, so the progress drawer and `Needs attention` of that session list it even
+  though it was reviewed in an earlier one. A recovered immediate vote that was reviewed as a first
   vote is likewise not sent when Platform now shows a different vote for the
   node.
 - **VOTE-FR-083** **[New]** — The progress drawer (bottom-right, collapsible,

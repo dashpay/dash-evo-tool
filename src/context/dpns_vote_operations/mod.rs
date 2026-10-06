@@ -16,8 +16,8 @@ use crate::backend_task::error::TaskError;
 use crate::model::dpns_voting::{
     DpnsCurrentVoteState, DpnsScheduledVoteClearDisposition, DpnsScheduledVoteClearOutcome,
     DpnsScheduledVoteEdit, DpnsScheduledVoteKey, DpnsVoteFailure, DpnsVoteOperation,
-    DpnsVoteOperationId, DpnsVoteTarget, DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming,
-    authoritative_dpns_vote_outcomes, failed_before_broadcast_outcome,
+    DpnsVoteOperationId, DpnsVoteOutcome, DpnsVoteTarget, DpnsVoteTargetKey, DpnsVoteTargetStatus,
+    VoteTiming, authoritative_dpns_vote_outcomes, failed_before_broadcast_outcome,
     unavailable_preflight_outcome,
 };
 use crate::utils::time::now_ms;
@@ -57,7 +57,58 @@ fn load_operation(
         Ok(None) => {}
         Err(error) => tracing::debug!(?error, "Relative schedule labels unreadable"),
     }
+    if operation.targets.iter().any(stoppable_by_recovery) {
+        match kv.get::<RecoveryStops>(DetScope::Global, &recovery_stops_key(key)) {
+            Ok(Some(stops)) => {
+                for outcome in &mut operation.targets {
+                    if stoppable_by_recovery(outcome) {
+                        outcome.stopped_by_recovery_at_ms = stops.get(&outcome.target.key).copied();
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(error) => tracing::debug!(?error, "Vote recovery stop times unreadable"),
+        }
+    }
     Ok(Some(operation))
+}
+
+/// When restart recovery stopped each immediate target of one operation, Unix ms.
+type RecoveryStops = BTreeMap<DpnsVoteTargetKey, u64>;
+
+/// Whether `outcome` is in the state restart recovery leaves a stopped
+/// immediate vote in.
+fn stoppable_by_recovery(outcome: &DpnsVoteOutcome) -> bool {
+    outcome.status == DpnsVoteTargetStatus::FailedBeforeSubmission
+        && outcome.target.timing == VoteTiming::Now
+}
+
+/// Record that restart recovery stopped `keys` of an operation at `at_ms`.
+///
+/// Display metadata, like the relative labels: a failed write is logged and
+/// never fails the journal transition it describes. Callers hold the journal
+/// guard.
+fn save_recovery_stops(
+    kv: &DetKv,
+    network: Network,
+    operation_id: DpnsVoteOperationId,
+    keys: &[DpnsVoteTargetKey],
+    at_ms: u64,
+) {
+    if keys.is_empty() {
+        return;
+    }
+    let key = recovery_stops_key(&operation_key(network, operation_id));
+    let result = kv
+        .get::<RecoveryStops>(DetScope::Global, &key)
+        .and_then(|stops| {
+            let mut stops = stops.unwrap_or_default();
+            stops.extend(keys.iter().cloned().map(|key| (key, at_ms)));
+            kv.put(DetScope::Global, &key, &stops)
+        });
+    if let Err(error) = result {
+        tracing::debug!(?error, "Could not save vote recovery stop times");
+    }
 }
 
 fn save_relative_presets(kv: &DetKv, network: Network, operation: &DpnsVoteOperation) {
@@ -773,7 +824,8 @@ impl AppContext {
         state: DpnsCurrentVoteState,
     ) -> Result<bool, TaskError> {
         self.mutate_dpns_vote_operation(operation_id, |kv| {
-            Ok(with_target(kv, self.network, operation_id, key, |outcome| {
+            let mut stopped = false;
+            let still_queued = with_target(kv, self.network, operation_id, key, |outcome| {
                 if outcome.status != DpnsVoteTargetStatus::Queued {
                     return TargetUpdate::Skip(false);
                 }
@@ -800,9 +852,22 @@ impl AppContext {
                             unavailable_preflight_outcome(outcome.target.timing);
                     }
                 }
+                stopped = stoppable_by_recovery(outcome);
                 TargetUpdate::Persist(outcome.status == DpnsVoteTargetStatus::Queued)
             })?
-            .unwrap_or(false))
+            .unwrap_or(false);
+            if stopped {
+                // An immediate target is only ever revalidated here when a
+                // restart left it queued, so its operation predates the session.
+                save_recovery_stops(
+                    kv,
+                    self.network,
+                    operation_id,
+                    std::slice::from_ref(key),
+                    now_ms(),
+                );
+            }
+            Ok(still_queued)
         })
     }
 
@@ -815,10 +880,24 @@ impl AppContext {
         let (_guard, kv) = self.journal()?;
         let now_ms = now_ms();
         for mut operation in load_operations(&kv, self.network)? {
+            let already_stopped: BTreeSet<DpnsVoteTargetKey> = operation
+                .targets
+                .iter()
+                .filter(|outcome| stoppable_by_recovery(outcome))
+                .map(|outcome| outcome.target.key.clone())
+                .collect();
             let interrupted = recover_interrupted_target_statuses(&mut operation, |_| true);
             let expired = expire_stale_queued_targets(&mut operation, now_ms);
             if interrupted || expired {
                 persist_operation(&kv, self.network, &operation)?;
+                let stopped: Vec<DpnsVoteTargetKey> = operation
+                    .targets
+                    .iter()
+                    .filter(|outcome| stoppable_by_recovery(outcome))
+                    .map(|outcome| outcome.target.key.clone())
+                    .filter(|key| !already_stopped.contains(key))
+                    .collect();
+                save_recovery_stops(&kv, self.network, operation.id, &stopped, now_ms);
             }
         }
         prune_completed_history(&kv, self.network, None, HistoryKind::Immediate)?;
@@ -2396,6 +2475,7 @@ mod tests {
         fresh.targets[0].target.key.voter_id = Identifier::from([7; 32]);
         let fresh_key = fresh.targets[0].target.key.clone();
         ctx.insert_dpns_vote_operation(&mut fresh, None).unwrap();
+        let session_start = now_ms();
 
         ctx.recover_interrupted_dpns_vote_operations().unwrap();
 
@@ -2412,6 +2492,34 @@ mod tests {
             ctx.dpns_vote_target_status(&stale_key).unwrap(),
             None,
             "nothing was broadcast, so the target is free to be voted again"
+        );
+        assert!(
+            recovered.targets[0]
+                .stopped_by_recovery_at_ms
+                .is_some_and(|stopped| stopped >= session_start),
+            "the stop is dated in this session, not by the operation's age"
+        );
+        let operations = ctx.dpns_vote_operations().unwrap();
+        assert_eq!(
+            crate::model::dpns_voting::progress::needs_attention(
+                &operations,
+                session_start,
+                &BTreeSet::new(),
+                now_ms(),
+            )
+            .failed,
+            1,
+            "the stopped vote must be reported to the operator after the restart"
+        );
+        assert!(
+            crate::model::dpns_voting::progress::drawer_operations(
+                &operations,
+                session_start,
+                &BTreeSet::new(),
+            )
+            .into_iter()
+            .any(|operation| operation.id == stale.id),
+            "the progress drawer must list the stopped vote with its Review again action"
         );
         assert_eq!(
             ctx.dpns_vote_target_status(&fresh_key).unwrap(),
@@ -2463,6 +2571,10 @@ mod tests {
         assert_eq!(
             saved.targets[0].status,
             DpnsVoteTargetStatus::FailedBeforeSubmission
+        );
+        assert!(
+            saved.targets[0].stopped_by_recovery_at_ms.is_some(),
+            "the operator must be told the vote was stopped"
         );
         assert_eq!(ctx.dpns_vote_target_status(&key).unwrap(), None);
 

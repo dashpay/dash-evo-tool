@@ -183,7 +183,8 @@ pub(super) fn prune_orphaned_schedule_dismissals(
         .filter_map(|key| key.strip_prefix(&operation_prefix).map(str::to_owned))
         .collect::<BTreeSet<_>>();
     let relative_prefix = format!("{RELATIVE_LABEL_KEY_PREFIX}{}:", network_prefix(network));
-    for prefix in [dismissal_prefix, relative_prefix] {
+    let recovery_stop_prefix = format!("{RECOVERY_STOP_KEY_PREFIX}{}:", network_prefix(network));
+    for prefix in [dismissal_prefix, relative_prefix, recovery_stop_prefix] {
         for key in kv
             .list(DetScope::Global, Some(&prefix))
             .map_err(unreadable_operation_err)?
@@ -218,6 +219,11 @@ pub(super) fn delete_terminal_operations(
         kv.delete(
             DetScope::Global,
             &relative_labels_key(&operation_key(network, *id)),
+        )
+        .map_err(operation_err)?;
+        kv.delete(
+            DetScope::Global,
+            &recovery_stops_key(&operation_key(network, *id)),
         )
         .map_err(operation_err)?;
         kv.delete(DetScope::Global, &operation_key(network, *id))

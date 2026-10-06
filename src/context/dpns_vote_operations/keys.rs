@@ -14,6 +14,7 @@ pub(super) const OPERATION_LOCK_INDEX_DIRTY_KEY_PREFIX: &str =
     "det:dpns_vote_operation_locks_dirty:v2:";
 
 pub(super) const RELATIVE_LABEL_KEY_PREFIX: &str = "det:dpns_vote_relative_labels:v1:";
+pub(super) const RECOVERY_STOP_KEY_PREFIX: &str = "det:dpns_vote_recovery_stops:v1:";
 
 pub(super) const SCHEDULE_DISMISSAL_KEY_PREFIX: &str = "det:dpns_vote_schedule_dismissals:v1:";
 pub(super) const IMMEDIATE_HISTORY_KEY_PREFIX: &str = "det:dpns_vote_immediate_history:v1:";
@@ -63,4 +64,10 @@ pub(super) fn unreadable_operation_err(source: KvAdapterError) -> TaskError {
 /// One display record per operation, owned by the same retention lifecycle.
 pub(super) fn relative_labels_key(operation_key: &str) -> String {
     operation_key.replacen(OPERATION_KEY_PREFIX, RELATIVE_LABEL_KEY_PREFIX, 1)
+}
+
+/// When restart recovery stopped an operation's immediate targets; one
+/// display record per operation, owned by the same retention lifecycle.
+pub(super) fn recovery_stops_key(operation_key: &str) -> String {
+    operation_key.replacen(OPERATION_KEY_PREFIX, RECOVERY_STOP_KEY_PREFIX, 1)
 }

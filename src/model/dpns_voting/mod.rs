@@ -295,6 +295,11 @@ pub struct DpnsVoteOutcome {
     /// Excluded from the established binary vote record format.
     #[serde(skip)]
     pub relative_schedule_preset_ms: Option<u64>,
+    /// When restart recovery stopped this immediate vote before it was sent,
+    /// in Unix ms. Display-only and hydrated like the preset: it lets the
+    /// session that stopped the vote report it, although the vote is older.
+    #[serde(skip)]
+    pub stopped_by_recovery_at_ms: Option<u64>,
 }
 
 /// Reviewed voting batch stored before its first broadcast.
@@ -328,6 +333,7 @@ impl DpnsVoteOperation {
                     status,
                     failure: None,
                     relative_schedule_preset_ms: None,
+                    stopped_by_recovery_at_ms: None,
                 }
             })
             .collect::<Vec<_>>();

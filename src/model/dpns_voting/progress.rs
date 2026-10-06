@@ -80,12 +80,16 @@ pub fn progress_counts<'a>(
 
 /// When a target was sent: its scheduled time for a scheduled vote, otherwise
 /// when its operation was created. A vote scheduled in an earlier session
-/// therefore counts as recent once it runs in this one.
+/// therefore counts as recent once it runs in this one, and so does a vote
+/// from an earlier session that restart recovery stopped in this one.
 fn sent_at(operation: &DpnsVoteOperation, outcome: &DpnsVoteOutcome) -> u64 {
-    match outcome.target.timing {
+    let sent = match outcome.target.timing {
         VoteTiming::Scheduled(at) => at.max(operation.created_at),
         VoteTiming::Now => operation.created_at,
-    }
+    };
+    outcome
+        .stopped_by_recovery_at_ms
+        .map_or(sent, |stopped| stopped.max(sent))
 }
 
 /// Operations the drawer lists: anything still in flight, plus operations
@@ -345,6 +349,34 @@ mod tests {
         let dismissed = BTreeSet::from([rejected_now.id, ended_now.id]);
         assert!(needs_attention(&operations, session_start, &dismissed, now).is_empty());
         assert!(drawer_operations(&operations, session_start, &dismissed).is_empty());
+    }
+
+    /// An immediate vote left over from an earlier session and stopped by
+    /// restart recovery is this session's news: the operator must see it as
+    /// not submitted and be able to review it again.
+    #[test]
+    fn a_vote_stopped_by_restart_recovery_is_surfaced_in_the_new_session() {
+        let session_start = 1_000;
+        let mut stopped = operation(10, &[(S::FailedBeforeSubmission, NOW)]);
+        stopped.targets[0].stopped_by_recovery_at_ms = Some(session_start + 60);
+        let mut old_failure = operation(11, &[(S::FailedBeforeSubmission, NOW)]);
+        old_failure.targets[0].target.key.voter_id = Identifier::from([42; 32]);
+        let operations = vec![stopped.clone(), old_failure];
+        let none = BTreeSet::new();
+
+        assert_eq!(
+            needs_attention(&operations, session_start, &none, session_start + 100).failed,
+            1
+        );
+        let shown: Vec<_> = drawer_operations(&operations, session_start, &none)
+            .into_iter()
+            .map(|operation| operation.id)
+            .collect();
+        assert_eq!(shown, vec![stopped.id]);
+
+        let later_session = session_start + 10_000;
+        assert!(needs_attention(&operations, later_session, &none, later_session).is_empty());
+        assert!(drawer_operations(&operations, later_session, &none).is_empty());
     }
 
     #[test]

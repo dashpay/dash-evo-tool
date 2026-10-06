@@ -473,7 +473,8 @@ fn request_status_page_explains_the_vote() {
             "Result: Not decided yet.",
             "Leading",
             "Other request (",
-            "Lock name",
+            "Lock, so no one gets it",
+            "Abstain",
             "Evonodes count as 4 votes.",
             "becomes yours automatically.",
             "the most recent request wins.",
@@ -493,7 +494,46 @@ fn request_status_page_explains_the_vote() {
     });
 }
 
-/// USR-TC-030: a Power user with a voting node sees the link to vote.
+/// Seed a masternode whose voter identity is loaded, with or without the
+/// signing-key reference that lets it cast a vote.
+fn seed_voting_node(app_context: &Arc<AppContext>, byte: u8, with_signing_key: bool) {
+    let pv = PlatformVersion::latest();
+    let mut voter =
+        Identity::create_basic_identity(Identifier::from([byte ^ 0xFF; 32]), pv).expect("voter");
+    let voter_key = IdentityPublicKey::random_key(1, Some(u64::from(byte)), pv);
+    voter.add_public_key(voter_key.clone());
+    let mut private_keys = BTreeMap::new();
+    if with_signing_key {
+        private_keys.insert(
+            (PrivateKeyTarget::PrivateKeyOnVoterIdentity, voter_key.id()),
+            (
+                QualifiedIdentityPublicKey::from(voter_key.clone()),
+                PrivateKeyData::InVault,
+            ),
+        );
+    }
+    let node = QualifiedIdentity {
+        identity: Identity::create_basic_identity(Identifier::from([byte; 32]), pv).expect("node"),
+        associated_voter_identity: Some((voter, voter_key)),
+        associated_operator_identity: None,
+        associated_owner_key_id: None,
+        identity_type: IdentityType::Masternode,
+        alias: Some("Voting node".to_owned()),
+        private_keys: KeyStorage::from(private_keys),
+        dpns_names: vec![],
+        associated_wallets: BTreeMap::new(),
+        secret_access: None,
+        wallet_index: None,
+        top_ups: BTreeMap::new(),
+        status: IdentityStatus::Active,
+        network: app_context.network(),
+    };
+    app_context
+        .insert_local_qualified_identity(&node, &None)
+        .expect("seed voting node");
+}
+
+/// USR-TC-030: a Power user with a node that can vote sees the link to vote.
 #[test]
 fn request_status_page_links_voters() {
     with_isolated_data_dir(|| {
@@ -502,28 +542,34 @@ fn request_status_page_links_voters() {
         app_context
             .store_username_requests(&id, vec![request("ali", RequestPhase::Voting)])
             .expect("store request");
-        let mut node = app_context
-            .load_local_user_identities()
-            .expect("identities")
-            .into_iter()
-            .find(|qi| qi.identity.id() == id)
-            .expect("seeded");
-        let voter = Identity::create_basic_identity(
-            Identifier::from([0x31; 32]),
-            PlatformVersion::latest(),
-        )
-        .expect("voter");
-        let key = IdentityPublicKey::random_key(9, Some(9), PlatformVersion::latest());
-        node.associated_voter_identity = Some((voter, key));
-        app_context
-            .update_local_qualified_identity(&node)
-            .expect("store node");
+        seed_voting_node(&app_context, 0x31, true);
         app_context.set_user_role(UserRole::Power);
         let harness = mount_request(&app_context, id, &normalize_dpns_label("ali"));
         assert!(
             harness
                 .query_by_label("Your nodes can vote on this name")
                 .is_some()
+        );
+    });
+}
+
+/// A node loaded without its voting key cannot vote on the Votes screen, so
+/// the status page must not send its owner there.
+#[test]
+fn request_status_page_hides_the_voter_link_for_a_node_that_cannot_vote() {
+    with_isolated_data_dir(|| {
+        let (_rt, app_context) = fresh_app_context();
+        let id = seed_username_identity(&app_context, 0x32, "Alice Novak", &[], 0, true);
+        app_context
+            .store_username_requests(&id, vec![request("ali", RequestPhase::Voting)])
+            .expect("store request");
+        seed_voting_node(&app_context, 0x33, false);
+        app_context.set_user_role(UserRole::Power);
+        let harness = mount_request(&app_context, id, &normalize_dpns_label("ali"));
+        assert!(
+            harness
+                .query_by_label("Your nodes can vote on this name")
+                .is_none()
         );
     });
 }

@@ -218,11 +218,12 @@ pub fn phase_label(phase: RequestPhase) -> &'static str {
     }
 }
 
-/// Complete timeline sentences for the request status page.
+/// Timeline sentence for when the request was made.
 pub fn requested_at_line(at: TimestampMillis) -> String {
     format!("Requested on {date}.", date = format_date(at))
 }
 
+/// Timeline sentence for the window in which other requests can join.
 pub fn joining_timeline_line(end: TimestampMillis, joining: bool) -> String {
     if joining {
         format!(
@@ -237,6 +238,7 @@ pub fn joining_timeline_line(end: TimestampMillis, joining: bool) -> String {
     }
 }
 
+/// Timeline sentence for when the community vote ends.
 pub fn voting_timeline_line(end: TimestampMillis, phase: RequestPhase) -> String {
     match phase {
         RequestPhase::Joinable => format!(
@@ -271,6 +273,12 @@ pub fn request_result_line(phase: RequestPhase) -> &'static str {
         RequestPhase::NoWinner => "Result: No one got the name.",
     }
 }
+
+/// Tally row for votes to lock the name, on the read-only request status page.
+pub const TALLY_LOCK_LABEL: &str = "Lock, so no one gets it";
+
+/// Tally row for abstaining votes, on the read-only request status page.
+pub const TALLY_ABSTAIN_LABEL: &str = "Abstain";
 
 /// Second sentence of the Home request card.
 pub fn standing_line(standing: TallyStanding, others: usize) -> &'static str {

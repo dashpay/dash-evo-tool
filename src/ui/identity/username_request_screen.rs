@@ -13,13 +13,16 @@ use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::dpns_usernames::{RequestPhase, TallyStanding, UsernameRequest};
+use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::user_role::UserRole;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::identity::identity_pill::shorten_id;
 use crate::ui::identity::register_dpns_name_screen::status_line;
-use crate::ui::identity::username_copy::{Tone, format_date_time, phase_label, what_happens_next};
+use crate::ui::identity::username_copy::{
+    TALLY_ABSTAIN_LABEL, TALLY_LOCK_LABEL, Tone, format_date_time, phase_label, what_happens_next,
+};
 use crate::ui::identity::usernames_card::register_action_for;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{RootScreenType, ScreenLike};
@@ -169,11 +172,11 @@ impl UsernameRequestScreen {
                     ui.label(votes.to_string());
                     ui.end_row();
                 }
-                ui.label(crate::ui::dpns::copy::vote_choice_label(dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice::Lock, None));
+                ui.label(TALLY_LOCK_LABEL);
                 ui.label(lock_standing);
                 ui.label(tally.lock.to_string());
                 ui.end_row();
-                ui.label(crate::ui::dpns::copy::vote_choice_label(dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice::Abstain, None));
+                ui.label(TALLY_ABSTAIN_LABEL);
                 ui.label("");
                 ui.label(tally.abstain.to_string());
                 ui.end_row();
@@ -266,7 +269,7 @@ impl ScreenLike for UsernameRequestScreen {
                 .load_local_qualified_identities()
                 .unwrap_or_default()
                 .iter()
-                .any(|qi| qi.associated_voter_identity.is_some());
+                .any(QualifiedIdentity::can_cast_masternode_vote);
     }
 
     fn refresh_on_arrival(&mut self) {

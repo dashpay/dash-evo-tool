@@ -1430,7 +1430,7 @@ mod tests {
         );
         let (message, _, _) = crate::ui::dpns::copy::dpns_vote_feedback(&saved);
         assert!(
-            message.contains("1 confirmed") && message.contains("1 needing review"),
+            message.contains("Votes confirmed: 1.") && message.contains("Votes needing review: 1."),
             "{message}"
         );
     }

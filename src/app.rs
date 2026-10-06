@@ -4232,8 +4232,75 @@ mod migration_banner_tests {
         assert!(keep_visible);
         assert_eq!(
             message,
-            "Vote results: 1 confirmed, 1 scheduled, 3 needing review, 1 cancelled, 0 in progress, and 1 still being checked. Review failed votes before retrying. Wait for votes in progress or still being checked; do not submit those votes again."
+            "Votes confirmed: 1. Votes scheduled: 1. Votes needing review: 3. Votes cancelled: 1. Votes still being checked: 1. Review failed votes before retrying. Wait for votes in progress or still being checked. Do not submit those votes again."
         );
+    }
+
+    /// The banner must name the real cause: retrying over a good connection
+    /// cannot cast a vote on a closed contest or without a voting key.
+    #[test]
+    fn not_submitted_feedback_names_the_cause_and_a_possible_action() {
+        use crate::model::dpns_voting::DpnsVoteFailure as F;
+        let connection_single = "This vote was not submitted. Check your connection and try again.";
+        let connection_plural =
+            "These votes were not submitted. Check your connection and try again.";
+        let cases: [(&[Option<F>], &str, MessageType); 9] = [
+            (
+                &[Some(F::VotingEnded)],
+                "This vote was not submitted because voting on the name has already ended. No further action is needed.",
+                MessageType::Warning,
+            ),
+            (
+                &[Some(F::VotingEnded), Some(F::VotingEnded)],
+                "These votes were not submitted because voting on the names has already ended. No further action is needed.",
+                MessageType::Warning,
+            ),
+            (
+                &[Some(F::VotingKeyMissing)],
+                "This vote was not submitted because the node's voting key is not loaded. Load the key on the Nodes tab, then cast the vote again.",
+                MessageType::Error,
+            ),
+            (
+                &[Some(F::VotingKeyMissing), Some(F::VotingKeyMissing)],
+                "These votes were not submitted because the voting keys of the nodes are not loaded. Load the keys on the Nodes tab, then cast the votes again.",
+                MessageType::Error,
+            ),
+            (
+                &[Some(F::VotingEnded), Some(F::VotingKeyMissing)],
+                "These votes were not submitted for different reasons. Open the vote progress list to see what to do for each vote.",
+                MessageType::Error,
+            ),
+            (
+                &[Some(F::VotingEnded), Some(F::SubmissionFailed)],
+                "These votes were not submitted for different reasons. Open the vote progress list to see what to do for each vote.",
+                MessageType::Error,
+            ),
+            (
+                &[Some(F::SubmissionFailed)],
+                connection_single,
+                MessageType::Error,
+            ),
+            (
+                &[Some(F::CurrentVoteUnavailable), Some(F::SubmissionFailed)],
+                connection_plural,
+                MessageType::Error,
+            ),
+            (&[None, None], connection_plural, MessageType::Error),
+        ];
+        for (failures, expected_message, expected_type) in cases {
+            let mut operation = feedback_operation(&vec![
+                DpnsVoteTargetStatus::FailedBeforeSubmission;
+                failures.len()
+            ]);
+            for (outcome, failure) in operation.targets.iter_mut().zip(failures) {
+                outcome.failure = *failure;
+            }
+            assert_eq!(
+                dpns_vote_feedback(&operation),
+                (expected_message.to_owned(), expected_type, false),
+                "{failures:?}"
+            );
+        }
     }
 
     /// Counts drive which sentence is built, so no single template has to carry
@@ -4270,7 +4337,7 @@ mod migration_banner_tests {
         assert!(!keep_visible);
         assert_eq!(
             message,
-            "Vote results: 2 confirmed, 0 scheduled, 1 needing review, 0 cancelled, 0 in progress, and 0 still being checked. Review failed votes before retrying. Wait for votes in progress or still being checked; do not submit those votes again."
+            "Votes confirmed: 2. Votes needing review: 1. Review failed votes before retrying."
         );
     }
 
@@ -4285,8 +4352,26 @@ mod migration_banner_tests {
 
         assert_eq!(
             message,
-            "Vote results: 0 confirmed, 0 scheduled, 2 needing review, 0 cancelled, 0 in progress, and 0 still being checked. Review failed votes before retrying. Wait for votes in progress or still being checked; do not submit those votes again."
+            "Votes needing review: 2. Review failed votes before retrying."
         );
+    }
+
+    #[test]
+    fn mixed_vote_feedback_omits_empty_outcomes_and_unneeded_guidance() {
+        let operation = feedback_operation(&[
+            DpnsVoteTargetStatus::Scheduled,
+            DpnsVoteTargetStatus::Submitting,
+        ]);
+
+        let (message, message_type, keep_visible) = dpns_vote_feedback(&operation);
+
+        assert_eq!(message_type, MessageType::Warning);
+        assert!(!keep_visible);
+        assert_eq!(
+            message,
+            "Votes scheduled: 1. Votes in progress: 1. Wait for votes in progress or still being checked. Do not submit those votes again."
+        );
+        assert!(!message.contains(": 0"));
     }
 
     /// A frame owns one migration snapshot even if the task publishes mid-frame.

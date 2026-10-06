@@ -552,6 +552,87 @@ fn dpns_unconfirmed_guidance(unconfirmed: usize) -> String {
     }
 }
 
+/// Feedback for a batch in which no target reached submission, by cause: only
+/// a connection problem is worth retrying as is.
+fn dpns_not_submitted_feedback(operation: &DpnsVoteOperation) -> (&'static str, MessageType) {
+    let single = operation.targets.len() == 1;
+    let caused_by = |cause| {
+        operation
+            .targets
+            .iter()
+            .filter(|outcome| outcome.failure == Some(cause))
+            .count()
+    };
+    let voting_ended = caused_by(DpnsVoteFailure::VotingEnded);
+    let key_missing = caused_by(DpnsVoteFailure::VotingKeyMissing);
+    let total = operation.targets.len();
+    if voting_ended == total {
+        let message = if single {
+            "This vote was not submitted because voting on the name has already ended. No further action is needed."
+        } else {
+            "These votes were not submitted because voting on the names has already ended. No further action is needed."
+        };
+        return (message, MessageType::Warning);
+    }
+    let message = if key_missing == total {
+        if single {
+            "This vote was not submitted because the node's voting key is not loaded. Load the key on the Nodes tab, then cast the vote again."
+        } else {
+            "These votes were not submitted because the voting keys of the nodes are not loaded. Load the keys on the Nodes tab, then cast the votes again."
+        }
+    } else if voting_ended + key_missing > 0 {
+        "These votes were not submitted for different reasons. Open the vote progress list to see what to do for each vote."
+    } else if single {
+        "This vote was not submitted. Check your connection and try again."
+    } else {
+        "These votes were not submitted. Check your connection and try again."
+    };
+    (message, MessageType::Error)
+}
+
+/// Feedback for a batch that ended in several different outcomes: one
+/// complete unit per non-empty outcome, then the guidance that applies.
+fn dpns_mixed_vote_feedback(counts: &DpnsVoteFeedbackCounts) -> String {
+    let DpnsVoteFeedbackCounts {
+        confirmed,
+        scheduled,
+        cancelled,
+        in_progress,
+        unconfirmed,
+        ..
+    } = *counts;
+    let reviewable = counts.rejected + counts.failed_before_submission + counts.not_applied;
+    let mut units = Vec::new();
+    if confirmed > 0 {
+        units.push(format!("Votes confirmed: {confirmed}."));
+    }
+    if scheduled > 0 {
+        units.push(format!("Votes scheduled: {scheduled}."));
+    }
+    if reviewable > 0 {
+        units.push(format!("Votes needing review: {reviewable}."));
+    }
+    if cancelled > 0 {
+        units.push(format!("Votes cancelled: {cancelled}."));
+    }
+    if in_progress > 0 {
+        units.push(format!("Votes in progress: {in_progress}."));
+    }
+    if unconfirmed > 0 {
+        units.push(format!("Votes still being checked: {unconfirmed}."));
+    }
+    if reviewable > 0 {
+        units.push("Review failed votes before retrying.".to_owned());
+    }
+    if in_progress + unconfirmed > 0 {
+        units.push(
+            "Wait for votes in progress or still being checked. Do not submit those votes again."
+                .to_owned(),
+        );
+    }
+    units.join(" ")
+}
+
 pub(crate) fn dpns_vote_feedback(operation: &DpnsVoteOperation) -> (String, MessageType, bool) {
     let mut counts = DpnsVoteFeedbackCounts::default();
     for outcome in &operation.targets {
@@ -649,12 +730,8 @@ pub(crate) fn dpns_vote_feedback(operation: &DpnsVoteOperation) -> (String, Mess
         return (message.to_owned(), MessageType::Error, false);
     }
     if counts.failed_before_submission == target_count {
-        let message = if single {
-            "This vote was not submitted. Check your connection and try again."
-        } else {
-            "These votes were not submitted. Check your connection and try again."
-        };
-        return (message.to_owned(), MessageType::Error, false);
+        let (message, message_type) = dpns_not_submitted_feedback(operation);
+        return (message.to_owned(), message_type, false);
     }
     if counts.not_applied == target_count {
         let message = if single {
@@ -680,19 +757,11 @@ pub(crate) fn dpns_vote_feedback(operation: &DpnsVoteOperation) -> (String, Mess
         );
     }
 
-    let reviewable = counts.rejected + counts.failed_before_submission + counts.not_applied;
-    let DpnsVoteFeedbackCounts {
-        confirmed,
-        scheduled,
-        cancelled,
-        in_progress,
-        unconfirmed,
-        ..
-    } = counts;
-    let message = format!(
-        "Vote results: {confirmed} confirmed, {scheduled} scheduled, {reviewable} needing review, {cancelled} cancelled, {in_progress} in progress, and {unconfirmed} still being checked. Review failed votes before retrying. Wait for votes in progress or still being checked; do not submit those votes again."
-    );
-    (message, MessageType::Warning, unconfirmed > 0)
+    (
+        dpns_mixed_vote_feedback(&counts),
+        MessageType::Warning,
+        counts.unconfirmed > 0,
+    )
 }
 
 #[cfg(test)]

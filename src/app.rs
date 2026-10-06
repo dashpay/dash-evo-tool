@@ -322,6 +322,54 @@ fn clear_profile_saving_banner_after_success(
 /// How often local state re-derives the voting attention summary.
 const DPNS_ATTENTION_RECOMPUTE_INTERVAL: Duration = Duration::from_secs(60);
 
+/// Sweeps that re-check unconfirmed votes right after startup or vote activity.
+const UNCONFIRMED_VOTE_QUICK_CHECKS: u8 = 3;
+
+/// How often unconfirmed votes are re-checked once the quick checks are used.
+const UNCONFIRMED_VOTE_RECHECK_INTERVAL: Duration = Duration::from_secs(10 * 60);
+
+/// Paces the sweep's re-check of unconfirmed votes. A vote can stay
+/// unconfirmed until its contest closes, so it is queried on a few sweeps and
+/// then only every [`UNCONFIRMED_VOTE_RECHECK_INTERVAL`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UnconfirmedVoteChecks {
+    quick_left: u8,
+    last_check: Option<Instant>,
+}
+
+impl Default for UnconfirmedVoteChecks {
+    fn default() -> Self {
+        Self {
+            quick_left: UNCONFIRMED_VOTE_QUICK_CHECKS,
+            last_check: None,
+        }
+    }
+}
+
+impl UnconfirmedVoteChecks {
+    /// Whether the sweep starting at `now` re-checks; records the check if so.
+    fn take_due(&mut self, now: Instant) -> bool {
+        let due = self.quick_left > 0
+            || self
+                .last_check
+                .is_none_or(|last| now.duration_since(last) >= UNCONFIRMED_VOTE_RECHECK_INTERVAL);
+        if due {
+            self.quick_left = self.quick_left.saturating_sub(1);
+            self.last_check = Some(now);
+        }
+        due
+    }
+}
+
+/// Whether `result` reports vote activity that can leave a vote unconfirmed.
+fn restarts_unconfirmed_vote_checks(result: &BackendTaskSuccessResult) -> bool {
+    matches!(
+        result,
+        BackendTaskSuccessResult::DpnsVoteOperationUpdated { .. }
+            | BackendTaskSuccessResult::ScheduledVotesInProgress(_)
+    )
+}
+
 fn unix_time_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1269,6 +1317,8 @@ pub struct AppState {
     scheduled_vote_sweep_deferred_since_ms: BTreeMap<Network, u64>,
     /// Networks with a scheduled-vote sweep currently running.
     scheduled_vote_sweeps_in_progress: BTreeSet<Network>,
+    /// Per-network pacing of the sweep's re-check of unconfirmed votes.
+    unconfirmed_vote_checks: BTreeMap<Network, UnconfirmedVoteChecks>,
     /// Unix ms of the last background contest refresh dispatched per network.
     dpns_background_refresh_dispatched_at_ms: BTreeMap<Network, u64>,
     /// When the voting attention summary was last recomputed per network, so
@@ -1854,6 +1904,7 @@ impl AppState {
             last_scheduled_vote_check: Instant::now(),
             scheduled_vote_sweep_deferred_since_ms: BTreeMap::new(),
             scheduled_vote_sweeps_in_progress: BTreeSet::new(),
+            unconfirmed_vote_checks: BTreeMap::new(),
             dpns_background_refresh_dispatched_at_ms: BTreeMap::new(),
             dpns_attention_recomputed_at: BTreeMap::new(),
             dpns_progress_drawer: crate::ui::dpns::progress_drawer::DrawerState::new(unix_time_ms()),
@@ -3140,6 +3191,9 @@ impl App for AppState {
                     );
                     self.route_identity_result_to_hidden_hub(&context, &unboxed_message);
                     self.route_dpns_vote_result_to_hidden_screens(&context, &unboxed_message);
+                    if restarts_unconfirmed_vote_checks(&unboxed_message) {
+                        self.unconfirmed_vote_checks.clear();
+                    }
                     match unboxed_message {
                         BackendTaskSuccessResult::RemovedIdentities { .. } => {
                             deliver_identity_removal_result(
@@ -3589,11 +3643,11 @@ impl App for AppState {
         }
 
         // Periodically cast any scheduled masternode votes that have come due.
-        // The poll itself — the DB query, local-identity load, and per-vote
+        // The poll itself — the journal read, local-identity load, and per-vote
         // casting — runs off the UI thread in the `CastDueScheduledVotes`
-        // backend task; this tick only dispatches it. The DPNS Scheduled Votes
-        // screen learns which votes are in progress / cast via
-        // `display_task_result`, so a slow or failing query never stalls a frame.
+        // backend task; this tick only dispatches it. The voting panel learns
+        // which votes are in progress / cast via `display_task_result`, so a
+        // slow or failing query never stalls a frame.
         let now = Instant::now();
         let network = active_context.network;
         if !migration_allows_scheduled_vote_sweep(migration_state.as_ref()) {
@@ -3621,10 +3675,16 @@ impl App for AppState {
                         .insert(network, now);
                 }
                 self.scheduled_vote_sweeps_in_progress.insert(network);
+                let reconcile_unconfirmed = self
+                    .unconfirmed_vote_checks
+                    .entry(network)
+                    .or_default()
+                    .take_due(now);
                 self.handle_backend_task_with_context(
                     BackendTask::ContestedResourceTask(
                         ContestedResourceTask::CastDueScheduledVotes {
                             preserve_eligibility_since_ms,
+                            reconcile_unconfirmed,
                         },
                     ),
                     BackendTaskContext::ScheduledVoteSweep { network },
@@ -4656,6 +4716,39 @@ mod dpns_result_routing_tests {
                 "refresh must be enabled after returning to the status page"
             );
         }
+    }
+
+    /// A vote can stay unconfirmed until its contest closes: it is re-checked
+    /// on a few sweeps, then rarely, and promptly again after vote activity.
+    #[test]
+    fn unconfirmed_votes_are_rechecked_a_few_times_then_rarely() {
+        let start = Instant::now();
+        let minute = Duration::from_secs(60);
+        let mut checks = UnconfirmedVoteChecks::default();
+        let due: Vec<bool> = (0..15u32)
+            .map(|sweep| checks.take_due(start + minute * sweep))
+            .collect();
+        let mut expected = vec![false; 15];
+        expected[..usize::from(UNCONFIRMED_VOTE_QUICK_CHECKS)].fill(true);
+        // The last quick check ran at minute 2; the next is one interval later.
+        expected[12] = true;
+        assert_eq!(due, expected);
+
+        assert!(restarts_unconfirmed_vote_checks(
+            &BackendTaskSuccessResult::DpnsVoteOperationUpdated {
+                network: Network::Testnet,
+                operation_id: DpnsVoteOperationId::from_bytes([7; 16]),
+            }
+        ));
+        assert!(restarts_unconfirmed_vote_checks(
+            &BackendTaskSuccessResult::ScheduledVotesInProgress(Vec::new())
+        ));
+        assert!(!restarts_unconfirmed_vote_checks(
+            &BackendTaskSuccessResult::ScheduledVoteSweepCompleted {
+                network: Network::Testnet,
+                preserve_eligibility_since_ms: None,
+            }
+        ));
     }
 
     #[test]

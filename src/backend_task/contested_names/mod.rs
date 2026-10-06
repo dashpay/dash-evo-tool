@@ -57,11 +57,13 @@ pub enum ContestedResourceTask {
     },
     ReconcileDpnsVoteOperation(DpnsVoteOperationId, Network),
     CastScheduledVote(ScheduledDPNSVote, Box<QualifiedIdentity>),
-    /// Sweep the scheduled-vote table and cast every vote that is now due.
+    /// Sweep the vote journal and cast every scheduled vote that is now due.
     /// `preserve_eligibility_since_ms` keeps a vote eligible when its normal
     /// grace window overlapped a migration that deferred the sweep.
+    /// `reconcile_unconfirmed` also re-checks unconfirmed votes afterwards.
     CastDueScheduledVotes {
         preserve_eligibility_since_ms: Option<u64>,
+        reconcile_unconfirmed: bool,
     },
     ClearAllScheduledVotes,
     ClearExecutedScheduledVotes,
@@ -291,11 +293,17 @@ impl AppContext {
             }
             ContestedResourceTask::CastDueScheduledVotes {
                 preserve_eligibility_since_ms,
+                reconcile_unconfirmed,
             } => {
                 let result = async {
                     self.ensure_dpns_vote_recovery(sdk).await?;
-                    self.cast_due_scheduled_votes(sdk, sender, preserve_eligibility_since_ms)
-                        .await
+                    self.cast_due_scheduled_votes(
+                        sdk,
+                        sender,
+                        preserve_eligibility_since_ms,
+                        reconcile_unconfirmed,
+                    )
+                    .await
                 }
                 .await;
                 wrap_scheduled_vote_sweep_result(self.network, result)
@@ -933,17 +941,29 @@ impl AppContext {
         operation_id: DpnsVoteOperationId,
         sdk: &Sdk,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        let Some(operation) = self.dpns_vote_operation(operation_id)? else {
-            return Ok(BackendTaskSuccessResult::DpnsVoteOperationUpdated {
-                network: self.network,
-                operation_id,
-            });
-        };
-        for outcome in operation
-            .targets
-            .iter()
-            .filter(|outcome| outcome.status == DpnsVoteTargetStatus::Unconfirmed)
-        {
+        if let Some(operation) = self.dpns_vote_operation(operation_id)? {
+            self.reconcile_unconfirmed_dpns_vote_targets(&operation, |_| true, sdk)
+                .await?;
+        }
+        Ok(BackendTaskSuccessResult::DpnsVoteOperationUpdated {
+            network: self.network,
+            operation_id,
+        })
+    }
+
+    /// Ask Platform about each `selected` unconfirmed target of `operation`.
+    /// Returns whether any of them was confirmed.
+    async fn reconcile_unconfirmed_dpns_vote_targets(
+        &self,
+        operation: &DpnsVoteOperation,
+        selected: impl Fn(&DpnsVoteOutcome) -> bool,
+        sdk: &Sdk,
+    ) -> Result<bool, TaskError> {
+        let operation_id = operation.id;
+        let mut confirmed_any = false;
+        for outcome in operation.targets.iter().filter(|outcome| {
+            outcome.status == DpnsVoteTargetStatus::Unconfirmed && selected(outcome)
+        }) {
             let poll_id = outcome.target.key.vote_poll_id;
             let query = ContestedResourceVotesGivenByIdentityQuery {
                 identity_id: outcome.target.key.voter_id,
@@ -973,6 +993,7 @@ impl AppContext {
                     if status != DpnsVoteTargetStatus::Confirmed {
                         continue;
                     }
+                    confirmed_any = true;
                     self.cache_confirmed_dpns_vote(
                         outcome.target.key.voter_id,
                         poll_id,
@@ -997,50 +1018,138 @@ impl AppContext {
                 }
             }
         }
-        Ok(BackendTaskSuccessResult::DpnsVoteOperationUpdated {
-            network: self.network,
-            operation_id,
-        })
+        Ok(confirmed_any)
     }
 
-    /// Preserve durable due targets and catch up after unrelated reconciliation.
-    async fn prepare_due_scheduled_votes(
+    /// The sweep's re-check of unconfirmed votes. An operation is reported to
+    /// the UI only when one of its votes was confirmed, so an unchanged result
+    /// never raises its message again.
+    ///
+    /// A decided contest has dropped its per-voter vote references, so its
+    /// targets can no longer be confirmed and are not queried.
+    async fn reconcile_unconfirmed_dpns_votes(
+        &self,
+        sdk: &Sdk,
+        sender: &crate::utils::egui_mpsc::SenderAsync<TaskResult>,
+    ) -> Result<(), TaskError> {
+        let operations: Vec<_> = self
+            .dpns_vote_operations()?
+            .into_iter()
+            .filter(|operation| {
+                operation
+                    .targets
+                    .iter()
+                    .any(|outcome| outcome.status == DpnsVoteTargetStatus::Unconfirmed)
+            })
+            .collect();
+        if operations.is_empty() {
+            return Ok(());
+        }
+        // An unreadable cache proves nothing closed, so every target is queried.
+        let closed: BTreeSet<String> = self
+            .all_contested_names()
+            .inspect_err(|error| {
+                tracing::debug!(
+                    ?error,
+                    "Contest cache unreadable; re-checking every unconfirmed DPNS vote"
+                );
+            })
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|contest| {
+                dpns_vote_poll_availability(Some(contest)) == DpnsVotePollAvailability::ProvedClosed
+            })
+            .map(|contest| contest.normalized_contested_name)
+            .collect();
+        for operation in operations {
+            let confirmed = self
+                .reconcile_unconfirmed_dpns_vote_targets(
+                    &operation,
+                    |outcome| !closed.contains(&outcome.target.contested_name),
+                    sdk,
+                )
+                .await?;
+            if confirmed {
+                let _ = sender
+                    .send(TaskResult::unattributed_success(
+                        BackendTaskSuccessResult::DpnsVoteOperationUpdated {
+                            network: self.network,
+                            operation_id: operation.id,
+                        },
+                    ))
+                    .await;
+            }
+        }
+        Ok(())
+    }
+
+    /// One scheduled-vote sweep: admit due schedules durably, execute them,
+    /// then run `reconcile`, so unrelated unconfirmed votes never delay a due
+    /// vote. Schedules that came due meanwhile are admitted at the end, so a
+    /// long sweep cannot turn them stale; targets this sweep already tried
+    /// stay under the next sweep's lateness rule.
+    async fn sweep_due_scheduled_votes<E>(
         &self,
         clock: impl Fn() -> u64,
         preserve_eligibility_since_ms: Option<u64>,
+        execute: impl FnOnce(Vec<DpnsVoteOperation>, Vec<ScheduledDPNSVote>) -> E,
         reconcile: impl std::future::Future<Output = Result<(), TaskError>>,
-    ) -> Result<(Vec<DpnsVoteOperation>, Vec<ScheduledDPNSVote>), TaskError> {
+    ) -> Result<(), TaskError>
+    where
+        E: std::future::Future<Output = Result<(), TaskError>>,
+    {
         let started_at = clock();
         let eligibility_cutoff = preserve_eligibility_since_ms.unwrap_or(started_at);
-        // Persist entry admissions before the await so errors or interruption
-        // cannot turn an eligible target into a stale schedule on the next sweep.
-        self.queue_due_scheduled_votes_at(started_at, eligibility_cutoff)?;
-        let reconciliation = reconcile.await;
-        // Also admit schedules that became due while reconciliation was waiting.
-        let admitted = self.queue_due_scheduled_votes_at(clock(), eligibility_cutoff)?;
-        reconciliation?;
-        Ok(admitted)
+        // Persist admissions before any await so an error or interruption
+        // cannot turn an eligible target into a stale schedule.
+        let (due_operations, in_progress) =
+            self.queue_due_scheduled_votes_at(started_at, eligibility_cutoff, &BTreeMap::new())?;
+        let attempted: BTreeMap<DpnsVoteOperationId, BTreeSet<DpnsVoteTargetKey>> = due_operations
+            .iter()
+            .map(|operation| {
+                let keys = operation
+                    .targets
+                    .iter()
+                    .filter(|outcome| outcome.status == DpnsVoteTargetStatus::Queued)
+                    .map(|outcome| outcome.target.key.clone())
+                    .collect();
+                (operation.id, keys)
+            })
+            .collect();
+        let executed = execute(due_operations, in_progress).await;
+        let reconciled = reconcile.await;
+        let admitted_late =
+            self.queue_due_scheduled_votes_at(clock(), eligibility_cutoff, &attempted);
+        executed?;
+        reconciled?;
+        admitted_late?;
+        Ok(())
     }
 
+    /// Queue every due scheduled target, except those in `already_attempted`.
     fn queue_due_scheduled_votes_at(
         &self,
         now_ms: u64,
         eligibility_cutoff: u64,
+        already_attempted: &BTreeMap<DpnsVoteOperationId, BTreeSet<DpnsVoteTargetKey>>,
     ) -> Result<(Vec<DpnsVoteOperation>, Vec<ScheduledDPNSVote>), TaskError> {
         let mut due_operations = Vec::new();
         let mut in_progress = Vec::new();
         for mut operation in self.dpns_vote_operations()? {
+            let attempted = already_attempted.get(&operation.id);
             let mut due = false;
             for outcome in &mut operation.targets {
                 let VoteTiming::Scheduled(scheduled_at) = outcome.target.timing else {
                     continue;
                 };
-                if !scheduled_target_should_execute(
-                    outcome.status,
-                    scheduled_at,
-                    now_ms,
-                    Some(eligibility_cutoff),
-                ) {
+                if attempted.is_some_and(|keys| keys.contains(&outcome.target.key))
+                    || !scheduled_target_should_execute(
+                        outcome.status,
+                        scheduled_at,
+                        now_ms,
+                        Some(eligibility_cutoff),
+                    )
+                {
                     continue;
                 }
                 if outcome.status == DpnsVoteTargetStatus::Scheduled
@@ -1065,44 +1174,49 @@ impl AppContext {
         Ok((due_operations, in_progress))
     }
 
-    /// Reconcile unresolved votes and execute each admitted scheduled operation.
-    /// Emits progress before execution; terminal results remain in the journal.
+    /// Execute each admitted scheduled operation, then re-check unconfirmed
+    /// votes when `reconcile_unconfirmed` is set. Emits progress before
+    /// execution; terminal results remain in the journal.
     async fn cast_due_scheduled_votes(
         self: &Arc<Self>,
         sdk: &Sdk,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
         preserve_eligibility_since_ms: Option<u64>,
+        reconcile_unconfirmed: bool,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        let (due_operations, in_progress) = self
-            .prepare_due_scheduled_votes(now_ms, preserve_eligibility_since_ms, async {
-                for operation in self
-                    .dpns_vote_operations()?
-                    .into_iter()
-                    .filter(|operation| {
-                        operation
-                            .targets
-                            .iter()
-                            .any(|outcome| outcome.status == DpnsVoteTargetStatus::Unconfirmed)
-                    })
-                {
-                    let result = self
-                        .reconcile_dpns_vote_operation(operation.id, sdk)
-                        .await?;
-                    let _ = sender.send(TaskResult::unattributed_success(result)).await;
+        self.sweep_due_scheduled_votes(
+            now_ms,
+            preserve_eligibility_since_ms,
+            |due_operations, in_progress| {
+                self.execute_due_scheduled_votes(due_operations, in_progress, sdk, &sender)
+            },
+            async {
+                if reconcile_unconfirmed {
+                    self.reconcile_unconfirmed_dpns_votes(sdk, &sender).await
+                } else {
+                    Ok(())
                 }
+            },
+        )
+        .await?;
+        Ok(BackendTaskSuccessResult::ScheduledVoteSweepCompleted {
+            network: self.network,
+            preserve_eligibility_since_ms,
+        })
+    }
 
-                Ok(())
-            })
-            .await?;
+    async fn execute_due_scheduled_votes(
+        self: &Arc<Self>,
+        due_operations: Vec<DpnsVoteOperation>,
+        in_progress: Vec<ScheduledDPNSVote>,
+        sdk: &Sdk,
+        sender: &crate::utils::egui_mpsc::SenderAsync<TaskResult>,
+    ) -> Result<(), TaskError> {
         if due_operations.is_empty() {
-            return Ok(BackendTaskSuccessResult::ScheduledVoteSweepCompleted {
-                network: self.network,
-                preserve_eligibility_since_ms,
-            });
+            return Ok(());
         }
-
         let voters = self.load_local_voting_identities()?;
-        // Tell the Scheduled Votes screen which votes are now in flight.
+        // Tell the Scheduled view which votes are now in flight.
         let _ = sender
             .send(TaskResult::unattributed_success(
                 BackendTaskSuccessResult::ScheduledVotesInProgress(in_progress),
@@ -1137,14 +1251,7 @@ impl AppContext {
                 first_error.get_or_insert(error);
             }
         }
-        if let Some(error) = first_error {
-            Err(error)
-        } else {
-            Ok(BackendTaskSuccessResult::ScheduledVoteSweepCompleted {
-                network: self.network,
-                preserve_eligibility_since_ms,
-            })
-        }
+        first_error.map_or(Ok(()), Err)
     }
 }
 
@@ -1666,25 +1773,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sweep_preserves_due_votes_across_slow_reconciliation() {
+    async fn sweep_executes_due_votes_before_reconciling_unconfirmed_ones() {
         let (_temp, context) = vote_context();
         let started = 1_000_000;
-        let clock = std::cell::Cell::new(started);
         let mut operation = scheduled_operation_for(&context, "alice", started);
         context
             .insert_dpns_vote_operation(&mut operation, None)
             .unwrap();
-        let (due, _) = context
-            .prepare_due_scheduled_votes(|| clock.get(), None, async {
-                clock.set(started + SCHEDULED_VOTE_MAX_LATENESS_MS + 1);
-                Ok(())
-            })
+        let events = std::cell::RefCell::new(Vec::new());
+        context
+            .sweep_due_scheduled_votes(
+                || started,
+                None,
+                |due, in_progress| {
+                    events
+                        .borrow_mut()
+                        .push(("execute", due.len(), in_progress.len()));
+                    std::future::ready(Ok(()))
+                },
+                async {
+                    events.borrow_mut().push(("reconcile", 0, 0));
+                    Ok(())
+                },
+            )
             .await
             .unwrap();
         assert_eq!(
-            due.len(),
-            1,
-            "reconciliation must not expire a schedule eligible at sweep entry"
+            *events.borrow(),
+            vec![("execute", 1, 1), ("reconcile", 0, 0)],
+            "a due vote must not wait behind reconciliation of unrelated votes"
         );
         assert_eq!(
             context
@@ -1693,7 +1810,8 @@ mod tests {
                 .unwrap()
                 .targets[0]
                 .status,
-            DpnsVoteTargetStatus::Queued
+            DpnsVoteTargetStatus::Queued,
+            "the admission is durable before execution starts"
         );
     }
 
@@ -1709,10 +1827,15 @@ mod tests {
             .insert_dpns_vote_operation(&mut newly_due, None)
             .unwrap();
         let result = context
-            .prepare_due_scheduled_votes(|| clock.get(), None, async {
-                clock.set(started + SCHEDULED_VOTE_MAX_LATENESS_MS * 2);
-                Err(TaskError::DpnsVoteTargetBusy)
-            })
+            .sweep_due_scheduled_votes(
+                || clock.get(),
+                None,
+                |_, _| std::future::ready(Ok(())),
+                async {
+                    clock.set(started + SCHEDULED_VOTE_MAX_LATENESS_MS * 2);
+                    Err(TaskError::DpnsVoteTargetBusy)
+                },
+            )
             .await;
         assert!(matches!(result, Err(TaskError::DpnsVoteTargetBusy)));
         for id in [due.id, newly_due.id] {
@@ -1722,6 +1845,192 @@ mod tests {
                 "failed reconciliation must retain entry and newly due admissions"
             );
         }
+    }
+
+    /// A retryable failure returns a scheduled target to `Scheduled`; the
+    /// end-of-sweep admission must not queue it again, or it would escape the
+    /// lateness rule that eventually reports it as missed.
+    #[tokio::test]
+    async fn sweep_does_not_readmit_a_target_it_already_tried() {
+        let (_temp, context) = vote_context();
+        let started = 1_000_000;
+        let mut operation = scheduled_operation_for(&context, "alice", started);
+        context
+            .insert_dpns_vote_operation(&mut operation, None)
+            .unwrap();
+        let key = operation.targets[0].target.key.clone();
+        context
+            .sweep_due_scheduled_votes(
+                || started,
+                None,
+                |due, _| {
+                    assert_eq!(due.len(), 1);
+                    assert!(context.claim_dpns_vote_target(due[0].id, &key).unwrap());
+                    let (status, failure) =
+                        failed_before_broadcast_outcome(VoteTiming::Scheduled(started));
+                    context
+                        .update_dpns_vote_target(due[0].id, &key, status, failure)
+                        .unwrap();
+                    std::future::ready(Ok(()))
+                },
+                std::future::ready(Ok(())),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            context
+                .dpns_vote_operation(operation.id)
+                .unwrap()
+                .unwrap()
+                .targets[0]
+                .status,
+            DpnsVoteTargetStatus::Scheduled
+        );
+    }
+
+    fn unconfirmed_operation_for(context: &AppContext, name: &str) -> DpnsVoteOperation {
+        let mut target = scheduled_operation_for(context, name, 42).targets[0]
+            .target
+            .clone();
+        target.timing = VoteTiming::Now;
+        let mut operation = AppContext::new_dpns_vote_operation(vec![target]);
+        operation.targets[0].status = DpnsVoteTargetStatus::Unconfirmed;
+        context
+            .insert_dpns_vote_operation(&mut operation, None)
+            .unwrap();
+        operation
+    }
+
+    async fn expect_current_vote(
+        sdk: &mut Sdk,
+        context: &AppContext,
+        key: &DpnsVoteTargetKey,
+        name: &str,
+        choice: Option<ResourceVoteChoice>,
+    ) {
+        use dash_sdk::dpp::voting::vote_polls::VotePoll;
+        use dash_sdk::dpp::voting::votes::resource_vote::v0::ResourceVoteV0;
+        use dash_sdk::query_types::ResourceVotesByIdentity;
+
+        let votes: ResourceVotesByIdentity = choice
+            .map(|resource_vote_choice| {
+                let vote_poll = VotePoll::ContestedDocumentResourceVotePoll(
+                    crate::model::dpns_voting::dpns_vote_poll(&context.dpns_contract, name)
+                        .unwrap(),
+                );
+                (
+                    key.vote_poll_id,
+                    Some(ResourceVote::V0(ResourceVoteV0 {
+                        vote_poll,
+                        resource_vote_choice,
+                    })),
+                )
+            })
+            .into_iter()
+            .collect();
+        sdk.mock()
+            .expect_fetch_many::<Identifier, ResourceVote, _, ResourceVotesByIdentity>(
+                ContestedResourceVotesGivenByIdentityQuery {
+                    identity_id: key.voter_id,
+                    offset: None,
+                    limit: Some(1),
+                    start_at: Some((key.vote_poll_id.to_buffer(), true)),
+                    order_ascending: true,
+                },
+                Some(votes),
+            )
+            .await
+            .unwrap();
+    }
+
+    /// An unchanged re-check must stay silent: forwarding it would raise the
+    /// "could not be confirmed yet" message again on every sweep.
+    #[tokio::test]
+    async fn sweep_reports_an_unconfirmed_vote_only_once_it_is_confirmed() {
+        let (_temp, context) = vote_context();
+        context.seed_dpns_contest_for_test("alice", Some(now_ms() + 600_000), false);
+        let operation = unconfirmed_operation_for(&context, "alice");
+        let key = operation.targets[0].target.key.clone();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, context.egui_ctx().clone());
+
+        let mut still_absent = Sdk::new_mock();
+        expect_current_vote(&mut still_absent, &context, &key, "alice", None).await;
+        context
+            .reconcile_unconfirmed_dpns_votes(&still_absent, &sender)
+            .await
+            .unwrap();
+        assert!(
+            rx.try_recv().is_err(),
+            "an unchanged unconfirmed vote must not be reported again"
+        );
+        assert_eq!(
+            context.dpns_vote_target_status(&key).unwrap(),
+            Some(DpnsVoteTargetStatus::Unconfirmed)
+        );
+
+        let mut applied = Sdk::new_mock();
+        expect_current_vote(
+            &mut applied,
+            &context,
+            &key,
+            "alice",
+            Some(ResourceVoteChoice::Lock),
+        )
+        .await;
+        context
+            .reconcile_unconfirmed_dpns_votes(&applied, &sender)
+            .await
+            .unwrap();
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(TaskResult::Success { result, .. })
+                if matches!(
+                    *result,
+                    BackendTaskSuccessResult::DpnsVoteOperationUpdated { operation_id, .. }
+                        if operation_id == operation.id
+                )
+        ));
+        assert_eq!(
+            context
+                .dpns_vote_operation(operation.id)
+                .unwrap()
+                .unwrap()
+                .targets[0]
+                .status,
+            DpnsVoteTargetStatus::Confirmed
+        );
+    }
+
+    /// A decided contest has dropped its vote references, so the sweep must
+    /// not query it again; the target keeps its lock and status.
+    #[tokio::test]
+    async fn sweep_does_not_query_unconfirmed_votes_of_decided_contests() {
+        let (_temp, context) = vote_context();
+        context.seed_dpns_contest_for_test("alice", Some(1), true);
+        let operation = unconfirmed_operation_for(&context, "alice");
+        let key = operation.targets[0].target.key.clone();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, context.egui_ctx().clone());
+
+        // No expectation: any query fails and would be recorded as a diagnostic.
+        context
+            .reconcile_unconfirmed_dpns_votes(&Sdk::new_mock(), &sender)
+            .await
+            .unwrap();
+
+        assert!(
+            context
+                .dpns_vote_operation_diagnostics(operation.id)
+                .is_empty(),
+            "a decided contest must not be queried"
+        );
+        assert!(rx.try_recv().is_err());
+        assert_eq!(
+            context.dpns_vote_target_status(&key).unwrap(),
+            Some(DpnsVoteTargetStatus::Unconfirmed),
+            "skipping the query must not release the lock"
+        );
     }
 
     /// Preference saves run offline: they skip vote recovery and persist.
@@ -1870,27 +2179,44 @@ mod tests {
         let started = 1_000_000;
         let finished = started + SCHEDULED_VOTE_MAX_LATENESS_MS * 2;
         let clock = std::cell::Cell::new(started);
-        for (name, timestamp) in [
-            ("newlydue", started + 10),
-            ("stale", started - SCHEDULED_VOTE_MAX_LATENESS_MS - 1),
-            ("future", finished + 1),
+        let mut statuses = Vec::new();
+        for (name, timestamp, expected) in [
+            ("newlydue", started + 10, DpnsVoteTargetStatus::Queued),
+            (
+                "stale",
+                started - SCHEDULED_VOTE_MAX_LATENESS_MS - 1,
+                DpnsVoteTargetStatus::Scheduled,
+            ),
+            ("future", finished + 1, DpnsVoteTargetStatus::Scheduled),
         ] {
+            let mut operation = scheduled_operation_for(&context, name, timestamp);
             context
-                .insert_dpns_vote_operation(
-                    &mut scheduled_operation_for(&context, name, timestamp),
-                    None,
-                )
+                .insert_dpns_vote_operation(&mut operation, None)
                 .unwrap();
+            statuses.push((name, operation.id, expected));
         }
-        let (due, _) = context
-            .prepare_due_scheduled_votes(|| clock.get(), None, async {
-                clock.set(finished);
-                Ok(())
-            })
+        context
+            .sweep_due_scheduled_votes(
+                || clock.get(),
+                None,
+                |due, _| {
+                    assert!(due.is_empty(), "nothing is due at sweep entry");
+                    std::future::ready(Ok(()))
+                },
+                async {
+                    clock.set(finished);
+                    Ok(())
+                },
+            )
             .await
             .unwrap();
-        assert_eq!(due.len(), 1);
-        assert_eq!(due[0].targets[0].target.contested_name, "newlydue");
+        for (name, id, expected) in statuses {
+            assert_eq!(
+                context.dpns_vote_operation(id).unwrap().unwrap().targets[0].status,
+                expected,
+                "{name}"
+            );
+        }
     }
 
     #[test]
@@ -2315,6 +2641,7 @@ mod tests {
             .run_contested_resource_task(
                 ContestedResourceTask::CastDueScheduledVotes {
                     preserve_eligibility_since_ms: None,
+                    reconcile_unconfirmed: true,
                 },
                 &context.sdk(),
                 sender,

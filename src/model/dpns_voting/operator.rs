@@ -381,6 +381,18 @@ pub fn background_refresh_incomplete(last_completed_ms: Option<u64>, dispatched_
     last_completed_ms.is_none_or(|completed| completed < dispatched_ms)
 }
 
+/// Oldest proof, in ms, that may decide what is sent: it authorises a
+/// submission, and it alone may conclude that a vote is already in place.
+pub const VOTE_STATE_DECISION_MAX_AGE_MS: u64 = 120_000;
+
+/// Whether proof read at `proved_at_ms` is still fresh enough to decide that
+/// nothing needs sending. Older proof may be shown, but the decision then
+/// belongs to the backend's own fresh proof.
+pub fn vote_proof_can_decide(proved_at_ms: Option<u64>, now_ms: u64) -> bool {
+    proved_at_ms
+        .is_some_and(|proved_at| now_ms.saturating_sub(proved_at) <= VOTE_STATE_DECISION_MAX_AGE_MS)
+}
+
 /// How long a proved vote-state snapshot stays valid for display and for the
 /// attention signal: two refresh intervals, so one late or failed background
 /// refresh does not blank them. Authorising a submission needs fresher proof.
@@ -773,6 +785,26 @@ mod tests {
             ChangesLeft::Unknown.after_applied_vote(true),
             ChangesLeft::Known(4),
             "the device has a record now, so the remainder is no longer unknown"
+        );
+    }
+
+    #[test]
+    fn only_proof_within_the_submission_cap_can_decide_a_vote_is_in_place() {
+        let now = 10_000_000;
+        assert!(vote_proof_can_decide(Some(now), now));
+        assert!(vote_proof_can_decide(
+            Some(now - VOTE_STATE_DECISION_MAX_AGE_MS),
+            now
+        ));
+        assert!(!vote_proof_can_decide(
+            Some(now - VOTE_STATE_DECISION_MAX_AGE_MS - 1),
+            now
+        ));
+        assert!(!vote_proof_can_decide(None, now));
+        assert!(
+            Duration::from_millis(VOTE_STATE_DECISION_MAX_AGE_MS)
+                < vote_state_display_max_age(Network::Testnet),
+            "display keeps proof that may no longer decide"
         );
     }
 

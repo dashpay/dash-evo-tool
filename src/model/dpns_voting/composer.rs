@@ -32,6 +32,9 @@ pub struct NodeStanding {
     /// An unresolved operation holds this node × contest target.
     pub locked: bool,
     pub changes: ChangesLeft,
+    /// Whether `state` rests on proof fresh enough to decide that nothing
+    /// needs sending. Display keeps older proof, which may not.
+    pub proof_can_decide: bool,
 }
 
 /// A node of the node set, as the composer sees it.
@@ -214,10 +217,16 @@ pub fn compose(
                 plan.skipped.push(skip(SkipReason::VoteStateUnavailable));
                 continue;
             };
-            if current == Some(decision.choice) {
+            // Proof too old to decide cannot settle "already voted": the target
+            // goes out without a reviewed current choice, and the backend's
+            // fresh proof either confirms the no-op without broadcasting or
+            // asks for another review because the vote changed elsewhere.
+            let unverified_no_op = current == Some(decision.choice) && !standing.proof_can_decide;
+            if current == Some(decision.choice) && !unverified_no_op {
                 plan.skipped.push(skip(SkipReason::AlreadyVoted));
                 continue;
             }
+            let current = if unverified_no_op { None } else { current };
             if current.is_some() && standing.changes.is_exhausted() {
                 plan.skipped.push(skip(SkipReason::NoChangesLeft));
                 continue;
@@ -282,6 +291,7 @@ mod tests {
             state: DpnsCurrentVoteState::Available(current),
             locked: false,
             changes: ChangesLeft::Known(4),
+            proof_can_decide: true,
         }
     }
 
@@ -420,6 +430,46 @@ mod tests {
             ]
         );
         assert!(!plan.all_now());
+    }
+
+    /// Display keeps proof far older than a submission may rest on. Such
+    /// proof must not conclude "already voted": the vote may have been changed
+    /// elsewhere since, so the target has to reach the backend's fresh check.
+    #[test]
+    fn stale_proof_of_the_requested_choice_does_not_skip_the_vote() {
+        let lock = ResourceVoteChoice::Lock;
+        let standing = |voter: Identifier, _| NodeStanding {
+            proof_can_decide: voter == id(1),
+            ..available(Some(lock))
+        };
+        let plan = compose(
+            Network::Testnet,
+            &[decision("alice", 10, lock, 100 * MIN)],
+            &nodes(&[1, 2]),
+            standing,
+            BatchTiming::Now,
+            &BTreeMap::new(),
+            0,
+        )
+        .unwrap();
+
+        assert_eq!(
+            plan.skipped,
+            vec![SkippedTarget {
+                voter_id: id(1),
+                contested_name: "alice".to_owned(),
+                reason: SkipReason::AlreadyVoted,
+            }],
+            "fresh proof still settles an exact no-op"
+        );
+        assert_eq!(plan.targets.len(), 1);
+        assert_eq!(plan.targets[0].key.voter_id, id(2));
+        assert_eq!(
+            plan.targets[0].current_choice, None,
+            "no reviewed current choice, so the backend cannot drop it as a no-op"
+        );
+        assert!(!plan.targets[0].is_no_op());
+        assert_eq!(plan.change_count(), 0);
     }
 
     /// "Before the end" needs a deadline. A contest whose deadline has not

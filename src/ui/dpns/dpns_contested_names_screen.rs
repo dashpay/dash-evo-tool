@@ -31,7 +31,7 @@ use crate::model::dpns_voting::composer::{
 use crate::model::dpns_voting::operator::NodeExclusion;
 use crate::model::dpns_voting::operator::{
     ChangesLeft, NodeSet, ResolvedNodeSet, VotingNode, VotingNodeKind, relative_schedule_preset,
-    time_left,
+    time_left, vote_proof_can_decide,
 };
 use crate::model::dpns_voting::progress::needs_attention;
 use crate::model::dpns_voting::{
@@ -880,8 +880,11 @@ impl DPNSScreen {
             .retain(|name| names.contains(name.as_str()));
     }
 
-    /// Votes a staged decision would send: submittable nodes not already on it.
+    /// Votes a staged decision would send: submittable nodes not already on
+    /// it. A node shown on the choice by proof too old to decide still counts;
+    /// the backend's fresh proof settles whether its vote is really in place.
     fn transaction_count(&self) -> usize {
+        let now = now_ms();
         self.selected_votes
             .iter()
             .filter_map(|vote| {
@@ -893,7 +896,15 @@ impl DPNSScreen {
                     card.nodes
                         .iter()
                         .filter(|node| node.status.can_submit())
-                        .filter(|node| node.current != Some(vote.vote_choice))
+                        .filter(|node| {
+                            node.current != Some(vote.vote_choice)
+                                || !card.vote_poll_id.is_some_and(|poll| {
+                                    vote_proof_can_decide(
+                                        self.vote_state.proved_at(node.node, poll),
+                                        now,
+                                    )
+                                })
+                        })
                         .count(),
                 )
             })
@@ -2372,6 +2383,10 @@ impl DPNSScreen {
                 state: self.vote_state.state(voter_id, vote_poll_id),
                 locked: self.vote_operations.target_status(&key).is_some(),
                 changes,
+                proof_can_decide: vote_proof_can_decide(
+                    self.vote_state.proved_at(voter_id, vote_poll_id),
+                    now_ms,
+                ),
             }
         };
         let aggregate = compose(
@@ -4849,6 +4864,44 @@ mod tests {
             screen.scheduled_votes.lock_recover()[0].status,
             DpnsVoteTargetStatus::Confirmed
         );
+    }
+
+    /// The cards may show proof far older than a submission may rest on. A
+    /// node shown on the requested choice by such proof must still be sent to
+    /// the backend's fresh check instead of being skipped as already voted.
+    #[test]
+    fn a_vote_matching_only_stale_proof_is_sent_for_a_fresh_check() {
+        let (mut screen, _dir) = voting_ui_review_fixture();
+        let voter = screen.voting_identities[0].identity.id();
+        let poll = screen.app_context.dpns_vote_poll_id("alpha").unwrap();
+        screen.selected_votes[0].vote_choice = ResourceVoteChoice::Lock;
+        assert_eq!(
+            screen.build_review_plan().unwrap().effective_count(),
+            0,
+            "control: fresh proof of the same choice is an exact no-op"
+        );
+
+        let four_minutes_ago = now_ms() - 4 * 60_000;
+        screen
+            .app_context
+            .seed_proved_dpns_votes_at_for_test(
+                voter,
+                BTreeMap::from([(poll.to_buffer(), ResourceVoteChoice::Lock)]),
+                four_minutes_ago,
+            )
+            .unwrap();
+        screen.vote_state =
+            DpnsVoteStateSnapshot::load(&screen.app_context, &[voter], &[poll]).unwrap();
+        assert_eq!(
+            screen.vote_state.state(voter, poll),
+            DpnsCurrentVoteState::Available(Some(ResourceVoteChoice::Lock)),
+            "the proof is still fresh enough to display"
+        );
+
+        let plan = screen.build_review_plan().unwrap();
+        assert_eq!(plan.effective_count(), 1);
+        assert!(plan.aggregate.skipped.is_empty());
+        assert_eq!(plan.aggregate.targets[0].current_choice, None);
     }
 
     /// A node set to "when voting is about to end" must use the lead time the

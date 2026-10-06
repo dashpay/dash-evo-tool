@@ -19,7 +19,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 const CURRENT_VOTES_KEY_PREFIX: &str = "det:dpns_current_votes:v3:";
 /// Oldest proof that may authorise a submission. Display and the attention
 /// signal use the longer `vote_state_display_max_age` instead.
-const CURRENT_VOTE_MAX_AGE_MS: u64 = 120_000;
+const CURRENT_VOTE_MAX_AGE_MS: u64 =
+    crate::model::dpns_voting::operator::VOTE_STATE_DECISION_MAX_AGE_MS;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct StoredCurrentVotes {
@@ -143,21 +144,36 @@ fn snapshot_vote_state(
     checked_at_ms: u64,
     max_age_ms: u64,
 ) -> DpnsCurrentVoteState {
+    proved_vote_state(snapshot, vote_poll_id, checked_at_ms, max_age_ms).0
+}
+
+/// [`snapshot_vote_state`] with the time the returned state was proved, Unix
+/// ms; `None` when the state is not `Available`.
+fn proved_vote_state(
+    snapshot: Option<&StoredCurrentVotes>,
+    vote_poll_id: Identifier,
+    checked_at_ms: u64,
+    max_age_ms: u64,
+) -> (DpnsCurrentVoteState, Option<u64>) {
     if let Some((updated_at, choice)) =
         snapshot.and_then(|snapshot| snapshot.confirmed.get(&vote_poll_id.to_buffer()))
         && checked_at_ms.saturating_sub(*updated_at) <= max_age_ms
     {
-        return DpnsCurrentVoteState::Available(Some(*choice));
+        return (
+            DpnsCurrentVoteState::Available(Some(*choice)),
+            Some(*updated_at),
+        );
     }
     match snapshot {
-        None => DpnsCurrentVoteState::Checking,
+        None => (DpnsCurrentVoteState::Checking, None),
         Some(snapshot) if checked_at_ms.saturating_sub(snapshot.updated_at) > max_age_ms => {
-            DpnsCurrentVoteState::Checking
+            (DpnsCurrentVoteState::Checking, None)
         }
-        Some(snapshot) if !snapshot.available => DpnsCurrentVoteState::Unavailable,
-        Some(snapshot) => {
-            DpnsCurrentVoteState::Available(snapshot.votes.get(&vote_poll_id.to_buffer()).copied())
-        }
+        Some(snapshot) if !snapshot.available => (DpnsCurrentVoteState::Unavailable, None),
+        Some(snapshot) => (
+            DpnsCurrentVoteState::Available(snapshot.votes.get(&vote_poll_id.to_buffer()).copied()),
+            Some(snapshot.updated_at),
+        ),
     }
 }
 
@@ -347,6 +363,22 @@ impl AppContext {
         voter_id: Identifier,
         vote_poll_ids: impl IntoIterator<Item = Identifier>,
     ) -> Result<BTreeMap<Identifier, DpnsCurrentVoteState>, TaskError> {
+        Ok(self
+            .dpns_current_vote_states_with_proof_time(voter_id, vote_poll_ids)?
+            .into_iter()
+            .map(|(vote_poll_id, (state, _))| (vote_poll_id, state))
+            .collect())
+    }
+
+    /// [`Self::dpns_current_vote_states`] with the time each state was proved,
+    /// Unix ms. A reader that derives a decision from a displayed state (such
+    /// as "already voted, nothing to send") must check that time with
+    /// `vote_proof_can_decide`, because displayed proof may be much older.
+    pub fn dpns_current_vote_states_with_proof_time(
+        &self,
+        voter_id: Identifier,
+        vote_poll_ids: impl IntoIterator<Item = Identifier>,
+    ) -> Result<BTreeMap<Identifier, (DpnsCurrentVoteState, Option<u64>)>, TaskError> {
         let snapshot = load_snapshot(&self.det_kv()?, self.network, &voter_id)?;
         let checked_at_ms = now_ms();
         let max_age_ms = self.dpns_vote_display_max_age_ms();
@@ -355,7 +387,7 @@ impl AppContext {
             .map(|vote_poll_id| {
                 (
                     vote_poll_id,
-                    snapshot_vote_state(snapshot.as_ref(), vote_poll_id, checked_at_ms, max_age_ms),
+                    proved_vote_state(snapshot.as_ref(), vote_poll_id, checked_at_ms, max_age_ms),
                 )
             })
             .collect())

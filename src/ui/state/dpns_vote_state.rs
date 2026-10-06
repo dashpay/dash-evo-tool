@@ -11,6 +11,8 @@ use crate::model::dpns_voting::DpnsCurrentVoteState;
 #[derive(Debug, Clone, Default)]
 pub struct DpnsVoteStateSnapshot {
     states: BTreeMap<(Identifier, Identifier), DpnsCurrentVoteState>,
+    /// When each available state was proved, Unix ms.
+    proved_at: BTreeMap<(Identifier, Identifier), u64>,
     loaded: bool,
 }
 
@@ -58,27 +60,30 @@ impl DpnsVoteStateSnapshot {
         polls_by_voter: impl IntoIterator<Item = (Identifier, Vec<Identifier>)>,
     ) -> Result<(), TaskError> {
         let mut states = BTreeMap::new();
+        let mut proved_at = BTreeMap::new();
         let mut first_error = None;
         for (voter_id, vote_poll_ids) in polls_by_voter {
             let voter_states = match app_context
-                .dpns_current_vote_states(voter_id, vote_poll_ids.iter().copied())
+                .dpns_current_vote_states_with_proof_time(voter_id, vote_poll_ids.iter().copied())
             {
                 Ok(states) => states,
                 Err(error) => {
                     first_error.get_or_insert(error);
                     vote_poll_ids
                         .into_iter()
-                        .map(|poll| (poll, DpnsCurrentVoteState::Unavailable))
+                        .map(|poll| (poll, (DpnsCurrentVoteState::Unavailable, None)))
                         .collect()
                 }
             };
-            states.extend(
-                voter_states
-                    .into_iter()
-                    .map(|(poll_id, state)| ((voter_id, poll_id), state)),
-            );
+            for (poll_id, (state, proved)) in voter_states {
+                states.insert((voter_id, poll_id), state);
+                if let Some(proved) = proved {
+                    proved_at.insert((voter_id, poll_id), proved);
+                }
+            }
         }
         self.states = states;
+        self.proved_at = proved_at;
         self.loaded = true;
         first_error.map_or(Ok(()), Err)
     }
@@ -91,6 +96,12 @@ impl DpnsVoteStateSnapshot {
             .get(&(voter_id, vote_poll_id))
             .copied()
             .unwrap_or(DpnsCurrentVoteState::Unavailable)
+    }
+
+    /// When the state [`Self::state`] returns was proved, Unix ms; `None`
+    /// unless it is available.
+    pub fn proved_at(&self, voter_id: Identifier, vote_poll_id: Identifier) -> Option<u64> {
+        self.proved_at.get(&(voter_id, vote_poll_id)).copied()
     }
 }
 

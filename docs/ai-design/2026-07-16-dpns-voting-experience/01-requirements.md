@@ -128,6 +128,10 @@ Validation floor: 24 nodes on one voting key, 6 open contests, 2 ending today.
   state stays valid for display and for VOTE-FR-072/073 for two refresh
   intervals, so the signal does not blank between refreshes. Submission never
   relies on it: preflight fetches its own proof and accepts it for 120 seconds.
+  The same limit applies to deciding that nothing needs sending: the confirm
+  step skips a node as already voted only on proof within 120 seconds. On older
+  proof the vote is sent to preflight, which confirms it without broadcasting
+  when the choice is in place, or asks for another review when it changed.
 - **VOTE-FR-076** **[New]** — Node detail shows `This node's votes` (name, choice,
   changes left, deadline), its masternode-list status, and `Vote with this node`
   (VOTE-FR-075 node set = that node).

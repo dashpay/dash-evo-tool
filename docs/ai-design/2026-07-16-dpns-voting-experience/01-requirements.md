@@ -134,6 +134,10 @@ Validation floor: 24 nodes on one voting key, 6 open contests, 2 ending today.
   when the choice is in place, or asks for another review when it changed.
   The tray and the confirm step present such a vote as one to check again
   (VOTE-FR-080/086): never as `Not voted yet`, and never as a transaction.
+  A node with no changes left (VOTE-FR-078) is the exception: it can send
+  nothing whatever a fresh check finds, so on older proof it is skipped with
+  the `no changes left` reason instead of being checked again, and the tray
+  does not offer it.
 - **VOTE-FR-076** **[New]** — Node detail shows `This node's votes` (name, choice,
   changes left, deadline), its masternode-list status, and `Vote with this node`
   (VOTE-FR-075 node set = that node).

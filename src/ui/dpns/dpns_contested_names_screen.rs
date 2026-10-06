@@ -930,7 +930,8 @@ impl DPNSScreen {
     /// What the staged decisions would submit across their submittable
     /// nodes: votes for nodes not on the choice, and checks for nodes shown on
     /// it by proof too old to decide. Nodes proved on it recently count as
-    /// neither.
+    /// neither, and so do nodes with no changes left, which the composer
+    /// skips on any proof.
     fn tray_counts(&self) -> TrayCounts {
         let now = now_ms();
         let mut counts = TrayCounts::default();
@@ -4929,15 +4930,10 @@ mod tests {
         );
     }
 
-    /// The cards may show proof far older than a submission may rest on. A
-    /// node shown on the requested choice by such proof must still be sent to
-    /// the backend's fresh check instead of being skipped as already voted —
-    /// and the operator must read it as a vote to check again, not as a first
-    /// vote or a transaction.
-    #[test]
-    fn a_vote_matching_only_stale_proof_is_sent_for_a_fresh_check() {
-        use egui_kittest::kittest::Queryable;
-        let (mut screen, _dir) = voting_ui_review_fixture();
+    /// Stage `Lock` on the review fixture's `alpha` contest and give the
+    /// contest a card, so the tray has nodes to count. Returns the voter and
+    /// the poll.
+    fn stage_lock_on_alpha_card(screen: &mut DPNSScreen) -> (Identifier, Identifier) {
         let voter = screen.voting_identities[0].identity.id();
         let poll = screen.app_context.dpns_vote_poll_id("alpha").unwrap();
         screen.selected_votes[0].vote_choice = ResourceVoteChoice::Lock;
@@ -4956,17 +4952,12 @@ mod tests {
             }],
         );
         screen.rebuild_cards();
-        assert_eq!(
-            screen.build_review_plan().unwrap().effective_count(),
-            0,
-            "control: fresh proof of the same choice is an exact no-op"
-        );
-        assert_eq!(
-            screen.tray_counts(),
-            TrayCounts::default(),
-            "control: the tray offers nothing for a vote proved in place just now"
-        );
+        (voter, poll)
+    }
 
+    /// Replace the node's proof of `Lock` with one four minutes old: still
+    /// shown on the card, too old to decide that nothing needs sending.
+    fn age_lock_proof(screen: &mut DPNSScreen, voter: Identifier, poll: Identifier) {
         let four_minutes_ago = now_ms() - 4 * 60_000;
         screen
             .app_context
@@ -4983,8 +4974,31 @@ mod tests {
             DpnsCurrentVoteState::Available(Some(ResourceVoteChoice::Lock)),
             "the proof is still fresh enough to display"
         );
-
         screen.rebuild_cards();
+    }
+
+    /// The cards may show proof far older than a submission may rest on. A
+    /// node shown on the requested choice by such proof must still be sent to
+    /// the backend's fresh check instead of being skipped as already voted —
+    /// and the operator must read it as a vote to check again, not as a first
+    /// vote or a transaction.
+    #[test]
+    fn a_vote_matching_only_stale_proof_is_sent_for_a_fresh_check() {
+        use egui_kittest::kittest::Queryable;
+        let (mut screen, _dir) = voting_ui_review_fixture();
+        let (voter, poll) = stage_lock_on_alpha_card(&mut screen);
+        assert_eq!(
+            screen.build_review_plan().unwrap().effective_count(),
+            0,
+            "control: fresh proof of the same choice is an exact no-op"
+        );
+        assert_eq!(
+            screen.tray_counts(),
+            TrayCounts::default(),
+            "control: the tray offers nothing for a vote proved in place just now"
+        );
+
+        age_lock_proof(&mut screen, voter, poll);
 
         let plan = screen.build_review_plan().unwrap();
         assert_eq!(plan.effective_count(), 1);
@@ -5033,6 +5047,45 @@ mod tests {
                 "the confirm step must not promise a transaction: {label}"
             );
         }
+    }
+
+    /// A node with no changes left is not offered by the tray. The confirm
+    /// step, which Enter opens regardless of the tray, must agree: stale proof
+    /// of the staged choice does not turn that node into a vote to check.
+    #[test]
+    fn a_node_with_no_changes_left_is_neither_a_vote_nor_a_check() {
+        let (mut screen, _dir) = voting_ui_review_fixture();
+        let (voter, poll) = stage_lock_on_alpha_card(&mut screen);
+        age_lock_proof(&mut screen, voter, poll);
+        assert_eq!(
+            screen.tray_counts(),
+            TrayCounts {
+                transactions: 0,
+                rechecks: 1,
+            },
+            "control: with changes left the node is offered as a check"
+        );
+
+        let node = &mut screen.cards[0].nodes[0];
+        node.changes = ChangesLeft::Known(0);
+        node.status = NodeContestStatus::classify(
+            DpnsCurrentVoteState::Available(Some(ResourceVoteChoice::Lock)),
+            None,
+            node.changes,
+        );
+        assert_eq!(
+            node.status,
+            NodeContestStatus::NoChangesLeft(ResourceVoteChoice::Lock)
+        );
+
+        assert_eq!(screen.tray_counts(), TrayCounts::default());
+        let plan = screen.build_review_plan().unwrap();
+        assert_eq!(plan.effective_count(), 0);
+        assert_eq!(plan.recheck_count(), 0);
+        assert_eq!(
+            plan.aggregate.skipped_by_reason(),
+            BTreeMap::from([(SkipReason::NoChangesLeft, 1)])
+        );
     }
 
     /// A node set to "when voting is about to end" must use the lead time the

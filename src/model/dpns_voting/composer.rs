@@ -248,11 +248,13 @@ pub fn compose(
                 plan.skipped.push(skip(SkipReason::AlreadyVoted));
                 continue;
             }
-            let current = if unverified_no_op { None } else { current };
+            // A node with no changes left can send nothing whatever a fresh
+            // check finds, so it is skipped before the stale-proof routing.
             if current.is_some() && standing.changes.is_exhausted() {
                 plan.skipped.push(skip(SkipReason::NoChangesLeft));
                 continue;
             }
+            let current = if unverified_no_op { None } else { current };
             let resolved = match timing {
                 Some(timing) => resolve_timing(timing, decision, now_ms)?,
                 None => batch_timing,
@@ -651,6 +653,35 @@ mod tests {
         assert_eq!(timing("far"), vec![VoteTiming::Scheduled(234 * hour); 2]);
         assert_eq!(timing("urgent"), vec![VoteTiming::Now; 2]);
         assert_eq!(plan.ends_soon_now, 2);
+    }
+
+    /// A node with no changes left can send nothing, so stale proof of the
+    /// requested choice does not make it a vote to check again: it is skipped
+    /// for the reason the operator can act on, as the cards and tray show it.
+    #[test]
+    fn an_exhausted_node_is_skipped_even_on_stale_proof_of_the_requested_choice() {
+        let lock = ResourceVoteChoice::Lock;
+        let plan = compose(
+            Network::Testnet,
+            &[decision("alice", 10, lock, 100 * MIN)],
+            &nodes(&[1]),
+            |_, _| NodeStanding {
+                changes: ChangesLeft::Known(0),
+                proof_can_decide: false,
+                ..available(Some(lock))
+            },
+            BatchTiming::Now,
+            &BTreeMap::new(),
+            0,
+        )
+        .unwrap();
+
+        assert!(plan.targets.is_empty());
+        assert!(plan.recheck.is_empty());
+        assert_eq!(
+            plan.skipped_by_reason(),
+            BTreeMap::from([(SkipReason::NoChangesLeft, 1)])
+        );
     }
 
     /// Inside the lead time a vote is sent now and the confirm step says so.

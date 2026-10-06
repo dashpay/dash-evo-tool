@@ -662,6 +662,11 @@ impl AppContext {
         } else {
             self.validate_new_dpns_schedules(&new_schedules)?;
             self.insert_dpns_vote_operation(&mut operation, replacing_scheduled_key.as_ref())?;
+            // A replacement comes back as the whole stored operation; only the
+            // requested targets belong to this run.
+            operation
+                .targets
+                .retain(|outcome| requested_keys.contains(&outcome.target.key));
         }
 
         let voters_by_id: BTreeMap<Identifier, QualifiedIdentity> = voters
@@ -1886,6 +1891,48 @@ mod tests {
                 .status,
             DpnsVoteTargetStatus::Scheduled
         );
+    }
+
+    /// Replacing one scheduled target must not pull the stored operation's
+    /// other targets into the run, where a queued one would be claimed
+    /// without its voter.
+    #[tokio::test]
+    async fn replacing_a_schedule_leaves_sibling_targets_of_the_operation_alone() {
+        let now = now_ms();
+        let (_temp, context) = vote_context();
+        context.seed_dpns_contest_for_test("alice", Some(now + 600_000), false);
+        let replaced = scheduled_operation_for(&context, "alice", now + 60_000).targets[0]
+            .target
+            .clone();
+        let mut sibling = replaced.clone();
+        sibling.key.voter_id = Identifier::from([2; 32]);
+        let mut existing = AppContext::new_dpns_vote_operation(vec![replaced.clone(), sibling]);
+        existing.targets[1].status = DpnsVoteTargetStatus::Queued;
+        context
+            .insert_dpns_vote_operation(&mut existing, None)
+            .unwrap();
+        let original_sibling = existing.targets[1].clone();
+        let replacement = AppContext::new_dpns_vote_operation(vec![DpnsVoteTarget {
+            timing: VoteTiming::Scheduled(now + 120_000),
+            ..replaced.clone()
+        }]);
+
+        let result = context
+            .execute_dpns_vote_operation(
+                replacement,
+                vec![],
+                Some(replaced.key.clone()),
+                &context.sdk(),
+            )
+            .await;
+
+        assert!(result.is_ok(), "{result:?}");
+        let saved = context.dpns_vote_operation(existing.id).unwrap().unwrap();
+        assert_eq!(
+            saved.targets[0].target.timing,
+            VoteTiming::Scheduled(now + 120_000)
+        );
+        assert_eq!(saved.targets[1], original_sibling);
     }
 
     /// A pass in which one node's proof query failed must not count as a

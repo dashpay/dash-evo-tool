@@ -562,6 +562,15 @@ impl AppContext {
                     load_operations_read_only(kv, self.network)?.into();
                 return Ok(());
             }
+            // A stored record under this ID may hold targets an executor has
+            // already claimed or broadcast; writing the caller's snapshot over
+            // it would make them claimable again.
+            if load_operation(kv, &operation_key(self.network, operation.id))
+                .map_err(unreadable_operation_err)?
+                .is_some()
+            {
+                return Err(TaskError::DpnsVoteTargetBusy);
+            }
             persist_operation(kv, self.network, operation)
         })
     }
@@ -2334,6 +2343,41 @@ mod tests {
 
         assert!(!diagnostics.contains_key(&first_key));
         assert!(diagnostics.contains_key(&second_key));
+    }
+
+    /// Inserting is for new operations only: a second insert under the same ID
+    /// must not put a claimed target back in the queue.
+    #[test]
+    fn inserting_an_existing_operation_id_cannot_requeue_a_claimed_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        ctx.set_det_kv_override_for_test(kv());
+        let mut operation = operation(DpnsVoteTargetStatus::Queued);
+        let key = operation.targets[0].target.key.clone();
+        ctx.insert_dpns_vote_operation(&mut operation, None)
+            .unwrap();
+        let mut duplicate = operation.clone();
+        assert!(ctx.claim_dpns_vote_target(operation.id, &key).unwrap());
+        assert!(ctx.mark_dpns_vote_broadcast(operation.id, &key).unwrap());
+
+        assert!(matches!(
+            ctx.insert_dpns_vote_operation(&mut duplicate, None),
+            Err(TaskError::DpnsVoteTargetBusy)
+        ));
+
+        assert_eq!(
+            ctx.dpns_vote_operation(operation.id)
+                .unwrap()
+                .unwrap()
+                .targets[0]
+                .status,
+            DpnsVoteTargetStatus::Confirming,
+            "the broadcast marker must survive"
+        );
+        assert!(
+            !ctx.claim_dpns_vote_target(operation.id, &key).unwrap(),
+            "a broadcast target must not become claimable again"
+        );
     }
 
     /// A vote still queued from an earlier run must not go out by itself long

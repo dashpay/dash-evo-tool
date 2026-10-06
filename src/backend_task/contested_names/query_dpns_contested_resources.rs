@@ -10,8 +10,54 @@ use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::drive::query::vote_polls_by_document_type_query::VotePollsByDocumentTypeQuery;
 use dash_sdk::platform::FetchMany;
 use dash_sdk::query_types::ContestedResource;
+use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+
+/// Extra attempts one contest page query gets after a retryable failure.
+const MAX_PAGE_RETRIES: usize = 3;
+/// Pause before the first retry of a page query; each later retry waits longer.
+const PAGE_RETRY_DELAY: Duration = Duration::from_millis(500);
+
+/// Whether asking again, likely on another node, can answer a failed page query.
+fn page_query_is_retryable(error: &dash_sdk::Error) -> bool {
+    // TODO(#875): replace substring match once the SDK exposes a
+    // structural "contract not found" variant.
+    matches!(error, dash_sdk::Error::StaleNode(_))
+        || error
+            .to_string()
+            .contains("contract not found when querying from value with contract info")
+}
+
+/// Run one contest page query, retrying a retryable failure at most
+/// [`MAX_PAGE_RETRIES`] times with a growing pause in between.
+async fn fetch_page_with_retries<T, Fut>(
+    retry_delay: Duration,
+    mut fetch: impl FnMut() -> Fut,
+) -> Result<T, dash_sdk::Error>
+where
+    Fut: Future<Output = Result<T, dash_sdk::Error>>,
+{
+    let mut retries: u32 = 0;
+    loop {
+        let error = match fetch().await {
+            Ok(page) => return Ok(page),
+            Err(error) => error,
+        };
+        tracing::error!("Error fetching contested resources: {}", error);
+        super::log_contested_proof_error(&error, RequestType::GetContestedResources);
+        if !page_query_is_retryable(&error) {
+            return Err(error);
+        }
+        if retries as usize >= MAX_PAGE_RETRIES {
+            tracing::error!("Max retries reached for query: {}", error);
+            return Err(error);
+        }
+        retries += 1;
+        tokio::time::sleep(retry_delay.saturating_mul(retries)).await;
+    }
+}
 
 impl AppContext {
     /// Refresh the contest cache, contenders, end times and every loaded node's
@@ -37,7 +83,6 @@ impl AppContext {
                 detail: "No contested index found on DPNS domain document type",
             });
         };
-        const MAX_RETRIES: usize = 3;
         let mut start_at_value = None;
         let mut names_to_be_updated = Vec::new();
         loop {
@@ -52,33 +97,10 @@ impl AppContext {
                 order_ascending: true,
             };
 
-            let mut retries = 0;
-
-            let contested_resources = match ContestedResource::fetch_many(sdk, query.clone()).await
-            {
-                Ok(contested_resources) => contested_resources,
-                Err(e) => {
-                    tracing::error!("Error fetching contested resources: {}", e);
-                    super::log_contested_proof_error(&e, RequestType::GetContestedResources);
-                    // TODO(#875): replace substring match once the SDK exposes a
-                    // structural "contract not found" variant.
-                    if matches!(e, dash_sdk::Error::StaleNode(_))
-                        || e.to_string().contains(
-                            "contract not found when querying from value with contract info",
-                        )
-                    {
-                        retries += 1;
-                        if retries > MAX_RETRIES {
-                            tracing::error!("Max retries reached for query: {}", e);
-                            return Err(TaskError::from(e));
-                        } else {
-                            continue;
-                        }
-                    } else {
-                        return Err(TaskError::from(e));
-                    }
-                }
-            };
+            let contested_resources = fetch_page_with_retries(PAGE_RETRY_DELAY, || {
+                ContestedResource::fetch_many(sdk, query.clone())
+            })
+            .await?;
             let contested_resources_len = contested_resources.0.len();
 
             if contested_resources_len == 0 {
@@ -261,5 +283,63 @@ impl AppContext {
             .await
             .map_err(|_| TaskError::InternalSendError)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dash_sdk::error::StaleNodeError;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn stale_node() -> dash_sdk::Error {
+        dash_sdk::Error::StaleNode(StaleNodeError::Height {
+            expected_height: 10,
+            received_height: 1,
+            tolerance_blocks: 1,
+        })
+    }
+
+    /// A node that keeps answering as stale must end the query, not loop on it.
+    #[tokio::test]
+    async fn a_persistently_stale_node_ends_the_page_query_after_bounded_retries() {
+        let attempts = AtomicUsize::new(0);
+        let result: Result<(), _> = fetch_page_with_retries(Duration::ZERO, || async {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            Err(stale_node())
+        })
+        .await;
+
+        assert!(matches!(result, Err(dash_sdk::Error::StaleNode(_))));
+        assert_eq!(attempts.load(Ordering::SeqCst), MAX_PAGE_RETRIES + 1);
+    }
+
+    #[tokio::test]
+    async fn a_page_query_recovers_when_a_retry_succeeds() {
+        let attempts = AtomicUsize::new(0);
+        let result = fetch_page_with_retries(Duration::ZERO, || async {
+            if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                Err(stale_node())
+            } else {
+                Ok(7)
+            }
+        })
+        .await;
+
+        assert!(matches!(result, Ok(7)));
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn a_failure_another_node_cannot_fix_is_not_retried() {
+        let attempts = AtomicUsize::new(0);
+        let result: Result<(), _> = fetch_page_with_retries(Duration::ZERO, || async {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            Err(dash_sdk::Error::Generic("unreachable".to_owned()))
+        })
+        .await;
+
+        assert!(matches!(result, Err(dash_sdk::Error::Generic(_))));
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
     }
 }

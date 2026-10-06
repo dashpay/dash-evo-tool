@@ -489,28 +489,10 @@ mod tests {
 
     /// A user identity with no names, alias, or keys.
     fn bare_identity(byte: u8) -> crate::model::qualified_identity::QualifiedIdentity {
-        use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
-        use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
-        QualifiedIdentity {
-            identity: dash_sdk::platform::Identity::create_basic_identity(
-                [byte; 32].into(),
-                dash_sdk::dpp::version::PlatformVersion::latest(),
-            )
-            .expect("identity"),
-            associated_voter_identity: None,
-            associated_operator_identity: None,
-            associated_owner_key_id: None,
-            identity_type: IdentityType::User,
-            alias: None,
-            private_keys: KeyStorage::default(),
-            dpns_names: Vec::new(),
-            associated_wallets: Default::default(),
-            secret_access: None,
-            wallet_index: None,
-            top_ups: Default::default(),
-            status: IdentityStatus::Active,
-            network: dash_sdk::dpp::dashcore::Network::Testnet,
-        }
+        crate::context::test_support::bare_user_identity(
+            [byte; 32].into(),
+            dash_sdk::dpp::dashcore::Network::Testnet,
+        )
     }
 
     #[tokio::test]

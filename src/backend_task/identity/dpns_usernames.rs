@@ -431,37 +431,12 @@ impl AppContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::test_support::bare_user_identity;
     use dash_sdk::dpp::block::block_info::BlockInfo;
     use dash_sdk::dpp::voting::contender_structs::ContenderWithSerializedDocument;
     use dash_sdk::drive::query::vote_poll_vote_state_query::{
         ContestedDocumentVotePollDriveQuery, ContestedDocumentVotePollDriveQueryResultType,
     };
-
-    fn bare_identity(
-        id: Identifier,
-        network: dash_sdk::dpp::dashcore::Network,
-    ) -> QualifiedIdentity {
-        QualifiedIdentity {
-            identity: dash_sdk::dpp::identity::Identity::create_basic_identity(
-                id,
-                dash_sdk::dpp::version::PlatformVersion::latest(),
-            )
-            .unwrap(),
-            associated_voter_identity: None,
-            associated_operator_identity: None,
-            associated_owner_key_id: None,
-            identity_type: crate::model::qualified_identity::IdentityType::User,
-            alias: None,
-            private_keys: Default::default(),
-            dpns_names: vec![],
-            associated_wallets: Default::default(),
-            secret_access: None,
-            wallet_index: None,
-            top_ups: Default::default(),
-            status: crate::model::qualified_identity::IdentityStatus::Active,
-            network,
-        }
-    }
 
     async fn sdk_with_owned_name(ctx: &AppContext, id: Identifier) -> Sdk {
         let query = DocumentQuery {
@@ -520,7 +495,7 @@ mod tests {
             std::sync::Arc::new(crate::wallet_backend::kv_test_support::InMemoryKv::default()),
         ));
         let id = Identifier::from([42; 32]);
-        let identity = bare_identity(id, ctx.network);
+        let identity = bare_user_identity(id, ctx.network);
         ctx.insert_local_qualified_identity_sidecar_only(&identity)
             .unwrap();
         let sdk = Sdk::new_mock();
@@ -558,7 +533,7 @@ mod tests {
                 std::sync::Arc::new(crate::wallet_backend::kv_test_support::InMemoryKv::default()),
             ));
             let id = Identifier::from([42; 32]);
-            let captured = bare_identity(id, ctx.network);
+            let captured = bare_user_identity(id, ctx.network);
             ctx.insert_local_qualified_identity_sidecar_only(&captured)
                 .unwrap();
             let sdk = Sdk::new_mock();
@@ -611,7 +586,7 @@ mod tests {
         ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(store.clone()));
         for byte in [42, 43] {
             let id = Identifier::from([byte; 32]);
-            ctx.insert_local_qualified_identity_sidecar_only(&bare_identity(id, ctx.network))
+            ctx.insert_local_qualified_identity_sidecar_only(&bare_user_identity(id, ctx.network))
                 .unwrap();
             ctx.store_username_requests(
                 &id,
@@ -692,7 +667,7 @@ mod tests {
             std::sync::Arc::new(crate::wallet_backend::kv_test_support::FailingKv::default());
         ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(store.clone()));
         let id = Identifier::from([43; 32]);
-        let identity = bare_identity(id, ctx.network);
+        let identity = bare_user_identity(id, ctx.network);
         ctx.insert_local_qualified_identity_sidecar_only(&identity)
             .unwrap();
         let mut won = UsernameRequest::submitted(
@@ -758,7 +733,7 @@ mod tests {
             std::sync::Arc::new(crate::wallet_backend::kv_test_support::InMemoryKv::default()),
         ));
         let id = Identifier::from([44; 32]);
-        let identity = bare_identity(id, ctx.network);
+        let identity = bare_user_identity(id, ctx.network);
         ctx.insert_local_qualified_identity_sidecar_only(&identity)
             .unwrap();
         let mut won = UsernameRequest::submitted(
@@ -802,7 +777,7 @@ mod tests {
             std::sync::Arc::new(crate::wallet_backend::kv_test_support::InMemoryKv::default()),
         ));
         let id = Identifier::from([42; 32]);
-        let identity = bare_identity(id, ctx.network);
+        let identity = bare_user_identity(id, ctx.network);
         ctx.insert_local_qualified_identity_sidecar_only(&identity)
             .unwrap();
         ctx.store_username_requests(

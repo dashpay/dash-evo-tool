@@ -385,27 +385,10 @@ mod tests {
     use std::time::Duration;
 
     fn identity(names: &[&str]) -> QualifiedIdentity {
-        use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
-        use crate::model::qualified_identity::{IdentityStatus, IdentityType};
-        use dash_sdk::dpp::identity::Identity;
-        use dash_sdk::dpp::version::PlatformVersion;
-        let mut identity = QualifiedIdentity {
-            identity: Identity::create_basic_identity([1; 32].into(), PlatformVersion::latest())
-                .expect("identity"),
-            associated_voter_identity: None,
-            associated_operator_identity: None,
-            associated_owner_key_id: None,
-            identity_type: IdentityType::User,
-            alias: None,
-            private_keys: KeyStorage::default(),
-            dpns_names: Vec::new(),
-            associated_wallets: Default::default(),
-            secret_access: None,
-            wallet_index: None,
-            top_ups: Default::default(),
-            status: IdentityStatus::Active,
-            network: dash_sdk::dpp::dashcore::Network::Testnet,
-        };
+        let mut identity = crate::context::test_support::bare_user_identity(
+            [1; 32].into(),
+            dash_sdk::dpp::dashcore::Network::Testnet,
+        );
         identity.dpns_names = names
             .iter()
             .map(|name| DPNSNameInfo {

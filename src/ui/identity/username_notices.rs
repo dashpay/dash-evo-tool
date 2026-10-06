@@ -214,8 +214,6 @@ mod tests {
     #[test]
     fn failing_seen_store_is_not_retried_every_frame() {
         use crate::model::dpns_usernames::{SEEN_MARK_MAX_FAILURES, UsernameRequest};
-        use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
-        use crate::model::qualified_identity::{IdentityStatus, IdentityType};
         use crate::utils::egui_mpsc::SenderAsync;
         use crate::wallet_backend::DetKv;
         use crate::wallet_backend::kv_test_support::FailingKv;
@@ -224,26 +222,10 @@ mod tests {
         let ctx = crate::context::test_support::test_app_context(dir.path());
         let store = Arc::new(FailingKv::default());
         ctx.set_det_kv_override_for_test(DetKv::from_store(store.clone()));
-        let identity = QualifiedIdentity {
-            identity: dash_sdk::dpp::identity::Identity::create_basic_identity(
-                [0x61; 32].into(),
-                dash_sdk::dpp::version::PlatformVersion::latest(),
-            )
-            .expect("identity"),
-            associated_voter_identity: None,
-            associated_operator_identity: None,
-            associated_owner_key_id: None,
-            identity_type: IdentityType::User,
-            alias: None,
-            private_keys: KeyStorage::default(),
-            dpns_names: Vec::new(),
-            associated_wallets: Default::default(),
-            secret_access: None,
-            wallet_index: None,
-            top_ups: Default::default(),
-            status: IdentityStatus::Active,
-            network: dash_sdk::dpp::dashcore::Network::Testnet,
-        };
+        let identity = crate::context::test_support::bare_user_identity(
+            [0x61; 32].into(),
+            dash_sdk::dpp::dashcore::Network::Testnet,
+        );
         let id = identity.identity.id();
         let mut won = UsernameRequest::submitted(
             "ali",

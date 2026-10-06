@@ -366,7 +366,7 @@ pub fn voting_weight_label(weight: u32) -> String {
     }
 }
 
-/// History outcome of an awarded contest (VOTE-FR-087).
+/// History outcome of an awarded contest.
 pub fn went_to_label(name: Option<&str>, short_id: &str) -> String {
     match name {
         Some(name) => format!("Went to {name} ({short_id})"),
@@ -449,7 +449,7 @@ pub fn excluded_nodes_line(count: usize, exclusion: NodeExclusion) -> String {
     }
 }
 
-/// One skipped-reason line, e.g. `2 votes: no changes left (4 of 4 changes used)`.
+/// One line of the confirm step's Skipped list: how many votes, and why.
 pub fn skipped_reason_line(count: usize, reason: SkipReason) -> String {
     match reason {
         SkipReason::AlreadyVoted => {

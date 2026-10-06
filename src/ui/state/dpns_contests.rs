@@ -12,7 +12,7 @@ pub struct ActiveDpnsContestView {
     pub vote_poll_id: Option<Identifier>,
 }
 
-/// Immutable render snapshot for the Active contests screen.
+/// Immutable render snapshot of the open contests for the Votes panel.
 #[derive(Debug, Clone, Default)]
 pub struct ActiveDpnsContestSnapshot {
     contests: Arc<[ActiveDpnsContestView]>,

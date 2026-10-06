@@ -50,10 +50,10 @@ use crate::ui::dpns::contest_card::{CardEvent, CardView};
 use crate::ui::dpns::copy::needs_attention_line;
 use crate::ui::dpns::copy::tray_label;
 use crate::ui::dpns::copy::{
-    LOCKED_FOR_GOOD, before_end_phrase, changes_left_label, confirm_button_label,
-    confirm_change_warning, confirm_title, confirm_transactions_line, decision_row, ends_in_label,
-    relative_schedule_label, scheduled_nodes_label, skipped_header, skipped_reason_line,
-    went_to_label,
+    JOURNAL_UNAVAILABLE_MESSAGE, LOCKED_FOR_GOOD, before_end_phrase, changes_left_label,
+    confirm_button_label, confirm_change_warning, confirm_title, confirm_transactions_line,
+    decision_row, ends_in_label, relative_schedule_label, scheduled_nodes_label, skipped_header,
+    skipped_reason_line, went_to_label,
 };
 use crate::ui::dpns::copy::{ends_soon_now_line, excluded_nodes_line};
 use crate::ui::dpns::node_set_picker;
@@ -78,7 +78,6 @@ const NO_OPEN_CONTESTS_MESSAGE: &str =
 const CANT_VOTE_REASON: &str = "None of the nodes you vote with has a voting key that is in the masternode list. Load a voting key or change the nodes you vote with.";
 const NO_VOTING_NODES_MESSAGE: &str = "No masternodes are loaded.";
 const NO_VOTING_NODES_DETAIL: &str = "Load a masternode with its voting key to cast votes.";
-const JOURNAL_UNAVAILABLE_MESSAGE: &str = crate::ui::dpns::copy::JOURNAL_UNAVAILABLE_MESSAGE;
 const MISSED_SCHEDULE_GUIDANCE: &str = "The automatic voting time was missed. On the Scheduled tab, use Cast now to vote, Edit to reschedule, or Remove to cancel.";
 const SCHEDULE_IN_FUTURE_MESSAGE: &str =
     "Choose a future date and time before scheduling these votes.";
@@ -470,8 +469,8 @@ pub struct DPNSScreen {
     refresh_banner: Option<BannerHandle>,
     journal_error_banner: Option<BannerHandle>,
 
-    /// Selected vote handling
-    show_bulk_schedule_popup: bool,
+    /// Whether the confirm step is open.
+    confirm_open: bool,
     /// Per-node overrides under `Adjust nodes`; absent means "same as above".
     node_overrides: BTreeMap<Identifier, NodeTiming>,
     /// Set by `Review again`: the confirm step covers only this target.
@@ -479,14 +478,14 @@ pub struct DPNSScreen {
     /// The retried target of the pending submission, kept so a submission
     /// that needs another review reopens on it.
     submitted_retry: Option<RetryReview>,
-    bulk_vote_handling_status: VoteHandlingStatus,
+    confirm_status: VoteHandlingStatus,
     submission_error_banner: Option<BannerHandle>,
     confirm_timing: ConfirmTiming,
     /// Lead time for "When voting is about to end" (VOTE-FR-081).
     relative_preset: std::time::Duration,
     /// Eagerly built, unlike most components: its default is the construction
     /// time plus a day, and the read-only accessors below must see it.
-    simple_schedule: UtcScheduleInput,
+    confirm_schedule: UtcScheduleInput,
     /// Set when the operator asks to load a node; the hosting Masternodes
     /// screen consumes it and opens its load form.
     load_node_requested: bool,
@@ -547,7 +546,7 @@ impl DPNSScreen {
             tracing::warn!(?error, "Could not cache proved DPNS vote state");
         }
 
-        // Initialize vote handling pop-up state to hidden
+        // The confirm step's fixed-time input starts one day ahead.
         let default_schedule_time = Utc::now() + chrono::Duration::days(1);
 
         let mut screen = Self {
@@ -582,15 +581,15 @@ impl DPNSScreen {
             journal_error_banner: None,
 
             // Vote handling
-            show_bulk_schedule_popup: false,
+            confirm_open: false,
             node_overrides: BTreeMap::new(),
             retry: None,
             submitted_retry: None,
-            bulk_vote_handling_status: VoteHandlingStatus::NotStarted,
+            confirm_status: VoteHandlingStatus::NotStarted,
             submission_error_banner: None,
             confirm_timing: ConfirmTiming::Now,
             relative_preset: relative_schedule_preset(app_context.network()),
-            simple_schedule: UtcScheduleInput::new().with_time(default_schedule_time),
+            confirm_schedule: UtcScheduleInput::new().with_time(default_schedule_time),
             load_node_requested: false,
             node_set: NodeSet::All,
             node_set_network: None,
@@ -629,8 +628,8 @@ impl DPNSScreen {
 
     pub(crate) fn reset_for_network_switch(&mut self) {
         self.selected_votes.clear();
-        self.show_bulk_schedule_popup = false;
-        self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
+        self.confirm_open = false;
+        self.confirm_status = VoteHandlingStatus::NotStarted;
         self.node_overrides.clear();
         self.retry = None;
         self.submitted_retry = None;
@@ -719,9 +718,8 @@ impl DPNSScreen {
         }
     }
 
-    fn render_no_voting_nodes(&mut self, ui: &mut Ui) -> AppAction {
+    fn render_no_voting_nodes(&mut self, ui: &mut Ui) {
         let (heading, detail, button) = self.no_voting_nodes_copy();
-        let action = AppAction::None;
         let dark_mode = ui.style().visuals.dark_mode;
         ui.vertical_centered(|ui| {
             ui.add_space(24.0);
@@ -741,7 +739,6 @@ impl DPNSScreen {
                 });
             });
         });
-        action
     }
 
     fn render_empty_view(&mut self, ui: &mut Ui) -> AppAction {
@@ -1159,10 +1156,7 @@ impl DPNSScreen {
     /// list has focus and no text field wants the keyboard (VOTE-NFR-010).
     /// Returns the card to scroll into view when focus moved.
     fn handle_shortcuts(&mut self, ui: &Ui, listed: &[usize]) -> Option<String> {
-        if !self.list_focused
-            || self.show_bulk_schedule_popup
-            || ui.ctx().egui_wants_keyboard_input()
-        {
+        if !self.list_focused || self.confirm_open || ui.ctx().egui_wants_keyboard_input() {
             return None;
         }
         let shortcuts: Vec<Shortcut> = ui.input(|input| {
@@ -1316,8 +1310,8 @@ impl DPNSScreen {
         }
         self.retry = None;
         self.node_overrides.clear();
-        self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
-        self.show_bulk_schedule_popup = true;
+        self.confirm_status = VoteHandlingStatus::NotStarted;
+        self.confirm_open = true;
     }
 
     /// Stage `choice` for a contest, or clear it when it is already staged.
@@ -1364,8 +1358,8 @@ impl DPNSScreen {
         });
         self.node_overrides.clear();
         self.confirm_timing = ConfirmTiming::Now;
-        self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
-        self.show_bulk_schedule_popup = true;
+        self.confirm_status = VoteHandlingStatus::NotStarted;
+        self.confirm_open = true;
     }
 
     /// `Needs attention` row (VOTE-FR-084): unconfirmed, failed or missed
@@ -1853,7 +1847,7 @@ impl DPNSScreen {
             ConfirmTiming::BeforeEnd => Ok(BatchTiming::BeforeEnd(self.relative_preset)),
             ConfirmTiming::At => {
                 let at = self
-                    .simple_schedule
+                    .confirm_schedule
                     .current_value()
                     .ok_or(ReviewPlanError::ScheduleIsNotAValidTime)?;
                 // Each contest's deadline is checked when the plan is composed.
@@ -1956,14 +1950,14 @@ impl DPNSScreen {
 
     /// The confirm step (VOTE-FR-080): an aggregate of the staged decisions
     /// across the node set, the batch timing, and `Adjust nodes`.
-    fn show_review_and_cast_window(&mut self, ui: &mut Ui) -> AppAction {
+    fn show_confirm_step(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
         let dark_mode = ui.style().visuals.dark_mode;
 
         if self.voting_identity_load_error.is_some() {
             self.render_voting_identity_load_error(ui);
             if ComponentStyles::add_secondary_button(ui, "Close", dark_mode).clicked() {
-                self.show_bulk_schedule_popup = false;
+                self.confirm_open = false;
             }
             return action;
         }
@@ -1974,10 +1968,10 @@ impl DPNSScreen {
             ui.horizontal(|ui| {
                 if ComponentStyles::add_primary_button(ui, button).clicked() {
                     self.load_node_requested = true;
-                    self.show_bulk_schedule_popup = false;
+                    self.confirm_open = false;
                 }
                 if ComponentStyles::add_secondary_button(ui, "Close", dark_mode).clicked() {
-                    self.show_bulk_schedule_popup = false;
+                    self.confirm_open = false;
                 }
             });
             return action;
@@ -1988,7 +1982,7 @@ impl DPNSScreen {
                 "No decisions are staged. Pick a choice on at least one name, then try again.",
             );
             if ComponentStyles::add_secondary_button(ui, "Back to To decide", dark_mode).clicked() {
-                self.show_bulk_schedule_popup = false;
+                self.confirm_open = false;
             }
             return action;
         }
@@ -2079,7 +2073,7 @@ impl DPNSScreen {
                 ui.colored_label(DashColors::warning_color(dark_mode), KEEP_RUNNING_MESSAGE);
             }
             ConfirmTiming::At => {
-                self.simple_schedule.show(ui);
+                self.confirm_schedule.show(ui);
                 ui.colored_label(DashColors::warning_color(dark_mode), KEEP_RUNNING_MESSAGE);
             }
         }
@@ -2138,21 +2132,21 @@ impl DPNSScreen {
             });
         }
         if submit_clicked {
-            action = self.bulk_apply_votes();
+            action = self.submit_confirmed_votes();
             if matches!(action, AppAction::BackendTask(_)) {
                 // The confirm step closes at once; the drawer tracks progress
                 // and the staged decisions clear when the operation reports.
-                self.show_bulk_schedule_popup = false;
+                self.confirm_open = false;
                 self.show_vote_progress(ui.ctx());
             }
         }
         if cancel_clicked {
             // Cancel closes the confirm step; staged decisions stay in the tray.
-            self.show_bulk_schedule_popup = false;
+            self.confirm_open = false;
             self.retry = None;
-            self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
+            self.confirm_status = VoteHandlingStatus::NotStarted;
         }
-        if let VoteHandlingStatus::Failed(error) = &self.bulk_vote_handling_status {
+        if let VoteHandlingStatus::Failed(error) = &self.confirm_status {
             ui.colored_label(DashColors::error_color(dark_mode), error.to_string());
         }
         action
@@ -2291,12 +2285,12 @@ impl DPNSScreen {
         if let Some(handle) = &self.submission_error_banner {
             handle.with_details(&error);
         }
-        self.bulk_vote_handling_status = VoteHandlingStatus::Failed(error);
+        self.confirm_status = VoteHandlingStatus::Failed(error);
     }
 
     /// Resolve every node × contest target the current review would submit.
     ///
-    /// The review sheet and the submit click share this so the sheet cannot
+    /// The confirm step and the submit click share this so the step cannot
     /// promise something other than what is sent.
     ///
     /// # Errors
@@ -2408,7 +2402,7 @@ impl DPNSScreen {
 
     /// Clone the signing identities of the nodes casting in `plan`.
     ///
-    /// Kept out of [`ReviewPlan`], which the review sheet rebuilds every frame:
+    /// Kept out of [`ReviewPlan`], which the confirm step rebuilds every frame:
     /// only the submit click needs owned identities.
     fn casting_voters(&self, plan: &ReviewPlan) -> Vec<QualifiedIdentity> {
         let casting: BTreeSet<Identifier> = plan
@@ -2423,7 +2417,7 @@ impl DPNSScreen {
             .collect()
     }
 
-    fn bulk_apply_votes(&mut self) -> AppAction {
+    fn submit_confirmed_votes(&mut self) -> AppAction {
         if self.pending_vote_operation.is_some() {
             return AppAction::None;
         }
@@ -2452,7 +2446,7 @@ impl DPNSScreen {
         let operation = AppContext::new_dpns_vote_operation(plan.aggregate.targets);
         let labels = self.relative_schedule_labels_for(&operation);
         self.submission_error_banner.take_and_clear();
-        self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
+        self.confirm_status = VoteHandlingStatus::NotStarted;
         self.submitted_retry = self.retry.take();
         self.pending_vote_operation = Some(operation.id);
         if self.submitted_retry.is_some() {
@@ -2583,9 +2577,9 @@ impl ScreenLike for DPNSScreen {
             if matches!(error, TaskError::DpnsVoteReviewRequired) {
                 // A first vote became a change during preflight: reopen the
                 // confirm on fresh vote state so it shows the change warning.
-                self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
+                self.confirm_status = VoteHandlingStatus::NotStarted;
                 self.retry = retried;
-                self.show_bulk_schedule_popup = !self.review_votes().is_empty();
+                self.confirm_open = !self.review_votes().is_empty();
             }
         }
         if let Err(refresh_error) = self.vote_operations.refresh(&self.app_context) {
@@ -2624,7 +2618,7 @@ impl ScreenLike for DPNSScreen {
                 if owns_result {
                     self.pending_vote_operation = None;
                     self.submitted_retry = None;
-                    self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
+                    self.confirm_status = VoteHandlingStatus::NotStarted;
                     self.selected_votes.retain(|vote| {
                         self.submitted_votes.get(&vote.contested_name) != Some(vote)
                     });
@@ -2820,23 +2814,23 @@ impl ScreenLike for DPNSScreen {
                 }
             }
         }
-        if self.show_bulk_schedule_popup {
+        if self.confirm_open {
             egui::Window::new("Confirm votes")
                 .collapsible(false)
                 .resizable(true)
                 .vscroll(true)
                 .show(ui.ctx(), |ui| {
-                    action |= self.show_review_and_cast_window(ui);
+                    action |= self.show_confirm_step(ui);
                 });
         }
 
-        if self.voting_identity_load_error.is_some() && !self.show_bulk_schedule_popup {
+        if self.voting_identity_load_error.is_some() && !self.confirm_open {
             self.render_voting_identity_load_error(ui);
         }
         match self.view {
             VotesView::ToDecide | VotesView::Voted => {
                 if self.voting_identities.is_empty() && self.voting_identity_load_error.is_none() {
-                    action |= self.render_no_voting_nodes(ui);
+                    self.render_no_voting_nodes(ui);
                 }
                 self.render_needs_attention(ui);
                 if self.active_contests.is_empty() {
@@ -3056,7 +3050,7 @@ mod tests {
         let (mut screen, _temp_dir) = voting_ui_review_fixture();
         let ctx = Arc::clone(&screen.app_context);
         assert!(matches!(
-            screen.bulk_apply_votes(),
+            screen.submit_confirmed_votes(),
             AppAction::BackendTask(_)
         ));
         let operation_id = screen.pending_vote_operation.unwrap();
@@ -3079,7 +3073,7 @@ mod tests {
         assert!(screen.selected_votes.is_empty());
         assert!(screen.pending_vote_operation.is_none());
         assert!(matches!(
-            screen.bulk_vote_handling_status,
+            screen.confirm_status,
             VoteHandlingStatus::NotStarted
         ));
         assert!(!screen.pending_scheduled_actions.is_empty());
@@ -3167,7 +3161,7 @@ mod tests {
         let mut harness = egui_kittest::Harness::builder()
             .with_size(egui::vec2(1000.0, 800.0))
             .build_ui(move |ui| {
-                screen.show_review_and_cast_window(ui);
+                screen.show_confirm_step(ui);
             });
         harness.run();
 
@@ -3372,11 +3366,11 @@ mod tests {
         let (mut screen, _dir) = voting_ui_review_fixture();
         let staged = screen.selected_votes.clone();
         assert!(matches!(
-            screen.bulk_apply_votes(),
+            screen.submit_confirmed_votes(),
             AppAction::BackendTask(_)
         ));
         let operation_id = screen.pending_vote_operation.unwrap();
-        screen.show_bulk_schedule_popup = false;
+        screen.confirm_open = false;
         let error = TaskError::DpnsCurrentVoteUnavailable;
 
         screen.display_backend_task_error(
@@ -3391,14 +3385,14 @@ mod tests {
         assert_eq!(screen.pending_vote_operation, None);
         assert_eq!(screen.selected_votes, staged);
         assert!(!staged.is_empty());
-        assert!(!screen.show_bulk_schedule_popup);
+        assert!(!screen.confirm_open);
         screen.open_review_for_node_set();
         assert!(
-            screen.show_bulk_schedule_popup,
+            screen.confirm_open,
             "the confirm step must open again once the failed submission is released"
         );
         assert!(matches!(
-            screen.bulk_vote_handling_status,
+            screen.confirm_status,
             VoteHandlingStatus::NotStarted
         ));
     }
@@ -3644,11 +3638,11 @@ mod tests {
             egui_kittest::Harness::builder()
                 .with_size(egui::vec2(1000.0, 800.0))
                 .build_ui(move |ui| {
-                    rendering.lock_recover().show_review_and_cast_window(ui);
+                    rendering.lock_recover().show_confirm_step(ui);
                 })
         };
         let (mut screen, _dir) = voting_ui_review_fixture();
-        screen.show_bulk_schedule_popup = true;
+        screen.confirm_open = true;
         let screen = Arc::new(Mutex::new(screen));
 
         let mut harness = render(&screen);
@@ -3663,10 +3657,10 @@ mod tests {
                 screen.pending_vote_operation.is_none(),
                 "Enter on Cancel must not cast"
             );
-            assert!(!screen.show_bulk_schedule_popup, "Enter on Cancel cancels");
+            assert!(!screen.confirm_open, "Enter on Cancel cancels");
         }
 
-        screen.lock_recover().show_bulk_schedule_popup = true;
+        screen.lock_recover().confirm_open = true;
         let mut harness = render(&screen);
         harness.run();
         harness.key_press(egui::Key::Enter);
@@ -3701,7 +3695,7 @@ mod tests {
         };
         harness.event(enter(true));
         harness.run();
-        assert!(screen.lock_recover().show_bulk_schedule_popup);
+        assert!(screen.lock_recover().confirm_open);
         assert!(screen.lock_recover().pending_vote_operation.is_none());
         harness.event(enter(true));
         harness.run_steps(2);
@@ -3746,7 +3740,7 @@ mod tests {
         screen.refresh();
         screen.selected_cards.insert("alpha".to_owned());
         assert!(matches!(
-            screen.bulk_apply_votes(),
+            screen.submit_confirmed_votes(),
             AppAction::BackendTask(_)
         ));
         let operation_id = screen.pending_vote_operation.unwrap();
@@ -3770,14 +3764,14 @@ mod tests {
     fn review_safety_pending_submission_cannot_be_replaced_by_reopening_review() {
         let (mut screen, _dir) = voting_ui_review_fixture();
         assert!(matches!(
-            screen.bulk_apply_votes(),
+            screen.submit_confirmed_votes(),
             AppAction::BackendTask(_)
         ));
         let operation_id = screen.pending_vote_operation;
-        screen.show_bulk_schedule_popup = false;
+        screen.confirm_open = false;
         screen.open_review_for_node_set();
-        assert!(!screen.show_bulk_schedule_popup);
-        assert!(matches!(screen.bulk_apply_votes(), AppAction::None));
+        assert!(!screen.confirm_open);
+        assert!(matches!(screen.submit_confirmed_votes(), AppAction::None));
         assert_eq!(screen.pending_vote_operation, operation_id);
     }
 
@@ -3785,7 +3779,7 @@ mod tests {
     fn review_safety_submission_result_preserves_changed_staged_choice() {
         let (mut screen, _dir) = voting_ui_review_fixture();
         assert!(matches!(
-            screen.bulk_apply_votes(),
+            screen.submit_confirmed_votes(),
             AppAction::BackendTask(_)
         ));
         let operation_id = screen.pending_vote_operation.unwrap();
@@ -4037,9 +4031,9 @@ mod tests {
         let (mut screen, _dir) = voting_ui_review_fixture();
         let now = Utc::now();
         screen.confirm_timing = ConfirmTiming::At;
-        screen.simple_schedule =
+        screen.confirm_schedule =
             UtcScheduleInput::new().with_time(now + chrono::Duration::hours(1));
-        let scheduled_at = screen.simple_schedule.current_value().unwrap();
+        let scheduled_at = screen.confirm_schedule.current_value().unwrap();
         for deadline in [scheduled_at - 1, scheduled_at, scheduled_at + 1] {
             screen.selected_votes[0].end_time = Some(deadline);
             assert_eq!(
@@ -4092,7 +4086,7 @@ mod tests {
             .and_hms_opt(18, 30, 0)
             .unwrap()
             .and_utc();
-        screen.simple_schedule = UtcScheduleInput::new().with_time(requested);
+        screen.confirm_schedule = UtcScheduleInput::new().with_time(requested);
         screen.confirm_timing = ConfirmTiming::At;
         let plan = screen.build_review_plan().unwrap();
         assert_eq!(
@@ -4231,7 +4225,7 @@ mod tests {
             .unwrap();
         screen.vote_state.reload(&screen.app_context).unwrap();
         assert!(matches!(
-            screen.bulk_apply_votes(),
+            screen.submit_confirmed_votes(),
             AppAction::BackendTask(_)
         ));
         let operation_id = screen.pending_vote_operation.unwrap();
@@ -4250,11 +4244,11 @@ mod tests {
         screen.display_task_error(&error);
         assert!(screen.pending_vote_operation.is_none());
         assert!(matches!(
-            screen.bulk_vote_handling_status,
+            screen.confirm_status,
             VoteHandlingStatus::NotStarted
         ));
         assert!(
-            screen.show_bulk_schedule_popup,
+            screen.confirm_open,
             "DPN-005: the confirm reopens with the change warning"
         );
         assert_eq!(
@@ -4264,7 +4258,7 @@ mod tests {
         let mut harness = egui_kittest::Harness::builder()
             .with_size(egui::vec2(1000.0, 800.0))
             .build_ui(move |ui| {
-                screen.show_review_and_cast_window(ui);
+                screen.show_confirm_step(ui);
             });
         harness.run();
         assert!(
@@ -4419,7 +4413,7 @@ mod tests {
         screen.lock_recover().list_focused = true;
         harness.key_press(egui::Key::Enter);
         harness.run();
-        assert!(screen.lock_recover().show_bulk_schedule_popup);
+        assert!(screen.lock_recover().confirm_open);
         assert!(
             harness
                 .query_by_label("Cast 2 decisions with 1 node")
@@ -4544,7 +4538,7 @@ mod tests {
         for reviewing in [false, true] {
             let mut screen = DPNSScreen::new(&context, VotesView::ToDecide);
             assert!(screen.voting_identity_load_error.is_some());
-            screen.show_bulk_schedule_popup = reviewing;
+            screen.confirm_open = reviewing;
             let mut harness = egui_kittest::Harness::builder().build_ui(move |ui| {
                 screen.ui(ui);
             });
@@ -4625,7 +4619,7 @@ mod tests {
         );
 
         assert!(matches!(
-            screen.bulk_apply_votes(),
+            screen.submit_confirmed_votes(),
             AppAction::BackendTask(_)
         ));
         let operation_id = screen.pending_vote_operation.unwrap();
@@ -4663,10 +4657,10 @@ mod tests {
         let retried = screen.retry.clone();
         assert!(retried.is_some());
         assert!(matches!(
-            screen.bulk_apply_votes(),
+            screen.submit_confirmed_votes(),
             AppAction::BackendTask(_)
         ));
-        screen.show_bulk_schedule_popup = false;
+        screen.confirm_open = false;
         let error = TaskError::DpnsVoteReviewRequired;
         screen.display_backend_task_error(
             &BackendTaskContext::DpnsVoteOperation {
@@ -4677,7 +4671,7 @@ mod tests {
         );
         screen.display_task_error(&error);
 
-        assert!(screen.show_bulk_schedule_popup);
+        assert!(screen.confirm_open);
         assert_eq!(screen.retry, retried);
         assert_eq!(screen.selected_votes.len(), 1);
         assert_eq!(screen.selected_votes[0].contested_name, "unrelated");
@@ -4720,7 +4714,7 @@ mod tests {
         use egui_kittest::kittest::Queryable;
         let (mut screen, _temp_dir) = voting_ui_review_fixture();
         let mut harness = egui_kittest::Harness::builder().build_ui(move |ui| {
-            screen.show_review_and_cast_window(ui);
+            screen.show_confirm_step(ui);
         });
         harness.run();
         assert!(
@@ -4739,7 +4733,7 @@ mod tests {
         screen.selected_votes[0].vote_choice = ResourceVoteChoice::Lock;
         assert_eq!(screen.build_review_plan().unwrap().effective_count(), 0);
         let mut harness = egui_kittest::Harness::builder().build_ui(move |ui| {
-            screen.show_review_and_cast_window(ui);
+            screen.show_confirm_step(ui);
         });
         harness.run();
         assert!(
@@ -4800,7 +4794,7 @@ mod tests {
     #[test]
     fn voting_ui_network_switch_discards_staged_choices() {
         let (mut screen, _temp_dir) = voting_ui_review_fixture();
-        screen.show_bulk_schedule_popup = true;
+        screen.confirm_open = true;
         screen.pending_scheduled_actions.insert(
             pending_scheduled_key(&screen.app_context),
             BackendTaskContext::Unknown,
@@ -4816,7 +4810,7 @@ mod tests {
         screen.reset_for_network_switch();
         screen.refresh_on_arrival();
         assert!(screen.selected_votes.is_empty());
-        assert!(!screen.show_bulk_schedule_popup);
+        assert!(!screen.confirm_open);
         assert!(screen.pending_scheduled_actions.is_empty());
     }
 
@@ -4906,7 +4900,7 @@ mod tests {
         );
     }
 
-    /// The review sheet must expand every node × contest pair, suppress the
+    /// The confirm step must expand every node × contest pair, suppress the
     /// targets that already hold the requested choice, and count what it dropped.
     #[tokio::test]
     async fn review_plan_expands_every_node_and_contest_and_suppresses_no_ops() {

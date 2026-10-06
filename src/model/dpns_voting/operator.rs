@@ -161,7 +161,7 @@ pub struct ChoiceTally {
 }
 
 /// Group nodes' proved choices by choice with summed vote weight; ties break
-/// by node count (History, VOTE-FR-087).
+/// by node count (History).
 pub fn tally_node_choices(
     votes: impl IntoIterator<Item = (VotingNodeKind, ResourceVoteChoice)>,
 ) -> Vec<ChoiceTally> {

@@ -149,7 +149,8 @@ pub fn validate_dpns_schedule_edit(
     Ok(())
 }
 
-/// Durable identity of one scheduled-vote compatibility mirror row.
+/// Identity of one scheduled vote as the Scheduled view addresses it: a node
+/// and a contested name on one network.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct DpnsScheduledVoteKey {
     pub network: Network,

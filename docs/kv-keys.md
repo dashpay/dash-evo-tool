@@ -117,7 +117,13 @@ These keys are **retired**. No current code reads or writes them; scheduled vote
 | `det:scheduled_vote_voters:v1` | `None` | `det-<net>.sqlite` | Retired; never read |
 | `det:migration:unreadable_votes:<network>:v1` | `None` | `det-app.sqlite` | Retired; never read (the storage update no longer inspects legacy scheduled votes) |
 
-Unexecuted schedules in the legacy SQLite `scheduled_votes` table of `data.db` are detected read-only at startup (`src/context/legacy_scheduled_votes.rs`) and raise a notice; they are never imported.
+Unexecuted schedules in the legacy SQLite `scheduled_votes` table of `data.db` are detected read-only at startup (`src/context/legacy_scheduled_votes.rs`) and raise a notice; they are never imported. One live key bounds that notice:
+
+| Key | Scope | Store | Value type | Notes |
+|-----|-------|-------|------------|-------|
+| `det:legacy_scheduled_votes_noticed_at:v1:<network>` | `None` | `det-<net>.sqlite` | `u64` | Unix time in milliseconds when the notice was first due. The notice stops one full contest duration later, when every contest an old schedule could refer to has closed |
+
+Source: `src/context/legacy_scheduled_votes.rs`
 
 ---
 

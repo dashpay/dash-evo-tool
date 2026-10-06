@@ -894,6 +894,7 @@ As a masternode operator, I want to be told when an upgrade cannot carry over my
 
 - Startup checks for unexecuted schedules in the previous SQLite storage on the selected network.
 - A persistent, dismissible notice directs me to Masternodes → Votes to make a new decision.
+- The notice stops appearing one full voting period after it was first shown, because every vote an old schedule could refer to has ended by then.
 - Old schedules are neither imported nor executed automatically; their source records remain untouched.
 - Executed schedules and votes already represented in the voting journal do not raise the notice.
 - New schedules use only the voting journal, including editing, cancellation, execution and recovery.

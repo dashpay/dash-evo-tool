@@ -155,7 +155,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   masternodes with To decide / Voted / Scheduled / History views, remembered
   node sets, bulk choices, and one aggregate confirmation for the batch.
   Cards show weighted tallies and your nodes' influence. The confirmation
-  lists names, choices, node counts and timing. Node details show remaining
+  lists names, choices with full contender identities, node counts and timing
+  (scheduled times as explicit UTC timestamps). Node details show remaining
   vote changes (four after the initial vote, or Unknown when this device has
   no count). If a first vote becomes a change before
   submission, another review is required. Nodes without available voting
@@ -165,33 +166,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Cast now, choose a UTC time, or schedule shortly before voting ends.
   Scheduled decisions can be edited or removed before execution; missed
   schedules and failed attempts offer recovery actions. Mixed batches report
-  cast and scheduled results together. A progress drawer shows live results
-  without reading storage during rendering. Decisions staged or changed during
-  submission survive its completion. Uncertain votes stay visible and blocked from resubmission;
-  passing the estimated deadline alone does not release them. Completed
-  history is bounded without discarding unresolved votes. Removing a node
-  cancels its unstarted scheduled votes.
+  cast and scheduled results together. A progress drawer shows live results.
+  Decisions staged or changed during submission survive its completion, and
+  entering Votes picks up newly added voting nodes without changing staged
+  choices. Uncertain votes stay visible and blocked from resubmission; neither
+  passing the estimated deadline nor the contest closing releases them.
+  Completed history is bounded without discarding unresolved votes. Removing a
+  node cancels its unstarted scheduled votes.
 
   A top-bar indicator and navigation badge highlight contests needing a vote,
   with background refresh every 30 minutes on Mainnet and every 3 minutes on
-  other networks. Refresh bursts yield between frames, and unresolved counts
-  use one pass through the vote journal. History has a final “details” column
-  that opens the contest in Platform Explorer on Mainnet or Testnet.
+  other networks. History has a final “details” column that opens the contest
+  in Platform Explorer on Mainnet or Testnet.
 
 - **Usernames in Identities**: check availability, request a name, and follow
   its status without opening the voting screen. Names needing a community
   vote show the non-refundable fee before payment, and availability is
   checked again before registration. Registration prevents duplicate payment;
-  returning from a top-up preserves the chosen name and payment review.
+  if the app cannot confirm that a paid request went through, it says so
+  instead of reporting a failure and asks you to check the Usernames list
+  before paying again. Returning from a top-up preserves the chosen name and
+  payment review.
   Changing the name, payer, network or fee requires a fresh review; the backend
   rejects an unapproved community vote fee before spending funds.
   Request status shows the timeline, tally and outcome, with alternatives
   that need no vote. Saved requests refresh before the wider contest search;
   after the estimated deadline they show “Awaiting result” until the network
-  confirms an outcome. Refresh preserves concurrent identity edits and finished
-  outcomes when an older refresh completes, and keeps the previous request
-  snapshot when storage cannot be read. Removed identities disappear immediately
-  from username views; failed record cleanup is retried after restarting.
+  confirms an outcome. Removed identities disappear immediately from username
+  views; failed record cleanup is retried after restarting.
   Won usernames retry failed fetches and identity writes, including after
   restarting the app.
   Profile → Usernames lists names and requests, with a “Show as main” choice
@@ -208,18 +210,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   follow-up.
 
 ### Fixed
-
-- Closed contests keep uncertain vote outcomes instead of reporting them as failed
-  when Platform has removed the voting records. Progress updates during submission,
-  and entering Votes reloads newly added voting nodes without changing staged choices.
-- Username refreshes skip identities removed while a request was in flight and report
-  local storage errors while retaining successful updates for other identities.
-
-- Username request updates preserve saved requests after a failed startup read, and
-  status refreshes complete when the request page is hidden behind registration.
-- Voting confirmation and schedule choices expose full contender identities;
-  scheduled votes use consistent node handles and explicit UTC timestamps.
-- Voting views share outcome selection and reuse scheduled decision groups between refreshes.
 
 - Restoring imported keys remains recoverable after interrupted storage writes
   and reports unreadable protected keys. Startup migration preserves existing
@@ -915,6 +905,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Scheduled votes now use only the voting journal. Schedules from the previous
   SQLite storage are no longer imported or executed automatically; a startup
   notice asks users to review and cast or schedule those votes again.
+  Votes scheduled with an earlier development (pre-release) build of this
+  version were saved in a storage format that is no longer read: they are not
+  carried over and that notice does not list them, so schedule them again in
+  Masternodes → Votes.
 
 - The standalone DPNS tool and voting controls embedded in node details. Voting now
   lives in Masternodes → Votes and username management in Identities;

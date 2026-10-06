@@ -225,12 +225,25 @@ fn show_legacy_settings_import_warning(ctx: &egui::Context, error: &impl std::fm
     handle.with_details(error);
 }
 
+/// Startup notice for schedules left behind by an earlier version. They are
+/// neither imported nor listed, so the copy says so instead of offering a review.
+fn legacy_scheduled_votes_notice(network: Network) -> String {
+    let network = chooser_network_label(network);
+    format!(
+        "Votes you scheduled in an earlier version of the app on {network} were not carried over and will not be cast. They are not listed in this version. Open Masternodes > Votes and schedule the ones you still want."
+    )
+}
+
 fn notify_legacy_scheduled_votes(app_context: &AppContext) {
     let ctx = app_context.egui_ctx();
-    match app_context.has_legacy_scheduled_votes() {
+    match app_context.legacy_scheduled_votes_notice_due() {
         Ok(true) => {
-            let network = app_context.network;
-            MessageBanner::set_global(ctx, format!("Some scheduled votes from an earlier version on {network} will not run automatically. Open Masternodes > Votes to review them and cast or schedule them again."), MessageType::Warning).disable_auto_dismiss();
+            MessageBanner::set_global(
+                ctx,
+                legacy_scheduled_votes_notice(app_context.network),
+                MessageType::Warning,
+            )
+            .disable_auto_dismiss();
         }
         Ok(false) => {}
         Err(error) => {
@@ -863,7 +876,7 @@ pub fn migration_running_text(step: MigrationStep) -> &'static str {
     match step {
         MigrationStep::Wiring => "The app is opening your saved data.",
         MigrationStep::Detecting => "The app is checking your wallet data.",
-        MigrationStep::AppData => "The app is restoring your scheduled votes.",
+        MigrationStep::AppData => "The app is restoring your identity balance history.",
         MigrationStep::SingleKey => "The app is updating your imported keys.",
         MigrationStep::Shielded => "The app is verifying your shielded balance.",
         MigrationStep::WalletSeeds => "The app is moving your wallets into secure storage.",
@@ -882,7 +895,7 @@ pub fn migration_running_text(step: MigrationStep) -> &'static str {
 pub fn migration_unreadable_votes_text(count: u32) -> String {
     format!(
         "Some scheduled votes from the previous version could not be read and were not carried \
-         over ({count} in total). Schedule them again on the Scheduled Votes screen."
+         over ({count} in total). Schedule them again under Masternodes > Votes."
     )
 }
 
@@ -915,7 +928,7 @@ pub fn migration_unreadable_identities_and_votes_text(identities: u32, votes: u3
          the previous version could not be read and were not carried over. Your previous data is \
          untouched. For a user identity, choose Load Identity on the Identities screen. For a \
          masternode or evonode identity, choose + Load on the Masternodes tab. Schedule the votes \
-         again on the Scheduled Votes screen."
+         again under Masternodes > Votes."
     )
 }
 
@@ -959,7 +972,7 @@ pub fn migration_unreadable_data_text(identities: u32, votes: u32, top_ups: u32)
         (false, true, true) => format!(
             "Some scheduled votes ({votes} in total) and some records of earlier additions to \
              identity balances ({top_ups} in total) from the previous version could not be read \
-             and were not carried over. Schedule the votes again on the Scheduled Votes screen. \
+             and were not carried over. Schedule the votes again under Masternodes > Votes. \
              Check each identity's balance history before adding more funds."
         ),
         (true, true, true) => format!(
@@ -967,8 +980,8 @@ pub fn migration_unreadable_data_text(identities: u32, votes: u32, top_ups: u32)
              and some records of earlier additions to identity balances ({top_ups} in total) \
              from the previous version could not be read and were not carried over. For a user \
              identity, choose Load Identity on the Identities screen. For a masternode or \
-             evonode identity, choose + Load on the Masternodes tab. Schedule the votes again on \
-             the Scheduled Votes screen, and check each identity's balance history before adding \
+             evonode identity, choose + Load on the Masternodes tab. Schedule the votes again \
+             under Masternodes > Votes, and check each identity's balance history before adding \
              more funds."
         ),
         (false, false, false) => {
@@ -4451,6 +4464,37 @@ mod migration_banner_tests {
         notify_legacy_scheduled_votes(&context);
         assert!(MessageBanner::has_global(context.egui_ctx()));
         assert!(context.dpns_vote_operations().unwrap().is_empty());
+    }
+
+    /// Old schedules are not listed anywhere, so the notice must not promise a
+    /// review, and it names the network the way the rest of the app does.
+    #[test]
+    fn legacy_schedule_notice_is_truthful_about_what_the_user_can_do() {
+        let notice = legacy_scheduled_votes_notice(Network::Mainnet);
+        assert_eq!(
+            notice,
+            "Votes you scheduled in an earlier version of the app on Mainnet were not carried over and will not be cast. They are not listed in this version. Open Masternodes > Votes and schedule the ones you still want."
+        );
+        assert!(!notice.contains("review"));
+    }
+
+    /// Scheduled votes are never imported, and the Scheduled Votes screen is
+    /// gone: no migration copy may claim otherwise.
+    #[test]
+    fn migration_copy_does_not_mention_importing_votes_or_a_removed_screen() {
+        for step in MigrationStep::ALL {
+            let text = migration_running_text(step);
+            assert!(!text.contains("scheduled votes"), "{text}");
+        }
+        for text in [
+            migration_unreadable_votes_text(2),
+            migration_unreadable_identities_and_votes_text(1, 2),
+            migration_unreadable_data_text(0, 2, 3),
+            migration_unreadable_data_text(1, 2, 3),
+        ] {
+            assert!(!text.contains("Scheduled Votes screen"), "{text}");
+            assert!(text.contains("Masternodes > Votes"), "{text}");
+        }
     }
 
     #[test]

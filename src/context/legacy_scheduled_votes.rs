@@ -2,9 +2,58 @@
 
 use super::AppContext;
 use crate::backend_task::error::TaskError;
+use crate::utils::time::now_ms;
+use crate::wallet_backend::{DetScope, network_prefix};
 use std::collections::BTreeSet;
+use std::time::Duration;
+
+const NOTICED_AT_KEY_PREFIX: &str = "det:legacy_scheduled_votes_noticed_at:v1:";
+
+/// Whether a notice first raised at `first_noticed_at_ms` is still worth
+/// showing: once a full contest has passed, every contest an old schedule
+/// could refer to has closed and nothing is left to schedule again.
+fn legacy_notice_is_current(
+    first_noticed_at_ms: u64,
+    now_ms: u64,
+    contest_duration: Duration,
+) -> bool {
+    let window_ms = u64::try_from(contest_duration.as_millis()).unwrap_or(u64::MAX);
+    now_ms.saturating_sub(first_noticed_at_ms) < window_ms
+}
 
 impl AppContext {
+    /// Whether startup should tell the user about old, unexecuted schedules.
+    ///
+    /// Old schedules are neither imported nor listed, so the user cannot retire
+    /// the notice for a contest that has ended. It therefore stops one contest
+    /// duration after its first appearance, which this call records.
+    pub(crate) fn legacy_scheduled_votes_notice_due(&self) -> Result<bool, TaskError> {
+        if !self.has_legacy_scheduled_votes()? {
+            return Ok(false);
+        }
+        let kv = self.det_kv()?;
+        let key = format!("{NOTICED_AT_KEY_PREFIX}{}", network_prefix(self.network));
+        let storage_err = |source| TaskError::DpnsVoteOperationStorage { source };
+        let now = now_ms();
+        let first_noticed_at = match kv.get::<u64>(DetScope::Global, &key).map_err(storage_err)? {
+            Some(at) => at,
+            None => {
+                kv.put(DetScope::Global, &key, &now).map_err(storage_err)?;
+                now
+            }
+        };
+        let contest_duration = crate::model::dpns::contest_durations(
+            self.network,
+            super::default_platform_version(&self.network),
+        )
+        .total;
+        Ok(legacy_notice_is_current(
+            first_noticed_at,
+            now,
+            contest_duration,
+        ))
+    }
+
     /// Whether unexecuted SQLite schedules still need an explicit voting decision.
     pub(crate) fn has_legacy_scheduled_votes(&self) -> Result<bool, TaskError> {
         let old = crate::database::legacy_import::read_scheduled_votes(
@@ -84,6 +133,56 @@ mod tests {
         assert!(
             !context.has_legacy_scheduled_votes().unwrap(),
             "already represented votes do not need a new decision"
+        );
+    }
+
+    /// The user cannot retire the notice for a contest that already ended, so
+    /// it must stop by itself once no old schedule can still matter.
+    #[test]
+    fn startup_notice_stops_one_contest_duration_after_it_first_appeared() {
+        use super::{NOTICED_AT_KEY_PREFIX, legacy_notice_is_current};
+        use crate::utils::time::now_ms;
+        use crate::wallet_backend::{DetScope, network_prefix};
+        use std::time::Duration;
+
+        let hour = Duration::from_secs(3600);
+        assert!(legacy_notice_is_current(1_000, 1_000, hour));
+        assert!(legacy_notice_is_current(1_000, 1_000 + 3_599_999, hour));
+        assert!(!legacy_notice_is_current(1_000, 1_000 + 3_600_000, hour));
+
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let kv = DetKv::from_store(Arc::new(InMemoryKv::default()));
+        context.set_det_kv_override_for_test(kv.clone());
+        assert!(!context.legacy_scheduled_votes_notice_due().unwrap());
+        create_legacy_scheduled_votes_table(&context.db).unwrap();
+        seed_legacy_scheduled_vote_row(&context.db, &[1; 32], "alice", "Lock", Network::Testnet)
+            .unwrap();
+        assert!(context.legacy_scheduled_votes_notice_due().unwrap());
+        assert!(
+            context.legacy_scheduled_votes_notice_due().unwrap(),
+            "the notice returns on later launches while a contest may still be open"
+        );
+
+        let contest_duration = crate::model::dpns::contest_durations(
+            Network::Testnet,
+            crate::context::default_platform_version(&Network::Testnet),
+        )
+        .total;
+        let long_ago = now_ms() - u64::try_from(contest_duration.as_millis()).unwrap() - 1;
+        kv.put(
+            DetScope::Global,
+            &format!(
+                "{NOTICED_AT_KEY_PREFIX}{}",
+                network_prefix(Network::Testnet)
+            ),
+            &long_ago,
+        )
+        .unwrap();
+        assert!(!context.legacy_scheduled_votes_notice_due().unwrap());
+        assert!(
+            context.has_legacy_scheduled_votes().unwrap(),
+            "the old record itself stays untouched"
         );
     }
 

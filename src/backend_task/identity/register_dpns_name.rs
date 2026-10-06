@@ -5,7 +5,11 @@ use crate::backend_task::error::TaskError;
 use crate::{
     context::AppContext,
     model::{
-        dpns::{DpnsNameValidationResult, classify_dpns_registration_outcome, validate_dpns_name},
+        dpns::{
+            DpnsNameValidationResult, DpnsRegistrationOutcome, classify_dpns_registration_outcome,
+            validate_dpns_name,
+        },
+        fee_estimation::contest_fee_credits,
         qualified_identity::DPNSNameInfo,
     },
 };
@@ -20,6 +24,7 @@ use dash_sdk::{
         identity::accessors::{IdentityGettersV0, IdentitySettersV0},
         platform_value::Bytes32,
         util::{hash::hash_double, strings::convert_to_homograph_safe_chars},
+        version::PlatformVersion,
     },
     platform::Fetch,
     platform::{Document, transition::put_document::PutDocument},
@@ -39,6 +44,17 @@ fn rebrand_dpns_domain_conflict(error: TaskError) -> TaskError {
     }
 }
 
+/// The community vote fee the user must have approved for `outcome`.
+fn required_contest_fee(
+    outcome: DpnsRegistrationOutcome,
+    platform_version: &PlatformVersion,
+) -> u64 {
+    match outcome {
+        DpnsRegistrationOutcome::PendingCommunityVote => contest_fee_credits(platform_version),
+        DpnsRegistrationOutcome::Registered => 0,
+    }
+}
+
 impl AppContext {
     pub(super) async fn register_dpns_name(
         &self,
@@ -49,32 +65,6 @@ impl AppContext {
         if validation != DpnsNameValidationResult::Valid {
             return Err(TaskError::InvalidDpnsName { validation });
         }
-
-        let contest_fee = if crate::model::dpns::is_contested_label(&input.name_input) {
-            crate::model::fee_estimation::contest_fee_credits(sdk.version())
-        } else {
-            0
-        };
-        if input.approved_contest_fee != contest_fee {
-            return Err(TaskError::UsernameRegistrationTermsChanged);
-        }
-
-        // Authoritative re-check before any fee is spent: the name may have been
-        // taken, locked, or closed to new requests since the user chose it.
-        let availability = self
-            .username_availability(
-                sdk,
-                input.qualified_identity.identity.id(),
-                &input.name_input,
-            )
-            .await?;
-        if !availability.allows_registration() {
-            return Err(TaskError::UsernameNoLongerAvailable { availability });
-        }
-        let joined_until = match availability {
-            UsernameAvailability::Joinable { join_end, .. } => Some(join_end),
-            _ => None,
-        };
 
         let mut rng = StdRng::from_entropy();
         let dpns_contract = self.dpns_contract.clone();
@@ -180,6 +170,25 @@ impl AppContext {
         )
         .map_err(|error| SdkError::Protocol(*error))?;
 
+        // The approval is checked against the document that is broadcast, so it
+        // can never cover a different charge than the one Platform applies.
+        if input.approved_contest_fee != required_contest_fee(outcome, sdk.version()) {
+            return Err(TaskError::UsernameRegistrationTermsChanged);
+        }
+
+        // Authoritative re-check before any fee is spent: the name may have been
+        // taken, locked, or closed to new requests since the user chose it.
+        let availability = self
+            .username_availability(sdk, qualified_identity.identity.id(), &input.name_input)
+            .await?;
+        if !availability.allows_registration() {
+            return Err(TaskError::UsernameNoLongerAvailable { availability });
+        }
+        let joined_until = match availability {
+            UsernameAvailability::Joinable { join_end, .. } => Some(join_end),
+            _ => None,
+        };
+
         let public_key = match input.signing_key_id {
             Some(key_id) => qualified_identity
                 .identity
@@ -250,7 +259,7 @@ impl AppContext {
         sdk: &Sdk,
         identity: crate::model::qualified_identity::QualifiedIdentity,
         name: &str,
-        outcome: crate::model::dpns::DpnsRegistrationOutcome,
+        outcome: DpnsRegistrationOutcome,
         joined_until: Option<u64>,
         balance_before: u64,
         estimated_fee: u64,
@@ -258,7 +267,7 @@ impl AppContext {
         // The name request is broadcast and paid for: from here on nothing may
         // report failure, or the user would be invited to pay again.
         let identity_id = identity.identity.id();
-        if outcome == crate::model::dpns::DpnsRegistrationOutcome::PendingCommunityVote
+        if outcome == DpnsRegistrationOutcome::PendingCommunityVote
             && let Err(error) =
                 self.record_submitted_username_request(sdk, &identity_id, name, joined_until)
         {
@@ -304,7 +313,7 @@ impl AppContext {
         if let Err(error) = self.edit_local_qualified_identity(&identity_id, |fresh| {
             if let Some(names) = refreshed_names {
                 fresh.dpns_names = names;
-            } else if outcome == crate::model::dpns::DpnsRegistrationOutcome::Registered
+            } else if outcome == DpnsRegistrationOutcome::Registered
                 && !fresh.dpns_names.iter().any(|known| known.name == name)
             {
                 fresh.dpns_names.push(DPNSNameInfo {
@@ -442,7 +451,7 @@ mod tests {
             &Sdk::new_mock(),
             stale,
             "alice-123",
-            crate::model::dpns::DpnsRegistrationOutcome::Registered,
+            DpnsRegistrationOutcome::Registered,
             None,
             1_000,
             100,
@@ -462,7 +471,6 @@ mod tests {
     /// automatic alias hides the user's chosen main name.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn paid_registration_succeeds_when_rereads_fail() {
-        use crate::model::dpns::DpnsRegistrationOutcome;
         use crate::model::dpns_usernames::RequestPhase;
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = crate::context::test_support::test_app_context(dir.path());
@@ -540,6 +548,24 @@ mod tests {
                 "{label}: {result:?}"
             );
         }
+    }
+
+    /// The fee the user must have approved follows the document's own
+    /// classification: a document that opens a vote always requires the fee,
+    /// whatever any other predicate said about its label.
+    #[test]
+    fn required_contest_fee_follows_the_broadcast_document() {
+        let version = PlatformVersion::latest();
+        let fee = contest_fee_credits(version);
+        assert!(fee > 0);
+        assert_eq!(
+            required_contest_fee(DpnsRegistrationOutcome::PendingCommunityVote, version),
+            fee
+        );
+        assert_eq!(
+            required_contest_fee(DpnsRegistrationOutcome::Registered, version),
+            0
+        );
     }
 
     /// USR-TC-018 backend half: availability is re-checked before anything is

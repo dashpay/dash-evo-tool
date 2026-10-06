@@ -382,7 +382,10 @@ impl AppContext {
         if let Err(error) = self.edit_local_qualified_identity(&identity_id, |fresh| {
             if let Some(names) = refreshed_names {
                 fresh.dpns_names = names;
-            } else if outcome == DpnsRegistrationOutcome::Registered
+            }
+            // A re-read served by a node that has not seen the new name yet
+            // must not drop it: the registration is already paid for.
+            if outcome == DpnsRegistrationOutcome::Registered
                 && !fresh.dpns_names.iter().any(|known| known.name == name)
             {
                 fresh.dpns_names.push(DPNSNameInfo {
@@ -544,6 +547,44 @@ mod tests {
         assert_eq!(saved.alias, current.alias);
         assert!(saved.private_keys.first_live_candidate(&key).is_some());
         assert!(saved.dpns_names.iter().any(|name| name.name == "alice-123"));
+    }
+
+    /// A re-read that succeeds but lags behind the registration must not drop
+    /// the name the user just paid for from the identity.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn registered_name_survives_a_lagging_reread() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(
+            std::sync::Arc::new(crate::wallet_backend::kv_test_support::InMemoryKv::default()),
+        ));
+        let identity = bare_identity(5);
+        let id = identity.identity.id();
+        ctx.update_local_qualified_identity(&identity).unwrap();
+        // The node answers, but only with a name registered earlier.
+        let mut sdk = Sdk::new_mock();
+        sdk.mock()
+            .expect_fetch_many::<Identifier, Document, _, Documents>(
+                ctx.owned_dpns_names_query(id),
+                Some(documents(Some(domain_document(id, "earlier-name-2")))),
+            )
+            .await
+            .expect("owned names expectation");
+
+        ctx.finish_username_registration(
+            &sdk,
+            identity,
+            "alice-123",
+            DpnsRegistrationOutcome::Registered,
+            None,
+            1_000,
+            100,
+        )
+        .await;
+
+        let saved = ctx.get_local_qualified_identity(&id).unwrap().unwrap();
+        let names: Vec<&str> = saved.dpns_names.iter().map(|n| n.name.as_str()).collect();
+        assert_eq!(names, ["earlier-name-2", "alice-123"]);
     }
 
     /// Once the documents are broadcast and paid for, failed re-reads must not

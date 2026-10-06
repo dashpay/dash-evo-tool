@@ -2423,19 +2423,44 @@ mod tests {
         );
     }
 
-    #[test]
-    fn review_safety_elapsed_deadline_keeps_ambiguous_votes_locked() {
+    /// Neither an elapsed local deadline nor a missing or different current
+    /// vote proves that an ambiguous broadcast was not applied: reconciliation
+    /// and restart recovery must both leave the target unconfirmed and locked.
+    #[tokio::test]
+    async fn review_safety_elapsed_deadline_keeps_ambiguous_votes_locked() {
         let (_temp, context) = vote_context();
         context.seed_dpns_contest_for_test("dominguez", Some(1_000), false);
         let contests = context.all_contested_names().unwrap();
-        for now in [1_000, 2_000, u64::MAX] {
-            for observed in [None, Some(ResourceVoteChoice::Abstain)] {
-                let status = classify_reconciled_vote(observed, ResourceVoteChoice::Lock)
-                    .unwrap_or(DpnsVoteTargetStatus::Unconfirmed);
-                assert_eq!(status, DpnsVoteTargetStatus::Unconfirmed);
-                assert!(status.holds_lock());
-            }
-            assert!(voting_ended_outcome(contests.first(), now).is_some());
+        assert!(
+            voting_ended_outcome(contests.first(), now_ms()).is_some(),
+            "the contest deadline has elapsed"
+        );
+        let operation = unconfirmed_operation_for(&context, "dominguez");
+        let key = operation.targets[0].target.key.clone();
+
+        for observed in [None, Some(ResourceVoteChoice::Abstain)] {
+            let mut sdk = Sdk::new_mock();
+            expect_current_vote(&mut sdk, &context, &key, "dominguez", observed).await;
+            context
+                .reconcile_dpns_vote_operation(operation.id, &sdk)
+                .await
+                .unwrap();
+            context.recover_interrupted_dpns_vote_operations().unwrap();
+            assert_eq!(
+                context
+                    .dpns_vote_operation(operation.id)
+                    .unwrap()
+                    .unwrap()
+                    .targets[0]
+                    .status,
+                DpnsVoteTargetStatus::Unconfirmed,
+                "observed {observed:?}"
+            );
+            assert_eq!(
+                context.dpns_vote_target_status(&key).unwrap(),
+                Some(DpnsVoteTargetStatus::Unconfirmed),
+                "the lock must survive, observed {observed:?}"
+            );
         }
     }
 
@@ -2596,13 +2621,33 @@ mod tests {
 
     #[test]
     fn scheduled_terminal_or_unconfirmed_targets_are_not_due_for_rebroadcast() {
+        use DpnsVoteTargetStatus as S;
+        let due_at = 1_000_000;
+        assert!(
+            scheduled_target_should_execute(S::Scheduled, due_at, due_at, None),
+            "control: a due schedule is executed"
+        );
         for status in [
-            DpnsVoteTargetStatus::Unconfirmed,
-            DpnsVoteTargetStatus::Rejected,
-            DpnsVoteTargetStatus::FailedBeforeSubmission,
-            DpnsVoteTargetStatus::Confirmed,
+            S::Submitting,
+            S::Confirming,
+            S::Confirmed,
+            S::Unconfirmed,
+            S::Rejected,
+            S::FailedBeforeSubmission,
+            S::NotApplied,
+            S::Cancelled,
         ] {
-            assert_ne!(status, DpnsVoteTargetStatus::Scheduled);
+            for preserve_eligibility_since_ms in [None, Some(due_at)] {
+                assert!(
+                    !scheduled_target_should_execute(
+                        status,
+                        due_at,
+                        due_at,
+                        preserve_eligibility_since_ms
+                    ),
+                    "{status:?} must never be sent again by the sweep"
+                );
+            }
         }
     }
 

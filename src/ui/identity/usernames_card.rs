@@ -20,7 +20,10 @@ use crate::ui::ScreenType;
 use crate::ui::components::message_banner::MessageBanner;
 use crate::ui::identity::funding_common::generate_qr_code_image;
 use crate::ui::identity::register_dpns_name_screen::{RegisterDpnsNameSource, status_line};
-use crate::ui::identity::username_copy::{Tone, format_date, phase_label};
+use crate::ui::identity::username_copy::{
+    NEEDS_KEY_TO_REGISTER, Tone, finished_request_detail, pending_request_detail, phase_label,
+    registered_on_line,
+};
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 
 /// One row of the card, in display order.
@@ -187,7 +190,7 @@ impl UsernamesCard {
                     });
                     if acquired_at > 0 {
                         ui.label(
-                            RichText::new(format!("Registered on {}.", format_date(acquired_at)))
+                            RichText::new(registered_on_line(acquired_at))
                                 .small()
                                 .color(DashColors::text_secondary(dark_mode)),
                         );
@@ -201,19 +204,9 @@ impl UsernamesCard {
                             action = request_status_action(app_context, identity, &request);
                         }
                     });
-                    let detail = match (request.phase, request.join_end, request.end) {
-                        (RequestPhase::Joinable, Some(join_end), _) => format!(
-                            "Others can ask for this name until {}. Masternodes can already vote.",
-                            format_date(join_end)
-                        ),
-                        (RequestPhase::AwaitingOutcome, _, _) =>
-                            "The estimated voting period has ended. View the status to check the outcome.".to_owned(),
-                        (_, _, Some(end)) => {
-                            format!("Voting ends around {}.", format_date(end))
-                        }
-                        _ => String::new(),
-                    };
-                    if !detail.is_empty() {
+                    if let Some(detail) =
+                        pending_request_detail(request.phase, request.join_end, request.end)
+                    {
                         ui.label(
                             RichText::new(detail)
                                 .small()
@@ -226,21 +219,8 @@ impl UsernamesCard {
                         ui.label(RichText::new(format!("@{}", request.label)).strong());
                         status_line(ui, Tone::Negative, phase_label(request.phase), dark_mode);
                     });
-                    let detail = match request.phase {
-                        RequestPhase::Locked => {
-                            "More votes went to locking this name, so no one can register it."
-                                .to_owned()
-                        }
-                        RequestPhase::NoWinner => {
-                            "The community vote ended without giving the name to anyone.".to_owned()
-                        }
-                        _ => request.decided_at.map_or_else(
-                            || "The community vote ended.".to_owned(),
-                            |at| format!("The community vote ended on {}.", format_date(at)),
-                        ),
-                    };
                     ui.label(
-                        RichText::new(detail)
+                        RichText::new(finished_request_detail(request.phase, request.decided_at))
                             .small()
                             .color(DashColors::text_secondary(dark_mode)),
                     );
@@ -357,7 +337,7 @@ fn get_username_button(
     label: &str,
 ) -> AppAction {
     let mut action = AppAction::None;
-    let reason = "Add a key to this identity to register usernames.";
+    let reason = NEEDS_KEY_TO_REGISTER;
     let clicked = ComponentStyles::add_primary_button_enabled(ui, can_register, label)
         .disabled_tooltip(reason)
         .clicked();

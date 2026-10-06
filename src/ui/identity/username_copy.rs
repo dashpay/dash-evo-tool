@@ -8,6 +8,7 @@ use std::time::Duration;
 use chrono::{Local, TimeZone};
 use dash_sdk::dpp::identity::TimestampMillis;
 
+use crate::backend_task::error::USERNAME_AVAILABILITY_CHECK_FAILED;
 use crate::model::dpns_usernames::{RequestPhase, TallyStanding, UsernameAvailability};
 use crate::model::fee_estimation::format_credits_as_dash;
 
@@ -88,19 +89,13 @@ pub fn format_duration(duration: Duration) -> String {
 /// The single availability line for `name`, with its tone.
 pub fn availability_line(name: &str, row: &AvailabilityRow) -> (Tone, String) {
     match row {
-        AvailabilityRow::Checking => (
-            Tone::Neutral,
-            format!("Checking if @{name} is available…"),
-        ),
+        AvailabilityRow::Checking => (Tone::Neutral, format!("Checking if @{name} is available…")),
         AvailabilityRow::CantCheck => (
             Tone::Negative,
-            "Availability can't be checked right now. Check your internet connection and try again."
-                .to_owned(),
+            USERNAME_AVAILABILITY_CHECK_FAILED.to_owned(),
         ),
         AvailabilityRow::Known(availability) => match availability {
-            UsernameAvailability::Available => {
-                (Tone::Positive, format!("@{name} is available."))
-            }
+            UsernameAvailability::Available => (Tone::Positive, format!("@{name} is available.")),
             UsernameAvailability::NeedsVote => (
                 Tone::Caution,
                 format!("@{name} is available, but it needs a community vote."),
@@ -162,6 +157,134 @@ pub const USERNAME_RULES: [&str; 4] = [
     "Capital letters are treated as lowercase.",
     "Names shorter than 20 characters that use only letters, hyphens, 0, and 1 need a community vote. Adding a digit from 2 to 9 avoids the vote.",
 ];
+
+/// Per-keystroke length check under the name field.
+pub const LENGTH_CHECK_LABEL: &str = "Between 3 and 63 characters";
+
+/// Per-keystroke character check under the name field.
+pub const CHARACTERS_CHECK_LABEL: &str = "Only letters, numbers, and hyphens";
+
+/// Why an identity without a usable key cannot register a username.
+pub const NEEDS_KEY_TO_REGISTER: &str = "Add a key to this identity to register usernames.";
+
+/// What a registered name gives its owner: the done page and the won banner.
+pub const NAME_REGISTERED_LINE: &str = "People can now find and pay you by this name.";
+
+/// Done-page heading for a name registered right away.
+pub fn registered_heading(name: &str) -> String {
+    format!("You're @{name}")
+}
+
+/// Done-page heading for a request that went to a community vote.
+pub fn request_sent_heading(name: &str) -> String {
+    format!("Your request for @{name} is in")
+}
+
+/// Done-page schedule of a request that went to a community vote.
+pub fn request_schedule_line(join_end: TimestampMillis, end: TimestampMillis) -> String {
+    format!(
+        "Others can still ask for this name until {join}. The community vote ends around {end}.",
+        join = format_date_time(join_end),
+        end = format_date(end)
+    )
+}
+
+/// Done-page sentence on how a request nobody contests resolves.
+pub fn request_uncontested_line(name: &str) -> String {
+    format!("If no one else asks and no one votes to lock it, @{name} becomes yours then.")
+}
+
+/// Done-page note that the result arrives without the screen staying open.
+pub const REQUEST_RESULT_NOTE: &str =
+    "We'll show the result on your identity's page. You don't need to keep this screen open.";
+
+/// Text of the one-time banner for a finished request, if it gets one.
+pub fn outcome_banner_line(name: &str, phase: RequestPhase) -> Option<String> {
+    match phase {
+        RequestPhase::Won => Some(format!("You're @{name}. {NAME_REGISTERED_LINE}")),
+        RequestPhase::Lost => Some(format!(
+            "@{name} went to someone else. You can choose a different username."
+        )),
+        RequestPhase::Locked => Some(format!(
+            "No one can register @{name} anymore. The community vote locked it."
+        )),
+        RequestPhase::NoWinner => Some(format!(
+            "The vote for @{name} ended without a winner. You can choose a different username."
+        )),
+        RequestPhase::Joinable | RequestPhase::Voting | RequestPhase::AwaitingOutcome => None,
+    }
+}
+
+/// First sentence of the Home card for a request that is still open.
+pub fn pending_notice_line(
+    name: &str,
+    phase: RequestPhase,
+    end: Option<TimestampMillis>,
+) -> String {
+    match (phase, end) {
+        (RequestPhase::AwaitingOutcome, _) => {
+            format!("@{name} is awaiting the voting result. View its status to check the outcome.")
+        }
+        (_, Some(end)) => format!(
+            "@{name} is waiting for a community vote. It ends around {date}.",
+            date = format_date(end)
+        ),
+        (_, None) => format!("@{name} is waiting for a community vote."),
+    }
+}
+
+/// Usernames-card line under a registered name.
+pub fn registered_on_line(at: TimestampMillis) -> String {
+    format!("Registered on {date}.", date = format_date(at))
+}
+
+/// Usernames-card line under a request that is still open, when there is
+/// something to say about it.
+pub fn pending_request_detail(
+    phase: RequestPhase,
+    join_end: Option<TimestampMillis>,
+    end: Option<TimestampMillis>,
+) -> Option<String> {
+    match (phase, join_end, end) {
+        (RequestPhase::Joinable, Some(join_end), _) => Some(format!(
+            "Others can ask for this name until {date}. Masternodes can already vote.",
+            date = format_date(join_end)
+        )),
+        (RequestPhase::AwaitingOutcome, _, _) => Some(
+            "The estimated voting period has ended. View the status to check the outcome."
+                .to_owned(),
+        ),
+        (_, _, Some(end)) => Some(format!(
+            "Voting ends around {date}.",
+            date = format_date(end)
+        )),
+        _ => None,
+    }
+}
+
+/// Usernames-card line under a request that ended without the name.
+pub fn finished_request_detail(phase: RequestPhase, decided_at: Option<TimestampMillis>) -> String {
+    match phase {
+        RequestPhase::Locked => {
+            "More votes went to locking this name, so no one can register it.".to_owned()
+        }
+        RequestPhase::NoWinner => {
+            "The community vote ended without giving the name to anyone.".to_owned()
+        }
+        _ => decided_at.map_or_else(
+            || "The community vote ended.".to_owned(),
+            vote_ended_on_line,
+        ),
+    }
+}
+
+/// The day a community vote ended.
+pub fn vote_ended_on_line(at: TimestampMillis) -> String {
+    format!(
+        "The community vote ended on {date}.",
+        date = format_date(at)
+    )
+}
 
 /// Title of the community-vote consent dialog.
 pub fn consent_title(name: &str) -> String {
@@ -253,10 +376,7 @@ pub fn voting_timeline_line(end: TimestampMillis, phase: RequestPhase) -> String
             "The estimated voting period ended around {date}.",
             date = format_date(end)
         ),
-        _ => format!(
-            "The community vote ended on {date}.",
-            date = format_date(end)
-        ),
+        _ => vote_ended_on_line(end),
     }
 }
 
@@ -319,6 +439,40 @@ mod tests {
         for word in FORBIDDEN {
             assert!(!text.contains(word), "{text:?} uses {word:?}");
         }
+    }
+
+    /// The won banner and the done page tell the owner the same thing.
+    #[test]
+    fn the_won_banner_repeats_the_done_page_sentence() {
+        assert_eq!(
+            outcome_banner_line("ali", RequestPhase::Won).as_deref(),
+            Some("You're @ali. People can now find and pay you by this name.")
+        );
+        assert_eq!(
+            NAME_REGISTERED_LINE,
+            "People can now find and pay you by this name."
+        );
+        assert_eq!(outcome_banner_line("ali", RequestPhase::Voting), None);
+    }
+
+    /// The card and the request timeline word the end of a vote identically.
+    #[test]
+    fn a_finished_vote_reads_the_same_on_the_card_and_the_timeline() {
+        let ended = format!("The community vote ended on {}.", format_date(0));
+        assert_eq!(finished_request_detail(RequestPhase::Lost, Some(0)), ended);
+        assert_eq!(voting_timeline_line(0, RequestPhase::Lost), ended);
+        assert_eq!(
+            finished_request_detail(RequestPhase::Lost, None),
+            "The community vote ended."
+        );
+        assert_eq!(
+            pending_request_detail(RequestPhase::Voting, None, None),
+            None
+        );
+        assert_eq!(
+            pending_notice_line("ali", RequestPhase::Voting, None),
+            "@ali is waiting for a community vote."
+        );
     }
 
     #[test]

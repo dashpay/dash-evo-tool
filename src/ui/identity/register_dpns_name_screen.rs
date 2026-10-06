@@ -664,11 +664,11 @@ impl RegisterDpnsNameScreen {
             ui.add_space(40.0);
             match outcome {
                 DpnsRegistrationOutcome::Registered => {
-                    ui.heading(format!("You're @{name}"));
-                    ui.label("People can now find and pay you by this name.");
+                    ui.heading(username_copy::registered_heading(&name));
+                    ui.label(username_copy::NAME_REGISTERED_LINE);
                 }
                 DpnsRegistrationOutcome::PendingCommunityVote => {
-                    ui.heading(format!("Your request for @{name} is in"));
+                    ui.heading(username_copy::request_sent_heading(&name));
                     let request = self.selected_qualified_identity.as_ref().and_then(|qi| {
                         self.app_context
                             .username_requests_for(&qi.identity.id())
@@ -678,20 +678,12 @@ impl RegisterDpnsNameScreen {
                     if let Some(request) = request
                         && let (Some(join_end), Some(end)) = (request.join_end, request.end)
                     {
-                        ui.label(format!(
-                            "Others can still ask for this name until {join}. The community vote ends around {end}.",
-                            join = username_copy::format_date_time(join_end),
-                            end = username_copy::format_date(end)
-                        ));
+                        ui.label(username_copy::request_schedule_line(join_end, end));
                     }
-                    ui.label(format!(
-                        "If no one else asks and no one votes to lock it, @{name} becomes yours then."
-                    ));
+                    ui.label(username_copy::request_uncontested_line(&name));
                     ui.label(
-                        RichText::new(
-                            "We'll show the result on your identity's page. You don't need to keep this screen open.",
-                        )
-                        .color(DashColors::text_secondary(dark_mode)),
+                        RichText::new(username_copy::REQUEST_RESULT_NOTE)
+                            .color(DashColors::text_secondary(dark_mode)),
                     );
                 }
             }
@@ -735,13 +727,13 @@ fn render_format_checks(ui: &mut Ui, label: &str, dark_mode: bool) {
     status_line(
         ui,
         tone(length_ok),
-        "Between 3 and 63 characters",
+        username_copy::LENGTH_CHECK_LABEL,
         dark_mode,
     );
     status_line(
         ui,
         tone(chars_ok),
-        "Only letters, numbers, and hyphens",
+        username_copy::CHARACTERS_CHECK_LABEL,
         dark_mode,
     );
     if matches!(
@@ -895,7 +887,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
                         status_line(
                             ui,
                             Tone::Negative,
-                            "Add a key to this identity to register usernames.",
+                            username_copy::NEEDS_KEY_TO_REGISTER,
                             dark_mode,
                         );
                         return;

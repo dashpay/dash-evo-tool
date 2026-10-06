@@ -16,7 +16,9 @@ use crate::model::dpns_usernames::{RequestPhase, UsernameRequest};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::ScreenType;
 use crate::ui::identity::register_dpns_name_screen::status_line;
-use crate::ui::identity::username_copy::{Tone, format_date, phase_label, standing_line};
+use crate::ui::identity::username_copy::{
+    Tone, outcome_banner_line, pending_notice_line, phase_label, standing_line,
+};
 use crate::ui::identity::usernames_card::register_action_for;
 use crate::ui::theme::{ComponentStyles, DashColors};
 
@@ -34,22 +36,7 @@ struct SessionBanners {
 
 /// Text of the one-time banner for a finished request, if it gets one.
 pub fn outcome_banner_text(request: &UsernameRequest) -> Option<String> {
-    let name = &request.label;
-    match request.phase {
-        RequestPhase::Won => Some(format!(
-            "You're @{name}. People can now find and pay you by this name."
-        )),
-        RequestPhase::Lost => Some(format!(
-            "@{name} went to someone else. You can choose a different username."
-        )),
-        RequestPhase::Locked => Some(format!(
-            "No one can register @{name} anymore. The community vote locked it."
-        )),
-        RequestPhase::NoWinner => Some(format!(
-            "The vote for @{name} ended without a winner. You can choose a different username."
-        )),
-        RequestPhase::Joinable | RequestPhase::Voting | RequestPhase::AwaitingOutcome => None,
-    }
+    outcome_banner_line(&request.label, request.phase)
 }
 
 fn banner_key(identity_id: &Identifier, request: &UsernameRequest) -> String {
@@ -127,17 +114,7 @@ pub fn render(
     for request in requests.iter().filter(|r| r.phase.is_pending()) {
         notice_frame(ui, dark_mode, |ui| {
             status_line(ui, Tone::Caution, phase_label(request.phase), dark_mode);
-            let name = &request.label;
-            let first = match (request.phase, request.end) {
-                (RequestPhase::AwaitingOutcome, _) => format!(
-                    "@{name} is awaiting the voting result. View its status to check the outcome."
-                ),
-                (_, Some(end)) => format!(
-                    "@{name} is waiting for a community vote. It ends around {date}.",
-                    date = format_date(end)
-                ),
-                (_, None) => format!("@{name} is waiting for a community vote."),
-            };
+            let first = pending_notice_line(&request.label, request.phase, request.end);
             ui.label(RichText::new(first).strong());
             if request.phase != RequestPhase::AwaitingOutcome {
                 ui.label(standing_line(

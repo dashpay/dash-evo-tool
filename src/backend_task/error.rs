@@ -115,6 +115,12 @@ pub(crate) const BACKUP_RETENTION_SAVED_CLEANUP_INCOMPLETE: &str = "Your backup 
 /// Shown whenever another window or session holds the wallet database.
 pub(crate) const WALLET_DATA_IN_USE: &str = "Your wallet data is open in another Dash Evo Tool window or command-line session. Close it and try again.";
 
+/// Shown when the network could not be asked whether a username is free: the
+/// message of [`TaskError::UsernameAvailabilityCheckFailed`] and the text of
+/// the availability row that reports the same failure.
+pub(crate) const USERNAME_AVAILABILITY_CHECK_FAILED: &str =
+    "Availability can't be checked right now. Check your internet connection and try again.";
+
 /// App-level error envelope for backend tasks.
 #[derive(Debug, Error)]
 pub enum TaskError {
@@ -2098,9 +2104,7 @@ pub enum TaskError {
     InvalidPrivateKey,
 
     /// The network could not be asked whether a username is free.
-    #[error(
-        "Availability can't be checked right now. Check your internet connection and try again."
-    )]
+    #[error("{}", USERNAME_AVAILABILITY_CHECK_FAILED)]
     UsernameAvailabilityCheckFailed {
         #[source]
         source: Box<SdkError>,

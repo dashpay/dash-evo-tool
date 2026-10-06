@@ -181,7 +181,7 @@ pub fn validate_dpns_name(name: &str) -> DpnsNameValidationResult {
     if name.len() < 3 {
         return DpnsNameValidationResult::TooShort;
     }
-    if name.len() > 63 {
+    if name.len() > MAX_LABEL_LEN {
         return DpnsNameValidationResult::TooLong;
     }
     if name.starts_with('-') {

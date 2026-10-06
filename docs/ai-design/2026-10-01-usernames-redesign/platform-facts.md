@@ -1,7 +1,7 @@
 # DPNS usernames & contested-resource voting — platform facts
 
 Source: dashpay/platform @ `9f7ed16935bd540e4c2a542688800d2953f9f67a` (DET pin). Paths are relative to
-`/home/ubuntu/.cargo/git/checkouts/platform-7a21f318038a582f/9f7ed16/packages/`.
+`packages/` in that repository at that commit.
 `LATEST_VERSION = PROTOCOL_VERSION_14` (`rs-platform-version/src/version/mod.rs:36`).
 Network status (web, unverified against chain): mainnet + testnet run **PV13** (Platform 4.1); PV14 (4.2) is the next upgrade.
 Credits: 1 DASH = 100,000,000,000 credits.
@@ -104,11 +104,13 @@ Abbreviations: PV = protocol version; "testing" = any network != Mainnet (testne
 - A contender cannot withdraw (domain Delete rejected; contested docs are not in primary storage).
 - End time is block-time based (ms), not height; displayed end_time = start block time + duration.
 
-## Contradictions with DET
+## Contradictions with DET before the redesign
 
-1. `src/ui/identity/register_dpns_name_screen.rs:539` hard-codes "Cost ≈ 0.2006 Dash": correct for PV13 (0.2 + ~0.0006 fees), **wrong from PV14 (0.1 DASH)**. Read it from `sdk.version()` or via `prefunded_voting_balance_for_document`.
+Recorded against the code as it stood when these facts were collected. Items 1 and 3 are resolved by the redesign (the fee is read from the platform version in `model/fee_estimation.rs`; the contested rule lives in `model/dpns.rs`); the others are the rules it was built to respect.
+
+1. `src/ui/identity/register_dpns_name_screen.rs:539` hard-coded "Cost ≈ 0.2006 Dash": correct for PV13 (0.2 + ~0.0006 fees), **wrong from PV14 (0.1 DASH)**. Read it from `sdk.version()` or via `prefunded_voting_balance_for_document`.
 2. The 0.2/0.1 DASH is **not refundable** in any outcome, and losers keep nothing. UI copy must not call it a deposit.
-3. `is_contested_name` lives in `ui/` (`register_dpns_name_screen.rs:678`) — duplicates the contract regex; placement policy wants `model/`, ideally delegating to the contract's `field_matches`.
+3. `is_contested_name` lived in `ui/` (`register_dpns_name_screen.rs:678`) — duplicated the contract regex; placement policy wants `model/`, ideally delegating to the contract's `field_matches`.
 4. If DET relies on SDK availability helpers, active-contest and locked names show as "available".
 5. Masternode "my votes" via `get_contested_dpns_identity_votes` returns nothing (stub); use `ResourceVote::fetch_many` with the proTxHash.
 6. Ties go to the **latest** created contender, not the first.

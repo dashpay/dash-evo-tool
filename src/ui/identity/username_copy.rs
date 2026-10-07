@@ -57,9 +57,7 @@ pub fn format_date(ms: TimestampMillis) -> String {
 
 /// Format a timestamp as a local date and time, for example `2026-10-05 14:00`.
 pub fn format_date_time(ms: TimestampMillis) -> String {
-    datetime::instant_from_unix_millis(ms)
-        .map(datetime::local_date_time)
-        .unwrap_or_default()
+    datetime::local_date_time_from_unix_millis(ms)
 }
 
 /// A contest duration in words: `14 days`, `1 day`, `45 minutes`, `2 hours`.

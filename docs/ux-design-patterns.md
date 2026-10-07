@@ -120,6 +120,16 @@ Reference: `src/ui/components/wallet_unlock.rs`.
 - Show validation errors only after user interaction, never on initial focus for untouched fields
 - See `docs/ai-design/2026-03-09-password-input/ux-spec.md` for full spec
 
+### Dates and Times
+
+Reference: `src/model/datetime.rs`. Applies to every label, caption, message, table cell and input.
+
+- Show every absolute date and time in the user's local time zone, never UTC, and without a zone suffix
+- One format everywhere: `YYYY-MM-DD`, `YYYY-MM-DD HH:MM`, or `YYYY-MM-DD HH:MM:SS` -- always through `model::datetime`, never a `chrono` format string at the call site
+- Typed dates and times are read as local time; a time input states that and names the UTC offset (see `LocalScheduleInput`)
+- Stored values stay UTC (Unix seconds or milliseconds); machine-facing output (MCP, CLI) is not localized
+- Text an upstream crate formats itself (token reward explanations) keeps the upstream format, labelled UTC
+
 ## 6. Messages and Errors
 
 Reference: `MessageBanner` in `src/ui/components/message_banner.rs`.
@@ -141,15 +151,7 @@ Reference: `MessageBanner` in `src/ui/components/message_banner.rs`.
 - Use `egui_extras::TableBuilder` with `Column` definitions
 - Alternating rows: `DashColors::stripe(dark_mode)` for tables > 5 rows
 - Sortable column headers where applicable
-
-### Dates and Times
-
-Reference: `src/model/datetime.rs`.
-
-- Show every absolute date and time in the user's local time zone, never UTC, and without a zone suffix
-- One format everywhere: `YYYY-MM-DD`, `YYYY-MM-DD HH:MM`, or `YYYY-MM-DD HH:MM:SS` -- always through `model::datetime`, never a `chrono` format string at the call site
-- Typed dates and times are read as local time; a time input states that and names the UTC offset (see `LocalScheduleInput`)
-- Stored values stay UTC (Unix seconds or milliseconds); machine-facing output (MCP, CLI) is not localized
+- Date and time columns follow [Dates and Times](#dates-and-times)
 
 ## 8. Loading and Progress
 

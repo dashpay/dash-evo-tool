@@ -129,13 +129,6 @@ fn node_labels_match_the_hex_pro_tx_hash_and_preserve_aliases() {
     );
 }
 
-/// A stored time to the minute, in the user's time zone.
-fn local_minute(ms: u64) -> String {
-    datetime::instant_from_unix_millis(ms)
-        .map(datetime::local_date_time)
-        .unwrap_or_default()
-}
-
 /// The schedule caption under a card title.
 pub fn schedule_caption(
     card: &VoteCard,
@@ -150,10 +143,13 @@ pub fn schedule_caption(
     Some(if now_ms < join_until {
         format!(
             "{requests} · Others can join until {when}.",
-            when = local_minute(join_until)
+            when = datetime::local_date_time_from_unix_millis(join_until)
         )
     } else {
-        format!("{requests} · Voting ends {when}.", when = local_minute(end))
+        format!(
+            "{requests} · Voting ends {when}.",
+            when = datetime::local_date_time_from_unix_millis(end)
+        )
     })
 }
 

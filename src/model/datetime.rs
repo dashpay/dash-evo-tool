@@ -136,6 +136,14 @@ pub fn local_date_time_seconds(instant: DateTime<Utc>) -> String {
     date_time_seconds_in(instant, &Local)
 }
 
+/// [`local_date_time`] of a stored Unix-millisecond time. Empty when the
+/// time is past the calendar's range.
+pub fn local_date_time_from_unix_millis(ms: u64) -> String {
+    instant_from_unix_millis(ms)
+        .map(local_date_time)
+        .unwrap_or_default()
+}
+
 /// A zone's clocks behind one object-safe type, so a widget can hold the
 /// host's zone ([`Local`]) and a test a fixed one.
 pub trait Clocks: Send + Sync {
@@ -478,6 +486,16 @@ mod tests {
         );
         assert!(instant_from_wall_clock_in("1970-01-01", 12, 0, &zone).is_some());
         assert!(instant_from_wall_clock_in("9999-12-31", 12, 0, &zone).is_some());
+    }
+
+    #[test]
+    fn a_stored_time_is_shown_to_the_minute_or_as_nothing() {
+        let ms = 1_900_000_000_000;
+        assert_eq!(
+            local_date_time_from_unix_millis(ms),
+            date_time_in(utc(2030, 3, 17, 17, 46, 40), &Local)
+        );
+        assert_eq!(local_date_time_from_unix_millis(u64::MAX), "");
     }
 
     /// Holds in every host zone: the instant is mid-winter and mid-summer,

@@ -5,7 +5,7 @@ use crate::wallet_backend::poison::MutexRecover;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
-use chrono::{DateTime, LocalResult, TimeZone, Utc};
+use chrono::{DateTime, Utc};
 use chrono_humanize::HumanTime;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -310,13 +310,6 @@ fn node_timing_label(timing: NodeTiming) -> &'static str {
         NodeTiming::Override(BatchTiming::At(_)) => "At a specific time",
         NodeTiming::DontUse => "Don't use this node",
     }
-}
-
-/// A stored time to the minute, in the user's time zone.
-fn local_minute(timestamp: u64) -> String {
-    datetime::instant_from_unix_millis(timestamp)
-        .map(datetime::local_date_time)
-        .unwrap_or_default()
 }
 
 fn review_current_choice_label(
@@ -1614,8 +1607,8 @@ impl DPNSScreen {
                             row.col(|ui| {
                                 let dark_mode = ui.style().visuals.dark_mode;
                                 if let Some(ended_time) = contested_name.end_time {
-                                    if let LocalResult::Single(dt) =
-                                        Utc.timestamp_millis_opt(ended_time as i64)
+                                    if let Some(dt) =
+                                        datetime::instant_from_unix_millis(ended_time)
                                     {
                                         ui.label(
                                             RichText::new(timestamp_with_relative(dt))
@@ -1638,8 +1631,8 @@ impl DPNSScreen {
                             row.col(|ui| {
                                 let dark_mode = ui.style().visuals.dark_mode;
                                 if let Some(last_updated) = contested_name.last_updated {
-                                    if let LocalResult::Single(dt) =
-                                        Utc.timestamp_opt(last_updated as i64, 0)
+                                    if let Some(dt) =
+                                        datetime::instant_from_unix_secs(last_updated)
                                     {
                                         let rel = HumanTime::from(dt).to_string();
                                         if rel.contains("seconds") {
@@ -1746,13 +1739,12 @@ impl DPNSScreen {
                         .get(&(key.clone(), group.unix_timestamp))
                 });
                 let when = match preset {
-                    Some(preset) => {
-                        relative_schedule_label(*preset, &local_minute(group.unix_timestamp))
-                    }
-                    None => match Utc.timestamp_millis_opt(group.unix_timestamp as i64) {
-                        LocalResult::Single(date) => timestamp_with_relative(date),
-                        _ => "Invalid timestamp".to_owned(),
-                    },
+                    Some(preset) => relative_schedule_label(
+                        *preset,
+                        &datetime::local_date_time_from_unix_millis(group.unix_timestamp),
+                    ),
+                    None => datetime::instant_from_unix_millis(group.unix_timestamp)
+                        .map_or_else(|| "Invalid timestamp".to_owned(), timestamp_with_relative),
                 };
                 let needs_attention = group.rows.iter().any(|row| {
                     schedule_is_missed(
@@ -2378,7 +2370,7 @@ impl DPNSScreen {
                     ui.label(self.review_choice_line(plan, target));
                     let timing = match target.timing {
                         VoteTiming::Now => "Now".to_owned(),
-                        VoteTiming::Scheduled(at) => local_minute(at),
+                        VoteTiming::Scheduled(at) => datetime::local_date_time_from_unix_millis(at),
                     };
                     let changes = self
                         .cards
@@ -3050,6 +3042,7 @@ mod tests {
     use crate::database::test_helpers::create_database_at_path;
     use crate::model::user_role::UserRoleCell;
     use crate::utils::tasks::TaskManager;
+    use chrono::TimeZone;
     use dash_sdk::dpp::dashcore::Network;
 
     #[test]
@@ -5943,8 +5936,10 @@ mod tests {
         ctx.insert_dpns_vote_operation(&mut operation, None)
             .expect("insert scheduled operation");
         let mut screen = DPNSScreen::new(&ctx, VotesView::Scheduled);
-        let expected =
-            relative_schedule_label(std::time::Duration::from_secs(6 * 3600), &local_minute(at));
+        let expected = relative_schedule_label(
+            std::time::Duration::from_secs(6 * 3600),
+            &datetime::local_date_time_from_unix_millis(at),
+        );
         let mut harness = egui_kittest::Harness::builder()
             .with_size(egui::vec2(1400.0, 800.0))
             .build_ui(move |ui| {

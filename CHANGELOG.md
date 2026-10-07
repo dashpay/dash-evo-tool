@@ -710,7 +710,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Dates and times are shown in your local time zone in one format
   (`2026-10-05 14:00`) across name voting, usernames, wallet transactions, token
-  claims and withdrawals, instead of a mix of UTC and local styles. A scheduled
+  claims and GroveSTARK proofs, instead of a mix of UTC and local styles. A scheduled
   vote time is entered in local time, and its label shows the zone's distance
   from UTC.
 

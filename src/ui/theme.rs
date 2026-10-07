@@ -529,6 +529,16 @@ impl DashColors {
         }
     }
 
+    /// Emphasized text (`RichText::strong()`) and the tick, dot or arrow of a
+    /// pressed control; drawn on plain surfaces as well as on the active fill.
+    pub fn text_strong(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            Self::WHITE
+        } else {
+            Self::TEXT_PRIMARY
+        }
+    }
+
     pub fn hover(dark_mode: bool) -> Color32 {
         if dark_mode {
             Self::DARK_HOVER
@@ -1435,7 +1445,8 @@ pub fn apply_theme(ctx: &egui::Context, theme_mode: ThemeMode) {
     // Active state with enhanced feedback
     style.visuals.widgets.active.bg_fill = DashColors::GRADIENT_START;
     style.visuals.widgets.active.bg_stroke = Stroke::new(2.0, DashColors::GRADIENT_END);
-    style.visuals.widgets.active.fg_stroke.color = DashColors::WHITE;
+    // egui colors `RichText::strong()` with this and skips `override_text_color`.
+    style.visuals.widgets.active.fg_stroke.color = DashColors::text_strong(dark_mode);
     style.visuals.widgets.active.weak_bg_fill = DashColors::GRADIENT_START;
     style.visuals.widgets.active.expansion = 1.0;
 
@@ -1518,6 +1529,74 @@ mod tests {
             Typography::SCALE_SM,
             "hint() must use the SCALE_SM token"
         );
+    }
+
+    /// WCAG contrast ratio of two opaque colors.
+    fn contrast_ratio(a: Color32, b: Color32) -> f32 {
+        fn luminance(color: Color32) -> f32 {
+            let linear = |channel: u8| {
+                let value = f32::from(channel) / 255.0;
+                if value <= 0.04045 {
+                    value / 12.92
+                } else {
+                    ((value + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * linear(color.r()) + 0.7152 * linear(color.g()) + 0.0722 * linear(color.b())
+        }
+        let (a, b) = (luminance(a), luminance(b));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    fn themed_style(mode: ThemeMode) -> Arc<egui::Style> {
+        let ctx = egui::Context::default();
+        apply_theme(&ctx, mode);
+        ctx.global_style()
+    }
+
+    /// `RichText::strong()` without a color ignores the theme's text override,
+    /// so the color egui gives it must be readable on every text surface.
+    #[test]
+    fn bold_text_without_a_color_is_readable_on_every_surface() {
+        for (mode, dark_mode) in [(ThemeMode::Light, false), (ThemeMode::Dark, true)] {
+            let style = themed_style(mode);
+            let job = WidgetText::from(RichText::new("Bold").strong()).into_layout_job(
+                &style,
+                egui::FontSelection::Default,
+                egui::Align::Center,
+            );
+            let bold = job.sections[0].format.color;
+            for (surface, fill) in [
+                ("panel", style.visuals.panel_fill),
+                ("window", style.visuals.window_fill),
+                ("card", DashColors::surface(dark_mode)),
+                ("input", style.visuals.extreme_bg_color),
+                ("hovered", DashColors::hover(dark_mode)),
+                ("selected", DashColors::selected(dark_mode)),
+            ] {
+                let ratio = contrast_ratio(bold, fill);
+                assert!(
+                    ratio >= 4.5,
+                    "{mode:?}: bold text {bold:?} on the {surface} fill {fill:?} has contrast {ratio:.2}"
+                );
+            }
+        }
+    }
+
+    /// A pressed or focused control draws its tick, dot or arrow in the active
+    /// foreground over the active fill.
+    #[test]
+    fn pressed_control_foreground_contrasts_with_its_fill() {
+        for mode in [ThemeMode::Light, ThemeMode::Dark] {
+            let active = themed_style(mode).visuals.widgets.active;
+            let ratio = contrast_ratio(active.fg_stroke.color, active.bg_fill);
+            assert!(
+                ratio >= 3.0,
+                "{mode:?}: pressed foreground {:?} on {:?} has contrast {ratio:.2}",
+                active.fg_stroke.color,
+                active.bg_fill
+            );
+        }
     }
 
     #[test]

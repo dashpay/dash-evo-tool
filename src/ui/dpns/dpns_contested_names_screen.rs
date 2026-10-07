@@ -566,6 +566,9 @@ pub struct DPNSScreen {
     focused_card: Option<String>,
     /// Whether the contest list has keyboard focus for shortcuts.
     list_focused: bool,
+    /// Height the tray took last frame: it grows when its sentences wrap, and
+    /// the list leaves it that much room.
+    tray_height: f32,
 }
 
 impl DPNSScreen {
@@ -666,6 +669,7 @@ impl DPNSScreen {
             selected_cards: BTreeSet::new(),
             focused_card: None,
             list_focused: false,
+            tray_height: 0.0,
         };
         screen.rebuild_cards();
         screen.rebuild_scheduled_vote_rows();
@@ -1097,7 +1101,7 @@ impl DPNSScreen {
         let mut events: Vec<(usize, CardEvent)> = Vec::new();
         let list = egui::ScrollArea::vertical()
             .id_salt("active_contest_cards")
-            .max_height(ui.available_height() - 48.0)
+            .max_height(ui.available_height() - self.tray_height.max(48.0))
             .show(ui, |ui| {
                 if listed.is_empty() {
                     let empty = match view {
@@ -1188,7 +1192,9 @@ impl DPNSScreen {
             self.focused_card = Some(name);
         }
 
+        let tray_top = ui.min_rect().bottom();
         self.render_tray(ui);
+        self.tray_height = ui.min_rect().bottom() - tray_top;
     }
 
     /// Stage `choice` for a contest (never toggles it off).
@@ -1349,10 +1355,7 @@ impl DPNSScreen {
         } = self.tray_counts();
         ui.separator();
         ui.horizontal(|ui| {
-            ui.label(RichText::new(tray_label(decisions, transactions)).strong());
-            if rechecks > 0 {
-                ui.label(tray_recheck_label(rechecks));
-            }
+            // The buttons take their room first; the sentences wrap in what is left.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ComponentStyles::add_primary_button_enabled(
                     ui,
@@ -1371,6 +1374,15 @@ impl DPNSScreen {
                 if ui.button("Clear").clicked() {
                     self.selected_votes.clear();
                 }
+                ui.with_layout(
+                    egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
+                    |ui| {
+                        ui.label(RichText::new(tray_label(decisions, transactions)).strong());
+                        if rechecks > 0 {
+                            ui.label(tray_recheck_label(rechecks));
+                        }
+                    },
+                );
             });
         });
     }
@@ -4447,17 +4459,21 @@ mod tests {
 
     /// Two open contests a single voting node has not voted on yet.
     async fn two_contest_screen() -> (Arc<Mutex<DPNSScreen>>, tempfile::TempDir) {
+        contest_screen(["alpha", "beta"]).await
+    }
+
+    /// Open contests with these names that a single voting node has not voted
+    /// on yet.
+    async fn contest_screen(names: [&str; 2]) -> (Arc<Mutex<DPNSScreen>>, tempfile::TempDir) {
         let (ctx, dir) = kv_ctx();
-        ctx.seed_dpns_contest_for_test("alpha", None, false);
-        ctx.seed_dpns_contest_for_test("beta", None, false);
+        for name in names {
+            ctx.seed_dpns_contest_for_test(name, None, false);
+        }
         let node = masternode_identity(1, "node-one", true, ctx.network());
         ctx.seed_proved_dpns_votes_for_test(node.identity.id(), BTreeMap::new())
             .await
             .unwrap();
-        let polls = [
-            ctx.dpns_vote_poll_id("alpha").unwrap(),
-            ctx.dpns_vote_poll_id("beta").unwrap(),
-        ];
+        let polls = names.map(|name| ctx.dpns_vote_poll_id(name).unwrap());
         let mut screen = DPNSScreen::new(&ctx, VotesView::ToDecide);
         screen.voting_identities = vec![node.clone()];
         screen.vote_state =
@@ -4474,6 +4490,170 @@ mod tests {
             .iter()
             .map(|vote| (vote.contested_name.clone(), vote.vote_choice))
             .collect()
+    }
+
+    /// Window widths to lay the Votes body out in: about what the narrowest
+    /// window the app opens in (800 px) leaves it, that window, and 1260 px.
+    const WINDOW_WIDTHS: [f32; 3] = [600.0, 800.0, 1260.0];
+
+    /// The long names: 19 characters, the longest that can be contested.
+    const LONG_NAMES: [&str; 2] = ["longestcontest10101", "longestcontest01010"];
+
+    fn window_rect(size: egui::Vec2) -> egui::Rect {
+        egui::Rect::from_min_size(egui::Pos2::ZERO, size)
+    }
+
+    /// Mount `render` in a window of `size`, with the app's fonts and theme so
+    /// that text takes the room it takes in the app.
+    fn app_styled_harness(
+        size: egui::Vec2,
+        render: impl FnMut(&mut Ui) + 'static,
+    ) -> egui_kittest::Harness<'static> {
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(size)
+            .build_ui(render);
+        harness
+            .ctx
+            .set_fonts(crate::bundled::fonts().expect("bundled fonts"));
+        crate::ui::theme::apply_theme(&harness.ctx, crate::ui::theme::ThemeMode::Light);
+        harness.run_steps(6);
+        harness
+    }
+
+    /// A contender's full identifier never widens a card: at every window
+    /// width the cards and the tray stay inside the window, and the decision
+    /// pills stay clear of the tally.
+    #[tokio::test]
+    async fn contest_cards_and_tray_fit_the_window_at_every_width() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::{By, Queryable};
+        for width in WINDOW_WIDTHS {
+            let (screen, _dir) = contest_screen(LONG_NAMES).await;
+            {
+                let mut screen = screen.lock_recover();
+                let contest = Arc::clone(&screen.cards[0].contest);
+                screen.stage_choice(&contest, ResourceVoteChoice::Abstain);
+            }
+            let size = egui::vec2(width, 1200.0);
+            let harness = app_styled_harness(size, move |ui| {
+                screen.lock_recover().ui(ui);
+            });
+            let window = window_rect(size);
+
+            for label in ["Cast", "Clear"] {
+                let button = harness.get_by_role_and_label(Role::Button, label).rect();
+                assert!(
+                    window.contains_rect(button),
+                    "{width} px: {label} at {button:?} is outside the window"
+                );
+            }
+            for role in [
+                Role::Button,
+                Role::Label,
+                Role::ProgressIndicator,
+                Role::CheckBox,
+            ] {
+                for node in harness.query_all_by_role(role) {
+                    let rect = node.rect();
+                    assert!(
+                        rect.left() >= window.left() && rect.right() <= window.right(),
+                        "{width} px: a {role:?} at {rect:?} is cut off by the window edge"
+                    );
+                }
+            }
+            let bars: Vec<egui::Rect> = harness
+                .query_all_by_role(Role::ProgressIndicator)
+                .map(|bar| bar.rect())
+                .collect();
+            let pills: Vec<egui::Rect> = harness
+                .query_all(By::new().role(Role::Button).label_contains("  ["))
+                .map(|pill| pill.rect())
+                .collect();
+            assert_eq!(
+                (bars.len(), pills.len()),
+                (6, 6),
+                "{width} px: two cards, each with three tally rows and three pills"
+            );
+            for pill in &pills {
+                for bar in &bars {
+                    assert!(
+                        !pill.intersects(*bar),
+                        "{width} px: the pill at {pill:?} covers the tally bar at {bar:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// With little room, the tray's sentences wrap beside Cast and Clear
+    /// instead of running under them.
+    #[test]
+    fn tray_sentences_wrap_beside_the_buttons_in_a_narrow_window() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        let (mut screen, _dir) = voting_ui_review_fixture();
+        let (voter, poll) = stage_lock_on_alpha_card(&mut screen);
+        age_lock_proof(&mut screen, voter, poll);
+        let size = egui::vec2(WINDOW_WIDTHS[0], 1200.0);
+        let harness = app_styled_harness(size, move |ui| {
+            screen.ui(ui);
+        });
+        let window = window_rect(size);
+
+        let texts = [tray_label(1, 0), tray_recheck_label(1)];
+        let sentences = texts
+            .each_ref()
+            .map(|text| harness.get_by_label(text).rect());
+        let buttons = ["Cast", "Clear"]
+            .map(|label| harness.get_by_role_and_label(Role::Button, label).rect());
+        for rect in sentences.iter().chain(&buttons) {
+            assert!(
+                window.contains_rect(*rect),
+                "the tray item at {rect:?} is outside the window"
+            );
+        }
+        for sentence in sentences {
+            for button in buttons {
+                assert!(
+                    !sentence.intersects(button),
+                    "the sentence at {sentence:?} runs under the button at {button:?}"
+                );
+            }
+        }
+    }
+
+    /// A tray whose sentence wraps is taller; under a list that fills the
+    /// window it still ends inside the window.
+    #[tokio::test]
+    async fn wrapped_tray_stays_inside_the_window_under_a_full_list() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        let (screen, _dir) = contest_screen(LONG_NAMES).await;
+        {
+            let mut screen = screen.lock_recover();
+            let contests: Vec<Arc<ContestedName>> = screen
+                .cards
+                .iter()
+                .map(|card| Arc::clone(&card.contest))
+                .collect();
+            for contest in contests {
+                screen.stage_choice(&contest, ResourceVoteChoice::Abstain);
+            }
+        }
+        // Too narrow for the sentence beside the buttons, too low for two cards.
+        let size = egui::vec2(500.0, 500.0);
+        let harness = app_styled_harness(size, move |ui| {
+            screen.lock_recover().ui(ui);
+        });
+
+        let sentence = harness.get_by_label(&tray_label(2, 2)).rect();
+        let cast = harness.get_by_role_and_label(Role::Button, "Cast").rect();
+        for rect in [sentence, cast] {
+            assert!(
+                rect.bottom() <= size.y,
+                "the tray item at {rect:?} ends below the window"
+            );
+        }
     }
 
     /// VOTE-TC-098: J, 1, J, L, Enter stages both decisions and opens the

@@ -334,6 +334,20 @@ fn clear_profile_saving_banner_after_success(
     }
 }
 
+/// End the background-progress banner of a top-up and, when it succeeded,
+/// confirm it: the screen that started it may be gone.
+fn finish_background_top_up(ctx: &egui::Context, context: &BackendTaskContext, succeeded: bool) {
+    use crate::ui::identity::top_up_identity_screen::{
+        TOP_UP_DONE_IN_BACKGROUND, clear_top_up_background_banner,
+    };
+    let Some(identity_id) = context.identity_top_up_identity() else {
+        return;
+    };
+    if clear_top_up_background_banner(ctx, &identity_id) && succeeded {
+        MessageBanner::set_global(ctx, TOP_UP_DONE_IN_BACKGROUND, MessageType::Success);
+    }
+}
+
 /// How often local state re-derives the voting attention summary.
 const DPNS_ATTENTION_RECOMPUTE_INTERVAL: Duration = Duration::from_secs(60);
 
@@ -531,6 +545,46 @@ mod backend_task_join_tests {
         assert_eq!(
             BackendTaskContext::from(&BackendTask::None),
             BackendTaskContext::Other
+        );
+    }
+
+    #[test]
+    fn background_top_up_result_ends_its_banner_and_confirms_success() {
+        use crate::ui::identity::top_up_identity_screen::{
+            TOP_UP_DONE_IN_BACKGROUND, show_top_up_background_banner,
+        };
+        let ctx = egui::Context::default();
+        let identity_id = Identifier::from([1; 32]);
+        let context = BackendTaskContext::IdentityTopUp(identity_id);
+
+        // A top-up the user watched to the end is confirmed by its screen.
+        finish_background_top_up(&ctx, &context, true);
+        assert!(!MessageBanner::has_global(&ctx));
+
+        show_top_up_background_banner(&ctx, identity_id);
+        finish_background_top_up(&ctx, &BackendTaskContext::Other, true);
+        finish_background_top_up(
+            &ctx,
+            &BackendTaskContext::IdentityTopUp(Identifier::from([2; 32])),
+            true,
+        );
+        assert!(
+            MessageBanner::has_global(&ctx),
+            "only the top-up's own result ends its progress banner"
+        );
+
+        finish_background_top_up(&ctx, &context, true);
+        MessageBanner::clear_global_message(&ctx, TOP_UP_DONE_IN_BACKGROUND);
+        assert!(
+            !MessageBanner::has_global(&ctx),
+            "success must swap the progress banner for the confirmation"
+        );
+
+        show_top_up_background_banner(&ctx, identity_id);
+        finish_background_top_up(&ctx, &context, false);
+        assert!(
+            !MessageBanner::has_global(&ctx),
+            "a failed top-up ends its progress banner without confirming"
         );
     }
 
@@ -2619,9 +2673,10 @@ impl AppState {
     // T7 lands (thread a per-operation CancellationToken through run_backend_task
     // and retain the abort handle in handle_backend_task), a screen can wire a
     // generic overlay button — e.g. one it labels "Cancel" — to a real abort.
-    // Until then no production overlay attaches a button to a running task, and
-    // this loop has no live cancellation role; the 120s watchdog
-    // (see progress_overlay.rs) bounds every block in the meantime.
+    // Until then a button on a running task can only stop waiting on it (the
+    // identity top-up's "Continue in background"), and this loop has no live
+    // cancellation role; the 120s watchdog (see progress_overlay.rs) bounds
+    // every block in the meantime.
     fn drain_overlay_actions(&mut self, ctx: &egui::Context) {
         for action_id in ProgressOverlay::sweep_orphan_actions(ctx) {
             tracing::warn!(
@@ -3170,6 +3225,7 @@ impl App for AppState {
                         self.retry_incomplete_dpns_background_refresh(*network);
                     }
                     clear_profile_saving_banner_after_success(ctx, &context, &unboxed_message);
+                    finish_background_top_up(ctx, &context, true);
                     route_username_refresh_to_hidden_screens(
                         &mut self.screen_stack,
                         &context,
@@ -3529,6 +3585,7 @@ impl App for AppState {
                     error: err,
                 } => {
                     clear_profile_saving_banner_after_error(ctx, &context);
+                    finish_background_top_up(ctx, &context, false);
                     clear_scheduled_vote_sweep_guard_on_error(
                         &mut self.scheduled_vote_sweeps_in_progress,
                         &context,

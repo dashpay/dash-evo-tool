@@ -217,16 +217,6 @@ impl TopUpIdentityScreen {
         }
 
         ui.add_space(20.0);
-        ui.vertical_centered(|ui| match step {
-            WalletFundedScreenStep::WaitingForAssetLock => {
-                ui.heading("Waiting for the Dash network to confirm the transfer.");
-            }
-            WalletFundedScreenStep::WaitingForPlatformAcceptance => {
-                ui.heading("Waiting for Platform to add the funds to the identity.");
-            }
-            _ => {}
-        });
-        ui.add_space(20.0);
 
         action
     }

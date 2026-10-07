@@ -16,7 +16,6 @@ use crate::model::asset_lock::{AssetLockAmountError, validate_asset_lock_amount}
 use crate::model::fee_estimation::{format_credits_as_dash, format_duffs_as_dash};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::{Wallet, WalletSeedHash};
-use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::info_popup::InfoPopup;
@@ -26,6 +25,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
+use crate::ui::components::{MessageBanner, OptionOverlayExt, OverlayConfig, OverlayHandle};
 use crate::ui::identity::funding_common::{
     FundingMethod, WalletFundedScreenStep, default_funding_state, deposit_event_outcome,
     max_amount_after_fee_reserve, receive_deposit_ceiling_duffs, spendable_covers_minimum,
@@ -41,12 +41,68 @@ use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::{CREDITS_PER_DUFF, Credits, Duffs};
 use dash_sdk::dpp::dashcore::OutPoint;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::platform::Identifier;
 use egui::{ComboBox, ScrollArea, Ui};
+use std::collections::BTreeSet;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 const WALLET_SELECTION_TOOLTIP: &str =
     "Choose the wallet that will supply or receive the Dash used to add funds to this identity.";
+
+/// Shown while the transfer that funds the top-up is being confirmed.
+const TOP_UP_WAITING_FOR_NETWORK: &str = "Waiting for the Dash network to confirm the transfer.";
+/// Shown while Platform credits the identity.
+const TOP_UP_WAITING_FOR_PLATFORM: &str = "Waiting for Platform to add the funds to the identity.";
+/// Progress banner kept up while a top-up runs in the background.
+pub(crate) const TOP_UP_IN_BACKGROUND: &str =
+    "Adding funds to your identity in the background. You can keep using Dash Evo Tool.";
+/// Confirmation banner for a top-up that finished in the background.
+pub(crate) const TOP_UP_DONE_IN_BACKGROUND: &str = "The funds were added to your identity.";
+const TOP_UP_BACKGROUND_LABEL: &str = "Continue in background";
+const TOP_UP_BACKGROUND_ACTION_ID: &str = "identity:top_up:background";
+const TOP_UP_BACKGROUND_OWNERS_ID: &str = "__identity_top_up_background_owners";
+/// How long the blocking overlay waits before it offers to continue in the
+/// background. A top-up normally finishes well inside this window.
+const TOP_UP_BACKGROUND_OFFER_AFTER: Duration = Duration::from_secs(30);
+
+fn background_top_ups(ctx: &egui::Context) -> BTreeSet<Identifier> {
+    ctx.data(|data| data.get_temp(egui::Id::new(TOP_UP_BACKGROUND_OWNERS_ID)))
+        .unwrap_or_default()
+}
+
+/// Whether a top-up of `identity_id` was sent to the background and is still
+/// running.
+fn top_up_runs_in_background(ctx: &egui::Context, identity_id: &Identifier) -> bool {
+    background_top_ups(ctx).contains(identity_id)
+}
+
+/// Raise the background-progress banner for a top-up of `identity_id`. It
+/// outlives the screen: the task's attributed result clears it.
+pub(crate) fn show_top_up_background_banner(ctx: &egui::Context, identity_id: Identifier) {
+    let mut owners = background_top_ups(ctx);
+    owners.insert(identity_id);
+    ctx.data_mut(|data| data.insert_temp(egui::Id::new(TOP_UP_BACKGROUND_OWNERS_ID), owners));
+    MessageBanner::set_global(ctx, TOP_UP_IN_BACKGROUND, MessageType::Info).disable_auto_dismiss();
+}
+
+/// Record that the top-up of `identity_id` ended, dropping the progress banner
+/// with the last one. Returns whether that top-up ran in the background.
+pub(crate) fn clear_top_up_background_banner(
+    ctx: &egui::Context,
+    identity_id: &Identifier,
+) -> bool {
+    let mut owners = background_top_ups(ctx);
+    if !owners.remove(identity_id) {
+        return false;
+    }
+    if owners.is_empty() {
+        MessageBanner::clear_global_message(ctx, TOP_UP_IN_BACKGROUND);
+    }
+    ctx.data_mut(|data| data.insert_temp(egui::Id::new(TOP_UP_BACKGROUND_OWNERS_ID), owners));
+    true
+}
 
 pub struct TopUpIdentityScreen {
     pub identity: QualifiedIdentity,
@@ -92,6 +148,13 @@ pub struct TopUpIdentityScreen {
     /// asset-lock picker.
     asset_lock_cache: TrackedAssetLockCache,
     asset_lock_balance: AssetLockBalanceCache,
+    /// The dispatch of the top-up this screen is waiting on.
+    top_up_context: Option<BackendTaskContext>,
+    /// Blocks the app while the top-up runs, until it ends or the user
+    /// continues in the background.
+    top_up_overlay: Option<OverlayHandle>,
+    /// Whether the overlay already carries its background button.
+    top_up_background_offered: bool,
 }
 
 impl TopUpIdentityScreen {
@@ -122,7 +185,89 @@ impl TopUpIdentityScreen {
             completed_fee_result: None,
             asset_lock_cache: TrackedAssetLockCache::default(),
             asset_lock_balance: AssetLockBalanceCache::default(),
+            top_up_context: None,
+            top_up_overlay: None,
+            top_up_background_offered: false,
         }
+    }
+
+    /// Dispatch a top-up: move to `step`, block the app behind the progress
+    /// overlay, and tag the task so only its own result releases the screen.
+    fn begin_top_up(&mut self, task: IdentityTask, step: WalletFundedScreenStep) -> AppAction {
+        self.set_step(step);
+        self.top_up_overlay.raise(
+            self.app_context.egui_ctx(),
+            top_up_progress_message(step),
+            OverlayConfig::default(),
+        );
+        self.top_up_background_offered = false;
+        let task = BackendTask::IdentityTask(task);
+        let context = BackendTaskContext::for_dispatch_on(&task, self.app_context.network());
+        self.top_up_context = Some(context.clone());
+        AppAction::BackendTaskWithContext { task, context }
+    }
+
+    /// Stop waiting on the top-up: lower the overlay and forget its dispatch.
+    fn release_top_up(&mut self) {
+        self.top_up_overlay.take_and_clear();
+        self.top_up_context = None;
+    }
+
+    /// Whether a top-up of this identity is running — one this screen
+    /// dispatched, or an earlier one still finishing in the background.
+    fn top_up_in_flight(&self) -> bool {
+        matches!(
+            self.current_step(),
+            WalletFundedScreenStep::WaitingForAssetLock
+                | WalletFundedScreenStep::WaitingForPlatformAcceptance
+        ) || top_up_runs_in_background(self.app_context.egui_ctx(), &self.identity.identity.id())
+    }
+
+    /// Keep the overlay in step with the top-up: follow its progress, offer
+    /// the background button once it runs long, and act on a click of it.
+    fn sync_top_up_overlay(&mut self) {
+        let Some(handle) = self.top_up_overlay.clone() else {
+            return;
+        };
+        if handle
+            .take_actions()
+            .iter()
+            .any(|action_id| action_id == TOP_UP_BACKGROUND_ACTION_ID)
+        {
+            self.continue_top_up_in_background();
+            return;
+        }
+        handle.set_description(top_up_progress_message(self.current_step()));
+        if !self.top_up_background_offered
+            && handle
+                .elapsed()
+                .is_some_and(|elapsed| elapsed >= TOP_UP_BACKGROUND_OFFER_AFTER)
+        {
+            handle.with_secondary_action(TOP_UP_BACKGROUND_LABEL, TOP_UP_BACKGROUND_ACTION_ID);
+            // The wait has no upper bound, so keyboard users need this exit too.
+            handle.with_keyboard_escape(TOP_UP_BACKGROUND_ACTION_ID);
+            self.top_up_background_offered = true;
+        }
+    }
+
+    /// Unblock the app while the top-up keeps running: the overlay gives way
+    /// to a progress banner that follows the user to other screens.
+    fn continue_top_up_in_background(&mut self) {
+        self.top_up_overlay.take_and_clear();
+        show_top_up_background_banner(self.app_context.egui_ctx(), self.identity.identity.id());
+    }
+
+    /// Replaces the funding form while a top-up runs, so nothing on it can be
+    /// changed or sent twice and no balance check describes a wallet whose
+    /// funds are already on their way.
+    fn render_top_up_in_flight(&self, ui: &mut Ui) {
+        ui.add_space(40.0);
+        ui.vertical_centered(|ui| {
+            ui.add(egui::Spinner::new());
+            ui.add_space(10.0);
+            ui.heading(top_up_progress_message(self.current_step()));
+        });
+        ui.add_space(40.0);
     }
 
     /// Current funding step, defaulting to the initial chooser step if the lock
@@ -342,6 +487,7 @@ impl TopUpIdentityScreen {
 
     /// Reset wallet- and network-bound state after changing contexts.
     pub(crate) fn reset_for_network_switch(&mut self) {
+        self.release_top_up();
         self.wallet = None;
         self.funding_asset_lock = None;
         self.reset_to_choose_funding();
@@ -497,11 +643,10 @@ impl TopUpIdentityScreen {
                         },
                     };
 
-                    self.set_step(WalletFundedScreenStep::WaitingForPlatformAcceptance);
-
-                    AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::TopUpIdentity(
-                        identity_input,
-                    )))
+                    self.begin_top_up(
+                        IdentityTask::TopUpIdentity(identity_input),
+                        WalletFundedScreenStep::WaitingForPlatformAcceptance,
+                    )
                 } else {
                     AppAction::None
                 }
@@ -569,12 +714,10 @@ impl TopUpIdentityScreen {
                     ),
                 };
 
-                self.set_step(WalletFundedScreenStep::WaitingForAssetLock);
-
-                // Create the backend task to top_up the identity
-                AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::TopUpIdentity(
-                    identity_input,
-                )))
+                self.begin_top_up(
+                    IdentityTask::TopUpIdentity(identity_input),
+                    WalletFundedScreenStep::WaitingForAssetLock,
+                )
             }
             _ => AppAction::None,
         }
@@ -642,6 +785,15 @@ impl TopUpIdentityScreen {
     }
 }
 
+/// What the running top-up is waiting on at `step`.
+fn top_up_progress_message(step: WalletFundedScreenStep) -> &'static str {
+    match step {
+        WalletFundedScreenStep::WaitingForAssetLock => TOP_UP_WAITING_FOR_NETWORK,
+        WalletFundedScreenStep::WaitingForPlatformAcceptance => TOP_UP_WAITING_FOR_PLATFORM,
+        _ => TOP_UP_IN_BACKGROUND,
+    }
+}
+
 impl ScreenLike for TopUpIdentityScreen {
     fn refresh_on_arrival(&mut self) {
         self.asset_lock_balance.invalidate();
@@ -651,14 +803,13 @@ impl ScreenLike for TopUpIdentityScreen {
         self.asset_lock_balance.invalidate();
     }
 
-    fn display_message(&mut self, _message: &str, message_type: MessageType) {
-        // Banner display is handled globally by AppState; this is only for side-effects.
-        if matches!(message_type, MessageType::Error | MessageType::Warning) {
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+        // Only the top-up's own failure releases the screen; an unrelated
+        // error must leave a running top-up blocked.
+        if self.top_up_context.as_ref() == Some(context) {
+            self.release_top_up();
             self.set_step(step_after_task_failure(self.current_step()));
         }
-    }
-
-    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
         if let Some((seed_hash, snapshot_generation, request_id)) =
             context.asset_lock_max_amount_request()
         {
@@ -772,6 +923,10 @@ impl ScreenLike for TopUpIdentityScreen {
         if let BackendTaskSuccessResult::ToppedUpIdentity(qualified_identity, fee_result) =
             backend_task_success_result
         {
+            if qualified_identity.identity.id() != self.identity.identity.id() {
+                return;
+            }
+            self.release_top_up();
             self.identity = qualified_identity;
             self.completed_fee_result = Some(fee_result);
             self.funding_address = None;
@@ -819,6 +974,7 @@ impl ScreenLike for TopUpIdentityScreen {
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
         let ctx = ui.ctx().clone();
         let ctx = &ctx;
+        self.sync_top_up_overlay();
         let mut action = add_top_panel(
             ui,
             &self.app_context,
@@ -865,6 +1021,11 @@ impl ScreenLike for TopUpIdentityScreen {
                 ui.add_space(10.0);
                 ui.separator();
                 ui.add_space(10.0);
+
+                if self.top_up_in_flight() {
+                    self.render_top_up_in_flight(ui);
+                    return;
+                }
 
                 ui.heading("Follow these steps to add funds to your identity:");
                 ui.add_space(15.0);
@@ -1054,6 +1215,7 @@ mod tests {
     use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
     use crate::model::qualified_identity::{IdentityStatus, IdentityType};
     use crate::ui::Screen;
+    use crate::ui::components::ProgressOverlay;
     use crate::wallet_backend::AssetLockInputState;
     use dash_sdk::dpp::dashcore::{Network, OutPoint, Txid, hashes::Hash};
     use dash_sdk::dpp::identity::Identity;
@@ -1276,6 +1438,192 @@ mod tests {
         assert!(
             !MessageBanner::has_global(&ctx),
             "failed dispatch must use the failed-specific retry warning"
+        );
+    }
+
+    const NOT_ENOUGH_DASH: &str = "does not have enough Dash";
+
+    /// Store a builder ceiling that matches the wallet's current inputs.
+    fn store_current_quote(
+        screen: &mut TopUpIdentityScreen,
+        seed_hash: WalletSeedHash,
+        amount_duffs: u64,
+    ) {
+        let (generation, inputs, revision) =
+            screen.app_context.asset_lock_probe_snapshot(&seed_hash);
+        let request_id = asset_lock_request_id(screen.asset_lock_balance.ensure_requested(
+            seed_hash,
+            generation,
+            inputs.clone(),
+            revision,
+        ));
+        screen.asset_lock_balance.store(
+            seed_hash,
+            generation,
+            request_id,
+            amount_duffs,
+            inputs,
+            false,
+        );
+    }
+
+    /// Render the whole screen once and report whether a label containing
+    /// `text` is on it.
+    fn screen_shows(screen: &mut TopUpIdentityScreen, text: &str) -> bool {
+        use egui_kittest::{Harness, kittest::Queryable};
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1200.0, 900.0))
+            .build_ui(|ui| {
+                screen.ui(ui);
+            });
+        // A fixed step count: the in-progress spinner never stops repainting.
+        harness.run_steps(2);
+        harness.query_by_label_contains(text).is_some()
+    }
+
+    /// A wallet-balance screen whose remaining balance cannot cover another
+    /// top-up — the state the wallet is in right after its funds were sent.
+    fn drained_wallet_balance_screen(
+        seed_byte: u8,
+    ) -> (TopUpIdentityScreen, WalletSeedHash, tempfile::TempDir) {
+        let (mut screen, seed_hash, temp_dir) = wallet_balance_screen(seed_byte);
+        *screen.funding_method.write().expect("funding method lock") =
+            FundingMethod::UseWalletBalance;
+        store_current_quote(&mut screen, seed_hash, 1);
+        (screen, seed_hash, temp_dir)
+    }
+
+    /// Sending the funds drains the wallet, so the balance check under the
+    /// running top-up reads as "not enough Dash". That warning describes the
+    /// next top-up, not the one in progress, and must not be shown.
+    #[test]
+    fn in_flight_top_up_never_reports_missing_funds() {
+        let (mut screen, _seed_hash, _temp_dir) = drained_wallet_balance_screen(0x41);
+
+        screen.set_step(WalletFundedScreenStep::ReadyToCreate);
+        assert!(
+            screen_shows(&mut screen, NOT_ENOUGH_DASH),
+            "an idle screen with a drained wallet reports the missing funds"
+        );
+
+        screen.set_step(WalletFundedScreenStep::WaitingForAssetLock);
+        assert!(
+            !screen_shows(&mut screen, NOT_ENOUGH_DASH),
+            "a running top-up must not report missing funds"
+        );
+        assert!(screen_shows(&mut screen, TOP_UP_WAITING_FOR_NETWORK));
+        assert!(
+            !screen_shows(&mut screen, "Add funds"),
+            "a running top-up must not offer to send the funds again"
+        );
+    }
+
+    /// A wallet-balance screen with a dispatched top-up, plus its dispatch.
+    fn dispatched_top_up_screen(
+        seed_byte: u8,
+    ) -> (TopUpIdentityScreen, BackendTaskContext, tempfile::TempDir) {
+        let (mut screen, seed_hash, temp_dir) = wallet_balance_screen(seed_byte);
+        store_current_quote(&mut screen, seed_hash, 10_000_000);
+        let action = screen.top_up_identity_clicked(FundingMethod::UseWalletBalance);
+        let AppAction::BackendTaskWithContext { context, .. } = action else {
+            panic!("expected an attributed top-up dispatch, got {action:?}");
+        };
+        (screen, context, temp_dir)
+    }
+
+    #[test]
+    fn top_up_dispatch_blocks_the_app_until_its_own_failure() {
+        let (mut screen, context, _temp_dir) = dispatched_top_up_screen(0x42);
+        let ctx = screen.app_context.egui_ctx().clone();
+        assert_eq!(
+            context.identity_top_up_identity(),
+            Some(screen.identity.identity.id())
+        );
+        assert!(ProgressOverlay::has_global(&ctx));
+        assert!(screen.top_up_in_flight());
+
+        // An unrelated failure reaches the visible screen too.
+        screen
+            .display_backend_task_error(&BackendTaskContext::Other, &TaskError::NoIdentitiesFound);
+        screen.display_message("Background refresh failed.", MessageType::Error);
+        assert!(
+            ProgressOverlay::has_global(&ctx),
+            "an unrelated error must not unblock a running top-up"
+        );
+        assert!(screen.top_up_in_flight());
+
+        screen.display_backend_task_error(&context, &TaskError::NoIdentitiesFound);
+        assert!(!ProgressOverlay::has_global(&ctx));
+        assert_eq!(screen.current_step(), WalletFundedScreenStep::ReadyToCreate);
+    }
+
+    #[test]
+    fn top_up_success_releases_only_the_screen_of_that_identity() {
+        let (mut screen, _context, _temp_dir) = dispatched_top_up_screen(0x43);
+        let ctx = screen.app_context.egui_ctx().clone();
+        let fee_result = || FeeResult::new(1, 1);
+
+        screen.display_task_result(BackendTaskSuccessResult::ToppedUpIdentity(
+            test_identity(Network::Testnet),
+            fee_result(),
+        ));
+        assert!(
+            ProgressOverlay::has_global(&ctx),
+            "another identity's top-up must not release this screen"
+        );
+
+        screen.display_task_result(BackendTaskSuccessResult::ToppedUpIdentity(
+            screen.identity.clone(),
+            fee_result(),
+        ));
+        assert!(!ProgressOverlay::has_global(&ctx));
+        assert_eq!(screen.current_step(), WalletFundedScreenStep::Success);
+    }
+
+    #[cfg(feature = "testing")]
+    #[test]
+    fn long_running_top_up_offers_to_continue_in_background() {
+        let (mut screen, _context, _temp_dir) = dispatched_top_up_screen(0x44);
+
+        screen.sync_top_up_overlay();
+        assert!(
+            !screen.top_up_background_offered,
+            "a top-up that just started must stay a hard block"
+        );
+
+        screen
+            .top_up_overlay
+            .as_ref()
+            .expect("overlay raised")
+            .backdate(TOP_UP_BACKGROUND_OFFER_AFTER);
+        screen.sync_top_up_overlay();
+        assert!(screen.top_up_background_offered);
+    }
+
+    #[test]
+    fn top_up_continued_in_background_unblocks_the_app_but_not_the_form() {
+        let (mut screen, _context, _temp_dir) = dispatched_top_up_screen(0x45);
+        let ctx = screen.app_context.egui_ctx().clone();
+        let identity_id = screen.identity.identity.id();
+
+        screen.continue_top_up_in_background();
+        assert!(!ProgressOverlay::has_global(&ctx));
+        assert!(MessageBanner::has_global(&ctx));
+        assert!(screen.top_up_in_flight());
+
+        // Reopening the screen for the same identity must not offer the form
+        // while its earlier top-up still runs.
+        let reopened = TopUpIdentityScreen::new(screen.identity.clone(), &screen.app_context);
+        assert!(reopened.top_up_in_flight());
+        let other = TopUpIdentityScreen::new(test_identity(Network::Testnet), &screen.app_context);
+        assert!(!other.top_up_in_flight());
+
+        assert!(clear_top_up_background_banner(&ctx, &identity_id));
+        assert!(!MessageBanner::has_global(&ctx));
+        assert!(!reopened.top_up_in_flight());
+        assert!(
+            !clear_top_up_background_banner(&ctx, &identity_id),
+            "a top-up that never ran in the background has no banner to end"
         );
     }
 

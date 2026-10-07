@@ -51,10 +51,11 @@ use std::time::Duration;
 const WALLET_SELECTION_TOOLTIP: &str =
     "Choose the wallet that will supply or receive the Dash used to add funds to this identity.";
 
-/// Shown while the transfer that funds the top-up is being confirmed.
-const TOP_UP_WAITING_FOR_NETWORK: &str = "Waiting for the Dash network to confirm the transfer.";
-/// Shown while Platform credits the identity.
-const TOP_UP_WAITING_FOR_PLATFORM: &str = "Waiting for Platform to add the funds to the identity.";
+/// Blocking-overlay text for a running top-up. The task reports no progress to
+/// the screen, so one sentence covers the whole run and names no stage.
+const TOP_UP_IN_PROGRESS: &str = "Adding funds to your identity.";
+/// Shown in place of the funding form while a top-up runs.
+const TOP_UP_FORM_PAUSED: &str = "You can add more funds when this transfer finishes.";
 /// Progress banner kept up while a top-up runs in the background.
 pub(crate) const TOP_UP_IN_BACKGROUND: &str =
     "Adding funds to your identity in the background. You can keep using Dash Evo Tool.";
@@ -197,7 +198,7 @@ impl TopUpIdentityScreen {
         self.set_step(step);
         self.top_up_overlay.raise(
             self.app_context.egui_ctx(),
-            top_up_progress_message(step),
+            TOP_UP_IN_PROGRESS,
             OverlayConfig::default(),
         );
         self.top_up_background_offered = false;
@@ -223,8 +224,8 @@ impl TopUpIdentityScreen {
         ) || top_up_runs_in_background(self.app_context.egui_ctx(), &self.identity.identity.id())
     }
 
-    /// Keep the overlay in step with the top-up: follow its progress, offer
-    /// the background button once it runs long, and act on a click of it.
+    /// Offer the background button once the top-up runs long, and act on a
+    /// click of it.
     fn sync_top_up_overlay(&mut self) {
         let Some(handle) = self.top_up_overlay.clone() else {
             return;
@@ -237,7 +238,6 @@ impl TopUpIdentityScreen {
             self.continue_top_up_in_background();
             return;
         }
-        handle.set_description(top_up_progress_message(self.current_step()));
         if !self.top_up_background_offered
             && handle
                 .elapsed()
@@ -265,7 +265,7 @@ impl TopUpIdentityScreen {
         ui.vertical_centered(|ui| {
             ui.add(egui::Spinner::new());
             ui.add_space(10.0);
-            ui.heading(top_up_progress_message(self.current_step()));
+            ui.heading(TOP_UP_FORM_PAUSED);
         });
         ui.add_space(40.0);
     }
@@ -782,15 +782,6 @@ impl TopUpIdentityScreen {
         }
 
         ui.add_space(10.0);
-    }
-}
-
-/// What the running top-up is waiting on at `step`.
-fn top_up_progress_message(step: WalletFundedScreenStep) -> &'static str {
-    match step {
-        WalletFundedScreenStep::WaitingForAssetLock => TOP_UP_WAITING_FOR_NETWORK,
-        WalletFundedScreenStep::WaitingForPlatformAcceptance => TOP_UP_WAITING_FOR_PLATFORM,
-        _ => TOP_UP_IN_BACKGROUND,
     }
 }
 
@@ -1511,7 +1502,7 @@ mod tests {
             !screen_shows(&mut screen, NOT_ENOUGH_DASH),
             "a running top-up must not report missing funds"
         );
-        assert!(screen_shows(&mut screen, TOP_UP_WAITING_FOR_NETWORK));
+        assert!(screen_shows(&mut screen, TOP_UP_FORM_PAUSED));
         assert!(
             !screen_shows(&mut screen, "Add funds"),
             "a running top-up must not offer to send the funds again"
@@ -1580,6 +1571,59 @@ mod tests {
         assert_eq!(screen.current_step(), WalletFundedScreenStep::Success);
     }
 
+    /// Everything the global overlay paints for one frame of `ctx`.
+    fn overlay_text(ctx: &egui::Context) -> String {
+        fn collect(shape: &egui::Shape, text: &mut String) {
+            match shape {
+                egui::Shape::Text(shape) => {
+                    text.push_str(shape.galley.text());
+                    text.push('\n');
+                }
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| collect(shape, text)),
+                _ => {}
+            }
+        }
+        let mut text = String::new();
+        // Two frames: the overlay card only measures itself on its first one.
+        for _ in 0..2 {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                ProgressOverlay::render_global(ui.ctx(), false);
+            });
+            text.clear();
+            for clipped in std::mem::take(&mut output.shapes) {
+                collect(&clipped.shape, &mut text);
+            }
+            output.drop_without_applying_deltas();
+        }
+        text
+    }
+
+    /// The task reports no progress to the screen, so the dialog keeps one
+    /// sentence for the whole run instead of naming a stage it cannot know,
+    /// and the status under it does not repeat the dialog.
+    #[test]
+    fn running_top_up_keeps_one_dialog_message_and_a_different_status() {
+        let (mut screen, _context, _temp_dir) = dispatched_top_up_screen(0x46);
+        let ctx = screen.app_context.egui_ctx().clone();
+
+        for step in [
+            WalletFundedScreenStep::WaitingForAssetLock,
+            WalletFundedScreenStep::WaitingForPlatformAcceptance,
+        ] {
+            screen.set_step(step);
+            assert!(screen_shows(&mut screen, TOP_UP_FORM_PAUSED));
+            assert!(
+                !screen_shows(&mut screen, TOP_UP_IN_PROGRESS),
+                "the status under the dialog must not repeat it"
+            );
+            let dialog = overlay_text(&ctx);
+            assert!(
+                dialog.contains(TOP_UP_IN_PROGRESS),
+                "the dialog must keep its message at every stage, got {dialog:?}"
+            );
+        }
+    }
+
     #[cfg(feature = "testing")]
     #[test]
     fn long_running_top_up_offers_to_continue_in_background() {
@@ -1613,8 +1657,13 @@ mod tests {
 
         // Reopening the screen for the same identity must not offer the form
         // while its earlier top-up still runs.
-        let reopened = TopUpIdentityScreen::new(screen.identity.clone(), &screen.app_context);
+        let mut reopened = TopUpIdentityScreen::new(screen.identity.clone(), &screen.app_context);
         assert!(reopened.top_up_in_flight());
+        assert!(screen_shows(&mut reopened, TOP_UP_FORM_PAUSED));
+        assert!(
+            !screen_shows(&mut reopened, TOP_UP_IN_BACKGROUND),
+            "the status must not repeat the banner above it"
+        );
         let other = TopUpIdentityScreen::new(test_identity(Network::Testnet), &screen.app_context);
         assert!(!other.top_up_in_flight());
 

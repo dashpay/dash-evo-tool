@@ -702,6 +702,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Dates and times are shown in your local time zone in one format
+  (`2026-10-05 14:00`) across name voting, usernames, wallet transactions, token
+  claims and withdrawals, instead of a mix of UTC and local styles. A scheduled
+  vote time is entered in local time, and its label shows the zone's distance
+  from UTC.
+
+- The vote choices on a contested name are listed one per row as a pick-one
+  list, so they read as options rather than plain text.
+
 - The startup "The app is opening your saved data." block now counts the saved
   wallets as it prepares them ("Step 3 of 12"), so a profile with many wallets
   shows progress instead of a still screen.

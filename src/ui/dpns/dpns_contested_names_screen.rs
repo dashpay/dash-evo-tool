@@ -38,7 +38,7 @@ use crate::model::dpns_voting::progress::needs_attention;
 use crate::model::dpns_voting::{
     DpnsCurrentVoteState, DpnsScheduledVoteKey, DpnsVoteFailure, DpnsVoteOperation,
     DpnsVoteOperationId, DpnsVoteOutcome, DpnsVoteTarget, DpnsVoteTargetKey, DpnsVoteTargetStatus,
-    VoteTiming, dpns_schedule_is_overdue, validate_dpns_schedule_time,
+    VoteTiming, default_dpns_schedule_time, dpns_schedule_is_overdue, validate_dpns_schedule_time,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
@@ -542,8 +542,9 @@ pub struct DPNSScreen {
     confirm_timing: ConfirmTiming,
     /// Lead time for "When voting is about to end" (VOTE-FR-081).
     relative_preset: std::time::Duration,
-    /// Eagerly built, unlike most components: its default is the construction
-    /// time plus a day, and the read-only accessors below must see it.
+    /// Eagerly built, unlike most components: the read-only accessors below
+    /// must see it. Each review that opens starts it from a time valid for
+    /// the decisions under review.
     confirm_schedule: LocalScheduleInput,
     /// Set when the operator asks to load a node; the hosting Masternodes
     /// screen consumes it and opens its load form.
@@ -615,9 +616,6 @@ impl DPNSScreen {
             tracing::warn!(?error, "Could not cache proved DPNS vote state");
         }
 
-        // The confirm step's fixed-time input starts one day ahead.
-        let default_schedule_time = Utc::now() + chrono::Duration::days(1);
-
         let mut screen = Self {
             voting_identities,
             voting_identity_load_error,
@@ -659,7 +657,7 @@ impl DPNSScreen {
             submission_error_banner: None,
             confirm_timing: ConfirmTiming::Now,
             relative_preset: relative_schedule_preset(app_context.network()),
-            confirm_schedule: LocalScheduleInput::new().with_time(default_schedule_time),
+            confirm_schedule: LocalScheduleInput::new(),
             load_node_requested: false,
             node_set: NodeSet::All,
             node_set_network: None,
@@ -1391,10 +1389,19 @@ impl DPNSScreen {
 
     /// Open the confirm step for the staged decisions across the node set.
     fn open_review_for_node_set(&mut self) {
+        self.open_review_for_node_set_at(Utc::now());
+    }
+
+    fn open_review_for_node_set_at(&mut self, now: DateTime<Utc>) {
         if self.pending_vote_operation.is_some() {
             return;
         }
+        // This review may already be open: it keeps the time typed into it.
+        let already_open = self.confirm_open && self.retry.is_none();
         self.retry = None;
+        if !already_open {
+            self.seed_confirm_schedule(now);
+        }
         self.node_overrides.clear();
         for node in &self.late_nodes {
             self.node_overrides.insert(*node, NodeTiming::DontUse);
@@ -1431,6 +1438,29 @@ impl DPNSScreen {
         }
     }
 
+    /// Start the fixed-time input from a time the decisions under review
+    /// accept: ahead of `now` and before the earliest of their deadlines.
+    fn seed_confirm_schedule(&mut self, now: DateTime<Utc>) {
+        let earliest_end = self
+            .review_votes()
+            .iter()
+            .filter_map(|vote| self.review_end_time(vote))
+            .min();
+        let now_ms = datetime::unix_millis(now).unwrap_or_default();
+        if let Some(time) =
+            datetime::instant_from_unix_millis(default_dpns_schedule_time(now_ms, earliest_end))
+        {
+            self.confirm_schedule = LocalScheduleInput::new().with_time(time);
+        }
+    }
+
+    /// The deadline a reviewed decision is held to. The cards may have read
+    /// it after the choice was staged.
+    fn review_end_time(&self, vote: &SelectedVote) -> Option<u64> {
+        self.contest_end_time(&vote.contested_name)
+            .or(vote.end_time)
+    }
+
     /// The contest's voting deadline as the cards last read it.
     fn contest_end_time(&self, contested_name: &str) -> Option<u64> {
         self.cards
@@ -1451,6 +1481,10 @@ impl DPNSScreen {
     /// `Review again` on a failed drawer row: confirm that one node × name
     /// again. The staged decisions are not part of it and stay in the tray.
     fn review_failed_target(&mut self, outcome: &DpnsVoteOutcome) {
+        self.review_failed_target_at(outcome, Utc::now());
+    }
+
+    fn review_failed_target_at(&mut self, outcome: &DpnsVoteOutcome, now: DateTime<Utc>) {
         self.retry = Some(RetryReview {
             voter: outcome.target.key.voter_id,
             vote: SelectedVote {
@@ -1459,6 +1493,7 @@ impl DPNSScreen {
                 end_time: self.contest_end_time(&outcome.target.contested_name),
             },
         });
+        self.seed_confirm_schedule(now);
         self.node_overrides.clear();
         self.confirm_timing = ConfirmTiming::Now;
         self.confirm_status = VoteHandlingStatus::NotStarted;
@@ -2463,10 +2498,7 @@ impl DPNSScreen {
                     contested_name: vote.contested_name.clone(),
                     vote_poll_id,
                     choice: vote.vote_choice,
-                    // The deadline may have been read after the choice was staged.
-                    end_time: self
-                        .contest_end_time(&vote.contested_name)
-                        .or(vote.end_time),
+                    end_time: self.review_end_time(vote),
                 })
             })
             .collect::<Result<Vec<_>, ReviewPlanError>>()?;
@@ -4206,6 +4238,133 @@ mod tests {
             ReviewPlanError::Compose(ComposeError::ScheduleOutlastsContest { contested_name })
                 if contested_name == "beta"
         ));
+    }
+
+    /// A fixed mid-winter instant, 30 seconds past a whole minute: no zone
+    /// changes its clocks near it.
+    fn review_opened_at() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2031, 1, 15, 12, 0, 30).unwrap()
+    }
+
+    const MINUTE_MS: u64 = 60_000;
+
+    /// The time "At a specific time" starts from in a review opened at `now`.
+    fn specific_time_default(screen: &mut DPNSScreen, now: DateTime<Utc>) -> u64 {
+        screen.open_review_for_node_set_at(now);
+        screen.confirm_timing = ConfirmTiming::At;
+        screen
+            .confirm_schedule
+            .current_value()
+            .expect("a seeded time")
+    }
+
+    #[test]
+    fn specific_time_starts_an_hour_after_the_review_opens() {
+        let (mut screen, _dir) = voting_ui_review_fixture();
+        let now = review_opened_at();
+        let now_ms = now.timestamp_millis() as u64;
+        screen.selected_votes[0].end_time = Some(now_ms + 3 * 24 * 60 * MINUTE_MS);
+
+        let at = specific_time_default(&mut screen, now);
+
+        assert_eq!(at, now_ms - 30_000 + 60 * MINUTE_MS);
+        let plan = screen.build_review_plan_at(now).unwrap();
+        assert_eq!(plan.effective_count(), 1);
+        assert_eq!(plan.aggregate.targets[0].timing, VoteTiming::Scheduled(at));
+    }
+
+    /// A contest ending within the hour: the sheet must still open on a time
+    /// it accepts, with a vote to schedule.
+    #[test]
+    fn specific_time_starts_before_a_deadline_under_an_hour_away() {
+        let (mut screen, _dir) = voting_ui_review_fixture();
+        let now = review_opened_at();
+        let now_ms = now.timestamp_millis() as u64;
+        screen.selected_votes[0].end_time = Some(now_ms + 40 * MINUTE_MS);
+
+        let at = specific_time_default(&mut screen, now);
+
+        assert_eq!(at, now_ms - 30_000 + 20 * MINUTE_MS);
+        let plan = screen.build_review_plan_at(now).unwrap();
+        assert_eq!(plan.effective_count(), 1);
+        assert_eq!(plan.aggregate.targets[0].timing, VoteTiming::Scheduled(at));
+    }
+
+    #[test]
+    fn specific_time_starts_before_the_earliest_deadline_under_review() {
+        let (mut screen, _dir) = voting_ui_review_fixture();
+        let now = review_opened_at();
+        let now_ms = now.timestamp_millis() as u64;
+        screen.selected_votes[0].end_time = Some(now_ms + 3 * 24 * 60 * MINUTE_MS);
+        screen.selected_votes.push(SelectedVote {
+            contested_name: "beta".into(),
+            vote_choice: ResourceVoteChoice::Abstain,
+            end_time: Some(now_ms + 30 * MINUTE_MS),
+        });
+
+        let at = specific_time_default(&mut screen, now);
+
+        assert_eq!(at, now_ms - 30_000 + 15 * MINUTE_MS);
+        let plan = screen.build_review_plan_at(now).unwrap();
+        assert!(plan.effective_count() > 0);
+    }
+
+    #[test]
+    fn a_typed_specific_time_is_kept_until_the_review_closes() {
+        let (mut screen, _dir) = voting_ui_review_fixture();
+        let now = review_opened_at();
+        let now_ms = now.timestamp_millis() as u64;
+        screen.selected_votes[0].end_time = Some(now_ms + 3 * 24 * 60 * MINUTE_MS);
+        specific_time_default(&mut screen, now);
+        let typed = now + chrono::Duration::minutes(10) - chrono::Duration::seconds(30);
+        screen.confirm_schedule = LocalScheduleInput::new().with_time(typed);
+
+        screen.open_review_for_node_set_at(now + chrono::Duration::minutes(1));
+        assert_eq!(
+            screen.confirm_schedule.current_value(),
+            Some(typed.timestamp_millis() as u64),
+            "the review is still open, so the typed time stays"
+        );
+
+        screen.confirm_open = false;
+        let reopened = now + chrono::Duration::hours(2);
+        assert_eq!(
+            specific_time_default(&mut screen, reopened),
+            now_ms - 30_000 + 3 * 60 * MINUTE_MS,
+            "a new review starts from its own opening time"
+        );
+    }
+
+    /// `Review again` covers one contest, so its deadline is the one that
+    /// bounds the starting time.
+    #[test]
+    fn review_again_starts_the_specific_time_before_that_contests_deadline() {
+        let (mut screen, _dir) = voting_ui_review_fixture();
+        let now = review_opened_at();
+        let now_ms = now.timestamp_millis() as u64;
+        screen.app_context.seed_dpns_contest_for_test(
+            "alpha",
+            Some(now_ms + 40 * MINUTE_MS),
+            false,
+        );
+        screen.refresh();
+        let operation = AppContext::new_dpns_vote_operation(vec![
+            screen
+                .build_review_plan_at(now)
+                .unwrap()
+                .aggregate
+                .targets
+                .remove(0),
+        ]);
+
+        screen.review_failed_target_at(&operation.targets[0], now);
+        screen.confirm_timing = ConfirmTiming::At;
+
+        let plan = screen.build_review_plan_at(now).unwrap();
+        assert_eq!(
+            plan.aggregate.targets[0].timing,
+            VoteTiming::Scheduled(now_ms - 30_000 + 20 * MINUTE_MS)
+        );
     }
 
     #[test]

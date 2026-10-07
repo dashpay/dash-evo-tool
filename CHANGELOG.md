@@ -212,6 +212,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Scheduling votes "At a specific time" starts from a time you can use: an hour
+  after you open the confirmation, or halfway to the earliest deadline when a
+  contest ends sooner. It used to suggest a time about a day ahead, often past
+  the deadline, so the confirmation opened with a warning and no votes to
+  schedule.
+
 - Emphasized text is readable in light mode. Section headings, usernames,
   totals and the labels of a few buttons were drawn in white on a light
   background, and so were some loading spinners.

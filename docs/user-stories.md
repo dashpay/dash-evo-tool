@@ -860,7 +860,7 @@ As a masternode operator, I want to make one decision per contest and have all m
 
 As a masternode operator, I want to schedule votes so that they are cast before the deadline without my watching.
 
-- Timing: Now, When voting is about to end (default 6 hours before the end on Mainnet, 10 minutes on Testnet), or At a specific time. A specific time is entered in your local time zone, and the label shows how far that zone is from UTC. The absolute time is shown in your local time zone next to the relative label.
+- Timing: Now, When voting is about to end (default 6 hours before the end on Mainnet, 10 minutes on Testnet), or At a specific time. A specific time is entered in your local time zone, and the label shows how far that zone is from UTC. It starts an hour after the confirm step opens, or halfway to the earliest deadline under review when that is sooner, and a time you typed stays until the confirm step closes. The absolute time is shown in your local time zone next to the relative label.
 - Votes ▸ Scheduled groups rows by decision with an expandable node list. Edit changes the choice or time before execution starts. Remove is permanent. Times at or after the deadline are rejected.
 - Scheduled and immediate votes share the same target locks and result states. An ambiguous result is never rebroadcast automatically.
 - Missed votes (more than 120 seconds past due) explain why and offer Cast now, Edit, and Remove.

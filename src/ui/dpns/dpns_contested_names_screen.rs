@@ -1450,7 +1450,7 @@ impl DPNSScreen {
         if let Some(time) =
             datetime::instant_from_unix_millis(default_dpns_schedule_time(now_ms, earliest_end))
         {
-            self.confirm_schedule = LocalScheduleInput::new().with_time(time);
+            self.confirm_schedule.set_time(time);
         }
     }
 
@@ -4288,6 +4288,48 @@ mod tests {
         let plan = screen.build_review_plan_at(now).unwrap();
         assert_eq!(plan.effective_count(), 1);
         assert_eq!(plan.aggregate.targets[0].timing, VoteTiming::Scheduled(at));
+    }
+
+    /// Central European clocks show 02:30 twice on 2031-10-26. A review opened
+    /// just after the first starts an hour ahead, at the second, and must
+    /// keep that instant instead of reading its own fields as the first.
+    #[test]
+    fn specific_time_default_keeps_its_instant_in_a_repeated_hour() {
+        use crate::model::datetime::test_zone::CentralEurope2031;
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::{NodeT, Queryable};
+        let (mut screen, _dir) = voting_ui_review_fixture();
+        screen.confirm_schedule = LocalScheduleInput::new().with_zone(CentralEurope2031);
+        let now = Utc.with_ymd_and_hms(2031, 10, 26, 0, 30, 30).unwrap();
+        let now_ms = now.timestamp_millis() as u64;
+        screen.selected_votes[0].end_time = Some(now_ms + 3 * 24 * 60 * MINUTE_MS);
+
+        let at = specific_time_default(&mut screen, now);
+
+        assert_eq!(at, now_ms - 30_000 + 60 * MINUTE_MS);
+        let plan = screen.build_review_plan_at(now).unwrap();
+        assert_eq!(plan.effective_count(), 1);
+        assert_eq!(plan.aggregate.targets[0].timing, VoteTiming::Scheduled(at));
+
+        let mut harness = egui_kittest::Harness::builder().build_ui(move |ui| {
+            screen.show_confirm_step(ui);
+        });
+        harness.run();
+        assert_eq!(
+            harness.get_by_role(Role::TextInput).value().as_deref(),
+            Some("2031-10-26")
+        );
+        let spinners: Vec<_> = harness
+            .query_all_by_role(Role::SpinButton)
+            .filter_map(|spinner| spinner.accesskit_node().numeric_value())
+            .collect();
+        assert_eq!(spinners, [2.0, 30.0], "the second 02:30");
+        assert!(
+            harness
+                .query_by_label("Cast on (your local time, UTC+01:00):")
+                .is_some(),
+            "the second 02:30 is on winter time"
+        );
     }
 
     #[test]

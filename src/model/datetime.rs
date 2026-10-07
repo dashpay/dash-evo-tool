@@ -136,56 +136,51 @@ pub fn local_date_time_seconds(instant: DateTime<Utc>) -> String {
     date_time_seconds_in(instant, &Local)
 }
 
-/// [`utc_offset_in`] the user's time zone.
-pub fn local_utc_offset(instant: DateTime<Utc>) -> String {
-    utc_offset_in(instant, &Local)
+/// A zone's clocks behind one object-safe type, so a widget can hold the
+/// host's zone ([`Local`]) and a test a fixed one.
+pub trait Clocks: Send + Sync {
+    /// [`wall_clock_in`] this zone.
+    fn wall_clock(&self, instant: DateTime<Utc>) -> WallClock;
+
+    /// [`instant_from_wall_clock_in`] this zone.
+    fn instant_from_wall_clock(&self, date: &str, hour: u32, minute: u32) -> Option<DateTime<Utc>>;
+
+    /// [`utc_offset_in`] this zone.
+    fn utc_offset(&self, instant: DateTime<Utc>) -> String;
 }
 
-/// [`wall_clock_in`] the user's time zone.
-pub fn local_wall_clock(instant: DateTime<Utc>) -> WallClock {
-    wall_clock_in(instant, &Local)
+impl<Tz: TimeZone + Send + Sync> Clocks for Tz {
+    fn wall_clock(&self, instant: DateTime<Utc>) -> WallClock {
+        wall_clock_in(instant, self)
+    }
+
+    fn instant_from_wall_clock(&self, date: &str, hour: u32, minute: u32) -> Option<DateTime<Utc>> {
+        instant_from_wall_clock_in(date, hour, minute, self)
+    }
+
+    fn utc_offset(&self, instant: DateTime<Utc>) -> String {
+        utc_offset_in(instant, self)
+    }
 }
 
-/// [`instant_from_wall_clock_in`] the user's time zone.
-pub fn instant_from_local_wall_clock(date: &str, hour: u32, minute: u32) -> Option<DateTime<Utc>> {
-    instant_from_wall_clock_in(date, hour, minute, &Local)
-}
-
+/// A zone with daylight saving time, for tests that must not read the host's.
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use chrono::{NaiveDateTime, NaiveTime, TimeDelta};
+pub(crate) mod test_zone {
+    use chrono::{FixedOffset, MappedLocalTime, NaiveDate, NaiveDateTime, NaiveTime, TimeZone};
 
-    fn utc(year: i32, month: u32, day: u32, hour: u32, minute: u32, second: u32) -> DateTime<Utc> {
-        naive(year, month, day, hour, minute, second).and_utc()
-    }
-
-    fn naive(
-        year: i32,
-        month: u32,
-        day: u32,
-        hour: u32,
-        minute: u32,
-        second: u32,
-    ) -> NaiveDateTime {
-        NaiveDate::from_ymd_opt(year, month, day)
-            .and_then(|date| date.and_hms_opt(hour, minute, second))
-            .expect("valid test instant")
-    }
+    /// Central European clocks in 2031: UTC+1, and UTC+2 from the last Sunday
+    /// of March to the last Sunday of October, both changes at 01:00 UTC.
+    #[derive(Debug, Clone, Copy)]
+    pub(crate) struct CentralEurope2031;
 
     fn east(hours: i32) -> FixedOffset {
         FixedOffset::east_opt(hours * 3600).expect("valid test offset")
     }
 
-    /// Central European clocks in 2031: UTC+1, and UTC+2 from the last Sunday
-    /// of March to the last Sunday of October, both changes at 01:00 UTC.
-    #[derive(Debug, Clone, Copy)]
-    struct CentralEurope2031;
-
-    impl CentralEurope2031 {
-        fn summer_time(utc: &NaiveDateTime) -> bool {
-            (naive(2031, 3, 30, 1, 0, 0)..naive(2031, 10, 26, 1, 0, 0)).contains(utc)
-        }
+    fn change_at(month: u32, day: u32) -> NaiveDateTime {
+        NaiveDate::from_ymd_opt(2031, month, day)
+            .and_then(|date| date.and_hms_opt(1, 0, 0))
+            .expect("valid test instant")
     }
 
     impl TimeZone for CentralEurope2031 {
@@ -220,12 +215,40 @@ mod tests {
         }
 
         fn offset_from_utc_datetime(&self, utc: &NaiveDateTime) -> FixedOffset {
-            if Self::summer_time(utc) {
+            if (change_at(3, 30)..change_at(10, 26)).contains(utc) {
                 east(2)
             } else {
                 east(1)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_zone::CentralEurope2031;
+    use super::*;
+    use chrono::{NaiveDateTime, TimeDelta};
+
+    fn utc(year: i32, month: u32, day: u32, hour: u32, minute: u32, second: u32) -> DateTime<Utc> {
+        naive(year, month, day, hour, minute, second).and_utc()
+    }
+
+    fn naive(
+        year: i32,
+        month: u32,
+        day: u32,
+        hour: u32,
+        minute: u32,
+        second: u32,
+    ) -> NaiveDateTime {
+        NaiveDate::from_ymd_opt(year, month, day)
+            .and_then(|date| date.and_hms_opt(hour, minute, second))
+            .expect("valid test instant")
+    }
+
+    fn east(hours: i32) -> FixedOffset {
+        FixedOffset::east_opt(hours * 3600).expect("valid test offset")
     }
 
     #[test]
@@ -420,8 +443,8 @@ mod tests {
             assert!(!local_date(instant).is_empty());
             assert!(!local_date_time(instant).is_empty());
             assert!(!local_date_time_seconds(instant).is_empty());
-            assert!(!local_wall_clock(instant).date.is_empty());
-            assert_eq!(local_utc_offset(instant), "UTC+00:00");
+            assert!(!Local.wall_clock(instant).date.is_empty());
+            assert_eq!(Local.utc_offset(instant), "UTC+00:00");
         }
     }
 
@@ -462,9 +485,9 @@ mod tests {
     #[test]
     fn the_host_zone_reads_back_the_fields_it_shows() {
         for instant in [utc(2031, 1, 15, 12, 0, 0), utc(2031, 7, 15, 12, 0, 0)] {
-            let fields = local_wall_clock(instant);
+            let fields = Local.wall_clock(instant);
             assert_eq!(
-                instant_from_local_wall_clock(&fields.date, fields.hour, fields.minute),
+                Local.instant_from_wall_clock(&fields.date, fields.hour, fields.minute),
                 Some(instant)
             );
             assert_eq!(
@@ -478,7 +501,7 @@ mod tests {
             );
             assert_eq!(local_date(instant), fields.date);
             assert!(local_date_time_seconds(instant).starts_with(&local_date_time(instant)));
-            assert!(local_utc_offset(instant).starts_with("UTC"));
+            assert!(Local.utc_offset(instant).starts_with("UTC"));
         }
     }
 }

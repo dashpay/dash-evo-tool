@@ -847,7 +847,7 @@ As a power user, I want to review past contests so that I can see outcomes and h
 
 As a masternode operator, I want to make one decision per contest and have all my chosen nodes cast it so that voting with many nodes takes seconds.
 
-- One choice per card (Vote for a requester, Lock name, Abstain) applies to every node in the remembered node set. Cast opens one confirm step for all decisions.
+- One choice per card (Vote for a requester, Lock name, Abstain) applies to every node in the remembered node set. The choices are listed one per row as a pick-one list. Cast opens one confirm step for all decisions.
 - Each node votes in its own transaction (Platform has no batching). The confirm shows decisions × nodes = transactions, warns once when votes change earlier choices, and lists skipped nodes with reasons (already voted this way, no changes left, vote state unavailable, not in the masternode list).
 - A node may vote five times per contest: the initial vote plus four changes. Changes left are shown per node, counted on this device, or marked unknown when the node voted outside Dash Evo Tool. Nodes with none left are skipped.
 - Choosing the current choice submits nothing. The node's proved current choice is shown before casting.
@@ -860,7 +860,7 @@ As a masternode operator, I want to make one decision per contest and have all m
 
 As a masternode operator, I want to schedule votes so that they are cast before the deadline without my watching.
 
-- Timing: Now, When voting is about to end (default 6 hours before the end on Mainnet, 10 minutes on Testnet), or At a specific time. The absolute UTC time is stored and shown next to the relative label.
+- Timing: Now, When voting is about to end (default 6 hours before the end on Mainnet, 10 minutes on Testnet), or At a specific time. A specific time is entered in your local time zone, and the label shows how far that zone is from UTC. The absolute time is shown in your local time zone next to the relative label.
 - Votes ▸ Scheduled groups rows by decision with an expandable node list. Edit changes the choice or time before execution starts. Remove is permanent. Times at or after the deadline are rejected.
 - Scheduled and immediate votes share the same target locks and result states. An ambiguous result is never rebroadcast automatically.
 - Missed votes (more than 120 seconds past due) explain why and offer Cast now, Edit, and Remove.

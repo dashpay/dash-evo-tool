@@ -1,6 +1,7 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::{AppContext, DET_PLATFORM_VERSION};
+use crate::model::datetime;
 use crate::model::fee_estimation::PlatformFeeEstimator;
 use dash_sdk::Error as SdkError;
 use dash_sdk::Sdk;
@@ -436,9 +437,8 @@ fn format_withdrawal_line(
     let index = document
         .created_at()
         .ok_or(WithdrawalParseError::MissingTimestamp)?;
-    let utc_datetime = DateTime::<Utc>::from_timestamp_millis(index as i64)
-        .ok_or(WithdrawalParseError::InvalidTimestamp)?;
-    let local_datetime: DateTime<Local> = utc_datetime.with_timezone(&Local);
+    let instant =
+        datetime::instant_from_unix_millis(index).ok_or(WithdrawalParseError::InvalidTimestamp)?;
 
     let amount = document
         .properties()
@@ -462,7 +462,7 @@ fn format_withdrawal_line(
         .unwrap_or_else(|e| format!("Invalid Address: {}", e));
     Ok(format!(
         "{}: {:.8} Dash for {} towards {} ({})",
-        local_datetime.format("%Y-%m-%d %H:%M:%S"),
+        datetime::local_date_time_seconds(instant),
         amount as f64 / (dash_to_credits!(1) as f64),
         owner_id,
         address,
@@ -480,9 +480,8 @@ fn format_completed_withdrawal_line(
     let index = document
         .updated_at()
         .ok_or(WithdrawalParseError::MissingTimestamp)?;
-    let utc_datetime = DateTime::<Utc>::from_timestamp_millis(index as i64)
-        .ok_or(WithdrawalParseError::InvalidTimestamp)?;
-    let local_datetime: DateTime<Local> = utc_datetime.with_timezone(&Local);
+    let instant =
+        datetime::instant_from_unix_millis(index).ok_or(WithdrawalParseError::InvalidTimestamp)?;
 
     let amount = document
         .properties()
@@ -515,7 +514,7 @@ fn format_completed_withdrawal_line(
         owner_id,
         address,
         status,
-        local_datetime.format("%Y-%m-%d %H:%M:%S"),
+        datetime::local_date_time_seconds(instant),
     ))
 }
 

@@ -1,19 +1,19 @@
 //! One contest card in Masternodes ▸ Votes (frame V1): a read-only weighted
-//! tally on the left, the decision pills and node line on the right.
+//! tally on the left, the decision choices and node line on the right.
 
+use crate::model::datetime;
 use crate::model::dpns::ContestDurations;
 use crate::model::dpns_voting::operator::{Influence, influence, time_left};
 use crate::ui::dpns::copy;
 use crate::ui::state::dpns_vote_cards::{NodeContestStatus, VoteCard};
 use crate::ui::theme::{DashColors, ResponseExt};
-use chrono::{DateTime, Utc};
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::platform::Identifier;
 use eframe::egui::{self, RichText, Ui};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-/// Shortcut keys shown next to contender pills, in contender order.
+/// Shortcut keys shown next to contender choices, in contender order.
 pub const CONTENDER_KEYS: [&str; 9] = ["1", "2", "3", "4", "5", "6", "7", "8", "9"];
 
 const TALLY_BAR_WIDTH: f32 = 140.0;
@@ -30,7 +30,7 @@ pub enum CardEvent {
     RefreshVoting,
 }
 
-/// The decision choices of a card, in pill and shortcut order.
+/// The decision choices of a card, in display and shortcut order.
 pub fn card_choices(card: &VoteCard) -> Vec<(ResourceVoteChoice, String)> {
     let mut choices: Vec<(ResourceVoteChoice, String)> = card
         .contest
@@ -129,9 +129,10 @@ fn node_labels_match_the_hex_pro_tx_hash_and_preserve_aliases() {
     );
 }
 
-fn utc_label(ms: u64) -> String {
-    DateTime::<Utc>::from_timestamp_millis(ms as i64)
-        .map(|date| date.format("%Y-%m-%d %H:%M").to_string())
+/// A stored time to the minute, in the user's time zone.
+fn local_minute(ms: u64) -> String {
+    datetime::instant_from_unix_millis(ms)
+        .map(datetime::local_date_time)
         .unwrap_or_default()
 }
 
@@ -148,14 +149,11 @@ pub fn schedule_caption(
     let join_until = end.saturating_sub(total).saturating_add(join);
     Some(if now_ms < join_until {
         format!(
-            "{requests} · Others can join until {when} UTC.",
-            when = utc_label(join_until)
+            "{requests} · Others can join until {when}.",
+            when = local_minute(join_until)
         )
     } else {
-        format!(
-            "{requests} · Voting ends {when} UTC.",
-            when = utc_label(end)
-        )
+        format!("{requests} · Voting ends {when}.", when = local_minute(end))
     })
 }
 
@@ -349,37 +347,36 @@ impl CardView<'_> {
         let shared = card.shared_choice();
         let highlighted = self.staged.or(shared);
         let mut contender_index = 0usize;
-        ui.horizontal_wrapped(|ui| {
-            for (choice, label) in card_choices(card) {
-                let key = match choice {
-                    ResourceVoteChoice::TowardsIdentity(_) => {
-                        let key = CONTENDER_KEYS.get(contender_index).copied();
-                        contender_index += 1;
-                        key
-                    }
-                    ResourceVoteChoice::Lock => Some("L"),
-                    ResourceVoteChoice::Abstain => Some("A"),
-                };
-                let text = match key {
-                    Some(key) => format!("{label}  [{key}]"),
-                    None => label.clone(),
-                };
-                let response = ui
-                    .add_enabled(
-                        enabled,
-                        egui::Button::selectable(highlighted == Some(choice), text),
-                    )
-                    .disabled_tooltip(disabled_reason);
-                if let ResourceVoteChoice::TowardsIdentity(id) = choice {
-                    response.clone().on_hover_text(id.to_string(
-                        dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
-                    ));
+        // One radio row per choice; a long label wraps inside the column.
+        for (choice, label) in card_choices(card) {
+            let key = match choice {
+                ResourceVoteChoice::TowardsIdentity(_) => {
+                    let key = CONTENDER_KEYS.get(contender_index).copied();
+                    contender_index += 1;
+                    key
                 }
-                if response.clicked() {
-                    events.push(CardEvent::Choose(choice));
-                }
+                ResourceVoteChoice::Lock => Some("L"),
+                ResourceVoteChoice::Abstain => Some("A"),
+            };
+            let text = match key {
+                Some(key) => format!("{label}  [{key}]"),
+                None => label.clone(),
+            };
+            let response = ui
+                .add_enabled(
+                    enabled,
+                    egui::RadioButton::new(highlighted == Some(choice), text),
+                )
+                .disabled_tooltip(disabled_reason);
+            if let ResourceVoteChoice::TowardsIdentity(id) = choice {
+                response.clone().on_hover_text(
+                    id.to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58),
+                );
             }
-        });
+            if response.clicked() {
+                events.push(CardEvent::Choose(choice));
+            }
+        }
         let in_flight = card.in_flight_count();
         if in_flight > 0 {
             ui.label(
@@ -539,12 +536,106 @@ mod tests {
             total: Duration::from_millis(9_000_000),
             join: Duration::from_millis(4_000_000),
         };
-        let open = schedule_caption(&card, durations, 2_000_000).unwrap();
-        assert!(
-            open.starts_with("1 request · Others can join until"),
-            "{open}"
+        let local = |ms| datetime::local_date_time(datetime::instant_from_unix_millis(ms).unwrap());
+        assert_eq!(
+            schedule_caption(&card, durations, 2_000_000).unwrap(),
+            format!(
+                "1 request · Others can join until {when}.",
+                when = local(5_000_000)
+            )
         );
-        let closed = schedule_caption(&card, durations, 6_000_000).unwrap();
-        assert!(closed.starts_with("1 request · Voting ends"), "{closed}");
+        assert_eq!(
+            schedule_caption(&card, durations, 6_000_000).unwrap(),
+            format!("1 request · Voting ends {when}.", when = local(10_000_000))
+        );
+    }
+
+    /// A card view with `Lock name` staged.
+    fn lock_staged_view<'a>(
+        card: &'a VoteCard,
+        node_labels: &'a BTreeMap<Identifier, String>,
+    ) -> CardView<'a> {
+        CardView {
+            card,
+            staged: Some(ResourceVoteChoice::Lock),
+            selected: false,
+            focused: false,
+            scroll_into_view: false,
+            node_labels,
+            node_set_weight: 1,
+            now_ms: 6_000_000,
+            urgency: Duration::from_secs(60),
+            durations: ContestDurations {
+                total: Duration::from_millis(9_000_000),
+                join: Duration::from_millis(4_000_000),
+            },
+            has_voting_nodes: true,
+        }
+    }
+
+    /// The choices read as a pick-one list: one radio row each, in shortcut
+    /// order, with the staged choice marked.
+    #[test]
+    fn decision_choices_are_stacked_radio_rows() {
+        use egui::accesskit::{Role, Toggled};
+        use egui_kittest::kittest::{NodeT, Queryable};
+        let card = card(&[NodeContestStatus::NotVoted]);
+        let labels = BTreeMap::new();
+        let harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1200.0, 600.0))
+            .build_ui(move |ui| {
+                lock_staged_view(&card, &labels).show(ui);
+            });
+
+        let rows: Vec<_> = harness.query_all_by_role(Role::RadioButton).collect();
+        let texts: Vec<String> = rows
+            .iter()
+            .map(|row| row.accesskit_node().label().unwrap_or_default())
+            .collect();
+        assert_eq!(texts.len(), 3, "{texts:?}");
+        assert!(texts[0].ends_with("  [1]"), "{texts:?}");
+        assert_eq!(texts[1..], ["Lock name  [L]", "Abstain  [A]"]);
+        let marked: Vec<bool> = rows
+            .iter()
+            .map(|row| row.accesskit_node().toggled() == Some(Toggled::True))
+            .collect();
+        assert_eq!(marked, [false, true, false]);
+        for pair in rows.windows(2) {
+            let (above, below) = (pair[0].rect(), pair[1].rect());
+            assert_eq!(above.left(), below.left(), "the rows share a left edge");
+            assert!(
+                below.top() >= above.bottom(),
+                "{below:?} is not under {above:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn clicking_a_decision_row_reports_that_choice() {
+        use egui_kittest::kittest::Queryable;
+        let card = card(&[NodeContestStatus::NotVoted]);
+        let labels = BTreeMap::new();
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let reported = Arc::clone(&events);
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1200.0, 600.0))
+            .build_ui(move |ui| {
+                let events = lock_staged_view(&card, &labels).show(ui);
+                reported.lock().unwrap().extend(events);
+            });
+
+        harness.get_by_label("Abstain  [A]").click();
+        harness.run();
+        harness.get_by_label("Lock name  [L]").click();
+        harness.run();
+
+        assert_eq!(
+            *events.lock().unwrap(),
+            [
+                CardEvent::Choose(ResourceVoteChoice::Abstain),
+                CardEvent::Choose(ResourceVoteChoice::Lock),
+            ],
+            "a click on the marked row is reported too, so the screen can clear it"
+        );
     }
 }

@@ -142,6 +142,15 @@ Reference: `MessageBanner` in `src/ui/components/message_banner.rs`.
 - Alternating rows: `DashColors::stripe(dark_mode)` for tables > 5 rows
 - Sortable column headers where applicable
 
+### Dates and Times
+
+Reference: `src/model/datetime.rs`.
+
+- Show every absolute date and time in the user's local time zone, never UTC, and without a zone suffix
+- One format everywhere: `YYYY-MM-DD`, `YYYY-MM-DD HH:MM`, or `YYYY-MM-DD HH:MM:SS` -- always through `model::datetime`, never a `chrono` format string at the call site
+- Typed dates and times are read as local time; a time input states that and names the UTC offset (see `LocalScheduleInput`)
+- Stored values stay UTC (Unix seconds or milliseconds); machine-facing output (MCP, CLI) is not localized
+
 ## 8. Loading and Progress
 
 | Duration | Indicator                                       |

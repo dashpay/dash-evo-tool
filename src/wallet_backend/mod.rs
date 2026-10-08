@@ -2868,6 +2868,12 @@ impl WalletBackend {
         self.inner.snapshots.snapshot(seed_hash).utxos.clone()
     }
 
+    /// Number of current unspent outputs for the wallet, without copying
+    /// them. DISPLAY-ONLY, like [`Self::utxos`].
+    pub fn utxo_count(&self, seed_hash: &WalletSeedHash) -> usize {
+        self.inner.snapshots.utxo_count(seed_hash)
+    }
+
     /// UTXO-derived per-address balances for the wallet.
     pub fn address_balances(
         &self,

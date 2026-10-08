@@ -7415,6 +7415,89 @@ async fn top_up_below_the_network_fee_is_refused_before_the_wallet_is_touched() 
     );
 }
 
+/// Creating an identity with a funding too small for the fee the network takes
+/// for its keys is refused by the task itself, before the wallet backend — not
+/// started here — is asked for anything.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn identity_creation_below_the_network_fee_is_refused_before_the_wallet_is_touched() {
+    use crate::backend_task::identity::{IdentityTask, build_identity_registration_with_seed};
+
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    let seed = [0x6Cu8; 64];
+    let wallet = Arc::new(RwLock::new(
+        Wallet::new_from_seed(seed, Network::Testnet, None, None).expect("build wallet"),
+    ));
+    // 0.002 DASH covers the base of the fee, but not the share of any key.
+    let info = build_identity_registration_with_seed(&ctx, &wallet, &seed, 0, 200_000)
+        .expect("registration info");
+    let key_count = info.keys.to_public_keys_map().expect("public keys").len() as u64;
+
+    let error = ctx
+        .run_identity_task(IdentityTask::RegisterIdentity(info), &ctx.sdk(), sender)
+        .await
+        .expect_err("a funding below the network fee must be refused");
+
+    assert!(
+        matches!(
+            error,
+            TaskError::AssetLockAmountBelowNetworkFee { amount_duffs: 200_000, minimum_duffs }
+                if minimum_duffs == 202_000 + 6_500 * key_count
+        ),
+        "expected AssetLockAmountBelowNetworkFee for {key_count} keys, got: {error:?}"
+    );
+    assert!(
+        ctx.wallet_backend().is_err(),
+        "refusing the amount must not start the wallet backend"
+    );
+}
+
+/// Funding a Platform address with an amount the network would refuse is
+/// stopped by the task itself in both fee modes; the smallest accepted amount
+/// gets past the check and only then needs the wallet backend.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn platform_address_funding_below_the_network_fee_is_refused_before_the_wallet_is_touched() {
+    use dash_sdk::dpp::address_funds::PlatformAddress;
+
+    let (ctx, _sender, _tmp) = offline_testnet_context();
+    let seed_hash = [0x7Bu8; 32];
+    let destination = PlatformAddress::P2pkh([0x21u8; 20]);
+
+    // (fee taken from the amount, smallest amount the network accepts)
+    for (fee_from_amount, minimum) in [(true, 56_000u64), (false, 43_250u64)] {
+        let error = ctx
+            .fund_platform_address_from_wallet_utxos(
+                seed_hash,
+                minimum - 1,
+                destination,
+                fee_from_amount,
+            )
+            .await
+            .expect_err("a funding below the network fee must be refused");
+        assert!(
+            matches!(
+                error,
+                TaskError::AssetLockAmountBelowNetworkFee { amount_duffs, minimum_duffs }
+                    if amount_duffs == minimum - 1 && minimum_duffs == minimum
+            ),
+            "fee from amount = {fee_from_amount}: expected a refusal at {minimum}, got: {error:?}"
+        );
+
+        let error = ctx
+            .fund_platform_address_from_wallet_utxos(
+                seed_hash,
+                minimum,
+                destination,
+                fee_from_amount,
+            )
+            .await
+            .expect_err("an offline context cannot fund anything");
+        assert!(
+            matches!(error, TaskError::WalletBackendNotYetWired),
+            "fee from amount = {fee_from_amount}: {minimum} must pass the check, got: {error:?}"
+        );
+    }
+}
+
 /// The cold-boot/unlock reconcile registers only the identities its own wallet
 /// is linked to. An identity linked to a different wallet must stay out of this
 /// wallet's manager, whatever the in-memory `associated_wallets` map holds.

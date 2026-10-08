@@ -1,7 +1,8 @@
-use crate::backend_task::error::TaskError;
+use crate::backend_task::error::{TaskError, ensure_funding_covers_network_fee};
 use crate::backend_task::identity::{IdentityRegistrationInfo, RegisterIdentityFundingMethod};
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
+use crate::model::fee_estimation::identity_create_min_funding_duffs;
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
 use crate::model::request_type::RequestType;
 use dash_sdk::dash_spv::Network;
@@ -53,6 +54,12 @@ impl AppContext {
         // tracked asset lock on success.
         match identity_funding_method {
             RegisterIdentityFundingMethod::FundWithWallet(amount_duffs, identity_index) => {
+                // Before any wallet work: the network refuses a funding below
+                // its fee only after the funds have left the wallet.
+                ensure_funding_covers_network_fee(
+                    amount_duffs,
+                    identity_create_min_funding_duffs(key_count, sdk.version()),
+                )?;
                 let funding =
                     platform_wallet::wallet::asset_lock::AssetLockFunding::FromWalletBalance {
                         amount_duffs,

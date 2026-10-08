@@ -22,10 +22,16 @@ use dash_sdk::dpp::prelude::{AddressNonce, AssetLockProof};
 use dash_sdk::dpp::state_transition::StateTransitionEstimatedFeeValidation;
 use dash_sdk::dpp::state_transition::address_credit_withdrawal_transition::AddressCreditWithdrawalTransition;
 use dash_sdk::dpp::state_transition::address_credit_withdrawal_transition::v0::AddressCreditWithdrawalTransitionV0;
-use dash_sdk::dpp::state_transition::address_funding_from_asset_lock_transition::AddressFundingFromAssetLockTransition;
 use dash_sdk::dpp::state_transition::address_funding_from_asset_lock_transition::v0::AddressFundingFromAssetLockTransitionV0;
+use dash_sdk::dpp::state_transition::address_funding_from_asset_lock_transition::{
+    AddressFundingFromAssetLockTransition,
+    calculate_address_funding_from_asset_lock_min_required_fee,
+};
+use dash_sdk::dpp::state_transition::identity_create_transition::IdentityCreateTransition;
+use dash_sdk::dpp::state_transition::identity_create_transition::v0::IdentityCreateTransitionV0;
 use dash_sdk::dpp::state_transition::identity_topup_transition::IdentityTopUpTransition;
 use dash_sdk::dpp::state_transition::identity_topup_transition::v0::IdentityTopUpTransitionV0;
+use dash_sdk::dpp::state_transition::public_key_in_creation::IdentityPublicKeyInCreation;
 
 /// Subtract an estimated fee from a credit balance without floating-point conversion.
 pub const fn max_spendable_credits(balance: u64, estimated_fee: u64) -> u64 {
@@ -308,6 +314,43 @@ impl PlatformFeeEstimator {
         let fee_duffs = base_fee_credits / CREDITS_PER_DUFF;
         // Add 50% buffer and ensure minimum of 10,000 duffs based on observed behavior
         fee_duffs.saturating_add(fee_duffs / 2).max(10_000)
+    }
+
+    /// Smallest amount, in duffs, a user can enter when funding a Platform
+    /// address from the wallet without the network refusing the funding.
+    ///
+    /// The network compares the whole funding with a fee that follows the
+    /// protocol version and the number of recipients. With the fee taken from
+    /// the amount, the amount is the whole funding. Otherwise the funding is
+    /// the amount plus [`Self::estimate_address_funding_from_asset_lock_duffs`]
+    /// and is shared with a change recipient, so the amount must make up what
+    /// that estimate leaves short, and still meet the smallest amount the
+    /// network accepts for a named recipient.
+    pub fn address_funding_min_amount_duffs(
+        &self,
+        fee_deduct_from_output: bool,
+        platform_version: &PlatformVersion,
+    ) -> u64 {
+        let required_duffs = |recipients| {
+            calculate_address_funding_from_asset_lock_min_required_fee(
+                0,
+                recipients,
+                platform_version,
+            )
+            .div_ceil(CREDITS_PER_DUFF)
+        };
+        if fee_deduct_from_output {
+            return required_duffs(1);
+        }
+        let smallest_named_amount = platform_version
+            .dpp
+            .state_transitions
+            .address_funds
+            .min_output_amount
+            .div_ceil(CREDITS_PER_DUFF);
+        required_duffs(2)
+            .saturating_sub(self.estimate_address_funding_from_asset_lock_duffs(2))
+            .max(smallest_named_amount)
     }
 
     /// Estimate fees (in duffs) for a shield-from-core asset lock operation.
@@ -845,6 +888,24 @@ pub(crate) fn identity_topup_min_funding_duffs(
         .map_err(Box::new)
 }
 
+/// Smallest identity-creation funding, in duffs, the network accepts for an
+/// identity created with `key_count` keys.
+///
+/// Same rule as [`identity_topup_min_funding_duffs`]; the fee the network
+/// takes grows with every key the new identity starts with.
+pub(crate) fn identity_create_min_funding_duffs(
+    key_count: usize,
+    platform_version: &PlatformVersion,
+) -> Result<u64, Box<ProtocolError>> {
+    IdentityCreateTransition::V0(IdentityCreateTransitionV0 {
+        public_keys: vec![IdentityPublicKeyInCreation::V0(Default::default()); key_count],
+        ..Default::default()
+    })
+    .calculate_min_required_fee(platform_version)
+    .map(|credits| credits.div_ceil(CREDITS_PER_DUFF))
+    .map_err(Box::new)
+}
+
 /// Calculate the estimated fee for funding a Platform address from an asset lock.
 pub(crate) fn estimate_address_funding_fee_from_transition(
     platform_version: &PlatformVersion,
@@ -1160,6 +1221,76 @@ mod tests {
             identity_topup_min_funding_duffs(pv13).expect("PV13 defines the top-up fee"),
             50_500
         );
+    }
+
+    /// Under protocol 13 the network takes 0.00202 DASH plus 0.000065 DASH for
+    /// every key from the funding of a new identity.
+    #[test]
+    fn identity_create_minimum_funding_grows_with_the_number_of_keys() {
+        let pv13 = PlatformVersion::get(13).expect("PV13");
+        let minimum = |keys| {
+            identity_create_min_funding_duffs(keys, pv13).expect("PV13 defines the creation fee")
+        };
+        assert_eq!(minimum(1), 208_500);
+        assert_eq!(minimum(4), 228_000);
+    }
+
+    /// With the fee taken from the amount, the amount is the whole funding and
+    /// must cover the fee for one recipient: 0.00056 DASH under protocol 13.
+    #[test]
+    fn address_funding_minimum_is_the_whole_fee_when_taken_from_the_amount() {
+        let pv13 = PlatformVersion::get(13).expect("PV13");
+        assert_eq!(
+            PlatformFeeEstimator::new().address_funding_min_amount_duffs(true, pv13),
+            56_000
+        );
+    }
+
+    /// With the fee paid on top, the funding is the amount plus the estimate
+    /// (18 750 duffs), and the network requires 62 000 for two recipients.
+    #[test]
+    fn address_funding_minimum_with_change_makes_up_what_the_estimate_leaves_short() {
+        let pv13 = PlatformVersion::get(13).expect("PV13");
+        assert_eq!(
+            PlatformFeeEstimator::new().address_funding_min_amount_duffs(false, pv13),
+            43_250
+        );
+    }
+
+    /// Whatever the fee multiplier, an amount at the minimum yields a funding
+    /// the network accepts for two recipients, and one duff less does not
+    /// unless the smallest named amount is what binds.
+    #[test]
+    fn address_funding_with_change_at_the_minimum_funds_what_the_network_requires() {
+        let pv13 = PlatformVersion::get(13).expect("PV13");
+        let required_credits =
+            calculate_address_funding_from_asset_lock_min_required_fee(0, 2, pv13);
+        let smallest_output_duffs = pv13
+            .dpp
+            .state_transitions
+            .address_funds
+            .min_output_amount
+            .div_ceil(CREDITS_PER_DUFF);
+        for multiplier in [1000, 1500, 2000, 3000, 4000, 10_000] {
+            let estimator = PlatformFeeEstimator::with_fee_multiplier(multiplier);
+            let minimum = estimator.address_funding_min_amount_duffs(false, pv13);
+            let funding = |amount: u64| {
+                (amount + estimator.estimate_address_funding_from_asset_lock_duffs(2))
+                    * CREDITS_PER_DUFF
+            };
+            assert!(
+                funding(minimum) >= required_credits,
+                "multiplier {multiplier}: minimum {minimum} leaves the funding short"
+            );
+            assert!(
+                minimum >= smallest_output_duffs,
+                "multiplier {multiplier}: minimum {minimum} is below the smallest named amount"
+            );
+            assert!(
+                minimum == smallest_output_duffs || funding(minimum - 1) < required_credits,
+                "multiplier {multiplier}: minimum {minimum} refuses an amount the network accepts"
+            );
+        }
     }
 
     #[test]

@@ -1,4 +1,8 @@
+use crate::backend_task::error::TaskError;
+use crate::model::asset_lock::{asset_lock_user_amount_range, validate_asset_lock_minimum};
+use crate::model::fee_estimation::format_duffs_as_dash;
 use crate::model::wallet::Wallet;
+use crate::ui::components::amount_input::AmountInput;
 use crate::ui::state::TrackedAssetLockCache;
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::Network;
@@ -156,6 +160,56 @@ pub fn max_amount_after_fee_reserve(spendable_duffs: u64, fee_credits: u64) -> u
     spendable_duffs
         .saturating_mul(CREDITS_PER_DUFF)
         .saturating_sub(fee_credits)
+}
+
+/// Shown instead of an amount when nothing the wallet can send covers the fee.
+pub const FUNDING_FEE_NOT_COVERED: &str = "The amount you can use is too small to cover the network fee. Add more Dash to your wallet and try again.";
+
+/// What a wallet must hold, in credits, before any amount it can send covers
+/// the network fee once `reserve_duffs` is kept back. Every "add at least" text
+/// and deposit threshold reads this, so none of them asks for an amount the
+/// form then cannot use.
+pub fn required_wallet_credits(minimum_duffs: Option<u64>, reserve_duffs: u64) -> u64 {
+    minimum_duffs
+        .unwrap_or(0)
+        .saturating_add(reserve_duffs)
+        .saturating_mul(CREDITS_PER_DUFF)
+}
+
+/// Why `amount_duffs` cannot be sent, for network-fee reasons, from a wallet
+/// that can build `ceiling_duffs` — as banner text. `None` when the fee is
+/// covered, or `minimum_duffs` is unknown (the backend then decides).
+pub fn network_fee_refusal(
+    amount_duffs: u64,
+    ceiling_duffs: u64,
+    reserve_duffs: u64,
+    minimum_duffs: Option<u64>,
+) -> Option<String> {
+    let minimum_duffs = minimum_duffs?;
+    if asset_lock_user_amount_range(ceiling_duffs, reserve_duffs, minimum_duffs).is_none() {
+        return Some(FUNDING_FEE_NOT_COVERED.to_string());
+    }
+    validate_asset_lock_minimum(amount_duffs, minimum_duffs)
+        .err()
+        .map(|error| {
+            TaskError::AssetLockAmountBelowNetworkFee {
+                amount_duffs,
+                minimum_duffs: error.minimum_amount_duffs,
+            }
+            .to_string()
+        })
+}
+
+/// Limit `amount_input` to the smallest funding the network accepts, and say
+/// why under the field.
+pub fn show_network_fee_minimum(amount_input: &mut AmountInput, minimum_duffs: Option<u64>) {
+    if let Some(minimum) = minimum_duffs {
+        amount_input.set_min_amount(Some(minimum.saturating_mul(CREDITS_PER_DUFF)));
+        amount_input.set_caption(Some(format!(
+            "The network fee is taken from this amount, so it must be at least {}.",
+            format_duffs_as_dash(minimum)
+        )));
+    }
 }
 
 /// Bound a received deposit by both its address balance and the wallet ceiling.

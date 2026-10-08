@@ -13,13 +13,10 @@ use egui::{Color32, RichText, Ui, Vec2};
 use std::time::Duration;
 
 impl AddNewIdentityScreen {
-    /// The minimum credits needed to create the identity with the current key
-    /// set — shown as the amount to deposit.
+    /// The smallest deposit, in credits, that leaves a funding the network
+    /// accepts for the current key set — shown as the amount to deposit.
     fn deposit_minimum_credits(&self) -> u64 {
-        let key_count = self.identity_keys.others.len() + 1; // +1 for master key
-        self.app_context
-            .fee_estimator()
-            .estimate_identity_create(key_count)
+        self.required_wallet_credits()
     }
 
     /// Queue a deposit-address derivation unless one is already shown, in

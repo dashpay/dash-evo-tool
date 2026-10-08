@@ -14,7 +14,6 @@ use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::asset_lock::{
     AssetLockAmountError, asset_lock_user_amount_range, validate_asset_lock_amount,
-    validate_asset_lock_minimum,
 };
 use crate::model::fee_estimation::{
     format_credits_as_dash, format_duffs_as_dash, identity_topup_min_funding_duffs,
@@ -34,9 +33,10 @@ use crate::ui::components::{
     BannerHandle, MessageBanner, OptionBannerExt, OptionOverlayExt, OverlayConfig, OverlayHandle,
 };
 use crate::ui::identity::funding_common::{
-    FundingMethod, WalletFundedScreenStep, default_funding_state, deposit_event_outcome,
-    max_amount_after_fee_reserve, receive_deposit_ceiling_duffs, step_after_task_failure,
-    wallet_selection_combo,
+    FUNDING_FEE_NOT_COVERED, FundingMethod, WalletFundedScreenStep, default_funding_state,
+    deposit_event_outcome, max_amount_after_fee_reserve, network_fee_refusal,
+    receive_deposit_ceiling_duffs, required_wallet_credits, show_network_fee_minimum,
+    step_after_task_failure, wallet_selection_combo,
 };
 use crate::ui::state::{AssetLockBalanceCache, TrackedAssetLockCache};
 use crate::ui::theme::DashColors;
@@ -64,8 +64,6 @@ const WALLET_SELECTION_TOOLTIP: &str =
 const TOP_UP_IN_PROGRESS: &str = "Adding funds to your identity.";
 /// Shown in place of the funding form while a top-up runs.
 const TOP_UP_FORM_PAUSED: &str = "You can add more funds when this transfer finishes.";
-/// Shown instead of an amount when nothing the wallet can send covers the fee.
-const TOP_UP_FEE_NOT_COVERED: &str = "The amount you can use is too small to cover the network fee. Add more Dash to your wallet and try again.";
 /// Progress banner kept up while a top-up runs in the background.
 const TOP_UP_IN_BACKGROUND: &str =
     "Adding funds to your identity in the background. You can keep using Dash Evo Tool.";
@@ -752,7 +750,12 @@ impl TopUpIdentityScreen {
                     );
                     return AppAction::None;
                 };
-                if let Some(message) = self.network_fee_refusal(amount, max_amount) {
+                if let Some(message) = network_fee_refusal(
+                    amount,
+                    max_amount,
+                    self.top_up_reserve_duffs(),
+                    self.minimum_top_up_duffs(),
+                ) {
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),
                         message,
@@ -830,33 +833,9 @@ impl TopUpIdentityScreen {
         )
     }
 
-    /// What a wallet must hold, in credits, before it can send any top-up. Every
-    /// "add at least" text and deposit threshold reads this, so none of them
-    /// asks for an amount the form then cannot use.
+    /// What a wallet must hold, in credits, before it can send any top-up.
     fn required_wallet_credits(&self) -> u64 {
-        self.minimum_top_up_duffs()
-            .unwrap_or(0)
-            .saturating_add(self.top_up_reserve_duffs())
-            .saturating_mul(CREDITS_PER_DUFF)
-    }
-
-    /// Why `amount_duffs` cannot be sent, for network-fee reasons, from a wallet
-    /// that can build `ceiling_duffs` — as banner text. `None` when the fee is
-    /// covered, or cannot be read here (the backend then decides).
-    fn network_fee_refusal(&self, amount_duffs: u64, ceiling_duffs: u64) -> Option<String> {
-        let minimum_duffs = self.minimum_top_up_duffs()?;
-        if self.top_up_amount_range(ceiling_duffs).is_none() {
-            return Some(TOP_UP_FEE_NOT_COVERED.to_string());
-        }
-        validate_asset_lock_minimum(amount_duffs, minimum_duffs)
-            .err()
-            .map(|error| {
-                TaskError::AssetLockAmountBelowNetworkFee {
-                    amount_duffs,
-                    minimum_duffs: error.minimum_amount_duffs,
-                }
-                .to_string()
-            })
+        required_wallet_credits(self.minimum_top_up_duffs(), self.top_up_reserve_duffs())
     }
 
     fn top_up_funding_amount_input(&mut self, ui: &mut egui::Ui) {
@@ -867,7 +846,7 @@ impl TopUpIdentityScreen {
         // Max nor the prefill can propose one the network would refuse.
         if available_ceiling_duffs.is_some_and(|c| self.top_up_amount_range(c).is_none()) {
             self.funding_amount_exact = None;
-            ui.colored_label(DashColors::WARNING, TOP_UP_FEE_NOT_COVERED);
+            ui.colored_label(DashColors::WARNING, FUNDING_FEE_NOT_COVERED);
             ui.add_space(10.0);
             return;
         }
@@ -904,13 +883,7 @@ impl TopUpIdentityScreen {
         amount_input.set_max_amount(max_amount);
         amount_input.set_show_max_button(show_max_button);
         amount_input.set_max_exceeded_hint(fee_hint);
-        if let Some(minimum) = minimum_duffs {
-            amount_input.set_min_amount(Some(minimum.saturating_mul(CREDITS_PER_DUFF)));
-            amount_input.set_caption(Some(format!(
-                "The network fee is taken from this amount, so it must be at least {}.",
-                format_duffs_as_dash(minimum)
-            )));
-        }
+        show_network_fee_minimum(amount_input, minimum_duffs);
 
         // Pre-fill (once) with the fee-reserve-capped maximum when a deposit just
         // arrived, so the amount and Add funds button are populated but still editable.
@@ -2266,7 +2239,7 @@ mod tests {
         );
         assert_eq!(
             global_banner_texts(screen.app_context.egui_ctx()),
-            vec![TOP_UP_FEE_NOT_COVERED.to_string()]
+            vec![FUNDING_FEE_NOT_COVERED.to_string()]
         );
     }
 
@@ -2281,7 +2254,7 @@ mod tests {
         screen.set_step(WalletFundedScreenStep::FundsReceived);
         screen.prefill_funding_amount = true;
 
-        assert!(screen_shows(&mut screen, TOP_UP_FEE_NOT_COVERED));
+        assert!(screen_shows(&mut screen, FUNDING_FEE_NOT_COVERED));
         assert!(!screen_shows(&mut screen, AMOUNT_FIELD));
         assert!(!screen_shows(&mut screen, ADD_FUNDS_BUTTON));
     }

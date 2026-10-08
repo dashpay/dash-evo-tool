@@ -269,6 +269,10 @@ pub struct AppContext {
     /// Read while holding `prepare_gate`, except for the final release store,
     /// so concurrent callers cannot observe partial preparation.
     storage_prepared: AtomicBool,
+    /// Test seam: a network switch dispatched from this context waits here
+    /// first. See [`AppContext::test_hold_network_switch`].
+    #[cfg(feature = "testing")]
+    pub(crate) test_network_switch_gate: tokio::sync::Mutex<()>,
     /// Process-local claim shared by every UI surface before a paid DashPay
     /// request action enters its backend flow.
     contact_request_actions_in_flight: Mutex<HashSet<Identifier>>,
@@ -625,6 +629,8 @@ impl AppContext {
             migration_status: Arc::new(MigrationStatus::new_idle()),
             prepare_gate: tokio::sync::Mutex::new(()),
             storage_prepared: AtomicBool::new(false),
+            #[cfg(feature = "testing")]
+            test_network_switch_gate: tokio::sync::Mutex::new(()),
             contact_request_actions_in_flight: Mutex::new(HashSet::new()),
             dpns_vote_operation_guard: Mutex::new(()),
             dpns_voter_lifecycles: Mutex::default(),

@@ -212,6 +212,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- After you press Disconnect, the app stays disconnected when you switch
+  networks. It used to reconnect on the new network whenever "Auto-start SPV on
+  startup" was enabled. Press Connect or restart the app to connect again.
+
 - Emphasized text is readable in light mode. Section headings, usernames,
   totals and the labels of a few buttons were drawn in white on a light
   background, and so were some loading spinners.

@@ -1551,6 +1551,7 @@ As an expert user, I want the app to automatically begin SPV sync when it opens 
 
 - Expert-mode toggle "Auto-start SPV on startup", persisted across launches.
 - When enabled, sync begins automatically on app launch.
+- After a manual Disconnect the app stays disconnected, including after switching networks, until the user presses Connect or restarts the app.
 
 ### NET-019: Clear all local data for a network [Implemented]
 **Persona:** Jordan, Priya

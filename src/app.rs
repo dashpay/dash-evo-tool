@@ -1299,6 +1299,10 @@ pub struct AppState {
     /// to continue in the background. Ambient reconnects are never armed, so
     /// they never hard-block a working user (F-SPV-A).
     spv_block: SpvBlockReconciler,
+    /// Whether the user disconnected by hand and has not connected since. Holds
+    /// back every automatic chain-sync start for the rest of the session — the
+    /// auto-start setting is about launch, so it never overrides a Disconnect.
+    spv_manually_disconnected: bool,
     /// Data-migration banner reconciler (also hosts the storage update's
     /// wallet-password prompt).
     migration: MigrationReconciler,
@@ -1878,6 +1882,7 @@ impl AppState {
             // with the sync it covers (F-SPV-A: scoped to user-initiated sync,
             // not ambient reconnect).
             spv_block: SpvBlockReconciler::new(false),
+            spv_manually_disconnected: false,
             migration: MigrationReconciler::new(),
             pending_confirmation: PendingConfirmation::new(),
             boot: if network_selection_required {
@@ -2149,6 +2154,13 @@ impl AppState {
         });
     }
 
+    /// Whether chain sync may start without the user asking: they opted into
+    /// auto-start and have not disconnected by hand this session.
+    fn auto_start_spv_allowed(&self) -> bool {
+        !self.spv_manually_disconnected
+            && self.current_app_context().get_app_settings().auto_start_spv
+    }
+
     /// Start chain sync for the active context.
     fn start_spv_for(&mut self, reason: BackendInitReason) {
         Self::spawn_spv_start(
@@ -2385,7 +2397,7 @@ impl AppState {
             format!("Connecting to {network:?}..."),
             MessageType::Info,
         ));
-        let start_spv = self.current_app_context().get_app_settings().auto_start_spv;
+        let start_spv = self.auto_start_spv_allowed();
         self.handle_backend_task(BackendTask::SwitchNetwork { network, start_spv });
     }
 
@@ -2424,7 +2436,7 @@ impl AppState {
         // afterwards would throw away the incoming network's freshly attached
         // preparation and leave the gate raised over nothing to poll.
         self.boot.reset_for_switch(network);
-        let auto_start_spv = app_context.get_app_settings().auto_start_spv;
+        let auto_start_spv = self.auto_start_spv_allowed();
         if self.boot.is_prepared(network) {
             if auto_start_spv {
                 self.start_spv_for(BackendInitReason::NetworkSwitch);
@@ -2814,7 +2826,7 @@ impl AppState {
     /// a user-initiated sync just like the Connect button, so the blocking
     /// overlay must cover it. Boot auto-start arms via the constructor instead.
     fn try_auto_start_spv(&mut self) {
-        if self.current_app_context().get_app_settings().auto_start_spv {
+        if self.auto_start_spv_allowed() {
             // Fresh user-initiated episode: arm the block and re-arm the escape,
             // mirroring AppAction::StartSpv.
             self.spv_block.arm();
@@ -3779,7 +3791,7 @@ impl App for AppState {
             Some(GateEvent::Retry(network)) => {
                 tracing::info!(?network, "User retried storage preparation");
                 let app_ctx = self.current_app_context().clone();
-                let auto_start = app_ctx.get_app_settings().auto_start_spv;
+                let auto_start = self.auto_start_spv_allowed();
                 // Clear the terminal status the failed run published, so the
                 // retry announces its own progress instead of being taken for a
                 // second call on an already prepared network and running silent.
@@ -3957,9 +3969,11 @@ impl App for AppState {
                     // (F-SPV-E: a dropped Info-banner handle could not be cleared
                     // by the overlay's banner suppression).
                     self.spv_block.arm();
+                    self.spv_manually_disconnected = false;
                     self.start_spv_for(BackendInitReason::ManualConnect);
                 }
                 AppAction::StopSpv => {
+                    self.spv_manually_disconnected = true;
                     let app_ctx = self.current_app_context().clone();
                     // Claim the disconnect synchronously: this flips the
                     // indicator to Stopping on this frame (so the button

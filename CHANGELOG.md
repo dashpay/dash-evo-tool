@@ -729,9 +729,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- Choosing a wallet looks the same on the create-identity, add-funds and
-  load-identity screens: every wallet shows its type, its name and a balance
-  (`HD: Main — 0.5 DASH`), and hovering a wallet breaks the balance down.
+- Choosing a wallet looks the same on the Wallets page and on the
+  create-identity, add-funds and load-identity screens: every wallet shows its
+  type, its name and a balance (`HD: Main — 0.5 DASH`), and hovering a wallet
+  breaks the balance down.
   Where the wallet pays, the balance is the amount it can use right now. A
   wallet that cannot be used for the chosen funding method is greyed out and
   says why when you hover it.

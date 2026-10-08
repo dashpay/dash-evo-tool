@@ -1,3 +1,4 @@
+use crate::model::address::AddressKind;
 use crate::model::wallet::Wallet;
 use crate::ui::state::TrackedAssetLockCache;
 use dash_sdk::dashcore_rpc::dashcore::Address;
@@ -48,6 +49,15 @@ impl FundingMethod {
     /// `UseUnusedAssetLock`: an existing identity being topped up was never
     /// mid-setup, so "recover an unfinished funding" doesn't fit — it just
     /// reuses an existing funding transaction.
+    /// The balance kind a wallet picker counts for this method: the funds
+    /// the method draws on.
+    pub fn balance_kind(&self) -> AddressKind {
+        match self {
+            FundingMethod::UsePlatformAddress => AddressKind::Platform,
+            _ => AddressKind::Core,
+        }
+    }
+
     pub fn top_up_label(&self) -> &'static str {
         match self {
             FundingMethod::NoSelection => "Select how to fund",

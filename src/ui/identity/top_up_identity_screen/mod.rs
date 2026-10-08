@@ -11,7 +11,6 @@ use crate::backend_task::identity::{IdentityTask, IdentityTopUpInfo, TopUpIdenti
 use crate::backend_task::wallet::WalletTask;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
-use crate::model::address::AddressKind;
 use crate::model::amount::Amount;
 use crate::model::asset_lock::{AssetLockAmountError, validate_asset_lock_amount};
 use crate::model::fee_estimation::{format_credits_as_dash, format_duffs_as_dash};
@@ -440,7 +439,13 @@ impl TopUpIdentityScreen {
             {
                 Some(WALLET_LACKS_DASH)
             }
-            FundingMethod::UseUnusedAssetLock if !self.asset_lock_cache.has_unused(&seed_hash) => {
+            // Only a completed read can show there is nothing to use. While it
+            // is unfinished or failed the wallet stays selectable, so the
+            // form's retry stays reachable.
+            FundingMethod::UseUnusedAssetLock
+                if self.asset_lock_cache.get(&seed_hash).is_some()
+                    && !self.asset_lock_cache.has_unused(&seed_hash) =>
+            {
                 Some(WALLET_HAS_NO_FUNDING)
             }
             _ => None,
@@ -476,10 +481,7 @@ impl TopUpIdentityScreen {
                     WalletSelector::new("select_wallet").with_core_figure(CoreFigure::Usable)
                 });
                 // The row shows the balance the chosen funding method draws on.
-                selector.set_balance_kinds(&[match funding_method {
-                    FundingMethod::UsePlatformAddress => AddressKind::Platform,
-                    _ => AddressKind::Core,
-                }]);
+                selector.set_balance_kinds(&[funding_method.balance_kind()]);
                 selector.set_entries(self.app_context.wallet_selector_entries(false));
                 selector.set_unavailable(unavailable);
                 selector.set_selected(self.wallet.as_deref().map(WalletChoice::of_hd_wallet));
@@ -1680,6 +1682,7 @@ mod tests {
             None,
             "a wallet whose usable amount is still being checked stays available"
         );
+        screen.asset_lock_cache.store(alpha, Vec::new());
         assert_eq!(
             screen.wallet_unavailable_reason(&wallets[&alpha], FundingMethod::UseUnusedAssetLock),
             Some(WALLET_HAS_NO_FUNDING)
@@ -1703,6 +1706,62 @@ mod tests {
                 .accesskit_node()
                 .is_disabled(),
             "the wallet that cannot pay must be greyed out"
+        );
+    }
+
+    /// A read that is unfinished or failed says nothing about what the wallet
+    /// holds, so only a completed read with nothing to use greys the wallet out.
+    #[test]
+    fn wallet_stays_available_until_a_read_shows_no_funding_transaction() {
+        let (mut screen, [alpha, beta], _temp_dir) = two_wallet_screen();
+        let wallets = screen.app_context.wallet_context().wallets();
+        let reason = |screen: &TopUpIdentityScreen, seed_hash: &WalletSeedHash| {
+            screen.wallet_unavailable_reason(&wallets[seed_hash], FundingMethod::UseUnusedAssetLock)
+        };
+
+        assert_eq!(reason(&screen, &alpha), None, "not read yet");
+        let _ = screen.asset_lock_cache.ensure_requested_many([alpha, beta]);
+        assert_eq!(reason(&screen, &alpha), None, "still loading");
+        screen.asset_lock_cache.mark_loading_failed();
+        assert_eq!(reason(&screen, &alpha), None, "the read failed");
+
+        screen.asset_lock_cache.store(alpha, Vec::new());
+        assert_eq!(reason(&screen, &alpha), Some(WALLET_HAS_NO_FUNDING));
+        assert_eq!(reason(&screen, &beta), None, "another wallet's read");
+    }
+
+    /// When no wallet's funding transactions could be loaded, the user can
+    /// still pick a wallet and reach the form's retry.
+    #[test]
+    fn wallet_whose_funding_read_failed_can_be_picked_to_retry() {
+        use egui_kittest::Harness;
+        use egui_kittest::kittest::{NodeT, Queryable};
+        let (mut screen, [alpha, beta], _temp_dir) = two_wallet_screen();
+        *screen.funding_method.write().expect("funding method lock") =
+            FundingMethod::UseUnusedAssetLock;
+        screen.wallet = None;
+        let _ = screen.asset_lock_cache.ensure_requested_many([alpha, beta]);
+        screen.asset_lock_cache.mark_loading_failed();
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1200.0, 900.0))
+            .build_ui(|ui| {
+                screen.ui(ui);
+            });
+        harness.run_steps(2);
+        harness.get_by_value("Select a wallet").click();
+        harness.run_steps(2);
+        let row = harness.get_by_label("HD: Alpha — 0 DASH");
+        assert!(
+            !row.accesskit_node().is_disabled(),
+            "a wallet whose read failed must stay selectable"
+        );
+        row.click();
+        harness.run_steps(2);
+
+        assert!(
+            harness.query_by_label("Retry").is_some(),
+            "picking the wallet must lead to the retry"
         );
     }
 

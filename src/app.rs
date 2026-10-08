@@ -30,6 +30,9 @@ use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen, ProfileSearchScreen};
 use crate::ui::dpns::copy::scheduled_vote_clear_feedback;
 use crate::ui::dpns::dpns_contested_names_screen::DPNSScreen;
 use crate::ui::identity::identity_pill::shorten_id;
+use crate::ui::identity::top_up_identity_screen::{
+    finish_top_up, follow_top_ups_after_network_switch,
+};
 use crate::ui::network_chooser_screen::{NetworkChooserScreen, chooser_network_label};
 use crate::ui::theme::ThemeMode;
 use crate::ui::tokens::tokens_screen::{TokensScreen, TokensSubscreen};
@@ -334,15 +337,11 @@ fn clear_profile_saving_banner_after_success(
     }
 }
 
-/// End the background-progress banner of a top-up and, when it succeeded,
-/// confirm it: the screen that started it may be gone.
-fn finish_background_top_up(ctx: &egui::Context, context: &BackendTaskContext, succeeded: bool) {
-    use crate::ui::identity::top_up_identity_screen::{
-        TOP_UP_DONE_IN_BACKGROUND, clear_top_up_background_banner,
-    };
-    if clear_top_up_background_banner(ctx, context) && succeeded {
-        MessageBanner::set_global(ctx, TOP_UP_DONE_IN_BACKGROUND, MessageType::Success);
-    }
+/// Whether `screen` is the Add Funds screen that sent the top-up `context`
+/// and still waits on it. No other screen may take that top-up's outcome for
+/// its own: Wallet Send, for one, completes on any top-up result.
+fn screen_awaits_top_up(screen: &Screen, context: &BackendTaskContext) -> bool {
+    matches!(screen, Screen::TopUpIdentityScreen(screen) if screen.awaits_top_up(context))
 }
 
 /// How often local state re-derives the voting attention summary.
@@ -542,78 +541,6 @@ mod backend_task_join_tests {
         assert_eq!(
             BackendTaskContext::from(&BackendTask::None),
             BackendTaskContext::Other
-        );
-    }
-
-    #[test]
-    fn background_top_up_result_ends_its_banner_and_confirms_success() {
-        use crate::ui::identity::top_up_identity_screen::{
-            TOP_UP_DONE_IN_BACKGROUND, show_top_up_background_banner,
-        };
-        let ctx = egui::Context::default();
-        let context = BackendTaskContext::IdentityTopUp(Identifier::from([1; 32]));
-
-        // A top-up the user watched to the end is confirmed by its screen.
-        finish_background_top_up(&ctx, &context, true);
-        assert!(!MessageBanner::has_global(&ctx));
-
-        show_top_up_background_banner(&ctx, context.clone());
-        finish_background_top_up(&ctx, &BackendTaskContext::Other, true);
-        finish_background_top_up(
-            &ctx,
-            &BackendTaskContext::IdentityTopUp(Identifier::from([2; 32])),
-            true,
-        );
-        assert!(
-            MessageBanner::has_global(&ctx),
-            "only the top-up's own result ends its progress banner"
-        );
-
-        finish_background_top_up(&ctx, &context, true);
-        assert!(
-            MessageBanner::has_global(&ctx),
-            "a successful background top-up must show its confirmation"
-        );
-        MessageBanner::clear_global_message(&ctx, TOP_UP_DONE_IN_BACKGROUND);
-        assert!(
-            !MessageBanner::has_global(&ctx),
-            "success must swap the progress banner for the confirmation"
-        );
-
-        show_top_up_background_banner(&ctx, context.clone());
-        finish_background_top_up(&ctx, &context, false);
-        assert!(
-            !MessageBanner::has_global(&ctx),
-            "a failed top-up ends its progress banner without confirming"
-        );
-    }
-
-    /// Wallet Send can move funds to the same identity while its top-up runs
-    /// in the background; that transfer's result is not the top-up's.
-    #[test]
-    fn another_top_up_of_the_same_identity_leaves_the_background_one_pending() {
-        use crate::ui::identity::top_up_identity_screen::{
-            clear_top_up_background_banner, show_top_up_background_banner,
-        };
-        let ctx = egui::Context::default();
-        let other_transfer = BackendTaskContext::IdentityTopUp(Identifier::from([1; 32]));
-        let dispatch = |dispatch_id| BackendTaskContext::Dispatched {
-            dispatch_id,
-            operation: Box::new(other_transfer.clone()),
-        };
-        let top_up = dispatch(1);
-
-        show_top_up_background_banner(&ctx, top_up.clone());
-        finish_background_top_up(&ctx, &other_transfer, true);
-        finish_background_top_up(&ctx, &dispatch(2), true);
-
-        assert!(
-            clear_top_up_background_banner(&ctx, &top_up),
-            "another transfer to the identity must leave its background top-up pending"
-        );
-        assert!(
-            !MessageBanner::has_global(&ctx),
-            "another transfer's success must not confirm the background top-up"
         );
     }
 
@@ -2548,6 +2475,8 @@ impl AppState {
         // is never left behind a stale block. Also drop the SPV-sync overlay
         // bookkeeping so its handle never goes stale against the cleared `ctx.data`.
         ProgressOverlay::clear_all_global(app_context.egui_ctx());
+        // A top-up sent before the switch keeps running without its dialog.
+        follow_top_ups_after_network_switch(app_context.egui_ctx());
         self.spv_block.reset();
 
         for screen in self.main_screens.values_mut() {
@@ -3234,6 +3163,14 @@ impl App for AppState {
                 .connection_status()
                 .handle_task_result(&task_result, active_context.network);
 
+            // Keyed on the dispatch alone and ahead of every arm below, so that
+            // none of them can leave an ended top-up in flight.
+            let tracked_top_up = match &task_result {
+                TaskResult::Success { context, .. } => finish_top_up(ctx, context, true),
+                TaskResult::Error { context, .. } => finish_top_up(ctx, context, false),
+                TaskResult::Refresh | TaskResult::Repaint => false,
+            };
+
             let recovery_delivered = deliver_legacy_recovery_result(
                 &mut self.main_screens,
                 &mut self.screen_stack,
@@ -3254,7 +3191,6 @@ impl App for AppState {
                         self.retry_incomplete_dpns_background_refresh(*network);
                     }
                     clear_profile_saving_banner_after_success(ctx, &context, &unboxed_message);
-                    finish_background_top_up(ctx, &context, true);
                     route_username_refresh_to_hidden_screens(
                         &mut self.screen_stack,
                         &context,
@@ -3534,8 +3470,13 @@ impl App for AppState {
                         _ => {
                             // For all other success results, let the screen decide how to display
                             // the outcome without showing a generic global success banner.
-                            self.visible_screen_mut()
-                                .display_backend_task_result(&context, unboxed_message);
+                            let visible = self.visible_screen_mut();
+                            if !tracked_top_up || screen_awaits_top_up(visible, &context) {
+                                visible.display_backend_task_result(&context, unboxed_message);
+                            } else {
+                                // Not this screen's top-up, but the balances it shows changed.
+                                visible.refresh();
+                            }
                         }
                     }
                 }
@@ -3614,9 +3555,6 @@ impl App for AppState {
                     error: err,
                 } => {
                     clear_profile_saving_banner_after_error(ctx, &context);
-                    // A top-up ends only here and in the success arm, so no
-                    // top-up error may take one of the special-cased arms above.
-                    finish_background_top_up(ctx, &context, false);
                     clear_scheduled_vote_sweep_guard_on_error(
                         &mut self.scheduled_vote_sweeps_in_progress,
                         &context,
@@ -3630,8 +3568,12 @@ impl App for AppState {
                     self.route_identity_error_to_hidden_hub(&context, &err);
                     self.route_dpns_vote_error_to_hidden_screens(&context, &err);
                     let chooser_owned = network_chooser_owns_task(&context);
-                    let suppress_stale_error = !chooser_owned
-                        && !recovery_delivered
+                    // A top-up can fail while another screen is in view. That
+                    // screen did not send it: the banner alone reports it.
+                    let foreign_top_up = tracked_top_up
+                        && !screen_awaits_top_up(self.visible_screen_mut(), &context);
+                    let visible_owned = !chooser_owned && !recovery_delivered && !foreign_top_up;
+                    let suppress_stale_error = visible_owned
                         && self
                             .visible_screen_mut()
                             .should_suppress_backend_task_error(&context, &err);
@@ -3642,16 +3584,14 @@ impl App for AppState {
                         {
                             screen.display_backend_task_error(&context, &err);
                         }
-                    } else if !recovery_delivered {
+                    } else if visible_owned {
                         self.visible_screen_mut()
                             .display_backend_task_error(&context, &err);
                     }
                     // Let the screen handle specific error types first.
                     // If handled, skip the generic error banner.
                     let handled = suppress_stale_error
-                        || (!chooser_owned
-                            && !recovery_delivered
-                            && self.visible_screen_mut().display_task_error(&err));
+                        || (visible_owned && self.visible_screen_mut().display_task_error(&err));
 
                     if !handled {
                         let msg = err.to_string();
@@ -3686,7 +3626,7 @@ impl App for AppState {
                             }
                             _ => {}
                         }
-                        if !chooser_owned && !recovery_delivered {
+                        if visible_owned {
                             self.visible_screen_mut()
                                 .display_message(&msg, MessageType::Error);
                         }

@@ -1055,6 +1055,58 @@ mod tests {
         assert_eq!(fee, BALANCE_DUFFS - max_amount);
     }
 
+    /// A wallet's payments spent whole into a funding lose the Core fee. The
+    /// model's estimate of that fee sizes deposit requests, so it must never be
+    /// below what the builder charges.
+    #[test]
+    fn asset_lock_core_fee_estimate_covers_what_the_builder_charges() {
+        use crate::model::fee_estimation::estimate_asset_lock_core_fee_duffs;
+        const PAYMENT_DUFFS: u64 = 430_000;
+        const CURRENT_HEIGHT: u32 = 200;
+
+        for payments in [1usize, 2, 5] {
+            let wallet =
+                Wallet::new_random(Network::Testnet, WalletAccountCreationOptions::Default)
+                    .expect("test wallet");
+            let mut wallet_info =
+                ManagedWalletInfo::from_wallet_with_name(&wallet, "Test".to_string(), 0);
+            let account = wallet.get_bip44_account(0).expect("BIP44 account");
+            let managed_account = wallet_info
+                .accounts
+                .standard_bip44_accounts
+                .get_mut(&0)
+                .expect("managed BIP44 account");
+            let funding_address = managed_account
+                .next_receive_address(Some(&account.account_xpub), true)
+                .expect("funding address");
+            for index in 0..payments {
+                let outpoint = OutPoint::new(Txid::from_byte_array([index as u8 + 1; 32]), 0);
+                let mut utxo = Utxo::new(
+                    outpoint,
+                    TxOut {
+                        value: PAYMENT_DUFFS,
+                        script_pubkey: funding_address.script_pubkey(),
+                    },
+                    funding_address.clone(),
+                    100,
+                    false,
+                );
+                utxo.is_confirmed = true;
+                managed_account.utxos.insert(outpoint, utxo);
+            }
+
+            let ceiling =
+                asset_lock_max_amount_from_account(managed_account, account, CURRENT_HEIGHT)
+                    .expect("asset-lock maximum");
+            let charged = PAYMENT_DUFFS * payments as u64 - ceiling;
+            let estimate = estimate_asset_lock_core_fee_duffs(payments);
+            assert!(
+                charged <= estimate,
+                "{payments} payments: the builder charges {charged} duffs, the estimate is {estimate}"
+            );
+        }
+    }
+
     #[test]
     fn asset_lock_max_excludes_unconfirmed_funds_counted_by_snapshot() {
         const CONFIRMED_DUFFS: u64 = 1_000_000;

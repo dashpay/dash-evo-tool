@@ -1259,6 +1259,16 @@ pub enum TaskError {
         source: bincode::error::DecodeError,
     },
 
+    /// The stored balances of the user's identities could not be read for a
+    /// wallet picker, which then leaves identity balances out of its totals.
+    #[error(
+        "Could not read the balances of your identities, so the wallet totals here do not include them. Reopen this screen to try again."
+    )]
+    IdentityBalancesUnavailable {
+        #[source]
+        source: Box<TaskError>,
+    },
+
     /// A token registry or balance record could not be read or written in
     /// the per-network wallet k/v store.
     #[error("Could not access your saved tokens. Check available disk space and try again.")]

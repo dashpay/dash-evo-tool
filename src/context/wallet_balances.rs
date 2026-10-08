@@ -12,6 +12,8 @@ impl AppContext {
     /// order with recovery-phrase wallets first.
     ///
     /// Reads only in-memory snapshots, so it is safe to call every frame.
+    /// The Platform snapshot is kept in whole duffs, so that figure carries no
+    /// sub-duff remainder into a combined total.
     /// Identity balances need a storage read and come separately from
     /// [`Self::identity_credits_by_wallet`].
     pub fn wallet_selector_entries(&self, include_single_key: bool) -> Vec<WalletBalanceEntry> {

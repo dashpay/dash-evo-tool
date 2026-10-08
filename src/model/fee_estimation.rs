@@ -1648,21 +1648,31 @@ mod tests {
         compute_minimum_shielded_fee(2, platform_version).expect("shielded fee") + funding_cost
     }
 
+    /// Protocol versions that know the shield from the Core wallet, with the
+    /// fee the network takes under each, in credits. Under 12 and 13 the fee is
+    /// not a whole number of duffs; under 14 it is.
+    const SHIELD_FROM_CORE_FEE_BY_PROTOCOL: [(u32, u64); 3] =
+        [(12, 212_851_200), (13, 212_851_200), (14, 164_140_000)];
+
     /// The fee added to a shield from the Core wallet must be the fee the
     /// network takes, rounded up to whole duffs — not less, and not padded.
     #[test]
     fn shield_from_core_fee_is_what_the_network_takes() {
-        let platform_version = PlatformVersion::latest();
-        let network_fee_credits = network_shield_from_core_fee_credits(platform_version);
-        for multiplier in [1000, 3000] {
-            let (fee_duffs, _) = PlatformFeeEstimator::with_fee_multiplier(multiplier)
-                .estimate_shield_from_core_fees_duffs(platform_version)
-                .expect("known version");
-            assert_eq!(
-                fee_duffs,
-                network_fee_credits.div_ceil(CREDITS_PER_DUFF),
-                "multiplier {multiplier}: the network takes {network_fee_credits} credits"
-            );
+        for (protocol, fee_credits) in SHIELD_FROM_CORE_FEE_BY_PROTOCOL {
+            let platform_version = PlatformVersion::get(protocol).expect("known protocol");
+            let network_fee_credits = network_shield_from_core_fee_credits(platform_version);
+            assert_eq!(network_fee_credits, fee_credits, "protocol {protocol}");
+            for multiplier in [1000, 3000] {
+                let (fee_duffs, _) = PlatformFeeEstimator::with_fee_multiplier(multiplier)
+                    .estimate_shield_from_core_fees_duffs(platform_version)
+                    .expect("known version");
+                assert_eq!(
+                    fee_duffs,
+                    network_fee_credits.div_ceil(CREDITS_PER_DUFF),
+                    "protocol {protocol}, multiplier {multiplier}: the network takes \
+                     {network_fee_credits} credits"
+                );
+            }
         }
     }
 
@@ -1671,31 +1681,57 @@ mod tests {
     /// duffs adds), and it is the amount to report as shielded.
     #[test]
     fn shield_from_core_delivers_and_reports_the_entered_amount() {
-        let platform_version = PlatformVersion::latest();
-        let network_fee_credits = network_shield_from_core_fee_credits(platform_version);
-        for amount_duffs in [1, 100_000, 100_000_000] {
-            let funding = PlatformFeeEstimator::new()
-                .shield_from_core_funding(amount_duffs, platform_version)
-                .expect("known version");
-            let delivered_credits = (funding.lock_duffs * CREDITS_PER_DUFF)
-                .checked_sub(network_fee_credits)
-                .filter(|delivered| *delivered > 0)
-                .unwrap_or_else(|| {
-                    panic!(
-                        "{amount_duffs} duffs: a funding of {} duffs does not cover the \
-                         network fee of {network_fee_credits} credits, so nothing is shielded",
-                        funding.lock_duffs
-                    )
-                });
-            let entered_credits = amount_duffs * CREDITS_PER_DUFF;
-            assert!(
-                (entered_credits..entered_credits + CREDITS_PER_DUFF).contains(&delivered_credits),
-                "{amount_duffs} duffs: {delivered_credits} credits are shielded"
-            );
-            assert_eq!(
-                funding.shielded_credits, delivered_credits,
-                "{amount_duffs} duffs: the reported amount must be what is shielded"
-            );
+        for (protocol, _) in SHIELD_FROM_CORE_FEE_BY_PROTOCOL {
+            let platform_version = PlatformVersion::get(protocol).expect("known protocol");
+            let network_fee_credits = network_shield_from_core_fee_credits(platform_version);
+            for amount_duffs in [1, 100_000, 100_000_000] {
+                let funding = PlatformFeeEstimator::new()
+                    .shield_from_core_funding(amount_duffs, platform_version)
+                    .expect("known version");
+                let delivered_credits = (funding.lock_duffs * CREDITS_PER_DUFF)
+                    .checked_sub(network_fee_credits)
+                    .filter(|delivered| *delivered > 0)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "protocol {protocol}, {amount_duffs} duffs: a funding of {} duffs \
+                             does not cover the network fee of {network_fee_credits} credits, \
+                             so nothing is shielded",
+                            funding.lock_duffs
+                        )
+                    });
+                let entered_credits = amount_duffs * CREDITS_PER_DUFF;
+                assert!(
+                    (entered_credits..entered_credits + CREDITS_PER_DUFF)
+                        .contains(&delivered_credits),
+                    "protocol {protocol}, {amount_duffs} duffs: {delivered_credits} credits are \
+                     shielded"
+                );
+                assert_eq!(
+                    funding.shielded_credits, delivered_credits,
+                    "protocol {protocol}, {amount_duffs} duffs: the reported amount must be \
+                     what is shielded"
+                );
+            }
+        }
+    }
+
+    /// Rounding the fee up to whole duffs shields a little more than was
+    /// entered wherever the fee is not a whole number of duffs. The reported
+    /// amount carries that remainder; the entered amount would understate it.
+    #[test]
+    fn shield_from_core_reports_the_remainder_of_rounding_the_fee_up() {
+        for (protocol, remainder_credits) in [(12, 800), (13, 800), (14, 0)] {
+            let platform_version = PlatformVersion::get(protocol).expect("known protocol");
+            for amount_duffs in [1, 100_000, 100_000_000] {
+                let funding = PlatformFeeEstimator::new()
+                    .shield_from_core_funding(amount_duffs, platform_version)
+                    .expect("known version");
+                assert_eq!(
+                    funding.shielded_credits,
+                    amount_duffs * CREDITS_PER_DUFF + remainder_credits,
+                    "protocol {protocol}, {amount_duffs} duffs"
+                );
+            }
         }
     }
 

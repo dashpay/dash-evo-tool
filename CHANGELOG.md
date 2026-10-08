@@ -222,6 +222,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The progress dialog shown while a username is being registered names the
   username.
 
+- A transfer that adds funds to an identity stays in progress until its own
+  result arrives, also when its screen is closed or the network is switched:
+  the funding form for that identity stays paused and a banner follows the
+  transfer. Its result is shown only on the screen that started it, so a
+  payment waiting on the Send screen is no longer reported as finished or
+  failed by it. The confirmation names the identity that received the funds.
+
 - Scheduling votes "At a specific time" starts from a time you can use: an hour
   after you open the confirmation, or halfway to the earliest deadline when a
   contest ends sooner. It used to suggest a time about a day ahead, often past

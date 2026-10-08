@@ -4,8 +4,8 @@ use crate::context::AppContext;
 use crate::context::feature_gate::{Check, FeatureGate};
 use crate::model::wallet::WalletSeedHash;
 use crate::wallet_backend::PlatformPathIndex;
+use dash_sdk::Error as SdkError;
 use dash_sdk::dpp::address_funds::{OrchardAddress, PlatformAddress};
-use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use dash_sdk::dpp::dashcore::Address;
 use std::sync::Arc;
 
@@ -107,10 +107,14 @@ impl AppContext {
 
                 // The asset lock must also cover the shielded fee; upstream
                 // passes the whole lock value (minus that flat fee) to the
-                // recipient, so we size the lock to `amount + fee`.
-                let (platform_fee_duffs, _l1_fee_duffs) =
-                    self.fee_estimator().estimate_shield_from_core_fees_duffs();
-                let lock_amount_duffs = amount_duffs.saturating_add(platform_fee_duffs);
+                // recipient, so we size the lock to `amount + fee`. A fee that
+                // cannot be read stops the shield before any funds move.
+                let shield = self
+                    .fee_estimator()
+                    .shield_from_core_funding(amount_duffs, self.sdk_platform_version())
+                    .map_err(|e| TaskError::AssetLockNetworkFeeUnavailable {
+                        source_error: Box::new(SdkError::Protocol(*e)),
+                    })?;
 
                 // Deposit into this wallet's own default Orchard address. The
                 // keys are bound at unlock; an unbound wallet has no address.
@@ -122,7 +126,7 @@ impl AppContext {
                     .map_err(|_| TaskError::ShieldedInvalidRecipientAddress)?;
 
                 let funding = AssetLockFunding::FromWalletBalance {
-                    amount_duffs: lock_amount_duffs,
+                    amount_duffs: shield.lock_duffs,
                     account_index: 0,
                 };
 
@@ -132,10 +136,9 @@ impl AppContext {
 
                 self.refresh_shielded_balance_snapshot(&seed_hash).await;
 
-                let credits = amount_duffs.saturating_mul(CREDITS_PER_DUFF);
                 Ok(BackendTaskSuccessResult::ShieldedFromAssetLock {
                     seed_hash,
-                    amount: credits,
+                    amount: shield.shielded_credits,
                 })
             }
 

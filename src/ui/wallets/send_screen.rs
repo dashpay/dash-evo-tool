@@ -545,6 +545,16 @@ impl WalletSendScreen {
         AddressKind::detect(address)
     }
 
+    /// Fees, in duffs, of shielding from the Core wallet: what the network
+    /// takes from the funding, and the Core transaction fee. `None` when they
+    /// cannot be read for the protocol version in use.
+    fn shield_from_core_fees_duffs(&self) -> Option<(u64, u64)> {
+        self.app_context
+            .fee_estimator()
+            .estimate_shield_from_core_fees_duffs(self.app_context.sdk_platform_version())
+            .ok()
+    }
+
     /// Smallest amount, in duffs, the network accepts when the wallet funds a
     /// destination of this kind directly. `None` for other kinds, or when it
     /// cannot be read for the protocol version in use; the backend then decides.
@@ -1718,7 +1728,13 @@ impl WalletSendScreen {
         let (platform_fee_duffs, _) = self
             .app_context
             .fee_estimator()
-            .estimate_shield_from_core_fees_duffs();
+            .estimate_shield_from_core_fees_duffs(self.app_context.sdk_platform_version())
+            .map_err(|e| {
+                TaskError::AssetLockNetworkFeeUnavailable {
+                    source_error: Box::new(SdkError::Protocol(*e)),
+                }
+                .to_string()
+            })?;
         let asset_lock_max = self.asset_lock_max_amount(&seed_hash)?;
         if let Err(error) =
             validate_asset_lock_amount(amount_duffs, platform_fee_duffs, asset_lock_max)
@@ -2605,19 +2621,26 @@ impl WalletSendScreen {
                         }
                     }
                     Some(AddressKind::Shielded) => {
-                        let (platform_fee_duffs, l1_tx_fee_duffs) =
-                            fee_estimator.estimate_shield_from_core_fees_duffs();
-                        let platform_fee_credits =
-                            platform_fee_duffs.saturating_mul(CREDITS_PER_DUFF);
-                        let total_fee_credits = platform_fee_duffs
-                            .saturating_add(l1_tx_fee_duffs)
-                            .saturating_mul(CREDITS_PER_DUFF);
-                        max = max
-                            .map(|amount| asset_lock_user_max_amount(amount, platform_fee_credits));
-                        let fee = format_credits_as_dash(total_fee_credits);
-                        Some(format!(
-                            "Shielding fees of approximately {fee} are reserved from your balance."
-                        ))
+                        if let Some((platform_fee_duffs, l1_tx_fee_duffs)) =
+                            self.shield_from_core_fees_duffs()
+                        {
+                            let platform_fee_credits =
+                                platform_fee_duffs.saturating_mul(CREDITS_PER_DUFF);
+                            let total_fee_credits = platform_fee_duffs
+                                .saturating_add(l1_tx_fee_duffs)
+                                .saturating_mul(CREDITS_PER_DUFF);
+                            max = max.map(|amount| {
+                                asset_lock_user_max_amount(amount, platform_fee_credits)
+                            });
+                            let fee = format_credits_as_dash(total_fee_credits);
+                            Some(format!(
+                                "Shielding fees of approximately {fee} are reserved from your balance."
+                            ))
+                        } else {
+                            // Without a fee to reserve, Max must offer nothing.
+                            max = None;
+                            None
+                        }
                     }
                     Some(AddressKind::Identity) => {
                         let estimated_fee = fee_estimator.estimate_identity_topup();
@@ -2776,7 +2799,7 @@ impl WalletSendScreen {
         if input_kind == Some(AddressKind::Core)
             && matches!(
                 output_kind,
-                Some(AddressKind::Platform | AddressKind::Identity)
+                Some(AddressKind::Platform | AddressKind::Identity | AddressKind::Shielded)
             )
             && let (Some(max), Some(min)) = (max_amount_credits, min_amount)
             && asset_lock_user_amount_range(max, 0, min).is_none()
@@ -2970,8 +2993,7 @@ impl WalletSendScreen {
             }
             // Core → Shielded: platform + L1 shield fees, paid on top.
             (SourceSelection::CoreWallet, AddressKind::Shielded) => {
-                let (platform_fee_duffs, l1_tx_fee_duffs) =
-                    fee_estimator.estimate_shield_from_core_fees_duffs();
+                let (platform_fee_duffs, l1_tx_fee_duffs) = self.shield_from_core_fees_duffs()?;
                 let fee_credits = platform_fee_duffs
                     .saturating_add(l1_tx_fee_duffs)
                     .saturating_mul(CREDITS_PER_DUFF);
@@ -4922,9 +4944,8 @@ mod tests {
             .selected_wallet_seed_hash
             .expect("selected wallet seed hash");
         let (platform_fee_duffs, _) = screen
-            .app_context
-            .fee_estimator()
-            .estimate_shield_from_core_fees_duffs();
+            .shield_from_core_fees_duffs()
+            .expect("shield fees for the test protocol version");
         assert!(BUILDER_MAX_DUFFS > platform_fee_duffs);
 
         let (snapshot_generation, final_funds_duffs, utxo_revision) =
@@ -6010,6 +6031,73 @@ mod tests {
         let (amount, notice) = press_max(screen);
         assert_eq!(amount, None, "Max must not produce an amount");
         assert!(notice, "the field must say why no amount is offered");
+    }
+
+    /// What the network takes from a Core wallet funding that is shielded, in
+    /// whole duffs: the shielded fee for the two actions of the bundle plus the
+    /// cost of processing the funding transaction.
+    fn network_shield_from_core_fee_duffs(screen: &WalletSendScreen) -> u64 {
+        let platform_version = screen.app_context.sdk_platform_version();
+        let funding_cost_duffs = platform_version
+            .dpp
+            .state_transitions
+            .identities
+            .asset_locks
+            .required_asset_lock_duff_balance_for_processing_start_for_address_funding;
+        let shielded_fee_credits =
+            dash_sdk::dpp::shielded::compute_minimum_shielded_fee(2, platform_version)
+                .expect("shielded fee");
+        (shielded_fee_credits + funding_cost_duffs * CREDITS_PER_DUFF).div_ceil(CREDITS_PER_DUFF)
+    }
+
+    /// The fee shown before a shield from the Core wallet must be what the
+    /// network takes plus the Core transaction fee, since that is what leaves
+    /// the wallet on top of the amount.
+    #[test]
+    fn core_to_shielded_fee_preview_shows_what_the_network_takes() {
+        let (mut screen, _temp_dir) = send_screen();
+        core_source_with_ceiling(&mut screen, 10_000_000);
+        screen.validated_destination = Some(ValidatedAddress::Shielded(String::new()));
+        screen.amount = Some(Amount::dash_from_duffs(1_000_000));
+        let network_fee_duffs = network_shield_from_core_fee_duffs(&screen);
+
+        let preview = screen.current_fee_preview().expect("a fee preview");
+
+        assert_eq!(
+            preview.fee_credits,
+            (network_fee_duffs + 3_000) * CREDITS_PER_DUFF
+        );
+    }
+
+    /// A wallet that can build less than the network's fee used to be offered
+    /// an amount as Max, and shielding it failed.
+    #[test]
+    fn core_to_shielded_max_offers_nothing_when_the_wallet_cannot_cover_the_fee() {
+        let (mut screen, _temp_dir) = send_screen();
+        let network_fee_duffs = network_shield_from_core_fee_duffs(&screen);
+        core_source_with_ceiling(&mut screen, network_fee_duffs);
+        screen.validated_destination = Some(ValidatedAddress::Shielded(String::new()));
+
+        let (amount, notice) = press_max(screen);
+        assert_eq!(amount, None, "Max must not produce an amount");
+        assert!(notice, "the field must say why no amount is offered");
+    }
+
+    /// Max leaves exactly the network's fee out of what the wallet can build,
+    /// so the funding it leads to is one the wallet can make.
+    #[test]
+    fn core_to_shielded_max_reserves_what_the_network_takes() {
+        const CEILING_DUFFS: u64 = 10_000_000;
+        let (mut screen, _temp_dir) = send_screen();
+        let network_fee_duffs = network_shield_from_core_fee_duffs(&screen);
+        core_source_with_ceiling(&mut screen, CEILING_DUFFS);
+        screen.validated_destination = Some(ValidatedAddress::Shielded(String::new()));
+
+        let (amount, _) = press_max(screen);
+        assert_eq!(
+            amount.expect("Max sets the amount").dash_to_duffs(),
+            Ok(CEILING_DUFFS - network_fee_duffs)
+        );
     }
 
     /// An advanced Core to Platform send of `amount` DASH with `fee_strategy`.

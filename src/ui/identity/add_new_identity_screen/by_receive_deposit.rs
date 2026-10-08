@@ -4,8 +4,8 @@ use crate::ui::MessageType;
 use crate::ui::components::MessageBanner;
 use crate::ui::identity::add_new_identity_screen::AddNewIdentityScreen;
 use crate::ui::identity::funding_common::{
-    FundingMethod, WalletFundedScreenStep, generate_qr_code_image, round_up_dash_4dp,
-    should_queue_funding_address, snapshot_deposit_outcome,
+    FundingMethod, WalletFundedScreenStep, generate_qr_code_image, required_deposit_credits,
+    round_up_dash_4dp, should_queue_funding_address, snapshot_deposit_outcome,
 };
 use crate::ui::theme::DashColors;
 use crate::wallet_backend::poison::RwLockRecover;
@@ -14,9 +14,21 @@ use std::time::Duration;
 
 impl AddNewIdentityScreen {
     /// The smallest deposit, in credits, that leaves a funding the network
-    /// accepts for the current key set — shown as the amount to deposit.
-    fn deposit_minimum_credits(&self) -> u64 {
-        self.required_wallet_credits()
+    /// accepts for the current key set once the payments the wallet holds, and
+    /// `incoming` more, are spent to make it.
+    fn deposit_minimum_credits(&self, incoming: usize) -> u64 {
+        let held = self
+            .selected_wallet
+            .as_ref()
+            .and_then(|wallet| wallet.read().ok().map(|wallet| wallet.seed_hash()))
+            .map_or(0, |seed_hash| {
+                self.app_context.snapshot_utxo_count(&seed_hash)
+            });
+        required_deposit_credits(
+            self.minimum_creation_duffs(),
+            self.creation_reserve_duffs(),
+            held + incoming,
+        )
     }
 
     /// Queue a deposit-address derivation unless one is already shown, in
@@ -54,7 +66,8 @@ impl AddNewIdentityScreen {
 
         // The QR URI encodes the amount at 4 decimals; show that same rounded-up
         // figure in the hint so the two never disagree or understate the minimum.
-        let minimum_credits = self.deposit_minimum_credits();
+        // One more payment is still to come.
+        let minimum_credits = self.deposit_minimum_credits(1);
         let minimum_dash = round_up_dash_4dp(Amount::dash_from_credits(minimum_credits).to_f64());
         let minimum_amount = format!("{minimum_dash:.4} DASH");
         let dash_uri = format!("dash:{address}?amount={minimum_dash:.4}");
@@ -124,7 +137,7 @@ impl AddNewIdentityScreen {
             .unwrap_or(0);
         self.funding_address_balance_duffs = address_balance_duffs;
 
-        let minimum_credits = self.deposit_minimum_credits();
+        let minimum_credits = self.deposit_minimum_credits(0);
         let current_step = *self.step.read_recover();
         let (next_step, prefill) =
             snapshot_deposit_outcome(current_step, address_balance_duffs, minimum_credits);

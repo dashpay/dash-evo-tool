@@ -1,6 +1,6 @@
 use crate::backend_task::error::TaskError;
 use crate::model::asset_lock::{asset_lock_user_amount_range, validate_asset_lock_minimum};
-use crate::model::fee_estimation::format_duffs_as_dash;
+use crate::model::fee_estimation::{estimate_asset_lock_core_fee_duffs, format_duffs_as_dash};
 use crate::model::wallet::Wallet;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::state::TrackedAssetLockCache;
@@ -174,6 +174,21 @@ pub fn required_wallet_credits(minimum_duffs: Option<u64>, reserve_duffs: u64) -
         .unwrap_or(0)
         .saturating_add(reserve_duffs)
         .saturating_mul(CREDITS_PER_DUFF)
+}
+
+/// What a deposit must bring, in credits, to leave an amount covering the
+/// network fee once it is spent whole into a funding together with the
+/// wallet's other payments, `payments` in all: [`required_wallet_credits`]
+/// plus the Core transaction fee the funding builder takes out of what it
+/// spends.
+pub fn required_deposit_credits(
+    minimum_duffs: Option<u64>,
+    reserve_duffs: u64,
+    payments: usize,
+) -> u64 {
+    required_wallet_credits(minimum_duffs, reserve_duffs).saturating_add(
+        estimate_asset_lock_core_fee_duffs(payments).saturating_mul(CREDITS_PER_DUFF),
+    )
 }
 
 /// Why `amount_duffs` cannot be sent, for network-fee reasons, from a wallet

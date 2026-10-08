@@ -1155,6 +1155,19 @@ pub fn estimate_core_l1_send_fee_duffs(num_inputs: usize, num_outputs: usize) ->
     raw_fee.saturating_add(raw_fee.saturating_mul(SAFETY_MARGIN_PERCENT) / 100)
 }
 
+/// Core transaction fee, in duffs, to allow for when `num_inputs` payments
+/// received by the wallet are spent into one funding transaction.
+///
+/// What the funding builder can lock is the spent amount less this fee, so a
+/// deposit meant to be used whole must bring it on top. Never understates
+/// what the builder charges.
+pub fn estimate_asset_lock_core_fee_duffs(num_inputs: usize) -> u64 {
+    // Sized as two outputs: the burn output and the credit output carried in
+    // the payload. A test in `wallet_backend::payments` holds this against
+    // the builder.
+    estimate_core_l1_send_fee_duffs(num_inputs, 2)
+}
+
 /// Compute the maximum spendable amount, in duffs, for a Core "Max" send:
 /// the whole balance minus the estimated L1 network fee.
 ///

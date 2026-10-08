@@ -3,8 +3,8 @@ use crate::model::amount::Amount;
 use crate::ui::MessageType;
 use crate::ui::components::MessageBanner;
 use crate::ui::identity::funding_common::{
-    FundingMethod, WalletFundedScreenStep, generate_qr_code_image, round_up_dash_4dp,
-    should_queue_funding_address, snapshot_deposit_outcome,
+    FundingMethod, WalletFundedScreenStep, generate_qr_code_image, required_deposit_credits,
+    round_up_dash_4dp, should_queue_funding_address, snapshot_deposit_outcome,
 };
 use crate::ui::identity::top_up_identity_screen::TopUpIdentityScreen;
 use crate::ui::theme::DashColors;
@@ -47,7 +47,8 @@ impl TopUpIdentityScreen {
 
         // The QR URI encodes the amount at 4 decimals; show that same rounded-up
         // figure in the hint so the two never disagree or understate the minimum.
-        let minimum_credits = self.required_wallet_credits();
+        // One more payment is still to come.
+        let minimum_credits = self.deposit_minimum_credits(1);
         let minimum_dash = round_up_dash_4dp(Amount::dash_from_credits(minimum_credits).to_f64());
         let minimum_amount = format!("{minimum_dash:.4} DASH");
         let dash_uri = format!("dash:{address}?amount={minimum_dash:.4}");
@@ -98,6 +99,24 @@ impl TopUpIdentityScreen {
         }
     }
 
+    /// The smallest deposit, in credits, that leaves a top-up the network
+    /// accepts once the payments the wallet holds, and `incoming` more, are
+    /// spent to make it.
+    fn deposit_minimum_credits(&self, incoming: usize) -> u64 {
+        let held = self
+            .wallet
+            .as_ref()
+            .and_then(|wallet| wallet.read().ok().map(|wallet| wallet.seed_hash()))
+            .map_or(0, |seed_hash| {
+                self.app_context.snapshot_utxo_count(&seed_hash)
+            });
+        required_deposit_credits(
+            self.minimum_top_up_duffs(),
+            self.top_up_reserve_duffs(),
+            held + incoming,
+        )
+    }
+
     fn reconcile_funding_deposit(&mut self) {
         let Some(address) = self.funding_address.as_ref() else {
             return;
@@ -117,7 +136,7 @@ impl TopUpIdentityScreen {
             .unwrap_or(0);
         self.funding_address_balance_duffs = address_balance_duffs;
 
-        let minimum_credits = self.required_wallet_credits();
+        let minimum_credits = self.deposit_minimum_credits(0);
         let current_step = self.current_step();
         let (next_step, prefill) =
             snapshot_deposit_outcome(current_step, address_balance_duffs, minimum_credits);

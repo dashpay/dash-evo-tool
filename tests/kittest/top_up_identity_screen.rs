@@ -327,10 +327,32 @@ fn background_top_up_failure_leaves_wallet_send_waiting() {
     });
 }
 
+/// Ask for `network` and step the app until it runs on it. A switch ends in
+/// whichever frame its result arrives, so nothing here counts frames.
+fn switch_network(harness: &mut App, network: Network) {
+    harness.state_mut().change_network(network);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        harness.step();
+        let state = harness.state();
+        if state.current_app_context().network() == network
+            && state.boot_phase() == BootPhase::Ready
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the switch to {network:?} did not finish in time"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    harness.run_steps(3);
+}
+
 /// A first visit to a network finishes switching while the app stays usable,
-/// and the switch drops every stacked screen, dialog and banner. A top-up
-/// still running at that point keeps running, so it must stay in flight and
-/// in view.
+/// and every switch drops the stacked screens, dialogs and banners. A top-up
+/// still running keeps running, so it must stay in flight and in view on the
+/// other network and after the way back to its own.
 #[test]
 fn top_up_survives_a_network_switch_that_drops_its_screen() {
     in_app(|| {
@@ -363,24 +385,7 @@ fn top_up_survives_a_network_switch_that_drops_its_screen() {
         // switch is asked for. The switch finds the same state either way.
         open_add_funds(&mut harness, &identity);
         let dispatch = begin_top_up(&mut harness);
-        harness.state_mut().change_network(second);
-
-        let deadline = Instant::now() + Duration::from_secs(60);
-        loop {
-            harness.step();
-            let state = harness.state();
-            if state.current_app_context().network() == second
-                && state.boot_phase() == BootPhase::Ready
-            {
-                break;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "the switch to {second:?} did not finish in time"
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        harness.run_steps(3);
+        switch_network(&mut harness, second);
         assert!(
             harness.state().screen_stack.is_empty(),
             "the switch drops the screen that sent the top-up"
@@ -390,6 +395,19 @@ fn top_up_survives_a_network_switch_that_drops_its_screen() {
             count(&harness, BACKGROUND_BANNER),
             1,
             "a top-up that outlives its screen is followed by the banner"
+        );
+
+        // Back to the identity's own network, where Add Funds can be opened.
+        switch_network(&mut harness, first);
+        assert_eq!(
+            harness.state().current_app_context().network(),
+            identity.network,
+            "Add Funds is opened on the network the identity lives on"
+        );
+        assert_eq!(
+            count(&harness, BACKGROUND_BANNER),
+            1,
+            "the banner follows the top-up through the switch back as well"
         );
 
         open_add_funds(&mut harness, &identity);

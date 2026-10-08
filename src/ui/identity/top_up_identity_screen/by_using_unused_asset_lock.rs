@@ -65,7 +65,6 @@ impl TopUpIdentityScreen {
         step_number: u32,
     ) -> AppAction {
         let mut action = AppAction::None;
-        let step = self.current_step();
 
         ui.heading(
             format!("{step_number}. Choose the unfinished funding you'd like to use.").as_str(),
@@ -109,18 +108,6 @@ impl TopUpIdentityScreen {
         if ui.add(button).clicked() {
             action |= self.top_up_identity_clicked(FundingMethod::UseUnusedAssetLock);
         }
-
-        ui.add_space(20.0);
-
-        ui.vertical_centered(|ui| match step {
-            WalletFundedScreenStep::WaitingForPlatformAcceptance => {
-                ui.heading("Waiting for Platform to add the funds to the identity.");
-            }
-            WalletFundedScreenStep::Success => {
-                ui.heading("...Success...");
-            }
-            _ => {}
-        });
 
         ui.add_space(40.0);
         action

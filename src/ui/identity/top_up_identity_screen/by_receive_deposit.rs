@@ -160,10 +160,7 @@ impl TopUpIdentityScreen {
         ));
         ui.add_space(10.0);
 
-        // Only render the amount input while choosing the amount. Once funding is
-        // dispatched (WaitingForAssetLock onward) the spendable balance is
-        // committed to the pending transaction, so the input's max recomputes to
-        // 0 and would show a stale "exceeds maximum" error over a succeeding op.
+        // Only render the amount input while choosing the amount.
         if step == WalletFundedScreenStep::FundsReceived {
             let Some(seed_hash) = seed_hash else {
                 if ui.button("Choose a different funding method").clicked() {
@@ -216,16 +213,6 @@ impl TopUpIdentityScreen {
             }
         }
 
-        ui.add_space(20.0);
-        ui.vertical_centered(|ui| match step {
-            WalletFundedScreenStep::WaitingForAssetLock => {
-                ui.heading("Waiting for the Dash network to confirm the transfer.");
-            }
-            WalletFundedScreenStep::WaitingForPlatformAcceptance => {
-                ui.heading("Waiting for Platform to add the funds to the identity.");
-            }
-            _ => {}
-        });
         ui.add_space(20.0);
 
         action

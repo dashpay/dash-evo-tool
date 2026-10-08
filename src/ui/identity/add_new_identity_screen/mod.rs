@@ -14,7 +14,6 @@ use crate::backend_task::identity::{
 use crate::backend_task::wallet::WalletTask;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
-use crate::model::address::AddressKind;
 use crate::model::asset_lock::{AssetLockAmountError, validate_asset_lock_amount};
 use crate::model::fee_estimation::{format_credits_as_dash, format_duffs_as_dash};
 use crate::model::secret::Secret;
@@ -382,13 +381,14 @@ impl AddNewIdentityScreen {
             if wallets.len() > 1 {
                 ui.heading("1. Choose which wallet this identity's keys will come from.");
 
-                // Each row shows the Dash that wallet can put towards the new
-                // identity, so funding sufficiency is visible before choosing.
+                // Each row shows what that wallet can put towards the new
+                // identity through the chosen funding method, so funding
+                // sufficiency is visible before choosing.
+                let balance_kind = self.funding_method.read_recover().balance_kind();
                 let selector = self.wallet_selector.get_or_insert_with(|| {
-                    WalletSelector::new("select_wallet")
-                        .with_balance_kinds(&[AddressKind::Core])
-                        .with_core_figure(CoreFigure::Usable)
+                    WalletSelector::new("select_wallet").with_core_figure(CoreFigure::Usable)
                 });
+                selector.set_balance_kinds(&[balance_kind]);
                 selector.set_entries(self.app_context.wallet_selector_entries(false));
                 selector.set_selected(
                     self.selected_wallet
@@ -1866,6 +1866,55 @@ mod funding_method_tests {
         screen.identity_keys = IdentityKeySpecs::new(Some(master), Vec::new());
         screen.funding_amount = Some(Amount::new(CREDITS_PER_DUFF, DASH_DECIMAL_PLACES));
         (screen, seed_hash, temp_dir)
+    }
+
+    /// The picker shows the balance the chosen funding method draws on: a
+    /// wallet funding from a Platform address reads its Platform funds, not
+    /// its Core funds.
+    #[test]
+    fn wallet_picker_counts_platform_funds_when_funding_from_a_platform_address() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let app_context = test_app_context(temp_dir.path());
+        let mut wallets = Vec::new();
+        for (seed_byte, alias) in [(0x63, "Alpha"), (0x64, "Beta")] {
+            let wallet = Wallet::new_from_seed(
+                [seed_byte; 64],
+                Network::Testnet,
+                Some(alias.to_string()),
+                None,
+            )
+            .expect("wallet");
+            let seed_hash = wallet.seed_hash();
+            let wallet = Arc::new(RwLock::new(wallet));
+            app_context
+                .wallet_context()
+                .insert_test_wallet(seed_hash, wallet.clone());
+            wallets.push((seed_hash, wallet));
+        }
+        app_context.has_wallet.store(true, Ordering::Relaxed);
+        app_context
+            .platform_balances
+            .lock()
+            .expect("platform balances")
+            .insert(wallets[0].0, 30_000_000);
+        let mut screen = AddNewIdentityScreen::new(&app_context);
+        screen.selected_wallet = Some(wallets[0].1.clone());
+        *screen.funding_method.write().expect("funding method lock") =
+            FundingMethod::UsePlatformAddress;
+        screen.user_chose_funding_method = true;
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1200.0, 900.0))
+            .build_ui(|ui| {
+                screen.ui(ui);
+            });
+        harness.run_steps(2);
+
+        assert!(
+            harness.query_by_value("HD: Alpha — 0.3 DASH").is_some(),
+            "the closed picker must show the wallet's Platform funds"
+        );
     }
 
     fn asset_lock_request_id(task: Option<BackendTask>) -> u64 {

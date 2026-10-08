@@ -231,6 +231,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   address with the fee paid on top is refused when the amount is too small for
   the network to accept.
 
+- An unfinished funding too small to cover the network fee can no longer be
+  picked when you add funds to an identity, create an identity, or fund a
+  Platform address from the Wallets screen. It used to be offered, was refused
+  by the network, and stayed on the list. It is still listed, with the reason
+  and what to do instead, and the list says so when nothing on it is large
+  enough. Only the amount a funding was created with is checked, so one that
+  was partly used before can still be refused by the network.
+
 - After you press Disconnect, the app stays disconnected when you switch
   networks. It used to reconnect on the new network whenever "Auto-start SPV on
   startup" was enabled. Disconnect also stops syncing on a network you left

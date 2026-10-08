@@ -24,6 +24,7 @@ use std::time::{Duration, Instant};
 use dash_evo_tool::app::{AppState, BootPhase, STORAGE_PREP_PASSWORD_DESCRIPTION};
 use dash_evo_tool::backend_task::error::TaskError;
 use dash_evo_tool::context::AppContext;
+use dash_evo_tool::context::connection_status::OverallConnectionState;
 use dash_evo_tool::context::migration_status::{MigrationState, MigrationStep};
 use dash_evo_tool::model::secret::Secret;
 use dash_evo_tool::model::spv_status::SpvStatus;
@@ -1106,6 +1107,73 @@ fn cancelling_the_startup_block_overrules_a_start_still_on_its_way() {
             "the cancel to settle the indicator on disconnected",
             |state| {
                 state.current_app_context().connection_status().spv_status() == SpvStatus::Stopped
+            },
+        );
+    });
+}
+
+/// A stop with nothing to stop is harmless. Stopping the startup sync screen
+/// when no connection is on its way reports no failure and leaves the app
+/// disconnected, and the next Connect brings chain sync up as usual.
+#[test]
+fn stopping_with_nothing_starting_is_harmless_and_connect_still_works() {
+    crate::support::with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let (mut harness, _first, _second) = mount_on_chooser_with_auto_start();
+        let app_context = harness.state().current_app_context().clone();
+
+        // The startup block is up, but no start was dispatched behind it.
+        harness.state_mut().test_arm_spv_block();
+        step_until_painted(&mut harness, "the startup block to offer Cancel", |h| {
+            h.query_by_label("Cancel").is_some()
+        });
+        harness.get_by_label("Cancel").click();
+        step_until_painted(&mut harness, "the cancel confirmation to appear", |h| {
+            h.query_by_label("Stop syncing").is_some()
+        });
+        harness.get_by_label("Stop syncing").click();
+        poll_until(
+            &mut harness,
+            "the stop to leave the app disconnected",
+            |_| {
+                let connection_status = app_context.connection_status();
+                connection_status.spv_status() == SpvStatus::Stopped
+                    && connection_status.overall_state() == OverallConnectionState::Disconnected
+            },
+        );
+
+        for _ in 0..10 {
+            harness.step();
+            let connection_status = app_context.connection_status();
+            assert_eq!(
+                (
+                    connection_status.spv_status(),
+                    connection_status.spv_last_error()
+                ),
+                (SpvStatus::Stopped, None),
+                "a stop with nothing to stop must not report a failure",
+            );
+            for failure in ["SPV sync failed", "Could not start network sync"] {
+                assert!(
+                    harness.query_by_label_contains(failure).is_none(),
+                    "a stop with nothing to stop must not raise the banner \"{failure}\"",
+                );
+            }
+        }
+
+        step_until_painted(&mut harness, "the Connect button to appear", |h| {
+            h.query_by_label("Connect").is_some()
+        });
+        harness.get_by_label("Connect").click();
+        poll_until(
+            &mut harness,
+            "Connect to bring chain sync up after the stop",
+            |_| {
+                app_context
+                    .wallet_backend()
+                    .is_ok_and(|backend| backend.is_started())
             },
         );
     });

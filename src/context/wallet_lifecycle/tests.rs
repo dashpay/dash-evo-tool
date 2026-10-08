@@ -629,6 +629,44 @@ async fn a_start_still_wanted_restarts_after_the_stop_it_queued_behind() {
     backend.shutdown().await;
 }
 
+/// Disconnect, then Connect straight away, with the pre-disconnect start still
+/// on its way: that start stands down and the Connect's start brings chain
+/// sync up, even though it had joined the overruled start's flight.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_connect_after_a_disconnect_starts_while_the_overruled_start_stands_down() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("backend wiring should succeed offline");
+    let backend = ctx
+        .wallet_backend()
+        .expect("backend must be wired before start");
+
+    // The overruled start reaches the lifecycle lock first; the Connect joins it.
+    let lifecycle = backend.lock_start_lifecycle_for_test().await;
+    let mut overruled = std::pin::pin!(backend.start_while(|| false));
+    let mut connect = std::pin::pin!(backend.start_while(|| true));
+    assert!(futures::poll!(&mut overruled).is_pending());
+    assert!(futures::poll!(&mut connect).is_pending());
+    drop(lifecycle);
+    let (overruled, connect) = tokio::join!(overruled, connect);
+
+    assert!(
+        !overruled.expect("standing down is not a failure"),
+        "the start dispatched before the disconnect must stand down"
+    );
+    assert!(
+        connect.expect("the Connect's start should succeed offline"),
+        "the start dispatched by the Connect must report chain sync as started"
+    );
+    assert!(
+        backend.is_started(),
+        "a Connect after a disconnect must bring chain sync up"
+    );
+
+    backend.shutdown().await;
+}
+
 /// Cold-boot signability regression, adapted to the JIT secret model: a
 /// no-password wallet must remain signable after a cold-boot hydration
 /// without any seed ever being parked in a long-lived cache.

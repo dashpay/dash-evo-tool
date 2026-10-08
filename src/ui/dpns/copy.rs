@@ -551,10 +551,10 @@ pub fn before_end_phrase(preset: std::time::Duration) -> String {
     }
 }
 
-/// A relative schedule with its absolute time: `6 hours before the end · 2026-10-03 12:00 UTC`.
-pub fn relative_schedule_label(preset: std::time::Duration, absolute_utc: &str) -> String {
+/// A relative schedule with its absolute local time: `6 hours before the end · 2026-10-03 12:00`.
+pub fn relative_schedule_label(preset: std::time::Duration, absolute: &str) -> String {
     format!(
-        "{relative} · {absolute_utc} UTC",
+        "{relative} · {absolute}",
         relative = before_end_phrase(preset)
     )
 }
@@ -973,7 +973,7 @@ mod tests {
         assert_eq!(confirm_button_label(1, 0, false), "Schedule 1 vote");
         assert_eq!(
             relative_schedule_label(std::time::Duration::from_secs(6 * 3600), "2026-10-03 12:00"),
-            "6 hours before the end · 2026-10-03 12:00 UTC"
+            "6 hours before the end · 2026-10-03 12:00"
         );
         assert_eq!(
             before_end_phrase(std::time::Duration::from_secs(600)),

@@ -5,10 +5,10 @@
 
 use std::time::Duration;
 
-use chrono::{Local, TimeZone};
 use dash_sdk::dpp::identity::TimestampMillis;
 
 use crate::backend_task::error::USERNAME_AVAILABILITY_CHECK_FAILED;
+use crate::model::datetime;
 use crate::model::dpns_usernames::{RequestPhase, TallyStanding, UsernameAvailability};
 use crate::model::fee_estimation::format_credits_as_dash;
 
@@ -48,18 +48,16 @@ impl Tone {
     }
 }
 
-/// Format a timestamp as a local calendar date, for example `Oct 5, 2026`.
+/// Format a timestamp as a local calendar date, for example `2026-10-05`.
 pub fn format_date(ms: TimestampMillis) -> String {
-    local(ms).map_or_else(String::new, |t| t.format("%b %-d, %Y").to_string())
+    datetime::instant_from_unix_millis(ms)
+        .map(datetime::local_date)
+        .unwrap_or_default()
 }
 
-/// Format a timestamp as a local date and time, for example `Oct 5, 2026, 14:00`.
+/// Format a timestamp as a local date and time, for example `2026-10-05 14:00`.
 pub fn format_date_time(ms: TimestampMillis) -> String {
-    local(ms).map_or_else(String::new, |t| t.format("%b %-d, %Y, %H:%M").to_string())
-}
-
-fn local(ms: TimestampMillis) -> Option<chrono::DateTime<Local>> {
-    Local.timestamp_millis_opt(i64::try_from(ms).ok()?).single()
+    datetime::local_date_time_from_unix_millis(ms)
 }
 
 /// A contest duration in words: `14 days`, `1 day`, `45 minutes`, `2 hours`.
@@ -439,6 +437,21 @@ mod tests {
         for word in FORBIDDEN {
             assert!(!text.contains(word), "{text:?} uses {word:?}");
         }
+    }
+
+    #[test]
+    fn dates_are_iso_style_in_the_local_time_zone() {
+        use chrono::TimeZone;
+        let ms = 1_790_000_000_000;
+        let local = chrono::Local
+            .timestamp_millis_opt(ms as i64)
+            .single()
+            .expect("valid test instant");
+        assert_eq!(format_date(ms), local.format("%Y-%m-%d").to_string());
+        assert_eq!(
+            format_date_time(ms),
+            local.format("%Y-%m-%d %H:%M").to_string()
+        );
     }
 
     /// The won banner and the done page tell the owner the same thing.

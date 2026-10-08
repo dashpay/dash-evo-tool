@@ -13,6 +13,7 @@ use crate::backend_task::{BackendTask, BackendTaskContext};
 use crate::context::AppContext;
 use crate::context::connection_status::spv_phase_summary;
 use crate::context::feature_gate::FeatureGate;
+use crate::model::datetime;
 use crate::model::fee_estimation::format_duffs_as_dash;
 use crate::model::spv_status::SpvStatus;
 use crate::model::user_role::UserRole;
@@ -38,7 +39,6 @@ use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
 use crate::wallet_backend::TransactionHistoryStatus;
 use crate::wallet_backend::poison::RwLockRecover;
-use chrono::{DateTime, Utc};
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use eframe::egui::{self, ComboBox, Context, Ui};
 use egui::{Color32, Frame, Margin, RichText};
@@ -1138,8 +1138,8 @@ impl WalletsBalancesScreen {
         if ts == 0 {
             return "Pending…".to_string();
         }
-        DateTime::<Utc>::from_timestamp(ts as i64, 0)
-            .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+        datetime::instant_from_unix_secs(ts)
+            .map(datetime::local_date_time_seconds)
             .unwrap_or_else(|| "Unknown".to_string())
     }
 
@@ -3224,10 +3224,17 @@ mod tests {
     }
 
     #[test]
-    fn format_transaction_timestamp_nonzero_renders_the_block_date() {
+    fn format_transaction_timestamp_nonzero_renders_the_block_time_in_local_time() {
+        use chrono::TimeZone;
+        let local = chrono::Local
+            .timestamp_opt(1_700_000_000, 0)
+            .single()
+            .expect("valid test instant")
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
         assert_eq!(
             WalletsBalancesScreen::format_transaction_timestamp(1_700_000_000),
-            "2023-11-14 22:13:20"
+            local
         );
     }
 

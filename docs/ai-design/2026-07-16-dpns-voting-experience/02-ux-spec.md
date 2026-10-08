@@ -54,8 +54,8 @@ match the digit 1, and the letter o matches 0.`).
 Card (two columns):
 - Left, read-only:
   - `alice.dash` and `Ends in 6 hours` (amber within the urgency window);
-  - `2 requests · Voting ends {date} {time} UTC.` During the join window:
-    `Others can join until {date} {time} UTC.`;
+  - `2 requests · Voting ends {date} {time}.` During the join window:
+    `Others can join until {date} {time}.`; both in local time;
   - weighted tally bars with numbers (`Vote for` rows = contenders, then
     `Lock name`, `Abstain`);
   - influence line (VOTE-FR-077).
@@ -129,7 +129,7 @@ As specified in VOTE-FR-083.
 ## Scheduled (frame V3)
 
 Columns: Name · Nodes (`24 nodes ▾`) · Vote · When · Status · actions.
-- When shows the relative label plus absolute UTC and a relative time.
+- When shows the relative label plus the absolute local time and a relative time.
 - Statuses: `Scheduled` [Edit] [Remove] · `Missed automatic vote` + guidance
   [Cast now] [Edit] [Remove] · `Not submitted` + saved reason + valid action ·
   `Confirmed`. Node labels use the alias or the same hexadecimal ProTxHash

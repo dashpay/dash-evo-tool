@@ -3,6 +3,7 @@ use crate::backend_task::document::DocumentTask;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::model::datetime;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -238,20 +239,11 @@ impl ScreenLike for ViewTokenClaimsScreen {
                                     };
 
                                     // Timestamp
-                                    let timestamp = match claim.created_at() {
-                                        Some(ts) => {
-                                            let dt =
-                                                chrono::DateTime::from_timestamp_millis(ts as i64)
-                                                    .map(|d| d.naive_utc())
-                                                    .unwrap_or_else(|| {
-                                                        chrono::DateTime::from_timestamp(0, 0)
-                                                            .unwrap()
-                                                            .naive_utc()
-                                                    });
-                                            dt.format("%Y-%m-%d %H:%M:%S").to_string()
-                                        }
-                                        None => "Unknown".to_string(),
-                                    };
+                                    let timestamp = claim
+                                        .created_at()
+                                        .and_then(datetime::instant_from_unix_millis)
+                                        .map(datetime::local_date_time_seconds)
+                                        .unwrap_or_else(|| "Unknown".to_string());
 
                                     // Block Height
                                     let block_height = claim

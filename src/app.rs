@@ -1382,6 +1382,10 @@ pub struct AppState {
     /// to continue in the background. Ambient reconnects are never armed, so
     /// they never hard-block a working user (F-SPV-A).
     spv_block: SpvBlockReconciler,
+    /// Whether the user disconnected by hand and has not connected since. Holds
+    /// back every automatic chain-sync start for the rest of the session — the
+    /// auto-start setting is about launch, so it never overrides a Disconnect.
+    spv_manually_disconnected: bool,
     /// Data-migration banner reconciler (also hosts the storage update's
     /// wallet-password prompt).
     migration: MigrationReconciler,
@@ -1961,6 +1965,7 @@ impl AppState {
             // with the sync it covers (F-SPV-A: scoped to user-initiated sync,
             // not ambient reconnect).
             spv_block: SpvBlockReconciler::new(false),
+            spv_manually_disconnected: false,
             migration: MigrationReconciler::new(),
             pending_confirmation: PendingConfirmation::new(),
             boot: if network_selection_required {
@@ -2232,6 +2237,13 @@ impl AppState {
         });
     }
 
+    /// Whether chain sync may start without the user asking: they opted into
+    /// auto-start and have not disconnected by hand this session.
+    fn auto_start_spv_allowed(&self) -> bool {
+        !self.spv_manually_disconnected
+            && self.current_app_context().get_app_settings().auto_start_spv
+    }
+
     /// Start chain sync for the active context.
     fn start_spv_for(&mut self, reason: BackendInitReason) {
         Self::spawn_spv_start(
@@ -2284,7 +2296,9 @@ impl AppState {
             }
         }
 
-        if start_spv {
+        // Re-read the manual disconnect: `start_spv` was decided when
+        // preparation began.
+        if start_spv && !self.spv_manually_disconnected {
             let reason = if arm_spv_block {
                 self.spv_block.arm();
                 BackendInitReason::Boot
@@ -2462,14 +2476,20 @@ impl AppState {
         // Slow path: dispatch SwitchNetwork as a backend task. The result
         // (NetworkContextCreated) comes back through the task result channel
         // and is handled in update(). Same path used by MCP tools.
+        //
+        // The task never starts chain sync for the GUI: that decision waits
+        // for `finalize_network_switch`, so a Disconnect pressed while the
+        // context is still being built is honored.
         self.network_switch_pending = Some(network);
         self.network_switch_banner = Some(MessageBanner::set_global(
             self.current_app_context().egui_ctx(),
             format!("Connecting to {network:?}..."),
             MessageType::Info,
         ));
-        let start_spv = self.current_app_context().get_app_settings().auto_start_spv;
-        self.handle_backend_task(BackendTask::SwitchNetwork { network, start_spv });
+        self.handle_backend_task(BackendTask::SwitchNetwork {
+            network,
+            start_spv: false,
+        });
     }
 
     /// Complete the network switch after the context is available.
@@ -2498,16 +2518,15 @@ impl AppState {
         // already prepared it: completion sentinels are per-network, so a
         // never-visited network still has a drain ahead of it. A return to a
         // prepared one must not flash the overlay, hence the `is_prepared`
-        // check; chain sync then starts as the gate's continuation, covering
-        // both the slow path (which started SPV inside `SwitchNetwork`) and the
-        // fast cached-context path, idempotently.
+        // check; chain sync then starts as the gate's continuation, on both
+        // the slow path and the fast cached-context path.
         //
         // Ordered before the attach below, never after: the reset drops the
         // outgoing network's pending preparation and overlay, so running it
         // afterwards would throw away the incoming network's freshly attached
         // preparation and leave the gate raised over nothing to poll.
         self.boot.reset_for_switch(network);
-        let auto_start_spv = app_context.get_app_settings().auto_start_spv;
+        let auto_start_spv = self.auto_start_spv_allowed();
         if self.boot.is_prepared(network) {
             if auto_start_spv {
                 self.start_spv_for(BackendInitReason::NetworkSwitch);
@@ -2898,7 +2917,7 @@ impl AppState {
     /// a user-initiated sync just like the Connect button, so the blocking
     /// overlay must cover it. Boot auto-start arms via the constructor instead.
     fn try_auto_start_spv(&mut self) {
-        if self.current_app_context().get_app_settings().auto_start_spv {
+        if self.auto_start_spv_allowed() {
             // Fresh user-initiated episode: arm the block and re-arm the escape,
             // mirroring AppAction::StartSpv.
             self.spv_block.arm();
@@ -3867,7 +3886,7 @@ impl App for AppState {
             Some(GateEvent::Retry(network)) => {
                 tracing::info!(?network, "User retried storage preparation");
                 let app_ctx = self.current_app_context().clone();
-                let auto_start = app_ctx.get_app_settings().auto_start_spv;
+                let auto_start = self.auto_start_spv_allowed();
                 // Clear the terminal status the failed run published, so the
                 // retry announces its own progress instead of being taken for a
                 // second call on an already prepared network and running silent.
@@ -4046,10 +4065,20 @@ impl App for AppState {
                     // (F-SPV-E: a dropped Info-banner handle could not be cleared
                     // by the overlay's banner suppression).
                     self.spv_block.arm();
+                    self.spv_manually_disconnected = false;
                     self.start_spv_for(BackendInitReason::ManualConnect);
                 }
                 AppAction::StopSpv => {
+                    self.spv_manually_disconnected = true;
                     let app_ctx = self.current_app_context().clone();
+                    // A network left behind by a switch keeps its chain sync
+                    // running; Disconnect takes those offline too.
+                    let background_contexts: Vec<_> = self
+                        .network_contexts
+                        .values()
+                        .filter(|context| !Arc::ptr_eq(context, &app_ctx))
+                        .cloned()
+                        .collect();
                     // Claim the disconnect synchronously: this flips the
                     // indicator to Stopping on this frame (so the button
                     // disables immediately) and dedupes a fast second click —
@@ -4057,6 +4086,11 @@ impl App for AppState {
                     // needed for a user-initiated stop.
                     if app_ctx.connection_status().begin_spv_stop() {
                         let _ = self.subtasks.spawn_sync("spv_manual_stop", async move {
+                            // Background networks first: they write to the same
+                            // indicator, which the active network settles last.
+                            for context in background_contexts {
+                                context.stop_background_spv().await;
+                            }
                             app_ctx.stop_spv().await;
                         });
                     }

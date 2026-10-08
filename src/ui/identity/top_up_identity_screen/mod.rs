@@ -276,6 +276,8 @@ impl TopUpIdentityScreen {
             return;
         }
         self.release_top_up();
+        // The top-up may have succeeded, so the form must not offer it again.
+        self.forget_sent_funding();
         self.set_step(step_after_task_failure(self.current_step()));
         // A successful top-up changed the stored balance and top-up count.
         if let Ok(Some(identity)) = self
@@ -284,6 +286,19 @@ impl TopUpIdentityScreen {
         {
             self.identity = identity;
         }
+    }
+
+    /// Forget what the last top-up was built from, so that a form shown
+    /// after it cannot offer the same transfer again.
+    fn forget_sent_funding(&mut self) {
+        self.funding_address = None;
+        self.funding_amount.clear();
+        self.funding_amount_exact = None;
+        self.funding_amount_input = None;
+        self.funding_asset_lock = None;
+        self.platform_top_up_amount = None;
+        self.platform_top_up_amount_input = None;
+        self.copied_to_clipboard = None;
     }
 
     /// Replaces the funding form while a top-up runs, so nothing on it can be
@@ -881,11 +896,7 @@ impl ScreenLike for TopUpIdentityScreen {
         }
         self.release_top_up();
         self.completed_fee_result = Some(fee_result);
-        self.funding_address = None;
-        self.funding_amount.clear();
-        self.funding_amount_exact = None;
-        self.funding_amount_input = None;
-        self.copied_to_clipboard = None;
+        self.forget_sent_funding();
         self.set_step(WalletFundedScreenStep::Success);
     }
 
@@ -1549,6 +1560,21 @@ mod tests {
         );
     }
 
+    const ADD_FUNDS_BUTTON: &str = "Add funds";
+
+    /// A wallet-balance screen on its form with an amount entered, so the
+    /// form offers to send it.
+    fn funded_form_screen(seed_byte: u8) -> (TopUpIdentityScreen, tempfile::TempDir) {
+        let (mut screen, seed_hash, temp_dir) = wallet_balance_screen(seed_byte);
+        *screen.funding_method.write().expect("funding method lock") =
+            FundingMethod::UseWalletBalance;
+        store_current_quote(&mut screen, seed_hash, 10_000_000);
+        screen.set_step(WalletFundedScreenStep::ReadyToCreate);
+        // The amount field fills itself with the largest amount it can send.
+        screen.prefill_funding_amount = true;
+        (screen, temp_dir)
+    }
+
     /// A wallet-balance screen with a dispatched top-up, plus its dispatch.
     fn dispatched_top_up_screen(
         seed_byte: u8,
@@ -1735,11 +1761,21 @@ mod tests {
     }
 
     /// The result of a background top-up reaches whichever screen is visible,
-    /// so the screen that started it has to notice the end by itself.
+    /// so the screen that started it has to notice the end by itself. It is
+    /// not told how the top-up ended, so the form it brings back must not
+    /// still hold the transfer that was just sent.
     #[test]
-    fn form_resumes_when_a_background_top_up_ends_out_of_sight() {
-        let (mut screen, context, _temp_dir) = dispatched_top_up_screen(0x47);
+    fn form_comes_back_clean_when_a_background_top_up_ends_out_of_sight() {
+        let (mut screen, _temp_dir) = funded_form_screen(0x47);
         let ctx = screen.app_context.egui_ctx().clone();
+        assert!(screen_shows(&mut screen, ADD_FUNDS_BUTTON));
+        // Choices left over from the other funding methods.
+        screen.funding_asset_lock = Some(OutPoint::null());
+        screen.platform_top_up_amount = Some(Amount::new_dash(1.0));
+        let action = screen.top_up_identity_clicked(FundingMethod::UseWalletBalance);
+        let AppAction::BackendTaskWithContext { context, .. } = action else {
+            panic!("expected a dispatched top-up, got {action:?}");
+        };
 
         screen.continue_top_up_in_background();
         assert!(screen_shows(&mut screen, TOP_UP_FORM_PAUSED));
@@ -1751,6 +1787,13 @@ mod tests {
         );
         assert!(!screen.top_up_in_flight());
         assert_eq!(screen.current_step(), WalletFundedScreenStep::ReadyToCreate);
+        assert!(
+            !screen_shows(&mut screen, ADD_FUNDS_BUTTON),
+            "the form must not offer the amount that was just sent"
+        );
+        assert_eq!(screen.funding_amount_exact, None);
+        assert_eq!(screen.funding_asset_lock, None);
+        assert!(screen.platform_top_up_amount.is_none());
     }
 
     #[test]

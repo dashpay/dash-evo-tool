@@ -3954,6 +3954,99 @@ async fn all_wallets_discovery_latch_is_one_shot_until_stop_spv() {
     );
 }
 
+/// Register a wallet the way the import screen does, on a context whose SDK
+/// is a mock so no identity lookup leaves the process.
+async fn context_with_imported_wallet(
+    seed: [u8; 64],
+) -> (
+    Arc<AppContext>,
+    tempfile::TempDir,
+    WalletSeedHash,
+    Arc<RwLock<Wallet>>,
+) {
+    let (ctx, sender, tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    ctx.sdk.store(Arc::new(dash_sdk::Sdk::new_mock()));
+
+    let wallet = Wallet::new_from_seed(seed, Network::Testnet, None, None).expect("build wallet");
+    let (seed_hash, wallet) = ctx
+        .register_wallet(wallet, &seed, WalletOrigin::Imported)
+        .expect("register imported wallet");
+    (ctx, tmp, seed_hash, wallet)
+}
+
+/// Whether a discovery pass has started looking this wallet's identities up.
+/// Every lookup first derives its key into the wallet's auth-key cache, and
+/// registering a wallet with no known identities leaves that cache empty.
+fn identity_lookups_started(ctx: &Arc<AppContext>, seed_hash: &WalletSeedHash) -> bool {
+    !ctx.wallet_backend()
+        .expect("backend wired")
+        .auth_pubkey_cache()
+        .get(Network::Testnet, seed_hash)
+        .is_empty()
+}
+
+async fn wait_for_identity_lookups(ctx: &Arc<AppContext>, seed_hash: &WalletSeedHash) {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !identity_lookups_started(ctx, seed_hash) {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "identity discovery for the imported wallet never started"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn import_discovery_waits_for_the_masternode_list() {
+    let (ctx, _tmp, seed_hash, wallet) = context_with_imported_wallet([0xD1u8; 64]).await;
+    assert!(
+        !ctx.connection_status().masternodes_ready(),
+        "precondition: the masternode list is not synced yet"
+    );
+
+    ctx.queue_wallet_identity_discovery(&wallet, 4);
+
+    // Far longer than a pass needs to derive its first lookup key.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert!(
+        !identity_lookups_started(&ctx, &seed_hash),
+        "import-time identity lookups must not start before the masternode list is synced"
+    );
+
+    ctx.connection_status().set_masternodes_ready(true);
+    wait_for_identity_lookups(&ctx, &seed_hash).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn import_discovery_starts_at_once_when_the_masternode_list_is_synced() {
+    let (ctx, _tmp, seed_hash, wallet) = context_with_imported_wallet([0xD2u8; 64]).await;
+    ctx.connection_status().set_masternodes_ready(true);
+
+    ctx.queue_wallet_identity_discovery(&wallet, 4);
+
+    wait_for_identity_lookups(&ctx, &seed_hash).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn import_discovery_wait_ends_at_shutdown() {
+    let (ctx, _sender, _tmp) = offline_testnet_context();
+    ctx.subtasks.cancellation_token.cancel();
+
+    let ready = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        ctx.wait_for_masternodes_ready(),
+    )
+    .await
+    .expect("a discovery waiting for the masternode list must not outlive shutdown");
+    assert!(
+        !ready,
+        "a wait ended by shutdown must not report the masternode list as synced"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn open_wallets_snapshot_excludes_locked_wallets() {
     use crate::database::test_helpers::seed_legacy_protected_hd_wallet_row;

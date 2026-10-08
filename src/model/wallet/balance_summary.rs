@@ -3,6 +3,9 @@
 //! Every balance kind is held in credits, the finest unit any kind uses
 //! (1 duff = 1000 credits). Kinds are added in credits and rounded down to
 //! duffs once, so sub-duff remainders of several kinds are not lost one by one.
+//! A figure given in duffs has no remainder left to add: the Platform address
+//! balance arrives in whole duffs, so a total counting it can be one duff
+//! below the exact sum.
 
 use crate::model::address::AddressKind;
 use crate::model::wallet::single_key::SingleKeyHash;
@@ -56,7 +59,8 @@ impl WalletBalanceSummary {
         self
     }
 
-    /// Set the Platform address balance, given in duffs.
+    /// Set the Platform address balance, given in whole duffs; any sub-duff
+    /// remainder is already gone.
     pub fn with_platform_duffs(mut self, duffs: Duffs) -> Self {
         self.platform = duffs.saturating_mul(CREDITS_PER_DUFF);
         self

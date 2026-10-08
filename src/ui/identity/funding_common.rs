@@ -6,7 +6,7 @@ use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::Transact
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use dash_sdk::dpp::dashcore::{OutPoint, TxOut};
 use eframe::epaint::{Color32, ColorImage};
-use egui::{ComboBox, Ui, Vec2};
+use egui::{Ui, Vec2};
 use image::Luma;
 use platform_wallet::wallet::asset_lock::tracked::{AssetLockStatus, TrackedAssetLock};
 use qrcode::QrCode;
@@ -275,43 +275,6 @@ pub fn asset_lock_address(lock: &TrackedAssetLock, network: Network) -> Option<A
     };
     let output = payload.credit_outputs.first()?;
     Address::from_script(&output.script_pubkey, network).ok()
-}
-
-/// Render a wallet-picker ComboBox and return the wallet the user clicked this
-/// frame, if any. `label_fn` supplies each entry's text and the closed-box text
-/// for the current selection; `enabled_fn` greys out wallets that cannot serve
-/// the active funding method. Reset-on-change is the caller's responsibility —
-/// act on the returned wallet. Shared by the create-identity, top-up, and
-/// add-existing-identity screens so the picker scaffolding lives in one place.
-pub fn wallet_selection_combo(
-    ui: &mut Ui,
-    id_salt: &str,
-    wallets: &[Arc<RwLock<Wallet>>],
-    selected: Option<&Arc<RwLock<Wallet>>>,
-    mut label_fn: impl FnMut(&Arc<RwLock<Wallet>>) -> String,
-    mut enabled_fn: impl FnMut(&Arc<RwLock<Wallet>>) -> bool,
-) -> Option<Arc<RwLock<Wallet>>> {
-    let selected_text = match selected {
-        Some(wallet) => label_fn(wallet),
-        None => "Select".to_string(),
-    };
-
-    let mut clicked = None;
-    ComboBox::from_id_salt(id_salt)
-        .selected_text(selected_text)
-        .show_ui(ui, |ui| {
-            for wallet in wallets {
-                let is_selected = selected.is_some_and(|s| Arc::ptr_eq(s, wallet));
-                let label = label_fn(wallet);
-                let enabled = enabled_fn(wallet);
-                ui.add_enabled_ui(enabled, |ui| {
-                    if ui.selectable_label(is_selected, label).clicked() {
-                        clicked = Some(wallet.clone());
-                    }
-                });
-            }
-        });
-    clicked
 }
 
 /// Outcome of the shared unused-funding picker gate.

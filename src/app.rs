@@ -2704,8 +2704,8 @@ impl AppState {
     // generic overlay button — e.g. one it labels "Cancel" — to a real abort.
     // Until then a button on a running task can only stop waiting on it (the
     // identity top-up's "Continue in background"), and this loop has no live
-    // cancellation role; the 120s watchdog (see progress_overlay.rs) bounds
-    // every block in the meantime.
+    // cancellation role. The 120s watchdog (see progress_overlay.rs) only
+    // reports a block that stopped progressing; it never lowers one.
     fn drain_overlay_actions(&mut self, ctx: &egui::Context) {
         for action_id in ProgressOverlay::sweep_orphan_actions(ctx) {
             tracing::warn!(
@@ -3614,6 +3614,8 @@ impl App for AppState {
                     error: err,
                 } => {
                     clear_profile_saving_banner_after_error(ctx, &context);
+                    // A top-up ends only here and in the success arm, so no
+                    // top-up error may take one of the special-cased arms above.
                     finish_background_top_up(ctx, &context, false);
                     clear_scheduled_vote_sweep_guard_on_error(
                         &mut self.scheduled_vote_sweeps_in_progress,

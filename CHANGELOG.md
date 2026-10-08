@@ -212,6 +212,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Adding funds to an identity shows a progress dialog and pauses the funding
+  form until the transfer ends, so it can no longer be changed or sent twice.
+  The form used to stay active and briefly warned that the wallet did not have
+  enough Dash while the transfer it had just started was going through. A
+  transfer that takes longer than 30 seconds can continue in the background,
+  with a banner that follows it and confirms when the funds arrive.
+
+- The progress dialog shown while a username is being registered names the
+  username.
+
 - Scheduling votes "At a specific time" starts from a time you can use: an hour
   after you open the confirmation, or halfway to the earliest deadline when a
   contest ends sooner. It used to suggest a time about a day ahead, often past

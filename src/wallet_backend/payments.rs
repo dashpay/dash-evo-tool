@@ -1064,7 +1064,8 @@ mod tests {
         const PAYMENT_DUFFS: u64 = 430_000;
         const CURRENT_HEIGHT: u32 = 200;
 
-        for payments in [1usize, 2, 5] {
+        // (payments spent whole, what the builder is known to charge for them)
+        for (payments, known_charge) in [(1usize, Some(229)), (2, Some(377)), (5, None)] {
             let wallet =
                 Wallet::new_random(Network::Testnet, WalletAccountCreationOptions::Default)
                     .expect("test wallet");
@@ -1100,6 +1101,9 @@ mod tests {
                     .expect("asset-lock maximum");
             let charged = PAYMENT_DUFFS * payments as u64 - ceiling;
             let estimate = estimate_asset_lock_core_fee_duffs(payments);
+            if let Some(known_charge) = known_charge {
+                assert_eq!(charged, known_charge, "{payments} payments");
+            }
             assert!(
                 charged <= estimate,
                 "{payments} payments: the builder charges {charged} duffs, the estimate is {estimate}"

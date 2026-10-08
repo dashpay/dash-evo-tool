@@ -833,6 +833,14 @@ impl TopUpIdentityScreen {
         )
     }
 
+    /// Whether the form has an amount to offer for `funding_method` from what
+    /// the wallet can send; `None` while that is not known. The amount field
+    /// and the deposit arrival check both read this, so they cannot disagree.
+    fn form_offers_amount(&self, funding_method: FundingMethod) -> Option<bool> {
+        let ceiling = self.current_validation_ceiling_duffs(funding_method)?;
+        Some(self.top_up_amount_range(ceiling).is_some())
+    }
+
     /// What a wallet must hold, in credits, before it can send any top-up.
     fn required_wallet_credits(&self) -> u64 {
         required_wallet_credits(self.minimum_top_up_duffs(), self.top_up_reserve_duffs())
@@ -844,7 +852,7 @@ impl TopUpIdentityScreen {
 
         // Offer no amount at all when none covers the network fee, so neither
         // Max nor the prefill can propose one the network would refuse.
-        if available_ceiling_duffs.is_some_and(|c| self.top_up_amount_range(c).is_none()) {
+        if self.form_offers_amount(funding_method) == Some(false) {
             self.funding_amount_exact = None;
             ui.colored_label(DashColors::WARNING, FUNDING_FEE_NOT_COVERED);
             ui.add_space(10.0);
@@ -2294,6 +2302,11 @@ mod tests {
 
     /// A payment of `duffs` arriving at `address`.
     fn deposit_event(address: &Address, duffs: u64) -> BackendTaskSuccessResult {
+        deposit_event_paying(address, &[duffs])
+    }
+
+    /// One transaction paying each of `payments_duffs` to `address`.
+    fn deposit_event_paying(address: &Address, payments_duffs: &[u64]) -> BackendTaskSuccessResult {
         use dash_sdk::dpp::dashcore::{Transaction, TxOut};
         BackendTaskSuccessResult::CoreItem(CoreItem::ReceivedAvailableUTXOTransaction(
             Transaction {
@@ -2303,20 +2316,26 @@ mod tests {
                 output: Vec::new(),
                 special_transaction_payload: None,
             },
-            vec![(
-                OutPoint::null(),
-                TxOut {
-                    value: duffs,
-                    script_pubkey: address.script_pubkey(),
-                },
-                address.clone(),
-            )],
+            payments_duffs
+                .iter()
+                .map(|duffs| {
+                    (
+                        OutPoint::null(),
+                        TxOut {
+                            value: *duffs,
+                            script_pubkey: address.script_pubkey(),
+                        },
+                        address.clone(),
+                    )
+                })
+                .collect(),
         ))
     }
 
-    /// What the funding builder charges to spend one payment whole, as
-    /// measured by `asset_lock_core_fee_estimate_covers_what_the_builder_charges`.
+    /// What the funding builder charges to spend one payment, and two, whole;
+    /// pinned by `asset_lock_core_fee_estimate_covers_what_the_builder_charges`.
     const BUILDER_FEE_ONE_PAYMENT_DUFFS: u64 = 229;
+    const BUILDER_FEE_TWO_PAYMENTS_DUFFS: u64 = 377;
 
     /// A deposit of what the old request asked for must keep waiting instead of
     /// opening a form that can only offer an amount the network refuses.
@@ -2370,6 +2389,12 @@ mod tests {
             seed_hash,
             awaited_duffs - BUILDER_FEE_ONE_PAYMENT_DUFFS,
         );
+        screen.settle_deposit_step();
+        assert_eq!(
+            screen.current_step(),
+            WalletFundedScreenStep::FundsReceived,
+            "a usable deposit must stay on the form"
+        );
         {
             let mut harness = egui_kittest::Harness::builder()
                 .build_ui(|ui| screen.top_up_funding_amount_input(ui));
@@ -2384,6 +2409,194 @@ mod tests {
         assert!(
             matches!(action, AppAction::BackendTaskWithContext { .. }),
             "the offered amount must be accepted, got {action:?}"
+        );
+    }
+
+    /// Record that the wallet can send at most `ceiling_duffs`, with
+    /// `at_address_duffs` of its funds at the deposit address.
+    fn store_deposit_quote(
+        screen: &mut TopUpIdentityScreen,
+        at_address_duffs: u64,
+        ceiling_duffs: u64,
+    ) {
+        store_deposit_quote_as(screen, at_address_duffs, ceiling_duffs, false);
+    }
+
+    /// As [`store_deposit_quote`]; `partial` marks a check that covered only
+    /// part of the wallet.
+    fn store_deposit_quote_as(
+        screen: &mut TopUpIdentityScreen,
+        at_address_duffs: u64,
+        ceiling_duffs: u64,
+        partial: bool,
+    ) {
+        screen.funding_address_balance_duffs = at_address_duffs;
+        let seed_hash = screen
+            .wallet
+            .as_ref()
+            .expect("selected wallet")
+            .read()
+            .expect("wallet lock")
+            .seed_hash();
+        let (generation, inputs, revision) =
+            screen.app_context.asset_lock_probe_snapshot(&seed_hash);
+        let request_id = asset_lock_request_id(screen.asset_lock_balance.ensure_requested(
+            seed_hash,
+            generation,
+            inputs.clone(),
+            revision,
+        ));
+        screen.asset_lock_balance.store(
+            seed_hash,
+            generation,
+            request_id,
+            ceiling_duffs,
+            inputs,
+            partial,
+        );
+    }
+
+    /// One transaction paying the deposit address twice reaches the awaited
+    /// total, but spending two payments costs more than spending one, and what
+    /// is left cannot cover the fee after the reserve. The form used to open
+    /// with no amount and no way forward.
+    #[test]
+    fn deposit_split_into_two_payments_that_cannot_be_used_returns_to_the_request() {
+        let (mut screen, address, _temp_dir) = deposit_screen(0x5B);
+        screen.display_task_result(deposit_event_paying(&address, &[50_629, 50_630]));
+        assert_eq!(
+            screen.current_step(),
+            WalletFundedScreenStep::FundsReceived,
+            "the total reaches the awaited amount, so the arrival is noticed"
+        );
+
+        store_deposit_quote(
+            &mut screen,
+            101_259,
+            101_259 - BUILDER_FEE_TWO_PAYMENTS_DUFFS,
+        );
+        screen.settle_deposit_step();
+
+        assert_eq!(
+            screen.form_offers_amount(FundingMethod::ReceiveDeposit),
+            Some(false)
+        );
+        assert_eq!(
+            screen.current_step(),
+            WalletFundedScreenStep::WaitingOnFunds,
+            "a deposit the form cannot use must return to the deposit request"
+        );
+    }
+
+    /// A deposit the wallet cannot spend yet is not counted by the builder, so
+    /// the form has nothing to offer from it however large it is.
+    #[test]
+    fn deposit_that_cannot_be_spent_yet_returns_to_the_request() {
+        let (mut screen, address, _temp_dir) = deposit_screen(0x5C);
+        screen.display_task_result(deposit_event(&address, 1_000_000));
+        assert_eq!(screen.current_step(), WalletFundedScreenStep::FundsReceived);
+
+        store_deposit_quote(&mut screen, 1_000_000, 0);
+        screen.settle_deposit_step();
+
+        assert_eq!(
+            screen.current_step(),
+            WalletFundedScreenStep::WaitingOnFunds
+        );
+    }
+
+    /// A check that covered only part of the wallet may understate what it can
+    /// send, so its answer must not take the form, and its Retry, away.
+    #[test]
+    fn deposit_checked_only_in_part_keeps_the_form_and_its_retry() {
+        let (mut screen, address, _temp_dir) = deposit_screen(0x5D);
+        screen.display_task_result(deposit_event(&address, 1_000_000));
+
+        store_deposit_quote_as(&mut screen, 1_000_000, 0, true);
+        screen.settle_deposit_step();
+
+        assert_eq!(screen.current_step(), WalletFundedScreenStep::FundsReceived);
+    }
+
+    /// When enough has arrived but cannot be used yet, the request must not
+    /// ask for an amount that is already there.
+    #[test]
+    fn deposit_request_says_when_the_deposit_awaits_confirmation() {
+        fn request_shows(screen: &mut TopUpIdentityScreen, text: &str) -> bool {
+            use egui_kittest::{Harness, kittest::Queryable};
+            let mut harness = Harness::builder()
+                .with_size(egui::vec2(1200.0, 900.0))
+                .build_ui(|ui| screen.render_deposit_qr(ui));
+            harness.run_steps(2);
+            harness.query_by_label_contains(text).is_some()
+        }
+        const AWAITING_CONFIRMATION: &str =
+            "Your deposit has arrived. Waiting for the network to confirm it.";
+        let (mut screen, _address, _temp_dir) = deposit_screen(0x5E);
+
+        screen.funding_address_balance_duffs = 60_000;
+        assert!(request_shows(
+            &mut screen,
+            "Waiting for at least 0.0011 DASH."
+        ));
+        assert!(!request_shows(&mut screen, AWAITING_CONFIRMATION));
+
+        screen.funding_address_balance_duffs = 1_000_000;
+        assert!(request_shows(&mut screen, AWAITING_CONFIRMATION));
+        assert!(!request_shows(&mut screen, "Waiting for at least"));
+    }
+
+    /// Two payments arriving one after the other are judged together once the
+    /// wallet has checked what it can send from them.
+    #[test]
+    fn deposits_arriving_separately_open_the_form_only_when_usable() {
+        let (mut screen, address, _temp_dir) = deposit_screen(0x5F);
+        screen.display_task_result(deposit_event(&address, 50_629));
+        screen.display_task_result(deposit_event(&address, 50_630));
+        assert_eq!(
+            screen.current_step(),
+            WalletFundedScreenStep::WaitingOnFunds
+        );
+
+        store_deposit_quote(
+            &mut screen,
+            101_259,
+            101_259 - BUILDER_FEE_TWO_PAYMENTS_DUFFS,
+        );
+        screen.settle_deposit_step();
+        assert_eq!(
+            screen.current_step(),
+            WalletFundedScreenStep::WaitingOnFunds
+        );
+
+        screen.asset_lock_balance.invalidate();
+        store_deposit_quote(
+            &mut screen,
+            101_500,
+            101_500 - BUILDER_FEE_TWO_PAYMENTS_DUFFS,
+        );
+        screen.settle_deposit_step();
+        assert_eq!(screen.current_step(), WalletFundedScreenStep::FundsReceived);
+    }
+
+    /// A wallet that already holds other funds pays the Core fee from them, so
+    /// a deposit of just the fee and the reserve is enough to open the form.
+    #[test]
+    fn deposit_into_a_wallet_holding_other_funds_opens_the_form() {
+        let (mut screen, address, _temp_dir) = deposit_screen(0x60);
+        screen.display_task_result(deposit_event(&address, 101_000));
+        assert_eq!(
+            screen.current_step(),
+            WalletFundedScreenStep::WaitingOnFunds
+        );
+
+        store_deposit_quote(&mut screen, 101_000, 1_000_000);
+        screen.settle_deposit_step();
+
+        assert_eq!(screen.current_step(), WalletFundedScreenStep::FundsReceived);
+        assert_eq!(
+            screen.form_offers_amount(FundingMethod::ReceiveDeposit),
+            Some(true)
         );
     }
 }

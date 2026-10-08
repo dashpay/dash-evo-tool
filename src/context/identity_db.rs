@@ -8,6 +8,7 @@ use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::ui::MessageType;
 use crate::ui::components::MessageBanner;
 use crate::wallet_backend::{DetKv, DetScope, KvAdapterError};
+use dash_sdk::dpp::balances::credits::Credits;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::KeyID;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -348,6 +349,31 @@ fn load_identity_index(kv: &DetKv) -> std::result::Result<Vec<[u8; 32]>, TaskErr
         .get::<Vec<[u8; 32]>>(DetScope::Global, IDENTITY_INDEX_KEY)
         .map_err(identity_err)?
         .unwrap_or_default())
+}
+
+/// Stored credit balance of every wallet-owned identity, summed per wallet.
+fn sum_identity_credits_by_wallet(
+    kv: &DetKv,
+    network: Network,
+) -> std::result::Result<BTreeMap<WalletSeedHash, Credits>, TaskError> {
+    let mut totals: BTreeMap<WalletSeedHash, Credits> = BTreeMap::new();
+    for id in load_identity_index(kv)? {
+        let Some(stored) = kv
+            .get::<StoredQualifiedIdentity>(DetScope::Identity(&id), IDENTITY_KEY)
+            .map_err(identity_err)?
+        else {
+            continue;
+        };
+        let (Some(wallet_hash), Some(_)) = (stored.wallet_hash, stored.wallet_index) else {
+            continue;
+        };
+        let credits = decode_stored_identity(&stored.qi_bytes, network)?
+            .identity
+            .balance();
+        let total = totals.entry(wallet_hash).or_default();
+        *total = total.saturating_add(credits);
+    }
+    Ok(totals)
 }
 
 /// Whether `identity_id` is on the Global enumeration index.
@@ -1085,6 +1111,24 @@ impl AppContext {
             }
         }
         Ok(out)
+    }
+
+    /// The summed credit balance of each wallet's identities, as last stored.
+    /// A wallet with no identities is absent.
+    ///
+    /// Reads and decodes every wallet-owned identity record, so call it when a
+    /// screen opens or refreshes, never once per frame. Display-only: on a
+    /// storage failure no wallet gets an identity balance.
+    pub fn identity_credits_by_wallet(&self) -> BTreeMap<WalletSeedHash, Credits> {
+        self.det_kv()
+            .and_then(|kv| sum_identity_credits_by_wallet(&kv, self.network))
+            .unwrap_or_else(|error| {
+                tracing::warn!(
+                    ?error,
+                    "Identity balances could not be read for the wallet selector; wallets are shown without them"
+                );
+                BTreeMap::new()
+            })
     }
 
     /// The masternode/evonode identities for the active network — the
@@ -2585,6 +2629,63 @@ mod tests {
         kv.put(DetScope::Identity(id), IDENTITY_KEY, &stored(identity_type))
             .unwrap();
         index_add_identity(kv, id).unwrap();
+    }
+
+    /// Store a real identity blob holding `credits`, owned by `wallet` or by
+    /// no wallet.
+    fn put_identity_with_credits(kv: &DetKv, id: u8, wallet: Option<[u8; 32]>, credits: u64) {
+        use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+        let mut qi = crate::context::test_support::bare_user_identity(
+            Identifier::from([id; 32]),
+            Network::Testnet,
+        );
+        qi.identity.set_balance(credits);
+        let stored = StoredQualifiedIdentity {
+            qi_bytes: qi.to_bytes(),
+            status: 0,
+            identity_type: "User".to_string(),
+            wallet_hash: wallet,
+            wallet_index: wallet.map(|_| u32::from(id)),
+        };
+        kv.put(DetScope::Identity(&[id; 32]), IDENTITY_KEY, &stored)
+            .unwrap();
+        index_add_identity(kv, &[id; 32]).unwrap();
+    }
+
+    #[test]
+    fn identity_credits_are_summed_per_owning_wallet() {
+        let kv = empty_kv();
+        let (wallet_a, wallet_b) = ([0xA1; 32], [0xB2; 32]);
+        put_identity_with_credits(&kv, 1, Some(wallet_a), 1_500);
+        put_identity_with_credits(&kv, 2, Some(wallet_a), 2_500);
+        put_identity_with_credits(&kv, 3, Some(wallet_b), 700);
+        put_identity_with_credits(&kv, 4, None, 999);
+
+        let totals = sum_identity_credits_by_wallet(&kv, Network::Testnet).unwrap();
+
+        assert_eq!(
+            totals,
+            BTreeMap::from([(wallet_a, 4_000), (wallet_b, 700)]),
+            "a wallet-less identity belongs to no wallet's total"
+        );
+    }
+
+    #[test]
+    fn identity_credits_of_an_unreadable_record_fail_the_read() {
+        let kv = empty_kv();
+        kv.put(
+            DetScope::Identity(&id(7)),
+            IDENTITY_KEY,
+            &StoredQualifiedIdentity {
+                wallet_hash: Some([0xA1; 32]),
+                wallet_index: Some(0),
+                ..stored("User")
+            },
+        )
+        .unwrap();
+        index_add_identity(&kv, &id(7)).unwrap();
+
+        assert!(sum_identity_credits_by_wallet(&kv, Network::Testnet).is_err());
     }
 
     // ---------------------------------------------------------------

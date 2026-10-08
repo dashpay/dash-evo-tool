@@ -20,6 +20,7 @@ pub mod migration_status;
 mod settings_db;
 #[cfg(test)]
 pub(crate) mod test_support;
+mod wallet_balances;
 mod wallet_lifecycle;
 pub use wallet_lifecycle::BackupPruneReport;
 pub use wallet_lifecycle::PrepareGateGuard;

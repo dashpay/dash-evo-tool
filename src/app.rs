@@ -340,10 +340,7 @@ fn finish_background_top_up(ctx: &egui::Context, context: &BackendTaskContext, s
     use crate::ui::identity::top_up_identity_screen::{
         TOP_UP_DONE_IN_BACKGROUND, clear_top_up_background_banner,
     };
-    let Some(identity_id) = context.identity_top_up_identity() else {
-        return;
-    };
-    if clear_top_up_background_banner(ctx, &identity_id) && succeeded {
+    if clear_top_up_background_banner(ctx, context) && succeeded {
         MessageBanner::set_global(ctx, TOP_UP_DONE_IN_BACKGROUND, MessageType::Success);
     }
 }
@@ -554,14 +551,13 @@ mod backend_task_join_tests {
             TOP_UP_DONE_IN_BACKGROUND, show_top_up_background_banner,
         };
         let ctx = egui::Context::default();
-        let identity_id = Identifier::from([1; 32]);
-        let context = BackendTaskContext::IdentityTopUp(identity_id);
+        let context = BackendTaskContext::IdentityTopUp(Identifier::from([1; 32]));
 
         // A top-up the user watched to the end is confirmed by its screen.
         finish_background_top_up(&ctx, &context, true);
         assert!(!MessageBanner::has_global(&ctx));
 
-        show_top_up_background_banner(&ctx, identity_id);
+        show_top_up_background_banner(&ctx, context.clone());
         finish_background_top_up(&ctx, &BackendTaskContext::Other, true);
         finish_background_top_up(
             &ctx,
@@ -574,17 +570,50 @@ mod backend_task_join_tests {
         );
 
         finish_background_top_up(&ctx, &context, true);
+        assert!(
+            MessageBanner::has_global(&ctx),
+            "a successful background top-up must show its confirmation"
+        );
         MessageBanner::clear_global_message(&ctx, TOP_UP_DONE_IN_BACKGROUND);
         assert!(
             !MessageBanner::has_global(&ctx),
             "success must swap the progress banner for the confirmation"
         );
 
-        show_top_up_background_banner(&ctx, identity_id);
+        show_top_up_background_banner(&ctx, context.clone());
         finish_background_top_up(&ctx, &context, false);
         assert!(
             !MessageBanner::has_global(&ctx),
             "a failed top-up ends its progress banner without confirming"
+        );
+    }
+
+    /// Wallet Send can move funds to the same identity while its top-up runs
+    /// in the background; that transfer's result is not the top-up's.
+    #[test]
+    fn another_top_up_of_the_same_identity_leaves_the_background_one_pending() {
+        use crate::ui::identity::top_up_identity_screen::{
+            clear_top_up_background_banner, show_top_up_background_banner,
+        };
+        let ctx = egui::Context::default();
+        let other_transfer = BackendTaskContext::IdentityTopUp(Identifier::from([1; 32]));
+        let dispatch = |dispatch_id| BackendTaskContext::Dispatched {
+            dispatch_id,
+            operation: Box::new(other_transfer.clone()),
+        };
+        let top_up = dispatch(1);
+
+        show_top_up_background_banner(&ctx, top_up.clone());
+        finish_background_top_up(&ctx, &other_transfer, true);
+        finish_background_top_up(&ctx, &dispatch(2), true);
+
+        assert!(
+            clear_top_up_background_banner(&ctx, &top_up),
+            "another transfer to the identity must leave its background top-up pending"
+        );
+        assert!(
+            !MessageBanner::has_global(&ctx),
+            "another transfer's success must not confirm the background top-up"
         );
     }
 

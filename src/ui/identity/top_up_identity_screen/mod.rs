@@ -43,7 +43,6 @@ use dash_sdk::dpp::dashcore::OutPoint;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
 use egui::{ComboBox, ScrollArea, Ui};
-use std::collections::BTreeSet;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -68,7 +67,8 @@ const TOP_UP_BACKGROUND_OWNERS_ID: &str = "__identity_top_up_background_owners";
 /// background. A top-up normally finishes well inside this window.
 const TOP_UP_BACKGROUND_OFFER_AFTER: Duration = Duration::from_secs(30);
 
-fn background_top_ups(ctx: &egui::Context) -> BTreeSet<Identifier> {
+/// Dispatches of the top-ups that were sent to the background and still run.
+fn background_top_ups(ctx: &egui::Context) -> Vec<BackendTaskContext> {
     ctx.data(|data| data.get_temp(egui::Id::new(TOP_UP_BACKGROUND_OWNERS_ID)))
         .unwrap_or_default()
 }
@@ -76,32 +76,38 @@ fn background_top_ups(ctx: &egui::Context) -> BTreeSet<Identifier> {
 /// Whether a top-up of `identity_id` was sent to the background and is still
 /// running.
 fn top_up_runs_in_background(ctx: &egui::Context, identity_id: &Identifier) -> bool {
-    background_top_ups(ctx).contains(identity_id)
+    background_top_ups(ctx)
+        .iter()
+        .any(|dispatch| dispatch.identity_top_up_identity() == Some(*identity_id))
 }
 
-/// Raise the background-progress banner for a top-up of `identity_id`. It
-/// outlives the screen: the task's attributed result clears it.
-pub(crate) fn show_top_up_background_banner(ctx: &egui::Context, identity_id: Identifier) {
-    let mut owners = background_top_ups(ctx);
-    owners.insert(identity_id);
-    ctx.data_mut(|data| data.insert_temp(egui::Id::new(TOP_UP_BACKGROUND_OWNERS_ID), owners));
+/// Raise the background-progress banner for the top-up sent as `dispatch`. It
+/// outlives the screen: only that dispatch's own result clears it.
+pub(crate) fn show_top_up_background_banner(ctx: &egui::Context, dispatch: BackendTaskContext) {
+    let mut dispatches = background_top_ups(ctx);
+    if !dispatches.contains(&dispatch) {
+        dispatches.push(dispatch);
+    }
+    ctx.data_mut(|data| data.insert_temp(egui::Id::new(TOP_UP_BACKGROUND_OWNERS_ID), dispatches));
     MessageBanner::set_global(ctx, TOP_UP_IN_BACKGROUND, MessageType::Info).disable_auto_dismiss();
 }
 
-/// Record that the top-up of `identity_id` ended, dropping the progress banner
-/// with the last one. Returns whether that top-up ran in the background.
+/// Record that the top-up sent as `dispatch` ended, dropping the progress
+/// banner with the last one. Returns whether that top-up ran in the
+/// background; another transfer to the same identity is not that top-up.
 pub(crate) fn clear_top_up_background_banner(
     ctx: &egui::Context,
-    identity_id: &Identifier,
+    dispatch: &BackendTaskContext,
 ) -> bool {
-    let mut owners = background_top_ups(ctx);
-    if !owners.remove(identity_id) {
+    let mut dispatches = background_top_ups(ctx);
+    let Some(position) = dispatches.iter().position(|pending| pending == dispatch) else {
         return false;
-    }
-    if owners.is_empty() {
+    };
+    dispatches.remove(position);
+    if dispatches.is_empty() {
         MessageBanner::clear_global_message(ctx, TOP_UP_IN_BACKGROUND);
     }
-    ctx.data_mut(|data| data.insert_temp(egui::Id::new(TOP_UP_BACKGROUND_OWNERS_ID), owners));
+    ctx.data_mut(|data| data.insert_temp(egui::Id::new(TOP_UP_BACKGROUND_OWNERS_ID), dispatches));
     true
 }
 
@@ -228,6 +234,7 @@ impl TopUpIdentityScreen {
     /// click of it.
     fn sync_top_up_overlay(&mut self) {
         let Some(handle) = self.top_up_overlay.clone() else {
+            self.resume_after_background_top_up();
             return;
         };
         if handle
@@ -254,7 +261,29 @@ impl TopUpIdentityScreen {
     /// to a progress banner that follows the user to other screens.
     fn continue_top_up_in_background(&mut self) {
         self.top_up_overlay.take_and_clear();
-        show_top_up_background_banner(self.app_context.egui_ctx(), self.identity.identity.id());
+        if let Some(dispatch) = self.top_up_context.clone() {
+            show_top_up_background_banner(self.app_context.egui_ctx(), dispatch);
+        }
+    }
+
+    /// Bring the form back once a top-up this screen sent to the background
+    /// has ended: its result goes to whichever screen is visible at the time.
+    fn resume_after_background_top_up(&mut self) {
+        let Some(dispatch) = &self.top_up_context else {
+            return;
+        };
+        if background_top_ups(self.app_context.egui_ctx()).contains(dispatch) {
+            return;
+        }
+        self.release_top_up();
+        self.set_step(step_after_task_failure(self.current_step()));
+        // A successful top-up changed the stored balance and top-up count.
+        if let Ok(Some(identity)) = self
+            .app_context
+            .get_identity_by_id(&self.identity.identity.id())
+        {
+            self.identity = identity;
+        }
     }
 
     /// Replaces the funding form while a top-up runs, so nothing on it can be
@@ -1646,9 +1675,8 @@ mod tests {
 
     #[test]
     fn top_up_continued_in_background_unblocks_the_app_but_not_the_form() {
-        let (mut screen, _context, _temp_dir) = dispatched_top_up_screen(0x45);
+        let (mut screen, context, _temp_dir) = dispatched_top_up_screen(0x45);
         let ctx = screen.app_context.egui_ctx().clone();
-        let identity_id = screen.identity.identity.id();
 
         screen.continue_top_up_in_background();
         assert!(!ProgressOverlay::has_global(&ctx));
@@ -1667,13 +1695,38 @@ mod tests {
         let other = TopUpIdentityScreen::new(test_identity(Network::Testnet), &screen.app_context);
         assert!(!other.top_up_in_flight());
 
-        assert!(clear_top_up_background_banner(&ctx, &identity_id));
+        // Another transfer to the same identity is not this top-up.
+        let other_transfer =
+            BackendTaskContext::IdentityTopUp(context.identity_top_up_identity().unwrap());
+        assert!(!clear_top_up_background_banner(&ctx, &other_transfer));
+        assert!(reopened.top_up_in_flight());
+
+        assert!(clear_top_up_background_banner(&ctx, &context));
         assert!(!MessageBanner::has_global(&ctx));
         assert!(!reopened.top_up_in_flight());
         assert!(
-            !clear_top_up_background_banner(&ctx, &identity_id),
+            !clear_top_up_background_banner(&ctx, &context),
             "a top-up that never ran in the background has no banner to end"
         );
+    }
+
+    /// The result of a background top-up reaches whichever screen is visible,
+    /// so the screen that started it has to notice the end by itself.
+    #[test]
+    fn form_resumes_when_a_background_top_up_ends_out_of_sight() {
+        let (mut screen, context, _temp_dir) = dispatched_top_up_screen(0x47);
+        let ctx = screen.app_context.egui_ctx().clone();
+
+        screen.continue_top_up_in_background();
+        assert!(screen_shows(&mut screen, TOP_UP_FORM_PAUSED));
+
+        assert!(clear_top_up_background_banner(&ctx, &context));
+        assert!(
+            !screen_shows(&mut screen, TOP_UP_FORM_PAUSED),
+            "the form must come back once the background top-up ended"
+        );
+        assert!(!screen.top_up_in_flight());
+        assert_eq!(screen.current_step(), WalletFundedScreenStep::ReadyToCreate);
     }
 
     #[test]

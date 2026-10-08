@@ -371,6 +371,32 @@ impl TopUpIdentityScreen {
         }
     }
 
+    /// Test seam: enter the state "Add funds" enters and return the dispatch,
+    /// without handing the task to the backend.
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    pub fn begin_top_up_for_test(&mut self) -> Option<BackendTaskContext> {
+        // The task is dropped on purpose: no funds may move in a test.
+        let _task = self.begin_top_up(
+            IdentityTask::TopUpIdentityFromPlatformAddresses {
+                identity: self.identity.clone(),
+                inputs: Default::default(),
+                wallet_seed_hash: Default::default(),
+            },
+            WalletFundedScreenStep::WaitingForPlatformAcceptance,
+        );
+        self.top_up_context.clone()
+    }
+
+    /// Test seam: age the blocking overlay of the running top-up by `by`.
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    pub fn backdate_top_up_for_test(&self, by: Duration) {
+        if let Some(overlay) = &self.top_up_overlay {
+            overlay.backdate(by);
+        }
+    }
+
     /// Forget what the last top-up was built from, so that a form shown
     /// after it cannot offer the same transfer again.
     fn forget_sent_funding(&mut self) {

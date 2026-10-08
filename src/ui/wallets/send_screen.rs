@@ -3393,6 +3393,13 @@ impl WalletSendScreen {
 
     #[cfg(feature = "testing")]
     #[doc(hidden)]
+    /// Enters the waiting state a dispatched transfer leaves the screen in.
+    pub fn mark_sending_for_test(&mut self) {
+        self.mark_sending();
+    }
+
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
     /// Runs the production simple-send validation and dispatch selection.
     pub fn validate_and_send_for_test(&mut self) -> Result<AppAction, String> {
         self.validate_and_send()

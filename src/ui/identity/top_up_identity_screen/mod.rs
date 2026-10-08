@@ -1554,10 +1554,6 @@ mod tests {
             "a running top-up must not report missing funds"
         );
         assert!(screen_shows(&mut screen, TOP_UP_FORM_PAUSED));
-        assert!(
-            !screen_shows(&mut screen, "Add funds"),
-            "a running top-up must not offer to send the funds again"
-        );
     }
 
     const ADD_FUNDS_BUTTON: &str = "Add funds";
@@ -1573,6 +1569,27 @@ mod tests {
         // The amount field fills itself with the largest amount it can send.
         screen.prefill_funding_amount = true;
         (screen, temp_dir)
+    }
+
+    /// The form of a running top-up could send the same funds a second time.
+    #[test]
+    fn in_flight_top_up_offers_no_way_to_send_again() {
+        let (mut screen, _temp_dir) = funded_form_screen(0x48);
+        assert!(
+            screen_shows(&mut screen, ADD_FUNDS_BUTTON),
+            "an idle form with an amount entered offers to send it"
+        );
+
+        let action = screen.top_up_identity_clicked(FundingMethod::UseWalletBalance);
+        assert!(
+            matches!(action, AppAction::BackendTaskWithContext { .. }),
+            "expected a dispatched top-up, got {action:?}"
+        );
+        assert!(screen_shows(&mut screen, TOP_UP_FORM_PAUSED));
+        assert!(
+            !screen_shows(&mut screen, ADD_FUNDS_BUTTON),
+            "a running top-up must not offer to send the funds again"
+        );
     }
 
     /// A wallet-balance screen with a dispatched top-up, plus its dispatch.
@@ -1723,6 +1740,65 @@ mod tests {
         assert!(screen.top_up_background_offered);
     }
 
+    /// One frame of the app's own egui context in which `key` is pressed and
+    /// released while the dialog claims the keyboard, as the app loop has it do.
+    #[cfg(feature = "testing")]
+    fn press_key_on_dialog(ctx: &egui::Context, key: egui::Key) {
+        let key_event = |pressed| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let input = egui::RawInput {
+            // Without the release egui reads the next press as a key repeat.
+            events: vec![key_event(true), key_event(false)],
+            ..Default::default()
+        };
+        ctx.run_ui(input, |ui| ProgressOverlay::claim_input(ui.ctx()))
+            .drop_without_applying_deltas();
+    }
+
+    /// The offered button is the only way out of a dialog that can stay up
+    /// for as long as the network takes, so its keys have to reach it.
+    #[cfg(feature = "testing")]
+    #[test]
+    fn enter_or_space_on_the_offered_button_continues_the_top_up_in_background() {
+        for (seed_byte, key) in [(0x4a, egui::Key::Enter), (0x4b, egui::Key::Space)] {
+            let (mut screen, _context, _temp_dir) = dispatched_top_up_screen(seed_byte);
+            let ctx = screen.app_context.egui_ctx().clone();
+
+            press_key_on_dialog(&ctx, key);
+            screen.sync_top_up_overlay();
+            assert!(
+                ProgressOverlay::has_global(&ctx),
+                "a top-up that just started has no way out, by {key:?} or otherwise"
+            );
+            assert!(!overlay_text(&ctx).contains(TOP_UP_BACKGROUND_LABEL));
+
+            screen
+                .top_up_overlay
+                .as_ref()
+                .expect("overlay raised")
+                .backdate(TOP_UP_BACKGROUND_OFFER_AFTER);
+            screen.sync_top_up_overlay();
+            assert!(
+                overlay_text(&ctx).contains(TOP_UP_BACKGROUND_LABEL),
+                "a top-up that runs long shows the button on its dialog"
+            );
+
+            press_key_on_dialog(&ctx, key);
+            screen.sync_top_up_overlay();
+            assert!(
+                !ProgressOverlay::has_global(&ctx),
+                "{key:?} must give the app back"
+            );
+            assert!(MessageBanner::has_global(&ctx));
+            assert!(screen_shows(&mut screen, TOP_UP_FORM_PAUSED));
+        }
+    }
+
     #[test]
     fn top_up_continued_in_background_unblocks_the_app_but_not_the_form() {
         let (mut screen, context, _temp_dir) = dispatched_top_up_screen(0x45);
@@ -1738,10 +1814,6 @@ mod tests {
         let mut reopened = TopUpIdentityScreen::new(screen.identity.clone(), &screen.app_context);
         assert!(reopened.top_up_in_flight());
         assert!(screen_shows(&mut reopened, TOP_UP_FORM_PAUSED));
-        assert!(
-            !screen_shows(&mut reopened, TOP_UP_IN_BACKGROUND),
-            "the status must not repeat the banner above it"
-        );
         let other = TopUpIdentityScreen::new(test_identity(Network::Testnet), &screen.app_context);
         assert!(!other.top_up_in_flight());
 

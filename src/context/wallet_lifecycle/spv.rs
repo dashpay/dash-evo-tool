@@ -279,4 +279,17 @@ impl AppContext {
             .store(false, std::sync::atomic::Ordering::SeqCst);
         self.connection_status.refresh_state();
     }
+
+    /// Stop chain sync on a network that is not the active one.
+    ///
+    /// The same in-place stop as [`Self::stop_spv`], minus the indicator
+    /// updates: the connection status is shared between networks and reports the
+    /// active one.
+    pub async fn stop_background_spv(self: &Arc<Self>) {
+        if let Ok(backend) = self.wallet_backend() {
+            backend.stop_in_place().await;
+        }
+        self.identity_autodiscovery_fired
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+    }
 }

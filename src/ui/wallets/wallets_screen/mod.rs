@@ -3624,6 +3624,51 @@ mod tests {
             );
         }
 
+        /// Render the wallet's funding transactions and click the only "Fund".
+        fn click_fund(screen: &mut WalletsBalancesScreen) {
+            use egui_kittest::{Harness, kittest::Queryable};
+            let mut harness = Harness::builder()
+                .with_size(egui::vec2(1400.0, 900.0))
+                .build_ui(|ui| {
+                    screen.render_wallet_asset_locks(ui);
+                });
+            harness.run_steps(2);
+            harness.get_by_label("Fund").click();
+            harness.run_steps(2);
+        }
+
+        /// The network refuses a funding transaction that cannot cover the fee
+        /// for funding a Platform address, so the list must not offer it.
+        #[test]
+        fn funding_below_the_network_fee_cannot_fund_a_platform_address() {
+            use crate::model::asset_lock::confirmed_funding_for_test;
+            let tmp = tempfile::tempdir().unwrap();
+            let ctx = test_app_context(tmp.path());
+            let (seed_hash, wallet) = seed_hd(&ctx, 9);
+            let mut screen = WalletsBalancesScreen::create_with_selection(&ctx, Some(wallet), None);
+            let minimum = ctx
+                .fee_estimator()
+                .address_funding_min_amount_duffs(true, ctx.sdk_platform_version());
+
+            screen
+                .asset_lock_cache
+                .store(seed_hash, vec![confirmed_funding_for_test(1, minimum - 1)]);
+            click_fund(&mut screen);
+            assert!(
+                !screen.fund_platform_dialog.is_open,
+                "a funding transaction below the network fee must not be usable"
+            );
+
+            screen
+                .asset_lock_cache
+                .store(seed_hash, vec![confirmed_funding_for_test(2, minimum)]);
+            click_fund(&mut screen);
+            assert!(
+                screen.fund_platform_dialog.is_open,
+                "a funding transaction that covers the network fee stays usable"
+            );
+        }
+
         /// TC-WALLETLINK-07 (the dual-hash trap, highest-risk case). (a) A
         /// single-key selection survives navigation without auto-picking an HD
         /// wallet; (b) a later HD pick from the pill supersedes the stale

@@ -1939,6 +1939,76 @@ mod funding_method_tests {
         }
     }
 
+    /// Render the list of existing funding transactions, click its only
+    /// "Select", and report which of `texts` the list showed.
+    fn select_only_existing_funding(
+        screen: &mut AddNewIdentityScreen,
+        texts: &[&str],
+    ) -> Vec<bool> {
+        use egui_kittest::{Harness, kittest::Queryable};
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1200.0, 900.0))
+            .build_ui(|ui| {
+                screen.render_ui_by_using_unused_asset_lock(ui, 1);
+            });
+        harness.run_steps(2);
+        harness.get_by_label("Select").click();
+        harness.run_steps(2);
+        texts
+            .iter()
+            .map(|text| harness.query_by_label_contains(text).is_some())
+            .collect()
+    }
+
+    const NO_FUNDING_LARGE_ENOUGH: &str = "Nothing listed here is large enough to cover the \
+        network fee. Use a different funding method, or add more Dash to your wallet first.";
+
+    fn funding_too_small(minimum_duffs: u64) -> String {
+        format!(
+            "This funding is too small to cover the network fee of {}. Choose a \
+             larger one, or use a different funding method.",
+            crate::model::fee_estimation::format_duffs_as_dash(minimum_duffs)
+        )
+    }
+
+    /// The fee the network takes for a new identity grows with its keys, so
+    /// the same funding transaction can be enough for one key and not for two.
+    #[test]
+    fn existing_funding_below_the_network_fee_cannot_be_selected() {
+        use crate::model::asset_lock::confirmed_funding_for_test;
+        let (mut screen, seed_hash, _temp_dir) = wallet_balance_screen(0x52);
+        let one_key_minimum = screen.minimum_creation_duffs().expect("the network fee");
+        let funding = confirmed_funding_for_test(1, one_key_minimum);
+        screen
+            .asset_lock_cache
+            .store(seed_hash, vec![funding.clone()]);
+
+        let another_key = screen.identity_keys.master.clone().expect("master key");
+        screen.identity_keys.others.push(another_key);
+        let two_key_minimum = screen.minimum_creation_duffs().expect("the network fee");
+        assert!(two_key_minimum > one_key_minimum);
+        let reason = funding_too_small(two_key_minimum);
+        let shown = select_only_existing_funding(&mut screen, &[&reason, NO_FUNDING_LARGE_ENOUGH]);
+        assert_eq!(
+            screen.funding_asset_lock, None,
+            "a funding transaction below the network fee must not be selectable"
+        );
+        assert_eq!(
+            shown,
+            [true, true],
+            "the entry says why, and a list with nothing usable says what to do instead"
+        );
+
+        screen.identity_keys.others.clear();
+        let shown = select_only_existing_funding(&mut screen, &[&reason, NO_FUNDING_LARGE_ENOUGH]);
+        assert_eq!(
+            screen.funding_asset_lock,
+            Some(funding.out_point),
+            "a funding transaction that covers the network fee stays selectable"
+        );
+        assert_eq!(shown, [false, false]);
+    }
+
     /// The picker label pairs the wallet alias with its spendable balance,
     /// rendered in DASH, so the user can compare wallets before choosing one.
     /// 0.5 DASH == 50_000_000 duffs.

@@ -200,6 +200,39 @@ pub fn network_fee_refusal(
         })
 }
 
+/// Shown under a list of existing funding transactions when none of them
+/// covers the network fee.
+pub const NO_FUNDING_LARGE_ENOUGH: &str = "Nothing listed here is large enough to cover the network fee. Use a different funding method, or add more Dash to your wallet first.";
+
+/// Why an existing funding transaction of `amount_duffs` cannot pay for an
+/// operation whose network fee is `minimum_duffs` — as text for its entry.
+/// `None` when it covers the fee, or `minimum_duffs` is unknown (the backend
+/// then decides). Only the amount the transaction was created with is known
+/// locally, so `None` does not promise that the network accepts it.
+pub fn existing_funding_refusal(amount_duffs: u64, minimum_duffs: Option<u64>) -> Option<String> {
+    let minimum_duffs = validate_asset_lock_minimum(amount_duffs, minimum_duffs?)
+        .err()?
+        .minimum_amount_duffs;
+    let refusal = TaskError::ExistingFundingBelowNetworkFee {
+        amount_duffs,
+        minimum_duffs,
+    };
+    Some(refusal.to_string())
+}
+
+/// Say what to do instead when no entry of `locks` covers the network fee.
+pub fn show_no_funding_large_enough(
+    ui: &mut Ui,
+    locks: &[TrackedAssetLock],
+    minimum_duffs: Option<u64>,
+) {
+    let refused =
+        |lock: &TrackedAssetLock| existing_funding_refusal(lock.amount, minimum_duffs).is_some();
+    if !locks.is_empty() && locks.iter().all(refused) {
+        ui.label(NO_FUNDING_LARGE_ENOUGH);
+    }
+}
+
 /// Limit `amount_input` to the smallest funding the network accepts, and say
 /// why under the field.
 pub fn show_network_fee_minimum(amount_input: &mut AmountInput, minimum_duffs: Option<u64>) {

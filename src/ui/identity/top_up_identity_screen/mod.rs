@@ -72,9 +72,12 @@ const TOP_UP_BACKGROUND_OFFER_AFTER: Duration = Duration::from_secs(30);
 /// Confirmation banner for a top-up that ended out of the user's sight. Two
 /// identities can share a name, and a banner already on screen is not raised
 /// again for the same text, so the ID keeps their confirmations apart.
-fn top_up_done_message(name: &str, id: &Identifier) -> String {
+fn top_up_done_message(name: Option<&str>, id: &Identifier) -> String {
     let id = id.to_string(Encoding::Base58);
-    format!("The funds were added to the identity {name} (ID: {id}).")
+    match name {
+        Some(name) => format!("The funds were added to the identity {name} (ID: {id})."),
+        None => format!("The funds were added to the identity {id}."),
+    }
 }
 
 /// A top-up sent from Add Funds whose result has not arrived yet.
@@ -304,7 +307,7 @@ impl TopUpIdentityScreen {
             self.app_context.egui_ctx(),
             context.clone(),
             top_up_done_message(
-                &self.app_context.identity_display_label(&self.identity),
+                self.app_context.identity_name(&self.identity).as_deref(),
                 &self.identity.identity.id(),
             ),
         );
@@ -1985,7 +1988,7 @@ mod tests {
         track_top_up(
             ctx,
             dispatch.clone(),
-            top_up_done_message("Savings", &identity_id),
+            top_up_done_message(Some("Savings"), &identity_id),
         );
         dispatch
     }
@@ -2008,7 +2011,10 @@ mod tests {
             MessageBanner::has_global(&ctx),
             "a successful background top-up must show its confirmation"
         );
-        MessageBanner::clear_global_message(&ctx, top_up_done_message("Savings", &identity_id));
+        MessageBanner::clear_global_message(
+            &ctx,
+            top_up_done_message(Some("Savings"), &identity_id),
+        );
         assert!(
             !MessageBanner::has_global(&ctx),
             "success must swap the progress banner for a confirmation naming the identity"
@@ -2190,6 +2196,31 @@ mod tests {
         assert_eq!(tracked_dispatches(&ctx), vec![top_up]);
     }
 
+    #[test]
+    fn confirmation_of_a_named_identity_gives_its_name_and_id() {
+        let id = Identifier::from([7; 32]);
+        let full_id = id.to_string(Encoding::Base58);
+        assert_eq!(
+            top_up_done_message(Some("Savings"), &id),
+            format!("The funds were added to the identity Savings (ID: {full_id}).")
+        );
+    }
+
+    /// An identity without a name is otherwise shown by a shortened ID, which
+    /// must not appear next to the full one.
+    #[test]
+    fn confirmation_of_a_nameless_identity_gives_its_id_once() {
+        let id = Identifier::from([7; 32]);
+        let full_id = id.to_string(Encoding::Base58);
+        let message = top_up_done_message(None, &id);
+        assert_eq!(
+            message,
+            format!("The funds were added to the identity {full_id}.")
+        );
+        assert_eq!(message.matches(&full_id).count(), 1);
+        assert!(!message.contains("(ID:") && !message.contains('…'));
+    }
+
     /// Two identities can carry the same name, and a banner is not raised
     /// again for a text that is already on screen.
     #[test]
@@ -2339,14 +2370,16 @@ mod tests {
             MessageBanner::has_global(&ctx),
             "a top-up that lost its screen is confirmed by a banner"
         );
+        // The fixture identity has no name, so its ID alone tells which one it is.
+        let id = reopened.identity.identity.id().to_string(Encoding::Base58);
         MessageBanner::clear_global_message(
             &ctx,
-            top_up_done_message(
-                &app_context.identity_display_label(&reopened.identity),
-                &reopened.identity.identity.id(),
-            ),
+            format!("The funds were added to the identity {id}."),
         );
-        assert!(!MessageBanner::has_global(&ctx));
+        assert!(
+            !MessageBanner::has_global(&ctx),
+            "an identity without a name is confirmed by its ID, written once"
+        );
     }
 
     #[test]

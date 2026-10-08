@@ -1003,29 +1003,37 @@ fn a_disconnect_during_a_first_visit_switch_is_honored() {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
 
-        let (mut harness, _first, second) = mount_on_chooser_with_auto_start();
+        let (mut harness, first, second) = mount_on_chooser_with_auto_start();
         offer_disconnect(&mut harness);
 
-        // Click while the switch is still building the new network's context.
+        // Pin the switch before it builds the new network's context, so the
+        // click is handled while the outgoing network is still the active one.
+        let outgoing_context = harness.state().current_app_context().clone();
+        let pending_switch = rt.block_on(outgoing_context.test_hold_network_switch());
+        harness.state_mut().change_network(second);
         // One frame first: the switch's progress banner shifts the layout, and
         // a click simulated on that very frame misses the button.
-        harness.state_mut().change_network(second);
         harness.step();
         harness.get_by_label("Disconnect").click();
         poll_until(
             &mut harness,
-            "the switch and the disconnect to both finish",
+            "the disconnect to finish while the switch is pending",
             |state| {
-                let app_context = state.current_app_context();
-                app_context.network() == second
-                    && state.boot_phase() == BootPhase::Ready
-                    && matches!(
-                        app_context.connection_status().spv_status(),
-                        SpvStatus::Idle | SpvStatus::Stopped
-                    )
+                state.current_app_context().connection_status().spv_status() == SpvStatus::Stopped
             },
         );
         assert_chain_sync_stays_off(&mut harness, "after a disconnect during a pending switch");
+        assert_eq!(
+            harness.state().current_app_context().network(),
+            first,
+            "the disconnect must be handled while the outgoing network is still active",
+        );
+
+        drop(pending_switch);
+        poll_until(&mut harness, "the pending switch to finish", |state| {
+            state.current_app_context().network() == second
+                && state.boot_phase() == BootPhase::Ready
+        });
     });
 }
 

@@ -220,6 +220,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   enough to leave a usable amount. Wallet Send and the command-line tool refuse
   a too-small amount before anything is sent as well.
 
+- Creating an identity, and sending from your wallet to an identity or to a
+  Platform address, no longer send an amount too small to cover the network
+  fee. These transfers used to leave the wallet and were then refused. Each
+  amount field now states the smallest amount it accepts, and the Max button
+  never goes below it. When your wallet cannot send an amount that covers the
+  fee, the form says so instead of offering an amount. For a new identity the
+  smallest amount grows with the number of keys, and a deposit request asks for
+  enough to leave a usable amount. In advanced mode, a transfer to a Platform
+  address with the fee paid on top is refused when the amount is too small for
+  the network to accept.
+
 - After you press Disconnect, the app stays disconnected when you switch
   networks. It used to reconnect on the new network whenever "Auto-start SPV on
   startup" was enabled. Disconnect also stops syncing on a network you left

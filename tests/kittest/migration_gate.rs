@@ -971,9 +971,9 @@ fn a_manual_disconnect_holds_across_network_switches_until_connect() {
         harness.state_mut().change_network(first);
         assert_chain_sync_stays_off(&mut harness, "on a return after a manual disconnect");
 
-        // Connect lifts the hold, so the next switch auto-starts again. Offline
-        // the start fails and flips the indicator to Error, which still proves
-        // it was attempted.
+        // Connect lifts the hold, so the next switch auto-starts again. Only the
+        // switched-to network's own start latch proves that: the indicator is
+        // shared, and the Connect is still starting the network left behind.
         step_until_painted(&mut harness, "the Connect button to appear", |h| {
             h.query_by_label("Connect").is_some()
         });
@@ -986,10 +986,9 @@ fn a_manual_disconnect_holds_across_network_switches_until_connect() {
             |state| {
                 let app_context = state.current_app_context();
                 app_context.network() == second
-                    && (app_context
+                    && app_context
                         .wallet_backend()
                         .is_ok_and(|backend| backend.is_started())
-                        || app_context.connection_status().spv_status() == SpvStatus::Error)
             },
         );
     });

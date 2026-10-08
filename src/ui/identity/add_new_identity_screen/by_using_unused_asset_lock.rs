@@ -32,6 +32,12 @@ impl AddNewIdentityScreen {
             .min_scrolled_height(180.0)
             .show(ui, |ui| {
                 for lock in &tracked {
+                    let refusal = existing_funding_refusal(lock.amount, minimum_duffs);
+                    // More keys raise the fee, so a funding chosen earlier can
+                    // stop being enough; it must not stay chosen.
+                    if refusal.is_some() && self.funding_asset_lock == Some(lock.out_point) {
+                        self.funding_asset_lock = None;
+                    }
                     let is_selected = self.funding_asset_lock == Some(lock.out_point);
                     ui.group(|ui| {
                         ui.vertical(|ui| {
@@ -56,9 +62,7 @@ impl AddNewIdentityScreen {
 
                             ui.add_space(6.0);
 
-                            if let Some(reason) =
-                                existing_funding_refusal(lock.amount, minimum_duffs)
-                            {
+                            if let Some(reason) = refusal {
                                 ui.add_enabled(false, egui::Button::new("Select"));
                                 ui.colored_label(
                                     DashColors::warning_color(ui.visuals().dark_mode),

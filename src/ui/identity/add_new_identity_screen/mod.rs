@@ -2009,6 +2009,30 @@ mod funding_method_tests {
         assert_eq!(shown, [false, false]);
     }
 
+    /// Adding a key raises the fee, so a funding chosen before can stop being
+    /// enough. It must not stay chosen, or "Create Identity" would send it.
+    #[test]
+    fn chosen_funding_is_dropped_when_more_keys_make_it_too_small() {
+        use crate::model::asset_lock::confirmed_funding_for_test;
+        let (mut screen, seed_hash, _temp_dir) = wallet_balance_screen(0x53);
+        let one_key_minimum = screen.minimum_creation_duffs().expect("the network fee");
+        let funding = confirmed_funding_for_test(1, one_key_minimum);
+        screen
+            .asset_lock_cache
+            .store(seed_hash, vec![funding.clone()]);
+        select_only_existing_funding(&mut screen, &[]);
+        assert_eq!(screen.funding_asset_lock, Some(funding.out_point));
+
+        let another_key = screen.identity_keys.master.clone().expect("master key");
+        screen.identity_keys.others.push(another_key);
+        let shown = select_only_existing_funding(&mut screen, &["Selected"]);
+        assert_eq!(
+            screen.funding_asset_lock, None,
+            "a chosen funding that no longer covers the network fee must be dropped"
+        );
+        assert_eq!(shown, [false], "it must not be shown as selected either");
+    }
+
     /// The picker label pairs the wallet alias with its spendable balance,
     /// rendered in DASH, so the user can compare wallets before choosing one.
     /// 0.5 DASH == 50_000_000 duffs.

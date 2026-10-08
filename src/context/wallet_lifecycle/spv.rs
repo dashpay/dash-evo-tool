@@ -147,9 +147,11 @@ impl AppContext {
 
     /// Prepare this network's storage (idempotent) and then start chain sync.
     ///
-    /// This is the single chokepoint for "start SPV" across every entry path:
-    /// GUI boot auto-start, the manual Connect button, MCP/CLI standalone boot,
-    /// and the post-network-switch restart. Chain sync is a *continuation* of a
+    /// With [`Self::start_spv_while`] — the same sequence, which the GUI calls
+    /// so a Disconnect can overrule it — this is the single chokepoint for
+    /// "start SPV" across every entry path: GUI boot auto-start, the manual
+    /// Connect button, MCP/CLI standalone boot, and the post-network-switch
+    /// restart. Chain sync is a *continuation* of a
     /// completed [`Self::prepare_storage`] — a data dependency inside one
     /// function, not a timing coincidence — so neither the historical
     /// `WalletBackendNotYetWired` fast-fail race nor a start that outruns the

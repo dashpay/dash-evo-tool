@@ -2138,8 +2138,8 @@ impl AppState {
     /// wording.
     ///
     /// Storage preparation is idempotent and happens inside
-    /// [`AppContext::ensure_wallet_backend_and_start_spv`], so a start can never
-    /// outrun wiring or the legacy drain regardless of which site fires it.
+    /// [`AppContext::start_spv_while`], so a start can never outrun wiring or
+    /// the legacy drain regardless of which site fires it.
     ///
     /// Associated (not `&mut self`) so the constructor can call it before
     /// `AppState` exists; the block-arming that user-initiated starts need stays

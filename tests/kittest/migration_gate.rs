@@ -1035,7 +1035,10 @@ fn a_disconnect_during_a_first_visit_switch_is_honored() {
             state.current_app_context().network() == second
                 && state.boot_phase() == BootPhase::Ready
         });
-        assert_chain_sync_stays_off(&mut harness, "after a disconnect during a pending switch");
+        assert_chain_sync_stays_off(
+            &mut harness,
+            "on the destination after a disconnect during a pending switch",
+        );
     });
 }
 

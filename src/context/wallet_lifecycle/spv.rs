@@ -172,18 +172,31 @@ impl AppContext {
         self: &Arc<Self>,
         sender: crate::utils::egui_mpsc::SenderAsync<crate::app::TaskResult>,
     ) -> Result<(), TaskError> {
+        self.start_spv_while(sender, || true).await.map(|_| ())
+    }
+
+    /// [`Self::ensure_wallet_backend_and_start_spv`] for a start the user can
+    /// overrule while it is on its way — see [`WalletBackend::start_while`]
+    /// for when `still_wanted` is read.
+    ///
+    /// Returns whether chain sync is started; `Ok(false)` means the start was
+    /// overruled and stood down.
+    pub async fn start_spv_while(
+        self: &Arc<Self>,
+        sender: crate::utils::egui_mpsc::SenderAsync<crate::app::TaskResult>,
+        still_wanted: impl Fn() -> bool + Send + Sync,
+    ) -> Result<bool, TaskError> {
         if let Err(e) = self.prepare_storage(sender).await {
             self.mark_spv_error(&e);
             return Err(e);
         }
         let backend = self.wallet_backend()?;
-        // `start()` can fail while initializing SPV networking, disk storage,
+        // The start can fail while initializing SPV networking, disk storage,
         // or the client; surface that through both the indicator and result.
-        if let Err(e) = backend.start().await {
-            self.mark_spv_error(&e);
-            return Err(e);
-        }
-        Ok(())
+        backend
+            .start_while(still_wanted)
+            .await
+            .inspect_err(|e| self.mark_spv_error(e))
     }
 
     /// Flip the SPV connection indicator to [`SpvStatus::Error`] and record the

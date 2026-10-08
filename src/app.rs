@@ -21,6 +21,7 @@ use crate::context::feature_gate::FeatureGate;
 use crate::context::migration_status::{MigrationState, MigrationStep};
 use crate::database::Database;
 use crate::model::settings::AppSettings;
+use crate::model::spv_status::SpvStatus;
 use crate::model::wallet::{TransactionConfirmation, TransactionStatus};
 use crate::ui::components::passphrase_modal;
 use crate::ui::components::secret_prompt_host::{ActivePrompt, EguiSecretPromptHost, QueuedPrompt};
@@ -54,6 +55,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::BitOrAssign;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::vec;
 use tokio::sync::mpsc as tokiompsc;
@@ -1303,6 +1305,11 @@ pub struct AppState {
     /// back every automatic chain-sync start for the rest of the session — the
     /// auto-start setting is about launch, so it never overrides a Disconnect.
     spv_manually_disconnected: bool,
+    /// How many times the user has disconnected by hand this session. A
+    /// chain-sync start remembers the count it was dispatched under and stands
+    /// down once it has moved on, so a Disconnect also overrules a start that
+    /// is still on its way — on any network.
+    spv_manual_disconnects: Arc<AtomicU64>,
     /// Data-migration banner reconciler (also hosts the storage update's
     /// wallet-password prompt).
     migration: MigrationReconciler,
@@ -1883,6 +1890,7 @@ impl AppState {
             // not ambient reconnect).
             spv_block: SpvBlockReconciler::new(false),
             spv_manually_disconnected: false,
+            spv_manual_disconnects: Arc::default(),
             migration: MigrationReconciler::new(),
             pending_confirmation: PendingConfirmation::new(),
             boot: if network_selection_required {
@@ -2136,19 +2144,29 @@ impl AppState {
     /// Associated (not `&mut self`) so the constructor can call it before
     /// `AppState` exists; the block-arming that user-initiated starts need stays
     /// at those callsites.
+    ///
+    /// `manual_disconnects` is read here, on the frame loop that also counts
+    /// them: a Disconnect handled after this call overrules the spawned start.
     fn spawn_spv_start(
         subtasks: &Arc<TaskManager>,
         sender: egui_mpsc::SenderAsync<TaskResult>,
         app_ctx: Arc<AppContext>,
         reason: BackendInitReason,
+        manual_disconnects: Arc<AtomicU64>,
     ) {
+        let dispatched_under = manual_disconnects.load(Ordering::SeqCst);
         let _ = subtasks.spawn_sync(reason.task_name(), async move {
             let already_running = app_ctx
                 .wallet_backend()
                 .map(|b| b.is_started())
                 .unwrap_or(false);
-            match app_ctx.ensure_wallet_backend_and_start_spv(sender).await {
-                Ok(()) => reason.log_spv_started(&app_ctx, already_running),
+            let still_wanted = || manual_disconnects.load(Ordering::SeqCst) == dispatched_under;
+            match app_ctx.start_spv_while(sender, still_wanted).await {
+                Ok(true) => reason.log_spv_started(&app_ctx, already_running),
+                Ok(false) => tracing::debug!(
+                    network = ?app_ctx.network(),
+                    "Chain sync start dropped: the user disconnected before it began"
+                ),
                 Err(e) => reason.on_spv_start_error(app_ctx.egui_ctx(), &e),
             }
         });
@@ -2168,6 +2186,7 @@ impl AppState {
             self.task_result_sender.clone(),
             self.current_app_context().clone(),
             reason,
+            Arc::clone(&self.spv_manual_disconnects),
         );
     }
 
@@ -3981,6 +4000,8 @@ impl App for AppState {
                 }
                 AppAction::StopSpv => {
                     self.spv_manually_disconnected = true;
+                    // Overrule every start still on its way, on any network.
+                    self.spv_manual_disconnects.fetch_add(1, Ordering::SeqCst);
                     let app_ctx = self.current_app_context().clone();
                     // A network left behind by a switch keeps its chain sync
                     // running; Disconnect takes those offline too.
@@ -3995,7 +4016,15 @@ impl App for AppState {
                     // disables immediately) and dedupes a fast second click —
                     // only the winner spawns the async teardown. No banner is
                     // needed for a user-initiated stop.
-                    if app_ctx.connection_status().begin_spv_stop() {
+                    //
+                    // An idle indicator still gets the teardown: a start on
+                    // its way has not reported in yet, and one that already
+                    // passed its last check can only be stopped. Only a
+                    // teardown already running is not repeated.
+                    let connection_status = app_ctx.connection_status();
+                    if connection_status.begin_spv_stop()
+                        || connection_status.spv_status() != SpvStatus::Stopping
+                    {
                         let _ = self.subtasks.spawn_sync("spv_manual_stop", async move {
                             // Background networks first: they write to the same
                             // indicator, which the active network settles last.

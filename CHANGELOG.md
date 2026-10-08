@@ -215,7 +215,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - After you press Disconnect, the app stays disconnected when you switch
   networks. It used to reconnect on the new network whenever "Auto-start SPV on
   startup" was enabled. Disconnect also stops syncing on a network you left
-  without disconnecting. Press Connect or restart the app to connect again.
+  without disconnecting, and it holds when the connection was still starting,
+  including when you stop the startup sync before it connects. Press Connect or
+  restart the app to connect again.
 
 - Scheduling votes "At a specific time" starts from a time you can use: an hour
   after you open the confirmation, or halfway to the earliest deadline when a

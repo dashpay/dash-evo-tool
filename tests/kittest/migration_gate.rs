@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 
 use dash_evo_tool::app::{AppState, BootPhase, STORAGE_PREP_PASSWORD_DESCRIPTION};
 use dash_evo_tool::backend_task::error::TaskError;
+use dash_evo_tool::context::AppContext;
 use dash_evo_tool::context::migration_status::{MigrationState, MigrationStep};
 use dash_evo_tool::model::secret::Secret;
 use dash_evo_tool::model::spv_status::SpvStatus;
@@ -1022,7 +1023,6 @@ fn a_disconnect_during_a_first_visit_switch_is_honored() {
                 state.current_app_context().connection_status().spv_status() == SpvStatus::Stopped
             },
         );
-        assert_chain_sync_stays_off(&mut harness, "after a disconnect during a pending switch");
         assert_eq!(
             harness.state().current_app_context().network(),
             first,
@@ -1034,6 +1034,124 @@ fn a_disconnect_during_a_first_visit_switch_is_honored() {
             state.current_app_context().network() == second
                 && state.boot_phase() == BootPhase::Ready
         });
+        assert_chain_sync_stays_off(&mut harness, "after a disconnect during a pending switch");
+    });
+}
+
+/// Pump frames for about a second, failing if chain sync comes up on `context`.
+/// For a start that was already dispatched when the user disconnected: it is
+/// spawned work, so its absence needs a settle window.
+fn assert_overruled_start_stays_down(
+    harness: &mut Harness<'static, AppState>,
+    context: &AppContext,
+    when: &str,
+) {
+    for _ in 0..50 {
+        harness.step();
+        let started = context
+            .wallet_backend()
+            .is_ok_and(|backend| backend.is_started());
+        let status = context.connection_status().spv_status();
+        assert!(
+            !started
+                && matches!(
+                    status,
+                    SpvStatus::Idle | SpvStatus::Stopping | SpvStatus::Stopped
+                ),
+            "a start overruled by a disconnect must not bring chain sync up {when} \
+             (started: {started}, status: {status:?})",
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Cancelling the startup sync screen is a disconnect, and it holds even when
+/// the start it cancels has not brought chain sync up yet. That start is still
+/// on its way, and must not finish the job after the user said stop.
+#[test]
+fn cancelling_the_startup_block_overrules_a_start_still_on_its_way() {
+    crate::support::with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let (mut harness, _first, _second) = mount_on_chooser_with_auto_start();
+        let app_context = harness.state().current_app_context().clone();
+
+        // Pin the start at storage preparation, its first step, so the cancel
+        // lands while the start is provably unfinished.
+        let parked_start = rt.block_on(app_context.test_hold_prepare_gate());
+        harness.state_mut().test_run_auto_start_spv();
+        step_until_painted(&mut harness, "the startup block to offer Cancel", |h| {
+            h.query_by_label("Cancel").is_some()
+        });
+        harness.get_by_label("Cancel").click();
+        step_until_painted(&mut harness, "the cancel confirmation to appear", |h| {
+            h.query_by_label("Stop syncing").is_some()
+        });
+        harness.get_by_label("Stop syncing").click();
+        step_until(
+            &mut harness,
+            "the confirmed cancel to reach the frame loop",
+            |state| !state.test_spv_block_armed(),
+        );
+
+        drop(parked_start);
+        assert_overruled_start_stays_down(
+            &mut harness,
+            &app_context,
+            "after cancelling the startup block",
+        );
+        poll_until(
+            &mut harness,
+            "the cancel to settle the indicator on disconnected",
+            |state| {
+                state.current_app_context().connection_status().spv_status() == SpvStatus::Stopped
+            },
+        );
+    });
+}
+
+/// Disconnect overrules a start left on its way on a network the user has since
+/// switched away from: nothing brings chain sync up there afterwards.
+#[test]
+fn a_manual_disconnect_overrules_a_start_still_on_its_way_on_another_network() {
+    crate::support::with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let (mut harness, _first, second) = mount_on_chooser_with_auto_start();
+        let background_context = harness.state().current_app_context().clone();
+
+        // Pin the first network's start at storage preparation, then leave it
+        // behind. Auto-start goes off so the destination stays offline and the
+        // pinned start is the only one in play.
+        let parked_start = rt.block_on(background_context.test_hold_prepare_gate());
+        harness.state_mut().test_run_auto_start_spv();
+        background_context
+            .update_auto_start_spv(false)
+            .expect("keep the destination offline");
+        harness.state_mut().change_network(second);
+        poll_until(
+            &mut harness,
+            "the switch away from the starting network",
+            |state| {
+                state.current_app_context().network() == second
+                    && state.boot_phase() == BootPhase::Ready
+            },
+        );
+
+        offer_disconnect(&mut harness);
+        harness.get_by_label("Disconnect").click();
+        poll_until(&mut harness, "the manual disconnect to finish", |state| {
+            state.current_app_context().connection_status().spv_status() == SpvStatus::Stopped
+        });
+
+        drop(parked_start);
+        assert_overruled_start_stays_down(
+            &mut harness,
+            &background_context,
+            "on a network left in the background",
+        );
     });
 }
 

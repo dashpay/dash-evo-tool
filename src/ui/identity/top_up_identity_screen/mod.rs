@@ -43,6 +43,7 @@ use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::{CREDITS_PER_DUFF, Credits, Duffs};
 use dash_sdk::dpp::dashcore::OutPoint;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
 use egui::{ComboBox, ScrollArea, Ui};
 use std::sync::atomic::Ordering;
@@ -68,17 +69,20 @@ const BACKGROUND_TOP_UP_BANNER_ID: &str = "__identity_background_top_up_banner";
 /// background. A top-up normally finishes well inside this window.
 const TOP_UP_BACKGROUND_OFFER_AFTER: Duration = Duration::from_secs(30);
 
-/// Confirmation banner for a top-up that ended out of the user's sight.
-fn top_up_done_message(identity: &str) -> String {
-    format!("The funds were added to the identity {identity}.")
+/// Confirmation banner for a top-up that ended out of the user's sight. Two
+/// identities can share a name, and a banner already on screen is not raised
+/// again for the same text, so the ID keeps their confirmations apart.
+fn top_up_done_message(name: &str, id: &Identifier) -> String {
+    let id = id.to_string(Encoding::Base58);
+    format!("The funds were added to the identity {name} (ID: {id}).")
 }
 
 /// A top-up sent from Add Funds whose result has not arrived yet.
 #[derive(Clone)]
 struct TopUpInFlight {
     dispatch: BackendTaskContext,
-    /// How Add Funds names the identity, for the confirmation banner.
-    identity_label: String,
+    /// Shown when the top-up succeeds out of the user's sight.
+    confirmation: String,
     /// Followed by the progress banner rather than by the blocking overlay.
     in_background: bool,
 }
@@ -104,11 +108,11 @@ fn top_up_in_flight_for(ctx: &egui::Context, identity_id: &Identifier) -> bool {
 
 /// Record the top-up sent as `dispatch`. It stays in flight until
 /// [`finish_top_up`] sees that dispatch's own result.
-fn track_top_up(ctx: &egui::Context, dispatch: BackendTaskContext, identity_label: String) {
+fn track_top_up(ctx: &egui::Context, dispatch: BackendTaskContext, confirmation: String) {
     let mut top_ups = top_ups_in_flight(ctx);
     top_ups.push(TopUpInFlight {
         dispatch,
-        identity_label,
+        confirmation,
         in_background: false,
     });
     store_top_ups_in_flight(ctx, top_ups);
@@ -192,11 +196,7 @@ pub(crate) fn finish_top_up(
     }
     store_top_ups_in_flight(ctx, top_ups);
     if succeeded && ended.in_background {
-        MessageBanner::set_global(
-            ctx,
-            top_up_done_message(&ended.identity_label),
-            MessageType::Success,
-        );
+        MessageBanner::set_global(ctx, ended.confirmation, MessageType::Success);
     }
     true
 }
@@ -303,7 +303,10 @@ impl TopUpIdentityScreen {
         track_top_up(
             self.app_context.egui_ctx(),
             context.clone(),
-            self.app_context.identity_display_label(&self.identity),
+            top_up_done_message(
+                &self.app_context.identity_display_label(&self.identity),
+                &self.identity.identity.id(),
+            ),
         );
         self.top_up_context = Some(context.clone());
         AppAction::BackendTaskWithContext { task, context }
@@ -1979,7 +1982,11 @@ mod tests {
         dispatch_id: u64,
     ) -> BackendTaskContext {
         let dispatch = top_up_dispatch(identity_id, dispatch_id);
-        track_top_up(ctx, dispatch.clone(), "Savings".to_owned());
+        track_top_up(
+            ctx,
+            dispatch.clone(),
+            top_up_done_message("Savings", &identity_id),
+        );
         dispatch
     }
 
@@ -2001,7 +2008,7 @@ mod tests {
             MessageBanner::has_global(&ctx),
             "a successful background top-up must show its confirmation"
         );
-        MessageBanner::clear_global_message(&ctx, top_up_done_message("Savings"));
+        MessageBanner::clear_global_message(&ctx, top_up_done_message("Savings", &identity_id));
         assert!(
             !MessageBanner::has_global(&ctx),
             "success must swap the progress banner for a confirmation naming the identity"
@@ -2183,6 +2190,35 @@ mod tests {
         assert_eq!(tracked_dispatches(&ctx), vec![top_up]);
     }
 
+    /// Two identities can carry the same name, and a banner is not raised
+    /// again for a text that is already on screen.
+    #[test]
+    fn identities_sharing_a_name_get_a_confirmation_each() {
+        let ctx = egui::Context::default();
+        let first_id = Identifier::from([1; 32]);
+        let second_id = Identifier::from([2; 32]);
+        let first = tracked_top_up(&ctx, first_id, 1);
+        let second = tracked_top_up(&ctx, second_id, 2);
+        send_top_up_to_background(&ctx, &first);
+        send_top_up_to_background(&ctx, &second);
+
+        // The second ends while the confirmation of the first is still shown.
+        assert!(finish_top_up(&ctx, &first, true));
+        assert!(finish_top_up(&ctx, &second, true));
+
+        let confirmations = global_banner_texts(&ctx);
+        assert_eq!(
+            confirmations.len(),
+            2,
+            "each top-up is confirmed by a banner of its own, got {confirmations:?}"
+        );
+        assert!(
+            confirmations[0].contains(&first_id.to_string(Encoding::Base58))
+                && confirmations[1].contains(&second_id.to_string(Encoding::Base58)),
+            "each confirmation tells which identity it is about, got {confirmations:?}"
+        );
+    }
+
     /// Two top-ups in the background share the one progress banner, so the
     /// end of the first must leave the second everything it still needs.
     #[test]
@@ -2305,7 +2341,10 @@ mod tests {
         );
         MessageBanner::clear_global_message(
             &ctx,
-            top_up_done_message(&app_context.identity_display_label(&reopened.identity)),
+            top_up_done_message(
+                &app_context.identity_display_label(&reopened.identity),
+                &reopened.identity.identity.id(),
+            ),
         );
         assert!(!MessageBanner::has_global(&ctx));
     }

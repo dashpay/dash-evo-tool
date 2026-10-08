@@ -227,7 +227,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the funding form for that identity stays paused and a banner follows the
   transfer. Its result is shown only on the screen that started it, so a
   payment waiting on the Send screen is no longer reported as finished or
-  failed by it. The confirmation names the identity that received the funds.
+  failed by it. The confirmation names the identity that received the funds
+  and shows its ID.
 
 - Importing a wallet while the app is still connecting finds the wallet's
   identities. The search used to start at once, before the network was ready,

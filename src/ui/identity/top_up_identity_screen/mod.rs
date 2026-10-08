@@ -56,20 +56,20 @@ const TOP_UP_IN_PROGRESS: &str = "Adding funds to your identity.";
 /// Shown in place of the funding form while a top-up runs.
 const TOP_UP_FORM_PAUSED: &str = "You can add more funds when this transfer finishes.";
 /// Progress banner kept up while a top-up runs in the background.
-pub(crate) const TOP_UP_IN_BACKGROUND: &str =
+const TOP_UP_IN_BACKGROUND: &str =
     "Adding funds to your identity in the background. You can keep using Dash Evo Tool.";
 /// Confirmation banner for a top-up that finished in the background.
 pub(crate) const TOP_UP_DONE_IN_BACKGROUND: &str = "The funds were added to your identity.";
 const TOP_UP_BACKGROUND_LABEL: &str = "Continue in background";
 const TOP_UP_BACKGROUND_ACTION_ID: &str = "identity:top_up:background";
-const TOP_UP_BACKGROUND_OWNERS_ID: &str = "__identity_top_up_background_owners";
+const BACKGROUND_TOP_UPS_ID: &str = "__identity_background_top_ups";
 /// How long the blocking overlay waits before it offers to continue in the
 /// background. A top-up normally finishes well inside this window.
 const TOP_UP_BACKGROUND_OFFER_AFTER: Duration = Duration::from_secs(30);
 
 /// Dispatches of the top-ups that were sent to the background and still run.
 fn background_top_ups(ctx: &egui::Context) -> Vec<BackendTaskContext> {
-    ctx.data(|data| data.get_temp(egui::Id::new(TOP_UP_BACKGROUND_OWNERS_ID)))
+    ctx.data(|data| data.get_temp(egui::Id::new(BACKGROUND_TOP_UPS_ID)))
         .unwrap_or_default()
 }
 
@@ -88,7 +88,7 @@ pub(crate) fn show_top_up_background_banner(ctx: &egui::Context, dispatch: Backe
     if !dispatches.contains(&dispatch) {
         dispatches.push(dispatch);
     }
-    ctx.data_mut(|data| data.insert_temp(egui::Id::new(TOP_UP_BACKGROUND_OWNERS_ID), dispatches));
+    ctx.data_mut(|data| data.insert_temp(egui::Id::new(BACKGROUND_TOP_UPS_ID), dispatches));
     MessageBanner::set_global(ctx, TOP_UP_IN_BACKGROUND, MessageType::Info).disable_auto_dismiss();
 }
 
@@ -107,7 +107,7 @@ pub(crate) fn clear_top_up_background_banner(
     if dispatches.is_empty() {
         MessageBanner::clear_global_message(ctx, TOP_UP_IN_BACKGROUND);
     }
-    ctx.data_mut(|data| data.insert_temp(egui::Id::new(TOP_UP_BACKGROUND_OWNERS_ID), dispatches));
+    ctx.data_mut(|data| data.insert_temp(egui::Id::new(BACKGROUND_TOP_UPS_ID), dispatches));
     true
 }
 

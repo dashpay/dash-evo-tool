@@ -212,6 +212,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- After you press Disconnect, the app stays disconnected when you switch
+  networks. It used to reconnect on the new network whenever "Auto-start SPV on
+  startup" was enabled. Disconnect also stops syncing on a network you left
+  without disconnecting. Press Connect or restart the app to connect again.
+
 - Adding funds to an identity shows a progress dialog and pauses the funding
   form until the transfer ends, so it can no longer be changed or sent twice.
   The form used to stay active and briefly warned that the wallet did not have

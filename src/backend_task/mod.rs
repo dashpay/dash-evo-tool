@@ -1412,6 +1412,14 @@ impl AppContext {
         }
     }
 
+    /// Test seam: keep every network switch dispatched from this context
+    /// pending at its first line until the returned guard is dropped. Lets a
+    /// test act while the outgoing network is provably still the active one.
+    #[cfg(feature = "testing")]
+    pub async fn test_hold_network_switch(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.test_network_switch_gate.lock().await
+    }
+
     async fn run_switch_network<F>(
         self: &Arc<Self>,
         network: Network,
@@ -1422,6 +1430,9 @@ impl AppContext {
     where
         F: Future<Output = Result<(), TaskError>>,
     {
+        #[cfg(feature = "testing")]
+        drop(self.test_network_switch_gate.lock().await);
+
         // Create a new AppContext for the target network, reusing shared
         // resources (db, subtasks, connection_status) from the current context.
         // Wrapped in block_in_place because AppContext::new() does DB init

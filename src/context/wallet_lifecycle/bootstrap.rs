@@ -4,6 +4,10 @@
 use super::*;
 use crate::model::identity_discovery::DiscoveryIntent;
 
+/// How often a queued wallet identity discovery re-checks whether the
+/// masternode list has synced.
+const MASTERNODES_READY_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
 impl AppContext {
     /// Whether `wallet` still needs its bootstrap address set derived.
     ///
@@ -695,8 +699,29 @@ impl AppContext {
         }
     }
 
+    /// Wait until the masternode list is synced, so identity lookups can be
+    /// proof-verified. Returns `false` if the app shuts down first.
+    pub(super) async fn wait_for_masternodes_ready(&self) -> bool {
+        if !self.connection_status.masternodes_ready() {
+            tracing::debug!(
+                "Masternode list not synced yet; holding wallet identity discovery until it is"
+            );
+        }
+        while !self.connection_status.masternodes_ready() {
+            tokio::select! {
+                _ = self.subtasks.cancellation_token.cancelled() => return false,
+                _ = tokio::time::sleep(MASTERNODES_READY_POLL_INTERVAL) => {}
+            }
+        }
+        true
+    }
+
     /// Queue automatic discovery of identities derived from a wallet.
     /// Checks identity indices 0 through max_identity_index for existing identities on the network.
+    ///
+    /// The pass waits for the masternode list: an earlier lookup fails proof
+    /// verification and gets the queried node banned. The all-wallets sweep is
+    /// no substitute — it may already have run and ignores `max_identity_index`.
     pub fn queue_wallet_identity_discovery(
         self: &Arc<Self>,
         wallet: &Arc<RwLock<Wallet>>,
@@ -707,6 +732,9 @@ impl AppContext {
         let _ = self
             .subtasks
             .spawn_sync("wallet_identity_discovery", async move {
+                if !ctx.wait_for_masternodes_ready().await {
+                    return;
+                }
                 if let Err(error) = ctx
                     .discover_identities_from_wallet(&wallet_clone, max_identity_index)
                     .await

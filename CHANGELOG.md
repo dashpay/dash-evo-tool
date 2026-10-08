@@ -222,6 +222,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The progress dialog shown while a username is being registered names the
   username.
 
+- Importing a wallet while the app is still connecting finds the wallet's
+  identities. The search used to start at once, before the network was ready,
+  so every lookup failed and the identity list stayed empty until the
+  identities were loaded by hand. It now waits until the network is ready and
+  then runs on its own.
+
 - Scheduling votes "At a specific time" starts from a time you can use: an hour
   after you open the confirmation, or halfway to the earliest deadline when a
   contest ends sooner. It used to suggest a time about a day ahead, often past

@@ -328,8 +328,9 @@ fn background_top_up_failure_leaves_wallet_send_waiting() {
 }
 
 /// A first visit to a network finishes switching while the app stays usable,
-/// and the switch drops every stacked screen, dialog and banner. The top-up
-/// sent in the meantime keeps running, so it must stay in flight and in view.
+/// and the switch drops every stacked screen, dialog and banner. A top-up
+/// still running at that point keeps running, so it must stay in flight and
+/// in view.
 #[test]
 fn top_up_survives_a_network_switch_that_drops_its_screen() {
     in_app(|| {
@@ -357,9 +358,12 @@ fn top_up_survives_a_network_switch_that_drops_its_screen() {
         };
         let identity = test_identity(first);
 
-        harness.state_mut().change_network(second);
+        // The switch runs as a backend task on its own clock and ends in
+        // whichever frame its result arrives, so the top-up is sent before the
+        // switch is asked for. The switch finds the same state either way.
         open_add_funds(&mut harness, &identity);
         let dispatch = begin_top_up(&mut harness);
+        harness.state_mut().change_network(second);
 
         let deadline = Instant::now() + Duration::from_secs(60);
         loop {

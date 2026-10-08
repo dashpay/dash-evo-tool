@@ -112,15 +112,26 @@ pub fn spendable_covers_minimum(spendable_duffs: u64, minimum_credits: u64) -> b
 /// Resolve a polling snapshot for the address shown by the deposit flow.
 /// Advancement and prefill are both bounded by funds at that address, never by
 /// unrelated spendable funds elsewhere in the wallet.
+///
+/// `form_offers_amount` is the form's own answer to whether it has an amount
+/// to offer from the deposit. Once known it decides: the form opens when it
+/// has one, and a form with nothing to offer returns to the deposit request.
+/// While it is `None` the balance at the address stands in for it.
 pub fn snapshot_deposit_outcome(
     current_step: WalletFundedScreenStep,
     address_balance_duffs: u64,
     minimum_credits: u64,
+    form_offers_amount: Option<bool>,
 ) -> (WalletFundedScreenStep, Option<u64>) {
     let advance = current_step == WalletFundedScreenStep::WaitingOnFunds
-        && spendable_covers_minimum(address_balance_duffs, minimum_credits);
+        && form_offers_amount
+            .unwrap_or_else(|| spendable_covers_minimum(address_balance_duffs, minimum_credits));
     let next_step = if advance {
         WalletFundedScreenStep::FundsReceived
+    } else if current_step == WalletFundedScreenStep::FundsReceived
+        && form_offers_amount == Some(false)
+    {
+        WalletFundedScreenStep::WaitingOnFunds
     } else {
         current_step
     };
@@ -910,7 +921,12 @@ mod tests {
         let minimum_credits = 50_000_000;
 
         assert_eq!(
-            snapshot_deposit_outcome(WalletFundedScreenStep::WaitingOnFunds, 1, minimum_credits,),
+            snapshot_deposit_outcome(
+                WalletFundedScreenStep::WaitingOnFunds,
+                1,
+                minimum_credits,
+                None
+            ),
             (WalletFundedScreenStep::WaitingOnFunds, None),
         );
         assert_eq!(
@@ -922,6 +938,56 @@ mod tests {
             ),
             (WalletFundedScreenStep::WaitingOnFunds, None),
         );
+    }
+
+    /// Once the form's own answer is known it decides where the deposit flow
+    /// stands; the balance at the address only stands in while it is not.
+    #[test]
+    fn deposit_step_follows_what_the_form_can_offer() {
+        use WalletFundedScreenStep::{FundsReceived, WaitingOnFunds};
+        const AWAITED_CREDITS: u64 = 430_259_000;
+        const ENOUGH: u64 = 430_259;
+        let step = |current, balance, form_offers_amount| {
+            snapshot_deposit_outcome(current, balance, AWAITED_CREDITS, form_offers_amount).0
+        };
+
+        // Not known yet: the balance at the address stands in.
+        assert_eq!(step(WaitingOnFunds, ENOUGH, None), FundsReceived);
+        assert_eq!(step(WaitingOnFunds, ENOUGH - 1, None), WaitingOnFunds);
+        assert_eq!(step(FundsReceived, ENOUGH, None), FundsReceived);
+
+        // Nothing to offer: stay on, or return to, the deposit request.
+        assert_eq!(step(WaitingOnFunds, ENOUGH, Some(false)), WaitingOnFunds);
+        assert_eq!(step(FundsReceived, ENOUGH, Some(false)), WaitingOnFunds);
+
+        // An amount to offer: open the form, even from a smaller balance.
+        assert_eq!(step(WaitingOnFunds, ENOUGH - 1, Some(true)), FundsReceived);
+        assert_eq!(step(FundsReceived, ENOUGH - 1, Some(true)), FundsReceived);
+
+        // A funding already under way is never moved.
+        for form_offers_amount in [None, Some(false), Some(true)] {
+            assert_eq!(
+                step(
+                    WalletFundedScreenStep::WaitingForAssetLock,
+                    ENOUGH,
+                    form_offers_amount
+                ),
+                WalletFundedScreenStep::WaitingForAssetLock
+            );
+        }
+    }
+
+    /// The amount is filled in only when the form opens.
+    #[test]
+    fn deposit_prefill_accompanies_only_the_opening_of_the_form() {
+        use WalletFundedScreenStep::{FundsReceived, WaitingOnFunds};
+        let prefill = |current, form_offers_amount| {
+            snapshot_deposit_outcome(current, 430_259, 430_259_000, form_offers_amount).1
+        };
+        assert!(prefill(WaitingOnFunds, Some(true)).is_some());
+        assert!(prefill(WaitingOnFunds, Some(false)).is_none());
+        assert!(prefill(FundsReceived, Some(false)).is_none());
+        assert!(prefill(FundsReceived, Some(true)).is_none());
     }
 
     #[test]

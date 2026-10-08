@@ -5,6 +5,7 @@ use crate::ui::components::MessageBanner;
 use crate::ui::identity::funding_common::{
     FundingMethod, WalletFundedScreenStep, generate_qr_code_image, required_deposit_credits,
     round_up_dash_4dp, should_queue_funding_address, snapshot_deposit_outcome,
+    spendable_covers_minimum,
 };
 use crate::ui::identity::top_up_identity_screen::TopUpIdentityScreen;
 use crate::ui::theme::DashColors;
@@ -31,7 +32,7 @@ impl TopUpIdentityScreen {
         }
     }
 
-    fn render_deposit_qr(&mut self, ui: &mut Ui) {
+    pub(super) fn render_deposit_qr(&mut self, ui: &mut Ui) {
         let Some(address) = self.funding_address.clone() else {
             if self.funding_address_request_failed {
                 ui.label("Could not prepare a deposit address.");
@@ -85,7 +86,11 @@ impl TopUpIdentityScreen {
         // Show only funds currently available at this address. Unrelated wallet
         // funds must never read as progress toward this deposit.
         let received = self.funding_address_balance_duffs;
-        if received > 0 {
+        if spendable_covers_minimum(received, minimum_credits) {
+            // Enough is here, yet the form has nothing to offer from it: the
+            // wallet cannot spend the deposit until the network confirms it.
+            ui.label("Your deposit has arrived. Waiting for the network to confirm it.");
+        } else if received > 0 {
             ui.label(format!(
                 "This address has {received_amount} available. Waiting for at least \
                  {minimum_amount}.",
@@ -135,13 +140,34 @@ impl TopUpIdentityScreen {
             .copied()
             .unwrap_or(0);
         self.funding_address_balance_duffs = address_balance_duffs;
+        self.settle_deposit_step();
+    }
 
+    /// Move between the deposit request and the form according to what the
+    /// form can offer from the funds at the deposit address.
+    pub(super) fn settle_deposit_step(&mut self) {
         let minimum_credits = self.deposit_minimum_credits(0);
+        // A check that covered only part of the wallet may understate what it
+        // can send; its "nothing to offer" keeps the form, which offers Retry.
+        let may_understate = self
+            .wallet
+            .as_ref()
+            .and_then(|wallet| wallet.read().ok().map(|wallet| wallet.seed_hash()))
+            .is_some_and(|seed_hash| self.asset_lock_balance.should_offer_retry(&seed_hash));
+        let form_offers_amount = self
+            .form_offers_amount(FundingMethod::ReceiveDeposit)
+            .filter(|offers| *offers || !may_understate);
         let current_step = self.current_step();
-        let (next_step, prefill) =
-            snapshot_deposit_outcome(current_step, address_balance_duffs, minimum_credits);
+        let (next_step, prefill) = snapshot_deposit_outcome(
+            current_step,
+            self.funding_address_balance_duffs,
+            minimum_credits,
+            form_offers_amount,
+        );
         if prefill.is_some() {
             self.prefill_funding_amount = true;
+        }
+        if next_step != current_step {
             self.set_step(next_step);
         }
     }

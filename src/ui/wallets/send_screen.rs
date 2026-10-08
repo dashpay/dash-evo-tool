@@ -1,6 +1,6 @@
 use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
-use crate::backend_task::error::TaskError;
+use crate::backend_task::error::{TaskError, ensure_funding_covers_network_fee};
 use crate::backend_task::identity::{IdentityTask, IdentityTopUpInfo, TopUpIdentityFundingMethod};
 use crate::backend_task::wallet::WalletTask;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
@@ -9,14 +9,15 @@ use crate::context::feature_gate::FeatureGate;
 use crate::model::address::{AddressKind, ValidatedAddress};
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::asset_lock::{
-    AssetLockAmountError, asset_lock_user_max_amount, validate_asset_lock_amount,
+    AssetLockAmountError, asset_lock_user_amount_range, asset_lock_user_max_amount,
+    validate_asset_lock_amount,
 };
 use crate::model::fee_estimation::{
     MAX_PLATFORM_INPUTS, PlatformFeeEstimator, allocate_platform_addresses,
     allocate_platform_addresses_with_fee, core_max_send_amount_duffs, core_max_send_reserve_duffs,
     estimate_address_funding_fee_from_transition, estimate_core_l1_send_fee_duffs,
     estimate_platform_fee, estimate_withdrawal_fee_from_transition, format_credits_as_dash,
-    format_duffs_as_dash, shield_from_balance_fee_headroom,
+    format_duffs_as_dash, identity_topup_min_funding_duffs, shield_from_balance_fee_headroom,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::user_role::UserRole;
@@ -32,6 +33,7 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
+use crate::ui::identity::funding_common::{FUNDING_FEE_NOT_COVERED, network_fee_refusal};
 use crate::ui::state::AssetLockBalanceCache;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{
@@ -543,6 +545,22 @@ impl WalletSendScreen {
         AddressKind::detect(address)
     }
 
+    /// Smallest amount, in duffs, the network accepts when the wallet funds a
+    /// destination of this kind directly. `None` for other kinds, or when it
+    /// cannot be read for the protocol version in use; the backend then decides.
+    fn wallet_funding_minimum_duffs(&self, destination: AddressKind) -> Option<u64> {
+        let platform_version = self.app_context.sdk_platform_version();
+        match destination {
+            AddressKind::Identity => identity_topup_min_funding_duffs(platform_version).ok(),
+            AddressKind::Platform => Some(
+                self.app_context
+                    .fee_estimator()
+                    .address_funding_min_amount_duffs(true, platform_version),
+            ),
+            _ => None,
+        }
+    }
+
     fn min_output_amount(
         &self,
         input_type: Option<AddressKind>,
@@ -562,7 +580,12 @@ impl WalletSendScreen {
             (None, None) => None,
             (Some(Core), Some(Core)) => Some(core_min),
             (Some(Platform), Some(Platform)) => Some(platform_min),
-            (Some(Core), Some(Platform)) => Some(56000000), // needed for asset locks
+            // The wallet funds these directly, and the network takes its fee
+            // from the amount.
+            (Some(Core), Some(kind @ (Platform | Identity))) => self
+                .wallet_funding_minimum_duffs(kind)
+                .map(|duffs| duffs.saturating_mul(CREDITS_PER_DUFF))
+                .or(Some(platform_min)),
             (Some(Platform), Some(Core)) => Some(core_min.max(platform_min)),
             (None, Some(Core)) => Some(core_min),
             (None, Some(Platform)) => Some(platform_min),
@@ -1012,6 +1035,14 @@ impl WalletSendScreen {
         )
         .div_ceil(CREDITS_PER_DUFF);
         let asset_lock_max = self.asset_lock_max_amount(&seed_hash)?;
+        if let Some(message) = network_fee_refusal(
+            amount_duffs,
+            asset_lock_max,
+            platform_fee_duffs,
+            self.wallet_funding_minimum_duffs(AddressKind::Platform),
+        ) {
+            return Err(message);
+        }
         if let Err(error) =
             validate_asset_lock_amount(amount_duffs, platform_fee_duffs, asset_lock_max)
         {
@@ -1729,6 +1760,14 @@ impl WalletSendScreen {
             .estimate_identity_topup()
             .div_ceil(CREDITS_PER_DUFF);
         let asset_lock_max = self.asset_lock_max_amount(&seed_hash)?;
+        if let Some(message) = network_fee_refusal(
+            amount_duffs,
+            asset_lock_max,
+            identity_fee_duffs,
+            self.wallet_funding_minimum_duffs(AddressKind::Identity),
+        ) {
+            return Err(message);
+        }
         if let Err(error) =
             validate_asset_lock_amount(amount_duffs, identity_fee_duffs, asset_lock_max)
         {
@@ -2552,8 +2591,14 @@ impl WalletSendScreen {
                             );
                             max = max.map(|amount| amount.saturating_sub(estimated_fee));
                             let fee = format_credits_as_dash(estimated_fee);
+                            let minimum = format_duffs_as_dash(
+                                fee_estimator.address_funding_min_amount_duffs(
+                                    true,
+                                    self.app_context.sdk_platform_version(),
+                                ),
+                            );
                             Some(format!(
-                                "A Platform fee of approximately {fee} is reserved from your balance and deducted from the amount."
+                                "A Platform fee of approximately {fee} is reserved from your balance and deducted from the amount, so the amount must be at least {minimum}."
                             ))
                         } else {
                             None
@@ -2578,9 +2623,19 @@ impl WalletSendScreen {
                         let estimated_fee = fee_estimator.estimate_identity_topup();
                         max = max.map(|amount| amount.saturating_sub(estimated_fee));
                         let fee = format_credits_as_dash(estimated_fee);
-                        Some(format!(
-                            "An identity top-up fee of approximately {fee} is reserved from your balance."
-                        ))
+                        Some(
+                            match self
+                                .wallet_funding_minimum_duffs(AddressKind::Identity)
+                                .map(format_duffs_as_dash)
+                            {
+                                Some(minimum) => format!(
+                                    "An identity top-up fee of approximately {fee} is reserved from your balance. The network fee is taken from the amount, so it must be at least {minimum}."
+                                ),
+                                None => format!(
+                                    "An identity top-up fee of approximately {fee} is reserved from your balance."
+                                ),
+                            },
+                        )
                     }
                     Some(AddressKind::Core) => {
                         // Core-to-Core "Max": reserve the L1 network fee so the
@@ -2715,6 +2770,22 @@ impl WalletSendScreen {
         };
         let output_kind = self.destination_kind();
         let min_amount = self.min_output_amount(input_kind, output_kind);
+
+        // Offer no amount when none the wallet can fund covers the network fee,
+        // so Max cannot propose one the network would refuse.
+        if input_kind == Some(AddressKind::Core)
+            && matches!(
+                output_kind,
+                Some(AddressKind::Platform | AddressKind::Identity)
+            )
+            && let (Some(max), Some(min)) = (max_amount_credits, min_amount)
+            && asset_lock_user_amount_range(max, 0, min).is_none()
+        {
+            self.amount = None;
+            self.amount_input = None;
+            ui.colored_label(DashColors::WARNING, FUNDING_FEE_NOT_COVERED);
+            return;
+        }
 
         Frame::group(ui.style())
             .fill(DashColors::surface(dark_mode))
@@ -4167,6 +4238,15 @@ impl WalletSendScreen {
             self.fee_strategy,
             PlatformFeeStrategy::ReduceFirstOutput | PlatformFeeStrategy::ReduceLastOutput
         );
+        let minimum_duffs = self
+            .app_context
+            .fee_estimator()
+            .address_funding_min_amount_duffs(
+                fee_deduct_from_output,
+                self.app_context.sdk_platform_version(),
+            );
+        ensure_funding_covers_network_fee(amount_duffs, Ok(minimum_duffs))
+            .map_err(|error| error.to_string())?;
 
         Ok(AppAction::BackendTask(BackendTask::WalletTask(
             WalletTask::FundPlatformAddressFromWalletUtxos {
@@ -5766,5 +5846,227 @@ mod tests {
                 .expect("valid output")
                 .is_empty()
         );
+    }
+
+    /// Select Core as the source and store a builder ceiling for the wallet.
+    fn core_source_with_ceiling(
+        screen: &mut WalletSendScreen,
+        ceiling_duffs: u64,
+    ) -> WalletSeedHash {
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+        let (generation, inputs, revision) =
+            screen.app_context.asset_lock_probe_snapshot(&seed_hash);
+        let request_id = asset_lock_request_id(screen.asset_lock_balance.ensure_requested(
+            seed_hash,
+            generation,
+            inputs.clone(),
+            revision,
+        ));
+        screen.asset_lock_balance.store(
+            seed_hash,
+            generation,
+            request_id,
+            ceiling_duffs,
+            inputs,
+            false,
+        );
+        screen.selected_source = Some(SourceSelection::CoreWallet);
+        seed_hash
+    }
+
+    fn identity_destination() -> ValidatedAddress {
+        ValidatedAddress::Identity {
+            id: dash_sdk::dpp::prelude::Identifier::new([0x29; 32]),
+            dpns_name: None,
+        }
+    }
+
+    fn platform_destination() -> ValidatedAddress {
+        let address =
+            PlatformAddress::try_from(testnet_core_address(4)).expect("platform destination");
+        ValidatedAddress::Platform {
+            address,
+            bech32m: address.to_bech32m_string(Network::Testnet),
+        }
+    }
+
+    /// Render the amount field, press Max when it is offered, and report the
+    /// resulting amount and whether the "nothing covers the fee" notice is shown.
+    fn press_max(screen: WalletSendScreen) -> (Option<Amount>, bool) {
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, screen: &mut WalletSendScreen| screen.render_amount_input(ui),
+            screen,
+        );
+        harness.run();
+        if let Some(max) = harness.query_by_label("Max") {
+            max.click_accesskit();
+        }
+        harness.step();
+        let notice = harness
+            .query_by_label_contains(FUNDING_FEE_NOT_COVERED)
+            .is_some();
+        (harness.state().amount.clone(), notice)
+    }
+
+    const TOP_UP_FEE_REFUSAL: &str = "This amount is too small to cover the network fee. \
+                                      Enter at least 0.000505 DASH and try again.";
+    const ADDRESS_FEE_REFUSAL: &str = "This amount is too small to cover the network fee. \
+                                       Enter at least 0.00056 DASH and try again.";
+
+    /// The amount sent to an identity is the whole funding, so the field must
+    /// refuse anything below the fee the network takes from it.
+    #[test]
+    fn core_to_identity_field_requires_the_network_fee() {
+        let (screen, _temp_dir) = send_screen();
+        assert_eq!(
+            screen.min_output_amount(Some(AddressKind::Core), Some(AddressKind::Identity)),
+            Some(50_500 * CREDITS_PER_DUFF)
+        );
+    }
+
+    #[test]
+    fn core_to_platform_field_requires_the_network_fee() {
+        let (screen, _temp_dir) = send_screen();
+        assert_eq!(
+            screen.min_output_amount(Some(AddressKind::Core), Some(AddressKind::Platform)),
+            Some(56_000 * CREDITS_PER_DUFF)
+        );
+    }
+
+    /// The amount of the reported case, sent from Wallet Send.
+    #[test]
+    fn core_to_identity_dispatch_refuses_an_amount_below_the_network_fee() {
+        let (mut screen, _temp_dir) = send_screen();
+        let seed_hash = core_source_with_ceiling(&mut screen, 10_000_000);
+        screen.validated_destination = Some(identity_destination());
+        screen.amount = Some(Amount::dash_from_duffs(5_237));
+
+        let error = screen
+            .send_core_to_identity(seed_hash)
+            .expect_err("an amount below the network fee must be refused");
+        assert_eq!(error, TOP_UP_FEE_REFUSAL);
+    }
+
+    /// A wallet that can build 55 737 duffs used to be told "You can transfer
+    /// up to 0.00005237 DASH" — an amount the network refuses.
+    #[test]
+    fn core_to_identity_dispatch_never_suggests_an_amount_the_network_refuses() {
+        let (mut screen, _temp_dir) = send_screen();
+        let seed_hash = core_source_with_ceiling(&mut screen, 55_737);
+        screen.validated_destination = Some(identity_destination());
+        screen.amount = Some(Amount::dash_from_duffs(50_500));
+
+        let error = screen
+            .send_core_to_identity(seed_hash)
+            .expect_err("no amount this wallet can send covers the network fee");
+        assert_eq!(error, FUNDING_FEE_NOT_COVERED);
+    }
+
+    #[test]
+    fn core_to_identity_max_offers_nothing_when_no_amount_covers_the_network_fee() {
+        let (mut screen, _temp_dir) = send_screen();
+        core_source_with_ceiling(&mut screen, 55_737);
+        screen.validated_destination = Some(identity_destination());
+
+        let (amount, notice) = press_max(screen);
+        assert_eq!(amount, None, "Max must not produce an amount");
+        assert!(notice, "the field must say why no amount is offered");
+    }
+
+    #[test]
+    fn core_to_platform_dispatch_refuses_an_amount_below_the_network_fee() {
+        let (mut screen, _temp_dir) = send_screen();
+        let seed_hash = core_source_with_ceiling(&mut screen, 10_000_000);
+        screen.validated_destination = Some(platform_destination());
+        screen.amount = Some(Amount::dash_from_duffs(55_999));
+
+        let error = screen
+            .send_core_to_platform(seed_hash)
+            .expect_err("an amount below the network fee must be refused");
+        assert_eq!(error, ADDRESS_FEE_REFUSAL);
+    }
+
+    #[test]
+    fn core_to_platform_dispatch_never_suggests_an_amount_the_network_refuses() {
+        let (mut screen, _temp_dir) = send_screen();
+        let seed_hash = core_source_with_ceiling(&mut screen, 100_000);
+        screen.validated_destination = Some(platform_destination());
+        screen.amount = Some(Amount::dash_from_duffs(56_000));
+
+        let error = screen
+            .send_core_to_platform(seed_hash)
+            .expect_err("no amount this wallet can send covers the network fee");
+        assert_eq!(error, FUNDING_FEE_NOT_COVERED);
+    }
+
+    #[test]
+    fn core_to_platform_max_offers_nothing_when_no_amount_covers_the_network_fee() {
+        let (mut screen, _temp_dir) = send_screen();
+        core_source_with_ceiling(&mut screen, 100_000);
+        screen.validated_destination = Some(platform_destination());
+
+        let (amount, notice) = press_max(screen);
+        assert_eq!(amount, None, "Max must not produce an amount");
+        assert!(notice, "the field must say why no amount is offered");
+    }
+
+    /// An advanced Core to Platform send of `amount` DASH with `fee_strategy`.
+    fn advanced_core_to_platform(
+        amount: &str,
+        fee_strategy: PlatformFeeStrategy,
+    ) -> (WalletSendScreen, WalletSeedHash, tempfile::TempDir) {
+        let (mut screen, temp_dir) = send_screen();
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+        let destination =
+            PlatformAddress::try_from(testnet_core_address(5)).expect("platform destination");
+        screen.advanced_source_type = AdvancedSourceType::Core;
+        screen.core_inputs = vec![CoreAddressInput {
+            address: testnet_core_address(4),
+            amount: "2".to_string(),
+        }];
+        screen.advanced_outputs = vec![AdvancedOutput {
+            address: destination.to_bech32m_string(Network::Testnet),
+            amount: amount.to_string(),
+        }];
+        screen.fee_strategy = fee_strategy;
+        (screen, seed_hash, temp_dir)
+    }
+
+    /// With the fee paid on top, the funding is the amount plus 18 750 duffs,
+    /// and the network requires 62 000 for the recipient and the change.
+    #[test]
+    fn advanced_core_to_platform_refuses_an_amount_the_fee_on_top_cannot_carry() {
+        let (mut screen, seed_hash, _temp_dir) =
+            advanced_core_to_platform("0.00043249", PlatformFeeStrategy::DeductFromFirstInput);
+        let error = screen
+            .send_advanced_core_to_platform(seed_hash)
+            .expect_err("the funding would be below what the network requires");
+        assert_eq!(
+            error,
+            "This amount is too small to cover the network fee. \
+             Enter at least 0.0004325 DASH and try again."
+        );
+
+        let (mut screen, seed_hash, _temp_dir) =
+            advanced_core_to_platform("0.0004325", PlatformFeeStrategy::DeductFromFirstInput);
+        assert!(screen.send_advanced_core_to_platform(seed_hash).is_ok());
+    }
+
+    #[test]
+    fn advanced_core_to_platform_refuses_an_amount_below_the_fee_taken_from_it() {
+        let (mut screen, seed_hash, _temp_dir) =
+            advanced_core_to_platform("0.00055999", PlatformFeeStrategy::ReduceFirstOutput);
+        let error = screen
+            .send_advanced_core_to_platform(seed_hash)
+            .expect_err("an amount below the network fee must be refused");
+        assert_eq!(error, ADDRESS_FEE_REFUSAL);
+
+        let (mut screen, seed_hash, _temp_dir) =
+            advanced_core_to_platform("0.00056", PlatformFeeStrategy::ReduceFirstOutput);
+        assert!(screen.send_advanced_core_to_platform(seed_hash).is_ok());
     }
 }

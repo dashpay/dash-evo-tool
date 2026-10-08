@@ -12,8 +12,13 @@ use crate::backend_task::wallet::WalletTask;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
-use crate::model::asset_lock::{AssetLockAmountError, validate_asset_lock_amount};
-use crate::model::fee_estimation::{format_credits_as_dash, format_duffs_as_dash};
+use crate::model::asset_lock::{
+    AssetLockAmountError, asset_lock_user_amount_range, validate_asset_lock_amount,
+    validate_asset_lock_minimum,
+};
+use crate::model::fee_estimation::{
+    format_credits_as_dash, format_duffs_as_dash, identity_topup_min_funding_duffs,
+};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::ui::components::amount_input::AmountInput;
@@ -30,10 +35,11 @@ use crate::ui::components::{
 };
 use crate::ui::identity::funding_common::{
     FundingMethod, WalletFundedScreenStep, default_funding_state, deposit_event_outcome,
-    max_amount_after_fee_reserve, receive_deposit_ceiling_duffs, spendable_covers_minimum,
-    step_after_task_failure, wallet_selection_combo,
+    max_amount_after_fee_reserve, receive_deposit_ceiling_duffs, step_after_task_failure,
+    wallet_selection_combo,
 };
 use crate::ui::state::{AssetLockBalanceCache, TrackedAssetLockCache};
+use crate::ui::theme::DashColors;
 use crate::ui::{
     MessageType, ScreenLike, append_concurrent_backend_tasks, can_append_concurrent_backend_tasks,
 };
@@ -45,6 +51,7 @@ use dash_sdk::dpp::dashcore::OutPoint;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
 use egui::{ComboBox, ScrollArea, Ui};
+use std::ops::RangeInclusive;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -57,6 +64,8 @@ const WALLET_SELECTION_TOOLTIP: &str =
 const TOP_UP_IN_PROGRESS: &str = "Adding funds to your identity.";
 /// Shown in place of the funding form while a top-up runs.
 const TOP_UP_FORM_PAUSED: &str = "You can add more funds when this transfer finishes.";
+/// Shown instead of an amount when nothing the wallet can send covers the fee.
+const TOP_UP_FEE_NOT_COVERED: &str = "The amount you can use is too small to cover the network fee. Add more Dash to your wallet and try again.";
 /// Progress banner kept up while a top-up runs in the background.
 const TOP_UP_IN_BACKGROUND: &str =
     "Adding funds to your identity in the background. You can keep using Dash Evo Tool.";
@@ -369,10 +378,9 @@ impl TopUpIdentityScreen {
     /// Whether the loaded builder ceiling covers the top-up minimum.
     /// An unloaded quote does not block the funding option.
     fn wallet_balance_can_afford_top_up(&self, seed_hash: &WalletSeedHash) -> bool {
-        let minimum = self.app_context.fee_estimator().estimate_identity_topup();
         self.asset_lock_balance
             .get(seed_hash)
-            .is_none_or(|ceiling| spendable_covers_minimum(ceiling, minimum))
+            .is_none_or(|ceiling| self.top_up_amount_range(ceiling).is_some())
     }
 
     /// Whether the builder ceiling for the wallet's current spendable inputs
@@ -744,11 +752,15 @@ impl TopUpIdentityScreen {
                     );
                     return AppAction::None;
                 };
-                let identity_fee_duffs = self
-                    .app_context
-                    .fee_estimator()
-                    .estimate_identity_topup()
-                    .div_ceil(CREDITS_PER_DUFF);
+                if let Some(message) = self.network_fee_refusal(amount, max_amount) {
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        message,
+                        MessageType::Warning,
+                    );
+                    return AppAction::None;
+                }
+                let identity_fee_duffs = self.top_up_reserve_duffs();
                 if let Err(error) =
                     validate_asset_lock_amount(amount, identity_fee_duffs, max_amount)
                 {
@@ -793,9 +805,73 @@ impl TopUpIdentityScreen {
         }
     }
 
+    /// Smallest top-up, in duffs, the network accepts. `None` when it cannot
+    /// be read for the protocol version in use; the backend then refuses the
+    /// top-up instead.
+    fn minimum_top_up_duffs(&self) -> Option<u64> {
+        identity_topup_min_funding_duffs(self.app_context.sdk_platform_version()).ok()
+    }
+
+    /// Fee reserve, in duffs, kept back from the builder ceiling.
+    fn top_up_reserve_duffs(&self) -> u64 {
+        self.app_context
+            .fee_estimator()
+            .estimate_identity_topup()
+            .div_ceil(CREDITS_PER_DUFF)
+    }
+
+    /// Amounts, in duffs, a wallet that can build `ceiling_duffs` may top up
+    /// with. `None` when nothing it can send covers the network fee.
+    fn top_up_amount_range(&self, ceiling_duffs: u64) -> Option<RangeInclusive<u64>> {
+        asset_lock_user_amount_range(
+            ceiling_duffs,
+            self.top_up_reserve_duffs(),
+            self.minimum_top_up_duffs().unwrap_or(0),
+        )
+    }
+
+    /// What a wallet must hold, in credits, before it can send any top-up. Every
+    /// "add at least" text and deposit threshold reads this, so none of them
+    /// asks for an amount the form then cannot use.
+    fn required_wallet_credits(&self) -> u64 {
+        self.minimum_top_up_duffs()
+            .unwrap_or(0)
+            .saturating_add(self.top_up_reserve_duffs())
+            .saturating_mul(CREDITS_PER_DUFF)
+    }
+
+    /// Why `amount_duffs` cannot be sent, for network-fee reasons, from a wallet
+    /// that can build `ceiling_duffs` — as banner text. `None` when the fee is
+    /// covered, or cannot be read here (the backend then decides).
+    fn network_fee_refusal(&self, amount_duffs: u64, ceiling_duffs: u64) -> Option<String> {
+        let minimum_duffs = self.minimum_top_up_duffs()?;
+        if self.top_up_amount_range(ceiling_duffs).is_none() {
+            return Some(TOP_UP_FEE_NOT_COVERED.to_string());
+        }
+        validate_asset_lock_minimum(amount_duffs, minimum_duffs)
+            .err()
+            .map(|error| {
+                TaskError::AssetLockAmountBelowNetworkFee {
+                    amount_duffs,
+                    minimum_duffs: error.minimum_amount_duffs,
+                }
+                .to_string()
+            })
+    }
+
     fn top_up_funding_amount_input(&mut self, ui: &mut egui::Ui) {
         let funding_method = self.current_funding_method();
         let available_ceiling_duffs = self.current_validation_ceiling_duffs(funding_method);
+
+        // Offer no amount at all when none covers the network fee, so neither
+        // Max nor the prefill can propose one the network would refuse.
+        if available_ceiling_duffs.is_some_and(|c| self.top_up_amount_range(c).is_none()) {
+            self.funding_amount_exact = None;
+            ui.colored_label(DashColors::WARNING, TOP_UP_FEE_NOT_COVERED);
+            ui.add_space(10.0);
+            return;
+        }
+        let minimum_duffs = self.minimum_top_up_duffs();
 
         let (max_amount, show_max_button, fee_hint) =
             if let Some(available_ceiling_duffs) = available_ceiling_duffs {
@@ -828,6 +904,13 @@ impl TopUpIdentityScreen {
         amount_input.set_max_amount(max_amount);
         amount_input.set_show_max_button(show_max_button);
         amount_input.set_max_exceeded_hint(fee_hint);
+        if let Some(minimum) = minimum_duffs {
+            amount_input.set_min_amount(Some(minimum.saturating_mul(CREDITS_PER_DUFF)));
+            amount_input.set_caption(Some(format!(
+                "The network fee is taken from this amount, so it must be at least {}.",
+                format_duffs_as_dash(minimum)
+            )));
+        }
 
         // Pre-fill (once) with the fee-reserve-capped maximum when a deposit just
         // arrived, so the amount and Add funds button are populated but still editable.
@@ -991,7 +1074,7 @@ impl ScreenLike for TopUpIdentityScreen {
                 outputs,
             )) = &backend_task_success_result
         {
-            let minimum_credits = self.app_context.fee_estimator().estimate_identity_topup();
+            let minimum_credits = self.required_wallet_credits();
             let (next, prefill) = deposit_event_outcome(
                 WalletFundedScreenStep::WaitingOnFunds,
                 self.funding_address.as_ref(),
@@ -1310,7 +1393,7 @@ mod tests {
         let seed_hash = wallet.read().expect("wallet lock").seed_hash();
         let mut screen = TopUpIdentityScreen::new(test_identity(Network::Testnet), &app_context);
         screen.wallet = Some(wallet);
-        screen.funding_amount_exact = Some(1);
+        screen.funding_amount_exact = Some(100_000);
         (screen, seed_hash, temp_dir)
     }
 
@@ -2070,5 +2153,201 @@ mod tests {
         );
         screen.refresh();
         assert_eq!(screen.asset_lock_balance.get(&seed_hash), None);
+    }
+
+    /// What the wallet in the reported case could build: 5 237 duffs remain
+    /// after the fee reserve, far below the fee the network takes.
+    const REPORTED_CEILING_DUFFS: u64 = 55_737;
+    const AMOUNT_FIELD: &str = "Amount:";
+
+    /// A wallet-balance form whose wallet can build at most `ceiling_duffs`.
+    fn wallet_form_with_ceiling(
+        seed_byte: u8,
+        ceiling_duffs: u64,
+    ) -> (TopUpIdentityScreen, tempfile::TempDir) {
+        let (mut screen, seed_hash, temp_dir) = wallet_balance_screen(seed_byte);
+        *screen.funding_method.write().expect("funding method lock") =
+            FundingMethod::UseWalletBalance;
+        store_current_quote(&mut screen, seed_hash, ceiling_duffs);
+        screen.set_step(WalletFundedScreenStep::ReadyToCreate);
+        (screen, temp_dir)
+    }
+
+    /// The reported case: the form used to fill itself with 0.00005237 DASH and
+    /// offer to send it, and the network then refused the funding.
+    #[test]
+    fn no_amount_is_offered_when_the_wallet_cannot_cover_the_network_fee() {
+        let (mut screen, _temp_dir) = wallet_form_with_ceiling(0x51, REPORTED_CEILING_DUFFS);
+        screen.prefill_funding_amount = true;
+
+        assert!(
+            screen_shows(&mut screen, NOT_ENOUGH_DASH),
+            "the wallet must be reported as too small to top up from"
+        );
+        assert!(
+            screen_shows(&mut screen, "Add at least 0.00101 DASH to continue."),
+            "the amount to add must leave a top-up the network accepts"
+        );
+        assert!(!screen_shows(&mut screen, AMOUNT_FIELD));
+        assert!(!screen_shows(&mut screen, ADD_FUNDS_BUTTON));
+    }
+
+    #[test]
+    fn form_states_the_smallest_amount_it_accepts() {
+        let (mut screen, _temp_dir) = wallet_form_with_ceiling(0x52, 10_000_000);
+        assert!(screen_shows(
+            &mut screen,
+            "The network fee is taken from this amount, so it must be at least 0.000505 DASH."
+        ));
+    }
+
+    /// The reported amount typed into a form that could send far more.
+    #[test]
+    fn form_does_not_offer_to_send_an_amount_below_the_network_fee() {
+        let (mut screen, _temp_dir) = wallet_form_with_ceiling(0x53, 10_000_000);
+        let mut typed = AmountInput::new(Amount::new_dash(0.0)).with_label(AMOUNT_FIELD);
+        typed.set_value(Amount::dash_from_duffs(5_237));
+        screen.funding_amount_input = Some(typed);
+
+        assert!(screen_shows(
+            &mut screen,
+            "Amount must be at least 0.000505"
+        ));
+        assert!(!screen_shows(&mut screen, ADD_FUNDS_BUTTON));
+    }
+
+    #[test]
+    fn top_up_dispatch_refuses_an_amount_below_the_network_fee() {
+        let (mut screen, _temp_dir) = wallet_form_with_ceiling(0x54, 10_000_000);
+        screen.funding_amount_exact = Some(5_237);
+
+        let action = screen.top_up_identity_clicked(FundingMethod::UseWalletBalance);
+
+        assert!(
+            matches!(action, AppAction::None),
+            "expected no dispatch, got {action:?}"
+        );
+        assert_eq!(
+            global_banner_texts(screen.app_context.egui_ctx()),
+            vec![
+                "This amount is too small to cover the network fee. \
+                 Enter at least 0.000505 DASH and try again."
+                    .to_string()
+            ]
+        );
+    }
+
+    /// The network accepts a funding equal to its fee, so the form must too.
+    #[test]
+    fn top_up_dispatch_accepts_an_amount_equal_to_the_network_fee() {
+        let (mut screen, _temp_dir) = wallet_form_with_ceiling(0x55, 10_000_000);
+        screen.funding_amount_exact = Some(50_500);
+
+        let action = screen.top_up_identity_clicked(FundingMethod::UseWalletBalance);
+
+        assert!(
+            matches!(action, AppAction::BackendTaskWithContext { .. }),
+            "expected a dispatched top-up, got {action:?}"
+        );
+    }
+
+    /// An amount above what the reported wallet can send used to be answered
+    /// with "You can transfer up to 0.00005237 DASH" — a doomed suggestion.
+    #[test]
+    fn top_up_dispatch_never_suggests_an_amount_the_network_refuses() {
+        let (mut screen, _temp_dir) = wallet_form_with_ceiling(0x56, REPORTED_CEILING_DUFFS);
+        screen.funding_amount_exact = Some(50_500);
+
+        let action = screen.top_up_identity_clicked(FundingMethod::UseWalletBalance);
+
+        assert!(
+            matches!(action, AppAction::None),
+            "expected no dispatch, got {action:?}"
+        );
+        assert_eq!(
+            global_banner_texts(screen.app_context.egui_ctx()),
+            vec![TOP_UP_FEE_NOT_COVERED.to_string()]
+        );
+    }
+
+    /// A deposit that leaves less than the network fee after the reserve must
+    /// not be turned into an amount, by Max or by the prefill.
+    #[test]
+    fn deposit_form_offers_no_amount_when_none_covers_the_network_fee() {
+        let (mut screen, _temp_dir) = wallet_form_with_ceiling(0x59, 10_000_000);
+        *screen.funding_method.write().expect("funding method lock") =
+            FundingMethod::ReceiveDeposit;
+        screen.funding_address_balance_duffs = REPORTED_CEILING_DUFFS;
+        screen.set_step(WalletFundedScreenStep::FundsReceived);
+        screen.prefill_funding_amount = true;
+
+        assert!(screen_shows(&mut screen, TOP_UP_FEE_NOT_COVERED));
+        assert!(!screen_shows(&mut screen, AMOUNT_FIELD));
+        assert!(!screen_shows(&mut screen, ADD_FUNDS_BUTTON));
+    }
+
+    /// A deposit-funded screen showing its deposit address.
+    fn deposit_screen(seed_byte: u8) -> (TopUpIdentityScreen, Address, tempfile::TempDir) {
+        use dash_sdk::dpp::dashcore::PubkeyHash;
+        use dash_sdk::dpp::dashcore::address::Payload;
+
+        let (mut screen, _seed_hash, temp_dir) = wallet_balance_screen(seed_byte);
+        *screen.funding_method.write().expect("funding method lock") =
+            FundingMethod::ReceiveDeposit;
+        let address = Address::new(
+            Network::Testnet,
+            Payload::PubkeyHash(PubkeyHash::from_byte_array([seed_byte; 20])),
+        );
+        screen.funding_address = Some(address.clone());
+        screen.set_step(WalletFundedScreenStep::WaitingOnFunds);
+        (screen, address, temp_dir)
+    }
+
+    /// The deposit request used to ask for 0.0006 DASH, which leaves less than
+    /// the network fee once the reserve is kept back.
+    #[test]
+    fn deposit_request_asks_for_enough_to_leave_a_top_up_the_network_accepts() {
+        let (mut screen, _address, _temp_dir) = deposit_screen(0x57);
+        assert!(screen_shows(
+            &mut screen,
+            "Send at least 0.0011 DASH to this address to top up your identity."
+        ));
+    }
+
+    /// A deposit of what the old request asked for must keep waiting instead of
+    /// opening a form that can only offer an amount the network refuses.
+    #[test]
+    fn deposit_too_small_for_the_network_fee_keeps_waiting() {
+        use dash_sdk::dpp::dashcore::{Transaction, TxOut};
+
+        let (mut screen, address, _temp_dir) = deposit_screen(0x58);
+        let deposit = |duffs: u64| {
+            BackendTaskSuccessResult::CoreItem(CoreItem::ReceivedAvailableUTXOTransaction(
+                Transaction {
+                    version: 3,
+                    lock_time: 0,
+                    input: Vec::new(),
+                    output: Vec::new(),
+                    special_transaction_payload: None,
+                },
+                vec![(
+                    OutPoint::null(),
+                    TxOut {
+                        value: duffs,
+                        script_pubkey: address.script_pubkey(),
+                    },
+                    address.clone(),
+                )],
+            ))
+        };
+
+        screen.display_task_result(deposit(60_000));
+        assert_eq!(
+            screen.current_step(),
+            WalletFundedScreenStep::WaitingOnFunds
+        );
+
+        screen.display_task_result(deposit(110_000));
+        assert_eq!(screen.current_step(), WalletFundedScreenStep::FundsReceived);
     }
 }

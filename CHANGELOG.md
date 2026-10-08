@@ -212,6 +212,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Adding funds to an identity no longer sends an amount too small to cover the
+  network fee. Such a transfer used to leave the wallet and was then refused
+  with a message about insufficient funds in the transaction. The amount field
+  now states the smallest amount it accepts, the Max button and the amount
+  filled in after a deposit never go below it, and a deposit request asks for
+  enough to leave a usable amount. Wallet Send and the command-line tool refuse
+  a too-small amount before anything is sent as well.
+
 - Adding funds to an identity shows a progress dialog and pauses the funding
   form until the transfer ends, so it can no longer be changed or sent twice.
   The form used to stay active and briefly warned that the wallet did not have

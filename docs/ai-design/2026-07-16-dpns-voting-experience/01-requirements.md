@@ -346,7 +346,7 @@ Validation floor: 24 nodes on one voting key, 6 open contests, 2 ending today.
 - **VOTE-FR-081** **[New]** — `When voting is about to end` resolves to
   end_time − preset (default 6 h on mainnet, 10 min on testnet/devnet, editable).
   Store the absolute UTC time as today, and display both: `6 hours before the end
-  · {abs UTC}`. A contest already inside the lead time is voted now instead of
+  · {abs local time}`. A contest already inside the lead time is voted now instead of
   rejecting the batch; the confirm step says so with a count: `{n} of these
   votes will be sent now because voting ends soon.` `{n}` leaves out votes that
   are only checked again (VOTE-FR-074), and the line is hidden when none is

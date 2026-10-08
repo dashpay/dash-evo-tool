@@ -25,7 +25,6 @@ use crate::ui::tokens::unfreeze_tokens_screen::UnfreezeTokensScreen;
 use crate::ui::tokens::update_token_config::UpdateTokenConfigScreen;
 use crate::ui::tokens::view_token_claims_screen::ViewTokenClaimsScreen;
 use crate::ui::{MessageType, Screen, ScreenType};
-use chrono::Local;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
@@ -595,13 +594,13 @@ impl TokensScreen {
                             ui.separator();
 
                             ui.collapsing("Basic Explanation", |ui| {
-                                let local_time = Local::now();
-                                let timezone = local_time.format("%Z").to_string();
-
+                                // Upstream formats these dates, labelled UTC. Its local
+                                // time needs a zone name the host does not give, or one
+                                // fixed offset, which is wrong across a clock change.
                                 let short_explanation = explanation.short_explanation(
                                     token_info.token_configuration.conventions().decimals(),
                                     self.app_context.platform_version(),
-                                    &timezone,
+                                    "UTC",
                                 );
 
                                 ui.label(short_explanation);

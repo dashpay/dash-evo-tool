@@ -22,7 +22,7 @@ K = kittest, B = backend test with fake SDK seam.
 |---|---|---|---|---|---|
 | VOTE-TC-010 | Single decision | Node set = 3 nodes, one choice | Cast → confirm → Cast | One target per node for that contest | FR-020, FR-075 |
 | VOTE-TC-011 **[Changed]** | Multi-contest aggregate | 3 choices, 3 nodes | Open confirm | Title `Cast 3 decisions with 3 nodes`; `9 transactions…`; Adjust nodes lists 9 rows | FR-024, FR-080 |
-| VOTE-TC-012 | Schedule at a specific time | One draft | Choose At a specific time | Targets appear in Scheduled with that UTC time | FR-023, FR-050 |
+| VOTE-TC-012 | Schedule at a specific time | One draft | Choose At a specific time | Targets appear in Scheduled with that time, shown in local time | FR-023, FR-050 |
 | VOTE-TC-013 **[Changed]** | No voting key | Nodes loaded, none with voting key | Open Votes | Gate copy + `Add a voting key`; no submit | FR-075, V5 |
 | VOTE-TC-014 | Voting key does not match node | Wrong voting key | Submit load | Key-specific rejection; existing keys unchanged | FR-065 |
 | VOTE-TC-020 | Multiple contests and nodes | 2 contests, 3 nodes | Confirm | 6 targets in Adjust nodes | FR-021, FR-024 |
@@ -76,7 +76,7 @@ K = kittest, B = backend test with fake SDK seam.
 | VOTE-TC-064 | Scheduled target can be cancelled | Target is Scheduled, not due | Cancel and confirm | Target is removed and its lock is released | FR-055 |
 | VOTE-TC-065 | Submitting schedule cannot be edited | Target is Submitting | Inspect actions | Edit and Cancel are disabled with an explanation | FR-055 |
 | VOTE-TC-066 | Missed automatic vote is explained | Due time > 120 s past, not executed | Reopen Scheduled | Row shows `Missed` with `Cast now`, `Edit`, `Remove` | FR-056 |
-| VOTE-TC-067 **[New]** | Relative schedule resolves | Mainnet contest ends T | Schedule `When voting is about to end` | Stored time = T − 6 h; row shows `6 hours before the end · {abs UTC}` | FR-081 |
+| VOTE-TC-067 **[New]** | Relative schedule resolves | Mainnet contest ends T | Schedule `When voting is about to end` | Stored time = T − 6 h; row shows `6 hours before the end · {abs local time}` | FR-081 |
 | VOTE-TC-068 **[New]** | Testnet preset | Testnet contest | Same | T − 10 min | FR-081, FR-085 |
 | VOTE-TC-069 **[New]** | Grouped scheduled rows | One decision on 24 nodes | Open Scheduled | One row `24 nodes ▾`; expansion lists 24 statuses | FR-088 |
 

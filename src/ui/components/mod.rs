@@ -15,6 +15,7 @@ pub mod identity_selector;
 pub mod info_popup;
 pub mod left_panel;
 pub mod legacy_recovery_section;
+pub mod local_schedule_input;
 pub mod message_banner;
 pub mod modal_chrome;
 pub mod passphrase_modal;
@@ -28,7 +29,6 @@ pub mod subscreen_chooser_panel;
 pub mod tokens_subscreen_chooser_panel;
 pub mod tools_subscreen_chooser_panel;
 pub mod top_panel;
-pub mod utc_schedule_input;
 pub mod wallet_unlock_popup;
 
 // Re-export the main traits for easy access

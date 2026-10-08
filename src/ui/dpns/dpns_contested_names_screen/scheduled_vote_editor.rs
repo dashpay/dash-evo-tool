@@ -12,7 +12,7 @@ pub(super) struct ScheduledVoteEditor {
     choice: ResourceVoteChoice,
     /// The contest's voting deadline, when the contest list has read it.
     end_time: Option<u64>,
-    schedule: UtcScheduleInput,
+    schedule: LocalScheduleInput,
     time_changed: bool,
 }
 
@@ -30,8 +30,7 @@ impl ScheduledVoteEditor {
         choices: Vec<(ResourceVoteChoice, String)>,
         end_time: Option<u64>,
     ) -> Option<Self> {
-        let timestamp = i64::try_from(original.vote.unix_timestamp).ok()?;
-        let time = DateTime::from_timestamp_millis(timestamp)?;
+        let time = datetime::instant_from_unix_millis(original.vote.unix_timestamp)?;
         Some(Self {
             choice: original.vote.choice,
             original,
@@ -39,7 +38,7 @@ impl ScheduledVoteEditor {
             node_label,
             choices,
             end_time,
-            schedule: UtcScheduleInput::new().with_time(time),
+            schedule: LocalScheduleInput::new().with_time(time),
             time_changed: false,
         })
     }
@@ -205,12 +204,11 @@ mod tests {
         assert!(editor.task(1).is_none());
         editor.original.status = DpnsVoteTargetStatus::Scheduled;
         editor.time_changed = true;
-        editor.schedule = UtcScheduleInput::new().with_time(
-            chrono::NaiveDate::from_ymd_opt(2031, 2, 3)
-                .and_then(|date| date.and_hms_opt(4, 5, 0))
-                .expect("valid test instant")
-                .and_utc(),
-        );
+        let rescheduled = chrono::NaiveDate::from_ymd_opt(2031, 2, 3)
+            .and_then(|date| date.and_hms_opt(4, 5, 0))
+            .expect("valid test instant")
+            .and_utc();
+        editor.schedule = LocalScheduleInput::new().with_time(rescheduled);
         let ContestedResourceTask::EditScheduledDpnsVote(DpnsScheduledVoteEdit {
             unix_timestamp,
             ..
@@ -218,10 +216,7 @@ mod tests {
         else {
             panic!("expected edit");
         };
-        assert_eq!(
-            unix_timestamp,
-            crate::model::dpns_vote_schedule::parse_utc_schedule("2031-02-03", 4, 5).unwrap()
-        );
+        assert_eq!(unix_timestamp, rescheduled.timestamp_millis() as u64);
     }
 
     /// The backend refuses a time at or after the contest deadline, so the

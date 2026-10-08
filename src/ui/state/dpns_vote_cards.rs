@@ -174,7 +174,7 @@ impl VoteCard {
 }
 
 /// A contest-list shortcut (VOTE-FR-082). Each has a visible control: card
-/// focus by click, decision pills, the card checkbox, and the tray's Cast.
+/// focus by click, decision choices, the card checkbox, and the tray's Cast.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shortcut {
     Next,

@@ -859,6 +859,36 @@ impl ScreenLike for TopUpIdentityScreen {
         context.asset_lock_max_amount_request().is_some()
     }
 
+    fn display_backend_task_result(
+        &mut self,
+        context: &BackendTaskContext,
+        backend_task_success_result: BackendTaskSuccessResult,
+    ) {
+        let BackendTaskSuccessResult::ToppedUpIdentity(qualified_identity, fee_result) =
+            backend_task_success_result
+        else {
+            self.display_task_result(backend_task_success_result);
+            return;
+        };
+        if qualified_identity.identity.id() != self.identity.identity.id() {
+            return;
+        }
+        self.identity = qualified_identity;
+        // Another transfer to this identity, such as one from Wallet Send, is
+        // not the top-up this screen waits on.
+        if self.top_up_context.as_ref() != Some(context) {
+            return;
+        }
+        self.release_top_up();
+        self.completed_fee_result = Some(fee_result);
+        self.funding_address = None;
+        self.funding_amount.clear();
+        self.funding_amount_exact = None;
+        self.funding_amount_input = None;
+        self.copied_to_clipboard = None;
+        self.set_step(WalletFundedScreenStep::Success);
+    }
+
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         if let BackendTaskSuccessResult::AssetLockMaxAmount {
             seed_hash,
@@ -937,25 +967,6 @@ impl ScreenLike for TopUpIdentityScreen {
                 self.prefill_funding_amount = true;
             }
             self.set_step(next);
-            return;
-        }
-
-        if let BackendTaskSuccessResult::ToppedUpIdentity(qualified_identity, fee_result) =
-            backend_task_success_result
-        {
-            if qualified_identity.identity.id() != self.identity.identity.id() {
-                return;
-            }
-            self.release_top_up();
-            self.identity = qualified_identity;
-            self.completed_fee_result = Some(fee_result);
-            self.funding_address = None;
-            self.funding_amount.clear();
-            self.funding_amount_exact = None;
-            self.funding_amount_input = None;
-            self.copied_to_clipboard = None;
-
-            self.set_step(WalletFundedScreenStep::Success);
             return;
         }
 
@@ -1577,25 +1588,38 @@ mod tests {
         assert_eq!(screen.current_step(), WalletFundedScreenStep::ReadyToCreate);
     }
 
+    /// Wallet Send can add funds to the same identity without blocking the
+    /// app, so its success may arrive while this screen waits on its own.
     #[test]
-    fn top_up_success_releases_only_the_screen_of_that_identity() {
-        let (mut screen, _context, _temp_dir) = dispatched_top_up_screen(0x43);
+    fn top_up_success_releases_only_the_screen_that_dispatched_it() {
+        let (mut screen, context, _temp_dir) = dispatched_top_up_screen(0x43);
         let ctx = screen.app_context.egui_ctx().clone();
-        let fee_result = || FeeResult::new(1, 1);
+        let other_transfer = BackendTaskContext::IdentityTopUp(screen.identity.identity.id());
+        let topped_up = |identity: QualifiedIdentity| {
+            BackendTaskSuccessResult::ToppedUpIdentity(identity, FeeResult::new(1, 1))
+        };
 
-        screen.display_task_result(BackendTaskSuccessResult::ToppedUpIdentity(
-            test_identity(Network::Testnet),
-            fee_result(),
-        ));
+        screen.display_backend_task_result(&context, topped_up(test_identity(Network::Testnet)));
         assert!(
             ProgressOverlay::has_global(&ctx),
             "another identity's top-up must not release this screen"
         );
 
-        screen.display_task_result(BackendTaskSuccessResult::ToppedUpIdentity(
-            screen.identity.clone(),
-            fee_result(),
-        ));
+        let mut refreshed = screen.identity.clone();
+        refreshed.alias = Some("refreshed".to_owned());
+        screen.display_backend_task_result(&other_transfer, topped_up(refreshed));
+        assert!(
+            ProgressOverlay::has_global(&ctx),
+            "another transfer to this identity must not release a running top-up"
+        );
+        assert!(screen.top_up_in_flight());
+        assert_eq!(
+            screen.identity.alias.as_deref(),
+            Some("refreshed"),
+            "another transfer's result still carries the current identity"
+        );
+
+        screen.display_backend_task_result(&context, topped_up(screen.identity.clone()));
         assert!(!ProgressOverlay::has_global(&ctx));
         assert_eq!(screen.current_step(), WalletFundedScreenStep::Success);
     }

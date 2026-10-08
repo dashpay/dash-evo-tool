@@ -46,6 +46,20 @@ lowers through the normal path, and make a stuck block impossible by constructio
 > adopter. See UX-002 (`docs/user-stories.md`), `01-requirements-ux.md` §5, and
 > `AppState::update_spv_overlay`.
 
+> **Post-decision update (identity top-up adopter, PR #1054).** The user asked for a way out of an
+> identity top-up that gets stuck, so its block offers **"Continue in background"** once it has run
+> for 30 s (`TOP_UP_BACKGROUND_OFFER_AFTER`), designated as the keyboard escape. A top-up
+> broadcasts, so this is the first exception inside the **unsafe-to-interrupt** class, and it is
+> scoped to this one operation. It rests on the in-flight guard this section names as the
+> precondition for a safe valve: the task is never cancelled, the tracker in
+> `top_up_identity_screen` records the dispatch (`BackendTaskContext::Dispatched`) and only that
+> dispatch's result ends it, and every Add Funds screen for that identity shows a notice in place
+> of the form while it is recorded. The guard covers the Add Funds screen only: Wallet Send raises
+> no block of its own, so it can move funds to the same identity meanwhile, with or without this
+> valve. Extending the valve to another operation needs the same guard where that operation's
+> tasks are dispatched; a future dev must NOT copy the button without it. See IDN-004 and UX-001
+> (`docs/user-stories.md`).
+
 ### Decision
 
 **Keep the block total. Ship NO renderer-level dismiss/background button in v1.** The safety valve

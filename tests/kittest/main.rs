@@ -39,6 +39,7 @@ mod support;
 mod tokens_screen;
 mod tools_screen;
 mod transfer_screen;
+mod wallet_selector;
 mod wallets_screen;
 mod welcome_screen;
 mod withdraw_screen;

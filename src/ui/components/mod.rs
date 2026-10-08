@@ -29,6 +29,7 @@ pub mod subscreen_chooser_panel;
 pub mod tokens_subscreen_chooser_panel;
 pub mod tools_subscreen_chooser_panel;
 pub mod top_panel;
+pub mod wallet_selector;
 pub mod wallet_unlock_popup;
 
 // Re-export the main traits for easy access

@@ -4,24 +4,28 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::identity_discovery::validate_search_index;
 use crate::model::qualified_identity::IdentityType;
-use crate::model::wallet::Wallet;
+use crate::model::wallet::balance_summary::WalletChoice;
+use crate::model::wallet::{Wallet, WalletSeedHash};
+use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::wallet_selector::WalletSelector;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
-use crate::ui::identity::funding_common::wallet_selection_combo;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{MessageType, ScreenLike};
 use crate::wallet_backend::poison::RwLockRecover;
+use dash_sdk::dpp::balances::credits::Credits;
+use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
-use egui::{Color32, ComboBox, RichText, Ui};
-use std::sync::atomic::Ordering;
+use egui::{Color32, RichText, Ui};
+use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -82,6 +86,14 @@ pub struct AddExistingIdentityScreen {
     keys_input: Vec<PasswordInput>,
     add_identity_status: AddIdentityStatus,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
+    /// Picker of the wallet to search for identities.
+    wallet_selector: Option<WalletSelector>,
+    /// Picker of the wallet to derive keys from, with an all-wallets row.
+    key_wallet_selector: Option<WalletSelector>,
+    /// Each wallet's summed identity balance on `identity_credits_network`,
+    /// read when the screen opens and again when the network changes.
+    identity_credits: BTreeMap<WalletSeedHash, Credits>,
+    identity_credits_network: Network,
     identity_associated_with_wallet: bool,
     wallet_unlock_popup: WalletUnlockPopup,
     wallet_open_attempted: bool,
@@ -115,6 +127,10 @@ impl AddExistingIdentityScreen {
             keys_input: vec![],
             add_identity_status: AddIdentityStatus::NotStarted,
             selected_wallet,
+            wallet_selector: None,
+            key_wallet_selector: None,
+            identity_credits: app_context.identity_credits_by_wallet(),
+            identity_credits_network: app_context.network(),
             identity_associated_with_wallet: true,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             wallet_open_attempted: false,
@@ -130,24 +146,57 @@ impl AddExistingIdentityScreen {
         }
     }
 
+    /// Show the wallet picker and apply the user's pick; reports whether the
+    /// wallet in use changed. `all_wallets` adds a row standing for every
+    /// unlocked wallet.
+    fn show_wallet_selector(&mut self, ui: &mut Ui, all_wallets: bool) -> bool {
+        if self.identity_credits_network != self.app_context.network() {
+            // The same wallet holds different identities on another network.
+            self.identity_credits_network = self.app_context.network();
+            self.identity_credits = self.app_context.identity_credits_by_wallet();
+            self.wallet_selector = None;
+            self.key_wallet_selector = None;
+        }
+        let slot = if all_wallets {
+            &mut self.key_wallet_selector
+        } else {
+            &mut self.wallet_selector
+        };
+        let selector = slot.get_or_insert_with(|| {
+            let mut selector = if all_wallets {
+                WalletSelector::new("key_wallet_selector")
+                    .with_all_wallets_option("All unlocked wallets")
+            } else {
+                WalletSelector::new("select_existing_wallet")
+                    .with_label("Select which wallet to search for identities:")
+            };
+            selector.set_identity_credits(self.identity_credits.clone());
+            selector
+        });
+        selector.set_entries(self.app_context.wallet_selector_entries(false));
+        selector.set_selected(
+            self.selected_wallet
+                .as_deref()
+                .map(WalletChoice::of_hd_wallet),
+        );
+        let response = selector.show(ui).inner;
+        if !response.has_changed() {
+            return false;
+        }
+        self.selected_wallet = match response.changed_value() {
+            Some(WalletChoice::Hd(seed_hash)) => {
+                self.app_context.wallet_context().hd_wallet(seed_hash)
+            }
+            _ => None,
+        };
+        true
+    }
+
     fn render_by_identity(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
 
-        let wallets_snapshot: Vec<(String, Arc<RwLock<Wallet>>)> = {
-            let wallets_guard = self.app_context.wallet_context().wallets();
-            wallets_guard
-                .values()
-                .map(|wallet| {
-                    let alias = self
-                        .app_context
-                        .wallet_context()
-                        .hd_alias(&wallet.read_recover().seed_hash())
-                        .unwrap_or_else(|| "Unnamed Wallet".to_string());
-                    (alias, wallet.clone())
-                })
-                .collect()
-        };
-        let has_wallets = !wallets_snapshot.is_empty();
+        let wallets = self.app_context.wallet_context().wallets();
+        let has_wallets = !wallets.is_empty();
         let mut should_return_early = false;
 
         // In simple mode, always try to derive from wallets
@@ -182,52 +231,15 @@ impl AddExistingIdentityScreen {
 
                 if self.identity_associated_with_wallet {
                     if has_wallets {
-                        let selected_label = self
-                            .selected_wallet
-                            .as_ref()
-                            .and_then(|selected| {
-                                wallets_snapshot.iter().find_map(|(alias, wallet)| {
-                                    if Arc::ptr_eq(selected, wallet) {
-                                        Some(alias.clone())
-                                    } else {
-                                        None
-                                    }
-                                })
-                            })
-                            .unwrap_or_else(|| "All unlocked wallets".to_string());
-
-                        ComboBox::from_id_salt("identity_wallet_selector")
-                            .selected_text(selected_label)
-                            .show_ui(ui, |ui| {
-                                if ui
-                                    .selectable_label(
-                                        self.selected_wallet.is_none(),
-                                        "All unlocked wallets",
-                                    )
-                                    .clicked()
-                                {
-                                    self.selected_wallet = None;
-                                    self.wallet_open_attempted = false;
-                                }
-
-                                for (alias, wallet) in &wallets_snapshot {
-                                    let is_selected = self
-                                        .selected_wallet
-                                        .as_ref()
-                                        .is_some_and(|selected| Arc::ptr_eq(selected, wallet));
-
-                                    if ui.selectable_label(is_selected, alias).clicked() {
-                                        self.selected_wallet = Some(wallet.clone());
-                                        self.wallet_open_attempted = false;
-                                    }
-                                }
-                            });
+                        if self.show_wallet_selector(ui, true) {
+                            self.wallet_open_attempted = false;
+                        }
 
                         ui.add_space(10.0);
                         if let Some(selected_wallet) = &self.selected_wallet {
-                            let wallet_still_loaded = wallets_snapshot
-                                .iter()
-                                .any(|(_, wallet)| Arc::ptr_eq(wallet, selected_wallet));
+                            let wallet_still_loaded = wallets
+                                .values()
+                                .any(|wallet| Arc::ptr_eq(wallet, selected_wallet));
 
                             if wallet_still_loaded {
                                 // Try to open wallet without password if it doesn't use one
@@ -440,45 +452,6 @@ impl AddExistingIdentityScreen {
         action
     }
 
-    fn render_wallet_selection(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            if self.app_context.has_wallet.load(Ordering::Relaxed) {
-                let wallets: Vec<_> = self
-                    .app_context
-                    .wallet_context()
-                    .wallets()
-                    .values()
-                    .cloned()
-                    .collect();
-
-                let clicked = wallet_selection_combo(
-                    ui,
-                    "select_existing_wallet",
-                    &wallets,
-                    self.selected_wallet.as_ref(),
-                    |wallet| {
-                        wallet
-                            .read()
-                            .ok()
-                            .and_then(|w| {
-                                self.app_context.wallet_context().hd_alias(&w.seed_hash())
-                            })
-                            .unwrap_or_else(|| "Unnamed Wallet".to_string())
-                    },
-                    |_| true,
-                );
-                if let Some(wallet) = clicked {
-                    self.selected_wallet = Some(wallet);
-                    self.wallet_open_attempted = false;
-                }
-
-                ui.add_space(20.0);
-            } else {
-                ui.label("No wallets available.");
-            }
-        });
-    }
-
     fn render_by_wallet(&mut self, ui: &mut egui::Ui, wallets_len: usize) -> AppAction {
         let mut action = AppAction::None;
 
@@ -500,9 +473,9 @@ impl AddExistingIdentityScreen {
 
         // Wallet selection
         if wallets_len > 1 {
-            ui.label("Select which wallet to search for identities:");
-            ui.add_space(5.0);
-            self.render_wallet_selection(ui);
+            if self.show_wallet_selector(ui, false) {
+                self.wallet_open_attempted = false;
+            }
             ui.add_space(10.0);
         }
 
@@ -672,21 +645,7 @@ impl AddExistingIdentityScreen {
         ui.label("Look up an identity by its registered DPNS username.");
         ui.add_space(15.0);
 
-        let wallets_snapshot: Vec<(String, Arc<RwLock<Wallet>>)> = {
-            let wallets_guard = self.app_context.wallet_context().wallets();
-            wallets_guard
-                .values()
-                .map(|wallet| {
-                    let alias = self
-                        .app_context
-                        .wallet_context()
-                        .hd_alias(&wallet.read_recover().seed_hash())
-                        .unwrap_or_else(|| "Unnamed Wallet".to_string());
-                    (alias, wallet.clone())
-                })
-                .collect()
-        };
-        let has_wallets = !wallets_snapshot.is_empty();
+        let has_wallets = self.app_context.wallet_context().has_hd_wallets();
 
         // In simple mode, always try to derive from wallets
         if !self.show_advanced_options {
@@ -713,44 +672,7 @@ impl AddExistingIdentityScreen {
             });
 
             if self.identity_associated_with_wallet && has_wallets {
-                let selected_label = self
-                    .selected_wallet
-                    .as_ref()
-                    .and_then(|selected| {
-                        wallets_snapshot.iter().find_map(|(alias, wallet)| {
-                            if Arc::ptr_eq(selected, wallet) {
-                                Some(alias.clone())
-                            } else {
-                                None
-                            }
-                        })
-                    })
-                    .unwrap_or_else(|| "All unlocked wallets".to_string());
-
-                ComboBox::from_id_salt("dpns_wallet_selector")
-                    .selected_text(selected_label)
-                    .show_ui(ui, |ui| {
-                        if ui
-                            .selectable_label(
-                                self.selected_wallet.is_none(),
-                                "All unlocked wallets",
-                            )
-                            .clicked()
-                        {
-                            self.selected_wallet = None;
-                        }
-
-                        for (alias, wallet) in &wallets_snapshot {
-                            let is_selected = self
-                                .selected_wallet
-                                .as_ref()
-                                .is_some_and(|selected| Arc::ptr_eq(selected, wallet));
-
-                            if ui.selectable_label(is_selected, alias).clicked() {
-                                self.selected_wallet = Some(wallet.clone());
-                            }
-                        }
-                    });
+                self.show_wallet_selector(ui, true);
             }
             ui.add_space(10.0);
         }

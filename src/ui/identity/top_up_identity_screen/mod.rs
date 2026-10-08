@@ -11,17 +11,20 @@ use crate::backend_task::identity::{IdentityTask, IdentityTopUpInfo, TopUpIdenti
 use crate::backend_task::wallet::WalletTask;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
+use crate::model::address::AddressKind;
 use crate::model::amount::Amount;
 use crate::model::asset_lock::{AssetLockAmountError, validate_asset_lock_amount};
 use crate::model::fee_estimation::{format_credits_as_dash, format_duffs_as_dash};
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::wallet::balance_summary::{CoreFigure, WalletChoice};
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::ui::components::amount_input::AmountInput;
-use crate::ui::components::component_trait::Component;
+use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::wallet_selector::WalletSelector;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
@@ -31,7 +34,7 @@ use crate::ui::components::{
 use crate::ui::identity::funding_common::{
     FundingMethod, WalletFundedScreenStep, default_funding_state, deposit_event_outcome,
     max_amount_after_fee_reserve, receive_deposit_ceiling_duffs, spendable_covers_minimum,
-    step_after_task_failure, wallet_selection_combo,
+    step_after_task_failure,
 };
 use crate::ui::state::{AssetLockBalanceCache, TrackedAssetLockCache};
 use crate::ui::{
@@ -51,6 +54,14 @@ use std::time::Duration;
 
 const WALLET_SELECTION_TOOLTIP: &str =
     "Choose the wallet that will supply or receive the Dash used to add funds to this identity.";
+/// Shown on a greyed-out wallet whose usable Dash cannot cover a top-up.
+const WALLET_LACKS_DASH: &str = "This wallet does not have enough Dash to add funds to this \
+     identity. Choose another wallet or add Dash to this one.";
+/// Shown on a greyed-out wallet that holds no reusable funding transaction.
+const WALLET_HAS_NO_FUNDING: &str = "This wallet has no existing funding transaction to use. \
+     Choose another wallet or another funding method.";
+/// Shown on a greyed-out wallet whose state cannot be read right now.
+const WALLET_BUSY: &str = "Wallet is busy. Try again in a moment.";
 
 /// Blocking-overlay text for a running top-up. The task reports no progress to
 /// the screen, so one sentence covers the whole run and names no stage.
@@ -145,6 +156,7 @@ pub struct TopUpIdentityScreen {
     /// `TopUpIdentityFundingMethod::UseAssetLock`.
     funding_asset_lock: Option<OutPoint>,
     wallet: Option<Arc<RwLock<Wallet>>>,
+    wallet_selector: Option<WalletSelector>,
     funding_address: Option<Address>,
     /// A queued deposit-address derivation for the "Receive a new deposit"
     /// method. Set when the QR view needs an address; drained at the end of
@@ -197,6 +209,7 @@ impl TopUpIdentityScreen {
             step: Arc::new(RwLock::new(WalletFundedScreenStep::ChooseFundingMethod)),
             funding_asset_lock: None,
             wallet: None,
+            wallet_selector: None,
             funding_address: None,
             pending_funding_address_request: None,
             funding_address_request_in_flight: false,
@@ -409,23 +422,38 @@ impl TopUpIdentityScreen {
         }
     }
 
-    /// Whether `wallet` remains eligible; an unloaded ceiling does not block it.
-    /// A busy wallet lock reads as ineligible rather than panicking.
+    /// Why `wallet` cannot serve `method`, or `None` while it remains
+    /// eligible; an unloaded ceiling does not block it. A busy wallet lock
+    /// reads as ineligible rather than panicking.
+    fn wallet_unavailable_reason(
+        &self,
+        wallet: &Arc<RwLock<Wallet>>,
+        method: FundingMethod,
+    ) -> Option<&'static str> {
+        let Ok(w) = wallet.read() else {
+            return Some(WALLET_BUSY);
+        };
+        let seed_hash = w.seed_hash();
+        match method {
+            FundingMethod::UseWalletBalance
+                if !self.wallet_balance_can_afford_top_up(&seed_hash) =>
+            {
+                Some(WALLET_LACKS_DASH)
+            }
+            FundingMethod::UseUnusedAssetLock if !self.asset_lock_cache.has_unused(&seed_hash) => {
+                Some(WALLET_HAS_NO_FUNDING)
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether `wallet` remains eligible for `method`.
     fn wallet_has_resources_for(
         &self,
         wallet: &Arc<RwLock<Wallet>>,
         method: FundingMethod,
     ) -> bool {
-        let Ok(w) = wallet.read() else {
-            return false;
-        };
-        match method {
-            FundingMethod::UseWalletBalance => {
-                self.wallet_balance_can_afford_top_up(&w.seed_hash())
-            }
-            FundingMethod::UseUnusedAssetLock => self.asset_lock_cache.has_unused(&w.seed_hash()),
-            _ => true,
-        }
+        self.wallet_unavailable_reason(wallet, method).is_none()
     }
 
     fn render_wallet_selection(&mut self, ui: &mut Ui) -> bool {
@@ -433,37 +461,37 @@ impl TopUpIdentityScreen {
         let mut step_update_method: Option<FundingMethod> = None;
 
         let rendered = if self.app_context.has_wallet.load(Ordering::Relaxed) {
-            let wallets: Vec<_> = self
-                .app_context
-                .wallet_context()
-                .wallets()
-                .values()
-                .cloned()
-                .collect();
+            let wallets = self.app_context.wallet_context().wallets();
 
             if wallets.len() > 1 {
                 let funding_method = self.current_funding_method();
-                selected_wallet_update = wallet_selection_combo(
-                    ui,
-                    "select_wallet",
-                    &wallets,
-                    self.wallet.as_ref(),
-                    |wallet| {
-                        wallet
-                            .read()
-                            .ok()
-                            .and_then(|w| {
-                                self.app_context.wallet_context().hd_alias(&w.seed_hash())
-                            })
-                            .unwrap_or_else(|| "Unnamed Wallet".to_string())
-                    },
-                    |wallet| self.wallet_has_resources_for(wallet, funding_method),
-                );
-                if selected_wallet_update.is_some() {
+                let unavailable: Vec<_> = wallets
+                    .iter()
+                    .filter_map(|(seed_hash, wallet)| {
+                        let reason = self.wallet_unavailable_reason(wallet, funding_method)?;
+                        Some((WalletChoice::Hd(*seed_hash), reason.to_string()))
+                    })
+                    .collect();
+                let selector = self.wallet_selector.get_or_insert_with(|| {
+                    WalletSelector::new("select_wallet").with_core_figure(CoreFigure::Usable)
+                });
+                // The row shows the balance the chosen funding method draws on.
+                selector.set_balance_kinds(&[match funding_method {
+                    FundingMethod::UsePlatformAddress => AddressKind::Platform,
+                    _ => AddressKind::Core,
+                }]);
+                selector.set_entries(self.app_context.wallet_selector_entries(false));
+                selector.set_unavailable(unavailable);
+                selector.set_selected(self.wallet.as_deref().map(WalletChoice::of_hd_wallet));
+                let response = selector.show(ui).inner;
+                if response.has_changed()
+                    && let Some(WalletChoice::Hd(seed_hash)) = response.changed_value()
+                {
+                    selected_wallet_update = wallets.get(seed_hash).cloned();
                     step_update_method = Some(funding_method);
                 }
                 true
-            } else if let Some(wallet) = wallets.first() {
+            } else if let Some(wallet) = wallets.values().next() {
                 if self.wallet.is_none() {
                     // §B.9 / QA-006: the very first time a wallet resolves with
                     // nothing chosen yet, apply the same pre-selection the
@@ -1581,6 +1609,101 @@ mod tests {
             "a running top-up must not report missing funds"
         );
         assert!(screen_shows(&mut screen, TOP_UP_FORM_PAUSED));
+    }
+
+    /// A screen funding from the wallet balance, with two named wallets loaded
+    /// and the first one chosen.
+    fn two_wallet_screen() -> (TopUpIdentityScreen, [WalletSeedHash; 2], tempfile::TempDir) {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let app_context = test_app_context(temp_dir.path());
+        let mut wallets = Vec::new();
+        for (seed_byte, alias) in [(0x61, "Alpha"), (0x62, "Beta")] {
+            let wallet = Wallet::new_from_seed(
+                [seed_byte; 64],
+                Network::Testnet,
+                Some(alias.to_string()),
+                None,
+            )
+            .expect("wallet");
+            let seed_hash = wallet.seed_hash();
+            let wallet = Arc::new(RwLock::new(wallet));
+            app_context
+                .wallet_context()
+                .insert_test_wallet(seed_hash, wallet.clone());
+            wallets.push((seed_hash, wallet));
+        }
+        app_context.has_wallet.store(true, Ordering::Relaxed);
+        let mut screen = TopUpIdentityScreen::new(test_identity(Network::Testnet), &app_context);
+        *screen.funding_method.write().expect("funding method lock") =
+            FundingMethod::UseWalletBalance;
+        screen.wallet = Some(wallets[0].1.clone());
+        (screen, [wallets[0].0, wallets[1].0], temp_dir)
+    }
+
+    /// The wallet selector names the wallet type and shows how much the wallet
+    /// can put towards the top-up — a bare wallet name tells the user nothing
+    /// about which wallet can pay.
+    #[test]
+    fn wallet_selector_shows_the_balance_next_to_the_wallet_name() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        let (mut screen, _seed_hashes, _temp_dir) = two_wallet_screen();
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1200.0, 900.0))
+            .build_ui(|ui| {
+                screen.ui(ui);
+            });
+        harness.run_steps(2);
+
+        assert!(
+            harness.query_by_value("HD: Alpha — 0 DASH").is_some(),
+            "the closed selector must show the chosen wallet with its balance"
+        );
+    }
+
+    /// A wallet the funding method cannot draw on is greyed out, and the row
+    /// carries the reason instead of leaving the user to guess.
+    #[test]
+    fn wallet_that_cannot_fund_the_top_up_is_greyed_out_with_a_reason() {
+        use egui_kittest::Harness;
+        use egui_kittest::kittest::{NodeT, Queryable};
+        let (mut screen, [alpha, beta], _temp_dir) = two_wallet_screen();
+        store_current_quote(&mut screen, beta, 1);
+        let wallets = screen.app_context.wallet_context().wallets();
+
+        assert_eq!(
+            screen.wallet_unavailable_reason(&wallets[&beta], FundingMethod::UseWalletBalance),
+            Some(WALLET_LACKS_DASH)
+        );
+        assert_eq!(
+            screen.wallet_unavailable_reason(&wallets[&alpha], FundingMethod::UseWalletBalance),
+            None,
+            "a wallet whose usable amount is still being checked stays available"
+        );
+        assert_eq!(
+            screen.wallet_unavailable_reason(&wallets[&alpha], FundingMethod::UseUnusedAssetLock),
+            Some(WALLET_HAS_NO_FUNDING)
+        );
+        assert_eq!(
+            screen.wallet_unavailable_reason(&wallets[&beta], FundingMethod::ReceiveDeposit),
+            None
+        );
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1200.0, 900.0))
+            .build_ui(|ui| {
+                screen.ui(ui);
+            });
+        harness.run_steps(2);
+        harness.get_by_value("HD: Alpha — 0 DASH").click();
+        harness.run_steps(2);
+        assert!(
+            harness
+                .get_by_label("HD: Beta — 0 DASH")
+                .accesskit_node()
+                .is_disabled(),
+            "the wallet that cannot pay must be greyed out"
+        );
     }
 
     const ADD_FUNDS_BUTTON: &str = "Add funds";

@@ -252,8 +252,10 @@ pub fn show_no_funding_large_enough(
     locks: &[TrackedAssetLock],
     minimum_duffs: Option<u64>,
 ) {
-    let refused =
-        |lock: &TrackedAssetLock| existing_funding_refusal(lock.amount, minimum_duffs).is_some();
+    let refused = |lock: &TrackedAssetLock| {
+        minimum_duffs
+            .is_some_and(|minimum| validate_asset_lock_minimum(lock.amount, minimum).is_err())
+    };
     if !locks.is_empty() && locks.iter().all(refused) {
         ui.label(NO_FUNDING_LARGE_ENOUGH);
     }

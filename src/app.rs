@@ -59,6 +59,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::vec;
 use tokio::sync::mpsc as tokiompsc;
+use tokio::sync::watch;
 
 /// Banner action id pushed when the user clicks "Retry now" on the
 /// migration-failure banner. The app loop matches this id and
@@ -1310,6 +1311,10 @@ pub struct AppState {
     /// down once it has moved on, so a Disconnect also overrules a start that
     /// is still on its way — on any network.
     spv_manual_disconnects: Arc<AtomicU64>,
+    /// How many disconnect teardowns are still running. A chain-sync start
+    /// waits for none: a teardown takes the networks offline one after another,
+    /// and would stop a start that got to its network first.
+    spv_teardowns: watch::Sender<usize>,
     /// Data-migration banner reconciler (also hosts the storage update's
     /// wallet-password prompt).
     migration: MigrationReconciler,
@@ -1465,6 +1470,23 @@ impl BitOrAssign for AppAction {
 
         // Otherwise, assign rhs to self.
         *self = rhs;
+    }
+}
+
+/// One disconnect teardown, counted as running from the frame that dispatched
+/// it until its task ends, however it ends.
+struct SpvTeardown(watch::Sender<usize>);
+
+impl SpvTeardown {
+    fn begin(running: &watch::Sender<usize>) -> Self {
+        running.send_modify(|count| *count += 1);
+        Self(running.clone())
+    }
+}
+
+impl Drop for SpvTeardown {
+    fn drop(&mut self) {
+        self.0.send_modify(|count| *count -= 1);
     }
 }
 
@@ -1891,6 +1913,7 @@ impl AppState {
             spv_block: SpvBlockReconciler::new(false),
             spv_manually_disconnected: false,
             spv_manual_disconnects: Arc::default(),
+            spv_teardowns: watch::Sender::new(0),
             migration: MigrationReconciler::new(),
             pending_confirmation: PendingConfirmation::new(),
             boot: if network_selection_required {
@@ -2147,15 +2170,24 @@ impl AppState {
     ///
     /// `manual_disconnects` is read here, on the frame loop that also counts
     /// them: a Disconnect handled after this call overrules the spawned start.
+    /// One handled before it is finished first: the start waits for every
+    /// teardown counted in `teardowns`.
     fn spawn_spv_start(
         subtasks: &Arc<TaskManager>,
         sender: egui_mpsc::SenderAsync<TaskResult>,
         app_ctx: Arc<AppContext>,
         reason: BackendInitReason,
         manual_disconnects: Arc<AtomicU64>,
+        teardowns: watch::Sender<usize>,
     ) {
         let dispatched_under = manual_disconnects.load(Ordering::SeqCst);
         let _ = subtasks.spawn_sync(reason.task_name(), async move {
+            // An earlier Disconnect finishes first. The wait cannot fail: this
+            // task holds a sender.
+            let _ = teardowns
+                .subscribe()
+                .wait_for(|running| *running == 0)
+                .await;
             let already_running = app_ctx
                 .wallet_backend()
                 .map(|b| b.is_started())
@@ -2187,6 +2219,7 @@ impl AppState {
             self.current_app_context().clone(),
             reason,
             Arc::clone(&self.spv_manual_disconnects),
+            self.spv_teardowns.clone(),
         );
     }
 
@@ -2658,6 +2691,19 @@ impl AppState {
         ]
         .iter()
         .any(|reason| self.subtasks.is_active(reason.task_name()))
+    }
+
+    /// Test seam: whether a disconnect teardown is still running.
+    #[cfg(feature = "testing")]
+    pub fn test_spv_teardown_running(&self) -> bool {
+        *self.spv_teardowns.borrow() > 0
+    }
+
+    /// Test seam: whether a chain-sync start is waiting for a disconnect
+    /// teardown to finish. Only such a start holds a receiver.
+    #[cfg(feature = "testing")]
+    pub fn test_spv_start_awaiting_teardown(&self) -> bool {
+        self.spv_teardowns.receiver_count() > 0
     }
 
     /// Sweep orphaned overlay action ids whose owning overlay is gone. Screens own
@@ -4038,7 +4084,11 @@ impl App for AppState {
                     if connection_status.begin_spv_stop()
                         || connection_status.spv_status() != SpvStatus::Stopping
                     {
+                        // Counted from this frame: a Connect handled later
+                        // starts once this teardown is done, not ahead of it.
+                        let teardown = SpvTeardown::begin(&self.spv_teardowns);
                         let _ = self.subtasks.spawn_sync("spv_manual_stop", async move {
+                            let _teardown = teardown;
                             // Background networks first: they write to the same
                             // indicator, which the active network settles last.
                             for context in background_contexts {

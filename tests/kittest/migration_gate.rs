@@ -105,6 +105,27 @@ fn step_until_painted(
     panic!("{what} did not happen within {MAX_GATE_FRAMES} frames");
 }
 
+/// Click `label` on every frame until `done` holds, panicking with `what` after
+/// [`MAX_GATE_FRAMES`]. For a click whose effect can be observed: a simulated
+/// click does not always land on the frame after the widget first appears.
+fn click_until(
+    harness: &mut Harness<'static, AppState>,
+    label: &str,
+    what: &str,
+    mut done: impl FnMut(&Harness<'static, AppState>) -> bool,
+) {
+    for _ in 0..MAX_GATE_FRAMES {
+        if done(harness) {
+            return;
+        }
+        if let Some(target) = harness.query_by_label(label) {
+            target.click();
+        }
+        harness.step();
+    }
+    panic!("{what} did not happen within {MAX_GATE_FRAMES} frames");
+}
+
 /// Mount `AppState` and let its boot preparation finish, so the app is on a
 /// screen with the gate released — the state every switch test starts from.
 fn mount_prepared_app() -> Harness<'static, AppState> {
@@ -1189,6 +1210,83 @@ fn stopping_with_nothing_starting_is_harmless_and_connect_still_works() {
                     .wallet_backend()
                     .is_ok_and(|backend| backend.is_started())
             },
+        );
+    });
+}
+
+/// Connect is the user's last word when it follows a Disconnect, even one that
+/// is still tearing down. That teardown takes the networks offline one after
+/// another, so it can reach the network on screen after the Connect was
+/// pressed — and must not take the new connection down with it.
+#[test]
+fn a_connect_pressed_while_a_disconnect_is_still_tearing_down_connects() {
+    crate::support::with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        // Two networks, both offline: the teardown stops the one left in the
+        // background first, then the one on screen.
+        let (mut harness, _first, second) = mount_on_chooser_with_auto_start();
+        let background_context = harness.state().current_app_context().clone();
+        background_context
+            .update_auto_start_spv(false)
+            .expect("keep both networks offline");
+        harness.state_mut().change_network(second);
+        poll_until(&mut harness, "the switch to the second network", |state| {
+            state.current_app_context().network() == second
+                && state.boot_phase() == BootPhase::Ready
+        });
+        let app_context = harness.state().current_app_context().clone();
+
+        // Pin the teardown on the background network, before it reaches the
+        // one on screen.
+        let background_backend = background_context
+            .wallet_backend()
+            .expect("the first network's backend was wired at boot");
+        let slow_stop = rt.block_on(background_backend.lock_start_lifecycle_for_test());
+
+        // Disconnect while the indicator reads idle, which leaves Connect on
+        // offer for as long as the teardown runs.
+        harness.state_mut().test_arm_spv_block();
+        click_until(&mut harness, "Cancel", "the cancel confirmation", |h| {
+            h.query_by_label("Stop syncing").is_some()
+        });
+        click_until(
+            &mut harness,
+            "Stop syncing",
+            "the confirmed cancel to reach the frame loop",
+            |h| !h.state().test_spv_block_armed() && h.state().test_spv_teardown_running(),
+        );
+        click_until(
+            &mut harness,
+            "Connect",
+            "the Connect to reach the frame loop",
+            |h| h.state().test_spv_block_armed(),
+        );
+        // Let the Connect get as far as it can while the teardown is pinned:
+        // either it has finished, or it is waiting for the teardown.
+        poll_until(
+            &mut harness,
+            "the Connect to finish or to wait for the teardown",
+            |state| !state.test_spv_start_in_flight() || state.test_spv_start_awaiting_teardown(),
+        );
+        assert!(
+            harness.state().test_spv_teardown_running(),
+            "the teardown must still be pinned when the Connect has gone as far as it can",
+        );
+
+        drop(slow_stop);
+        poll_until(
+            &mut harness,
+            "the teardown and the Connect to finish",
+            |state| !state.test_spv_teardown_running() && !state.test_spv_start_in_flight(),
+        );
+        assert!(
+            app_context
+                .wallet_backend()
+                .is_ok_and(|backend| backend.is_started()),
+            "a Connect pressed after a Disconnect must leave chain sync running once that \
+             Disconnect has finished tearing down",
         );
     });
 }

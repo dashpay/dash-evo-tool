@@ -1695,6 +1695,7 @@ As a user with more than one wallet, I want every wallet picker to show each wal
 - Each screen counts the balances that matter there: the Dash the wallet can use right now where the wallet pays, the Platform address balance when funding from a Platform address, and everything the wallet holds (Core, Platform addresses, shielded funds and its identities' credits) where the wallet is only being identified.
 - Hovering a wallet breaks the shown balance down by kind.
 - A wallet that cannot be used for the chosen funding method is greyed out, and hovering it says why and what to do instead.
+- If the balances of the wallet's identities cannot be read, the load-existing-identity screen says so, leaves them out of the totals instead of showing them as zero, and stays usable.
 - The Wallets page picker and the top-bar wallet pill keep their own formats.
 
 ## Identities Hub (IDH)

@@ -1117,17 +1117,16 @@ impl AppContext {
     /// A wallet with no identities is absent.
     ///
     /// Reads and decodes every wallet-owned identity record, so call it when a
-    /// screen opens or refreshes, never once per frame. Display-only: on a
-    /// storage failure no wallet gets an identity balance.
-    pub fn identity_credits_by_wallet(&self) -> BTreeMap<WalletSeedHash, Credits> {
+    /// screen opens or refreshes, never once per frame. One unreadable record
+    /// fails the whole read: its owner may be unknown, so a partial answer
+    /// would understate some wallet's total without saying which.
+    pub fn identity_credits_by_wallet(
+        &self,
+    ) -> std::result::Result<BTreeMap<WalletSeedHash, Credits>, TaskError> {
         self.det_kv()
             .and_then(|kv| sum_identity_credits_by_wallet(&kv, self.network))
-            .unwrap_or_else(|error| {
-                tracing::warn!(
-                    ?error,
-                    "Identity balances could not be read for the wallet selector; wallets are shown without them"
-                );
-                BTreeMap::new()
+            .map_err(|error| TaskError::IdentityBalancesUnavailable {
+                source: Box::new(error),
             })
     }
 
@@ -2686,6 +2685,74 @@ mod tests {
         index_add_identity(&kv, &id(7)).unwrap();
 
         assert!(sum_identity_credits_by_wallet(&kv, Network::Testnet).is_err());
+    }
+
+    fn app_context_over(kv: DetKv) -> (Arc<AppContext>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        ctx.set_det_kv_override_for_test(kv);
+        (ctx, dir)
+    }
+
+    #[test]
+    fn identity_credits_by_wallet_returns_each_wallets_sum() {
+        let kv = empty_kv();
+        put_identity_with_credits(&kv, 1, Some([0xA1; 32]), 1_500);
+        put_identity_with_credits(&kv, 2, Some([0xA1; 32]), 500);
+        let (ctx, _dir) = app_context_over(kv);
+
+        assert_eq!(
+            ctx.identity_credits_by_wallet().expect("readable store"),
+            BTreeMap::from([([0xA1; 32], 2_000)])
+        );
+    }
+
+    /// One unreadable record fails the whole read. A record that cannot be
+    /// read may belong to any wallet, so a partial answer would understate
+    /// some wallet's total without saying which.
+    #[test]
+    fn identity_credits_by_wallet_reports_an_unreadable_record_instead_of_a_partial_sum() {
+        let kv = empty_kv();
+        put_identity_with_credits(&kv, 1, Some([0xB2; 32]), 700);
+        kv.put(
+            DetScope::Identity(&id(7)),
+            IDENTITY_KEY,
+            &StoredQualifiedIdentity {
+                wallet_hash: Some([0xA1; 32]),
+                wallet_index: Some(0),
+                ..stored("User")
+            },
+        )
+        .unwrap();
+        index_add_identity(&kv, &id(7)).unwrap();
+        let (ctx, _dir) = app_context_over(kv);
+
+        let error = ctx
+            .identity_credits_by_wallet()
+            .expect_err("an unreadable record must not read as no identities");
+
+        assert!(matches!(
+            &error,
+            TaskError::IdentityBalancesUnavailable { source }
+                if matches!(**source, TaskError::IdentityEncoding { .. })
+        ));
+    }
+
+    #[test]
+    fn identity_credits_by_wallet_reports_a_storage_failure() {
+        let store = Arc::new(FailingKv::default());
+        store.fail_all_reads(true);
+        let (ctx, _dir) = app_context_over(DetKv::from_store(store));
+
+        let error = ctx
+            .identity_credits_by_wallet()
+            .expect_err("a failed read must not read as no identities");
+
+        assert!(matches!(
+            &error,
+            TaskError::IdentityBalancesUnavailable { source }
+                if matches!(**source, TaskError::IdentityStorage { .. })
+        ));
     }
 
     // ---------------------------------------------------------------

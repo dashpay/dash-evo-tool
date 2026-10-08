@@ -3949,6 +3949,7 @@ impl App for AppState {
         ) {
             self.handle_backend_task(task);
         }
+        crate::ui::identity::top_up_identity_screen::restore_top_up_background_banner(ctx);
         self.pending_confirmation.update(ctx, &active_context);
         if !self.network_selection_required {
             self.migration.update_banner(

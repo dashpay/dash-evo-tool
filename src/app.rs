@@ -2647,6 +2647,19 @@ impl AppState {
         self.spv_block.armed()
     }
 
+    /// Test seam: whether a chain-sync start the frame loop dispatched has not
+    /// finished yet, from the frame that dispatched it.
+    #[cfg(feature = "testing")]
+    pub fn test_spv_start_in_flight(&self) -> bool {
+        [
+            BackendInitReason::Boot,
+            BackendInitReason::OnboardingAutoStart,
+            BackendInitReason::ManualConnect,
+        ]
+        .iter()
+        .any(|reason| self.subtasks.is_active(reason.task_name()))
+    }
+
     /// Sweep orphaned overlay action ids whose owning overlay is gone. Screens own
     /// dispatch and cancellation today — they drain their own clicks via
     /// [`OverlayHandle::take_actions`](crate::ui::components::OverlayHandle::take_actions);

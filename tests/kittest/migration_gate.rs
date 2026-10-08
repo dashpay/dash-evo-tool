@@ -1042,16 +1042,20 @@ fn a_disconnect_during_a_first_visit_switch_is_honored() {
     });
 }
 
-/// Pump frames for about a second, failing if chain sync comes up on `context`.
-/// For a start that was already dispatched when the user disconnected: it is
-/// spawned work, so its absence needs a settle window.
-fn assert_overruled_start_stays_down(
+/// Pump frames until every chain-sync start the app dispatched has finished,
+/// failing if chain sync comes up on `context` on the way or once they have.
+/// For a start that was already dispatched when the user disconnected. Only its
+/// finishing proves it stood down: a start that has not run yet looks the same
+/// as one that will never connect.
+fn assert_overruled_start_stands_down(
     harness: &mut Harness<'static, AppState>,
     context: &AppContext,
     when: &str,
 ) {
-    for _ in 0..50 {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
         harness.step();
+        let finished = !harness.state().test_spv_start_in_flight();
         let started = context
             .wallet_backend()
             .is_ok_and(|backend| backend.is_started());
@@ -1064,6 +1068,13 @@ fn assert_overruled_start_stays_down(
                 ),
             "a start overruled by a disconnect must not bring chain sync up {when} \
              (started: {started}, status: {status:?})",
+        );
+        if finished {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the overruled start did not finish in time {when}",
         );
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -1100,7 +1111,7 @@ fn cancelling_the_startup_block_overrules_a_start_still_on_its_way() {
         );
 
         drop(parked_start);
-        assert_overruled_start_stays_down(
+        assert_overruled_start_stands_down(
             &mut harness,
             &app_context,
             "after cancelling the startup block",
@@ -1218,7 +1229,7 @@ fn a_manual_disconnect_overrules_a_start_still_on_its_way_on_another_network() {
         });
 
         drop(parked_start);
-        assert_overruled_start_stays_down(
+        assert_overruled_start_stands_down(
             &mut harness,
             &background_context,
             "on a network left in the background",

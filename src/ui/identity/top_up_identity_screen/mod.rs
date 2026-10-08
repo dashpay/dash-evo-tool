@@ -2183,6 +2183,60 @@ mod tests {
         assert_eq!(tracked_dispatches(&ctx), vec![top_up]);
     }
 
+    /// Two top-ups in the background share the one progress banner, so the
+    /// end of the first must leave the second everything it still needs.
+    #[test]
+    fn background_banner_serves_the_top_up_that_outlasts_another() {
+        let ctx = egui::Context::default();
+        let first = tracked_top_up(&ctx, Identifier::from([1; 32]), 1);
+        let second = tracked_top_up(&ctx, Identifier::from([2; 32]), 2);
+        send_top_up_to_background(&ctx, &first);
+        send_top_up_to_background(&ctx, &second);
+        assert_eq!(
+            background_notices(&ctx),
+            1,
+            "two background top-ups share one progress banner"
+        );
+
+        assert!(finish_top_up(&ctx, &first, true));
+        assert_eq!(tracked_dispatches(&ctx), vec![second.clone()]);
+        assert_eq!(
+            background_notices(&ctx),
+            1,
+            "the progress banner stays for the top-up still running"
+        );
+
+        // The banner cap strikes between the two ends.
+        flood_banners(&ctx, 1);
+        assert_eq!(background_notices(&ctx), 0);
+        restore_top_up_background_banner(&ctx);
+        assert_eq!(
+            background_notices(&ctx),
+            1,
+            "the top-up still running must get its banner back"
+        );
+
+        // Dropped again, and the last top-up ends before the next frame.
+        flood_banners(&ctx, 2);
+        assert!(finish_top_up(&ctx, &second, true));
+        assert!(tracked_dispatches(&ctx).is_empty());
+        assert!(
+            ctx.data(|data| {
+                data.get_temp::<BannerHandle>(egui::Id::new(BACKGROUND_TOP_UP_BANNER_ID))
+            })
+            .is_none(),
+            "nothing of the banner is kept once the last top-up has ended"
+        );
+        restore_top_up_background_banner(&ctx);
+        flood_banners(&ctx, 3);
+        restore_top_up_background_banner(&ctx);
+        assert_eq!(
+            background_notices(&ctx),
+            0,
+            "no progress banner comes back once the last top-up has ended"
+        );
+    }
+
     /// A screen that is not in view when its top-up ends never learns how it
     /// ended, so the form it brings back must not still hold the amount that
     /// was just sent.

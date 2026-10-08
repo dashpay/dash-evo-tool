@@ -339,13 +339,12 @@ impl RegisterDpnsNameScreen {
     }
 
     fn raise_progress_overlay(&mut self, ctx: &Context) {
-        let title = format!("Registering @{name}.", name = self.label());
-        self.op_overlay.raise(
-            ctx,
-            title,
-            OverlayConfig::default()
-                .with_description("Keep Dash Evo Tool open until this finishes."),
+        let description = format!(
+            "Registering @{name}. Keep Dash Evo Tool open until this finishes.",
+            name = self.label()
         );
+        self.op_overlay
+            .raise(ctx, description, OverlayConfig::default());
     }
 
     /// Test seam: run the exact production overlay-raise the Pay button uses.

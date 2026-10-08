@@ -332,6 +332,8 @@ pub enum BackendTaskContext {
     TokenBalanceRefresh,
     /// A DashPay social-profile update for one identity.
     DashPayProfileUpdate(Identifier),
+    /// A top-up of one identity's balance.
+    IdentityTopUp(Identifier),
     /// A perpetual-reward estimate for one identity-token pair.
     TokenRewardEstimate(IdentityTokenIdentifier),
     /// The destructive per-network database clear.
@@ -501,6 +503,13 @@ impl BackendTaskContext {
         }
     }
 
+    pub(crate) fn identity_top_up_identity(&self) -> Option<Identifier> {
+        match self.operation() {
+            Self::IdentityTopUp(identity_id) => Some(*identity_id),
+            _ => None,
+        }
+    }
+
     pub(crate) fn dispatched_document_fetch(&self) -> bool {
         matches!(
             self,
@@ -624,6 +633,13 @@ impl From<&BackendTask> for BackendTaskContext {
             BackendTask::IdentityTask(IdentityTask::RefreshIdentity(identity)) => {
                 Self::IdentityRefresh(identity.identity.id())
             }
+            BackendTask::IdentityTask(IdentityTask::TopUpIdentity(info)) => {
+                Self::IdentityTopUp(info.qualified_identity.identity.id())
+            }
+            BackendTask::IdentityTask(IdentityTask::TopUpIdentityFromPlatformAddresses {
+                identity,
+                ..
+            }) => Self::IdentityTopUp(identity.identity.id()),
             BackendTask::IdentityTask(
                 IdentityTask::AddKeyToIdentity(identity, ..)
                 | IdentityTask::AddDerivedKeyToIdentity { identity, .. },

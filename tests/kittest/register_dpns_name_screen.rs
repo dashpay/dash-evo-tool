@@ -61,6 +61,39 @@ fn dpns_dispatch_raises_blocking_overlay() {
     });
 }
 
+/// The dialog says which username is being registered and asks to keep the app open.
+#[test]
+fn dpns_overlay_names_the_username_and_asks_to_keep_the_app_open() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
+
+        let mut screen = screen_with_context();
+        screen.type_label_for_test("alice");
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(420.0, 360.0))
+            .build_ui(|ui| {
+                ProgressOverlay::render_global(ui.ctx(), false);
+            });
+
+        screen.raise_progress_overlay_for_test(&harness.ctx);
+        // A fixed step count: the overlay spinner never stops repainting.
+        harness.run_steps(2);
+        assert!(
+            harness
+                .query_by_label_contains("Registering @alice.")
+                .is_some(),
+            "the dialog must name the username being registered"
+        );
+        assert!(
+            harness
+                .query_by_label_contains("Keep Dash Evo Tool open until this finishes.")
+                .is_some(),
+            "the dialog must ask to keep the app open"
+        );
+    });
+}
+
 /// A successful registration result tears the overlay down (success terminal path).
 #[test]
 fn dpns_success_result_clears_overlay() {

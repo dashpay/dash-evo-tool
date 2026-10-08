@@ -2,7 +2,7 @@ use crate::app::AppAction;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::ui::RootScreenType;
 use crate::ui::identity::funding_common::{FundingMethod, spendable_covers_minimum};
-use crate::ui::identity::top_up_identity_screen::{TopUpIdentityScreen, WalletFundedScreenStep};
+use crate::ui::identity::top_up_identity_screen::TopUpIdentityScreen;
 use crate::ui::theme::DashColors;
 use egui::{Color32, Frame, Margin, RichText, Ui};
 
@@ -127,9 +127,6 @@ impl TopUpIdentityScreen {
 
         self.top_up_funding_amount_input(ui);
 
-        // Extract the step from the RwLock to minimize borrow scope
-        let step = self.current_step();
-
         // Only show the fee estimate and Add funds button once a positive amount
         // is entered — otherwise clicking Add funds would silently no-op.
         let has_valid_amount = self.funding_amount_exact.is_some_and(|d| d > 0);
@@ -174,23 +171,6 @@ impl TopUpIdentityScreen {
         if ui.add(button).clicked() {
             action = self.top_up_identity_clicked(FundingMethod::UseWalletBalance);
         }
-
-        ui.add_space(20.0);
-
-        ui.vertical_centered(|ui| {
-            match step {
-                WalletFundedScreenStep::WaitingForAssetLock => {
-                    ui.heading("Waiting for the Dash network to confirm the transfer.");
-                }
-                WalletFundedScreenStep::WaitingForPlatformAcceptance => {
-                    ui.heading("Waiting for Platform to add the funds to the identity.");
-                }
-                WalletFundedScreenStep::Success => {
-                    ui.heading("...Success...");
-                }
-                _ => {}
-            };
-        });
 
         ui.add_space(40.0);
         action

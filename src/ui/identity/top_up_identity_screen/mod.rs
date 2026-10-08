@@ -25,7 +25,9 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
-use crate::ui::components::{MessageBanner, OptionOverlayExt, OverlayConfig, OverlayHandle};
+use crate::ui::components::{
+    BannerHandle, MessageBanner, OptionBannerExt, OptionOverlayExt, OverlayConfig, OverlayHandle,
+};
 use crate::ui::identity::funding_common::{
     FundingMethod, WalletFundedScreenStep, default_funding_state, deposit_event_outcome,
     max_amount_after_fee_reserve, receive_deposit_ceiling_duffs, spendable_covers_minimum,
@@ -61,6 +63,7 @@ const TOP_UP_IN_BACKGROUND: &str =
 const TOP_UP_BACKGROUND_LABEL: &str = "Continue in background";
 const TOP_UP_BACKGROUND_ACTION_ID: &str = "identity:top_up:background";
 const TOP_UPS_IN_FLIGHT_ID: &str = "__identity_top_ups_in_flight";
+const BACKGROUND_TOP_UP_BANNER_ID: &str = "__identity_background_top_up_banner";
 /// How long the blocking overlay waits before it offers to continue in the
 /// background. A top-up normally finishes well inside this window.
 const TOP_UP_BACKGROUND_OFFER_AFTER: Duration = Duration::from_secs(30);
@@ -111,8 +114,27 @@ fn track_top_up(ctx: &egui::Context, dispatch: BackendTaskContext, identity_labe
     store_top_ups_in_flight(ctx, top_ups);
 }
 
-fn show_top_up_background_banner(ctx: &egui::Context) {
-    MessageBanner::set_global(ctx, TOP_UP_IN_BACKGROUND, MessageType::Info).disable_auto_dismiss();
+/// Raise the background-progress banner and keep its handle, the only witness
+/// of the banner cap dropping it later.
+fn raise_top_up_background_banner(ctx: &egui::Context) {
+    let banner = MessageBanner::set_global(ctx, TOP_UP_IN_BACKGROUND, MessageType::Info);
+    banner.disable_auto_dismiss();
+    ctx.data_mut(|data| data.insert_temp(egui::Id::new(BACKGROUND_TOP_UP_BANNER_ID), banner));
+}
+
+/// Bring the background-progress banner back when the banner cap dropped it
+/// while a background top-up still runs. A banner the user closed stays
+/// closed. Runs every frame, as no screen may be left to do it.
+pub(crate) fn restore_top_up_background_banner(ctx: &egui::Context) {
+    let banner: Option<BannerHandle> =
+        ctx.data(|data| data.get_temp(egui::Id::new(BACKGROUND_TOP_UP_BANNER_ID)));
+    if banner.was_evicted()
+        && top_ups_in_flight(ctx)
+            .iter()
+            .any(|top_up| top_up.in_background)
+    {
+        raise_top_up_background_banner(ctx);
+    }
 }
 
 /// Follow the top-up sent as `dispatch` with the progress banner instead of
@@ -127,7 +149,7 @@ fn send_top_up_to_background(ctx: &egui::Context, dispatch: &BackendTaskContext)
     };
     top_up.in_background = true;
     store_top_ups_in_flight(ctx, top_ups);
-    show_top_up_background_banner(ctx);
+    raise_top_up_background_banner(ctx);
 }
 
 /// A network switch drops every overlay, banner and stacked screen while the
@@ -141,7 +163,7 @@ pub(crate) fn follow_top_ups_after_network_switch(ctx: &egui::Context) {
         top_up.in_background = true;
     }
     store_top_ups_in_flight(ctx, top_ups);
-    show_top_up_background_banner(ctx);
+    raise_top_up_background_banner(ctx);
 }
 
 /// End the top-up sent as `dispatch` on its own result, and confirm a success
@@ -163,6 +185,10 @@ pub(crate) fn finish_top_up(
     let ended = top_ups.remove(position);
     if !top_ups.iter().any(|top_up| top_up.in_background) {
         MessageBanner::clear_global_message(ctx, TOP_UP_IN_BACKGROUND);
+        // The handle holds the egui context, which must not stay stored in itself.
+        ctx.data_mut(|data| {
+            data.remove::<BannerHandle>(egui::Id::new(BACKGROUND_TOP_UP_BANNER_ID))
+        });
     }
     store_top_ups_in_flight(ctx, top_ups);
     if succeeded && ended.in_background {
@@ -1368,6 +1394,7 @@ mod tests {
     use crate::model::qualified_identity::{IdentityStatus, IdentityType};
     use crate::ui::Screen;
     use crate::ui::components::ProgressOverlay;
+    use crate::ui::components::message_banner::{MAX_BANNERS, global_banner_texts};
     use crate::wallet_backend::AssetLockInputState;
     use dash_sdk::dpp::dashcore::{Network, OutPoint, Txid, hashes::Hash};
     use dash_sdk::dpp::identity::Identity;
@@ -2041,6 +2068,119 @@ mod tests {
 
         assert!(finish_top_up(&ctx, &second, false));
         assert!(!MessageBanner::has_global(&ctx));
+    }
+
+    /// How many background-progress banners the global list holds.
+    fn background_notices(ctx: &egui::Context) -> usize {
+        global_banner_texts(ctx)
+            .iter()
+            .filter(|text| *text == TOP_UP_IN_BACKGROUND)
+            .count()
+    }
+
+    /// The dispatches of the top-ups in flight.
+    fn tracked_dispatches(ctx: &egui::Context) -> Vec<BackendTaskContext> {
+        top_ups_in_flight(ctx)
+            .into_iter()
+            .map(|top_up| top_up.dispatch)
+            .collect()
+    }
+
+    fn unrelated_notification(round: u8, n: usize) -> String {
+        format!("Unrelated notification {round}-{n}.")
+    }
+
+    /// Raise as many unrelated notifications as the global list holds, which
+    /// pushes every older banner out of it.
+    fn flood_banners(ctx: &egui::Context, round: u8) {
+        for n in 0..MAX_BANNERS {
+            MessageBanner::set_global(ctx, unrelated_notification(round, n), MessageType::Info);
+        }
+    }
+
+    /// The global banner list is capped, so later notifications can push the
+    /// progress banner out while its top-up still runs.
+    #[test]
+    fn background_top_up_banner_returns_after_the_banner_cap_drops_it() {
+        let ctx = egui::Context::default();
+        let top_up = tracked_top_up(&ctx, Identifier::from([1; 32]), 1);
+        send_top_up_to_background(&ctx, &top_up);
+
+        flood_banners(&ctx, 1);
+        assert_eq!(
+            background_notices(&ctx),
+            0,
+            "the flood must have pushed the progress banner out"
+        );
+
+        // Two frames: a banner that is back must not be raised again.
+        restore_top_up_background_banner(&ctx);
+        restore_top_up_background_banner(&ctx);
+        assert_eq!(
+            background_notices(&ctx),
+            1,
+            "a top-up still running in the background must get its banner back"
+        );
+        assert_eq!(
+            tracked_dispatches(&ctx),
+            vec![top_up.clone()],
+            "bringing the banner back must leave the top-up tracked exactly once"
+        );
+
+        // The banner that came back is protected like the first one.
+        flood_banners(&ctx, 2);
+        assert_eq!(background_notices(&ctx), 0);
+        restore_top_up_background_banner(&ctx);
+        assert_eq!(background_notices(&ctx), 1);
+
+        // Dropped once more, and this time the top-up ends before the next frame.
+        flood_banners(&ctx, 3);
+        assert!(finish_top_up(&ctx, &top_up, false));
+        restore_top_up_background_banner(&ctx);
+        assert_eq!(
+            background_notices(&ctx),
+            0,
+            "a top-up that ended must not get its progress banner back"
+        );
+    }
+
+    /// Only the banner cap is undone. A user who closed the progress banner
+    /// asked for it to go away, also when the one closed had come back before.
+    #[test]
+    fn closed_background_top_up_banner_stays_closed() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        const DISMISS: &str = "\u{274C}";
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1200.0, 900.0))
+            .build_ui(MessageBanner::show_global);
+        let ctx = harness.ctx.clone();
+        let top_up = tracked_top_up(&ctx, Identifier::from([1; 32]), 1);
+        send_top_up_to_background(&ctx, &top_up);
+        flood_banners(&ctx, 1);
+        restore_top_up_background_banner(&ctx);
+        assert_eq!(background_notices(&ctx), 1);
+
+        // Leave the progress banner alone on screen, then close it by its button.
+        for n in 0..MAX_BANNERS {
+            MessageBanner::clear_global_message(&ctx, unrelated_notification(1, n));
+        }
+        harness.run_steps(2);
+        harness.get_by_label(DISMISS).click();
+        harness.run_steps(2);
+        assert_eq!(
+            background_notices(&ctx),
+            0,
+            "the dismiss button must close the progress banner"
+        );
+
+        flood_banners(&ctx, 2);
+        restore_top_up_background_banner(&ctx);
+        assert_eq!(
+            background_notices(&ctx),
+            0,
+            "a progress banner the user closed must stay closed"
+        );
+        assert_eq!(tracked_dispatches(&ctx), vec![top_up]);
     }
 
     /// A screen that is not in view when its top-up ends never learns how it

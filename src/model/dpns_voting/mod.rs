@@ -127,6 +127,27 @@ pub fn validate_dpns_schedule_time(
     Ok(())
 }
 
+/// The time a new schedule starts from: an hour ahead, or halfway to
+/// `earliest_end` when an hour ahead is not before it. Always a whole minute,
+/// and valid under [`validate_dpns_schedule_time`] whenever a whole minute is.
+pub fn default_dpns_schedule_time(now_ms: u64, earliest_end: Option<u64>) -> u64 {
+    const MINUTE_MS: u64 = 60_000;
+    let whole_minute = |ms: u64| ms - ms % MINUTE_MS;
+    let hour_ahead = whole_minute(now_ms.saturating_add(60 * MINUTE_MS));
+    let Some(end) = earliest_end.filter(|end| hour_ahead >= *end) else {
+        return hour_ahead;
+    };
+    let halfway = whole_minute(now_ms + end.saturating_sub(now_ms) / 2);
+    // Rounding down can land on the minute already running; the next one is
+    // the first still ahead.
+    let ahead = if halfway > now_ms {
+        halfway
+    } else {
+        halfway.saturating_add(MINUTE_MS)
+    };
+    if ahead < end { ahead } else { hour_ahead }
+}
+
 /// Validate the new schedule against the current time and the selected contest.
 pub fn validate_dpns_schedule_edit(
     choice: ResourceVoteChoice,
@@ -485,6 +506,68 @@ mod tests {
     use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
     use dash_sdk::platform::Identifier;
+
+    const MINUTE: u64 = 60_000;
+    /// 30 seconds past a whole minute.
+    const NOW: u64 = 1_900_000_020_000 + 30_000;
+
+    #[test]
+    fn a_new_schedule_starts_an_hour_ahead_on_a_whole_minute() {
+        assert_eq!(NOW % MINUTE, 30_000);
+        let hour_ahead = NOW - 30_000 + 60 * MINUTE;
+        assert_eq!(default_dpns_schedule_time(NOW, None), hour_ahead);
+        assert_eq!(
+            default_dpns_schedule_time(NOW, Some(NOW + 3 * 24 * 60 * MINUTE)),
+            hour_ahead
+        );
+        assert_eq!(
+            default_dpns_schedule_time(NOW, Some(hour_ahead + 1)),
+            hour_ahead
+        );
+    }
+
+    #[test]
+    fn a_new_schedule_starts_halfway_to_a_deadline_under_an_hour_away() {
+        let hour_ahead = NOW - 30_000 + 60 * MINUTE;
+        assert_eq!(
+            default_dpns_schedule_time(NOW, Some(hour_ahead)),
+            NOW - 30_000 + 30 * MINUTE,
+            "an hour ahead is the deadline itself, so it is not before it"
+        );
+        assert_eq!(
+            default_dpns_schedule_time(NOW, Some(NOW + 40 * MINUTE)),
+            NOW - 30_000 + 20 * MINUTE
+        );
+    }
+
+    /// Whenever a whole minute lies between now and the deadline, the default
+    /// is one of them.
+    #[test]
+    fn a_new_schedule_is_valid_whenever_a_whole_minute_is() {
+        for seconds_past_minute in 0..60 {
+            let now = NOW - 30_000 + seconds_past_minute * 1_000;
+            for window_secs in (1..=7_500).step_by(7) {
+                let end = now + window_secs * 1_000;
+                let next_minute = now - now % MINUTE + MINUTE;
+                let at = default_dpns_schedule_time(now, Some(end));
+                assert_eq!(at % MINUTE, 0, "{now} {end}");
+                assert_eq!(
+                    validate_dpns_schedule_time(at, now, Some(end)).is_ok(),
+                    next_minute < end,
+                    "now {now}, end {end}, default {at}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_new_schedule_for_an_ended_contest_is_still_an_hour_ahead() {
+        let hour_ahead = NOW - 30_000 + 60 * MINUTE;
+        assert_eq!(default_dpns_schedule_time(NOW, Some(NOW)), hour_ahead);
+        assert_eq!(default_dpns_schedule_time(NOW, Some(NOW - 1)), hour_ahead);
+        assert_eq!(default_dpns_schedule_time(NOW, Some(0)), hour_ahead);
+        assert_eq!(default_dpns_schedule_time(u64::MAX, None) % MINUTE, 0);
+    }
 
     #[test]
     fn authoritative_outcomes_preserve_exact_keys_and_share_tie_breaking() {

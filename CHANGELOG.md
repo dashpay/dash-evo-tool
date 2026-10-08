@@ -216,6 +216,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   networks. It used to reconnect on the new network whenever "Auto-start SPV on
   startup" was enabled. Press Connect or restart the app to connect again.
 
+- Scheduling votes "At a specific time" starts from a time you can use: an hour
+  after you open the confirmation, or halfway to the earliest deadline when a
+  contest ends sooner. It used to suggest a time about a day ahead, often past
+  the deadline, so the confirmation opened with a warning and no votes to
+  schedule.
+
 - Emphasized text is readable in light mode. Section headings, usernames,
   totals and the labels of a few buttons were drawn in white on a light
   background, and so were some loading spinners.
@@ -705,6 +711,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   says plainly that the rate shown is fixed rather than read from the network.
 
 ### Changed
+
+- Dates and times are shown in your local time zone in one format
+  (`2026-10-05 14:00`) across name voting, usernames, wallet transactions, token
+  claims and GroveSTARK proofs, instead of a mix of UTC and local styles. A scheduled
+  vote time is entered in local time, and its label shows the zone's distance
+  from UTC.
+
+- The vote choices on a contested name are listed one per row as a pick-one
+  list, so they read as options rather than plain text.
 
 - The startup "The app is opening your saved data." block now counts the saved
   wallets as it prepares them ("Step 3 of 12"), so a profile with many wallets

@@ -106,7 +106,7 @@ scripts/safe-cargo.sh +nightly fmt --all
 
 Code lives by responsibility, not convenience:
 
-- **`model/`** — stateless data types and pure validation (format/length/charset). The single source of truth for validation. No `AppContext`, `Sdk`, DB, or `BackendTask`. All fee estimation goes in `model/fee_estimation.rs` — never inlined elsewhere.
+- **`model/`** — stateless data types and pure validation (format/length/charset). The single source of truth for validation. No `AppContext`, `Sdk`, DB, or `BackendTask`. All fee estimation goes in `model/fee_estimation.rs` — never inlined elsewhere. All user-facing date/time formatting and reading of typed dates goes in `model/datetime.rs` (local time zone, ISO style) — never inlined elsewhere.
 - **`backend_task/`** — async business logic, one submodule per domain; the authoritative enforcement layer. `TaskError` and its typed variants live in `backend_task/error.rs`.
 - **`database/`** — SQLite persistence, one module per domain.
 - **`context/`** — `AppContext` submodules (`*_db.rs`, lifecycle, settings, status).

@@ -53,11 +53,7 @@ impl AddNewIdentityScreen {
             }
         };
 
-        let key_count = self.identity_keys.others.len() + 1; // +1 for master key
-        let minimum_credits = self
-            .app_context
-            .fee_estimator()
-            .estimate_identity_create(key_count);
+        let minimum_credits = self.required_wallet_credits();
 
         if spendable_covers_minimum(spendable_duffs, minimum_credits) {
             return None;

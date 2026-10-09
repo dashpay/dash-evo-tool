@@ -7523,6 +7523,97 @@ async fn top_up_below_the_network_fee_is_refused_before_the_wallet_is_touched() 
     );
 }
 
+/// A funding transaction the wallet already holds, too small for the network
+/// fee, is refused by every task that can be given one — at once, so before
+/// anything is signed or sent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn existing_funding_below_the_network_fee_is_refused_by_every_task_that_takes_one() {
+    use crate::backend_task::BackendTask;
+    use crate::backend_task::identity::{
+        IdentityTask, IdentityTopUpInfo, RegisterIdentityFundingMethod, TopUpIdentityFundingMethod,
+        build_identity_registration_with_seed,
+    };
+    use crate::backend_task::wallet::WalletTask;
+    use crate::model::asset_lock::confirmed_funding_for_test;
+    use dash_sdk::dpp::address_funds::PlatformAddress;
+
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    let seed = [0x6Du8; 64];
+    let wallet = Wallet::new_from_seed(seed, Network::Testnet, None, None).expect("build wallet");
+    let seed_hash = wallet.seed_hash();
+    ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
+        .expect("register wallet");
+    // The first wallet task starts the backend and registers the wallet in it.
+    ctx.run_backend_task(
+        BackendTask::WalletTask(WalletTask::ListTrackedAssetLocks { seed_hash }),
+        sender.clone(),
+    )
+    .await
+    .expect("start the wallet backend");
+    let funding = confirmed_funding_for_test(1, 5_237);
+    let out_point = funding.out_point;
+    ctx.wallet_backend()
+        .expect("wallet backend")
+        .track_asset_lock_for_test(&seed_hash, funding)
+        .await;
+    let wallet = ctx.wallet_arc(&seed_hash).expect("wallet");
+
+    let top_up = IdentityTask::TopUpIdentity(IdentityTopUpInfo {
+        qualified_identity: wallet_owned_qualified_identity(Some(0)),
+        wallet: Arc::clone(&wallet),
+        identity_funding_method: TopUpIdentityFundingMethod::UseAssetLock {
+            out_point,
+            identity_index: 0,
+            top_up_index: 0,
+        },
+    });
+    let mut creation = build_identity_registration_with_seed(&ctx, &wallet, &seed, 0, 0)
+        .expect("registration info");
+    creation.identity_funding_method = RegisterIdentityFundingMethod::UseAssetLock {
+        out_point,
+        identity_index: 0,
+    };
+    let recipient =
+        std::collections::BTreeMap::from([(PlatformAddress::P2pkh([0x21u8; 20]), None)]);
+
+    let sdk = ctx.sdk();
+    let refusals = [
+        tokio::time::timeout(
+            REFUSAL_DEADLINE,
+            ctx.run_identity_task(top_up, &sdk, sender.clone()),
+        )
+        .await,
+        tokio::time::timeout(
+            REFUSAL_DEADLINE,
+            ctx.run_identity_task(IdentityTask::RegisterIdentity(creation), &sdk, sender),
+        )
+        .await,
+        tokio::time::timeout(
+            REFUSAL_DEADLINE,
+            ctx.fund_platform_address_from_asset_lock(seed_hash, out_point, recipient),
+        )
+        .await,
+    ];
+    for (task, refusal) in ["top-up", "identity creation", "address funding"]
+        .into_iter()
+        .zip(refusals)
+    {
+        assert!(
+            matches!(
+                refusal,
+                Ok(Err(TaskError::ExistingFundingBelowNetworkFee {
+                    amount_duffs: 5_237,
+                    ..
+                }))
+            ),
+            "{task}: expected ExistingFundingBelowNetworkFee, got: {refusal:?}"
+        );
+    }
+}
+
+/// How long a task may take to refuse a funding it must not use.
+const REFUSAL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Creating an identity with a funding too small for the fee the network takes
 /// for its keys is refused by the task itself, before the wallet backend — not
 /// started here — is asked for anything.

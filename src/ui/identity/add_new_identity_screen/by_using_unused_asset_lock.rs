@@ -7,6 +7,7 @@ use crate::ui::identity::add_new_identity_screen::{
 };
 use crate::ui::identity::funding_common::{
     FundingAssetLockPicker, actionable_asset_locks, asset_lock_address, asset_lock_status_label,
+    existing_funding_refusal, show_no_funding_large_enough,
 };
 use crate::ui::theme::{ComponentStyles, DashColors};
 use egui::{Color32, RichText, Ui};
@@ -24,12 +25,19 @@ impl AddNewIdentityScreen {
 
         ui.heading("Select the unfinished funding to use:");
         ui.add_space(8.0);
+        let minimum_duffs = self.minimum_creation_duffs();
 
         egui::ScrollArea::vertical()
             .auto_shrink([false, true])
             .min_scrolled_height(180.0)
             .show(ui, |ui| {
                 for lock in &tracked {
+                    let refusal = existing_funding_refusal(lock.amount, minimum_duffs);
+                    // More keys raise the fee, so a funding chosen earlier can
+                    // stop being enough; it must not stay chosen.
+                    if refusal.is_some() && self.funding_asset_lock == Some(lock.out_point) {
+                        self.funding_asset_lock = None;
+                    }
                     let is_selected = self.funding_asset_lock == Some(lock.out_point);
                     ui.group(|ui| {
                         ui.vertical(|ui| {
@@ -54,7 +62,13 @@ impl AddNewIdentityScreen {
 
                             ui.add_space(6.0);
 
-                            if lock.proof.is_some() {
+                            if let Some(reason) = refusal {
+                                ui.add_enabled(false, egui::Button::new("Select"));
+                                ui.colored_label(
+                                    DashColors::warning_color(ui.visuals().dark_mode),
+                                    reason,
+                                );
+                            } else if lock.proof.is_some() {
                                 if ui.button("Select").clicked() {
                                     self.funding_asset_lock = Some(lock.out_point);
                                     if let Ok(mut step) = self.step.write() {
@@ -72,6 +86,7 @@ impl AddNewIdentityScreen {
                     });
                     ui.add_space(6.0);
                 }
+                show_no_funding_large_enough(ui, &tracked, minimum_duffs);
             });
     }
 

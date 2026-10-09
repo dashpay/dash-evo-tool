@@ -1,5 +1,5 @@
 use crate::backend_task::BackendTaskSuccessResult;
-use crate::backend_task::error::TaskError;
+use crate::backend_task::error::{TaskError, ensure_existing_funding_covers_network_fee};
 use crate::context::AppContext;
 use crate::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::address_funds::PlatformAddress;
@@ -44,6 +44,17 @@ impl AppContext {
         if outputs.is_empty() {
             return Err(TaskError::NoFundingRecipients);
         }
+
+        // Before any signing or network work. The fee grows with the number
+        // of recipients, so the one-recipient fee is the least it can be.
+        let minimum_duffs = self
+            .fee_estimator()
+            .address_funding_min_amount_duffs(true, self.sdk_platform_version());
+        ensure_existing_funding_covers_network_fee(
+            &backend.list_tracked_asset_locks(&seed_hash).await?,
+            &out_point,
+            Ok(minimum_duffs),
+        )?;
 
         // Resolve each recipient's pool membership (short-circuiting on the first
         // miss to skip remaining network-touching queries), then apply the pure

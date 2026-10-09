@@ -229,6 +229,24 @@ one scenario silently invalidating another:
   correct while answering different-scoped questions — write up findings so a
   later contradiction doesn't require silently discarding earlier work.
 
+## Procedure lessons for A/B campaigns
+
+- Run only one build against Testnet at a time: endpoint rate limits are per
+  IP, so two concurrent builds disturb each other's results.
+- Take no screenshots or accessibility-tree dumps between opening a wallet
+  import/creation form and leaving it; the recovery phrase may be on screen.
+- Before planning Core-funded steps, check that the fixture wallet can really
+  broadcast a Core transaction. If it cannot, use a temporary wallet funded
+  from the fixture wallet via Send ▸ Platform Addresses ▸ "Withdraw to Wallet"
+  (allow several minutes before the funds are spendable) and return the
+  leftovers afterwards.
+- A wallet created or imported in the running session cannot shield until the
+  app is restarted; restart before any shielding step.
+- When both builds must vote on one contest with the same node, the network
+  may refuse the second identical vote; plan a second node or contest.
+- The first balance right after an import can be partial until sync completes;
+  read balances only after the sync has finished.
+
 ## Known UI/environment quirks
 
 - **Default window is small (800×600) and clips controls** (sidebar items,

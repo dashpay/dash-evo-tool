@@ -54,14 +54,19 @@ after each run.
 ## Procedure
 
 1. **Locate voting.** Record which left-nav entries and Tools sub-entries
-   exist. Record whether Tools offers any contested-names/DPNS entry, and
-   where (if anywhere) you can see contested names, scheduled votes and past
-   contests.
+   exist. Record whether Tools offers any contested-names/DPNS entry (older
+   builds keep these under Tools ▸ DPNS: Active, Past, My usernames, Scheduled
+   votes), and where (if anywhere) you can see contested names, scheduled
+   votes and past contests.
 2. **Masternodes tab layout.** Open Masternodes with no node loaded; record
    the empty state and primary action. Load the node; record the card
    contents (type, voter readiness, key status, voting-status line) and any
-   segment/tab header (names and counts in labels).
-3. **Contests view.** Open the contest view for the loaded node. Record the
+   segment/tab header (names and counts in labels; a newer build shows
+   Votes / Nodes segments).
+3. **Contests view.** Open the contest view for the loaded node (sub-views
+   such as "To decide", "Voted", "Scheduled", "History"). A freshly created
+   contest's row may need a manual Refresh before it shows; contest names are
+   displayed in normalized form (for example `0` for `o`). Record the
    sub-views/filters offered, the contest cards (tally, deadline, node set,
    changes left) and any attention indicator in the top bar or navigation.
 4. **Stage without sending.** Pick a choice on a contest card (for a
@@ -70,9 +75,15 @@ after each run.
    bulk-action bar when several cards are selected. Do not press the final
    cast control yet.
 5. **Confirmation step.** Open the confirmation. Record its title, the
-   choice list (names and contender identity text), node counts, timing
+   choice list (names and contender identity text; choices read like "Vote
+   for <name> (<id>)", "Lock name", "Abstain"), the "Vote with:" node-set
+   control (All / Evonodes only / Masternodes only / Custom, "Save as my
+   default"), node counts, timing
    options and their defaults, the time-zone wording on any date field, and
-   the exact label of the final button. Then **cancel** out of it.
+   the exact label of the final button (for example "Cast 1 vote" or
+   "Schedule 1 vote"). The window is titled "Confirm votes" and is non-modal;
+   record where it is anchored and whether the screen behind stays usable.
+   Then **cancel** out of it.
 6. **Schedule options.** In the confirmation open the "specific time" option.
    Record the pre-filled date/time relative to now (and relative to the
    contest deadline), the zone label, and any warning shown. Cancel out.
@@ -120,6 +131,8 @@ to every step marked **MUTATES** below.
 
 ## Known gotchas
 
+- When both builds must vote on one contest with the same node, the network
+  may refuse the second identical vote; plan a second node or contest.
 - Testnet contests may not exist at the time of the run; record that and run
   the node-detail, empty-state and theme steps anyway.
 - Remaining-vote-changes counts are tracked per device; a freshly seeded data

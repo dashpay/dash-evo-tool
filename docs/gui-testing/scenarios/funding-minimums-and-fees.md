@@ -32,6 +32,9 @@ other step stops before the final confirm and moves nothing.
 - A wallet with an unfinished (unused) funding of a very small amount, if
   one can be made; otherwise record the lists as "no small funding available"
 - Expert mode on (Shield and Platform-address Send need it)
+- The fixture wallet can really broadcast a Core transaction (check before
+  planning steps 9-10); otherwise use a temporary funded wallet as described in
+  the README's "Procedure lessons for A/B campaigns"
 - Verify exact captions during execution
 
 ## Setup
@@ -65,13 +68,19 @@ wallet cannot cover the minimum at all.
 3. **Create identity → from wallet.** Record the minimum with 1 key and after
    adding keys up to 6, and the message when the wallet is too small.
 4. **Create identity → deposit request.** Record the amount requested.
-5. **Wallets → Send → Core to an identity ID.** Record the minimum, caption,
+5. **Wallets → Send → Core to an identity ID.** The "Send to" box accepts a
+   pasted identity ID; clicking an entry in its suggestion list fills the
+   field, so check which ID landed there. Record the minimum, caption,
    and the refusal text on a too-small amount.
 6. **Wallets → Send → Core to a Platform address.** Record the caption, Max
    and, in advanced mode, the "fee from wallet" variant with a small amount.
-7. **Wallets → Send → Core to a shielded address.** Enter 0.01 DASH and
+7. **Shield.** Shielding has its own screen: Wallets ▸ Shielded tab ▸
+   "Shield" button (separate from Send; Send to your own shielded address
+   is a second entry). Enter 0.01 DASH and
    record the fee text shown, then 0.001 DASH, then Max on the small wallet
-   and the message when the fee cannot be covered.
+   and the message when the fee cannot be covered. Record the confirmation dialog's
+   wording, including whether the destination is named. A wallet created in
+   this session cannot shield until the app is restarted.
 8. **Existing fundings.** With a small unfinished funding, open the list in
    Add funds, in Create identity, and the Asset Locks table on the Wallets
    screen. Record whether the entry can be selected ("Select"/"Fund"), the
@@ -79,7 +88,8 @@ wallet cannot cover the minimum at all.
 9. **Tiny send (MUTATES).** On the small wallet, send the smallest accepted
    amount for one flow (Add funds or Send → identity) and record the result
    message and the wallet balance before/after.
-10. **Shield (MUTATES).** Shield 0.01 DASH from the Core wallet. Record the
+10. **Shield (MUTATES).** Shield 0.01 DASH from the Core wallet through the
+    Shielded tab's "Shield" screen. Record the
     amount named in the result message, the shielded balance after the next
     sync, and the wallet balance change. Compare with the fee displayed in
     step 7.

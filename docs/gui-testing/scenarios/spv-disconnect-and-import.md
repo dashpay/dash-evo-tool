@@ -66,7 +66,8 @@ after each run.
    app starts connecting, import `E2E_WALLET_MNEMONIC` through the import screen,
    choosing a small number of identities to check. Record the Identities list
    immediately and for several minutes, without pressing any manual load
-   control. Then record whether a password prompt appears.
+   control. Then record whether a password prompt appears. Note that the first
+   balance shown right after an import can be partial until sync completes.
 7. **Import when already synced.** Repeat on a second fresh data directory
    after sync completes; record the time until identities appear.
 
@@ -90,6 +91,8 @@ to every step marked **MUTATES** below.
 
 ## Known gotchas
 
+- Whether wallet identities appear on their own after an import, and when,
+  is what this scenario records; do not assume either outcome beforehand.
 - Steps 3-5 are timing-sensitive; repeat several times per build before
   concluding. Intermittency only changes how many attempts a repro needs.
 - Disconnect is session-only; restarting the app connects again when the

@@ -24,9 +24,11 @@ beyond holding equivalent wallets on both sides so balances are comparable.
 - Network: testnet
 - Environment variables (names only):
   - `E2E_WALLET_MNEMONIC` — funded wallet (import it in both builds)
-- A second wallet (recovery-phrase) with a different balance, and ideally an
-  imported single key; one wallet unusable for some funding method (for
-  example zero balance)
+- At least two wallets: the picker on Create identity, Add funds and Load
+  existing identity is hidden while only one wallet exists. A throwaway second
+  wallet funded from the first (see the README's "Procedure lessons for A/B
+  campaigns") is the practical way. Ideally also an imported single key, and
+  one wallet unusable for some funding method (for example zero balance)
 - Verify exact labels during execution
 
 ## Setup
@@ -55,7 +57,8 @@ after each run.
 2. **Switch wallet.** Choose another wallet (and the imported key). Record the
    header total, the selected account tab, and what happens on re-clicking the
    wallet already chosen. Restart the app and record the remembered wallet.
-3. **Create identity.** Open the create-identity screen. Record the picker rows
+3. **Create identity.** Open the create-identity screen. If no picker is shown,
+   record that and the wallet count. Record the picker rows
    and hover text, and which funding methods grey out a wallet and the reason
    in the hover.
 4. **Add funds.** Identity Home → "Add funds" → "From your wallet". Record

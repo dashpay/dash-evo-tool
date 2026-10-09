@@ -63,13 +63,25 @@ after each run.
    with their row actions (copy, QR code, make main) and any pending requests
    or recent outcomes shown there.
 2. **Start a request.** Find the control that starts a new username request
-   from the identity. Record whether an identity or signing-key picker is
-   offered.
+   from the identity: on a build with a Usernames card it is Identity ▸
+   Settings ▸ Usernames ▸ "Get another username" ("Get a username" when the
+   identity has none, and right after creating an identity). On a build
+   without that card the equivalent lives under Tools ▸ DPNS (Register Name).
+   Record the entry point on each build and whether an identity or signing-key
+   picker is offered.
 3. **Availability check.** Type, in turn, a taken name, a likely-contested
    name and an unusual name, **without paying**. Record the state text for
    each (available / needs a vote / joinable / taken / locked / window closed
-   / already requested), the live-check wording, and any fee text.
-4. **Review step.** For a contested name, record the consent/review text:
+   / already requested), the live-check wording, and any fee text. Typical
+   wording: "is already taken. Try another name.", "is available.", "is
+   available, but it needs a community vote." with an alternative offered as
+   "Try one without a vote". Also try a too-short name and one with invalid
+   characters.
+4. **Review step.** For a contested name a consent dialog ("@name needs a
+   community vote", choices "Choose another name" / "I understand, continue")
+   may precede a "Review and pay" screen whose button reads like "Pay <total>
+   DASH and request @name"; a build without them goes straight to
+   registration. Record the consent/review text:
    fee amounts, whether the fee is described as refundable, the join-window and
    vote-length wording, the total, and the balance it is paid from. Change the
    name afterwards and record whether the review is invalidated and asked
@@ -84,7 +96,10 @@ after each run.
 7. **Register an uncontested name (MUTATES).** On a second identity register
    the unusual name and record the completion message; confirm it differs from
    the contested case.
-8. **Status of the request.** Open the pending request. Record the timeline,
+8. **Status of the request.** A fresh contest's contender row may need a
+   manual Refresh in the votes view before it appears; press it and record
+   that. The contest name is shown in normalized form (for example `0` for
+   `o`). Open the pending request. Record the timeline,
    tally, "what happens next" text, and any link to the votes view. Record
    the indicator on Identity Home, the identities list, and the onboarding
    checklist, and the indicator's tooltip.

@@ -1,40 +1,43 @@
-# Scenario: DPNS registration messaging and social-profile save feedback
+# Scenario: Usernames in Identities — list, request, availability, status
 
-**Verifies:** DPNS registration correctly distinguishes "registered outright"
-from "submitted for a community vote" (contested name), a pending
-registration shows a clear indicator/tooltip instead of looking unrequested,
-the onboarding checklist counts a pending request toward "Pick a username,"
-and — from the same underlying PR — the DashPay social-profile save flow
-gives real progress/success/error feedback without a stuck progress banner
-or a stale result misattributed after switching identities mid-save. (Risk
-area: #918.)
+**Verifies:** how a user sees their usernames and pending requests, asks for a
+new name, learns whether it is available / needs a community vote, reviews the
+cost, and follows a request; and how a contested registration is reported. It
+also covers DashPay social-profile save feedback. (Risk area: #918, #901,
+#1054.)
 
 **Tier justification:** Needs a real contested-name registration against a
-live testnet name-contest window, real onboarding-checklist state derived
-from actual identity data, and real async save timing (a save in flight
-when the user switches identity) — none of which a no-display harness can
-drive with a live contest clock and real background-task scheduling.
+live testnet contest window, real identity data, and real async save timing
+(a save in flight when the user switches identity) — none of which a
+no-display harness can drive.
 
 **Run against BOTH builds with this identical procedure** — the baseline and
 development binaries selected for the current campaign (record their exact
-SHAs in that campaign's own artifacts, not here).
+SHAs in that campaign's own artifacts, not here). Describe what you observe
+on each build without assuming which one is "correct", and note where a
+control or screen exists on only one build (a feature-presence difference,
+not a step failure).
 
 Before any step that spends funds, consumes a deposit, or registers a
 name, each build needs its own independently-funded equivalent fixture (or
 a restored snapshot of the same starting state) — see [A/B build comparison
-contract](../README.md#ab-build-comparison-contract).
+contract](../README.md#ab-build-comparison-contract). Name registration also
+needs a name that is free **on each side**: use a different candidate name per
+build.
 
 ## Prerequisites
 
 - Network: testnet
 - Environment variables (names only):
   - `E2E_WALLET_MNEMONIC` — funded testnet wallet
-- A DPNS name likely to be contested (short, generic, or currently popular)
-  to register during an active contest window
+  - `E2E_IDENTITY_ID` — an identity with enough credits (optional if the
+    wallet's identities are discovered in the app)
 - At least two identities on the same wallet (for the identity-switch-
-  mid-save step)
-- Verify exact tooltip/button text during execution rather than assuming
-  the wording below is literal
+  mid-save step), at least one with no username
+- Candidate names: one short/generic (likely contested), one long/unusual
+  (likely uncontested), one already taken
+- Verify exact labels during execution rather than assuming the wording
+  below is literal
 
 ## Setup
 
@@ -49,86 +52,91 @@ LOG="$DATADIR/dpns-registration.log"
 DASH_EVO_DATA_DIR="$DATADIR" nohup "$BIN" >"$LOG" 2>&1 &
 ```
 
+Resize the window (see the README's "Known UI/environment quirks") before
+judging layout. Check `det-stderr.log` / `det.log` in `$DATADIR` for panics
+after each run.
+
 ## Procedure
 
-1. **Register a contested name.** On an identity with no username yet,
-   register a name likely to be contested. Record the exact completion
-   message shown — does it say "registered" or does it indicate a pending
-   community vote?
-2. **Identities list indicator.** Record whether/how the Identities list
-   shows this identity's pending request differently from "no username."
-3. **Identity Home indicator.** Record what the Identity Home hero card
-   shows for this identity — the requested name, a status indicator, or the
-   generic "pick a username" prompt.
-4. **Indicator tooltip.** If a status indicator/pill is present, open its
-   tooltip and record what it says (who decides, any estimated timing).
-5. **Onboarding checklist.** Record whether the onboarding checklist treats
-   the submitted request as satisfying "Pick a username," and what wording
-   it uses.
-6. **Uncontested name, for comparison.** On a second identity, register a
-   name unlikely to be contested and record the completion messaging —
-   confirm it's still distinguishable from the contested case.
-7. **Contest resolves.** If the contest window is short enough to wait out,
-   revisit the identity after resolution and record what the indicator does
-   (disappears / name displays normally on a win; reverts to "pick a
-   username" on a loss).
-8. **Social profile save, normal case.** Open Contacts → set up/edit social
-   profile, change the display name or bio, save. Record what feedback
-   appears during and after the save (progress indicator, then a
-   success/error banner) and whether the progress indicator clears when the
-   outcome appears.
-9. **Social profile save, forced failure.** If you can force a failure
-   (briefly disconnect network mid-save), record the same as step 8 for the
-   failure path.
-10. **Switch identity mid-save.** Start a profile save on identity A, and
-    before it completes, switch to identity B. Once the save's result
-    arrives in the background, record which identity (if any) shows a
-    result banner, and whether it's ever attributed to the wrong
-    (now-active) identity.
-11. **Contacts setup CTA.** On an identity with no DashPay profile, open
-    the Contacts tab and record the setup card's CTA wording and whether any
-    "Why?"/explanation control actually opens an explanation.
+1. **Where usernames live.** Record where the identity's usernames are listed
+   (Identity Home, the identity's Profile/Settings, the identity switcher),
+   with their row actions (copy, QR code, make main) and any pending requests
+   or recent outcomes shown there.
+2. **Start a request.** Find the control that starts a new username request
+   from the identity. Record whether an identity or signing-key picker is
+   offered.
+3. **Availability check.** Type, in turn, a taken name, a likely-contested
+   name and an unusual name, **without paying**. Record the state text for
+   each (available / needs a vote / joinable / taken / locked / window closed
+   / already requested), the live-check wording, and any fee text.
+4. **Review step.** For a contested name, record the consent/review text:
+   fee amounts, whether the fee is described as refundable, the join-window and
+   vote-length wording, the total, and the balance it is paid from. Change the
+   name afterwards and record whether the review is invalidated and asked
+   again. Record any alternative offered that needs no vote.
+5. **Low credits.** With an identity whose balance is too low, record how the
+   review step offers more funds and whether the chosen name is preserved when
+   returning from the add-funds screen.
+6. **Register a contested name (MUTATES: spends credits, registers a
+   request).** Pay for the likely-contested name. Record the progress dialog
+   text (does it name the username?), the completion message (registered vs.
+   pending a community vote), and whether the app can be used while it runs.
+7. **Register an uncontested name (MUTATES).** On a second identity register
+   the unusual name and record the completion message; confirm it differs from
+   the contested case.
+8. **Status of the request.** Open the pending request. Record the timeline,
+   tally, "what happens next" text, and any link to the votes view. Record
+   the indicator on Identity Home, the identities list, and the onboarding
+   checklist, and the indicator's tooltip.
+9. **After the estimated deadline.** If the contest window can be waited out
+   (testnet), record how the request is labelled once the estimated end passes
+   and when the outcome arrives (won / lost / locked).
+10. **Make a name the main one.** If the identity has two names, use the make-
+    main row action; record where the main name then appears (header, lists,
+    switcher).
+11. **Social profile save, normal case.** Open Contacts → set up/edit social
+    profile, change the display name or bio, save. Record the feedback during
+    and after the save and whether the progress indicator clears.
+12. **Social profile save, forced failure.** If you can force a failure
+    (briefly disconnect the network mid-save), record the same as step 11.
+13. **Switch identity mid-save.** Start a profile save on identity A and
+    switch to identity B before it completes. Record which identity (if any)
+    shows the result banner and whether it is ever attributed to the wrong
+    identity.
+14. **Contacts setup CTA.** On an identity with no DashPay profile, open
+    Contacts and record the setup card's CTA wording and whether any
+    "Why?"/explanation control opens an explanation.
 
 ## Safety constraints specific to this scenario
 
-- None beyond the standing rules — DPNS registration fees are small and
-  testnet-only here.
+- Steps 6-7 spend credits and register names; use testnet only and the
+  smallest-fee names available.
+- Do not retry a payment whose outcome is uncertain before checking the
+  usernames list; record the app's own wording for that case if it occurs.
 
 ## Expected outcome / pass criteria
 
-Record the observed behavior for each build at every step, then apply this
-rule:
+Record the observed behavior for each build at every step, then:
 
-- **BLOCKING** only if HEAD is worse than baseline in the happy flow (e.g.
-  a contested registration falsely claims "Registered!" on HEAD when
-  baseline correctly said "pending"; a save's progress banner gets
-  permanently stuck on HEAD where baseline cleared it; a save result gets
-  attributed to the wrong identity on HEAD where baseline didn't), or a
-  **data-loss** outcome (a profile edit silently lost) on either build.
-- **NOT blocking**: wording differences with no functional consequence; an
-  issue reproducing identically on both builds; a timing-sensitive race that
-  needs several attempts to reproduce and only sometimes shows on **both**
-  builds.
-- **Precedence: intermittency never downgrades a wrong-identity result.** If a
-  save result is attributed to the wrong identity (step 10) on one build and
-  never on the other, it stays BLOCKING however rarely it reproduces — that
-  race is exactly what this scenario exists to catch, so being hard to land
-  inside the race window is a reason to attempt it more times, not a reason to
-  waive it under the timing-sensitive clause above.
-- If the pending-registration indicator exists on only one of the two selected
-  builds, record that as a feature-presence difference, not a step failure on
-  the build that lacks it.
+- **Precedence: intermittency never downgrades a wrong-identity result.** If
+  a save result is attributed to the wrong identity (step 13) on one build and
+  never on the other, it stays a regression however rarely it reproduces;
+  attempt it more times instead of waiving it.
+- A contested registration reported as plain "registered" on one build and
+  as pending on the other is a difference to classify under the contract,
+  not to wave through.
+
+Apply the [A/B build comparison contract](../README.md#ab-build-comparison-contract):
+its blocker rule decides what blocks, and its equivalent-fixture rule applies
+to every step marked **MUTATES** below.
 
 ## Known gotchas
 
-- Contest resolution timing depends on the live masternode voting schedule
-  on testnet — step 7 may need to be deferred to a later session rather than
-  blocking the rest of this scenario.
-- The identity-switch race (step 10) is timing-sensitive; several attempts
-  with the save action and the identity switch performed in quick succession
-  may be needed to land inside the race window on either build. That
-  difficulty does not soften the result: per the precedence rule in "Expected
-  outcome", a wrong-identity attribution seen on one build only is blocking
-  even if it reproduced once in many tries.
+- Contest resolution timing depends on the live testnet schedule; defer
+  step 9 to a later session if needed.
+- A name consumed by the first build's run is gone for the second: use
+  different names per build (see the fixture rule above).
+- The identity-switch race (step 13) is timing-sensitive; several attempts
+  may be needed.
 
 <sub>🤖 Co-authored by [Claudius the Magnificent](https://github.com/lklimek/claudius) AI Agent</sub>

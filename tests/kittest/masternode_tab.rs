@@ -1764,3 +1764,110 @@ fn the_masternode_page_resolves_held_keys_the_way_the_keys_list_does() {
         );
     });
 }
+
+/// The identity a withdrawal form on top of the screen stack is showing.
+fn withdrawal_form_alias(
+    harness: &egui_kittest::Harness<'static, dash_evo_tool::app::AppState>,
+) -> Option<String> {
+    let Some(Screen::WithdrawalScreen(form)) = harness.state().screen_stack.last() else {
+        panic!("the withdrawal form must stay open");
+    };
+    form.identity.alias.clone()
+}
+
+/// A contest refresh runs for minutes while the user works elsewhere, and
+/// reports each step. A screen that shows no contest data must be left alone:
+/// here a withdrawal form, whose `refresh()` re-reads its identity from storage.
+#[test]
+fn contest_notifications_do_not_refresh_a_screen_without_contest_data() {
+    use dash_evo_tool::ui::identity::withdraw_screen::WithdrawalScreen;
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
+        let app_context = harness.state().current_app_context().clone();
+        seed_node(&app_context, 0x71, "before", IdentityType::User);
+        let stored = app_context
+            .get_local_qualified_identity(&Identifier::from([0x71; 32]))
+            .expect("read the identity")
+            .expect("identity stored");
+        harness
+            .state_mut()
+            .screen_stack
+            .push(Screen::WithdrawalScreen(WithdrawalScreen::new(
+                stored.clone(),
+                &app_context,
+            )));
+        harness.run_steps(3);
+
+        // A write behind the form's back: the form shows it only once refreshed.
+        let mut renamed = stored;
+        renamed.alias = Some("after".to_owned());
+        app_context
+            .update_local_qualified_identity(&renamed)
+            .expect("rename the stored identity");
+
+        let sender = harness.state().task_result_sender.clone();
+        for _ in 0..3 {
+            sender
+                .try_send(TaskResult::DpnsContestsChanged)
+                .expect("queue the contest notification");
+            harness.run_steps(2);
+        }
+        assert_eq!(
+            withdrawal_form_alias(&harness).as_deref(),
+            Some("before"),
+            "a contest notification must not refresh a screen that shows no contest data"
+        );
+
+        sender
+            .try_send(TaskResult::Refresh)
+            .expect("queue the refresh");
+        harness.run_steps(2);
+        assert_eq!(
+            withdrawal_form_alias(&harness).as_deref(),
+            Some("after"),
+            "the premise: a refresh that reaches this form is visible in it"
+        );
+    });
+}
+
+/// The Votes view in view keeps following a contest refresh: each of its
+/// notifications makes the view re-read the contest cache.
+#[test]
+fn contest_notifications_update_the_open_votes_view() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = rt.enter();
+        let mut harness = mount_app(RootScreenType::RootScreenMasternodes);
+        let context = harness.state().current_app_context().clone();
+        // No network: arriving at Votes would start a real contest refresh.
+        rt.block_on(harness.state().subtasks.shutdown_async())
+            .unwrap();
+        harness.get_by_label("Votes").click();
+        harness.run_steps(3);
+        assert_eq!(masternodes_segment(&mut harness), MasternodesSegment::Votes);
+        assert!(
+            harness.query_by_label("alice.dash").is_none(),
+            "the premise: the contest is not cached yet"
+        );
+
+        seed_open_contest(&context, "alice");
+        harness
+            .state()
+            .task_result_sender
+            .try_send(TaskResult::DpnsContestsChanged)
+            .expect("queue the contest notification");
+        harness.run_steps(3);
+
+        assert!(
+            harness.query_by_label("alice.dash").is_some(),
+            "the open Votes view must show a contest the refresh has just cached"
+        );
+        rt.block_on(context.wallet_backend().unwrap().shutdown());
+    });
+}

@@ -212,6 +212,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The background refresh of name contests no longer resets the screen you are
+  working on. While it ran, a lookup on another screen could lose its spinner
+  and its answer, typed search text could be cleared, and an amount field could
+  disappear for a moment and drop what you were typing. The refresh now updates
+  only the voting screen and the indicators that show votes waiting for you.
+
 - Refreshing name contests no longer reads every finished contest from the
   network again. With a voting node loaded this happened on opening
   Masternodes → Votes and every few minutes in the background, and on a

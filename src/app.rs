@@ -486,6 +486,18 @@ fn dpns_result_needs_hidden_route(
         && dpns_screen_is_hidden(target, selected, screen_stack_is_empty)
 }
 
+/// The screen refresh owed for the cache notifications merged so far in a
+/// frame. Ordered by reach, so merging two keeps the wider one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+enum PendingRefresh {
+    #[default]
+    None,
+    /// Contest data changed: the voting screen re-reads, if it is in view.
+    VotingScreen,
+    /// Local data changed: whatever screen is in view re-reads.
+    VisibleScreen,
+}
+
 /// Plain, jargon-free descriptions for the SPV-sync block (Everyday-User rule:
 /// no "SPV"/"headers"/"masternodes"/raw heights/percentages — the jargon-free
 /// "Step N of 5" counter carries the granularity). Complete sentences (NFR-2).
@@ -1133,6 +1145,9 @@ fn network_took_transaction(confirmation: TransactionConfirmation) -> bool {
 pub enum TaskResult {
     Repaint,
     Refresh,
+    /// Name-contest or vote data changed. Only the voting screen re-reads it,
+    /// and only while in view; other readers take it live on the repaint.
+    DpnsContestsChanged,
     Success {
         context: BackendTaskContext,
         result: Box<BackendTaskSuccessResult>,
@@ -2752,6 +2767,19 @@ impl AppState {
         }
     }
 
+    /// Run the refresh owed for the merged cache notifications and clear it.
+    fn run_pending_refresh(&mut self, pending: &mut PendingRefresh) {
+        match std::mem::take(pending) {
+            PendingRefresh::None => {}
+            PendingRefresh::VotingScreen => {
+                if let voting @ Screen::MasternodesScreen(_) = self.visible_screen_mut() {
+                    voting.refresh();
+                }
+            }
+            PendingRefresh::VisibleScreen => self.visible_screen_mut().refresh(),
+        }
+    }
+
     fn route_identity_result_to_hidden_hub(
         &mut self,
         context: &BackendTaskContext,
@@ -3243,7 +3271,7 @@ impl App for AppState {
 
         // Bound result work so refresh bursts cannot starve window input and painting.
         let result_work_started = Instant::now();
-        let mut refresh_pending = false;
+        let mut pending_refresh = PendingRefresh::None;
         for processed in 0..64 {
             if processed > 0 && result_work_started.elapsed() >= Duration::from_millis(8) {
                 break;
@@ -3252,9 +3280,11 @@ impl App for AppState {
                 break;
             };
             // Merge adjacent cache invalidations without moving refreshes past typed results.
-            if refresh_pending && !matches!(task_result, TaskResult::Refresh) {
-                self.visible_screen_mut().refresh();
-                refresh_pending = false;
+            if !matches!(
+                task_result,
+                TaskResult::Refresh | TaskResult::DpnsContestsChanged
+            ) {
+                self.run_pending_refresh(&mut pending_refresh);
             }
             active_context
                 .connection_status()
@@ -3265,7 +3295,9 @@ impl App for AppState {
             let tracked_top_up = match &task_result {
                 TaskResult::Success { context, .. } => finish_top_up(ctx, context, true),
                 TaskResult::Error { context, .. } => finish_top_up(ctx, context, false),
-                TaskResult::Refresh | TaskResult::Repaint => false,
+                TaskResult::Refresh | TaskResult::DpnsContestsChanged | TaskResult::Repaint => {
+                    false
+                }
             };
 
             let recovery_delivered = deliver_legacy_recovery_result(
@@ -3730,7 +3762,10 @@ impl App for AppState {
                     }
                 }
                 TaskResult::Refresh => {
-                    refresh_pending = true;
+                    pending_refresh = PendingRefresh::VisibleScreen;
+                }
+                TaskResult::DpnsContestsChanged => {
+                    pending_refresh = pending_refresh.max(PendingRefresh::VotingScreen);
                 }
                 TaskResult::Repaint => {
                     // SenderAsync/SenderSync already requested a repaint when sending; avoid
@@ -3739,9 +3774,7 @@ impl App for AppState {
             }
         }
 
-        if refresh_pending {
-            self.visible_screen_mut().refresh();
-        }
+        self.run_pending_refresh(&mut pending_refresh);
         if !self.task_result_receiver.is_empty() {
             ctx.request_repaint();
         }

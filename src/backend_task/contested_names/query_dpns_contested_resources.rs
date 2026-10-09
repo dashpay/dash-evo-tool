@@ -108,6 +108,20 @@ async fn start_in_order(
 }
 
 impl AppContext {
+    /// Prove every loaded node's current votes and refresh which nodes are in
+    /// the masternode list. Tells whether every node's votes were proved.
+    async fn prove_current_votes(&self, sdk: &Sdk) -> bool {
+        let proved = match self.refresh_dpns_vote_states(sdk).await {
+            Ok(results) => super::refresh_vote_states::every_voter_refreshed(&results),
+            Err(error) => {
+                tracing::warn!(?error, "Could not refresh DPNS current votes with contests");
+                false
+            }
+        };
+        self.refresh_masternode_list_membership().await;
+        proved
+    }
+
     /// Refresh the contest cache, contenders, end times and every loaded node's
     /// proved votes as one snapshot.
     ///
@@ -248,7 +262,10 @@ impl AppContext {
         // The end times tell which contests are still open. Those are read
         // first, so a long unread history does not hold up what can be voted on.
         let end_times_refreshed = every_contest_query_succeeded(vec![handle]).await;
-        let names_to_be_updated = self.open_contests_first(names_to_be_updated)?;
+        let queue = self.contender_queue(names_to_be_updated)?;
+        let reads_unread_history = !queue.unread.is_empty();
+        // Dropped when the pass ends, however it ends: nothing stays hidden.
+        let unread_history = self.hide_unread_contests(queue.unread);
 
         let start_contender_query = |name: String| {
             let semaphore = semaphore.clone();
@@ -305,28 +322,44 @@ impl AppContext {
                 }
             })
         };
-        let handles = start_in_order(
-            names_to_be_updated,
+        let unpaced_after_open = UNPACED_CONTENDER_QUERIES.saturating_sub(queue.open.len());
+        let mut handles = start_in_order(
+            queue.open,
             UNPACED_CONTENDER_QUERIES,
             CONTENDER_QUERY_SPACING,
-            start_contender_query,
+            &start_contender_query,
         )
         .await;
-
-        let contests_refreshed =
-            every_contest_query_succeeded(handles).await && end_times_refreshed;
+        let mut contests_refreshed = end_times_refreshed;
+        if reads_unread_history {
+            // The unread history is hidden, so the open contests on show are
+            // the real ones: prove the nodes' votes on them now rather than
+            // after the whole history is read.
+            contests_refreshed &= every_contest_query_succeeded(std::mem::take(&mut handles)).await;
+            self.prove_current_votes(sdk).await;
+            self.recompute_dpns_vote_attention();
+            sender
+                .send(TaskResult::Refresh)
+                .await
+                .map_err(|_| TaskError::InternalSendError)?;
+        }
+        handles.extend(
+            start_in_order(
+                queue.rest,
+                unpaced_after_open,
+                CONTENDER_QUERY_SPACING,
+                &start_contender_query,
+            )
+            .await,
+        );
+        contests_refreshed &= every_contest_query_succeeded(handles).await;
+        // The snapshot below covers every contest again, read or not.
+        drop(unread_history);
 
         // Publish contests and every loaded node's proved current votes as one
         // completed refresh snapshot. Per-node failures are stored explicitly
         // as unavailable instead of being mistaken for "Not voted".
-        let vote_states_refreshed = match self.refresh_dpns_vote_states(sdk).await {
-            Ok(results) => super::refresh_vote_states::every_voter_refreshed(&results),
-            Err(error) => {
-                tracing::warn!(?error, "Could not refresh DPNS current votes with contests");
-                false
-            }
-        };
-        self.refresh_masternode_list_membership().await;
+        let vote_states_refreshed = self.prove_current_votes(sdk).await;
         self.forget_closed_dpns_vote_counts();
         self.recompute_dpns_vote_attention();
         self.refresh_pending_dpns_usernames()?;
@@ -532,8 +565,9 @@ mod tests {
             .expect("store end times");
 
         let queue = context
-            .open_contests_first(listed)
+            .contender_queue(listed)
             .expect("order the contender queries");
+        let queue = queue.open.into_iter().chain(queue.rest).collect();
         let dispatched = Arc::new(std::sync::Mutex::new(Vec::new()));
         let record = Arc::clone(&dispatched);
         let queries = start_in_order(queue, usize::MAX, Duration::from_millis(1), move |name| {
@@ -565,6 +599,114 @@ mod tests {
 
         drop(running);
         second.await.expect("the waiting pass runs afterwards");
+    }
+
+    /// Load a masternode into `context` and let the mock SDK prove that it
+    /// has not voted on anything.
+    async fn load_node_without_votes(context: &Arc<AppContext>, sdk: &mut Sdk) -> Identifier {
+        use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
+        use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+        use dash_sdk::dpp::voting::votes::resource_vote::ResourceVote;
+        use dash_sdk::drive::query::contested_resource_votes_given_by_identity_query::ContestedResourceVotesGivenByIdentityQuery;
+        use dash_sdk::query_types::ResourceVotesByIdentity;
+
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(8);
+        context
+            .ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+                tx,
+                context.egui_ctx().clone(),
+            ))
+            .await
+            .expect("wire the wallet backend offline");
+        let identity = dash_sdk::dpp::identity::Identity::create_basic_identity(
+            Identifier::from([1; 32]),
+            dash_sdk::dpp::version::PlatformVersion::latest(),
+        )
+        .expect("basic identity");
+        let node = QualifiedIdentity {
+            identity,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::Masternode,
+            alias: None,
+            private_keys: Default::default(),
+            dpns_names: vec![],
+            associated_wallets: Default::default(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: Default::default(),
+            status: IdentityStatus::Active,
+            network: context.network(),
+        };
+        context
+            .insert_local_qualified_identity(&node, &None)
+            .expect("load the node");
+        let node_id = node.identity.id();
+        sdk.mock()
+            .expect_fetch_many::<Identifier, ResourceVote, _, ResourceVotesByIdentity>(
+                ContestedResourceVotesGivenByIdentityQuery {
+                    identity_id: node_id,
+                    offset: None,
+                    limit: Some(100),
+                    start_at: None,
+                    order_ascending: true,
+                },
+                Some(ResourceVotesByIdentity::default()),
+            )
+            .await
+            .expect("vote query expectation");
+        node_id
+    }
+
+    /// On a first load the node's votes are proved as soon as the open
+    /// contest is read. The unread history is still being back-filled then,
+    /// and none of it may show as a contest the node has yet to vote on.
+    /// Stopping the pass midway must leave nothing hidden.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn votes_are_proved_before_the_unread_history_is_read() {
+        // Enough unread names for a paced tail of about two seconds; the open
+        // contest is listed last.
+        const PACED: usize = 16;
+        let mut names = contest_names(UNPACED_CONTENDER_QUERIES + PACED - 1);
+        names.push("open".to_owned());
+        let (_dir, context, mut sdk) = context_listing(&names).await;
+        let node_id = load_node_without_votes(&context, &mut sdk).await;
+        context.seed_dpns_contest_for_test(
+            "open",
+            Some(crate::utils::time::now_ms() + 600_000),
+            false,
+        );
+
+        let pass = tokio::spawn({
+            let context = Arc::clone(&context);
+            async move { run_pass(&context, &sdk).await }
+        });
+        // Contests the node is shown as able to decide on, sampled for a
+        // second: well inside the back-fill.
+        let mut decidable = Vec::new();
+        for _ in 0..40 {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+            let rows = context.dpns_node_votes(node_id).expect("node votes");
+            decidable.push(
+                rows.into_iter()
+                    .filter(|row| row.state_known)
+                    .map(|row| row.contested_name)
+                    .collect::<Vec<_>>(),
+            );
+        }
+
+        assert!(!pass.is_finished(), "the back-fill must still be running");
+        assert!(
+            decidable.iter().all(|names| names.len() <= 1),
+            "unread history was shown as waiting for a vote: {decidable:?}"
+        );
+        assert_eq!(decidable.last().expect("samples"), &["open"]);
+
+        pass.abort();
+        assert!(pass.await.is_err_and(|error| error.is_cancelled()));
+        let open_contests = context.ongoing_contested_names().expect("open contests");
+        assert_eq!(open_contests.len(), names.len());
     }
 
     #[tokio::test]

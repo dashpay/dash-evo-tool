@@ -529,6 +529,49 @@ mod tests {
         assert!(summary.soonest_end.is_some());
     }
 
+    /// While a pass back-fills unread history, a node's proved votes are
+    /// already published. Only the contest known to be open may then need a
+    /// decision — never the unread ones the node has, of course, not voted on.
+    #[test]
+    fn unread_history_needs_no_decision_while_a_pass_reads_it() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let kv = crate::wallet_backend::DetKv::from_store(Arc::new(
+            crate::wallet_backend::kv_test_support::InMemoryKv::default(),
+        ));
+        let context = crate::context::test_support::test_app_context_with_kv(
+            temp_dir.path(),
+            Arc::new(kv.clone()),
+        );
+        context.set_det_kv_override_for_test(kv);
+        context.seed_dpns_contest_for_test("alpha", Some(now_ms() + 600_000), false);
+        let history: Vec<String> = (0..300)
+            .map(|index| format!("history-{index:03}"))
+            .collect();
+        context
+            .insert_name_contests_as_normalized_names(history.clone())
+            .expect("list the unread history");
+        let node = Identifier::from([1; 32]);
+        context
+            .seed_proved_dpns_votes_at_for_test(node, BTreeMap::new(), now_ms())
+            .unwrap();
+        let needing_decision = || {
+            context
+                .dpns_contest_attention(&[node], &[])
+                .expect("attention")
+                .into_iter()
+                .filter(|contest| contest.needs_decision)
+                .map(|contest| contest.name)
+                .collect::<Vec<_>>()
+        };
+
+        let pass = context.hide_unread_contests(history.iter().cloned().collect());
+        assert_eq!(needing_decision(), ["alpha"]);
+
+        // Once the pass is over, what it could not read is shown as before.
+        drop(pass);
+        assert_eq!(needing_decision().len(), history.len() + 1);
+    }
+
     #[test]
     fn membership_is_unknown_until_the_list_is_available() {
         let temp_dir = tempfile::tempdir().expect("tempdir");

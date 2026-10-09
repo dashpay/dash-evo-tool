@@ -3081,6 +3081,31 @@ mod tests {
         assert!(screen.refreshing_status == RefreshingStatus::NotRefreshing);
     }
 
+    /// On a first load the operator must be able to vote on an open contest
+    /// as soon as it and the node's votes are read, while the unread history
+    /// is still being loaded and stays out of the list.
+    #[test]
+    fn an_open_contest_accepts_a_decision_while_history_is_still_loading() {
+        let (ctx, _dir) = kv_ctx();
+        let voter = masternode_identity(1, "node-one", true, ctx.network());
+        ctx.seed_dpns_contest_for_test("alpha", Some(now_ms() + 600_000), false);
+        let history: Vec<String> = (0..50).map(|index| format!("history-{index:02}")).collect();
+        ctx.insert_name_contests_as_normalized_names(history.clone())
+            .expect("list the unread history");
+        ctx.seed_proved_dpns_votes_at_for_test(voter.identity.id(), BTreeMap::new(), now_ms())
+            .unwrap();
+        let mut screen = DPNSScreen::new(&ctx, VotesView::ToDecide);
+        screen.voting_identities = vec![voter];
+
+        let _pass = ctx.hide_unread_contests(history.into_iter().collect());
+        screen.refresh();
+
+        let cards: Vec<&str> = screen.cards.iter().map(VoteCard::name).collect();
+        assert_eq!(cards, ["alpha"]);
+        assert_eq!(screen.cards[0].placement, CardPlacement::ToDecide);
+        assert!(screen.cards[0].accepts_decision());
+    }
+
     fn offline_ctx() -> (Arc<AppContext>, tempfile::TempDir) {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let data_dir = temp_dir.path().to_path_buf();

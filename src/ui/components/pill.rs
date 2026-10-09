@@ -102,7 +102,10 @@ mod tests {
             .elapsed()
             .unwrap_or_default()
             .as_millis() as u64;
-        let pending = waiting(Some(now_ms + 3 * 3_600 * 1_000));
+        // Half an hour into the "about 3 hours" bucket: the tooltip reads the
+        // clock again, and at exactly three hours a millisecond between the
+        // two reads already rounds the estimate down to two.
+        let pending = waiting(Some(now_ms + (3 * 3_600 + 1_800) * 1_000));
         let tip = pending_username_tooltip(&pending);
         assert!(
             tip.contains("about 3 hours"),

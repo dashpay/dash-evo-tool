@@ -264,8 +264,6 @@ impl AppContext {
         let end_times_refreshed = every_contest_query_succeeded(vec![handle]).await;
         let queue = self.contender_queue(names_to_be_updated)?;
         let reads_unread_history = !queue.unread.is_empty();
-        // Dropped when the pass ends, however it ends: nothing stays hidden.
-        let unread_history = self.hide_unread_contests(queue.unread);
 
         let start_contender_query = |name: String| {
             let semaphore = semaphore.clone();
@@ -332,9 +330,9 @@ impl AppContext {
         .await;
         let mut contests_refreshed = end_times_refreshed;
         if reads_unread_history {
-            // The unread history is hidden, so the open contests on show are
-            // the real ones: prove the nodes' votes on them now rather than
-            // after the whole history is read.
+            // Unread names are not listed as open, so the open contests on
+            // show are the real ones: prove the nodes' votes on them now
+            // rather than after the whole history is read.
             contests_refreshed &= every_contest_query_succeeded(std::mem::take(&mut handles)).await;
             self.prove_current_votes(sdk).await;
             self.recompute_dpns_vote_attention();
@@ -353,8 +351,6 @@ impl AppContext {
             .await,
         );
         contests_refreshed &= every_contest_query_succeeded(handles).await;
-        // The snapshot below covers every contest again, read or not.
-        drop(unread_history);
 
         // Publish contests and every loaded node's proved current votes as one
         // completed refresh snapshot. Per-node failures are stored explicitly
@@ -661,8 +657,8 @@ mod tests {
 
     /// On a first load the node's votes are proved as soon as the open
     /// contest is read. The unread history is still being back-filled then,
-    /// and none of it may show as a contest the node has yet to vote on.
-    /// Stopping the pass midway must leave nothing hidden.
+    /// and none of it may show as a contest the node has yet to vote on —
+    /// nor after the pass is stopped midway, with the proof already stored.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn votes_are_proved_before_the_unread_history_is_read() {
         // Enough unread names for a paced tail of about two seconds; the open
@@ -705,8 +701,13 @@ mod tests {
 
         pass.abort();
         assert!(pass.await.is_err_and(|error| error.is_cancelled()));
-        let open_contests = context.ongoing_contested_names().expect("open contests");
-        assert_eq!(open_contests.len(), names.len());
+        let still_decidable: Vec<String> = context
+            .dpns_node_votes(node_id)
+            .expect("node votes")
+            .into_iter()
+            .map(|row| row.contested_name)
+            .collect();
+        assert_eq!(still_decidable, ["open"]);
     }
 
     #[tokio::test]

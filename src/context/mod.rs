@@ -291,10 +291,6 @@ pub struct AppContext {
     /// Held for a whole contest refresh pass, so only one runs at a time: two
     /// at once would each query the contests the other is already reading.
     pub(crate) dpns_contest_refresh_pass: tokio::sync::Mutex<()>,
-    /// Contests the running refresh pass has listed but not read yet, and has
-    /// no end time to call open. Left out of the open contests meanwhile, so
-    /// unread history is not shown as waiting for a vote.
-    dpns_unread_contests: RwLock<std::collections::BTreeSet<String>>,
     /// Runs crash recovery before this context first accepts vote work.
     pub(crate) dpns_vote_recovery: tokio::sync::Mutex<DpnsVoteRecovery>,
     /// Full in-process diagnostics keyed to sanitized durable outcomes.
@@ -645,7 +641,6 @@ impl AppContext {
             dpns_vote_dispatch: DpnsVoteDispatchCoordinator::default(),
             dpns_vote_refresh_permits: tokio::sync::Semaphore::new(MAX_CONCURRENT_DPNS_VOTERS),
             dpns_contest_refresh_pass: tokio::sync::Mutex::new(()),
-            dpns_unread_contests: RwLock::new(Default::default()),
             dpns_vote_state_publications: dpns_vote_state::DpnsVoteStatePublications::default(),
             dpns_vote_recovery: tokio::sync::Mutex::new(DpnsVoteRecovery::default()),
             dpns_vote_diagnostics: Mutex::new(BTreeMap::new()),

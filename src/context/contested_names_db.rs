@@ -113,20 +113,6 @@ pub(crate) struct ContenderQueue {
     pub(crate) unread: BTreeSet<String>,
 }
 
-/// Keeps a pass's unread contests out of the open contests; dropping it shows
-/// whatever is still unread again, so no pass can leave a contest hidden.
-pub(crate) struct UnreadContestsGuard<'a>(&'a AppContext);
-
-impl Drop for UnreadContestsGuard<'_> {
-    fn drop(&mut self) {
-        self.0
-            .dpns_unread_contests
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clear();
-    }
-}
-
 impl StoredContestedName {
     /// Whether the contest ended and its outcome is stored. That outcome is
     /// final, so the record has nothing left to refresh.
@@ -261,25 +247,26 @@ impl AppContext {
     }
 
     /// Fetches every DPNS contest cached in the per-network k/v store whose
-    /// `end_time` is in the future (or unknown), except the contests a running
-    /// refresh pass has yet to read (see [`Self::hide_unread_contests`]).
+    /// `end_time` is in the future (or unknown), except names that were only
+    /// listed so far ([`ContestedName::is_unread`]). Those are history until
+    /// read: counting them as open would show each as waiting for a vote.
     pub fn ongoing_contested_names(&self) -> std::result::Result<Vec<ContestedName>, TaskError> {
         let current_timestamp = now_ms();
         let kv = self.det_kv()?;
-        let unread = self
-            .dpns_unread_contests
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let keys = kv
             .list(DetScope::Global, Some(CONTESTED_NAME_KEY_PREFIX))
             .map_err(contest_err)?;
         let mut out = Vec::new();
         for key in keys {
             match kv.get::<StoredContestedName>(DetScope::Global, &key) {
-                Ok(Some(stored)) if unread.contains(&stored.normalized_contested_name) => {}
                 Ok(Some(stored)) => match stored.end_time {
                     Some(t) if t <= current_timestamp => {}
-                    _ => out.push(stored.to_contested_name(self.network)),
+                    _ => {
+                        let contest = stored.to_contested_name(self.network);
+                        if !contest.is_unread() {
+                            out.push(contest);
+                        }
+                    }
                 },
                 Ok(None) => {}
                 Err(e) => tracing::warn!(
@@ -840,16 +827,6 @@ impl AppContext {
         Ok(queue)
     }
 
-    /// Leave `names` out of the open contests until each is read, or until
-    /// the returned guard is dropped.
-    pub(crate) fn hide_unread_contests(&self, names: BTreeSet<String>) -> UnreadContestsGuard<'_> {
-        *self
-            .dpns_unread_contests
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = names;
-        UnreadContestsGuard(self)
-    }
-
     /// Update a single contest record with the latest set of contenders.
     /// Mirrors the pre-C6 `insert_or_update_contenders` behavior: when a
     /// winner is decided, only the resolution fields are written; otherwise
@@ -861,11 +838,6 @@ impl AppContext {
         dpns_domain_document_type: DocumentTypeRef,
     ) -> std::result::Result<(), TaskError> {
         let kv = self.det_kv()?;
-        // Its contenders have arrived, so it is no longer unread.
-        self.dpns_unread_contests
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(normalized_contested_name);
         let mut labels = self
             .dpns_candidate_labels
             .write()
@@ -1705,39 +1677,42 @@ mod tests {
         assert!(queue.unread.is_empty());
     }
 
-    /// An open contest the end times did not announce is hidden with the
-    /// unread history, and must show up as soon as its contenders are read.
+    /// A listed name is an open contest only once something is known about
+    /// it: an answer that stores nothing leaves it unread, its contenders
+    /// make it open.
     #[test]
-    fn a_hidden_contest_is_open_again_once_it_is_read() {
+    fn an_unread_contest_is_open_only_once_its_contenders_are_read() {
+        use dash_sdk::dpp::block::block_info::BlockInfo;
         use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
-        let (_temp_dir, context, history) = cold_history(3);
-        let hidden = context.hide_unread_contests(history.iter().cloned().collect());
-        assert_eq!(open_names(&context), ["open", "read-earlier"]);
-
-        let still_running = Contenders {
-            winner: None,
+        let (_temp_dir, context, _history) = cold_history(3);
+        let document_type = context
+            .dpns_contract
+            .document_type_for_name("domain")
+            .expect("domain document type");
+        let answer = |winner| Contenders {
+            winner,
             contenders: BTreeMap::new(),
             abstain_vote_tally: None,
             lock_vote_tally: None,
         };
+        assert_eq!(open_names(&context), ["open", "read-earlier"]);
+
+        let undecided = Some((
+            ContestedDocumentVotePollWinnerInfo::NoWinner,
+            BlockInfo::default(),
+        ));
         context
-            .insert_or_update_contenders(
-                "history-001",
-                &still_running,
-                context
-                    .dpns_contract
-                    .document_type_for_name("domain")
-                    .expect("domain document type"),
-            )
+            .insert_or_update_contenders("history-001", &answer(undecided), document_type)
+            .expect("an answer that stores nothing");
+        assert_eq!(open_names(&context), ["open", "read-earlier"]);
+
+        context
+            .insert_or_update_contenders("history-001", &answer(None), document_type)
             .expect("store the contenders");
         assert_eq!(
             open_names(&context),
             ["history-001", "open", "read-earlier"]
         );
-
-        // The pass ends, however it ends: nothing stays hidden.
-        drop(hidden);
-        assert_eq!(open_names(&context).len(), history.len() + 2);
     }
 
     #[test]

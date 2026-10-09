@@ -3,7 +3,7 @@
 //! `Display` → user-friendly text (shown in `MessageBanner`).
 //! `Debug` → variant name + fields (logged and shown in collapsible details).
 
-use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::fee_estimation::{format_credits_as_dash, format_duffs_as_dash};
 use crate::wallet_backend::platform_compatibility::StorageFailure;
 use dash_sdk::Error as SdkError;
 use dash_sdk::dapi_client::DapiClientError;
@@ -398,6 +398,27 @@ pub enum TaskError {
         "This way of paying is not available when topping up an identity from another wallet. Enter the amount to add, or choose a saved funding transaction instead."
     )]
     TopUpFundingMethodUnsupported,
+
+    /// A funding amount is smaller than the network fee taken from it, so the
+    /// network would refuse it after the funds had already left the wallet.
+    #[error(
+        "This amount is too small to cover the network fee. Enter at least {minimum_dash} and try again.",
+        minimum_dash = format_duffs_as_dash(*.minimum_duffs)
+    )]
+    AssetLockAmountBelowNetworkFee {
+        amount_duffs: u64,
+        minimum_duffs: u64,
+    },
+
+    /// The network fee a funding amount must cover could not be read for the
+    /// protocol version in use, so the amount cannot be checked and is refused.
+    #[error(
+        "The network fee for this amount could not be checked. Update the app to the latest version and try again."
+    )]
+    AssetLockNetworkFeeUnavailable {
+        #[source]
+        source_error: Box<SdkError>,
+    },
 
     /// The asset-lock proof finalization (InstantSend → ChainLock fallback)
     /// timed out without producing a usable proof for Platform.
@@ -5717,6 +5738,20 @@ mod tests {
         assert!(
             !msg.contains("sync") && !msg.contains("anchor"),
             "Expected no ZK jargon in user message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn asset_lock_amount_below_network_fee_display_names_the_amount_to_enter() {
+        let message = TaskError::AssetLockAmountBelowNetworkFee {
+            amount_duffs: 5_237,
+            minimum_duffs: 50_500,
+        }
+        .to_string();
+        assert_eq!(
+            message,
+            "This amount is too small to cover the network fee. \
+             Enter at least 0.000505 DASH and try again."
         );
     }
 

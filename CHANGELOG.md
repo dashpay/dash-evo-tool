@@ -212,6 +212,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Adding funds to an identity no longer sends an amount too small to cover the
+  network fee. Such a transfer used to leave the wallet and was then refused
+  with a message about insufficient funds in the transaction. The amount field
+  now states the smallest amount it accepts, the Max button and the amount
+  filled in after a deposit never go below it, and a deposit request asks for
+  enough to leave a usable amount. Wallet Send and the command-line tool refuse
+  a too-small amount before anything is sent as well.
+
 - Disconnect now stops a connection that is still starting. Disconnecting, or
   stopping the startup sync, before the app had connected used to be ignored,
   and the app connected anyway a moment later. Press Connect to connect again.

@@ -7484,6 +7484,45 @@ async fn cross_wallet_top_up_never_displaces_the_paying_wallets_own_identity() {
     backend.shutdown().await;
 }
 
+/// A wallet-funded top-up too small to cover the network fee is refused by the
+/// task itself. The wallet backend is never started here, so the refusal cannot
+/// have built or sent a funding transaction.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn top_up_below_the_network_fee_is_refused_before_the_wallet_is_touched() {
+    use crate::backend_task::identity::{
+        IdentityTask, IdentityTopUpInfo, TopUpIdentityFundingMethod,
+    };
+
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    let wallet =
+        Wallet::new_from_seed([0x6Au8; 64], Network::Testnet, None, None).expect("build wallet");
+    let task = IdentityTask::TopUpIdentity(IdentityTopUpInfo {
+        qualified_identity: wallet_owned_qualified_identity(Some(0)),
+        wallet: Arc::new(RwLock::new(wallet)),
+        identity_funding_method: TopUpIdentityFundingMethod::FundWithWallet(5_237, 0, 0),
+    });
+
+    let error = ctx
+        .run_identity_task(task, &ctx.sdk(), sender)
+        .await
+        .expect_err("a top-up below the network fee must be refused");
+
+    assert!(
+        matches!(
+            error,
+            TaskError::AssetLockAmountBelowNetworkFee {
+                amount_duffs: 5_237,
+                ..
+            }
+        ),
+        "expected AssetLockAmountBelowNetworkFee, got: {error:?}"
+    );
+    assert!(
+        ctx.wallet_backend().is_err(),
+        "refusing the amount must not start the wallet backend"
+    );
+}
+
 /// The cold-boot/unlock reconcile registers only the identities its own wallet
 /// is linked to. An identity linked to a different wallet must stay out of this
 /// wallet's manager, whatever the in-memory `associated_wallets` map holds.

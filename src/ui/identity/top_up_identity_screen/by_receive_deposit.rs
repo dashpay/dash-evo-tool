@@ -47,7 +47,7 @@ impl TopUpIdentityScreen {
 
         // The QR URI encodes the amount at 4 decimals; show that same rounded-up
         // figure in the hint so the two never disagree or understate the minimum.
-        let minimum_credits = self.app_context.fee_estimator().estimate_identity_topup();
+        let minimum_credits = self.required_wallet_credits();
         let minimum_dash = round_up_dash_4dp(Amount::dash_from_credits(minimum_credits).to_f64());
         let minimum_amount = format!("{minimum_dash:.4} DASH");
         let dash_uri = format!("dash:{address}?amount={minimum_dash:.4}");
@@ -117,7 +117,7 @@ impl TopUpIdentityScreen {
             .unwrap_or(0);
         self.funding_address_balance_duffs = address_balance_duffs;
 
-        let minimum_credits = self.app_context.fee_estimator().estimate_identity_topup();
+        let minimum_credits = self.required_wallet_credits();
         let current_step = self.current_step();
         let (next_step, prefill) =
             snapshot_deposit_outcome(current_step, address_balance_duffs, minimum_credits);

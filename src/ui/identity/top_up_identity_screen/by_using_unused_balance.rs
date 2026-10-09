@@ -1,7 +1,7 @@
 use crate::app::AppAction;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::ui::RootScreenType;
-use crate::ui::identity::funding_common::{FundingMethod, spendable_covers_minimum};
+use crate::ui::identity::funding_common::FundingMethod;
 use crate::ui::identity::top_up_identity_screen::TopUpIdentityScreen;
 use crate::ui::theme::DashColors;
 use egui::{Color32, Frame, Margin, RichText, Ui};
@@ -33,7 +33,7 @@ impl TopUpIdentityScreen {
         }
     }
 
-    /// If the selected wallet can't cover even the estimated top-up fee,
+    /// If the selected wallet can't send a top-up that covers the network fee,
     /// render an equivalent of the Create-Identity "not enough Dash" banner
     /// with a link to the Wallets screen, and report that the caller should
     /// stop rendering this step. Returns `None` when the balance is
@@ -49,9 +49,7 @@ impl TopUpIdentityScreen {
             }
         };
 
-        let minimum_credits = self.app_context.fee_estimator().estimate_identity_topup();
-
-        if spendable_covers_minimum(spendable_duffs, minimum_credits) {
+        if self.top_up_amount_range(spendable_duffs).is_some() {
             return None;
         }
 
@@ -61,7 +59,7 @@ impl TopUpIdentityScreen {
             format!(
                 "Your wallet does not have enough Dash to top up this identity yet. \
                  Add at least {amount} to continue.",
-                amount = format_credits_as_dash(minimum_credits)
+                amount = format_credits_as_dash(self.required_wallet_credits())
             ),
         );
         ui.add_space(8.0);

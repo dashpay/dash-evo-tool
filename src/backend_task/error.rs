@@ -3,6 +3,7 @@
 //! `Display` → user-friendly text (shown in `MessageBanner`).
 //! `Debug` → variant name + fields (logged and shown in collapsible details).
 
+use crate::model::asset_lock::validate_asset_lock_minimum;
 use crate::model::fee_estimation::{format_credits_as_dash, format_duffs_as_dash};
 use crate::wallet_backend::platform_compatibility::StorageFailure;
 use dash_sdk::Error as SdkError;
@@ -3572,6 +3573,26 @@ fn parse_fee_exceeds_spendable(detail: &str) -> Option<(u64, u64, u64)> {
     let spendable: u64 = detail[spendable_start..].trim().parse().ok()?;
 
     Some((amount, fee, spendable))
+}
+
+/// Refuse a wallet funding the network would reject for not covering its fee.
+///
+/// Call before any wallet work: by the time the network reports such a refusal
+/// the funds have already left the wallet. A minimum that could not be read
+/// refuses the amount rather than letting it through. Pure — no I/O.
+pub(crate) fn ensure_funding_covers_network_fee(
+    amount_duffs: u64,
+    minimum_duffs: Result<u64, Box<ProtocolError>>,
+) -> Result<(), TaskError> {
+    let minimum_duffs = minimum_duffs.map_err(|e| TaskError::AssetLockNetworkFeeUnavailable {
+        source_error: Box::new(SdkError::Protocol(*e)),
+    })?;
+    validate_asset_lock_minimum(amount_duffs, minimum_duffs).map_err(|e| {
+        TaskError::AssetLockAmountBelowNetworkFee {
+            amount_duffs,
+            minimum_duffs: e.minimum_amount_duffs,
+        }
+    })
 }
 
 /// Construct the appropriate `TaskError` for a shielded transition build failure.

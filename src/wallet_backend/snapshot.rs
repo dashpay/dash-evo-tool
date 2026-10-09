@@ -683,6 +683,15 @@ impl SnapshotStore {
             .unwrap_or_default()
     }
 
+    /// Number of unspent outputs in a wallet's published snapshot, read in
+    /// place; 0 before the first publish.
+    pub(super) fn utxo_count(&self, seed_hash: &WalletSeedHash) -> usize {
+        self.snapshots
+            .load()
+            .get(seed_hash)
+            .map_or(0, |snapshot| snapshot.utxos.len())
+    }
+
     /// Atomically read the generation, exact input composition, and revision.
     pub(super) fn asset_lock_probe_snapshot(
         &self,
@@ -1094,6 +1103,43 @@ mod tests {
         assert!(snap.utxos.is_empty());
         // Pre-sync: no watched receive set is published yet.
         assert!(snap.monitored_receive_addresses.is_empty());
+    }
+
+    /// The in-place count agrees with the published output list, and a wallet
+    /// with no snapshot counts as empty.
+    #[test]
+    fn utxo_count_matches_the_published_outputs() {
+        let store = SnapshotStore::new();
+        let utxos: Vec<DetUtxo> = (1..=3)
+            .map(|n| {
+                let address = addr(n);
+                DetUtxo {
+                    outpoint: OutPoint::null(),
+                    value: 1_000 * u64::from(n),
+                    script_pubkey: address.script_pubkey(),
+                    address,
+                }
+            })
+            .collect();
+        store.publish(
+            &seed(3),
+            &wid(3),
+            SnapshotState {
+                balance: DetWalletBalance::default(),
+                asset_lock_inputs: AssetLockInputState::default(),
+                utxos,
+                address_balances: BTreeMap::new(),
+                monitored_receive_addresses: Vec::new(),
+                address_paths: BTreeMap::new(),
+            },
+        );
+
+        assert_eq!(store.utxo_count(&seed(3)), 3);
+        assert_eq!(
+            store.utxo_count(&seed(3)),
+            store.snapshot(&seed(3)).utxos.len()
+        );
+        assert_eq!(store.utxo_count(&seed(4)), 0);
     }
 
     #[test]

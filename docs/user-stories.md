@@ -185,6 +185,7 @@ As a user, I want to fund a Platform payment address directly from my wallet UTX
 
 - Creates asset lock automatically from wallet funds.
 - Supports fee deduction from output or wallet.
+- An amount too small for the network to accept is refused before any funds leave the wallet, in both fee modes.
 
 ### WAL-018: Fund Platform address from asset lock [Implemented]
 **Persona:** Priya, Jordan
@@ -438,6 +439,7 @@ As a user, I want to top up an identity directly from the Send screen so that I 
 - Select Core Wallet or Platform Addresses as source.
 - Enter an identity ID (Base58) as destination.
 - System uses appropriate backend task (asset lock for Core, direct for Platform).
+- From a Core wallet, the amount field states the smallest amount that covers the network fee, Max never goes below it, and the form says so when no amount the wallet can send covers the fee.
 
 ### SND-009: Shield credits from Platform address [Implemented]
 **Persona:** Jordan
@@ -578,6 +580,7 @@ As a developer, I want a one-click "fund this identity with X credits" button so
 As a user, I want to register a new identity on Dash Platform so that I can use Platform features like DPNS and DashPay.
 
 - Fund-first wizard: choose a funding method — from your wallet (recommended, pre-selected by default when available), recover an unfinished funding, or use a Platform address — then create the identity.
+- An amount too small to cover the network fee for the chosen number of keys is refused before any funds leave the wallet: the form states the smallest amount it accepts, and neither Max, the amount filled in after a deposit, nor the deposit request goes below it.
 - Multi-stage confirmation flow.
 
 ### IDN-002: Load existing identity by ID [Implemented]

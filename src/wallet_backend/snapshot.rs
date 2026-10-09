@@ -1242,6 +1242,64 @@ mod tests {
         );
     }
 
+    /// Crosses the wallet-selector seam: `AppContext::wallet_selector_entries`
+    /// must hand on the snapshot's Core total and, separately, the funds an
+    /// identity can be funded from. A selector on a screen where the wallet
+    /// pays shows the second figure, so neither may be dropped or swapped.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wallet_selector_entries_carry_the_snapshots_total_and_usable_core_funds() {
+        use crate::model::address::AddressKind;
+        use crate::model::wallet::balance_summary::{CoreFigure, WalletChoice};
+        const USABLE_DUFFS: u64 = 400_000;
+        const NOT_YET_USABLE_DUFFS: u64 = 600_000;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let (sender, _results) = tokio::sync::mpsc::channel(32);
+        ctx.ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+            sender,
+            ctx.egui_ctx().clone(),
+        ))
+        .await
+        .expect("the wallet backend starts offline");
+        let wallet =
+            crate::model::wallet::Wallet::new_from_seed([0x51; 64], Network::Testnet, None, None)
+                .expect("wallet");
+        let seed_hash = wallet.seed_hash();
+        ctx.wallet_context()
+            .insert_test_wallet(seed_hash, Arc::new(std::sync::RwLock::new(wallet)));
+
+        let backend = ctx.wallet_backend().expect("wallet backend");
+        backend.inner.snapshots.publish(
+            &seed_hash,
+            &wid(9),
+            SnapshotState {
+                balance: DetWalletBalance {
+                    confirmed: USABLE_DUFFS,
+                    unconfirmed: NOT_YET_USABLE_DUFFS,
+                    total: USABLE_DUFFS + NOT_YET_USABLE_DUFFS,
+                },
+                asset_lock_inputs: AssetLockInputState::from_inputs([(
+                    OutPoint::new(Txid::from_byte_array([1; 32]), 0),
+                    USABLE_DUFFS,
+                )]),
+                utxos: Vec::new(),
+                address_balances: BTreeMap::new(),
+                monitored_receive_addresses: Vec::new(),
+                address_paths: BTreeMap::new(),
+            },
+        );
+
+        let entries = ctx.wallet_selector_entries(false);
+        assert_eq!(
+            entries.iter().map(|e| e.choice).collect::<Vec<_>>(),
+            [WalletChoice::Hd(seed_hash)]
+        );
+        let core = |figure| entries[0].balances.kind_duffs(AddressKind::Core, figure);
+        assert_eq!(core(CoreFigure::Total), USABLE_DUFFS + NOT_YET_USABLE_DUFFS);
+        assert_eq!(core(CoreFigure::Usable), USABLE_DUFFS);
+    }
+
     /// FUNDS-SAFETY (display list): the Receive list is sourced from the
     /// snapshot's `monitored_receive_addresses` — the SPV-watched set published
     /// off the event-bridge recompute. Publishing a watched set makes it the

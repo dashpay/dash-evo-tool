@@ -1695,6 +1695,19 @@ As a user, while the app opens my saved data on startup or after switching netwo
 - Once a network's storage is prepared, returning to it later in the same session does not re-show the block; chain sync starts automatically only after preparation finishes, never before or during it.
 - Not covered: the headless CLI/MCP path has no such block — it fast-fails with "The storage update is still running. Please wait a moment and try again." instead, since it has no window to hold up. See `docs/ai-design/2026-08-31-startup-linearization/`.
 
+### UX-006: Wallet pickers show each wallet's balance the same way [Implemented]
+**Persona:** Alex, Priya, Jordan
+
+As a user with more than one wallet, I want every wallet picker to show each wallet's balance in the same way, so that I can tell which wallet to use without leaving the screen.
+
+- On the create-identity, add-funds and load-existing-identity screens every wallet reads as its type, its name and a balance, e.g. `HD: Main — 0.5000 DASH` (`SK:` for an imported key).
+- The balance always shows four decimal places. Smaller fractions are cut off, never rounded up, so a picker cannot show more than the wallet holds; an amount below 0.0001 DASH reads `0.0000 DASH`.
+- Each screen counts the balances that matter there: the Dash the wallet can use right now where the wallet pays, the Platform address balance when funding from a Platform address, and everything the wallet holds (Core, Platform addresses, shielded funds and its identities' credits) where the wallet is only being identified.
+- Hovering a wallet breaks the shown balance down by kind.
+- A wallet that cannot be used for the chosen funding method is greyed out, and hovering it says why and what to do instead.
+- If the balances of the wallet's identities cannot be read, the load-existing-identity screen says so, leaves them out of the totals instead of showing them as zero, and stays usable.
+- The Wallets page picker and the top-bar wallet pill keep their own formats.
+
 ## Identities Hub (IDH)
 
 ### IDH-001: First-time identity setup [Implemented]

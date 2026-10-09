@@ -21,12 +21,14 @@ use crate::model::fee_estimation::{
     format_credits_as_dash, format_duffs_as_dash, identity_create_min_funding_duffs,
 };
 use crate::model::secret::Secret;
+use crate::model::wallet::balance_summary::{CoreFigure, WalletChoice};
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::ui::components::MessageBanner;
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::wallet_selector::WalletSelector;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
@@ -35,7 +37,7 @@ use crate::ui::identity::funding_common::{
     deposit_event_outcome, funding_method_after_switch, max_amount_after_fee_reserve,
     network_fee_refusal, receive_deposit_ceiling_duffs, required_deposit_credits,
     required_wallet_credits, show_network_fee_minimum, spendable_covers_minimum,
-    step_after_task_failure, wallet_selection_combo,
+    step_after_task_failure,
 };
 use crate::ui::state::{AssetLockBalanceCache, TrackedAssetLockCache};
 use crate::ui::theme::DashColors;
@@ -65,17 +67,6 @@ use std::sync::{Arc, RwLock};
 
 pub const MAX_IDENTITY_INDEX: u32 = 30;
 
-/// Compose a wallet-picker entry as `alias — spendable-balance in DASH`.
-///
-/// The balance shown is always the wallet's **spendable** amount (never the
-/// total): only spendable funds can pay for identity creation, so surfacing
-/// the total here would invite the very insufficient-funds surprise this
-/// label exists to prevent. A pure function so the wording is testable
-/// without constructing a real wallet/balance snapshot.
-fn format_wallet_picker_label(alias: &str, spendable_duffs: u64) -> String {
-    format!("{alias} — {}", Amount::dash_from_duffs(spendable_duffs))
-}
-
 pub struct AddNewIdentityScreen {
     identity_id_number: u32,
     step: Arc<RwLock<WalletFundedScreenStep>>,
@@ -85,6 +76,7 @@ pub struct AddNewIdentityScreen {
     /// re-derives the credit-output key from the seed.
     funding_asset_lock: Option<OutPoint>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
+    wallet_selector: Option<WalletSelector>,
     funding_address: Option<Address>,
     /// A queued deposit-address derivation for the "Receive a new deposit"
     /// method. Set when the QR view needs an address; drained at the end of
@@ -183,6 +175,7 @@ impl AddNewIdentityScreen {
             step: Arc::new(RwLock::new(WalletFundedScreenStep::ChooseFundingMethod)),
             funding_asset_lock: None,
             selected_wallet: None, // updated later
+            wallet_selector: None,
             funding_address: None,
             pending_funding_address_request: None,
             funding_address_request_in_flight: false,
@@ -386,54 +379,36 @@ impl AddNewIdentityScreen {
         }
     }
 
-    /// Build the wallet-picker label (`alias — spendable balance`) for one
-    /// wallet, reading its spendable balance from the display snapshot.
-    ///
-    /// Poison-tolerant: if the wallet lock is poisoned, falls back to a plain
-    /// "Unnamed Wallet" label rather than panicking. Takes `&AppContext`
-    /// (not `&self`) so the ComboBox closure can call it via a field-level
-    /// borrow, leaving the closure's other `self` field writes undisturbed.
-    fn wallet_picker_label(app_context: &AppContext, wallet: &Arc<RwLock<Wallet>>) -> String {
-        let Some((seed_hash, alias)) = wallet.read().ok().map(|w| {
-            let alias = app_context
-                .wallet_context()
-                .hd_alias(&w.seed_hash())
-                .unwrap_or_else(|| "Unnamed Wallet".to_string());
-            (w.seed_hash(), alias)
-        }) else {
-            return "Unnamed Wallet".to_string();
-        };
-        let spendable_duffs = app_context.snapshot_balance(&seed_hash).spendable();
-        format_wallet_picker_label(&alias, spendable_duffs)
-    }
-
     fn render_wallet_selection(&mut self, ui: &mut Ui) -> bool {
         let mut clicked_wallet = None;
         let rendered = if self.app_context.has_wallet.load(Ordering::Relaxed) {
-            let wallets: Vec<_> = self
-                .app_context
-                .wallet_context()
-                .wallets()
-                .values()
-                .cloned()
-                .collect();
+            let wallets = self.app_context.wallet_context().wallets();
 
             if wallets.len() > 1 {
                 ui.heading("1. Choose which wallet this identity's keys will come from.");
 
-                // Show each wallet's spendable balance next to its alias so
-                // funding sufficiency is visible before choosing.
-                let app_context = self.app_context.clone();
-                clicked_wallet = wallet_selection_combo(
-                    ui,
-                    "select_wallet",
-                    &wallets,
-                    self.selected_wallet.as_ref(),
-                    |wallet| Self::wallet_picker_label(&app_context, wallet),
-                    |_| true,
+                // Each row shows what that wallet can put towards the new
+                // identity through the chosen funding method, so funding
+                // sufficiency is visible before choosing.
+                let balance_kind = self.funding_method.read_recover().balance_kind();
+                let selector = self.wallet_selector.get_or_insert_with(|| {
+                    WalletSelector::new("select_wallet").with_core_figure(CoreFigure::Usable)
+                });
+                selector.set_balance_kinds(&[balance_kind]);
+                selector.set_entries(self.app_context.wallet_selector_entries(false));
+                selector.set_selected(
+                    self.selected_wallet
+                        .as_deref()
+                        .map(WalletChoice::of_hd_wallet),
                 );
+                let response = selector.show(ui).inner;
+                if response.has_changed()
+                    && let Some(WalletChoice::Hd(seed_hash)) = response.changed_value()
+                {
+                    clicked_wallet = wallets.get(seed_hash).cloned();
+                }
                 true
-            } else if let Some(wallet) = wallets.first() {
+            } else if let Some(wallet) = wallets.values().next() {
                 if self.selected_wallet.is_none() {
                     // Automatically select the only available wallet.
                     clicked_wallet = Some(wallet.clone());
@@ -1943,6 +1918,55 @@ mod funding_method_tests {
         (screen, seed_hash, temp_dir)
     }
 
+    /// The picker shows the balance the chosen funding method draws on: a
+    /// wallet funding from a Platform address reads its Platform funds, not
+    /// its Core funds.
+    #[test]
+    fn wallet_picker_counts_platform_funds_when_funding_from_a_platform_address() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let app_context = test_app_context(temp_dir.path());
+        let mut wallets = Vec::new();
+        for (seed_byte, alias) in [(0x63, "Alpha"), (0x64, "Beta")] {
+            let wallet = Wallet::new_from_seed(
+                [seed_byte; 64],
+                Network::Testnet,
+                Some(alias.to_string()),
+                None,
+            )
+            .expect("wallet");
+            let seed_hash = wallet.seed_hash();
+            let wallet = Arc::new(RwLock::new(wallet));
+            app_context
+                .wallet_context()
+                .insert_test_wallet(seed_hash, wallet.clone());
+            wallets.push((seed_hash, wallet));
+        }
+        app_context.has_wallet.store(true, Ordering::Relaxed);
+        app_context
+            .platform_balances
+            .lock()
+            .expect("platform balances")
+            .insert(wallets[0].0, 30_000_000);
+        let mut screen = AddNewIdentityScreen::new(&app_context);
+        screen.selected_wallet = Some(wallets[0].1.clone());
+        *screen.funding_method.write().expect("funding method lock") =
+            FundingMethod::UsePlatformAddress;
+        screen.user_chose_funding_method = true;
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1200.0, 900.0))
+            .build_ui(|ui| {
+                screen.ui(ui);
+            });
+        harness.run_steps(2);
+
+        assert!(
+            harness.query_by_value("HD: Alpha — 0.3000 DASH").is_some(),
+            "the closed picker must show the wallet's Platform funds"
+        );
+    }
+
     fn asset_lock_request_id(task: Option<BackendTask>) -> u64 {
         match task {
             Some(BackendTask::WalletTask(WalletTask::GetAssetLockMaxAmount {
@@ -2044,34 +2068,6 @@ mod funding_method_tests {
             "a chosen funding that no longer covers the network fee must be dropped"
         );
         assert_eq!(shown, [false], "it must not be shown as selected either");
-    }
-
-    /// The picker label pairs the wallet alias with its spendable balance,
-    /// rendered in DASH, so the user can compare wallets before choosing one.
-    /// 0.5 DASH == 50_000_000 duffs.
-    #[test]
-    fn wallet_picker_label_shows_spendable_balance_in_dash() {
-        assert_eq!(
-            format_wallet_picker_label("Main", 50_000_000),
-            "Main — 0.5 DASH"
-        );
-    }
-
-    /// A zero-balance wallet still renders a well-formed label rather than an
-    /// empty or unit-less string.
-    #[test]
-    fn wallet_picker_label_renders_zero_balance() {
-        assert_eq!(format_wallet_picker_label("Empty", 0), "Empty — 0 DASH");
-    }
-
-    /// Structural guard: the label keeps the alias, an em-dash separator, and
-    /// the DASH unit — the shape UI code and any future i18n extraction rely on.
-    #[test]
-    fn wallet_picker_label_keeps_alias_separator_and_unit() {
-        let label = format_wallet_picker_label("Savings", 12_345_678);
-        assert!(label.starts_with("Savings"), "keeps the alias: {label}");
-        assert!(label.contains(" — "), "uses an em-dash separator: {label}");
-        assert!(label.ends_with(" DASH"), "shows the DASH unit: {label}");
     }
 
     #[test]

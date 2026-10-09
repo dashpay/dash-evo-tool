@@ -212,6 +212,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Adding funds to an identity no longer sends an amount too small to cover the
+  network fee. Such a transfer used to leave the wallet and was then refused
+  with a message about insufficient funds in the transaction. The amount field
+  now states the smallest amount it accepts, the Max button and the amount
+  filled in after a deposit never go below it, and a deposit request asks for
+  enough to leave a usable amount. Wallet Send and the command-line tool refuse
+  a too-small amount before anything is sent as well.
+
+- Disconnect now stops a connection that is still starting. Disconnecting, or
+  stopping the startup sync, before the app had connected used to be ignored,
+  and the app connected anyway a moment later. Press Connect to connect again.
+
 - After you press Disconnect, the app stays disconnected when you switch
   networks. It used to reconnect on the new network whenever "Auto-start SPV on
   startup" was enabled. Disconnect also stops syncing on a network you left
@@ -226,6 +238,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - The progress dialog shown while a username is being registered names the
   username.
+
+- A transfer that adds funds to an identity stays in progress until its own
+  result arrives, also when its screen is closed or the network is switched:
+  the funding form for that identity stays paused and a banner follows the
+  transfer. Its result is shown only on the screen that started it, so a
+  payment waiting on the Send screen is no longer reported as finished or
+  failed by it. The confirmation names the identity that received the funds
+  and shows its ID.
 
 - Importing a wallet while the app is still connecting finds the wallet's
   identities. The search used to start at once, before the network was ready,

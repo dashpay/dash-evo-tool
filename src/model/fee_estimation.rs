@@ -14,6 +14,7 @@
 
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use dash_sdk::dashcore_rpc::dashcore::Address;
+use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::address_funds::{AddressFundsFeeStrategyStep, PlatformAddress};
 use dash_sdk::dpp::balances::credits::{CREDITS_PER_DUFF, Credits};
 use dash_sdk::dpp::identity::core_script::CoreScript;
@@ -23,6 +24,8 @@ use dash_sdk::dpp::state_transition::address_credit_withdrawal_transition::Addre
 use dash_sdk::dpp::state_transition::address_credit_withdrawal_transition::v0::AddressCreditWithdrawalTransitionV0;
 use dash_sdk::dpp::state_transition::address_funding_from_asset_lock_transition::AddressFundingFromAssetLockTransition;
 use dash_sdk::dpp::state_transition::address_funding_from_asset_lock_transition::v0::AddressFundingFromAssetLockTransitionV0;
+use dash_sdk::dpp::state_transition::identity_topup_transition::IdentityTopUpTransition;
+use dash_sdk::dpp::state_transition::identity_topup_transition::v0::IdentityTopUpTransitionV0;
 
 /// Subtract an estimated fee from a credit balance without floating-point conversion.
 pub const fn max_spendable_credits(balance: u64, estimated_fee: u64) -> u64 {
@@ -828,6 +831,20 @@ pub(crate) fn estimate_withdrawal_fee_from_transition(
         .unwrap_or(0)
 }
 
+/// Smallest identity top-up funding, in duffs, the network accepts.
+///
+/// The network takes its fee out of the funding and refuses one that cannot
+/// cover it. That fee follows the protocol version, is not scaled by the epoch
+/// fee multiplier, and is rounded up here to whole duffs.
+pub(crate) fn identity_topup_min_funding_duffs(
+    platform_version: &PlatformVersion,
+) -> Result<u64, Box<ProtocolError>> {
+    IdentityTopUpTransition::V0(IdentityTopUpTransitionV0::default())
+        .calculate_min_required_fee(platform_version)
+        .map(|credits| credits.div_ceil(CREDITS_PER_DUFF))
+        .map_err(Box::new)
+}
+
 /// Calculate the estimated fee for funding a Platform address from an asset lock.
 pub(crate) fn estimate_address_funding_fee_from_transition(
     platform_version: &PlatformVersion,
@@ -1132,6 +1149,17 @@ mod tests {
         let balance = (1_u64 << 53) + 17;
         assert_eq!(max_spendable_credits(balance, 11), balance - 11);
         assert_eq!(max_spendable_credits(10, 11), 0);
+    }
+
+    /// 0.000505 DASH is the "required" figure the network reports when it
+    /// refuses a smaller top-up funding under protocol 13.
+    #[test]
+    fn identity_topup_minimum_funding_is_the_fee_the_network_requires() {
+        let pv13 = PlatformVersion::get(13).expect("PV13");
+        assert_eq!(
+            identity_topup_min_funding_duffs(pv13).expect("PV13 defines the top-up fee"),
+            50_500
+        );
     }
 
     #[test]

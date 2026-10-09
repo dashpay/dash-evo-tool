@@ -559,6 +559,114 @@ async fn concurrent_spv_start_failure_is_returned_to_every_caller() {
     backend.shutdown().await;
 }
 
+/// A disconnect outranks a start it overtook. The start was dispatched first
+/// but reaches the lifecycle lock behind the stop, and must stand down rather
+/// than retry on the latch that stop re-armed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_start_overtaken_by_a_disconnect_stands_down() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("backend wiring should succeed offline");
+    let backend = ctx
+        .wallet_backend()
+        .expect("backend must be wired before start");
+    let still_wanted = AtomicBool::new(true);
+
+    // Queue the stop ahead of the start on the lifecycle lock.
+    let lifecycle = backend.lock_start_lifecycle_for_test().await;
+    let mut stop = std::pin::pin!(backend.stop_in_place());
+    let mut start = std::pin::pin!(backend.start_while(|| still_wanted.load(Ordering::SeqCst)));
+    assert!(futures::poll!(&mut stop).is_pending());
+    assert!(futures::poll!(&mut start).is_pending());
+    still_wanted.store(false, Ordering::SeqCst);
+    drop(lifecycle);
+    let ((), started) = tokio::join!(stop, start);
+
+    assert!(
+        !started.expect("standing down is not a failure"),
+        "an overruled start must report that it did not start chain sync"
+    );
+    assert!(
+        !backend.is_started(),
+        "a start overtaken by a disconnect must not bring chain sync up"
+    );
+
+    backend.shutdown().await;
+}
+
+/// The counterpart: a start nobody overruled still retries past the stop it
+/// queued behind, so a Connect pressed during a disconnect reconnects.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_start_still_wanted_restarts_after_the_stop_it_queued_behind() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("backend wiring should succeed offline");
+    let backend = ctx
+        .wallet_backend()
+        .expect("backend must be wired before start");
+
+    let lifecycle = backend.lock_start_lifecycle_for_test().await;
+    let mut stop = std::pin::pin!(backend.stop_in_place());
+    let mut start = std::pin::pin!(backend.start_while(|| true));
+    assert!(futures::poll!(&mut stop).is_pending());
+    assert!(futures::poll!(&mut start).is_pending());
+    drop(lifecycle);
+    let ((), started) = tokio::join!(stop, start);
+
+    assert!(
+        started.expect("the retried start should succeed offline"),
+        "a start that is still wanted must report chain sync as started"
+    );
+    assert!(
+        backend.is_started(),
+        "a start that is still wanted must restart chain sync after the stop"
+    );
+
+    backend.shutdown().await;
+}
+
+/// Disconnect, then Connect straight away, with the pre-disconnect start still
+/// on its way: that start stands down and the Connect's start brings chain
+/// sync up, even though it had joined the overruled start's flight.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_connect_after_a_disconnect_starts_while_the_overruled_start_stands_down() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("backend wiring should succeed offline");
+    let backend = ctx
+        .wallet_backend()
+        .expect("backend must be wired before start");
+
+    // The overruled start reaches the lifecycle lock first; the Connect joins it.
+    let lifecycle = backend.lock_start_lifecycle_for_test().await;
+    let mut overruled = std::pin::pin!(backend.start_while(|| false));
+    let mut connect = std::pin::pin!(backend.start_while(|| true));
+    assert!(futures::poll!(&mut overruled).is_pending());
+    assert!(futures::poll!(&mut connect).is_pending());
+    drop(lifecycle);
+    let (overruled, connect) = tokio::join!(overruled, connect);
+
+    assert!(
+        !overruled.expect("standing down is not a failure"),
+        "the start dispatched before the disconnect must stand down"
+    );
+    assert!(
+        connect.expect("the Connect's start should succeed offline"),
+        "the start dispatched by the Connect must report chain sync as started"
+    );
+    assert!(
+        backend.is_started(),
+        "a Connect after a disconnect must bring chain sync up"
+    );
+
+    backend.shutdown().await;
+}
+
 /// Cold-boot signability regression, adapted to the JIT secret model: a
 /// no-password wallet must remain signable after a cold-boot hydration
 /// without any seed ever being parked in a long-lived cache.
@@ -7374,6 +7482,45 @@ async fn cross_wallet_top_up_never_displaces_the_paying_wallets_own_identity() {
     );
 
     backend.shutdown().await;
+}
+
+/// A wallet-funded top-up too small to cover the network fee is refused by the
+/// task itself. The wallet backend is never started here, so the refusal cannot
+/// have built or sent a funding transaction.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn top_up_below_the_network_fee_is_refused_before_the_wallet_is_touched() {
+    use crate::backend_task::identity::{
+        IdentityTask, IdentityTopUpInfo, TopUpIdentityFundingMethod,
+    };
+
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    let wallet =
+        Wallet::new_from_seed([0x6Au8; 64], Network::Testnet, None, None).expect("build wallet");
+    let task = IdentityTask::TopUpIdentity(IdentityTopUpInfo {
+        qualified_identity: wallet_owned_qualified_identity(Some(0)),
+        wallet: Arc::new(RwLock::new(wallet)),
+        identity_funding_method: TopUpIdentityFundingMethod::FundWithWallet(5_237, 0, 0),
+    });
+
+    let error = ctx
+        .run_identity_task(task, &ctx.sdk(), sender)
+        .await
+        .expect_err("a top-up below the network fee must be refused");
+
+    assert!(
+        matches!(
+            error,
+            TaskError::AssetLockAmountBelowNetworkFee {
+                amount_duffs: 5_237,
+                ..
+            }
+        ),
+        "expected AssetLockAmountBelowNetworkFee, got: {error:?}"
+    );
+    assert!(
+        ctx.wallet_backend().is_err(),
+        "refusing the amount must not start the wallet backend"
+    );
 }
 
 /// The cold-boot/unlock reconcile registers only the identities its own wallet

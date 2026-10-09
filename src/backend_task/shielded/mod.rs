@@ -110,34 +110,31 @@ impl AppContext {
                 // passes the whole lock value (minus that flat fee) to the
                 // recipient, so we size the lock to `amount + fee`. A fee that
                 // cannot be read stops the shield before any funds move.
-                let (shield, version_at_sizing) = self.plan_shield_from_core(amount_duffs)?;
+                let result = self
+                    .shield_from_core_with(seed_hash, amount_duffs, async |shield| {
+                        // Deposit into this wallet's own default Orchard address. The
+                        // keys are bound at unlock; an unbound wallet has no address.
+                        let raw = backend
+                            .shielded_default_address(&seed_hash, 0)
+                            .await?
+                            .ok_or(TaskError::ShieldedNotBound)?;
+                        let recipient = OrchardAddress::from_raw_bytes(&raw)
+                            .map_err(|_| TaskError::ShieldedInvalidRecipientAddress)?;
 
-                // Deposit into this wallet's own default Orchard address. The
-                // keys are bound at unlock; an unbound wallet has no address.
-                let raw = backend
-                    .shielded_default_address(&seed_hash, 0)
-                    .await?
-                    .ok_or(TaskError::ShieldedNotBound)?;
-                let recipient = OrchardAddress::from_raw_bytes(&raw)
-                    .map_err(|_| TaskError::ShieldedInvalidRecipientAddress)?;
+                        let funding = AssetLockFunding::FromWalletBalance {
+                            amount_duffs: shield.lock_duffs,
+                            account_index: 0,
+                        };
 
-                let funding = AssetLockFunding::FromWalletBalance {
-                    amount_duffs: shield.lock_duffs,
-                    account_index: 0,
-                };
-
-                backend
-                    .shield_from_asset_lock(&seed_hash, funding, recipient, 0, None)
+                        backend
+                            .shield_from_asset_lock(&seed_hash, funding, recipient, 0, None)
+                            .await
+                    })
                     .await?;
-                let amount = shielded_amount_to_report(
-                    shield.shielded_credits,
-                    version_at_sizing,
-                    self.shield_from_core_protocol_version().0,
-                );
 
                 self.refresh_shielded_balance_snapshot(&seed_hash).await;
 
-                Ok(BackendTaskSuccessResult::ShieldedFromAssetLock { seed_hash, amount })
+                Ok(result)
             }
 
             ShieldedTask::ShieldFromBalance { seed_hash, amount } => {
@@ -244,6 +241,29 @@ impl AppContext {
 }
 
 impl AppContext {
+    /// Shield `amount_duffs` from the Core wallet through `transfer`, the call
+    /// that locks the sized funding and shields it. The protocol version is
+    /// read before the funding is sized and again once `transfer` has
+    /// finished; the result names an amount only when the two agree.
+    async fn shield_from_core_with<F>(
+        &self,
+        seed_hash: WalletSeedHash,
+        amount_duffs: u64,
+        transfer: impl FnOnce(ShieldFromCoreFunding) -> F,
+    ) -> Result<BackendTaskSuccessResult, TaskError>
+    where
+        F: Future<Output = Result<(), TaskError>>,
+    {
+        let (shield, version_at_sizing) = self.plan_shield_from_core(amount_duffs)?;
+        transfer(shield).await?;
+        let amount = shielded_amount_to_report(
+            shield.shielded_credits,
+            version_at_sizing,
+            self.shield_from_core_protocol_version().0,
+        );
+        Ok(BackendTaskSuccessResult::ShieldedFromAssetLock { seed_hash, amount })
+    }
+
     /// Size a shield of `amount_duffs` from the Core wallet, and note the
     /// number of the protocol version the fee was read from.
     pub(crate) fn plan_shield_from_core(
@@ -420,5 +440,110 @@ mod tests {
         assert_eq!(version_at_sizing, 13);
         assert_eq!(shield.lock_duffs, 100_000 + 212_852);
         assert_eq!(shield.shielded_credits, 100_000_800);
+    }
+
+    /// A context whose wallet backend runs on protocol 13.
+    async fn ctx_with_backend(
+        dir: &std::path::Path,
+    ) -> (Arc<AppContext>, Arc<crate::wallet_backend::WalletBackend>) {
+        let ctx = test_app_context(dir);
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        ctx.ensure_wallet_backend(SenderAsync::new(tx, egui::Context::default()))
+            .await
+            .expect("wallet backend");
+        let backend = ctx.wallet_backend().expect("wallet backend");
+        assert_eq!(backend.sdk().protocol_version_number(), 13);
+        (ctx, backend)
+    }
+
+    /// Tell `sdk` the network runs protocol `version`, the way a response
+    /// from the network does.
+    fn network_reports_protocol_version(sdk: &dash_sdk::Sdk, version: u32) {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_millis() as u64;
+        sdk.verify_response_metadata(
+            "test",
+            &dash_sdk::dapi_grpc::platform::v0::ResponseMetadata {
+                height: 1,
+                time_ms: now_ms,
+                protocol_version: version,
+                ..Default::default()
+            },
+        )
+        .expect("fresh metadata");
+        assert_eq!(sdk.protocol_version_number(), version);
+    }
+
+    /// The version moves while the transfer is under way, and the transfer
+    /// then completes: the task must still succeed, and must not name an
+    /// amount it sized under the earlier version.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shield_from_core_task_succeeds_without_an_amount_when_the_version_moves_mid_transfer()
+    {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (ctx, backend) = ctx_with_backend(tmp.path()).await;
+        let seed_hash = WalletSeedHash::default();
+
+        let result = ctx
+            .shield_from_core_with(seed_hash, 100_000, async |funding| {
+                assert_eq!(funding.lock_duffs, 100_000 + 212_852);
+                network_reports_protocol_version(backend.sdk(), 14);
+                Ok(())
+            })
+            .await;
+
+        assert!(
+            matches!(
+                &result,
+                Ok(BackendTaskSuccessResult::ShieldedFromAssetLock { seed_hash: reported, amount: None })
+                    if *reported == seed_hash
+            ),
+            "got {result:?}"
+        );
+    }
+
+    /// With the version unchanged across the transfer the task reports what
+    /// was shielded, including the 800 credits that rounding the fee up to
+    /// whole duffs adds under protocol 13.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shield_from_core_task_reports_the_amount_when_the_version_holds() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (ctx, _backend) = ctx_with_backend(tmp.path()).await;
+        let seed_hash = WalletSeedHash::default();
+
+        let result = ctx
+            .shield_from_core_with(seed_hash, 100_000, async |_funding| Ok(()))
+            .await;
+
+        assert!(
+            matches!(
+                &result,
+                Ok(BackendTaskSuccessResult::ShieldedFromAssetLock {
+                    amount: Some(100_000_800),
+                    ..
+                })
+            ),
+            "got {result:?}"
+        );
+    }
+
+    /// A transfer that fails stays a failure.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shield_from_core_task_keeps_a_failed_transfer_a_failure() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (ctx, _backend) = ctx_with_backend(tmp.path()).await;
+
+        let result = ctx
+            .shield_from_core_with(WalletSeedHash::default(), 100_000, async |_funding| {
+                Err(TaskError::ShieldedNotBound)
+            })
+            .await;
+
+        assert!(
+            matches!(&result, Err(TaskError::ShieldedNotBound)),
+            "got {result:?}"
+        );
     }
 }

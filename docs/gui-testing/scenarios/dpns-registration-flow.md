@@ -109,12 +109,13 @@ after each run.
 10. **Make a name the main one.** If the identity has two names, use the make-
     main row action; record where the main name then appears (header, lists,
     switcher).
-11. **Social profile save, normal case.** Open Contacts → set up/edit social
+11. **Social profile save, normal case (MUTATES: publishes a paid profile
+    write).** Open Contacts → set up/edit social
     profile, change the display name or bio, save. Record the feedback during
     and after the save and whether the progress indicator clears.
-12. **Social profile save, forced failure.** If you can force a failure
+12. **Social profile save, forced failure (MUTATES).** If you can force a failure
     (briefly disconnect the network mid-save), record the same as step 11.
-13. **Switch identity mid-save.** Start a profile save on identity A and
+13. **Switch identity mid-save (MUTATES).** Start a profile save on identity A and
     switch to identity B before it completes. Record which identity (if any)
     shows the result banner and whether it is ever attributed to the wrong
     identity.
@@ -126,6 +127,11 @@ after each run.
 
 - Steps 6-7 spend credits and register names; use testnet only and the
   smallest-fee names available.
+- Steps 11-13 write the identity's published DashPay profile (it is created
+  or updated through the signer and costs credits). Per the equivalent-fixture
+  rule, give each build an equivalent, independent identity with the same
+  profile state (profile present or absent) and the same credit balance;
+  never run both builds against the same identity's profile.
 - Do not retry a payment whose outcome is uncertain before checking the
   usernames list; record the app's own wording for that case if it occurs.
 

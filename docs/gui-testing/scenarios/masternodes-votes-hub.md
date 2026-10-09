@@ -104,7 +104,8 @@ after each run.
     bar summary, button labels).
 11. **Restart persistence.** Restart the app. Record whether staged/scheduled
     decisions and the node set are remembered.
-12. **Old schedules after an upgrade.** Only if a data directory from an
+12. **Old schedules after an upgrade (potentially MUTATES: an older build
+    may cast the schedules on launch).** Only if a data directory from an
     earlier version holding unexecuted scheduled votes is available (copy it
     to a fresh directory first; do not use a real user's): start each build on
     it. Record any startup notice (wording, whether it lists votes, whether it
@@ -112,8 +113,15 @@ after each run.
 
 ## Safety constraints specific to this scenario
 
-- Step 7 is the only fund/state-affecting step; cast a single decision with a
+- Step 7 is the only step that casts by design; cast a single decision with a
   single testnet node.
+- Step 12 can also change voting state: a build that predates #901
+  automatically casts due schedules on launch, and copying the data directory
+  isolates local storage, not the node's live votes. Run it only against a
+  controlled testnet fixture with equivalent, independent voting state per
+  build and a bounded, known number of executable schedules (or with the
+  voting keys removed), and check the schedules before each launch. The
+  current build only reports old schedules and never casts them.
 - Never print or screenshot the key-entry fields while populated.
 
 ## Expected outcome / pass criteria

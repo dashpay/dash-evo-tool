@@ -87,22 +87,38 @@ async fn every_contest_query_succeeded(queries: Vec<JoinHandle<bool>>) -> bool {
     succeeded
 }
 
-/// Start one query per name, in order: the first `unpaced` at once, each
-/// later one no sooner than `spacing` after the one before it.
-async fn start_in_order(
+/// Start one query per name, in order, each as soon as `capacity` has a free
+/// slot for it: the first `unpaced` at once, each later one no sooner than
+/// `spacing` after the one before it. A query keeps its slot until it ends.
+async fn start_in_order<Query>(
     names: Vec<String>,
     unpaced: usize,
     spacing: Duration,
-    mut start: impl FnMut(String) -> JoinHandle<bool>,
-) -> Vec<JoinHandle<bool>> {
+    capacity: &Arc<Semaphore>,
+    mut query: impl FnMut(String) -> Query,
+) -> Vec<JoinHandle<bool>>
+where
+    Query: Future<Output = bool> + Send + 'static,
+{
     let mut pace = tokio::time::interval(spacing);
     pace.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut queries = Vec::with_capacity(names.len());
     for (index, name) in names.into_iter().enumerate() {
+        // The slot is taken before the pace. Queries that waited for slow
+        // answers would otherwise all start at once when the answers arrive.
+        let Ok(permit) = Arc::clone(capacity).acquire_owned().await else {
+            tracing::error!("Semaphore closed while starting contest queries");
+            queries.push(tokio::spawn(std::future::ready(false)));
+            break;
+        };
         if index >= unpaced {
             pace.tick().await;
         }
-        queries.push(start(name));
+        let query = query(name);
+        queries.push(tokio::spawn(async move {
+            let _permit = permit;
+            query.await
+        }));
     }
     queries
 }
@@ -265,25 +281,12 @@ impl AppContext {
         let queue = self.contender_queue(names_to_be_updated)?;
         let reads_unread_history = !queue.unread.is_empty();
 
-        let start_contender_query = |name: String| {
-            let semaphore = semaphore.clone();
+        let contender_query = |name: String| {
             let sdk = sdk.clone();
             let sender = sender.clone();
             let self_ref = self.clone();
 
-            tokio::spawn(async move {
-                let _permit: OwnedSemaphorePermit = match semaphore.acquire_owned().await {
-                    Ok(permit) => permit,
-                    Err(e) => {
-                        tracing::error!(
-                            "Semaphore closed while querying vote contenders for {}: {}",
-                            name,
-                            e
-                        );
-                        return false;
-                    }
-                };
-
+            async move {
                 match self_ref
                     .query_dpns_vote_contenders(&name, &sdk, sender.clone())
                     .await
@@ -318,14 +321,15 @@ impl AppContext {
                         false
                     }
                 }
-            })
+            }
         };
         let unpaced_after_open = UNPACED_CONTENDER_QUERIES.saturating_sub(queue.open.len());
         let mut handles = start_in_order(
             queue.open,
             UNPACED_CONTENDER_QUERIES,
             CONTENDER_QUERY_SPACING,
-            &start_contender_query,
+            &semaphore,
+            &contender_query,
         )
         .await;
         let mut contests_refreshed = end_times_refreshed;
@@ -346,7 +350,8 @@ impl AppContext {
                 queue.rest,
                 unpaced_after_open,
                 CONTENDER_QUERY_SPACING,
-                &start_contender_query,
+                &semaphore,
+                &contender_query,
             )
             .await,
         );
@@ -527,9 +532,13 @@ mod tests {
         // The pace is long enough that waiting for it even once runs out the clock.
         let started = tokio::time::timeout(
             Duration::from_secs(5),
-            start_in_order(names, allowance, Duration::from_secs(60), |_| {
-                tokio::spawn(async { true })
-            }),
+            start_in_order(
+                names,
+                allowance,
+                Duration::from_secs(60),
+                &Arc::new(Semaphore::new(allowance)),
+                |_| async { true },
+            ),
         )
         .await;
 
@@ -537,6 +546,71 @@ mod tests {
             started.is_ok_and(|queries| queries.len() == allowance),
             "a query within the allowance waited for the pace"
         );
+    }
+
+    /// Slow answers keep every slot busy while the pace runs on. Once they
+    /// arrive, the queries that waited must still start a pace apart, not all
+    /// at once.
+    #[tokio::test]
+    async fn queries_that_waited_for_slow_answers_start_a_pace_apart() {
+        const SLOTS: usize = 4;
+        const WAITING: u32 = 8;
+        let spacing = Duration::from_millis(25);
+        // Long enough for the pace alone to give every waiting query its turn.
+        let slow_answer = spacing * (WAITING + 2);
+        let started = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let answered = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let mut asked = 0;
+        let queries = start_in_order(
+            contest_names(SLOTS + WAITING as usize),
+            SLOTS,
+            spacing,
+            &Arc::new(Semaphore::new(SLOTS)),
+            |_| {
+                // The first queries fill every slot and are answered slowly.
+                let slow = asked < SLOTS;
+                asked += 1;
+                let started = Arc::clone(&started);
+                let answered = Arc::clone(&answered);
+                async move {
+                    started
+                        .lock()
+                        .expect("start record")
+                        .push(std::time::Instant::now());
+                    if slow {
+                        tokio::time::sleep(slow_answer).await;
+                        answered
+                            .lock()
+                            .expect("answer record")
+                            .push(std::time::Instant::now());
+                    }
+                    true
+                }
+            },
+        )
+        .await;
+        assert!(every_contest_query_succeeded(queries).await);
+
+        let started = started.lock().expect("start record");
+        let first_answer = *answered
+            .lock()
+            .expect("answer record")
+            .first()
+            .expect("a slow query was answered");
+        let waited = &started[SLOTS..];
+        assert_eq!(waited.len(), WAITING as usize);
+        for (turn, start) in (0u32..).zip(waited) {
+            // No waiting query starts before a slot is free, and each later
+            // one starts at least one more pace after that.
+            assert!(
+                start
+                    .checked_duration_since(first_answer)
+                    .is_some_and(|since| since >= spacing * turn),
+                "waiting query {turn} started {:?} after the first answer; the pace is {spacing:?}",
+                start.saturating_duration_since(first_answer)
+            );
+        }
     }
 
     /// On a cold cache a few open contests sit among a long unread history.
@@ -566,10 +640,16 @@ mod tests {
         let queue = queue.open.into_iter().chain(queue.rest).collect();
         let dispatched = Arc::new(std::sync::Mutex::new(Vec::new()));
         let record = Arc::clone(&dispatched);
-        let queries = start_in_order(queue, usize::MAX, Duration::from_millis(1), move |name| {
-            record.lock().expect("dispatch record").push(name);
-            tokio::spawn(async { true })
-        })
+        let queries = start_in_order(
+            queue,
+            usize::MAX,
+            Duration::from_millis(1),
+            &Arc::new(Semaphore::new(24)),
+            move |name| {
+                record.lock().expect("dispatch record").push(name);
+                async { true }
+            },
+        )
         .await;
         assert!(every_contest_query_succeeded(queries).await);
 

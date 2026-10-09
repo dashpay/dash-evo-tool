@@ -19,6 +19,7 @@ use dash_sdk::dpp::dashcore;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
+use platform_wallet::wallet::asset_lock::tracked::TrackedAssetLock;
 use std::fmt;
 use thiserror::Error;
 
@@ -407,6 +408,17 @@ pub enum TaskError {
         minimum_dash = format_duffs_as_dash(*.minimum_duffs)
     )]
     AssetLockAmountBelowNetworkFee {
+        amount_duffs: u64,
+        minimum_duffs: u64,
+    },
+
+    /// A funding transaction that already exists is smaller than the network
+    /// fee taken from it, so the network would refuse it on every attempt.
+    #[error(
+        "This funding is too small to cover the network fee of {minimum_dash}. Choose a larger one, or use a different funding method.",
+        minimum_dash = format_duffs_as_dash(*.minimum_duffs)
+    )]
+    ExistingFundingBelowNetworkFee {
         amount_duffs: u64,
         minimum_duffs: u64,
     },
@@ -3605,6 +3617,31 @@ pub(crate) fn ensure_funding_covers_network_fee(
     })
 }
 
+/// [`ensure_funding_covers_network_fee`] for the funding transaction at
+/// `out_point`, when the wallet tracks it; one it does not track is left for
+/// the operation to report. Only the amount the transaction was created with
+/// is known here, not what an earlier use left of it, so passing does not
+/// promise that the network accepts it. Pure — no I/O.
+pub(crate) fn ensure_existing_funding_covers_network_fee(
+    tracked: &[TrackedAssetLock],
+    out_point: &dashcore::OutPoint,
+    minimum_duffs: Result<u64, Box<ProtocolError>>,
+) -> Result<(), TaskError> {
+    let Some(lock) = tracked.iter().find(|lock| lock.out_point == *out_point) else {
+        return Ok(());
+    };
+    match ensure_funding_covers_network_fee(lock.amount, minimum_duffs) {
+        Err(TaskError::AssetLockAmountBelowNetworkFee {
+            amount_duffs,
+            minimum_duffs,
+        }) => Err(TaskError::ExistingFundingBelowNetworkFee {
+            amount_duffs,
+            minimum_duffs,
+        }),
+        other => other,
+    }
+}
+
 /// Construct the appropriate `TaskError` for a shielded transition build failure.
 ///
 /// Parses the error string for known patterns and returns a specific variant:
@@ -5770,6 +5807,53 @@ mod tests {
             !msg.contains("sync") && !msg.contains("anchor"),
             "Expected no ZK jargon in user message, got: {msg}"
         );
+    }
+
+    /// The user entered nothing, so the refusal must not ask for an amount.
+    #[test]
+    fn existing_funding_below_the_network_fee_is_refused_with_what_to_do_instead() {
+        use crate::model::asset_lock::confirmed_funding_for_test;
+        let tracked = [
+            confirmed_funding_for_test(1, 50_500),
+            confirmed_funding_for_test(2, 5_237),
+        ];
+        let error =
+            ensure_existing_funding_covers_network_fee(&tracked, &tracked[1].out_point, Ok(50_500))
+                .expect_err("a funding transaction below the network fee must be refused");
+        assert!(
+            matches!(
+                error,
+                TaskError::ExistingFundingBelowNetworkFee {
+                    amount_duffs: 5_237,
+                    minimum_duffs: 50_500,
+                }
+            ),
+            "expected ExistingFundingBelowNetworkFee, got: {error:?}"
+        );
+        assert_eq!(
+            error.to_string(),
+            "This funding is too small to cover the network fee of 0.000505 DASH. \
+             Choose a larger one, or use a different funding method."
+        );
+    }
+
+    /// A funding equal to the fee is accepted, and one the wallet does not
+    /// track is not judged here.
+    #[test]
+    fn existing_funding_that_covers_the_fee_or_is_not_tracked_passes() {
+        use crate::model::asset_lock::confirmed_funding_for_test;
+        let tracked = [
+            confirmed_funding_for_test(1, 50_500),
+            confirmed_funding_for_test(2, 5_237),
+        ];
+        let not_tracked = confirmed_funding_for_test(3, 1).out_point;
+        for out_point in [tracked[0].out_point, not_tracked] {
+            assert!(
+                ensure_existing_funding_covers_network_fee(&tracked, &out_point, Ok(50_500))
+                    .is_ok(),
+                "{out_point} must pass"
+            );
+        }
     }
 
     #[test]

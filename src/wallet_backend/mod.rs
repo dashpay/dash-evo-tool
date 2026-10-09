@@ -1172,6 +1172,29 @@ impl WalletBackend {
         }
     }
 
+    /// Make the registered wallet track `lock`, as if found on the chain.
+    #[cfg(test)]
+    pub(crate) async fn track_asset_lock_for_test(
+        &self,
+        seed_hash: &WalletSeedHash,
+        lock: platform_wallet::wallet::asset_lock::tracked::TrackedAssetLock,
+    ) {
+        let wallet = self.resolve_wallet(seed_hash).await.expect("wallet");
+        tokio::task::spawn_blocking(move || {
+            wallet.asset_locks().recover_asset_lock_blocking(
+                lock.transaction,
+                lock.amount,
+                lock.account_index,
+                lock.funding_type,
+                lock.identity_index,
+                lock.out_point,
+                lock.proof,
+            )
+        })
+        .await
+        .expect("track the funding transaction");
+    }
+
     #[cfg(test)]
     pub(crate) fn registration_attempt_count(&self) -> usize {
         self.inner

@@ -1765,6 +1765,71 @@ mod tests {
         harness.query_by_label_contains(text).is_some()
     }
 
+    /// Render the list of existing funding transactions, click its only
+    /// "Select", and report which of `texts` the list showed.
+    fn select_only_existing_funding(screen: &mut TopUpIdentityScreen, texts: &[&str]) -> Vec<bool> {
+        use egui_kittest::{Harness, kittest::Queryable};
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1200.0, 900.0))
+            .build_ui(|ui| {
+                screen.render_ui_by_using_unused_asset_lock(ui, 1);
+            });
+        harness.run_steps(2);
+        harness.get_by_label("Select").click();
+        harness.run_steps(2);
+        texts
+            .iter()
+            .map(|text| harness.query_by_label_contains(text).is_some())
+            .collect()
+    }
+
+    const NO_FUNDING_LARGE_ENOUGH: &str = "Nothing listed here is large enough to cover the \
+        network fee. Use a different funding method, or add more Dash to your wallet first.";
+
+    fn funding_too_small(minimum_duffs: u64) -> String {
+        format!(
+            "This funding is too small to cover the network fee of {}. Choose a \
+             larger one, or use a different funding method.",
+            crate::model::fee_estimation::format_duffs_as_dash(minimum_duffs)
+        )
+    }
+
+    /// The network refuses a funding transaction that cannot cover its fee,
+    /// and one that was refused would otherwise stay on the list for good.
+    #[test]
+    fn existing_funding_below_the_network_fee_cannot_be_selected() {
+        use crate::model::asset_lock::confirmed_funding_for_test;
+        let (mut screen, seed_hash, _temp_dir) = wallet_balance_screen(0x51);
+        let minimum = screen.minimum_top_up_duffs().expect("the network fee");
+        let reason = funding_too_small(minimum);
+
+        screen
+            .asset_lock_cache
+            .store(seed_hash, vec![confirmed_funding_for_test(1, minimum - 1)]);
+        let shown = select_only_existing_funding(&mut screen, &[&reason, NO_FUNDING_LARGE_ENOUGH]);
+        assert_eq!(
+            screen.funding_asset_lock, None,
+            "a funding transaction below the network fee must not be selectable"
+        );
+        assert_eq!(
+            shown,
+            [true, true],
+            "the entry says why, and a list with nothing usable says what to do instead"
+        );
+
+        let enough = confirmed_funding_for_test(2, minimum);
+        screen
+            .asset_lock_cache
+            .store(seed_hash, vec![enough.clone()]);
+        let shown = select_only_existing_funding(&mut screen, &[&reason, NO_FUNDING_LARGE_ENOUGH]);
+        assert_eq!(
+            screen.funding_asset_lock,
+            Some(enough.out_point),
+            "a funding transaction that covers the network fee stays selectable"
+        );
+        assert_eq!(shown, [false, false]);
+    }
+
     /// A wallet-balance screen whose remaining balance cannot cover another
     /// top-up — the state the wallet is in right after its funds were sent.
     fn drained_wallet_balance_screen(

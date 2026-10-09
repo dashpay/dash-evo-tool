@@ -71,6 +71,39 @@ pub fn asset_lock_user_amount_range(
     (minimum <= maximum).then_some(minimum..=maximum)
 }
 
+/// A confirmed funding transaction of `amount_duffs`, for the tests of the
+/// lists that offer one.
+#[cfg(test)]
+pub(crate) fn confirmed_funding_for_test(
+    txid_byte: u8,
+    amount_duffs: u64,
+) -> platform_wallet::wallet::asset_lock::tracked::TrackedAssetLock {
+    use dash_sdk::dpp::dashcore::{OutPoint, Transaction, Txid, hashes::Hash};
+    use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
+    use dash_sdk::dpp::prelude::AssetLockProof;
+    use platform_wallet::wallet::asset_lock::tracked::{AssetLockStatus, TrackedAssetLock};
+    let out_point = OutPoint::new(Txid::from_byte_array([txid_byte; 32]), 0);
+    TrackedAssetLock {
+        out_point,
+        transaction: Transaction {
+            version: 3,
+            lock_time: 0,
+            input: Vec::new(),
+            output: Vec::new(),
+            special_transaction_payload: None,
+        },
+        account_index: 0,
+        funding_type: platform_wallet::AssetLockFundingType::IdentityTopUp,
+        identity_index: 0,
+        amount: amount_duffs,
+        status: AssetLockStatus::ChainLocked,
+        proof: Some(AssetLockProof::Chain(ChainAssetLockProof {
+            core_chain_locked_height: 1,
+            out_point,
+        })),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

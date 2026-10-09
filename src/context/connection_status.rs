@@ -222,8 +222,9 @@ impl ConnectionStatus {
     /// (`Starting`/`Syncing`/`Running`/`Error`), returning `true` for the
     /// single caller that won the transition.
     ///
-    /// Returns `false` when no stop is needed or one is already in flight (the
-    /// status is already `Stopping`, or it is `Idle`/`Stopped`). This is the
+    /// Returns `false` when there is no such state to claim: a stop is already
+    /// in flight (`Stopping`), or the indicator reads `Idle`/`Stopped` — which
+    /// does not prove nothing is starting, so the caller decides. This is the
     /// synchronous dedupe guard the Disconnect button relies on: the winning
     /// dispatch flips the indicator to `Stopping` on the same frame as the click
     /// — so the button disables immediately — and a fast second click loses the

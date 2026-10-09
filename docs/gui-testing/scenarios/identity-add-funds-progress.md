@@ -42,9 +42,11 @@ pgrep -af dash-evo-tool
 BIN=<path to the build under test — baseline or development worktree binary>
 test -x "$BIN"
 LOG="$DATADIR/identity-add-funds-progress.log"
-: "${DISPLAY:?Set DISPLAY to the desktop used for GUI testing}"
-xdpyinfo >/dev/null
-DASH_EVO_DATA_DIR="$DATADIR" nohup "$BIN" >"$LOG" 2>&1 &
+if [ -n "${DISPLAY:-}" ] && xdpyinfo >/dev/null 2>&1; then
+  DASH_EVO_DATA_DIR="$DATADIR" nohup "$BIN" >"$LOG" 2>&1 &
+else
+  echo "DISPLAY is unset or unreachable; not launching" >&2
+fi
 ```
 
 Read the network indicator after launch. A fresh data directory starts on

@@ -31,9 +31,16 @@ CI, and headless X servers all use different values. Verify the selected
 display before launching:
 
 ```bash
-: "${DISPLAY:?Set DISPLAY to the desktop used for GUI testing}"
-xdpyinfo >/dev/null
+if [ -n "${DISPLAY:-}" ] && xdpyinfo >/dev/null 2>&1; then
+  echo "Display $DISPLAY is reachable"
+else
+  echo "DISPLAY is unset or unreachable; set it to the desktop used for GUI testing and do not launch" >&2
+fi
 ```
+
+Do not launch the app if the check printed the error. Scenarios guard their own
+launch line with the same test, so a pasted block skips the launch instead of
+closing your terminal.
 
 On a minimal Ubuntu host, egui/eframe also needs an X keyboard library and a
 wgpu backend. Install missing packages only after the launch log identifies

@@ -1127,9 +1127,11 @@ pub enum BackendTaskSuccessResult {
         seed_hash: WalletSeedHash,
         amount: u64,
     },
+    /// A shield from the Core wallet went through. `amount` is the credits
+    /// shielded, or `None` when the app cannot vouch for the exact figure.
     ShieldedFromAssetLock {
         seed_hash: WalletSeedHash,
-        amount: u64,
+        amount: Option<u64>,
     },
     ShieldedWithdrawalComplete {
         seed_hash: WalletSeedHash,

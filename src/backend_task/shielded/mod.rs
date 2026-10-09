@@ -2,6 +2,7 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::context::feature_gate::{Check, FeatureGate};
+use crate::model::fee_estimation::ShieldFromCoreFunding;
 use crate::model::wallet::WalletSeedHash;
 use crate::wallet_backend::PlatformPathIndex;
 use dash_sdk::Error as SdkError;
@@ -109,12 +110,8 @@ impl AppContext {
                 // passes the whole lock value (minus that flat fee) to the
                 // recipient, so we size the lock to `amount + fee`. A fee that
                 // cannot be read stops the shield before any funds move.
-                let shield = self
-                    .fee_estimator()
-                    .shield_from_core_funding(amount_duffs, self.sdk_platform_version())
-                    .map_err(|e| TaskError::AssetLockNetworkFeeUnavailable {
-                        source_error: Box::new(SdkError::Protocol(*e)),
-                    })?;
+                let (shield, version_at_sizing) =
+                    self.plan_shield_from_core(backend, amount_duffs)?;
 
                 // Deposit into this wallet's own default Orchard address. The
                 // keys are bound at unlock; an unbound wallet has no address.
@@ -133,13 +130,15 @@ impl AppContext {
                 backend
                     .shield_from_asset_lock(&seed_hash, funding, recipient, 0, None)
                     .await?;
+                let amount = shielded_amount_to_report(
+                    shield.shielded_credits,
+                    version_at_sizing,
+                    backend.sdk().protocol_version_number(),
+                );
 
                 self.refresh_shielded_balance_snapshot(&seed_hash).await;
 
-                Ok(BackendTaskSuccessResult::ShieldedFromAssetLock {
-                    seed_hash,
-                    amount: shield.shielded_credits,
-                })
+                Ok(BackendTaskSuccessResult::ShieldedFromAssetLock { seed_hash, amount })
             }
 
             ShieldedTask::ShieldFromBalance { seed_hash, amount } => {
@@ -245,6 +244,41 @@ impl AppContext {
     }
 }
 
+impl AppContext {
+    /// Size a shield of `amount_duffs` from the Core wallet, and note the
+    /// protocol version the fee was read from. Both come from the wallet
+    /// backend's SDK, the one the transfer itself runs on; the app's own SDK
+    /// can be on a different version after it has been rebuilt.
+    fn plan_shield_from_core(
+        &self,
+        backend: &crate::wallet_backend::WalletBackend,
+        amount_duffs: u64,
+    ) -> Result<(ShieldFromCoreFunding, u32), TaskError> {
+        let sdk = backend.sdk();
+        let version_at_sizing = sdk.protocol_version_number();
+        let shield = self
+            .fee_estimator()
+            .shield_from_core_funding(amount_duffs, sdk.version())
+            .map_err(|e| TaskError::AssetLockNetworkFeeUnavailable {
+                source_error: Box::new(SdkError::Protocol(*e)),
+            })?;
+        Ok((shield, version_at_sizing))
+    }
+}
+
+/// The shielded amount to report once a shield from the Core wallet has gone
+/// through. The transfer works its fee out again while it runs and does not
+/// return what it shielded. The version only ever moves forward, so the same
+/// version before and after means the transfer used the fee the prediction
+/// did; otherwise there is no figure the app can vouch for.
+fn shielded_amount_to_report(
+    predicted_credits: u64,
+    version_at_sizing: u32,
+    version_after: u32,
+) -> Option<u64> {
+    (version_after == version_at_sizing).then_some(predicted_credits)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -343,5 +377,55 @@ mod tests {
             ctx.wallet_backend().is_err(),
             "the shielded pre-check must return before ensure_wallet_backend wires the backend"
         );
+    }
+
+    /// The predicted amount is what upstream shields only while the protocol
+    /// version stays the one the fee was read from.
+    #[test]
+    fn shield_from_core_reports_the_amount_when_the_version_did_not_move() {
+        assert_eq!(
+            shielded_amount_to_report(100_000_800, 13, 13),
+            Some(100_000_800)
+        );
+    }
+
+    /// The transfer works the fee out again while it runs. When the version
+    /// moved in between, the app cannot tell which fee was used, so it must
+    /// not name a figure.
+    #[test]
+    fn shield_from_core_reports_no_amount_when_the_version_moved() {
+        assert_eq!(shielded_amount_to_report(100_000_800, 13, 14), None);
+    }
+
+    /// The transfer runs on the wallet backend's connection, which keeps its
+    /// own protocol version once the app's connection has been rebuilt. The
+    /// funding must be sized with the backend's version: 212 852 duffs of fee
+    /// under protocol 13, not the 164 140 of protocol 14.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shield_from_core_is_sized_with_the_wallet_backend_version() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(tmp.path());
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        ctx.ensure_wallet_backend(SenderAsync::new(tx, egui::Context::default()))
+            .await
+            .expect("wallet backend");
+        let backend = ctx.wallet_backend().expect("wallet backend");
+        assert_eq!(backend.sdk().protocol_version_number(), 13);
+
+        let pv14 = dash_sdk::dpp::version::PlatformVersion::get(14).expect("PV14");
+        ctx.sdk.store(Arc::new(
+            dash_sdk::SdkBuilder::new_mock()
+                .with_version(pv14)
+                .build()
+                .expect("mock sdk"),
+        ));
+
+        let (shield, version_at_sizing) = ctx
+            .plan_shield_from_core(&backend, 100_000)
+            .expect("known fee");
+
+        assert_eq!(version_at_sizing, 13);
+        assert_eq!(shield.lock_duffs, 100_000 + 212_852);
+        assert_eq!(shield.shielded_credits, 100_000_800);
     }
 }

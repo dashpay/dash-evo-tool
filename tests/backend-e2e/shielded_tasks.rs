@@ -84,8 +84,11 @@ async fn tc_074_shielded_lifecycle() {
             amount,
         }) => {
             assert_eq!(sh, seed_hash, "seed_hash should match");
-            assert!(amount > 0, "shielded amount should be > 0, got {amount}");
-            tracing::info!("tc_074: shielded {amount} credits from core wallet");
+            assert!(
+                amount.is_none_or(|amount| amount > 0),
+                "a reported shielded amount should be > 0, got {amount:?}"
+            );
+            tracing::info!("tc_074: shielded {amount:?} credits from core wallet");
         }
         Ok(other) => panic!("Expected ShieldedFromAssetLock, got: {other:?}"),
     }

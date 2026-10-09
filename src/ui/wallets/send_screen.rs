@@ -36,6 +36,7 @@ use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::identity::funding_common::{FUNDING_FEE_NOT_COVERED, network_fee_refusal};
 use crate::ui::state::AssetLockBalanceCache;
 use crate::ui::theme::{ComponentStyles, DashColors};
+use crate::ui::wallets::shielded_tab::SHIELDED_FROM_CORE_WITHOUT_AMOUNT;
 use crate::ui::{
     MessageType, RootScreenType, ScreenLike, append_concurrent_backend_tasks,
     can_append_concurrent_backend_tasks,
@@ -4634,11 +4635,14 @@ impl ScreenLike for WalletSendScreen {
             crate::backend_task::BackendTaskSuccessResult::ShieldedFromAssetLock {
                 amount, ..
             } => {
-                self.send_status = SendStatus::Complete(format!(
-                    "{} shielded from asset lock successfully!\n\n\
-                     Balance will update after the next block.",
-                    format_credits_as_dash(amount)
-                ));
+                self.send_status = SendStatus::Complete(match amount {
+                    Some(amount) => format!(
+                        "{} shielded from asset lock successfully!\n\n\
+                         Balance will update after the next block.",
+                        format_credits_as_dash(amount)
+                    ),
+                    None => SHIELDED_FROM_CORE_WITHOUT_AMOUNT.to_string(),
+                });
             }
             // Shielded->Core withdrawal result
             crate::backend_task::BackendTaskSuccessResult::ShieldedWithdrawalComplete {
@@ -6163,5 +6167,40 @@ mod tests {
         let (mut screen, seed_hash, _temp_dir) =
             advanced_core_to_platform("0.00056", PlatformFeeStrategy::ReduceFirstOutput);
         assert!(screen.send_advanced_core_to_platform(seed_hash).is_ok());
+    }
+
+    /// A shield from the Core wallet whose amount is not known still completes
+    /// as a success, and names no figure.
+    #[test]
+    fn shield_from_core_without_an_amount_completes_without_a_figure() {
+        use crate::backend_task::BackendTaskSuccessResult;
+        let (mut screen, _dir) = send_screen();
+
+        screen.display_task_result(BackendTaskSuccessResult::ShieldedFromAssetLock {
+            seed_hash: [0; 32],
+            amount: None,
+        });
+        assert!(
+            matches!(
+                &screen.send_status,
+                SendStatus::Complete(message) if message == SHIELDED_FROM_CORE_WITHOUT_AMOUNT
+            ),
+            "got {:?}",
+            screen.send_status
+        );
+
+        screen.display_task_result(BackendTaskSuccessResult::ShieldedFromAssetLock {
+            seed_hash: [0; 32],
+            amount: Some(100_000_800),
+        });
+        assert!(
+            matches!(
+                &screen.send_status,
+                SendStatus::Complete(message)
+                    if message.starts_with("0.001000008 DASH shielded from asset lock")
+            ),
+            "got {:?}",
+            screen.send_status
+        );
     }
 }

@@ -1856,7 +1856,7 @@ mod tests {
         harness.run_steps(2);
 
         assert!(
-            harness.query_by_value("HD: Alpha — 0 DASH").is_some(),
+            harness.query_by_value("HD: Alpha — 0.0000 DASH").is_some(),
             "the closed selector must show the chosen wallet with its balance"
         );
     }
@@ -1896,11 +1896,11 @@ mod tests {
                 screen.ui(ui);
             });
         harness.run_steps(2);
-        harness.get_by_value("HD: Alpha — 0 DASH").click();
+        harness.get_by_value("HD: Alpha — 0.0000 DASH").click();
         harness.run_steps(2);
         assert!(
             harness
-                .get_by_label("HD: Beta — 0 DASH")
+                .get_by_label("HD: Beta — 0.0000 DASH")
                 .accesskit_node()
                 .is_disabled(),
             "the wallet that cannot pay must be greyed out"
@@ -1949,7 +1949,7 @@ mod tests {
         harness.run_steps(2);
         harness.get_by_value("Select a wallet").click();
         harness.run_steps(2);
-        let row = harness.get_by_label("HD: Alpha — 0 DASH");
+        let row = harness.get_by_label("HD: Alpha — 0.0000 DASH");
         assert!(
             !row.accesskit_node().is_disabled(),
             "a wallet whose read failed must stay selectable"

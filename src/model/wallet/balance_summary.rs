@@ -106,6 +106,17 @@ impl WalletBalanceSummary {
     }
 }
 
+/// A balance as a wallet selector shows it: DASH with exactly four decimal
+/// places, zero-padded. Finer digits are cut off, never rounded up, so the
+/// text cannot show more than the wallet holds; an amount below 0.0001 DASH
+/// reads as `0.0000 DASH`.
+pub fn format_selector_balance(duffs: Duffs) -> String {
+    /// Duffs in 0.0001 DASH, and such steps in one DASH.
+    const STEP: Duffs = 10_000;
+    let steps = duffs / STEP;
+    format!("{}.{:04} DASH", steps / STEP, steps % STEP)
+}
+
 /// One selector row: which wallet, its name, and its balances.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WalletBalanceEntry {
@@ -202,5 +213,34 @@ mod tests {
             s.total_duffs(&AddressKind::ALL, CoreFigure::Total),
             u64::MAX / CREDITS_PER_DUFF
         );
+    }
+
+    #[test]
+    fn selector_balance_is_padded_to_four_decimal_places() {
+        assert_eq!(format_selector_balance(50_000_000), "0.5000 DASH");
+        assert_eq!(format_selector_balance(1_200_000_000), "12.0000 DASH");
+        assert_eq!(format_selector_balance(0), "0.0000 DASH");
+    }
+
+    /// The text must never show more than the wallet holds.
+    #[test]
+    fn selector_balance_cuts_finer_digits_off_instead_of_rounding_up() {
+        assert_eq!(format_selector_balance(12_349_999), "0.1234 DASH");
+        assert_eq!(format_selector_balance(99_999_999), "0.9999 DASH");
+    }
+
+    #[test]
+    fn selector_balance_below_the_smallest_step_reads_as_zero() {
+        assert_eq!(format_selector_balance(9_999), "0.0000 DASH");
+        assert_eq!(format_selector_balance(10_000), "0.0001 DASH");
+    }
+
+    #[test]
+    fn selector_balance_of_a_large_amount_keeps_every_whole_digit() {
+        assert_eq!(
+            format_selector_balance(2_100_000_012_345_678),
+            "21000000.1234 DASH"
+        );
+        assert_eq!(format_selector_balance(u64::MAX), "184467440737.0955 DASH");
     }
 }

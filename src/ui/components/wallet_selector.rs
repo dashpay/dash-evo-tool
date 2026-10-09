@@ -2,10 +2,9 @@
 //! balance the calling screen counts.
 
 use crate::model::address::AddressKind;
-use crate::model::fee_estimation::format_duffs_as_dash;
 use crate::model::wallet::WalletSeedHash;
 use crate::model::wallet::balance_summary::{
-    CoreFigure, WalletBalanceEntry, WalletBalanceSummary, WalletChoice,
+    CoreFigure, WalletBalanceEntry, WalletBalanceSummary, WalletChoice, format_selector_balance,
 };
 use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::theme::ResponseExt;
@@ -174,7 +173,7 @@ impl WalletSelector {
             .map(str::trim)
             .filter(|name| !name.is_empty())
             .unwrap_or(UNNAMED_WALLET);
-        let balance = format_duffs_as_dash(balances.total_duffs(&self.kinds, self.core_figure));
+        let balance = format_selector_balance(balances.total_duffs(&self.kinds, self.core_figure));
         let label = match entry.choice {
             WalletChoice::Hd(_) => format!("HD: {name} — {balance}"),
             WalletChoice::SingleKey(_) => format!("SK: {name} — {balance}"),
@@ -183,7 +182,7 @@ impl WalletSelector {
             .into_iter()
             .filter(|kind| self.kinds.contains(kind))
             .map(|kind| {
-                let amount = format_duffs_as_dash(balances.kind_duffs(kind, self.core_figure));
+                let amount = format_selector_balance(balances.kind_duffs(kind, self.core_figure));
                 match (kind, self.core_figure) {
                     (AddressKind::Core, CoreFigure::Total) => format!("Core: {amount}"),
                     (AddressKind::Core, CoreFigure::Usable) => {
@@ -330,11 +329,11 @@ mod tests {
         let selector = selector().with_balance_kinds(&[AddressKind::Core]);
         assert_eq!(
             selector.row(&entry(MAIN, Some("Main"))).label,
-            "HD: Main — 0.5 DASH"
+            "HD: Main — 0.5000 DASH"
         );
         assert_eq!(
             selector.row(&entry(KEY, Some("Key 1"))).label,
-            "SK: Key 1 — 0.5 DASH"
+            "SK: Key 1 — 0.5000 DASH"
         );
     }
 
@@ -343,7 +342,7 @@ mod tests {
         // 0.5 Core + 0.1 Platform + 0.05 shielded.
         assert_eq!(
             selector().row(&entry(MAIN, Some("Main"))).label,
-            "HD: Main — 0.65 DASH"
+            "HD: Main — 0.6500 DASH"
         );
     }
 
@@ -351,8 +350,8 @@ mod tests {
     fn row_counts_only_the_kinds_the_screen_asked_for() {
         let selector = selector().with_balance_kinds(&[AddressKind::Platform]);
         let row = selector.row(&entry(MAIN, Some("Main")));
-        assert_eq!(row.label, "HD: Main — 0.1 DASH");
-        assert_eq!(row.breakdown, "Platform: 0.1 DASH");
+        assert_eq!(row.label, "HD: Main — 0.1000 DASH");
+        assert_eq!(row.breakdown, "Platform: 0.1000 DASH");
     }
 
     #[test]
@@ -361,8 +360,8 @@ mod tests {
             .with_balance_kinds(&[AddressKind::Core])
             .with_core_figure(CoreFigure::Usable);
         let row = selector.row(&entry(MAIN, Some("Main")));
-        assert_eq!(row.label, "HD: Main — 0.2 DASH");
-        assert_eq!(row.breakdown, "Core, ready to use: 0.2 DASH");
+        assert_eq!(row.label, "HD: Main — 0.2000 DASH");
+        assert_eq!(row.breakdown, "Core, ready to use: 0.2000 DASH");
     }
 
     #[test]
@@ -371,7 +370,7 @@ mod tests {
         selector.set_identity_credits(BTreeMap::from([([1; 32], 2_000_000_000)]));
         assert_eq!(
             selector.row(&entry(MAIN, Some("Main"))).breakdown,
-            "Core: 0.5 DASH\nPlatform: 0.1 DASH\nShielded: 0.05 DASH\nIdentities: 0.02 DASH"
+            "Core: 0.5000 DASH\nPlatform: 0.1000 DASH\nShielded: 0.0500 DASH\nIdentities: 0.0200 DASH"
         );
     }
 
@@ -381,15 +380,15 @@ mod tests {
         selector.set_identity_credits(BTreeMap::from([([1; 32], 2_000_000_000)]));
         assert_eq!(
             selector.row(&entry(MAIN, Some("Main"))).label,
-            "HD: Main — 0.02 DASH"
+            "HD: Main — 0.0200 DASH"
         );
         assert_eq!(
             selector.row(&entry(SAVINGS, Some("Savings"))).label,
-            "HD: Savings — 0 DASH"
+            "HD: Savings — 0.0000 DASH"
         );
         assert_eq!(
             selector.row(&entry(KEY, Some("Key 1"))).label,
-            "SK: Key 1 — 0 DASH"
+            "SK: Key 1 — 0.0000 DASH"
         );
     }
 
@@ -398,7 +397,7 @@ mod tests {
         let selector = selector().with_balance_kinds(&[]);
         assert_eq!(
             selector.row(&entry(MAIN, Some("Main"))).label,
-            "HD: Main — 0.65 DASH"
+            "HD: Main — 0.6500 DASH"
         );
     }
 
@@ -407,11 +406,11 @@ mod tests {
         let selector = selector().with_balance_kinds(&[AddressKind::Core]);
         assert_eq!(
             selector.row(&entry(MAIN, None)).label,
-            "HD: Unnamed wallet — 0.5 DASH"
+            "HD: Unnamed wallet — 0.5000 DASH"
         );
         assert_eq!(
             selector.row(&entry(MAIN, Some("  "))).label,
-            "HD: Unnamed wallet — 0.5 DASH"
+            "HD: Unnamed wallet — 0.5000 DASH"
         );
     }
 
@@ -433,7 +432,7 @@ mod tests {
     fn closed_selector_shows_the_selected_row() {
         let mut selector = selector().with_balance_kinds(&[AddressKind::Core]);
         selector.set_selected(Some(SAVINGS));
-        assert_eq!(selector.selected_text(), "HD: Savings — 0.5 DASH");
+        assert_eq!(selector.selected_text(), "HD: Savings — 0.5000 DASH");
     }
 
     #[test]

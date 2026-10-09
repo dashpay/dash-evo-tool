@@ -1277,7 +1277,7 @@ fn picker_create_entries_preserve_selected_wallet() {
             ));
             assert!(
                 harness
-                    .query_by_value(&format!("HD: {selected_alias} — 0 DASH"))
+                    .query_by_value(&format!("HD: {selected_alias} — 0.0000 DASH"))
                     .is_some(),
                 "{entry} must preselect the chosen wallet in the creation form"
             );

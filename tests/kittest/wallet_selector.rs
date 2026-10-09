@@ -96,9 +96,9 @@ fn rows_show_wallet_type_name_and_balance_in_light_and_dark_mode() {
         open(&mut harness, "Select a wallet");
 
         for row in [
-            "HD: Main — 0.5 DASH",
-            "HD: Savings — 1 DASH",
-            "SK: Key 1 — 0.25 DASH",
+            "HD: Main — 0.5000 DASH",
+            "HD: Savings — 1.0000 DASH",
+            "SK: Key 1 — 0.2500 DASH",
         ] {
             assert!(harness.query_by_label(row).is_some(), "missing row {row}");
         }
@@ -114,20 +114,22 @@ fn rows_show_the_sum_of_the_kinds_the_screen_counts() {
     open(&mut harness, "Select a wallet");
 
     // 0.25 usable Core + 0.1 Platform.
-    assert!(harness.query_by_label("HD: Main — 0.35 DASH").is_some());
+    assert!(harness.query_by_label("HD: Main — 0.3500 DASH").is_some());
 }
 
 #[test]
 fn clicking_a_row_reports_that_wallet_once_and_shows_it_when_closed() {
     let (mut harness, picked) = mount(core_selector(), entries(), egui::Visuals::light());
     open(&mut harness, "Select a wallet");
-    harness.get_by_label("HD: Savings — 1 DASH").click();
+    harness.get_by_label("HD: Savings — 1.0000 DASH").click();
     harness.run();
 
     assert_eq!(picked.borrow().current, Some(SAVINGS));
     assert_eq!(picked.borrow().changes, vec![Some(SAVINGS)]);
     assert!(
-        harness.query_by_value("HD: Savings — 1 DASH").is_some(),
+        harness
+            .query_by_value("HD: Savings — 1.0000 DASH")
+            .is_some(),
         "the closed selector must show the picked wallet with its balance"
     );
 }
@@ -137,8 +139,8 @@ fn clicking_the_wallet_already_in_use_reports_no_change() {
     let (mut harness, picked) = mount(core_selector(), entries(), egui::Visuals::light());
     picked.borrow_mut().current = Some(MAIN);
     harness.run();
-    open(&mut harness, "HD: Main — 0.5 DASH");
-    harness.get_by_label("HD: Main — 0.5 DASH").click();
+    open(&mut harness, "HD: Main — 0.5000 DASH");
+    harness.get_by_label("HD: Main — 0.5000 DASH").click();
     harness.run();
 
     assert_eq!(picked.borrow().current, Some(MAIN));
@@ -151,11 +153,11 @@ fn hovering_a_row_breaks_its_balance_down_by_kind() {
         .with_balance_kinds(&[AddressKind::Core, AddressKind::Platform]);
     let (mut harness, _picked) = mount(selector, entries(), egui::Visuals::light());
     open(&mut harness, "Select a wallet");
-    hover(&mut harness, "HD: Main — 0.6 DASH");
+    hover(&mut harness, "HD: Main — 0.6000 DASH");
 
     assert!(
         harness
-            .query_by_label("Core: 0.5 DASH\nPlatform: 0.1 DASH")
+            .query_by_label("Core: 0.5000 DASH\nPlatform: 0.1000 DASH")
             .is_some(),
         "hovering a row must show the per-kind breakdown"
     );
@@ -169,7 +171,7 @@ fn hovering_the_closed_selector_breaks_the_chosen_wallets_balance_down() {
     picked.borrow_mut().current = Some(MAIN);
     harness.run();
 
-    harness.get_by_value("HD: Main — 0.6 DASH").hover();
+    harness.get_by_value("HD: Main — 0.6000 DASH").hover();
     for _ in 0..30 {
         harness.step();
     }
@@ -177,7 +179,7 @@ fn hovering_the_closed_selector_breaks_the_chosen_wallets_balance_down() {
 
     assert!(
         harness
-            .query_by_label("Core: 0.5 DASH\nPlatform: 0.1 DASH")
+            .query_by_label("Core: 0.5000 DASH\nPlatform: 0.1000 DASH")
             .is_some(),
         "the chosen wallet's breakdown must be reachable without reopening the list"
     );
@@ -192,17 +194,17 @@ fn unavailable_row_is_disabled_and_says_why() {
 
     assert!(
         harness
-            .get_by_label("HD: Savings — 1 DASH")
+            .get_by_label("HD: Savings — 1.0000 DASH")
             .accesskit_node()
             .is_disabled()
     );
-    hover(&mut harness, "HD: Savings — 1 DASH");
+    hover(&mut harness, "HD: Savings — 1.0000 DASH");
     assert!(
         harness.query_by_label(NOT_ENOUGH).is_some(),
         "a greyed-out wallet must say why it cannot be picked"
     );
 
-    harness.get_by_label("HD: Savings — 1 DASH").click();
+    harness.get_by_label("HD: Savings — 1.0000 DASH").click();
     harness.run();
     assert_eq!(
         picked.borrow().current,
@@ -217,7 +219,7 @@ fn all_wallets_row_clears_the_choice() {
     let (mut harness, picked) = mount(selector, entries(), egui::Visuals::light());
     picked.borrow_mut().current = Some(MAIN);
     harness.run();
-    open(&mut harness, "HD: Main — 0.5 DASH");
+    open(&mut harness, "HD: Main — 0.5000 DASH");
     harness.get_by_label("All unlocked wallets").click();
     harness.run();
 

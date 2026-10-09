@@ -1162,7 +1162,7 @@ mod wallet_picker_tests {
         screen.show_advanced_options = true;
 
         assert_eq!(
-            picker_breakdown(&mut screen, "HD: Main — 0.5 DASH"),
+            picker_breakdown(&mut screen, "HD: Main — 0.5000 DASH"),
             ["Core", "Platform", "Shielded", "Identities"]
         );
         assert!(!global_banner_texts(ctx.egui_ctx()).contains(&BALANCES_UNREADABLE.to_string()));
@@ -1188,7 +1188,7 @@ mod wallet_picker_tests {
         );
         // The screen stays usable: the picker still lists the wallet.
         assert_eq!(
-            picker_breakdown(&mut screen, "HD: Main — 0 DASH"),
+            picker_breakdown(&mut screen, "HD: Main — 0.0000 DASH"),
             ["Core", "Platform", "Shielded"],
             "an unreadable kind must not be shown as a zero balance"
         );

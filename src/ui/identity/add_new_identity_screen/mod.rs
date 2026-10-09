@@ -1912,7 +1912,7 @@ mod funding_method_tests {
         harness.run_steps(2);
 
         assert!(
-            harness.query_by_value("HD: Alpha — 0.3 DASH").is_some(),
+            harness.query_by_value("HD: Alpha — 0.3000 DASH").is_some(),
             "the closed picker must show the wallet's Platform funds"
         );
     }

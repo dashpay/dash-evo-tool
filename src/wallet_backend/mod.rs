@@ -1880,6 +1880,22 @@ impl WalletBackend {
     /// either now (if masternodes already synced) or when the `EventBridge`
     /// reports the masternode list reached `Synced`.
     pub async fn start(&self) -> Result<(), TaskError> {
+        self.start_while(|| true).await.map(|_| ())
+    }
+
+    /// [`Self::start`] for a start that a later disconnect can overrule.
+    ///
+    /// `still_wanted` is read under the lock [`Self::stop_in_place`] holds, so
+    /// a start that sees `true` is always stopped by a stop requested after
+    /// it. It is read again when a stop got there first: an overruled start
+    /// stands down, where an unconditional one retries on the re-armed latch.
+    ///
+    /// Returns whether chain sync is started; `Ok(false)` means this call
+    /// stood down without starting it.
+    pub async fn start_while(
+        &self,
+        still_wanted: impl Fn() -> bool + Send + Sync,
+    ) -> Result<bool, TaskError> {
         loop {
             let flight = self.inner.start_latch.flight();
             let outcome = flight
@@ -1888,6 +1904,12 @@ impl WalletBackend {
                     let Some(_lifecycle) = self.inner.start_latch.claim(&flight).await else {
                         return Err(StartFlightError::Superseded);
                     };
+                    if !still_wanted() {
+                        // A caller that joined this flight may still be wanted:
+                        // leave it a fresh one to decide on.
+                        self.inner.start_latch.reset_if_current(&flight);
+                        return Err(StartFlightError::Superseded);
+                    }
                     flight.begun.store(true, Ordering::SeqCst);
                     match self.start_once().await {
                         Ok(()) => Ok(()),
@@ -1900,12 +1922,13 @@ impl WalletBackend {
                 .await;
 
             match outcome {
-                Ok(()) => return Ok(()),
+                Ok(()) => return Ok(true),
                 Err(StartFlightError::Failed(source)) => {
                     return Err(TaskError::WalletBackend {
                         source: Arc::clone(source),
                     });
                 }
+                Err(StartFlightError::Superseded) if !still_wanted() => return Ok(false),
                 Err(StartFlightError::Superseded) => {}
             }
         }
@@ -2112,9 +2135,10 @@ impl WalletBackend {
         self.inner.coordinator_gate.reset();
     }
 
-    /// Hold startup pending so tests can join multiple callers to one flight.
-    #[cfg(test)]
-    pub(crate) async fn lock_start_lifecycle_for_test(&self) -> tokio::sync::MutexGuard<'_, ()> {
+    /// Hold starts and stops pending, so tests can join multiple callers to
+    /// one flight or pin a stop on its way.
+    #[cfg(any(test, feature = "testing"))]
+    pub async fn lock_start_lifecycle_for_test(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.inner.start_latch.lifecycle.lock().await
     }
 

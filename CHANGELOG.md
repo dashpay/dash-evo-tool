@@ -239,6 +239,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   enough. Only the amount a funding was created with is checked, so one that
   was partly used before can still be refused by the network.
 
+- Disconnect now stops a connection that is still starting. Disconnecting, or
+  stopping the startup sync, before the app had connected used to be ignored,
+  and the app connected anyway a moment later. Press Connect to connect again.
+
 - After you press Disconnect, the app stays disconnected when you switch
   networks. It used to reconnect on the new network whenever "Auto-start SPV on
   startup" was enabled. Disconnect also stops syncing on a network you left

@@ -194,6 +194,7 @@ As a user, I want to fund a Platform address from an existing asset lock so that
 
 - Converts InstantLock to ChainLock proof automatically.
 - Supports multiple destination addresses.
+- An asset lock too small to cover the network fee is marked "Too small" and cannot be used; it says why, and the list says what to do instead when nothing on it is large enough.
 
 ### WAL-019: Transfer credits between Platform addresses [Implemented]
 **Persona:** Priya, Jordan
@@ -581,6 +582,7 @@ As a user, I want to register a new identity on Dash Platform so that I can use 
 
 - Fund-first wizard: choose a funding method — from your wallet (recommended, pre-selected by default when available), recover an unfinished funding, or use a Platform address — then create the identity.
 - An amount too small to cover the network fee for the chosen number of keys is refused before any funds leave the wallet: the form states the smallest amount it accepts, and neither Max, the amount filled in after a deposit, nor the deposit request goes below it.
+- An unfinished funding too small to cover that fee stays on the list but cannot be selected; it says why and what to do instead, and the list says so when nothing on it is large enough.
 - Multi-stage confirmation flow.
 
 ### IDN-002: Load existing identity by ID [Implemented]
@@ -607,6 +609,7 @@ As a user, I want to add credits to my identity so that I can continue performin
 - Top up from wallet or Platform addresses.
 - Amount selection with credit cost display.
 - An amount too small to cover the network fee is refused before any funds leave the wallet: the form states the smallest amount it accepts, and neither Max nor the amount filled in after a deposit goes below it.
+- An unfinished funding too small to cover the network fee stays on the list but cannot be selected; it says why and what to do instead, and the list says so when nothing on it is large enough.
 - Any loaded wallet can pay, including for an identity another wallet owns; only the paying wallet's funds move and its own identity records are left untouched.
 - A saved funding transaction can only pay for an identity of the wallet it was created in; paying for another wallet's identity uses the wallet balance instead.
 - While the funds are on their way, a progress dialog blocks the app and the funding form is replaced by a short notice, so the top-up cannot be changed or sent twice and no balance warning appears for funds already in transit. A top-up that runs long can continue in the background; a banner follows it, also across a network switch, and confirms with the identity's name and ID when the funds arrive.

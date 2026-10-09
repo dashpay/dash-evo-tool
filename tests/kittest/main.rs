@@ -38,6 +38,8 @@ mod startup;
 mod support;
 mod tokens_screen;
 mod tools_screen;
+#[cfg(feature = "testing")]
+mod top_up_identity_screen;
 mod transfer_screen;
 mod wallets_screen;
 mod welcome_screen;

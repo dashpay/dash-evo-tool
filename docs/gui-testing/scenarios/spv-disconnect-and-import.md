@@ -35,11 +35,19 @@ DATADIR=$(mktemp -d)
 cp .env.example "$DATADIR/.env"
 pgrep -af dash-evo-tool
 
+# Build in the checkout under test and resolve BIN from Cargo's effective
+# target directory, as in the README ("How to run a scenario").
 BIN=<path to the build under test — baseline or development worktree binary>
 test -x "$BIN"
 LOG="$DATADIR/spv-disconnect-and-import.log"
+: "${DISPLAY:?Set DISPLAY to the desktop used for GUI testing}"
+xdpyinfo >/dev/null
 DASH_EVO_DATA_DIR="$DATADIR" nohup "$BIN" >"$LOG" 2>&1 &
 ```
+
+Read the network indicator after launch. A fresh data directory starts on
+Mainnet, so if it is not **Testnet**, select Testnet in Settings ▸ Networks
+and confirm the indicator before continuing.
 
 Resize the window (see the README's "Known UI/environment quirks") before
 judging layout. Check `det-stderr.log` / `det.log` in `$DATADIR` for panics

@@ -44,8 +44,14 @@ pgrep -af dash-evo-tool
 BIN=<path to the build under test — baseline or development worktree binary>
 test -x "$BIN"
 LOG="$DATADIR/masternodes-votes-hub.log"
+: "${DISPLAY:?Set DISPLAY to the desktop used for GUI testing}"
+xdpyinfo >/dev/null
 DASH_EVO_DATA_DIR="$DATADIR" nohup "$BIN" >"$LOG" 2>&1 &
 ```
+
+Read the network indicator after launch. A fresh data directory starts on
+Mainnet, so if it is not **Testnet**, select Testnet in Settings ▸ Networks
+and confirm the indicator before continuing.
 
 Resize the window (see the README's "Known UI/environment quirks") before
 judging layout. Check `det-stderr.log` / `det.log` in `$DATADIR` for panics
@@ -102,8 +108,10 @@ after each run.
 10. **Light and dark theme.** Repeat steps 3 and 5 in both light and dark
     theme. Record any text invisible against its background (headings, bottom
     bar summary, button labels).
-11. **Restart persistence.** Restart the app. Record whether staged/scheduled
-    decisions and the node set are remembered.
+11. **Restart persistence.** Restart the app. Record whether staged
+    decisions and the node set are remembered. This run creates no scheduled
+    decision (steps 5-6 cancel); do not create one here, since it could cast
+    automatically.
 12. **Old schedules after an upgrade (potentially MUTATES: an older build
     may cast the schedules on launch).** Only if a data directory from an
     earlier version holding unexecuted scheduled votes is available (copy it

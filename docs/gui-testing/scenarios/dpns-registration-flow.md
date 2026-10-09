@@ -32,8 +32,10 @@ build.
   - `E2E_WALLET_MNEMONIC` — funded testnet wallet
   - `E2E_IDENTITY_ID` — an identity with enough credits (optional if the
     wallet's identities are discovered in the app)
-- At least two identities on the same wallet (for the identity-switch-
-  mid-save step), at least one with no username
+- At least two funded identities on the same wallet (for steps 7 and 13),
+  at least one with no username
+- For step 5, a third identity with a balance too low to pay for a
+  registration; if none exists, skip step 5 and record it as not exercised
 - Candidate names: one short/generic (likely contested), one long/unusual
   (likely uncontested), one already taken
 - Verify exact labels during execution rather than assuming the wording
@@ -49,8 +51,14 @@ pgrep -af dash-evo-tool
 BIN=<path to the build under test — baseline or development worktree binary>
 test -x "$BIN"
 LOG="$DATADIR/dpns-registration.log"
+: "${DISPLAY:?Set DISPLAY to the desktop used for GUI testing}"
+xdpyinfo >/dev/null
 DASH_EVO_DATA_DIR="$DATADIR" nohup "$BIN" >"$LOG" 2>&1 &
 ```
+
+Read the network indicator after launch. A fresh data directory starts on
+Mainnet, so if it is not **Testnet**, select Testnet in Settings ▸ Networks
+and confirm the indicator before continuing.
 
 Resize the window (see the README's "Known UI/environment quirks") before
 judging layout. Check `det-stderr.log` / `det.log` in `$DATADIR` for panics

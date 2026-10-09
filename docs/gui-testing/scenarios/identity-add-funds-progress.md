@@ -26,6 +26,8 @@ the contract below.
 - Environment variables (names only):
   - `E2E_WALLET_MNEMONIC` — funded testnet wallet (separate wallet per build)
   - `E2E_IDENTITY_ID` — identity to top up (separate identity per build)
+- A second identity on the same wallet (for step 4); if none exists, record
+  step 4's different-identity part as not exercised
 - A second, previously unvisited network available for the switch (for
   example Devnet or Regtest configured in `.env`), or a note that it is not
 - Verify exact labels during execution
@@ -40,8 +42,14 @@ pgrep -af dash-evo-tool
 BIN=<path to the build under test — baseline or development worktree binary>
 test -x "$BIN"
 LOG="$DATADIR/identity-add-funds-progress.log"
+: "${DISPLAY:?Set DISPLAY to the desktop used for GUI testing}"
+xdpyinfo >/dev/null
 DASH_EVO_DATA_DIR="$DATADIR" nohup "$BIN" >"$LOG" 2>&1 &
 ```
+
+Read the network indicator after launch. A fresh data directory starts on
+Mainnet, so if it is not **Testnet**, select Testnet in Settings ▸ Networks
+and confirm the indicator before continuing.
 
 Resize the window (see the README's "Known UI/environment quirks") before
 judging layout. Check `det-stderr.log` / `det.log` in `$DATADIR` for panics

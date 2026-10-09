@@ -818,25 +818,15 @@ mod tests {
             .collect()
     }
 
-    /// Take reports of a held pass until the node's votes are proved. The
-    /// proof has to be there once `at_most` reports are taken.
-    async fn take_reports_until_votes_are_proved(
-        context: &AppContext,
-        node_id: Identifier,
-        reports: &mut tokio::sync::mpsc::Receiver<TaskResult>,
-        at_most: usize,
-    ) {
-        let mut taken = 0;
-        while decidable(context, node_id).is_empty() {
-            assert!(
-                taken < at_most,
-                "the votes were not proved within {at_most} reports"
-            );
+    /// Take the next `count` reports of a held pass. A pass sends its reports
+    /// in a fixed order, so the last one taken tells how far it got,
+    /// whichever of its tasks ran first.
+    async fn take_reports(reports: &mut tokio::sync::mpsc::Receiver<TaskResult>, count: usize) {
+        for _ in 0..count {
             tokio::time::timeout(Duration::from_secs(30), reports.recv())
                 .await
                 .expect("the pass went on reporting")
                 .expect("the pass is still running");
-            taken += 1;
         }
     }
 
@@ -882,15 +872,16 @@ mod tests {
         // Every read fails and, the pass not being quiet, is reported. The
         // back-fill is held by its reports, which nobody takes.
         let (pass, mut reports) = start_held_pass(&context, sdk, false);
-        // Ahead of the back-fill: the listed names, the failed reads of the
-        // end times and of the open contest, then the proof.
-        take_reports_until_votes_are_proved(&context, node_id, &mut reports, 4).await;
+        // Ahead of the back-fill the pass reports the listed names, the
+        // failed reads of the end times and of the open contest, then the
+        // proof. With that last report taken it is in the back-fill.
+        take_reports(&mut reports, 4).await;
 
         assert!(!pass.is_finished(), "the back-fill must still be running");
         assert_eq!(
             decidable(&context, node_id),
             ["open"],
-            "unread history was shown as waiting for a vote"
+            "the open contest alone must wait for a vote once the proof is reported"
         );
 
         pass.abort();
@@ -946,7 +937,13 @@ mod tests {
         );
 
         // The listed names, the read of the open contest, then the proof.
-        take_reports_until_votes_are_proved(&context, node_id, &mut reports, 3).await;
+        // With that last report taken the pass is in the back-fill.
+        take_reports(&mut reports, 3).await;
+        assert_eq!(
+            decidable(&context, node_id),
+            ["open"],
+            "the votes were not proved ahead of the back-fill"
+        );
 
         // The back-fill reads history until its reports, which nobody takes,
         // hold it.

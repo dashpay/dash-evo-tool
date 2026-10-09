@@ -187,13 +187,12 @@ fn routes_core_wallet_to_platform_address() {
         Some(0),
     )
     .expect_err("offline Core wallet has no spendable snapshot balance");
-    assert!(
-        error.starts_with("You can transfer up to 0 DASH right now."),
-        "{error}"
-    );
-    assert!(
-        error.contains("Choose a smaller amount or wait for more funds."),
-        "{error}"
+    // Nothing an empty wallet can send covers the network fee, so the refusal
+    // must not name an amount to send instead.
+    assert_eq!(
+        error,
+        "The amount you can use is too small to cover the network fee. \
+         Add more Dash to your wallet and try again."
     );
 }
 

@@ -1,5 +1,9 @@
+use crate::backend_task::error::TaskError;
 use crate::model::address::AddressKind;
+use crate::model::asset_lock::{asset_lock_user_amount_range, validate_asset_lock_minimum};
+use crate::model::fee_estimation::{estimate_asset_lock_core_fee_duffs, format_duffs_as_dash};
 use crate::model::wallet::Wallet;
+use crate::ui::components::amount_input::AmountInput;
 use crate::ui::state::TrackedAssetLockCache;
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::Network;
@@ -118,15 +122,26 @@ pub fn spendable_covers_minimum(spendable_duffs: u64, minimum_credits: u64) -> b
 /// Resolve a polling snapshot for the address shown by the deposit flow.
 /// Advancement and prefill are both bounded by funds at that address, never by
 /// unrelated spendable funds elsewhere in the wallet.
+///
+/// `form_offers_amount` is the form's own answer to whether it has an amount
+/// to offer from the deposit. Once known it decides: the form opens when it
+/// has one, and a form with nothing to offer returns to the deposit request.
+/// While it is `None` the balance at the address stands in for it.
 pub fn snapshot_deposit_outcome(
     current_step: WalletFundedScreenStep,
     address_balance_duffs: u64,
     minimum_credits: u64,
+    form_offers_amount: Option<bool>,
 ) -> (WalletFundedScreenStep, Option<u64>) {
     let advance = current_step == WalletFundedScreenStep::WaitingOnFunds
-        && spendable_covers_minimum(address_balance_duffs, minimum_credits);
+        && form_offers_amount
+            .unwrap_or_else(|| spendable_covers_minimum(address_balance_duffs, minimum_credits));
     let next_step = if advance {
         WalletFundedScreenStep::FundsReceived
+    } else if current_step == WalletFundedScreenStep::FundsReceived
+        && form_offers_amount == Some(false)
+    {
+        WalletFundedScreenStep::WaitingOnFunds
     } else {
         current_step
     };
@@ -166,6 +181,71 @@ pub fn max_amount_after_fee_reserve(spendable_duffs: u64, fee_credits: u64) -> u
     spendable_duffs
         .saturating_mul(CREDITS_PER_DUFF)
         .saturating_sub(fee_credits)
+}
+
+/// Shown instead of an amount when nothing the wallet can send covers the fee.
+pub const FUNDING_FEE_NOT_COVERED: &str = "The amount you can use is too small to cover the network fee. Add more Dash to your wallet and try again.";
+
+/// What a wallet must hold, in credits, before any amount it can send covers
+/// the network fee once `reserve_duffs` is kept back. Every "add at least" text
+/// and deposit threshold reads this, so none of them asks for an amount the
+/// form then cannot use.
+pub fn required_wallet_credits(minimum_duffs: Option<u64>, reserve_duffs: u64) -> u64 {
+    minimum_duffs
+        .unwrap_or(0)
+        .saturating_add(reserve_duffs)
+        .saturating_mul(CREDITS_PER_DUFF)
+}
+
+/// What a deposit must bring, in credits, to leave an amount covering the
+/// network fee once it is spent whole into a funding together with the
+/// wallet's other payments, `payments` in all: [`required_wallet_credits`]
+/// plus the Core transaction fee the funding builder takes out of what it
+/// spends.
+pub fn required_deposit_credits(
+    minimum_duffs: Option<u64>,
+    reserve_duffs: u64,
+    payments: usize,
+) -> u64 {
+    required_wallet_credits(minimum_duffs, reserve_duffs).saturating_add(
+        estimate_asset_lock_core_fee_duffs(payments).saturating_mul(CREDITS_PER_DUFF),
+    )
+}
+
+/// Why `amount_duffs` cannot be sent, for network-fee reasons, from a wallet
+/// that can build `ceiling_duffs` — as banner text. `None` when the fee is
+/// covered, or `minimum_duffs` is unknown (the backend then decides).
+pub fn network_fee_refusal(
+    amount_duffs: u64,
+    ceiling_duffs: u64,
+    reserve_duffs: u64,
+    minimum_duffs: Option<u64>,
+) -> Option<String> {
+    let minimum_duffs = minimum_duffs?;
+    if asset_lock_user_amount_range(ceiling_duffs, reserve_duffs, minimum_duffs).is_none() {
+        return Some(FUNDING_FEE_NOT_COVERED.to_string());
+    }
+    validate_asset_lock_minimum(amount_duffs, minimum_duffs)
+        .err()
+        .map(|error| {
+            TaskError::AssetLockAmountBelowNetworkFee {
+                amount_duffs,
+                minimum_duffs: error.minimum_amount_duffs,
+            }
+            .to_string()
+        })
+}
+
+/// Limit `amount_input` to the smallest funding the network accepts, and say
+/// why under the field.
+pub fn show_network_fee_minimum(amount_input: &mut AmountInput, minimum_duffs: Option<u64>) {
+    if let Some(minimum) = minimum_duffs {
+        amount_input.set_min_amount(Some(minimum.saturating_mul(CREDITS_PER_DUFF)));
+        amount_input.set_caption(Some(format!(
+            "The network fee is taken from this amount, so it must be at least {}.",
+            format_duffs_as_dash(minimum)
+        )));
+    }
 }
 
 /// Bound a received deposit by both its address balance and the wallet ceiling.
@@ -781,7 +861,12 @@ mod tests {
         let minimum_credits = 50_000_000;
 
         assert_eq!(
-            snapshot_deposit_outcome(WalletFundedScreenStep::WaitingOnFunds, 1, minimum_credits,),
+            snapshot_deposit_outcome(
+                WalletFundedScreenStep::WaitingOnFunds,
+                1,
+                minimum_credits,
+                None
+            ),
             (WalletFundedScreenStep::WaitingOnFunds, None),
         );
         assert_eq!(
@@ -793,6 +878,56 @@ mod tests {
             ),
             (WalletFundedScreenStep::WaitingOnFunds, None),
         );
+    }
+
+    /// Once the form's own answer is known it decides where the deposit flow
+    /// stands; the balance at the address only stands in while it is not.
+    #[test]
+    fn deposit_step_follows_what_the_form_can_offer() {
+        use WalletFundedScreenStep::{FundsReceived, WaitingOnFunds};
+        const AWAITED_CREDITS: u64 = 430_259_000;
+        const ENOUGH: u64 = 430_259;
+        let step = |current, balance, form_offers_amount| {
+            snapshot_deposit_outcome(current, balance, AWAITED_CREDITS, form_offers_amount).0
+        };
+
+        // Not known yet: the balance at the address stands in.
+        assert_eq!(step(WaitingOnFunds, ENOUGH, None), FundsReceived);
+        assert_eq!(step(WaitingOnFunds, ENOUGH - 1, None), WaitingOnFunds);
+        assert_eq!(step(FundsReceived, ENOUGH, None), FundsReceived);
+
+        // Nothing to offer: stay on, or return to, the deposit request.
+        assert_eq!(step(WaitingOnFunds, ENOUGH, Some(false)), WaitingOnFunds);
+        assert_eq!(step(FundsReceived, ENOUGH, Some(false)), WaitingOnFunds);
+
+        // An amount to offer: open the form, even from a smaller balance.
+        assert_eq!(step(WaitingOnFunds, ENOUGH - 1, Some(true)), FundsReceived);
+        assert_eq!(step(FundsReceived, ENOUGH - 1, Some(true)), FundsReceived);
+
+        // A funding already under way is never moved.
+        for form_offers_amount in [None, Some(false), Some(true)] {
+            assert_eq!(
+                step(
+                    WalletFundedScreenStep::WaitingForAssetLock,
+                    ENOUGH,
+                    form_offers_amount
+                ),
+                WalletFundedScreenStep::WaitingForAssetLock
+            );
+        }
+    }
+
+    /// The amount is filled in only when the form opens.
+    #[test]
+    fn deposit_prefill_accompanies_only_the_opening_of_the_form() {
+        use WalletFundedScreenStep::{FundsReceived, WaitingOnFunds};
+        let prefill = |current, form_offers_amount| {
+            snapshot_deposit_outcome(current, 430_259, 430_259_000, form_offers_amount).1
+        };
+        assert!(prefill(WaitingOnFunds, Some(true)).is_some());
+        assert!(prefill(WaitingOnFunds, Some(false)).is_none());
+        assert!(prefill(FundsReceived, Some(false)).is_none());
+        assert!(prefill(FundsReceived, Some(true)).is_none());
     }
 
     #[test]

@@ -1699,7 +1699,7 @@ impl AppContext {
     /// selection — it only sizes the fee reserved off the displayed balance.
     pub fn snapshot_utxo_count(&self, seed_hash: &WalletSeedHash) -> usize {
         self.wallet_backend()
-            .map(|wb| wb.utxos(seed_hash).len())
+            .map(|wb| wb.utxo_count(seed_hash))
             .unwrap_or(0)
     }
 

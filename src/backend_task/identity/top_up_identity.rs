@@ -1,11 +1,9 @@
-use crate::backend_task::error::TaskError;
+use crate::backend_task::error::{TaskError, ensure_funding_covers_network_fee};
 use crate::backend_task::identity::{IdentityTopUpInfo, TopUpIdentityFundingMethod};
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
-use crate::model::asset_lock::validate_asset_lock_minimum;
 use crate::model::fee_estimation::identity_topup_min_funding_duffs;
 use crate::model::wallet::WalletSeedHash;
-use dash_sdk::Error as SdkError;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::dpp::version::PlatformVersion;
@@ -77,17 +75,10 @@ fn ensure_top_up_covers_network_fee(
     amount_duffs: u64,
     platform_version: &PlatformVersion,
 ) -> Result<(), TaskError> {
-    let minimum_duffs = identity_topup_min_funding_duffs(platform_version).map_err(|e| {
-        TaskError::AssetLockNetworkFeeUnavailable {
-            source_error: Box::new(SdkError::Protocol(*e)),
-        }
-    })?;
-    validate_asset_lock_minimum(amount_duffs, minimum_duffs).map_err(|e| {
-        TaskError::AssetLockAmountBelowNetworkFee {
-            amount_duffs,
-            minimum_duffs: e.minimum_amount_duffs,
-        }
-    })
+    ensure_funding_covers_network_fee(
+        amount_duffs,
+        identity_topup_min_funding_duffs(platform_version),
+    )
 }
 
 impl AppContext {

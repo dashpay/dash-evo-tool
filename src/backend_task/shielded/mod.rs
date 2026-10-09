@@ -2,6 +2,7 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::context::feature_gate::{Check, FeatureGate};
+use crate::model::amount::validate_nonzero_amount;
 use crate::model::fee_estimation::ShieldFromCoreFunding;
 use crate::model::wallet::WalletSeedHash;
 use crate::wallet_backend::PlatformPathIndex;
@@ -270,6 +271,9 @@ impl AppContext {
         &self,
         amount_duffs: u64,
     ) -> Result<(ShieldFromCoreFunding, u32), TaskError> {
+        // Zero would still size a funding the network accepts under some
+        // protocol versions, paying the fee to shield nothing asked for.
+        validate_nonzero_amount(amount_duffs).map_err(|_| TaskError::ShieldedZeroAmount)?;
         let (version_at_sizing, platform_version) = self.shield_from_core_protocol_version();
         let shield = self
             .fee_estimator()
@@ -545,5 +549,50 @@ mod tests {
             matches!(&result, Err(TaskError::ShieldedNotBound)),
             "got {result:?}"
         );
+    }
+
+    /// Run a zero shield through the task and require that it is refused
+    /// without the transfer ever being started.
+    async fn assert_zero_shield_is_refused(ctx: &AppContext) {
+        let transfer_started = std::sync::atomic::AtomicBool::new(false);
+        let result = ctx
+            .shield_from_core_with(WalletSeedHash::default(), 0, async |_funding| {
+                transfer_started.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            })
+            .await;
+
+        assert!(
+            matches!(&result, Err(TaskError::ShieldedZeroAmount)),
+            "got {result:?}"
+        );
+        assert!(
+            !transfer_started.load(std::sync::atomic::Ordering::SeqCst),
+            "a zero shield must not reach the transfer"
+        );
+    }
+
+    /// Under protocols 12 and 13 the fee is not a whole number of duffs, so a
+    /// zero amount sizes a funding just large enough to be accepted: the fee
+    /// would be paid for shielding the 800 credits of rounding. The task must
+    /// refuse zero itself, before the transfer.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shield_from_core_task_refuses_a_zero_amount_before_the_transfer() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (ctx, _backend) = ctx_with_backend(tmp.path()).await;
+        assert_zero_shield_is_refused(&ctx).await;
+
+        // Protocol 12, through the app's own SDK: no backend is wired here.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(tmp.path());
+        let pv12 = dash_sdk::dpp::version::PlatformVersion::get(12).expect("PV12");
+        ctx.sdk.store(Arc::new(
+            dash_sdk::SdkBuilder::new_mock()
+                .with_version(pv12)
+                .build()
+                .expect("mock sdk"),
+        ));
+        assert_eq!(ctx.shield_from_core_protocol_version().0, 12);
+        assert_zero_shield_is_refused(&ctx).await;
     }
 }

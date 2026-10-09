@@ -2789,6 +2789,12 @@ pub enum TaskError {
     #[error("The recipient shielded address is invalid. Please check the address and retry.")]
     ShieldedInvalidRecipientAddress,
 
+    /// A shield from the Core wallet was asked for with a zero amount. The
+    /// network fee would be paid while nothing asked for is shielded, so it is
+    /// refused before any funds move.
+    #[error("The amount to shield is zero. Enter an amount greater than zero and try again.")]
+    ShieldedZeroAmount,
+
     /// Timed out waiting for asset lock proof during shield-from-asset-lock.
     #[error(
         "The funding transaction was not confirmed within 5 minutes. Please check your network connection and retry."

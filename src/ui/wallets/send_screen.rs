@@ -7,7 +7,7 @@ use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessRes
 use crate::context::AppContext;
 use crate::context::feature_gate::FeatureGate;
 use crate::model::address::{AddressKind, ValidatedAddress};
-use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
+use crate::model::amount::{Amount, DASH_DECIMAL_PLACES, validate_nonzero_amount};
 use crate::model::asset_lock::{
     AssetLockAmountError, asset_lock_user_amount_range, asset_lock_user_max_amount,
     validate_asset_lock_amount,
@@ -1723,7 +1723,7 @@ impl WalletSendScreen {
             .as_ref()
             .ok_or_else(|| "Amount is required".to_string())?
             .dash_to_duffs()?;
-        if amount_duffs == 0 {
+        if validate_nonzero_amount(amount_duffs).is_err() {
             return Err("Amount must be greater than 0".to_string());
         }
 

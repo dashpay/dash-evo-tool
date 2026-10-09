@@ -197,7 +197,7 @@ impl AppContext {
             names_to_be_updated.extend(new_names_to_be_updated);
 
             sender
-                .send(TaskResult::Refresh)
+                .send(TaskResult::DpnsContestsChanged)
                 .await
                 .map_err(|_| TaskError::InternalSendError)?;
 
@@ -229,7 +229,7 @@ impl AppContext {
                     .await
                 {
                     Ok(_) => {
-                        if let Err(e) = sender.send(TaskResult::Refresh).await {
+                        if let Err(e) = sender.send(TaskResult::DpnsContestsChanged).await {
                             tracing::warn!(
                                 "Failed to send refresh after dpns end times query: {}",
                                 e
@@ -289,7 +289,7 @@ impl AppContext {
                     .await
                 {
                     Ok(_) => {
-                        if let Err(e) = sender.send(TaskResult::Refresh).await {
+                        if let Err(e) = sender.send(TaskResult::DpnsContestsChanged).await {
                             tracing::warn!(
                                 "Failed to send refresh after vote contenders query for {}: {}",
                                 name,
@@ -337,7 +337,7 @@ impl AppContext {
             self.prove_current_votes(sdk).await;
             self.recompute_dpns_vote_attention();
             sender
-                .send(TaskResult::Refresh)
+                .send(TaskResult::DpnsContestsChanged)
                 .await
                 .map_err(|_| TaskError::InternalSendError)?;
         }
@@ -595,6 +595,33 @@ mod tests {
 
         drop(running);
         second.await.expect("the waiting pass runs afterwards");
+    }
+
+    /// A pass runs for minutes while the user works elsewhere. It reports that
+    /// contest data changed; a screen-wide refresh would reset that screen.
+    #[tokio::test]
+    async fn a_pass_reports_contest_changes_without_refreshing_every_screen() {
+        let (_dir, context, sdk) = context_listing(&contest_names(2)).await;
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, context.egui_ctx().clone());
+
+        context
+            .query_dpns_contested_resources(&sdk, sender, true)
+            .await
+            .expect("refresh pass");
+
+        let sent: Vec<TaskResult> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert!(
+            !sent
+                .iter()
+                .any(|result| matches!(result, TaskResult::Refresh)),
+            "a pass must not ask whatever screen is visible to refresh: {sent:?}"
+        );
+        assert!(
+            sent.iter()
+                .any(|result| matches!(result, TaskResult::DpnsContestsChanged)),
+            "a pass must still report that contest data changed: {sent:?}"
+        );
     }
 
     /// Load a masternode into `context` and let the mock SDK prove that it

@@ -219,8 +219,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   once: the servers then refused the app for a while, which could fail
   unrelated actions. A finished contest is now read once and only one refresh
   runs at a time. The first load of a long history is spread out: contests
-  still open are read first, and the finished ones fill in over a couple of
-  minutes.
+  still open are read first and can be voted on within seconds, while the
+  finished ones fill in over a couple of minutes without being listed as
+  waiting for a vote.
 
 - Adding funds to an identity no longer sends an amount too small to cover the
   network fee. Such a transfer used to leave the wallet and was then refused

@@ -124,6 +124,20 @@ where
 }
 
 impl AppContext {
+    /// Prove every loaded node's current votes and refresh which nodes are in
+    /// the masternode list. Tells whether every node's votes were proved.
+    async fn prove_current_votes(&self, sdk: &Sdk) -> bool {
+        let proved = match self.refresh_dpns_vote_states(sdk).await {
+            Ok(results) => super::refresh_vote_states::every_voter_refreshed(&results),
+            Err(error) => {
+                tracing::warn!(?error, "Could not refresh DPNS current votes with contests");
+                false
+            }
+        };
+        self.refresh_masternode_list_membership().await;
+        proved
+    }
+
     /// Refresh the contest cache, contenders, end times and every loaded node's
     /// proved votes as one snapshot.
     ///
@@ -264,7 +278,8 @@ impl AppContext {
         // The end times tell which contests are still open. Those are read
         // first, so a long unread history does not hold up what can be voted on.
         let end_times_refreshed = every_contest_query_succeeded(vec![handle]).await;
-        let names_to_be_updated = self.open_contests_first(names_to_be_updated)?;
+        let queue = self.contender_queue(names_to_be_updated)?;
+        let reads_unread_history = !queue.unread.is_empty();
 
         let contender_query = |name: String| {
             let sdk = sdk.clone();
@@ -308,29 +323,44 @@ impl AppContext {
                 }
             }
         };
-        let handles = start_in_order(
-            names_to_be_updated,
+        let unpaced_after_open = UNPACED_CONTENDER_QUERIES.saturating_sub(queue.open.len());
+        let mut handles = start_in_order(
+            queue.open,
             UNPACED_CONTENDER_QUERIES,
             CONTENDER_QUERY_SPACING,
             &semaphore,
-            contender_query,
+            &contender_query,
         )
         .await;
-
-        let contests_refreshed =
-            every_contest_query_succeeded(handles).await && end_times_refreshed;
+        let mut contests_refreshed = end_times_refreshed;
+        if reads_unread_history {
+            // Unread names are not listed as open, so the open contests on
+            // show are the real ones: prove the nodes' votes on them now
+            // rather than after the whole history is read.
+            contests_refreshed &= every_contest_query_succeeded(std::mem::take(&mut handles)).await;
+            self.prove_current_votes(sdk).await;
+            self.recompute_dpns_vote_attention();
+            sender
+                .send(TaskResult::Refresh)
+                .await
+                .map_err(|_| TaskError::InternalSendError)?;
+        }
+        handles.extend(
+            start_in_order(
+                queue.rest,
+                unpaced_after_open,
+                CONTENDER_QUERY_SPACING,
+                &semaphore,
+                &contender_query,
+            )
+            .await,
+        );
+        contests_refreshed &= every_contest_query_succeeded(handles).await;
 
         // Publish contests and every loaded node's proved current votes as one
         // completed refresh snapshot. Per-node failures are stored explicitly
         // as unavailable instead of being mistaken for "Not voted".
-        let vote_states_refreshed = match self.refresh_dpns_vote_states(sdk).await {
-            Ok(results) => super::refresh_vote_states::every_voter_refreshed(&results),
-            Err(error) => {
-                tracing::warn!(?error, "Could not refresh DPNS current votes with contests");
-                false
-            }
-        };
-        self.refresh_masternode_list_membership().await;
+        let vote_states_refreshed = self.prove_current_votes(sdk).await;
         self.forget_closed_dpns_vote_counts();
         self.recompute_dpns_vote_attention();
         self.refresh_pending_dpns_usernames()?;
@@ -354,9 +384,16 @@ impl AppContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dash_sdk::dpp::block::block_info::BlockInfo;
+    use dash_sdk::dpp::voting::contender_structs::ContenderWithSerializedDocument;
+    use dash_sdk::dpp::voting::vote_info_storage::contested_document_vote_poll_winner_info::ContestedDocumentVotePollWinnerInfo;
+    use dash_sdk::dpp::voting::vote_polls::contested_document_resource_vote_poll::ContestedDocumentResourceVotePoll;
+    use dash_sdk::drive::query::vote_poll_vote_state_query::{
+        ContestedDocumentVotePollDriveQuery, ContestedDocumentVotePollDriveQueryResultType,
+    };
     use dash_sdk::error::StaleNodeError;
     use dash_sdk::platform::Identifier;
-    use dash_sdk::query_types::ContestedResources;
+    use dash_sdk::query_types::{Contenders, ContestedResources};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn stale_node() -> dash_sdk::Error {
@@ -605,8 +642,9 @@ mod tests {
             .expect("store end times");
 
         let queue = context
-            .open_contests_first(listed)
+            .contender_queue(listed)
             .expect("order the contender queries");
+        let queue = queue.open.into_iter().chain(queue.rest).collect();
         let dispatched = Arc::new(std::sync::Mutex::new(Vec::new()));
         let record = Arc::clone(&dispatched);
         let queries = start_in_order(
@@ -644,6 +682,284 @@ mod tests {
 
         drop(running);
         second.await.expect("the waiting pass runs afterwards");
+    }
+
+    /// Load a masternode into `context` and let the mock SDK prove that it
+    /// has not voted on anything.
+    async fn load_node_without_votes(context: &Arc<AppContext>, sdk: &mut Sdk) -> Identifier {
+        use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
+        use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+        use dash_sdk::dpp::voting::votes::resource_vote::ResourceVote;
+        use dash_sdk::drive::query::contested_resource_votes_given_by_identity_query::ContestedResourceVotesGivenByIdentityQuery;
+        use dash_sdk::query_types::ResourceVotesByIdentity;
+
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(8);
+        context
+            .ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+                tx,
+                context.egui_ctx().clone(),
+            ))
+            .await
+            .expect("wire the wallet backend offline");
+        let identity = dash_sdk::dpp::identity::Identity::create_basic_identity(
+            Identifier::from([1; 32]),
+            dash_sdk::dpp::version::PlatformVersion::latest(),
+        )
+        .expect("basic identity");
+        let node = QualifiedIdentity {
+            identity,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::Masternode,
+            alias: None,
+            private_keys: Default::default(),
+            dpns_names: vec![],
+            associated_wallets: Default::default(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: Default::default(),
+            status: IdentityStatus::Active,
+            network: context.network(),
+        };
+        context
+            .insert_local_qualified_identity(&node, &None)
+            .expect("load the node");
+        let node_id = node.identity.id();
+        sdk.mock()
+            .expect_fetch_many::<Identifier, ResourceVote, _, ResourceVotesByIdentity>(
+                ContestedResourceVotesGivenByIdentityQuery {
+                    identity_id: node_id,
+                    offset: None,
+                    limit: Some(100),
+                    start_at: None,
+                    order_ascending: true,
+                },
+                Some(ResourceVotesByIdentity::default()),
+            )
+            .await
+            .expect("vote query expectation");
+        node_id
+    }
+
+    /// Let the mock SDK answer the contender query for `name`: with a
+    /// `winner` the contest has ended, without one it is open.
+    async fn answer_contenders(
+        context: &AppContext,
+        sdk: &mut Sdk,
+        name: &str,
+        winner: Option<(ContestedDocumentVotePollWinnerInfo, BlockInfo)>,
+    ) {
+        let document_type = context
+            .dpns_contract
+            .document_type_for_name("domain")
+            .expect("domain document type");
+        let query = ContestedDocumentVotePollDriveQuery {
+            limit: None,
+            offset: None,
+            start_at: None,
+            vote_poll: ContestedDocumentResourceVotePoll {
+                index_name: document_type
+                    .find_contested_index()
+                    .expect("contested index")
+                    .name
+                    .clone(),
+                index_values: vec![Value::from("dash"), Value::Text(name.to_owned())],
+                document_type_name: document_type.name().to_owned(),
+                contract_id: context.dpns_contract.id(),
+            },
+            allow_include_locked_and_abstaining_vote_tally: true,
+            result_type: ContestedDocumentVotePollDriveQueryResultType::DocumentsAndVoteTally,
+        };
+        sdk.mock()
+            .expect_fetch_many::<Identifier, ContenderWithSerializedDocument, _, Contenders>(
+                query,
+                Some(Contenders {
+                    winner,
+                    contenders: Default::default(),
+                    abstain_vote_tally: None,
+                    lock_vote_tally: None,
+                }),
+            )
+            .await
+            .expect("contender expectation");
+    }
+
+    /// Start a pass that hands its reports to a channel with room for one. A
+    /// pass waits until each report is taken, so it gets only as far as the
+    /// reports the test takes let it.
+    fn start_held_pass(
+        context: &Arc<AppContext>,
+        sdk: Sdk,
+        quiet: bool,
+    ) -> (
+        JoinHandle<Result<(), TaskError>>,
+        tokio::sync::mpsc::Receiver<TaskResult>,
+    ) {
+        let (tx, reports) = tokio::sync::mpsc::channel(1);
+        let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, context.egui_ctx().clone());
+        let context = Arc::clone(context);
+        let pass = tokio::spawn(async move {
+            context
+                .query_dpns_contested_resources(&sdk, sender, quiet)
+                .await
+        });
+        (pass, reports)
+    }
+
+    /// The contests the node is shown as able to decide on.
+    fn decidable(context: &AppContext, node_id: Identifier) -> Vec<String> {
+        context
+            .dpns_node_votes(node_id)
+            .expect("node votes")
+            .into_iter()
+            .filter(|row| row.state_known)
+            .map(|row| row.contested_name)
+            .collect()
+    }
+
+    /// Take the next `count` reports of a held pass. A pass sends its reports
+    /// in a fixed order, so the last one taken tells how far it got,
+    /// whichever of its tasks ran first.
+    async fn take_reports(reports: &mut tokio::sync::mpsc::Receiver<TaskResult>, count: usize) {
+        for _ in 0..count {
+            tokio::time::timeout(Duration::from_secs(30), reports.recv())
+                .await
+                .expect("the pass went on reporting")
+                .expect("the pass is still running");
+        }
+    }
+
+    /// Whether the contenders of `name` were read and stored.
+    fn was_read(context: &AppContext, name: &str) -> bool {
+        context
+            .all_contested_names()
+            .expect("contests")
+            .iter()
+            .any(|contest| {
+                contest.normalized_contested_name == name && contest.last_updated.is_some()
+            })
+    }
+
+    /// Wait for `reached`, for at most `limit`. Tells whether it came about.
+    async fn reached_within(limit: Duration, reached: impl Fn() -> bool) -> bool {
+        tokio::time::timeout(limit, async {
+            while !reached() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .is_ok()
+    }
+
+    /// On a first load the node's votes are proved as soon as the open
+    /// contest is read. The unread history is still being back-filled then,
+    /// and none of it may show as a contest the node has yet to vote on —
+    /// nor after the pass is stopped midway, with the proof already stored.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn votes_are_proved_before_the_unread_history_is_read() {
+        // The open contest is listed last, behind the unread history.
+        let mut names = contest_names(40);
+        names.push("open".to_owned());
+        let (_dir, context, mut sdk) = context_listing(&names).await;
+        let node_id = load_node_without_votes(&context, &mut sdk).await;
+        context.seed_dpns_contest_for_test(
+            "open",
+            Some(crate::utils::time::now_ms() + 600_000),
+            false,
+        );
+
+        // Every read fails and, the pass not being quiet, is reported. The
+        // back-fill is held by its reports, which nobody takes.
+        let (pass, mut reports) = start_held_pass(&context, sdk, false);
+        // Ahead of the back-fill the pass reports the listed names, the
+        // failed reads of the end times and of the open contest, then the
+        // proof. With that last report taken it is in the back-fill.
+        take_reports(&mut reports, 4).await;
+
+        assert!(!pass.is_finished(), "the back-fill must still be running");
+        assert_eq!(
+            decidable(&context, node_id),
+            ["open"],
+            "the open contest alone must wait for a vote once the proof is reported"
+        );
+
+        pass.abort();
+        assert!(pass.await.is_err_and(|error| error.is_cancelled()));
+        let still_decidable: Vec<String> = context
+            .dpns_node_votes(node_id)
+            .expect("node votes")
+            .into_iter()
+            .map(|row| row.contested_name)
+            .collect();
+        assert_eq!(still_decidable, ["open"]);
+    }
+
+    /// The same first load with every contender read answered. The votes are
+    /// proved only once the read of the open contest has finished, and
+    /// history read to its outcome does not show as waiting for a vote while
+    /// the rest of it is still unread.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn answered_history_does_not_show_as_waiting_for_a_vote() {
+        let history = contest_names(40);
+        let mut names = history.clone();
+        names.push("open".to_owned());
+        let (_dir, context, mut sdk) = context_listing(&names).await;
+        let node_id = load_node_without_votes(&context, &mut sdk).await;
+        context.seed_dpns_contest_for_test(
+            "open",
+            Some(crate::utils::time::now_ms() + 600_000),
+            false,
+        );
+        answer_contenders(&context, &mut sdk, "open", None).await;
+        let won = (
+            ContestedDocumentVotePollWinnerInfo::WonByIdentity(Identifier::from([9; 32])),
+            BlockInfo::default(),
+        );
+        for name in &history {
+            answer_contenders(&context, &mut sdk, name, Some(won)).await;
+        }
+
+        let (pass, mut reports) = start_held_pass(&context, sdk, true);
+        // The open contest is read, but its read ends by handing over a
+        // report and the channel is still full. The read has not finished,
+        // so the votes must not be proved, however long the pass is given.
+        assert!(
+            reached_within(Duration::from_secs(30), || was_read(&context, "open")).await,
+            "the open contest was not read"
+        );
+        assert!(
+            !reached_within(Duration::from_millis(250), || {
+                !decidable(&context, node_id).is_empty()
+            })
+            .await,
+            "the votes were proved before the read of the open contest finished"
+        );
+
+        // The listed names, the read of the open contest, then the proof.
+        // With that last report taken the pass is in the back-fill.
+        take_reports(&mut reports, 3).await;
+        assert_eq!(
+            decidable(&context, node_id),
+            ["open"],
+            "the votes were not proved ahead of the back-fill"
+        );
+
+        // The back-fill reads history until its reports, which nobody takes,
+        // hold it.
+        assert!(
+            reached_within(Duration::from_secs(30), || {
+                history.iter().any(|name| was_read(&context, name))
+            })
+            .await,
+            "no history was read"
+        );
+        assert!(!pass.is_finished(), "the back-fill must still be running");
+        assert_eq!(
+            decidable(&context, node_id),
+            ["open"],
+            "history was shown as waiting for a vote"
+        );
     }
 
     #[tokio::test]

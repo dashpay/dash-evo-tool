@@ -49,6 +49,15 @@ impl ContestedName {
     pub fn is_votable(&self) -> bool {
         self.state.state_is_votable()
     }
+
+    /// Whether the name was only listed so far: its contenders were never
+    /// read and no end time is stored. Nothing says such a name is an open
+    /// contest; on a network with a long history it almost never is.
+    pub fn is_unread(&self) -> bool {
+        self.last_updated.is_none()
+            && self.end_time.is_none()
+            && self.contestants.as_ref().is_none_or(Vec::is_empty)
+    }
 }
 
 /// Return a bounded pending-name label safe to interpolate into UI text.

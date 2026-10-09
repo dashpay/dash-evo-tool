@@ -603,9 +603,11 @@ As a user, I want to add credits to my identity so that I can continue performin
 
 - Top up from wallet or Platform addresses.
 - Amount selection with credit cost display.
+- An amount too small to cover the network fee is refused before any funds leave the wallet: the form states the smallest amount it accepts, and neither Max nor the amount filled in after a deposit goes below it.
 - Any loaded wallet can pay, including for an identity another wallet owns; only the paying wallet's funds move and its own identity records are left untouched.
 - A saved funding transaction can only pay for an identity of the wallet it was created in; paying for another wallet's identity uses the wallet balance instead.
-- While the funds are on their way, a progress dialog blocks the app and the funding form is replaced by a short notice, so the top-up cannot be changed or sent twice and no balance warning appears for funds already in transit. A top-up that runs long can continue in the background; a banner follows it and confirms when the funds arrive.
+- While the funds are on their way, a progress dialog blocks the app and the funding form is replaced by a short notice, so the top-up cannot be changed or sent twice and no balance warning appears for funds already in transit. A top-up that runs long can continue in the background; a banner follows it, also across a network switch, and confirms with the identity's name and ID when the funds arrive.
+- A top-up stays in progress until its own result arrives, even when the screen that sent it is closed or the network is switched: every Add Funds screen for that identity shows the notice until then. Only the Add Funds screen that sent the top-up shows its result; another screen in view keeps its own state.
 
 ### IDN-005: Withdraw credits to Core address [Implemented]
 **Persona:** Priya, Jordan
@@ -1554,6 +1556,7 @@ As an expert user, I want the app to automatically begin SPV sync when it opens 
 - When enabled, sync begins automatically on app launch.
 - After a manual Disconnect the app stays disconnected, including after switching networks, until the user presses Connect or restarts the app.
 - Disconnect stops sync on every network, including one left syncing in the background by a network switch.
+- A manual Disconnect, including stopping the startup sync screen, also cancels a connection that is still starting, on any network; the app does not connect afterwards.
 
 ### NET-019: Clear all local data for a network [Implemented]
 **Persona:** Jordan, Priya

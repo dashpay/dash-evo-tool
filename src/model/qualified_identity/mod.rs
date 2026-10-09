@@ -1089,6 +1089,17 @@ impl QualifiedIdentity {
         )
     }
 
+    /// The alias, profile name or given username, or `None` for an identity
+    /// that has none of them.
+    pub fn name_with_username(
+        &self,
+        display_name: Option<&str>,
+        username: Option<&str>,
+    ) -> Option<String> {
+        let preferred = self.administrative_alias().or(display_name);
+        crate::model::identity_name::display_name_or_username(preferred, username)
+    }
+
     /// Resolve the profile name with the given username and identifier fallbacks.
     pub fn display_name_label_with_username(
         &self,

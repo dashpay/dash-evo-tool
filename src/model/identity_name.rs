@@ -10,20 +10,27 @@ pub fn masternode_label(id: dash_sdk::platform::Identifier, alias: Option<&str>)
         })
 }
 
-/// Resolve a profile name, username, or shortened identity identifier.
-pub fn display_label(display_name: Option<&str>, username: Option<&str>, id: &str) -> String {
+/// Resolve a profile name or username, or `None` for an identity with neither.
+pub fn display_name_or_username(
+    display_name: Option<&str>,
+    username: Option<&str>,
+) -> Option<String> {
     [display_name, username]
         .into_iter()
         .flatten()
         .map(clean_display_text)
         .find(|name| !name.is_empty())
-        .unwrap_or_else(|| {
-            if id.trim().is_empty() {
-                "Unknown identity".into()
-            } else {
-                shorten_id(id.trim())
-            }
-        })
+}
+
+/// Resolve a profile name, username, or shortened identity identifier.
+pub fn display_label(display_name: Option<&str>, username: Option<&str>, id: &str) -> String {
+    display_name_or_username(display_name, username).unwrap_or_else(|| {
+        if id.trim().is_empty() {
+            "Unknown identity".into()
+        } else {
+            shorten_id(id.trim())
+        }
+    })
 }
 
 /// Remove control and bidi characters from rendered text, then trim surrounding whitespace.
@@ -93,5 +100,19 @@ mod tests {
             "alex.dash"
         );
         assert_eq!(display_label(None, None, "abcdefghijk"), "abcde…ijk");
+    }
+
+    #[test]
+    fn an_identity_without_a_profile_name_or_username_has_no_name() {
+        assert_eq!(
+            display_name_or_username(Some(" Alex "), Some("alex.dash")).as_deref(),
+            Some("Alex")
+        );
+        assert_eq!(
+            display_name_or_username(Some("\u{202e} "), Some("alex.dash")).as_deref(),
+            Some("alex.dash")
+        );
+        assert_eq!(display_name_or_username(Some(" "), Some("\0")), None);
+        assert_eq!(display_name_or_username(None, None), None);
     }
 }

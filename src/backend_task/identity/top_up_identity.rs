@@ -2,9 +2,13 @@ use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::{IdentityTopUpInfo, TopUpIdentityFundingMethod};
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
+use crate::model::asset_lock::validate_asset_lock_minimum;
+use crate::model::fee_estimation::identity_topup_min_funding_duffs;
 use crate::model::wallet::WalletSeedHash;
+use dash_sdk::Error as SdkError;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
+use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::Identifier;
 
 /// How a top-up must be funded, decided by which wallet owns the identity.
@@ -63,6 +67,29 @@ fn validate_topup_index(
     }
 }
 
+/// Refuse a wallet-funded top-up the network would reject for not covering its
+/// fee.
+///
+/// Runs before any wallet work, because by the time the network reports such a
+/// refusal the funds have already left the wallet. A fee that cannot be read
+/// refuses the amount rather than letting it through. Pure — no I/O.
+fn ensure_top_up_covers_network_fee(
+    amount_duffs: u64,
+    platform_version: &PlatformVersion,
+) -> Result<(), TaskError> {
+    let minimum_duffs = identity_topup_min_funding_duffs(platform_version).map_err(|e| {
+        TaskError::AssetLockNetworkFeeUnavailable {
+            source_error: Box::new(SdkError::Protocol(*e)),
+        }
+    })?;
+    validate_asset_lock_minimum(amount_duffs, minimum_duffs).map_err(|e| {
+        TaskError::AssetLockAmountBelowNetworkFee {
+            amount_duffs,
+            minimum_duffs: e.minimum_amount_duffs,
+        }
+    })
+}
+
 impl AppContext {
     pub(super) async fn top_up_identity(
         &self,
@@ -95,6 +122,7 @@ impl AppContext {
                     identity_index,
                     top_up_index,
                 ) => {
+                    ensure_top_up_covers_network_fee(amount, sdk.version())?;
                     let funding =
                         platform_wallet::wallet::asset_lock::AssetLockFunding::FromWalletBalance {
                             amount_duffs: amount,
@@ -245,6 +273,50 @@ impl AppContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The reported case: 5 237 duffs is far below the fee the network takes
+    /// from a top-up, so it is refused with the amount that would be accepted.
+    #[test]
+    fn top_up_below_the_network_fee_is_refused_with_the_minimum() {
+        let platform_version = PlatformVersion::get(13).expect("PV13");
+        let err = ensure_top_up_covers_network_fee(5_237, platform_version)
+            .expect_err("a funding below the network fee must be refused");
+        assert!(
+            matches!(
+                err,
+                TaskError::AssetLockAmountBelowNetworkFee {
+                    amount_duffs: 5_237,
+                    minimum_duffs: 50_500,
+                }
+            ),
+            "expected AssetLockAmountBelowNetworkFee, got: {err:?}"
+        );
+    }
+
+    /// The network accepts a funding equal to its fee, so the guard must too.
+    #[test]
+    fn top_up_equal_to_the_network_fee_passes() {
+        let platform_version = PlatformVersion::get(13).expect("PV13");
+        assert!(ensure_top_up_covers_network_fee(50_500, platform_version).is_ok());
+    }
+
+    /// When the fee cannot be read for the protocol version, no amount is let
+    /// through — however large.
+    #[test]
+    fn top_up_is_refused_when_the_network_fee_cannot_be_read() {
+        let mut unknown = PlatformVersion::latest().clone();
+        unknown
+            .dpp
+            .state_transitions
+            .identities
+            .calculate_min_required_fee_on_identity_top_up_transition = 99;
+        let err = ensure_top_up_covers_network_fee(100_000_000, &unknown)
+            .expect_err("an unreadable fee must refuse the amount");
+        assert!(
+            matches!(err, TaskError::AssetLockNetworkFeeUnavailable { .. }),
+            "expected AssetLockNetworkFeeUnavailable, got: {err:?}"
+        );
+    }
 
     /// A wallet-owned identity whose op index matches its wallet index passes.
     #[test]

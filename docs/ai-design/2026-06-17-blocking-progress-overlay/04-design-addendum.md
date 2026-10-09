@@ -52,13 +52,26 @@ lowers through the normal path, and make a stuck block impossible by constructio
 > broadcasts, so this is the first exception inside the **unsafe-to-interrupt** class, and it is
 > scoped to this one operation. It rests on the in-flight guard this section names as the
 > precondition for a safe valve: the task is never cancelled, the tracker in
-> `top_up_identity_screen` records the dispatch (`BackendTaskContext::Dispatched`) and only that
-> dispatch's result ends it, and every Add Funds screen for that identity shows a notice in place
-> of the form while it is recorded. The guard covers the Add Funds screen only: Wallet Send raises
-> no block of its own, so it can move funds to the same identity meanwhile, with or without this
-> valve. Extending the valve to another operation needs the same guard where that operation's
-> tasks are dispatched; a future dev must NOT copy the button without it. See IDN-004 and UX-001
-> (`docs/user-stories.md`).
+> `top_up_identity_screen` records the dispatch (`BackendTaskContext::Dispatched`) when it is sent
+> — behind the block as well as in the background — and only that dispatch's result ends it, and
+> every Add Funds screen for that identity shows a notice in place of the form while it is
+> recorded. Three properties keep the guard whole:
+>
+> - **The record outlives its screen.** It lives in egui temp data, so closing the screen or
+>   switching networks does not end it. A switch drops every block and banner, so
+>   `finalize_network_switch` hands the top-ups still recorded to the background banner.
+> - **The end is keyed on the dispatch alone.** `AppState::update` ends the record before it
+>   matches on the result, so no error arm can leave a top-up recorded. The screen that sent the
+>   top-up follows the record: once it is gone, the screen lowers its block and brings back an
+>   empty form.
+> - **The outcome belongs to the screen that sent it.** A recorded top-up's result or error is
+>   delivered to the visible screen only when that screen sent it. Any other screen gets a plain
+>   refresh on success and nothing on failure; the global banner reports the outcome.
+>
+> The guard covers the Add Funds screen only: Wallet Send raises no block of its own, so it can
+> move funds to the same identity meanwhile, with or without this valve. Extending the valve to
+> another operation needs the same guard where that operation's tasks are dispatched; a future dev
+> must NOT copy the button without it. See IDN-004 and UX-001 (`docs/user-stories.md`).
 
 ### Decision
 

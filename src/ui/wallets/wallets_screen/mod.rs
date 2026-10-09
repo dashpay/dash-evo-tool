@@ -3559,7 +3559,7 @@ mod tests {
 
             with_rendered_screen(&mut screen, |harness| {
                 assert!(
-                    harness.query_by_value("HD: hd-5 — 0 DASH").is_some(),
+                    harness.query_by_value("HD: hd-5 — 0.0000 DASH").is_some(),
                     "the closed picker must show type, name and balance"
                 );
                 assert!(
@@ -3579,7 +3579,7 @@ mod tests {
 
             with_rendered_screen(&mut screen, |harness| {
                 assert!(
-                    harness.query_by_value("SK: sk-7 — 0 DASH").is_some(),
+                    harness.query_by_value("SK: sk-7 — 0.0000 DASH").is_some(),
                     "the closed picker must show type, name and balance"
                 );
             });
@@ -3597,9 +3597,9 @@ mod tests {
             let mut screen = WalletsBalancesScreen::create_with_selection(&ctx, Some(hd), None);
 
             with_rendered_screen(&mut screen, |harness| {
-                harness.get_by_value("HD: hd-5 — 0 DASH").click();
+                harness.get_by_value("HD: hd-5 — 0.0000 DASH").click();
                 harness.run_steps(2);
-                harness.get_by_label("SK: sk-7 — 0 DASH").click();
+                harness.get_by_label("SK: sk-7 — 0.0000 DASH").click();
                 harness.run_steps(2);
             });
 
@@ -3626,9 +3626,9 @@ mod tests {
             let mut screen = WalletsBalancesScreen::create_with_selection(&ctx, None, Some(sk));
 
             with_rendered_screen(&mut screen, |harness| {
-                harness.get_by_value("SK: sk-7 — 0 DASH").click();
+                harness.get_by_value("SK: sk-7 — 0.0000 DASH").click();
                 harness.run_steps(2);
-                harness.get_by_label("HD: hd-5 — 0 DASH").click();
+                harness.get_by_label("HD: hd-5 — 0.0000 DASH").click();
                 harness.run_steps(2);
             });
 

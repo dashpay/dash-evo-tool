@@ -527,9 +527,9 @@ fn hd_rename_delayed_success_keeps_newer_alias_after_selection_change() {
         harness.run();
         let dispatch = take_rename_dispatch(&dispatched);
 
-        harness.get_by_value("HD: Target — 0 DASH").click();
+        harness.get_by_value("HD: Target — 0.0000 DASH").click();
         harness.run();
-        harness.get_by_label("HD: Other — 0 DASH").click();
+        harness.get_by_label("HD: Other — 0.0000 DASH").click();
         harness.run();
 
         app_context
@@ -604,9 +604,9 @@ fn single_key_rename_delayed_success_keeps_newer_alias_after_selection_change() 
         harness.run();
         let dispatch = take_rename_dispatch(&dispatched);
 
-        harness.get_by_value("SK: Target key — 0 DASH").click();
+        harness.get_by_value("SK: Target key — 0.0000 DASH").click();
         harness.run();
-        harness.get_by_label("SK: Other key — 0 DASH").click();
+        harness.get_by_label("SK: Other key — 0.0000 DASH").click();
         harness.run();
 
         app_context

@@ -212,6 +212,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Starting the app no longer warns that your old scheduled votes will not be
+  cast when an earlier pre-release build had already cast them. This affected
+  installs that went from 0.9 through a pre-release build, where the notice
+  returned on every launch for up to 14 days on Mainnet. Old schedules that
+  are still waiting to be cast raise the notice as before.
+
 - Adding funds to an identity no longer sends an amount too small to cover the
   network fee. Such a transfer used to leave the wallet and was then refused
   with a message about insufficient funds in the transaction. The amount field
@@ -1008,7 +1014,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   schedule could refer to can still be open (14 days after it first appeared
   on Mainnet, 90 minutes on Testnet).
   Votes scheduled with an earlier development (pre-release) build of this
-  version were saved in a storage format that is no longer read: they are not
+  version were saved in a storage format that is no longer used: they are not
   carried over and raise no notice, so schedule them again in
   Masternodes → Votes.
 

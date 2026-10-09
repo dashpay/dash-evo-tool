@@ -15,11 +15,18 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
+use tokio::time::MissedTickBehavior;
 
 /// Extra attempts one contest page query gets after a retryable failure.
 const MAX_PAGE_RETRIES: usize = 3;
 /// Pause before the first retry of a page query; each later retry waits longer.
 const PAGE_RETRY_DELAY: Duration = Duration::from_millis(500);
+/// Shortest gap between the starts of two contender queries of a pass.
+///
+/// The SDK sends requests to five endpoints at a time and each allows 150 a
+/// minute, so the whole app has about 750 a minute. This pace holds the first
+/// load of a long contest history to 480 of them.
+const CONTENDER_QUERY_SPACING: Duration = Duration::from_millis(125);
 
 /// Whether asking again, likely on another node, can answer a failed page query.
 fn page_query_is_retryable(error: &dash_sdk::Error) -> bool {
@@ -90,6 +97,9 @@ impl AppContext {
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
         quiet: bool,
     ) -> Result<(), TaskError> {
+        // Held to the end of the pass and taken before any other lock, so a
+        // pass that waits here holds nothing a running pass needs.
+        let _pass = self.dpns_contest_refresh_pass.lock().await;
         let data_contract = self.dpns_contract.as_ref();
         let document_type = data_contract
             .document_type_for_name("domain")
@@ -216,7 +226,10 @@ impl AppContext {
 
         handles.push(handle);
 
+        let mut pace = tokio::time::interval(CONTENDER_QUERY_SPACING);
+        pace.set_missed_tick_behavior(MissedTickBehavior::Delay);
         for name in names_to_be_updated {
+            pace.tick().await;
             let semaphore = semaphore.clone();
             let sdk = sdk.clone();
             let sender = sender.clone();
@@ -311,6 +324,8 @@ impl AppContext {
 mod tests {
     use super::*;
     use dash_sdk::error::StaleNodeError;
+    use dash_sdk::platform::Identifier;
+    use dash_sdk::query_types::ContestedResources;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn stale_node() -> dash_sdk::Error {
@@ -363,6 +378,94 @@ mod tests {
         let stopped = tokio::spawn(std::future::pending::<bool>());
         stopped.abort();
         assert!(!every_contest_query_succeeded(vec![stopped, query(true)]).await);
+    }
+
+    /// A context on an in-memory store and a mock SDK that lists `names` as
+    /// the contested names. Every other query of a pass fails at once.
+    async fn context_listing(names: &[&str]) -> (tempfile::TempDir, Arc<AppContext>, Sdk) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = crate::context::test_support::test_app_context(dir.path());
+        context.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(Arc::new(
+            crate::wallet_backend::kv_test_support::InMemoryKv::default(),
+        )));
+        let document_type = context
+            .dpns_contract
+            .document_type_for_name("domain")
+            .expect("domain document type");
+        let mut sdk = Sdk::new_mock();
+        sdk.mock()
+            .expect_fetch_many::<Identifier, ContestedResource, _, ContestedResources>(
+                VotePollsByDocumentTypeQuery {
+                    contract_id: context.dpns_contract.id(),
+                    document_type_name: document_type.name().to_owned(),
+                    index_name: document_type
+                        .find_contested_index()
+                        .expect("contested index")
+                        .name
+                        .clone(),
+                    start_at_value: None,
+                    start_index_values: vec!["dash".into()],
+                    end_index_values: vec![],
+                    limit: Some(100),
+                    order_ascending: true,
+                },
+                Some(ContestedResources(
+                    names
+                        .iter()
+                        .map(|name| ContestedResource(Value::Text((*name).to_owned())))
+                        .collect(),
+                )),
+            )
+            .await
+            .expect("contest list expectation");
+        (dir, context, sdk)
+    }
+
+    /// Run one background refresh pass to its end.
+    async fn run_pass(context: &Arc<AppContext>, sdk: &Sdk) -> Result<(), TaskError> {
+        let (tx, _rx) = tokio::sync::mpsc::channel(16);
+        let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, context.egui_ctx().clone());
+        context
+            .query_dpns_contested_resources(sdk, sender, true)
+            .await
+    }
+
+    /// The first load of a contest history has one contender query per name;
+    /// they must be spread over time, not sent as one burst.
+    #[tokio::test]
+    async fn contender_queries_of_one_pass_are_spaced_out() {
+        let names = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"];
+        let (_dir, context, sdk) = context_listing(&names).await;
+
+        let started = std::time::Instant::now();
+        run_pass(&context, &sdk).await.expect("refresh pass");
+
+        let gaps = u32::try_from(names.len() - 1).expect("gap count");
+        assert!(
+            started.elapsed() >= CONTENDER_QUERY_SPACING * gaps,
+            "{} contender queries were started within {:?}",
+            names.len(),
+            started.elapsed()
+        );
+    }
+
+    /// Two passes at once would each query the contests the other is already
+    /// reading, so a second pass waits for the running one.
+    #[tokio::test]
+    async fn a_second_refresh_pass_waits_for_the_running_one() {
+        let (_dir, context, sdk) = context_listing(&[]).await;
+
+        let running = context.dpns_contest_refresh_pass.lock().await;
+        let mut second = std::pin::pin!(run_pass(&context, &sdk));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), &mut second)
+                .await
+                .is_err(),
+            "a pass must not run while another one is still running"
+        );
+
+        drop(running);
+        second.await.expect("the waiting pass runs afterwards");
     }
 
     #[tokio::test]

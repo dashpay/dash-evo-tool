@@ -550,9 +550,10 @@ impl WalletSendScreen {
     /// takes from the funding, and the Core transaction fee. `None` when they
     /// cannot be read for the protocol version in use.
     fn shield_from_core_fees_duffs(&self) -> Option<(u64, u64)> {
+        let (_, platform_version) = self.app_context.shield_from_core_protocol_version();
         self.app_context
             .fee_estimator()
-            .estimate_shield_from_core_fees_duffs(self.app_context.sdk_platform_version())
+            .estimate_shield_from_core_fees_duffs(platform_version)
             .ok()
     }
 
@@ -1726,10 +1727,11 @@ impl WalletSendScreen {
             return Err("Amount must be greater than 0".to_string());
         }
 
+        let (_, platform_version) = self.app_context.shield_from_core_protocol_version();
         let (platform_fee_duffs, _) = self
             .app_context
             .fee_estimator()
-            .estimate_shield_from_core_fees_duffs(self.app_context.sdk_platform_version())
+            .estimate_shield_from_core_fees_duffs(platform_version)
             .map_err(|e| {
                 TaskError::AssetLockNetworkFeeUnavailable {
                     source_error: Box::new(SdkError::Protocol(*e)),
@@ -6201,6 +6203,78 @@ mod tests {
             ),
             "got {:?}",
             screen.send_status
+        );
+    }
+
+    /// After the app's own SDK has been rebuilt it can be on a newer protocol
+    /// version than the wallet backend, which runs the transfer and sizes its
+    /// funding. Max and the check before sending must use the backend's fee
+    /// (212 852 duffs under protocol 13, not the 164 140 of protocol 14), or
+    /// Max proposes an amount whose funding the wallet cannot build.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn core_to_shielded_max_fits_the_ceiling_when_the_sdks_differ() {
+        const CEILING_DUFFS: u64 = 10_000_000;
+        const BACKEND_FEE_DUFFS: u64 = 212_852;
+
+        let (mut screen, _temp_dir) = send_screen();
+        let (sender, _receiver) = tokio::sync::mpsc::channel(32);
+        screen
+            .app_context
+            .ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+                sender,
+                screen.app_context.egui_ctx().clone(),
+            ))
+            .await
+            .expect("wallet backend");
+        let pv14 = dash_sdk::dpp::version::PlatformVersion::get(14).expect("PV14");
+        screen.app_context.sdk.store(Arc::new(
+            dash_sdk::SdkBuilder::new_mock()
+                .with_version(pv14)
+                .build()
+                .expect("mock sdk"),
+        ));
+        let seed_hash = core_source_with_ceiling(&mut screen, CEILING_DUFFS);
+        screen.validated_destination = Some(ValidatedAddress::Shielded(String::new()));
+
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, screen: &mut WalletSendScreen| screen.render_amount_input(ui),
+            screen,
+        );
+        harness.run();
+        harness.get_by_label("Max").click_accesskit();
+        harness.step();
+        let max_amount_duffs = harness
+            .state()
+            .amount
+            .as_ref()
+            .expect("Max sets the amount")
+            .dash_to_duffs()
+            .expect("DASH amount");
+
+        let (funding, _) = harness
+            .state()
+            .app_context
+            .plan_shield_from_core(max_amount_duffs)
+            .expect("known fee");
+        assert!(
+            funding.lock_duffs <= CEILING_DUFFS,
+            "Max of {max_amount_duffs} duffs leads to a funding of {} duffs, above what the \
+             wallet can build",
+            funding.lock_duffs
+        );
+        assert_eq!(max_amount_duffs, CEILING_DUFFS - BACKEND_FEE_DUFFS);
+
+        assert!(
+            harness.state_mut().send_core_to_shielded(seed_hash).is_ok(),
+            "the check before sending must accept the amount Max proposed"
+        );
+        harness.state_mut().amount = Some(Amount::dash_from_duffs(max_amount_duffs + 1));
+        assert!(
+            harness
+                .state_mut()
+                .send_core_to_shielded(seed_hash)
+                .is_err(),
+            "one duff more needs a funding above the ceiling and must be refused"
         );
     }
 }

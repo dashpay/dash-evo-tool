@@ -110,8 +110,7 @@ impl AppContext {
                 // passes the whole lock value (minus that flat fee) to the
                 // recipient, so we size the lock to `amount + fee`. A fee that
                 // cannot be read stops the shield before any funds move.
-                let (shield, version_at_sizing) =
-                    self.plan_shield_from_core(backend, amount_duffs)?;
+                let (shield, version_at_sizing) = self.plan_shield_from_core(amount_duffs)?;
 
                 // Deposit into this wallet's own default Orchard address. The
                 // keys are bound at unlock; an unbound wallet has no address.
@@ -133,7 +132,7 @@ impl AppContext {
                 let amount = shielded_amount_to_report(
                     shield.shielded_credits,
                     version_at_sizing,
-                    backend.sdk().protocol_version_number(),
+                    self.shield_from_core_protocol_version().0,
                 );
 
                 self.refresh_shielded_balance_snapshot(&seed_hash).await;
@@ -246,19 +245,15 @@ impl AppContext {
 
 impl AppContext {
     /// Size a shield of `amount_duffs` from the Core wallet, and note the
-    /// protocol version the fee was read from. Both come from the wallet
-    /// backend's SDK, the one the transfer itself runs on; the app's own SDK
-    /// can be on a different version after it has been rebuilt.
-    fn plan_shield_from_core(
+    /// number of the protocol version the fee was read from.
+    pub(crate) fn plan_shield_from_core(
         &self,
-        backend: &crate::wallet_backend::WalletBackend,
         amount_duffs: u64,
     ) -> Result<(ShieldFromCoreFunding, u32), TaskError> {
-        let sdk = backend.sdk();
-        let version_at_sizing = sdk.protocol_version_number();
+        let (version_at_sizing, platform_version) = self.shield_from_core_protocol_version();
         let shield = self
             .fee_estimator()
-            .shield_from_core_funding(amount_duffs, sdk.version())
+            .shield_from_core_funding(amount_duffs, platform_version)
             .map_err(|e| TaskError::AssetLockNetworkFeeUnavailable {
                 source_error: Box::new(SdkError::Protocol(*e)),
             })?;
@@ -420,9 +415,7 @@ mod tests {
                 .expect("mock sdk"),
         ));
 
-        let (shield, version_at_sizing) = ctx
-            .plan_shield_from_core(&backend, 100_000)
-            .expect("known fee");
+        let (shield, version_at_sizing) = ctx.plan_shield_from_core(100_000).expect("known fee");
 
         assert_eq!(version_at_sizing, 13);
         assert_eq!(shield.lock_duffs, 100_000 + 212_852);

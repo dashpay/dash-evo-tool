@@ -1,4 +1,6 @@
-use crate::backend_task::error::{TaskError, ensure_funding_covers_network_fee};
+use crate::backend_task::error::{
+    TaskError, ensure_existing_funding_covers_network_fee, ensure_funding_covers_network_fee,
+};
 use crate::backend_task::identity::{IdentityRegistrationInfo, RegisterIdentityFundingMethod};
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
@@ -81,6 +83,13 @@ impl AppContext {
                 out_point,
                 identity_index,
             } => {
+                // Before any signing or network work.
+                let backend = self.wallet_backend()?;
+                ensure_existing_funding_covers_network_fee(
+                    &backend.list_tracked_asset_locks(&wallet_seed_hash).await?,
+                    &out_point,
+                    identity_create_min_funding_duffs(key_count, sdk.version()),
+                )?;
                 let funding =
                     platform_wallet::wallet::asset_lock::AssetLockFunding::FromExistingAssetLock {
                         out_point,

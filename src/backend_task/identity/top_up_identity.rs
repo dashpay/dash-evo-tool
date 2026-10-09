@@ -1,4 +1,6 @@
-use crate::backend_task::error::{TaskError, ensure_funding_covers_network_fee};
+use crate::backend_task::error::{
+    TaskError, ensure_existing_funding_covers_network_fee, ensure_funding_covers_network_fee,
+};
 use crate::backend_task::identity::{IdentityTopUpInfo, TopUpIdentityFundingMethod};
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
@@ -126,6 +128,14 @@ impl AppContext {
                     identity_index,
                     top_up_index,
                 } => {
+                    // Before any signing or network work.
+                    let seed_hash = wallet.read().map_err(TaskError::from)?.seed_hash();
+                    let backend = self.wallet_backend()?;
+                    ensure_existing_funding_covers_network_fee(
+                        &backend.list_tracked_asset_locks(&seed_hash).await?,
+                        &out_point,
+                        identity_topup_min_funding_duffs(sdk.version()),
+                    )?;
                     let funding = platform_wallet::wallet::asset_lock::AssetLockFunding::FromExistingAssetLock {
                         out_point,
                         // Generic identity top-up resume, not the DashPay

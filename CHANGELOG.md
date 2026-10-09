@@ -242,6 +242,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   when your wallet cannot cover the fee. The command-line tool is corrected the
   same way.
 
+- An unfinished funding too small to cover the network fee can no longer be
+  picked when you add funds to an identity, create an identity, or fund a
+  Platform address from the Wallets screen. It used to be offered, was refused
+  by the network, and stayed on the list. It is still listed, with the reason
+  and what to do instead, and the list says so when nothing on it is large
+  enough. Only the amount a funding was created with is checked, so one that
+  was partly used before can still be refused by the network.
+
 - Disconnect now stops a connection that is still starting. Disconnecting, or
   stopping the startup sync, before the app had connected used to be ignored,
   and the app connected anyway a moment later. Press Connect to connect again.

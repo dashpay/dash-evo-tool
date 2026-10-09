@@ -238,6 +238,17 @@ impl TaskManager {
         });
     }
 
+    /// Test seam: whether a subtask spawned under `name` has not finished yet.
+    /// A name is listed by the call that spawns it, so a task that has not run
+    /// yet already counts.
+    #[cfg(feature = "testing")]
+    pub fn is_active(&self, name: &str) -> bool {
+        self.active_names
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .contains(&name)
+    }
+
     /// Maximum time used by the ordinary-task and tracked-join shutdown phases.
     pub const fn graceful_shutdown_budget() -> Duration {
         SHUTDOWN_TIMEOUT.saturating_add(SHUTDOWN_TIMEOUT)

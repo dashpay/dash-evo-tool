@@ -1554,6 +1554,7 @@ As an expert user, I want the app to automatically begin SPV sync when it opens 
 - When enabled, sync begins automatically on app launch.
 - After a manual Disconnect the app stays disconnected, including after switching networks, until the user presses Connect or restarts the app.
 - Disconnect stops sync on every network, including one left syncing in the background by a network switch.
+- A manual Disconnect, including stopping the startup sync screen, also cancels a connection that is still starting, on any network; the app does not connect afterwards.
 
 ### NET-019: Clear all local data for a network [Implemented]
 **Persona:** Jordan, Priya

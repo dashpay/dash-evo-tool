@@ -32,6 +32,10 @@ pub const SHIELDED_SKIP_MIGRATION_LABEL: &str = "Skip for now";
 /// Receive-address section copy. Each is a complete sentence or a standalone
 /// label so the i18n pass extracts it as one translation unit; `pub` so the
 /// tests assert against the exact strings the UI renders.
+/// Shown after a shield from the Core wallet when the exact amount shielded
+/// is not known to the app.
+pub const SHIELDED_FROM_CORE_WITHOUT_AMOUNT: &str =
+    "Your Dash was shielded. Your shielded balance will show the new amount after the next sync.";
 pub const SHIELDED_ADDRESS_HEADING: &str = "Shielded Address";
 pub const SHIELDED_ADDRESS_HINT: &str = "Share this address to receive a private transfer.";
 pub const SHIELDED_ADDRESS_PENDING_LABEL: &str =
@@ -340,10 +344,13 @@ impl ShieldedTabView {
             BackendTaskSuccessResult::ShieldedFromAssetLock { seed_hash, amount }
                 if *seed_hash == self.seed_hash =>
             {
-                self.success_message = Some(format!(
-                    "Shielded {} from core wallet",
-                    format_credits_as_dash(*amount)
-                ));
+                self.success_message = Some(match amount {
+                    Some(amount) => format!(
+                        "Shielded {} from core wallet",
+                        format_credits_as_dash(*amount)
+                    ),
+                    None => SHIELDED_FROM_CORE_WITHOUT_AMOUNT.to_string(),
+                });
                 true
             }
             BackendTaskSuccessResult::ShieldedWithdrawalComplete { seed_hash, amount }
@@ -1009,6 +1016,40 @@ mod tests {
                 true,
             ),
             ShieldedIndicator::Hidden,
+        );
+    }
+
+    /// A shield from the Core wallet whose amount is not known still reads as
+    /// a success, and names no figure.
+    #[test]
+    fn shield_from_core_without_an_amount_is_a_success_without_a_figure() {
+        use crate::backend_task::BackendTaskSuccessResult;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(tmp.path());
+        let seed_hash = WalletSeedHash::default();
+        let mut tab = ShieldedTabView::new(&ctx, seed_hash);
+
+        assert!(
+            tab.handle_result(&BackendTaskSuccessResult::ShieldedFromAssetLock {
+                seed_hash,
+                amount: None,
+            })
+        );
+        assert_eq!(
+            tab.success_message.as_deref(),
+            Some(SHIELDED_FROM_CORE_WITHOUT_AMOUNT)
+        );
+        assert!(tab.error_message.is_none());
+
+        assert!(
+            tab.handle_result(&BackendTaskSuccessResult::ShieldedFromAssetLock {
+                seed_hash,
+                amount: Some(100_000_800),
+            })
+        );
+        assert_eq!(
+            tab.success_message.as_deref(),
+            Some("Shielded 0.001000008 DASH from core wallet")
         );
     }
 }

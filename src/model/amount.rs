@@ -10,6 +10,19 @@ use std::fmt::{Debug, Display};
 /// 1 dash == 10e11 credits
 pub const DASH_DECIMAL_PLACES: u8 = 11;
 
+/// An amount of zero was given where something has to be moved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("Enter an amount greater than zero, then try again.")]
+pub struct ZeroAmountError;
+
+/// Pure check that an amount to move, in any unit, is not zero.
+pub fn validate_nonzero_amount(amount: u64) -> Result<(), ZeroAmountError> {
+    if amount == 0 {
+        return Err(ZeroAmountError);
+    }
+    Ok(())
+}
+
 /// Represents an amount of a token or cryptocurrency.
 ///
 /// As we cannot use floats to represent token amounts due to precision issues, we represent amounts as integers (u64)
@@ -729,5 +742,13 @@ mod tests {
         let empty_unit = Amount::new(12345, 2).with_unit_name("");
         assert_eq!(empty_unit.to_string_opts(true, true), "123.45"); // empty unit name should not show
         assert_eq!(empty_unit.to_string_opts(false, true), "123.45");
+    }
+
+    /// Zero moves nothing; any other amount passes.
+    #[test]
+    fn validate_nonzero_amount_refuses_only_zero() {
+        assert_eq!(validate_nonzero_amount(0), Err(ZeroAmountError));
+        assert_eq!(validate_nonzero_amount(1), Ok(()));
+        assert_eq!(validate_nonzero_amount(u64::MAX), Ok(()));
     }
 }

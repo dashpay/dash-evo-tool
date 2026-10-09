@@ -25,6 +25,7 @@ use dash_evo_tool::backend_task::shielded::ShieldedTask;
 use dash_evo_tool::backend_task::wallet::WalletTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_evo_tool::model::wallet::WalletSeedHash;
+use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use dash_sdk::dpp::dashcore::Network;
 
 // ---------------------------------------------------------------------------
@@ -73,7 +74,7 @@ async fn tc_074_shielded_lifecycle() {
         seed_hash,
         amount_duffs,
     });
-    match run_task(app_context, task).await {
+    let reported_credits = match run_task(app_context, task).await {
         Err(e) if shielded_helpers::is_platform_shielded_unsupported(&e) => {
             tracing::warn!("tc_074: shield-from-core skipped — platform unsupported: {e}");
             return;
@@ -84,18 +85,38 @@ async fn tc_074_shielded_lifecycle() {
             amount,
         }) => {
             assert_eq!(sh, seed_hash, "seed_hash should match");
-            assert!(amount > 0, "shielded amount should be > 0, got {amount}");
-            tracing::info!("tc_074: shielded {amount} credits from core wallet");
+            tracing::info!("tc_074: shielded {amount:?} credits from core wallet");
+            amount
         }
         Ok(other) => panic!("Expected ShieldedFromAssetLock, got: {other:?}"),
-    }
+    };
 
-    // Sync and assert the shielded balance increased (Phase-E push writer).
+    // Sync and assert the entered amount arrived in full (Phase-E push writer):
+    // the fee is paid on top of it, never out of it.
     let after_shield = shielded_helpers::force_shielded_sync(app_context, seed_hash).await;
+    let increase_credits = after_shield.saturating_sub(baseline);
+    let entered_credits = amount_duffs * CREDITS_PER_DUFF;
     assert!(
-        after_shield > baseline,
-        "shielding must increase the shielded balance: {after_shield} !> {baseline}"
+        increase_credits >= entered_credits,
+        "the shielded balance must grow by at least the entered amount: \
+         {increase_credits} < {entered_credits} ({baseline} -> {after_shield})"
     );
+    // The reported figure is the entered amount plus what rounding the fee up
+    // to whole duffs adds (800 credits under protocols 12 and 13), and it is
+    // what arrived. The equality holds because the suite runs serially and
+    // nothing else pays this wallet's shielded address between the two syncs;
+    // a payment from outside in that window would show up here as a surplus.
+    if let Some(reported_credits) = reported_credits {
+        assert!(
+            (entered_credits..entered_credits + CREDITS_PER_DUFF).contains(&reported_credits),
+            "the reported amount must be the entered amount plus less than one duff, \
+             got {reported_credits} for {entered_credits}"
+        );
+        assert_eq!(
+            increase_credits, reported_credits,
+            "the reported amount must be what arrived ({baseline} -> {after_shield})"
+        );
+    }
     tracing::info!("tc_074: post-shield shielded balance = {after_shield} credits");
 
     // Step 2 (TC-080): private self-transfer within the pool. The recipient is

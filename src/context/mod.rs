@@ -1373,6 +1373,19 @@ impl AppContext {
         }
     }
 
+    /// Protocol version a shield from the Core wallet is priced with, as its
+    /// number and as the version itself: that of the wallet backend's SDK,
+    /// which runs the transfer and can be on a different version than the
+    /// app's own SDK once that has been rebuilt. Before the backend is wired
+    /// nothing can be sent, and the app's own SDK stands in.
+    pub(crate) fn shield_from_core_protocol_version(&self) -> (u32, &'static PlatformVersion) {
+        let version_of = |sdk: &Sdk| (sdk.protocol_version_number(), sdk.version());
+        match self.wallet_backend() {
+            Ok(backend) => version_of(backend.sdk()),
+            Err(_) => version_of(&self.sdk.load()),
+        }
+    }
+
     /// The wallet seam, or `WalletBackendNotYetWired` if not yet built.
     pub fn wallet_backend(&self) -> Result<Arc<WalletBackend>, TaskError> {
         self.wallet_backend

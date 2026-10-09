@@ -429,6 +429,7 @@ As a developer, I want to shield DASH directly from my Core wallet so that I can
 
 - Select Core Wallet source and enter a shielded address as destination.
 - System creates an asset lock, waits for proof, and shields the credits.
+- The amount entered is the amount shielded: the fee the network takes is paid on top, shown before sending, and reserved by Max. When the wallet cannot cover that fee, the form says so instead of offering an amount.
 - Progress banner shows multi-step operation status.
 - Available only on Platform protocol v12 or later when Expert view or Developer view is selected.
 

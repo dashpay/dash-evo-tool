@@ -353,19 +353,37 @@ impl PlatformFeeEstimator {
             .max(smallest_named_amount)
     }
 
-    /// Estimate fees (in duffs) for a shield-from-core asset lock operation.
+    /// Fees (in duffs) for shielding from the Core wallet.
     ///
     /// Returns `(platform_fee_duffs, l1_tx_fee_duffs)`:
-    /// - Platform fee: `address_funding_asset_lock_cost` with fee multiplier applied,
-    ///   converted to duffs, plus 20% buffer
+    /// - Platform fee: what the network takes from the funding before the rest
+    ///   reaches the shielded pool, rounded up to whole duffs
     /// - L1 tx fee: flat estimate covering Core minimum relay fee (~3000 duffs)
-    pub fn estimate_shield_from_core_fees_duffs(&self) -> (u64, u64) {
-        let platform_fee_credits =
-            self.apply_multiplier(self.min_fees.address_funding_asset_lock_cost);
+    pub fn estimate_shield_from_core_fees_duffs(
+        &self,
+        platform_version: &PlatformVersion,
+    ) -> Result<(u64, u64), Box<ProtocolError>> {
         let platform_fee_duffs =
-            (platform_fee_credits / CREDITS_PER_DUFF).saturating_mul(120) / 100;
+            shield_from_core_pool_fee_credits(platform_version)?.div_ceil(CREDITS_PER_DUFF);
         let l1_tx_fee_duffs = 3_000_u64;
-        (platform_fee_duffs, l1_tx_fee_duffs)
+        Ok((platform_fee_duffs, l1_tx_fee_duffs))
+    }
+
+    /// What shielding `amount_duffs` from the Core wallet locks, and what
+    /// reaches the shielded pool once the network has taken its fee.
+    pub(crate) fn shield_from_core_funding(
+        &self,
+        amount_duffs: u64,
+        platform_version: &PlatformVersion,
+    ) -> Result<ShieldFromCoreFunding, Box<ProtocolError>> {
+        let pool_fee_credits = shield_from_core_pool_fee_credits(platform_version)?;
+        let lock_duffs = amount_duffs.saturating_add(pool_fee_credits.div_ceil(CREDITS_PER_DUFF));
+        Ok(ShieldFromCoreFunding {
+            lock_duffs,
+            shielded_credits: lock_duffs
+                .saturating_mul(CREDITS_PER_DUFF)
+                .saturating_sub(pool_fee_credits),
+        })
     }
 
     /// Estimate fee for identity update (adding/disabling keys)
@@ -872,6 +890,31 @@ pub(crate) fn estimate_withdrawal_fee_from_transition(
     transition
         .calculate_min_required_fee(platform_version)
         .unwrap_or(0)
+}
+
+/// Fee, in credits, the network takes from a Core wallet funding before the
+/// rest reaches the shielded pool: the shielded fee for the two actions of the
+/// bundle plus the cost of processing the funding transaction. It follows the
+/// protocol version and is not scaled by the epoch fee multiplier.
+fn shield_from_core_pool_fee_credits(
+    platform_version: &PlatformVersion,
+) -> Result<u64, Box<ProtocolError>> {
+    let funding_cost_credits = platform_version
+        .dpp
+        .state_transitions
+        .identities
+        .asset_locks
+        .required_asset_lock_duff_balance_for_processing_start_for_address_funding
+        .saturating_mul(CREDITS_PER_DUFF);
+    Ok(shielded_fee_for_actions(2, platform_version)?.saturating_add(funding_cost_credits))
+}
+
+/// A shield from the Core wallet: the funding to lock, and the credits that
+/// reach the shielded pool from it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ShieldFromCoreFunding {
+    pub lock_duffs: u64,
+    pub shielded_credits: u64,
 }
 
 /// Smallest identity top-up funding, in duffs, the network accepts.
@@ -1580,6 +1623,134 @@ mod tests {
         assert_eq!(core_max_send_reserve_duffs(fee, 1, 1), None);
         assert_eq!(core_max_send_reserve_duffs(0, 1, 1), None);
         assert_eq!(core_max_send_reserve_duffs(fee + 1, 1, 1), Some(fee));
+    }
+
+    /// What the network takes from a Core wallet funding that is shielded, by
+    /// the platform's own functions: the shielded fee for the two actions of
+    /// the bundle, plus the cost of processing the funding transaction.
+    fn network_shield_from_core_fee_credits(platform_version: &PlatformVersion) -> u64 {
+        use dash_sdk::dpp::shielded::compute_minimum_shielded_fee;
+        use dash_sdk::dpp::state_transition::shield_from_asset_lock_transition::ShieldFromAssetLockTransition;
+        use dash_sdk::dpp::state_transition::shield_from_asset_lock_transition::v0::ShieldFromAssetLockTransitionV0;
+
+        let funding_cost = ShieldFromAssetLockTransition::V0(ShieldFromAssetLockTransitionV0 {
+            asset_lock_proof: AssetLockProof::default(),
+            actions: Vec::new(),
+            value_balance: 1,
+            anchor: [0; 32],
+            proof: Vec::new(),
+            binding_signature: [0; 64],
+            surplus_output: None,
+            signature: Default::default(),
+        })
+        .calculate_min_required_fee(platform_version)
+        .expect("funding cost");
+        compute_minimum_shielded_fee(2, platform_version).expect("shielded fee") + funding_cost
+    }
+
+    /// Protocol versions that know the shield from the Core wallet, with the
+    /// fee the network takes under each, in credits. Under 12 and 13 the fee is
+    /// not a whole number of duffs; under 14 it is.
+    const SHIELD_FROM_CORE_FEE_BY_PROTOCOL: [(u32, u64); 3] =
+        [(12, 212_851_200), (13, 212_851_200), (14, 164_140_000)];
+
+    /// The fee added to a shield from the Core wallet must be the fee the
+    /// network takes, rounded up to whole duffs — not less, and not padded.
+    #[test]
+    fn shield_from_core_fee_is_what_the_network_takes() {
+        for (protocol, fee_credits) in SHIELD_FROM_CORE_FEE_BY_PROTOCOL {
+            let platform_version = PlatformVersion::get(protocol).expect("known protocol");
+            let network_fee_credits = network_shield_from_core_fee_credits(platform_version);
+            assert_eq!(network_fee_credits, fee_credits, "protocol {protocol}");
+            for multiplier in [1000, 3000] {
+                let (fee_duffs, _) = PlatformFeeEstimator::with_fee_multiplier(multiplier)
+                    .estimate_shield_from_core_fees_duffs(platform_version)
+                    .expect("known version");
+                assert_eq!(
+                    fee_duffs,
+                    network_fee_credits.div_ceil(CREDITS_PER_DUFF),
+                    "protocol {protocol}, multiplier {multiplier}: the network takes \
+                     {network_fee_credits} credits"
+                );
+            }
+        }
+    }
+
+    /// The network shields what is left of the funding after its fee. That
+    /// must be the entered amount (plus what rounding the fee up to whole
+    /// duffs adds), and it is the amount to report as shielded.
+    #[test]
+    fn shield_from_core_delivers_and_reports_the_entered_amount() {
+        for (protocol, _) in SHIELD_FROM_CORE_FEE_BY_PROTOCOL {
+            let platform_version = PlatformVersion::get(protocol).expect("known protocol");
+            let network_fee_credits = network_shield_from_core_fee_credits(platform_version);
+            for amount_duffs in [1, 100_000, 100_000_000] {
+                let funding = PlatformFeeEstimator::new()
+                    .shield_from_core_funding(amount_duffs, platform_version)
+                    .expect("known version");
+                let delivered_credits = (funding.lock_duffs * CREDITS_PER_DUFF)
+                    .checked_sub(network_fee_credits)
+                    .filter(|delivered| *delivered > 0)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "protocol {protocol}, {amount_duffs} duffs: a funding of {} duffs \
+                             does not cover the network fee of {network_fee_credits} credits, \
+                             so nothing is shielded",
+                            funding.lock_duffs
+                        )
+                    });
+                let entered_credits = amount_duffs * CREDITS_PER_DUFF;
+                assert!(
+                    (entered_credits..entered_credits + CREDITS_PER_DUFF)
+                        .contains(&delivered_credits),
+                    "protocol {protocol}, {amount_duffs} duffs: {delivered_credits} credits are \
+                     shielded"
+                );
+                assert_eq!(
+                    funding.shielded_credits, delivered_credits,
+                    "protocol {protocol}, {amount_duffs} duffs: the reported amount must be \
+                     what is shielded"
+                );
+            }
+        }
+    }
+
+    /// Rounding the fee up to whole duffs shields a little more than was
+    /// entered wherever the fee is not a whole number of duffs. The reported
+    /// amount carries that remainder; the entered amount would understate it.
+    #[test]
+    fn shield_from_core_reports_the_remainder_of_rounding_the_fee_up() {
+        for (protocol, remainder_credits) in [(12, 800), (13, 800), (14, 0)] {
+            let platform_version = PlatformVersion::get(protocol).expect("known protocol");
+            for amount_duffs in [1, 100_000, 100_000_000] {
+                let funding = PlatformFeeEstimator::new()
+                    .shield_from_core_funding(amount_duffs, platform_version)
+                    .expect("known version");
+                assert_eq!(
+                    funding.shielded_credits,
+                    amount_duffs * CREDITS_PER_DUFF + remainder_credits,
+                    "protocol {protocol}, {amount_duffs} duffs"
+                );
+            }
+        }
+    }
+
+    /// A fee that cannot be read must stop the shield, not default to a guess.
+    #[test]
+    fn shield_from_core_fee_is_unavailable_for_an_unknown_fee_version() {
+        let mut platform_version = PlatformVersion::latest().clone();
+        platform_version.dpp.methods.compute_minimum_shielded_fee = 99;
+        let estimator = PlatformFeeEstimator::new();
+        assert!(
+            estimator
+                .estimate_shield_from_core_fees_duffs(&platform_version)
+                .is_err()
+        );
+        assert!(
+            estimator
+                .shield_from_core_funding(100_000, &platform_version)
+                .is_err()
+        );
     }
 
     #[test]

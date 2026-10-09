@@ -231,6 +231,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   address with the fee paid on top is refused when the amount is too small for
   the network to accept.
 
+- Shielding Dash from your Core wallet now shields the amount you entered. The
+  app used to set aside less than the network takes for this transfer, and the
+  difference came out of the amount: about 0.0015 DASH less was shielded than
+  entered, while the result reported the full amount. The fee shown before
+  sending was too low for the same reason (about 0.00063 DASH instead of about
+  0.00216 DASH), and a small amount, or Max on a small wallet, ended in an
+  error. The wallet now pays the real fee on top of the amount, the fee shown
+  is the real one, the result reports what was shielded, and the form says so
+  when your wallet cannot cover the fee. The command-line tool is corrected the
+  same way.
+
 - An unfinished funding too small to cover the network fee can no longer be
   picked when you add funds to an identity, create an identity, or fund a
   Platform address from the Wallets screen. It used to be offered, was refused

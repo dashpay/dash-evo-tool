@@ -21,11 +21,14 @@ use tokio::time::MissedTickBehavior;
 const MAX_PAGE_RETRIES: usize = 3;
 /// Pause before the first retry of a page query; each later retry waits longer.
 const PAGE_RETRY_DELAY: Duration = Duration::from_millis(500);
-/// Shortest gap between the starts of two contender queries of a pass.
+/// Contender queries a pass starts at once, before it begins pacing them.
+/// Open contests are queued first, so this is what brings them up at once.
+const UNPACED_CONTENDER_QUERIES: usize = 100;
+/// Shortest gap between the starts of two later contender queries of a pass.
 ///
 /// The SDK sends requests to five endpoints at a time and each allows 150 a
-/// minute, so the whole app has about 750 a minute. This pace holds the first
-/// load of a long contest history to 480 of them.
+/// minute, so the whole app has about 750 a minute. The first load of a long
+/// contest history takes at most 100 + 480 of them in its first minute.
 const CONTENDER_QUERY_SPACING: Duration = Duration::from_millis(125);
 
 /// Whether asking again, likely on another node, can answer a failed page query.
@@ -82,6 +85,26 @@ async fn every_contest_query_succeeded(queries: Vec<JoinHandle<bool>>) -> bool {
         }
     }
     succeeded
+}
+
+/// Start one query per name, in order: the first `unpaced` at once, each
+/// later one no sooner than `spacing` after the one before it.
+async fn start_in_order(
+    names: Vec<String>,
+    unpaced: usize,
+    spacing: Duration,
+    mut start: impl FnMut(String) -> JoinHandle<bool>,
+) -> Vec<JoinHandle<bool>> {
+    let mut pace = tokio::time::interval(spacing);
+    pace.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut queries = Vec::with_capacity(names.len());
+    for (index, name) in names.into_iter().enumerate() {
+        if index >= unpaced {
+            pace.tick().await;
+        }
+        queries.push(start(name));
+    }
+    queries
 }
 
 impl AppContext {
@@ -172,8 +195,6 @@ impl AppContext {
 
         let semaphore = Arc::new(Semaphore::new(24));
 
-        let mut handles = Vec::new();
-
         let handle = {
             let semaphore = semaphore.clone();
             let sdk = sdk.clone();
@@ -224,18 +245,18 @@ impl AppContext {
             })
         };
 
-        handles.push(handle);
+        // The end times tell which contests are still open. Those are read
+        // first, so a long unread history does not hold up what can be voted on.
+        let end_times_refreshed = every_contest_query_succeeded(vec![handle]).await;
+        let names_to_be_updated = self.open_contests_first(names_to_be_updated)?;
 
-        let mut pace = tokio::time::interval(CONTENDER_QUERY_SPACING);
-        pace.set_missed_tick_behavior(MissedTickBehavior::Delay);
-        for name in names_to_be_updated {
-            pace.tick().await;
+        let start_contender_query = |name: String| {
             let semaphore = semaphore.clone();
             let sdk = sdk.clone();
             let sender = sender.clone();
             let self_ref = self.clone();
 
-            let handle = tokio::spawn(async move {
+            tokio::spawn(async move {
                 let _permit: OwnedSemaphorePermit = match semaphore.acquire_owned().await {
                     Ok(permit) => permit,
                     Err(e) => {
@@ -282,12 +303,18 @@ impl AppContext {
                         false
                     }
                 }
-            });
+            })
+        };
+        let handles = start_in_order(
+            names_to_be_updated,
+            UNPACED_CONTENDER_QUERIES,
+            CONTENDER_QUERY_SPACING,
+            start_contender_query,
+        )
+        .await;
 
-            handles.push(handle);
-        }
-
-        let contests_refreshed = every_contest_query_succeeded(handles).await;
+        let contests_refreshed =
+            every_contest_query_succeeded(handles).await && end_times_refreshed;
 
         // Publish contests and every loaded node's proved current votes as one
         // completed refresh snapshot. Per-node failures are stored explicitly
@@ -382,7 +409,7 @@ mod tests {
 
     /// A context on an in-memory store and a mock SDK that lists `names` as
     /// the contested names. Every other query of a pass fails at once.
-    async fn context_listing(names: &[&str]) -> (tempfile::TempDir, Arc<AppContext>, Sdk) {
+    async fn context_listing(names: &[String]) -> (tempfile::TempDir, Arc<AppContext>, Sdk) {
         let dir = tempfile::tempdir().expect("tempdir");
         let context = crate::context::test_support::test_app_context(dir.path());
         context.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(Arc::new(
@@ -392,33 +419,46 @@ mod tests {
             .dpns_contract
             .document_type_for_name("domain")
             .expect("domain document type");
+        let page_from = |start_at_value| VotePollsByDocumentTypeQuery {
+            contract_id: context.dpns_contract.id(),
+            document_type_name: document_type.name().to_owned(),
+            index_name: document_type
+                .find_contested_index()
+                .expect("contested index")
+                .name
+                .clone(),
+            start_at_value,
+            start_index_values: vec!["dash".into()],
+            end_index_values: vec![],
+            limit: Some(100),
+            order_ascending: true,
+        };
+        // The whole list is one page; a full page is followed by an empty one.
+        let mut pages = vec![(None, names.to_vec())];
+        if let Some(last) = names.last().filter(|_| names.len() >= 100) {
+            pages.push((Some((Value::Text(last.clone()), false)), Vec::new()));
+        }
         let mut sdk = Sdk::new_mock();
-        sdk.mock()
-            .expect_fetch_many::<Identifier, ContestedResource, _, ContestedResources>(
-                VotePollsByDocumentTypeQuery {
-                    contract_id: context.dpns_contract.id(),
-                    document_type_name: document_type.name().to_owned(),
-                    index_name: document_type
-                        .find_contested_index()
-                        .expect("contested index")
-                        .name
-                        .clone(),
-                    start_at_value: None,
-                    start_index_values: vec!["dash".into()],
-                    end_index_values: vec![],
-                    limit: Some(100),
-                    order_ascending: true,
-                },
-                Some(ContestedResources(
-                    names
-                        .iter()
-                        .map(|name| ContestedResource(Value::Text((*name).to_owned())))
-                        .collect(),
-                )),
-            )
-            .await
-            .expect("contest list expectation");
+        for (start_at_value, page) in pages {
+            sdk.mock()
+                .expect_fetch_many::<Identifier, ContestedResource, _, ContestedResources>(
+                    page_from(start_at_value),
+                    Some(ContestedResources(
+                        page.into_iter()
+                            .map(|name| ContestedResource(Value::Text(name)))
+                            .collect(),
+                    )),
+                )
+                .await
+                .expect("contest list expectation");
+        }
         (dir, context, sdk)
+    }
+
+    fn contest_names(count: usize) -> Vec<String> {
+        (0..count)
+            .map(|index| format!("contest-{index:03}"))
+            .collect()
     }
 
     /// Run one background refresh pass to its end.
@@ -431,22 +471,81 @@ mod tests {
     }
 
     /// The first load of a contest history has one contender query per name;
-    /// they must be spread over time, not sent as one burst.
+    /// past the allowance they must be spread over time, not sent as one burst.
     #[tokio::test]
-    async fn contender_queries_of_one_pass_are_spaced_out() {
-        let names = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"];
+    async fn contender_queries_past_the_allowance_are_spaced_out() {
+        const PACED: u32 = 6;
+        let names = contest_names(UNPACED_CONTENDER_QUERIES + PACED as usize);
         let (_dir, context, sdk) = context_listing(&names).await;
 
         let started = std::time::Instant::now();
         run_pass(&context, &sdk).await.expect("refresh pass");
 
-        let gaps = u32::try_from(names.len() - 1).expect("gap count");
+        // The first paced query starts at once; each later one waits its turn.
         assert!(
-            started.elapsed() >= CONTENDER_QUERY_SPACING * gaps,
-            "{} contender queries were started within {:?}",
-            names.len(),
+            started.elapsed() >= CONTENDER_QUERY_SPACING * (PACED - 1),
+            "{PACED} paced contender queries were started within {:?}",
             started.elapsed()
         );
+    }
+
+    /// Queries within the allowance are not held back by the pace.
+    #[tokio::test]
+    async fn contender_queries_within_the_allowance_start_at_once() {
+        let names = contest_names(20);
+        let allowance = names.len();
+
+        // The pace is long enough that waiting for it even once runs out the clock.
+        let started = tokio::time::timeout(
+            Duration::from_secs(5),
+            start_in_order(names, allowance, Duration::from_secs(60), |_| {
+                tokio::spawn(async { true })
+            }),
+        )
+        .await;
+
+        assert!(
+            started.is_ok_and(|queries| queries.len() == allowance),
+            "a query within the allowance waited for the pace"
+        );
+    }
+
+    /// On a cold cache a few open contests sit among a long unread history.
+    /// Every open one must be asked about before any of the rest.
+    #[tokio::test]
+    async fn open_contests_are_dispatched_before_unread_history() {
+        const HOUR_MS: u64 = 3_600_000;
+        let (_dir, context, _sdk) = context_listing(&[]).await;
+        let names = contest_names(400);
+        let open: Vec<String> = names.iter().skip(7).step_by(20).cloned().collect();
+        let ended = names.iter().skip(3).step_by(20).cloned();
+        let now = crate::utils::time::now_ms();
+        let listed = context
+            .insert_name_contests_as_normalized_names(names.clone())
+            .expect("list the contests on a cold cache");
+        context
+            .update_contested_name_ending_times(
+                open.iter()
+                    .map(|name| (name.clone(), now + HOUR_MS))
+                    .chain(ended.map(|name| (name, now - HOUR_MS))),
+            )
+            .expect("store end times");
+
+        let queue = context
+            .open_contests_first(listed)
+            .expect("order the contender queries");
+        let dispatched = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = Arc::clone(&dispatched);
+        let queries = start_in_order(queue, usize::MAX, Duration::from_millis(1), move |name| {
+            record.lock().expect("dispatch record").push(name);
+            tokio::spawn(async { true })
+        })
+        .await;
+        assert!(every_contest_query_succeeded(queries).await);
+
+        let dispatched = dispatched.lock().expect("dispatch record");
+        assert_eq!(dispatched.len(), names.len());
+        assert_eq!(dispatched[..open.len()], open[..]);
     }
 
     /// Two passes at once would each query the contests the other is already

@@ -782,6 +782,31 @@ impl AppContext {
         Ok(stale.into_iter().map(|(name, _)| name).collect())
     }
 
+    /// Put the contests known to be still open — those with an end time in
+    /// the future — ahead of the rest, keeping the order within each group.
+    pub(crate) fn open_contests_first(
+        &self,
+        names: Vec<String>,
+    ) -> std::result::Result<Vec<String>, TaskError> {
+        let kv = self.det_kv()?;
+        let now = now_ms();
+        let mut open = Vec::new();
+        let mut rest = Vec::new();
+        for name in names {
+            let end_time = kv
+                .get::<StoredContestedName>(DetScope::Global, &contested_name_key(&name))
+                .map_err(contest_err)?
+                .and_then(|stored| stored.end_time);
+            if end_time.is_some_and(|end| end > now) {
+                open.push(name);
+            } else {
+                rest.push(name);
+            }
+        }
+        open.append(&mut rest);
+        Ok(open)
+    }
+
     /// Update a single contest record with the latest set of contenders.
     /// Mirrors the pre-C6 `insert_or_update_contenders` behavior: when a
     /// winner is decided, only the resolution fields are written; otherwise

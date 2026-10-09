@@ -71,6 +71,13 @@ impl AppContext {
         identity.display_name_label_with_username(display_name.as_deref(), main_username.as_deref())
     }
 
+    /// The identity's alias, profile name or main username, or `None` when it has none.
+    pub fn identity_name(&self, identity: &QualifiedIdentity) -> Option<String> {
+        let display_name = self.identity_display_name(identity.identity.id());
+        let main_username = self.main_username(identity);
+        identity.name_with_username(display_name.as_deref(), main_username.as_deref())
+    }
+
     /// Serialize profile fetch/mirror/write operations for this owner and network.
     pub(crate) async fn lock_identity_profile(
         &self,

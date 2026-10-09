@@ -103,6 +103,12 @@ fn vote_state_summary(states: &[DpnsCurrentVoteState]) -> MasternodeVoteStateSum
 }
 
 impl StoredContestedName {
+    /// Whether the contest ended and its outcome is stored. That outcome is
+    /// final, so the record has nothing left to refresh.
+    fn has_outcome(&self) -> bool {
+        self.locked || self.awarded_to.is_some()
+    }
+
     fn to_contested_name(&self, network: Network) -> ContestedName {
         let join_window = crate::model::dpns::contest_durations(
             network,
@@ -727,13 +733,16 @@ impl AppContext {
     /// Apply a batch of newly-seen normalized names. New names are stored
     /// as empty contest skeletons; existing names whose `last_updated` is
     /// older than 30 s are returned alongside new names for the caller to
-    /// refresh — matching pre-C6 staleness gating.
+    /// refresh — matching pre-C6 staleness gating. A contest whose outcome
+    /// is stored is final: it is stamped as current and never returned, as
+    /// the caller spends one query per returned name.
     pub fn insert_name_contests_as_normalized_names(
         &self,
         name_contests: Vec<String>,
     ) -> std::result::Result<Vec<String>, TaskError> {
         let kv = self.det_kv()?;
-        let stale_threshold = chrono::Utc::now().timestamp() - 30;
+        let now = chrono::Utc::now().timestamp();
+        let stale_threshold = now - 30;
         let mut new_names: Vec<String> = Vec::new();
         let mut stale: Vec<(String, Option<i64>)> = Vec::new();
 
@@ -752,6 +761,11 @@ impl AppContext {
                         .map_err(contest_err)?;
                     new_names.push(name);
                 }
+                Some(mut stored) if stored.has_outcome() => {
+                    stored.last_updated = Some(now as u64);
+                    kv.put(DetScope::Global, &key, &stored)
+                        .map_err(contest_err)?;
+                }
                 Some(stored) => {
                     let last_updated = stored.last_updated.map(|t| t as i64);
                     if last_updated.is_none_or(|t| t < stale_threshold) {
@@ -766,6 +780,31 @@ impl AppContext {
         stale.extend(new_names.into_iter().map(|name| (name, None)));
         stale.sort_by_key(|a| a.1.unwrap_or(0));
         Ok(stale.into_iter().map(|(name, _)| name).collect())
+    }
+
+    /// Put the contests known to be still open — those with an end time in
+    /// the future — ahead of the rest, keeping the order within each group.
+    pub(crate) fn open_contests_first(
+        &self,
+        names: Vec<String>,
+    ) -> std::result::Result<Vec<String>, TaskError> {
+        let kv = self.det_kv()?;
+        let now = now_ms();
+        let mut open = Vec::new();
+        let mut rest = Vec::new();
+        for name in names {
+            let end_time = kv
+                .get::<StoredContestedName>(DetScope::Global, &contested_name_key(&name))
+                .map_err(contest_err)?
+                .and_then(|stored| stored.end_time);
+            if end_time.is_some_and(|end| end > now) {
+                open.push(name);
+            } else {
+                rest.push(name);
+            }
+        }
+        open.append(&mut rest);
+        Ok(open)
     }
 
     /// Update a single contest record with the latest set of contenders.
@@ -1471,6 +1510,81 @@ mod tests {
     #[test]
     fn contest_key_is_prefixed_with_normalized_name() {
         assert_eq!(contested_name_key("dash"), "det:contested_name:dash");
+    }
+
+    /// Every name queued here costs one contender query, so a finished contest
+    /// must not be queued again, however long its history and however old its
+    /// record.
+    #[test]
+    fn a_long_finished_history_queues_only_open_and_new_contests() {
+        const FINISHED_CONTESTS: usize = 600;
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let context = test_app_context(temp_dir.path());
+        let kv = empty_kv();
+        context.set_det_kv_override_for_test(kv.clone());
+        let store = |stored: StoredContestedName| {
+            let key = contested_name_key(&stored.normalized_contested_name);
+            kv.put(DetScope::Global, &key, &stored).unwrap();
+        };
+
+        let mut listed = vec!["open".to_owned(), "brand-new".to_owned()];
+        for index in 0..FINISHED_CONTESTS {
+            let name = format!("finished-{index}");
+            // Half were won, half ended locked; all were last read long ago.
+            store(StoredContestedName {
+                normalized_contested_name: name.clone(),
+                awarded_to: (index % 2 == 0).then_some([7; 32]),
+                locked: index % 2 == 1,
+                last_updated: Some(1),
+                ..Default::default()
+            });
+            listed.push(name);
+        }
+        store(StoredContestedName {
+            normalized_contested_name: "open".to_owned(),
+            contestants: vec![contestant(1, Some(1))],
+            last_updated: Some(1),
+            ..Default::default()
+        });
+
+        let mut queued = context
+            .insert_name_contests_as_normalized_names(listed)
+            .expect("queue contests for refresh");
+        queued.sort();
+
+        assert_eq!(queued, ["brand-new", "open"]);
+    }
+
+    /// A refresh that lists a finished contest has confirmed it, so History
+    /// shows it as just updated although nothing more was asked about it.
+    #[test]
+    fn a_listed_finished_contest_reads_as_just_updated() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let context = test_app_context(temp_dir.path());
+        let kv = empty_kv();
+        context.set_det_kv_override_for_test(kv.clone());
+        let key = contested_name_key("finished");
+        let finished = StoredContestedName {
+            normalized_contested_name: "finished".to_owned(),
+            awarded_to: Some([7; 32]),
+            end_time: Some(1_700),
+            last_updated: Some(1),
+            contestants: vec![contestant(1, Some(10))],
+            ..Default::default()
+        };
+        kv.put(DetScope::Global, &key, &finished).unwrap();
+        let listed_at = chrono::Utc::now().timestamp() as u64;
+
+        let queued = context
+            .insert_name_contests_as_normalized_names(vec!["finished".to_owned()])
+            .expect("queue contests for refresh");
+
+        assert!(queued.is_empty());
+        let stored: StoredContestedName = kv.get(DetScope::Global, &key).unwrap().unwrap();
+        assert!(stored.last_updated.is_some_and(|at| at >= listed_at));
+        assert_eq!(stored.awarded_to, finished.awarded_to);
+        assert_eq!(stored.end_time, finished.end_time);
+        assert_eq!(stored.contestants.len(), 1);
     }
 
     #[test]

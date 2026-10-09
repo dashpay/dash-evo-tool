@@ -288,6 +288,9 @@ pub struct AppContext {
     /// while bounding unrelated voters globally.
     pub(crate) dpns_vote_dispatch: DpnsVoteDispatchCoordinator,
     pub(crate) dpns_vote_refresh_permits: tokio::sync::Semaphore,
+    /// Held for a whole contest refresh pass, so only one runs at a time: two
+    /// at once would each query the contests the other is already reading.
+    pub(crate) dpns_contest_refresh_pass: tokio::sync::Mutex<()>,
     /// Runs crash recovery before this context first accepts vote work.
     pub(crate) dpns_vote_recovery: tokio::sync::Mutex<DpnsVoteRecovery>,
     /// Full in-process diagnostics keyed to sanitized durable outcomes.
@@ -637,6 +640,7 @@ impl AppContext {
             dpns_voter_lifecycles: Mutex::default(),
             dpns_vote_dispatch: DpnsVoteDispatchCoordinator::default(),
             dpns_vote_refresh_permits: tokio::sync::Semaphore::new(MAX_CONCURRENT_DPNS_VOTERS),
+            dpns_contest_refresh_pass: tokio::sync::Mutex::new(()),
             dpns_vote_state_publications: dpns_vote_state::DpnsVoteStatePublications::default(),
             dpns_vote_recovery: tokio::sync::Mutex::new(DpnsVoteRecovery::default()),
             dpns_vote_diagnostics: Mutex::new(BTreeMap::new()),

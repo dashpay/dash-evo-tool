@@ -384,9 +384,16 @@ impl AppContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dash_sdk::dpp::block::block_info::BlockInfo;
+    use dash_sdk::dpp::voting::contender_structs::ContenderWithSerializedDocument;
+    use dash_sdk::dpp::voting::vote_info_storage::contested_document_vote_poll_winner_info::ContestedDocumentVotePollWinnerInfo;
+    use dash_sdk::dpp::voting::vote_polls::contested_document_resource_vote_poll::ContestedDocumentResourceVotePoll;
+    use dash_sdk::drive::query::vote_poll_vote_state_query::{
+        ContestedDocumentVotePollDriveQuery, ContestedDocumentVotePollDriveQueryResultType,
+    };
     use dash_sdk::error::StaleNodeError;
     use dash_sdk::platform::Identifier;
-    use dash_sdk::query_types::ContestedResources;
+    use dash_sdk::query_types::{Contenders, ContestedResources};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn stale_node() -> dash_sdk::Error {
@@ -735,16 +742,134 @@ mod tests {
         node_id
     }
 
+    /// Let the mock SDK answer the contender query for `name`: with a
+    /// `winner` the contest has ended, without one it is open.
+    async fn answer_contenders(
+        context: &AppContext,
+        sdk: &mut Sdk,
+        name: &str,
+        winner: Option<(ContestedDocumentVotePollWinnerInfo, BlockInfo)>,
+    ) {
+        let document_type = context
+            .dpns_contract
+            .document_type_for_name("domain")
+            .expect("domain document type");
+        let query = ContestedDocumentVotePollDriveQuery {
+            limit: None,
+            offset: None,
+            start_at: None,
+            vote_poll: ContestedDocumentResourceVotePoll {
+                index_name: document_type
+                    .find_contested_index()
+                    .expect("contested index")
+                    .name
+                    .clone(),
+                index_values: vec![Value::from("dash"), Value::Text(name.to_owned())],
+                document_type_name: document_type.name().to_owned(),
+                contract_id: context.dpns_contract.id(),
+            },
+            allow_include_locked_and_abstaining_vote_tally: true,
+            result_type: ContestedDocumentVotePollDriveQueryResultType::DocumentsAndVoteTally,
+        };
+        sdk.mock()
+            .expect_fetch_many::<Identifier, ContenderWithSerializedDocument, _, Contenders>(
+                query,
+                Some(Contenders {
+                    winner,
+                    contenders: Default::default(),
+                    abstain_vote_tally: None,
+                    lock_vote_tally: None,
+                }),
+            )
+            .await
+            .expect("contender expectation");
+    }
+
+    /// Start a pass that hands its reports to a channel with room for one. A
+    /// pass waits until each report is taken, so it gets only as far as the
+    /// reports the test takes let it.
+    fn start_held_pass(
+        context: &Arc<AppContext>,
+        sdk: Sdk,
+        quiet: bool,
+    ) -> (
+        JoinHandle<Result<(), TaskError>>,
+        tokio::sync::mpsc::Receiver<TaskResult>,
+    ) {
+        let (tx, reports) = tokio::sync::mpsc::channel(1);
+        let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, context.egui_ctx().clone());
+        let context = Arc::clone(context);
+        let pass = tokio::spawn(async move {
+            context
+                .query_dpns_contested_resources(&sdk, sender, quiet)
+                .await
+        });
+        (pass, reports)
+    }
+
+    /// The contests the node is shown as able to decide on.
+    fn decidable(context: &AppContext, node_id: Identifier) -> Vec<String> {
+        context
+            .dpns_node_votes(node_id)
+            .expect("node votes")
+            .into_iter()
+            .filter(|row| row.state_known)
+            .map(|row| row.contested_name)
+            .collect()
+    }
+
+    /// Take reports of a held pass until the node's votes are proved. The
+    /// proof has to be there once `at_most` reports are taken.
+    async fn take_reports_until_votes_are_proved(
+        context: &AppContext,
+        node_id: Identifier,
+        reports: &mut tokio::sync::mpsc::Receiver<TaskResult>,
+        at_most: usize,
+    ) {
+        let mut taken = 0;
+        while decidable(context, node_id).is_empty() {
+            assert!(
+                taken < at_most,
+                "the votes were not proved within {at_most} reports"
+            );
+            tokio::time::timeout(Duration::from_secs(30), reports.recv())
+                .await
+                .expect("the pass went on reporting")
+                .expect("the pass is still running");
+            taken += 1;
+        }
+    }
+
+    /// Whether the contenders of `name` were read and stored.
+    fn was_read(context: &AppContext, name: &str) -> bool {
+        context
+            .all_contested_names()
+            .expect("contests")
+            .iter()
+            .any(|contest| {
+                contest.normalized_contested_name == name && contest.last_updated.is_some()
+            })
+    }
+
+    /// Wait for `reached`, for at most `limit`. Tells whether it came about.
+    async fn reached_within(limit: Duration, reached: impl Fn() -> bool) -> bool {
+        tokio::time::timeout(limit, async {
+            while !reached() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .is_ok()
+    }
+
     /// On a first load the node's votes are proved as soon as the open
     /// contest is read. The unread history is still being back-filled then,
     /// and none of it may show as a contest the node has yet to vote on —
     /// nor after the pass is stopped midway, with the proof already stored.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn votes_are_proved_before_the_unread_history_is_read() {
-        // Enough unread names for a paced tail of about two seconds; the open
-        // contest is listed last.
-        const PACED: usize = 16;
-        let mut names = contest_names(UNPACED_CONTENDER_QUERIES + PACED - 1);
+        // The open contest is listed last, behind the unread history.
+        let mut names = contest_names(40);
         names.push("open".to_owned());
         let (_dir, context, mut sdk) = context_listing(&names).await;
         let node_id = load_node_without_votes(&context, &mut sdk).await;
@@ -754,30 +879,19 @@ mod tests {
             false,
         );
 
-        let pass = tokio::spawn({
-            let context = Arc::clone(&context);
-            async move { run_pass(&context, &sdk).await }
-        });
-        // Contests the node is shown as able to decide on, sampled for a
-        // second: well inside the back-fill.
-        let mut decidable = Vec::new();
-        for _ in 0..40 {
-            tokio::time::sleep(Duration::from_millis(25)).await;
-            let rows = context.dpns_node_votes(node_id).expect("node votes");
-            decidable.push(
-                rows.into_iter()
-                    .filter(|row| row.state_known)
-                    .map(|row| row.contested_name)
-                    .collect::<Vec<_>>(),
-            );
-        }
+        // Every read fails and, the pass not being quiet, is reported. The
+        // back-fill is held by its reports, which nobody takes.
+        let (pass, mut reports) = start_held_pass(&context, sdk, false);
+        // Ahead of the back-fill: the listed names, the failed reads of the
+        // end times and of the open contest, then the proof.
+        take_reports_until_votes_are_proved(&context, node_id, &mut reports, 4).await;
 
         assert!(!pass.is_finished(), "the back-fill must still be running");
-        assert!(
-            decidable.iter().all(|names| names.len() <= 1),
-            "unread history was shown as waiting for a vote: {decidable:?}"
+        assert_eq!(
+            decidable(&context, node_id),
+            ["open"],
+            "unread history was shown as waiting for a vote"
         );
-        assert_eq!(decidable.last().expect("samples"), &["open"]);
 
         pass.abort();
         assert!(pass.await.is_err_and(|error| error.is_cancelled()));
@@ -788,6 +902,67 @@ mod tests {
             .map(|row| row.contested_name)
             .collect();
         assert_eq!(still_decidable, ["open"]);
+    }
+
+    /// The same first load with every contender read answered. The votes are
+    /// proved only once the read of the open contest has finished, and
+    /// history read to its outcome does not show as waiting for a vote while
+    /// the rest of it is still unread.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn answered_history_does_not_show_as_waiting_for_a_vote() {
+        let history = contest_names(40);
+        let mut names = history.clone();
+        names.push("open".to_owned());
+        let (_dir, context, mut sdk) = context_listing(&names).await;
+        let node_id = load_node_without_votes(&context, &mut sdk).await;
+        context.seed_dpns_contest_for_test(
+            "open",
+            Some(crate::utils::time::now_ms() + 600_000),
+            false,
+        );
+        answer_contenders(&context, &mut sdk, "open", None).await;
+        let won = (
+            ContestedDocumentVotePollWinnerInfo::WonByIdentity(Identifier::from([9; 32])),
+            BlockInfo::default(),
+        );
+        for name in &history {
+            answer_contenders(&context, &mut sdk, name, Some(won)).await;
+        }
+
+        let (pass, mut reports) = start_held_pass(&context, sdk, true);
+        // The open contest is read, but its read ends by handing over a
+        // report and the channel is still full. The read has not finished,
+        // so the votes must not be proved, however long the pass is given.
+        assert!(
+            reached_within(Duration::from_secs(30), || was_read(&context, "open")).await,
+            "the open contest was not read"
+        );
+        assert!(
+            !reached_within(Duration::from_millis(250), || {
+                !decidable(&context, node_id).is_empty()
+            })
+            .await,
+            "the votes were proved before the read of the open contest finished"
+        );
+
+        // The listed names, the read of the open contest, then the proof.
+        take_reports_until_votes_are_proved(&context, node_id, &mut reports, 3).await;
+
+        // The back-fill reads history until its reports, which nobody takes,
+        // hold it.
+        assert!(
+            reached_within(Duration::from_secs(30), || {
+                history.iter().any(|name| was_read(&context, name))
+            })
+            .await,
+            "no history was read"
+        );
+        assert!(!pass.is_finished(), "the back-fill must still be running");
+        assert_eq!(
+            decidable(&context, node_id),
+            ["open"],
+            "history was shown as waiting for a vote"
+        );
     }
 
     #[tokio::test]

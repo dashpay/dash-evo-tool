@@ -123,8 +123,8 @@ impl AppContext {
     ///
     /// Earlier pre-release builds copied these schedules into their own queue
     /// and cast them from there, leaving the SQLite rows marked unexecuted. That
-    /// queue is read, never imported, to leave out what such a build already
-    /// cast or dropped.
+    /// queue is read, never imported, to leave out what such a build still
+    /// records as cast.
     pub(crate) fn has_legacy_scheduled_votes(&self) -> Result<bool, TaskError> {
         let old = crate::database::legacy_import::read_scheduled_votes(
             &self.db.locked_conn(),
@@ -170,13 +170,14 @@ impl AppContext {
             let voter = vote.voter_id.to_buffer();
             let key = format!("{RETIRED_SCHEDULE_KEY_PREFIX}{}", vote.contested_name);
             match read_retired::<RetiredSchedule>(&kv, DetScope::Identity(&voter), &key)? {
-                // Cast by the earlier build, or dropped from its queue.
+                // Cast by the earlier build.
                 Retired::Found(RetiredSchedule {
                     executed_successfully: true,
                     ..
-                })
-                | Retired::Absent => {}
-                Retired::Found(_) | Retired::Damaged => return Ok(true),
+                }) => {}
+                // A missing entry was removed there or never copied; nothing
+                // tells the two apart, so it still needs a decision.
+                Retired::Found(_) | Retired::Absent | Retired::Damaged => return Ok(true),
             }
         }
         Ok(false)
@@ -427,14 +428,15 @@ mod tests {
     }
 
     /// The pre-release build keeps its voter index, emptied, after the user
-    /// removed a schedule or cleared the cast ones.
+    /// removed a schedule or cleared the cast ones. A schedule gone from its
+    /// queue looks the same as one never copied there, so the notice stays.
     #[test]
-    fn startup_notice_skips_schedules_a_pre_release_build_no_longer_holds() {
+    fn startup_notice_reports_schedules_a_pre_release_build_no_longer_holds() {
         let (_dir, context, kv, _store) = profile_from_0_9(&["alice"]);
         pre_release_took_over(&kv, &[]);
 
-        assert!(!context.has_legacy_scheduled_votes().unwrap());
-        assert!(!context.legacy_scheduled_votes_notice_due().unwrap());
+        assert!(context.has_legacy_scheduled_votes().unwrap());
+        assert!(context.legacy_scheduled_votes_notice_due().unwrap());
     }
 
     /// A schedule the pre-release build had not cast yet is not cast by this
@@ -448,6 +450,26 @@ mod tests {
         assert!(context.has_legacy_scheduled_votes().unwrap());
         assert!(context.legacy_scheduled_votes_notice_due().unwrap());
         assert!(context.dpns_vote_operations().unwrap().is_empty());
+    }
+
+    /// A pre-release build that stopped part-way through copying the old
+    /// schedules leaves its voter index behind without the rows it never
+    /// reached. Nobody cast or removed those, so the notice must stay.
+    #[test]
+    fn startup_notice_reports_schedules_an_interrupted_pre_release_copy_never_reached() {
+        let (_dir, context, kv, _store) = profile_from_0_9(&["alice", "bob"]);
+        context
+            .db
+            .execute(
+                "UPDATE scheduled_votes SET executed = 1 WHERE contested_name = 'alice'",
+                [],
+            )
+            .unwrap();
+        // Copied, with the voter index, before the interruption; "bob" never was.
+        pre_release_holds(&kv, "alice", PreReleaseChoice::Lock, true);
+
+        assert!(context.has_legacy_scheduled_votes().unwrap());
+        assert!(context.legacy_scheduled_votes_notice_due().unwrap());
     }
 
     /// Rows the pre-release build could not read were never cast by anyone.

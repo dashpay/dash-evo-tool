@@ -213,10 +213,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - Starting the app no longer warns that your old scheduled votes will not be
-  cast when an earlier pre-release build had already cast them. This affected
-  installs that went from 0.9 through a pre-release build, where the notice
-  returned on every launch for up to 14 days on Mainnet. Old schedules that
-  are still waiting to be cast raise the notice as before.
+  cast when an earlier pre-release build had already cast them and still lists
+  them as cast. This affected installs that went from 0.9 through a
+  pre-release build, where the notice returned on every launch for up to 14
+  days on Mainnet. Old schedules that are still waiting to be cast raise the
+  notice as before. So do schedules you cleared or removed in that build,
+  because the app can no longer tell whether they were cast.
 
 - Adding funds to an identity no longer sends an amount too small to cover the
   network fee. Such a transfer used to leave the wallet and was then refused

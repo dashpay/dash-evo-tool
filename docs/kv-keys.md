@@ -109,7 +109,7 @@ Source: `src/context/identity_db.rs`, `src/wallet_backend/identity_ops.rs`
 
 ## Scheduled votes (retired)
 
-These keys are **retired**. No current code writes them; scheduled votes live only in the DPNS vote journal below. Entries left behind by an earlier development build are never imported, executed or reported on their own. The startup check described below reads the first two, only to leave out an old SQLite schedule that build already cast or dropped.
+These keys are **retired**. No current code writes them; scheduled votes live only in the DPNS vote journal below. Entries left behind by an earlier development build are never imported, executed or reported on their own. The startup check described below reads the first two, only to leave out an old SQLite schedule that build still records as cast.
 
 | Key | Scope | Store | Status |
 |-----|-------|-------|--------|
@@ -122,7 +122,7 @@ Unexecuted schedules in the legacy SQLite `scheduled_votes` table of `data.db` a
 An earlier development build copied those rows into the retired keys above and cast them from there without updating `data.db`, so a row it handled still reads as unexecuted. The check therefore consults the retired keys:
 
 - `det:scheduled_vote_voters:v1` absent — no such build took the schedules over; every unexecuted row raises the notice. Clearing the whole queue in that build deleted the index too, so such a profile is treated the same way.
-- `det:scheduled_vote_voters:v1` present, even as an empty list — a row raises the notice only while its `det:scheduled_vote:<contested_name>` entry is still marked uncast. An entry marked cast, or no entry (cast and cleared, or removed by the user), raises nothing.
+- `det:scheduled_vote_voters:v1` present, even as an empty list — only a row whose `det:scheduled_vote:<contested_name>` entry is marked cast raises nothing. An entry marked uncast raises the notice, and so does a missing entry: that build removed it (cleared after casting, or removed by the user) or stopped before copying it, and nothing stored tells those apart.
 - An undecodable index or entry proves nothing, so the row raises the notice.
 
 One live key bounds that notice:

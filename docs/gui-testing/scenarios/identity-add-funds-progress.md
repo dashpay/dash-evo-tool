@@ -16,8 +16,8 @@ on each build without assuming which one is "correct", and note where a
 control or screen exists on only one build (a feature-presence difference,
 not a step failure).
 
-Every step marked **MUTATES** spends wallet funds and credits an identity; each
-build needs its own independently-funded equivalent wallet and identity — see
+Every step marked **MUTATES** spends wallet funds (crediting an identity) or
+identity credits (registering a username); each build needs its own independently-funded equivalent wallet and identity — see
 the contract below.
 
 ## Prerequisites
@@ -72,16 +72,23 @@ after each run.
    shows its in-progress state let a top-up finish. Record what the Send screen
    shows when the top-up result arrives, and where the top-up result is
    reported.
-7. **Completion text.** Record the exact completion message and whether it names
+7. **Completion text (MUTATES when repeating).** Record the exact completion message and whether it names
    the identity (by name and/or ID). Repeat with two top-ups of the same
-   identity name if possible and record whether the second confirmation is
+   identity name if possible (each repetition is another top-up, within the
+   same cap) and record whether the second confirmation is
    visible as a new message.
-8. **Registration dialog.** Start a username registration (see the usernames
-   scenario) and record whether its progress dialog names the username.
+8. **Registration dialog (MUTATES: spends credits, registers a name).** Start
+   a username registration and record whether its progress dialog names the
+   username. Follow the registration safety and equivalent-fixture rules in
+   [dpns-registration-flow.md](dpns-registration-flow.md), including a
+   different available name for each build.
 
 ## Safety constraints specific to this scenario
 
-- Cap each top-up at about 10% of the funded balance.
+- Cap each top-up, including every repetition in step 7, at about 10% of the
+  funded balance.
+- Step 8 spends identity credits and registers a name; testnet only, smallest
+  fee name, and never the same name on both builds.
 - Do not use mainnet.
 
 ## Expected outcome / pass criteria

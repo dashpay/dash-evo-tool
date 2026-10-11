@@ -42,6 +42,10 @@ Do not launch the app if the check printed the error. Scenarios guard their own
 launch line with the same test, so a pasted block skips the launch instead of
 closing your terminal.
 
+The check needs `xdpyinfo` (package `x11-utils` on Debian and Ubuntu). Without
+it a working display reads as unreachable and every scenario skips its launch,
+so confirm `command -v xdpyinfo` prints a path before you start.
+
 On a minimal Ubuntu host, egui/eframe also needs an X keyboard library and a
 wgpu backend. Install missing packages only after the launch log identifies
 the corresponding failure:

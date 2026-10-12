@@ -47,6 +47,13 @@ pub(crate) const MAX_PLATFORM_INPUTS: usize = 16;
 /// Estimated serialized bytes per input (address + signature/witness data).
 const ESTIMATED_BYTES_PER_INPUT: usize = 225;
 
+// TODO(dashpay/platform#5383): the `USERNAME_*` figures are fitted to how Drive
+// bills the DPNS contract; replace them with Platform's own numbers. The charge
+// comes from `drive::document::cost::document_create_cost`
+// (dashpay/platform#5159), which the pinned Platform revision does not have
+// yet. The balance Drive wants before it accepts a document has no function
+// yet; dashpay/platform#5265 asks for one.
+
 /// Bytes Platform bills for a username's first registration document and its
 /// index entry: 726, plus 428 the first time an identity writes to the name
 /// contract.
@@ -582,6 +589,8 @@ impl PlatformFeeEstimator {
     }
 
     /// Estimate fee for document batch transition
+    // TODO(dashpay/platform#5383): mirrors Platform's minimum-fee floor; it is
+    // not an estimate of the charge.
     pub fn estimate_document_batch(&self, transition_count: usize) -> u64 {
         let base_fee = self
             .min_fees

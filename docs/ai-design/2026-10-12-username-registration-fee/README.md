@@ -132,3 +132,17 @@ these figures; the estimate lands 10 to 11% above each.
   schedule alone. Re-run the method above, and the `measure_dpns_registration`
   module of the backend end-to-end suite, when the pinned Platform revision
   changes how documents or their indexes are stored.
+
+## Replacing the constants
+
+The constants are fitted to how Drive bills the DPNS contract and should give
+way to Platform's own numbers
+([dashpay/platform#5383](https://github.com/dashpay/platform/issues/5383)):
+
+- The charge: `drive::document::cost::document_create_cost`
+  ([dashpay/platform#5159](https://github.com/dashpay/platform/pull/5159)). It
+  is in Platform's `v4.2-dev` but not in the pinned revision, so it needs a
+  Platform bump first.
+- The balance Drive wants before it accepts a document: no function yet,
+  requested in
+  [dashpay/platform#5265](https://github.com/dashpay/platform/issues/5265).

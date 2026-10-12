@@ -43,6 +43,38 @@ pub(crate) fn bare_user_identity(id: Identifier, network: Network) -> QualifiedI
     }
 }
 
+/// A user identity publishing one key that can register usernames (key id 1),
+/// held on this device only when `held`.
+pub(crate) fn user_identity_with_signing_key(
+    id: Identifier,
+    network: Network,
+    held: bool,
+) -> QualifiedIdentity {
+    use crate::model::qualified_identity::PrivateKeyTarget;
+    use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
+    use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+    use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
+
+    let mut key = dash_sdk::platform::IdentityPublicKey::random_key(
+        1,
+        Some(7),
+        dash_sdk::dpp::version::PlatformVersion::latest(),
+    );
+    key.set_id(1);
+    key.set_purpose(Purpose::AUTHENTICATION);
+    key.set_security_level(SecurityLevel::HIGH);
+    let mut identity = bare_user_identity(id, network);
+    identity.identity.add_public_key(key.clone());
+    if held {
+        identity.private_keys = KeyStorage::from(std::collections::BTreeMap::from([(
+            (PrivateKeyTarget::PrivateKeyOnMainIdentity, 1),
+            (key.into(), PrivateKeyData::InVault),
+        )]));
+    }
+    identity
+}
+
 /// Build a network-free [`AppContext`] backed by throwaway temp storage — enough
 /// to exercise the settings read-modify-write and feature-gate paths.
 pub(crate) fn test_app_context(dir: &Path) -> Arc<AppContext> {

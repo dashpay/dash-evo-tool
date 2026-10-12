@@ -22,7 +22,9 @@ use dash_sdk::{
         version::PlatformVersion,
     },
     platform::Fetch,
-    platform::dpns_usernames::RegisterDpnsNameInput as SdkRegistrationInput,
+    platform::dpns_usernames::{
+        RegisterDpnsNameInput as SdkRegistrationInput, RegisterDpnsNameResult,
+    },
     platform::{Document, Identifier, IdentityPublicKey},
 };
 
@@ -98,6 +100,24 @@ async fn broadcast_name_registration(
     signing_key: IdentityPublicKey,
     label: &str,
 ) -> Result<Document, BroadcastFailure> {
+    broadcast_name_registration_with(identity, signing_key, label, |input| {
+        sdk.register_dpns_name(input)
+    })
+    .await
+}
+
+/// [`broadcast_name_registration`] with the SDK's registration call passed in,
+/// so what it is handed and how its failure is sorted can be driven directly.
+async fn broadcast_name_registration_with<F, Fut>(
+    identity: &QualifiedIdentity,
+    signing_key: IdentityPublicKey,
+    label: &str,
+    register: F,
+) -> Result<Document, BroadcastFailure>
+where
+    F: FnOnce(SdkRegistrationInput<QualifiedIdentity>) -> Fut,
+    Fut: Future<Output = Result<RegisterDpnsNameResult, SdkError>>,
+{
     // Written once by the SDK's callback, read only after its call returns.
     let preorder_confirmed = Arc::new(AtomicBool::new(false));
     let confirmed = Arc::clone(&preorder_confirmed);
@@ -108,7 +128,7 @@ async fn broadcast_name_registration(
         signer: identity.clone(),
         preorder_callback: Some(Box::new(move |_| confirmed.store(true, Ordering::Release))),
     };
-    sdk.register_dpns_name(input)
+    register(input)
         .await
         .map(|registered| registered.domain_document)
         .map_err(|error| {
@@ -575,6 +595,36 @@ mod tests {
             BroadcastFailure::at_stage(true, unproven_broadcast_failure()),
             BroadcastFailure::Domain(_)
         ));
+    }
+
+    /// The SDK calls back once the first document is confirmed. A failure it
+    /// reports after that call is the paid-for stage, which holds only while
+    /// the callback handed to the SDK sets the flag read once it returns.
+    #[tokio::test]
+    async fn failure_after_the_sdk_confirms_the_first_document_is_the_paid_stage() {
+        let identity = bare_identity(4);
+        let key = dash_sdk::platform::IdentityPublicKey::random_key(
+            1,
+            Some(4),
+            PlatformVersion::latest(),
+        );
+        let confirmed_preorder = domain_document(identity.identity.id(), "alice-123");
+
+        let failure =
+            broadcast_name_registration_with(&identity, key, "alice-123", |input| async move {
+                // As the SDK does: report the confirmed first document if asked to.
+                if let Some(report_confirmed) = input.preorder_callback {
+                    report_confirmed(&confirmed_preorder);
+                }
+                Err(unproven_broadcast_failure())
+            })
+            .await
+            .expect_err("the name request failed");
+
+        assert!(
+            matches!(failure, BroadcastFailure::Domain(_)),
+            "got {failure:?}"
+        );
     }
 
     /// With no node to confirm the first document, the broadcast stops there.

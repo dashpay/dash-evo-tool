@@ -759,6 +759,12 @@ impl Screen {
                 screen.reset_for_context_change();
                 return;
             }
+            Screen::PlatformInfoScreen(screen) => {
+                screen.app_context = app_context;
+                // The shown result and any fetch in flight describe the old network.
+                screen.reset_for_network_switch();
+                return;
+            }
             Screen::MasternodesScreen(screen) => {
                 screen.app_context = app_context;
                 // A network switch invalidates any open load form or detail view
@@ -791,7 +797,6 @@ impl Screen {
             AddContractsScreen,
             ProofVisualizerScreen,
             DocumentVisualizerScreen,
-            PlatformInfoScreen,
             GroveSTARKScreen,
             TokensScreen,
             TransferTokensScreen,
@@ -829,6 +834,7 @@ impl Screen {
             SingleKeyWalletSendScreen,
             CreateAssetLockScreen,
             AddressBalanceScreen,
+            PlatformInfoScreen,
             DashPayScreen,
             IdentityHubScreen,
         );

@@ -45,7 +45,6 @@ use std::sync::Arc;
 // they are extractable as a single translation unit when i18n lands.
 // ---------------------------------------------------------------------------
 
-const TIP_CHANGE_PHOTO: &str = "Upload a square image. Other apps will see this avatar.";
 /// Progress banner shown while an `UpdateProfile` save is in flight.
 pub(crate) const PROFILE_SAVING: &str = "Saving your social profile…";
 /// Confirmation banner shown after a social profile save succeeds.
@@ -65,8 +64,8 @@ pub(crate) fn clear_profile_saving_banner(ctx: &egui::Context, identity_id: &Ide
     MessageBanner::clear_global_message(ctx, PROFILE_SAVING);
     ctx.data_mut(|data| data.remove::<Identifier>(Id::new(PROFILE_SAVING_OWNER_ID)));
 }
-/// Guidance under the Avatar URL field — supported formats and recommended size.
-const AVATAR_URL_HINT: &str = "Link to a public square image (JPEG, PNG, WebP, or GIF); 256×256 pixels or larger is recommended.";
+/// Guidance for updating the profile photo by URL.
+const AVATAR_URL_HINT: &str = "Paste a direct link to a public image, then choose \"Save social profile\" to update your photo. A square JPEG, PNG, WebP, or GIF of at least 256×256 pixels is recommended.";
 const TIP_SAVE_NO_CHANGES: &str = "There are no changes to save.";
 const TIP_SAVE_INVALID: &str = "Fix the highlighted fields before saving.";
 const TIP_DELETE_PROFILE: &str = "Remove the display name, bio, and avatar from DashPay. Your identity, usernames, and \
@@ -294,28 +293,6 @@ impl SettingsTab {
         );
         ui.add_space(8.0);
 
-        // Avatar block — placeholder glyph + "Change photo" ghost button.
-        // The actual file-picker wiring lives in `ProfileScreen`; we surface
-        // the button and let the user click through to the legacy edit path
-        // in a follow-up (no backend task needed yet).
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("👤").size(48.0).color(DashColors::DEEP_BLUE));
-            ui.vertical(|ui| {
-                let btn = ComponentStyles::add_secondary_button(ui, "Change photo", dark_mode)
-                    .clickable_tooltip(TIP_CHANGE_PHOTO);
-                if btn.clicked() {
-                    // Route to legacy DashPay Profile screen for the full
-                    // image-upload flow. This is NOT a backend task and does
-                    // not violate the "additive only" rule.
-                    action = AppAction::SetMainScreen(
-                        crate::ui::RootScreenType::RootScreenDashPayProfile,
-                    );
-                }
-            });
-        });
-
-        ui.add_space(8.0);
-
         // Display name input.
         ui.label(RichText::new("Display name").color(DashColors::text_primary(dark_mode)));
         let display_name = ui.add(
@@ -345,10 +322,7 @@ impl SettingsTab {
 
         ui.add_space(8.0);
 
-        // Avatar URL — we include it so users can still set the avatar when
-        // the file-picker flow is not yet available from this tab. Kept under
-        // the visual avatar block so it is clearly secondary.
-        ui.label(RichText::new("Avatar URL").color(DashColors::text_primary(dark_mode)));
+        ui.label(RichText::new("Profile photo URL").color(DashColors::text_primary(dark_mode)));
         ui.add(
             TextEdit::singleline(&mut self.edit_avatar_url)
                 .hint_text("https://example.com/avatar.jpg")

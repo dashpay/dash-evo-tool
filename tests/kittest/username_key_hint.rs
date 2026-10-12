@@ -13,10 +13,11 @@ use dash_evo_tool::model::qualified_identity::encrypted_key_storage::KeyStorage;
 use dash_evo_tool::model::qualified_identity::{
     IdentityStatus, IdentityType, PrivateKeyTarget, QualifiedIdentity,
 };
-use dash_evo_tool::ui::ScreenLike;
+use dash_evo_tool::ui::components::MessageBanner;
 use dash_evo_tool::ui::identity::profile_cache::ProfileCache;
 use dash_evo_tool::ui::identity::settings::SettingsTab;
 use dash_evo_tool::ui::identity::{IdentityHubScreen, IdentityHubTab};
+use dash_evo_tool::ui::{Screen, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{Identity, Purpose};
 use dash_sdk::dpp::version::PlatformVersion;
@@ -188,6 +189,99 @@ fn card_offers_the_restore_when_the_previous_version_holds_the_key() {
             .display_backend_task_error(&context, &TaskError::LegacyRecoveryIdentityChanged);
         harness.run();
         assert!(harness.query_by_label("Restore keys").is_some());
+    });
+}
+
+/// Whether the hub returned an action opening the "Get a username" screen.
+fn opened_registration(harness: &Harness<'static, HubState>) -> bool {
+    harness.state().1.iter().any(|action| {
+        matches!(
+            action,
+            AppAction::AddScreen(Screen::RegisterDpnsNameScreen(_))
+        )
+    })
+}
+
+/// The promise the offer makes: once the restore lands, the hub answers it,
+/// the card reads the restored key back, the guidance and the offer are gone,
+/// and "Get a username" opens the registration screen.
+#[test]
+fn card_enables_registration_once_the_restore_completes() {
+    with_isolated_data_dir(|| {
+        let (rt, app_context) = fresh_app_context();
+        let _guard = rt.enter();
+        let identity_id = seed_username_identity(&app_context, 0x44, "Upgraded", &[], 0, false);
+        let mut harness = mount_hub_settings(&app_context);
+
+        harness.state_mut().0.display_task_result(
+            BackendTaskSuccessResult::LegacyRecoveryCandidates {
+                identity_id,
+                plan: plan_with_the_signing_key(),
+            },
+        );
+        harness.run();
+        harness.get_by_label("Restore keys").click();
+        // One frame handles the click; the spinner it starts repaints forever.
+        harness.step();
+        let (_, _, context) =
+            dispatched_restore(&harness).expect("the card dispatches the restore");
+
+        // While the restore runs the identity still cannot register.
+        harness.get_by_label("Get a username").click();
+        harness.step();
+        assert!(!opened_registration(&harness));
+
+        // What the restore does: the stored record now holds the key. Then the
+        // completion is delivered the way `AppState` delivers it, on the
+        // context the restore was dispatched with.
+        seed_username_identity(&app_context, 0x44, "Upgraded", &[], 0, true);
+        MessageBanner::clear_all_global(app_context.egui_ctx());
+        assert!(
+            harness
+                .state()
+                .0
+                .accepts_legacy_recovery_result(&context, true)
+        );
+        harness.state_mut().0.display_backend_task_result(
+            &context,
+            BackendTaskSuccessResult::LegacyRecoveryCompleted {
+                identity_id,
+                applied: plan_with_the_signing_key().items,
+                skipped_stale: vec![],
+                excluded: vec![],
+            },
+        );
+        harness.run();
+
+        assert!(
+            MessageBanner::has_global(app_context.egui_ctx()),
+            "the finished restore is confirmed to the user",
+        );
+        for gone in [RESTORE_YOUR_KEYS, "Restore keys", "Restoring…", "Open keys"] {
+            assert!(harness.query_by_label(gone).is_none(), "{gone} remains");
+        }
+        assert!(
+            !harness
+                .state()
+                .0
+                .accepts_legacy_recovery_result(&context, true),
+            "a finished offer is retired, not left waiting for an answer",
+        );
+
+        assert!(
+            !harness.state().1.iter().any(|action| matches!(
+                action,
+                AppAction::BackendTaskWithContext {
+                    task: BackendTask::IdentityTask(IdentityTask::CheckLegacyRecovery { .. }),
+                    ..
+                }
+            )),
+            "an identity that can register asks nothing more of the previous version's data",
+        );
+
+        harness.get_by_label("Get a username").click();
+        harness.run();
+        assert!(opened_registration(&harness));
     });
 }
 

@@ -258,7 +258,9 @@ fn confirm_step_shows_fees_low_balance_and_sync_gate() {
         );
         assert!(harness.query_by_label(&contest_fee).is_some());
         let total = format_credits_as_dash(
-            app_context.fee_estimator().estimate_document_batch(2)
+            app_context
+                .fee_estimator()
+                .estimate_username_registration("nova".len(), true)
                 + contest_fee_credits(app_context.sdk_platform_version()),
         );
         assert!(harness.query_by_label("Total").is_some());

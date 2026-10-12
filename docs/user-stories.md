@@ -818,6 +818,7 @@ As a user, I want to register a username for one of my identities so that others
 - Names that need a vote show a consent step: other people can ask during the join window (7 days on Mainnet, 45 minutes on Testnet), the vote lasts 14 days (90 minutes on Testnet) even without a rival, the community vote fee (read from the network: 0.2 DASH before protocol 14, 0.1 DASH from 14) is never returned, and a lock vote means no one gets the name.
 - The confirm step shows the registration fee, the community vote fee, the total, and the identity balance it is paid from. A low balance offers Top up and returns with the name kept. Availability is re-checked on Pay.
 - Changing the name, identity, network or fees invalidates the payment review and vote consent. The backend rejects an unapproved community vote fee before spending funds.
+- The registration fee shown is the balance the network needs for both registration steps, which is above what it then charges. An identity that holds less than the total cannot pay and is refused before anything is sent, so the first step is never paid for a registration the second step would turn down.
 - While registration runs, a full-window blocking progress overlay prevents a duplicate submission.
 - Completion distinguishes a username registered for immediate use from a request submitted for a community vote.
 - If the app cannot confirm whether a paid request went through, it says so, asks me not to pay again until I have checked the Usernames list, and does not put the Pay step back with the same review.

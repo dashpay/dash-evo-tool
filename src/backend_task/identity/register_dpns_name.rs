@@ -195,10 +195,20 @@ impl AppContext {
         }
         .ok_or(TaskError::NoDocumentSigningKey)?;
 
-        let fee_estimator = self.fee_estimator();
-        let estimated_fee = fee_estimator.estimate_document_batch(2);
-
+        let estimated_fee = self.fee_estimator().estimate_username_registration(
+            input.name_input.chars().count(),
+            outcome == DpnsRegistrationOutcome::PendingCommunityVote,
+        );
         let balance_before = qualified_identity.identity.balance();
+        // Refused here, not by the network: it would take the first document's
+        // fee and only then turn the second document down.
+        let required = estimated_fee.saturating_add(input.approved_contest_fee);
+        if balance_before < required {
+            return Err(TaskError::UsernameRegistrationBalanceTooLow {
+                available: balance_before,
+                required,
+            });
+        }
 
         let confirmed_at = match broadcast_name_registration(
             &qualified_identity,
@@ -554,21 +564,13 @@ mod tests {
         assert_eq!(names, [("earlier-name-2", 7), ("alice-123", 4_242)]);
     }
 
-    /// The date saved for a newly registered name is the one on the name
-    /// document the network confirmed, carried there by the registration itself.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn registration_saves_the_date_of_the_confirmed_name_document() {
-        use dash_sdk::dpp::document::DocumentV0Setters;
+    /// An identity with a key allowed to sign name documents. Nothing signs
+    /// with it while the SDK's registration call is stood in for.
+    fn identity_with_signing_key(byte: u8) -> QualifiedIdentity {
         use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
         use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 
-        let dir = tempfile::tempdir().expect("tempdir");
-        let ctx = crate::context::test_support::test_app_context(dir.path());
-        ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(
-            std::sync::Arc::new(crate::wallet_backend::kv_test_support::InMemoryKv::default()),
-        ));
-        let mut identity = bare_identity(3);
-        // A key allowed to sign name documents; nothing signs while the SDK is stood in for.
+        let mut identity = bare_identity(byte);
         identity
             .identity
             .add_public_keys([IdentityPublicKey::V0(IdentityPublicKeyV0 {
@@ -581,6 +583,79 @@ mod tests {
                 data: vec![2; 33].into(),
                 disabled_at: None,
             })]);
+        identity
+    }
+
+    /// An identity that cannot cover both documents, plus the community vote
+    /// fee when the name needs one, is refused before anything is broadcast.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn registration_is_refused_before_broadcast_when_the_balance_cannot_cover_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let vote_fee = crate::model::fee_estimation::contest_fee_credits(Sdk::new_mock().version());
+        for (label, approved_contest_fee) in [("alice-123", 0), ("alice", vote_fee)] {
+            let needs_vote = approved_contest_fee > 0;
+            let required = ctx
+                .fee_estimator()
+                .estimate_username_registration(label.len(), needs_vote)
+                + approved_contest_fee;
+            let mut identity = identity_with_signing_key(3);
+            identity.identity.set_balance(required - 1);
+            let mut sdk = Sdk::new_mock();
+            expect_domain_lookup(&mut sdk, &ctx, label, false).await;
+            if needs_vote {
+                expect_vote_state(&mut sdk, &ctx, label, Contenders::default()).await;
+            }
+            let broadcast = AtomicBool::new(false);
+
+            let result = ctx
+                .register_dpns_name_through(
+                    &sdk,
+                    RegisterDpnsNameInput {
+                        qualified_identity: identity,
+                        name_input: label.to_owned(),
+                        approved_contest_fee,
+                        signing_key_id: Some(1),
+                    },
+                    |_| {
+                        broadcast.store(true, Ordering::Release);
+                        async { Err::<RegisterDpnsNameResult, _>(unproven_broadcast_failure()) }
+                    },
+                )
+                .await;
+
+            assert!(
+                matches!(
+                    result,
+                    Err(TaskError::UsernameRegistrationBalanceTooLow { available, required: needed })
+                        if available == required - 1 && needed == required
+                ),
+                "{label}: {result:?}"
+            );
+            assert!(
+                !broadcast.load(Ordering::Acquire),
+                "{label}: nothing may be broadcast"
+            );
+        }
+    }
+
+    /// The date saved for a newly registered name is the one on the name
+    /// document the network confirmed, carried there by the registration itself.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn registration_saves_the_date_of_the_confirmed_name_document() {
+        use dash_sdk::dpp::document::DocumentV0Setters;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(
+            std::sync::Arc::new(crate::wallet_backend::kv_test_support::InMemoryKv::default()),
+        ));
+        let mut identity = identity_with_signing_key(3);
+        // Exactly what the registration needs: the smallest balance that is accepted.
+        identity.identity.set_balance(
+            ctx.fee_estimator()
+                .estimate_username_registration("alice-123".len(), false),
+        );
         let id = identity.identity.id();
         ctx.update_local_qualified_identity(&identity).unwrap();
         let mut sdk = Sdk::new_mock();

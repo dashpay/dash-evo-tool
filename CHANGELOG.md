@@ -212,6 +212,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Registering a username now shows a realistic cost. The review step used to
+  show a registration fee of about 0.000002 DASH, while the network charges
+  roughly 0.0008 DASH and wants about 0.0012 DASH on the identity before it
+  accepts the request. The amount shown, and the balance required to pay, is
+  now what the network needs, with a small margin. An identity that holds less
+  is asked to top up before anything is sent; before, it could pay for the
+  first registration step and be turned down at the second.
+
 - Adding a masternode or evonode with a voting key that has since been replaced
   on the network is now refused when you add it, with a message asking for the
   node's current voting private key. Before, the node was added as if the key

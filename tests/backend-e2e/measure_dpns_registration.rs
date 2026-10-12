@@ -222,9 +222,9 @@ async fn register_and_log(
         balance_before = before,
         balance_after_first = ?after_first,
         balance_after_second = ?after_second,
-        first_document = ?after_first.map(|after| before - after),
-        second_document = ?after_first.zip(after_second).map(|(first, second)| first - second),
-        total = ?after_second.map(|after| before - after),
+        first_document = ?after_first.and_then(|after| before.checked_sub(after)),
+        second_document = ?after_first.zip(after_second).and_then(|(first, second)| first.checked_sub(second)),
+        total = ?after_second.and_then(|after| before.checked_sub(after)),
         error = ?registered.as_ref().err(),
         "MEASURE dpns registration"
     );

@@ -607,7 +607,7 @@ async fn register_through_app(
         balance_before = before,
         balance_after_first = ?after_first,
         balance_after = ?after,
-        total = ?after.map(|after| before - after),
+        total = ?after.and_then(|after| before.checked_sub(after)),
         ?balances_seen,
         ?result,
         "MEASURE dpns registration through the app"

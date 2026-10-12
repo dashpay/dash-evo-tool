@@ -200,8 +200,10 @@ impl RegisterDpnsNameScreen {
         }
     }
 
-    fn registration_fee(&self) -> u64 {
-        self.app_context.fee_estimator().estimate_document_batch(2)
+    fn registration_fee(&self, needs_vote: bool) -> u64 {
+        self.app_context
+            .fee_estimator()
+            .estimate_username_registration(self.label().chars().count(), needs_vote)
     }
 
     fn contest_fee(&self) -> u64 {
@@ -266,7 +268,7 @@ impl RegisterDpnsNameScreen {
             identity_id: self.selected_qualified_identity.as_ref()?.identity.id(),
             network: self.app_context.network,
             needs_vote: availability.needs_vote(),
-            registration_fee: self.registration_fee(),
+            registration_fee: self.registration_fee(availability.needs_vote()),
             contest_fee: if availability.needs_vote() {
                 self.contest_fee()
             } else {

@@ -77,6 +77,8 @@ pub use super::VotesView;
 
 const NO_OPEN_CONTESTS_MESSAGE: &str =
     "There are no open name contests right now. New contests appear here automatically.";
+const CONTESTS_LOADING_MESSAGE: &str =
+    "Name contests are still loading. Open contests appear here as soon as they are read.";
 const CANT_VOTE_REASON: &str = "None of the nodes you vote with has a voting key that is in the masternode list. Load a voting key or change the nodes you vote with.";
 const NO_VOTING_NODES_MESSAGE: &str = "No masternodes are loaded.";
 const NO_VOTING_NODES_DETAIL: &str = "Load a masternode with its voting key to cast votes.";
@@ -804,17 +806,33 @@ impl DPNSScreen {
         });
     }
 
-    fn render_empty_view(&mut self, ui: &mut Ui) -> AppAction {
-        let mut app_action = AppAction::None;
-        let dark_mode = ui.style().visuals.dark_mode;
-        let (heading, detail) = match self.view {
+    /// Heading and detail of the active view when it has nothing to list.
+    fn empty_view_copy(&self) -> (&'static str, Option<&'static str>) {
+        match self.view {
+            // An unread name may turn out to be open; do not rule it out yet.
+            VotesView::ToDecide | VotesView::Voted
+                if self.app_context.dpns_contest_refresh_running()
+                    && self
+                        .contested_names
+                        .lock_recover()
+                        .iter()
+                        .any(ContestedName::is_unread) =>
+            {
+                (CONTESTS_LOADING_MESSAGE, None)
+            }
             VotesView::ToDecide | VotesView::Voted => (NO_OPEN_CONTESTS_MESSAGE, None),
             VotesView::History => ("There are no finished name contests yet.", None),
             VotesView::Scheduled => (
                 "No scheduled votes.",
                 Some("Pick a decision in To decide, then choose a later time in the confirm step."),
             ),
-        };
+        }
+    }
+
+    fn render_empty_view(&mut self, ui: &mut Ui) -> AppAction {
+        let mut app_action = AppAction::None;
+        let dark_mode = ui.style().visuals.dark_mode;
+        let (heading, detail) = self.empty_view_copy();
         ui.vertical_centered(|ui| {
             ui.add_space(20.0);
             ui.label(
@@ -3065,8 +3083,7 @@ mod tests {
         let poll = screen.app_context.dpns_vote_poll_id("alpha").unwrap();
         screen
             .app_context
-            .insert_name_contests_as_normalized_names(vec!["alpha".into()])
-            .unwrap();
+            .seed_dpns_contest_for_test("alpha", Some(now_ms() + 600_000), false);
         screen
             .app_context
             .cache_confirmed_dpns_vote(voter, poll, ResourceVoteChoice::Abstain)
@@ -3079,6 +3096,49 @@ mod tests {
             DpnsCurrentVoteState::Available(Some(ResourceVoteChoice::Abstain))
         );
         assert!(screen.refreshing_status == RefreshingStatus::NotRefreshing);
+    }
+
+    /// The operator must be able to vote on an open contest as soon as it and
+    /// the node's votes are read. Listed names nobody has read yet stay out
+    /// of the list — during a first load and after a start that follows an
+    /// interrupted one, when no refresh has run yet.
+    #[test]
+    fn an_open_contest_accepts_a_decision_while_history_is_unread() {
+        let (ctx, _dir) = kv_ctx();
+        let voter = masternode_identity(1, "node-one", true, ctx.network());
+        ctx.seed_dpns_contest_for_test("alpha", Some(now_ms() + 600_000), false);
+        let history: Vec<String> = (0..50).map(|index| format!("history-{index:02}")).collect();
+        ctx.insert_name_contests_as_normalized_names(history)
+            .expect("list the unread history");
+        ctx.seed_proved_dpns_votes_at_for_test(voter.identity.id(), BTreeMap::new(), now_ms())
+            .unwrap();
+        let mut screen = DPNSScreen::new(&ctx, VotesView::ToDecide);
+        screen.voting_identities = vec![voter];
+
+        screen.refresh();
+
+        let cards: Vec<&str> = screen.cards.iter().map(VoteCard::name).collect();
+        assert_eq!(cards, ["alpha"]);
+        assert_eq!(screen.cards[0].placement, CardPlacement::ToDecide);
+        assert!(screen.cards[0].accepts_decision());
+    }
+
+    /// With nothing open but unread names still being read, To decide must
+    /// not claim there are no open contests: one of them may be open.
+    #[tokio::test]
+    async fn to_decide_does_not_say_none_are_open_while_unread_names_load() {
+        let (ctx, _dir) = kv_ctx();
+        ctx.insert_name_contests_as_normalized_names(vec!["unread".to_owned()])
+            .expect("list an unread name");
+        let mut screen = DPNSScreen::new(&ctx, VotesView::ToDecide);
+        screen.refresh();
+        assert!(screen.cards.is_empty());
+
+        let pass = ctx.dpns_contest_refresh_pass.lock().await;
+        assert_eq!(screen.empty_view_copy().0, CONTESTS_LOADING_MESSAGE);
+
+        drop(pass);
+        assert_eq!(screen.empty_view_copy().0, NO_OPEN_CONTESTS_MESSAGE);
     }
 
     fn offline_ctx() -> (Arc<AppContext>, tempfile::TempDir) {
@@ -4109,9 +4169,7 @@ mod tests {
                 .cache_confirmed_dpns_vote(voter.identity.id(), poll, ResourceVoteChoice::Lock)
                 .unwrap();
         }
-        context
-            .insert_name_contests_as_normalized_names(vec!["alpha".into()])
-            .unwrap();
+        context.seed_dpns_contest_for_test("alpha", Some(now_ms() + 600_000), false);
         store.fail_next_gets_containing("det:dpns_current_votes:v3:", 1);
         let screen = DPNSScreen::new(&context, VotesView::ToDecide);
         assert_eq!(screen.voting_identities.len(), 2);

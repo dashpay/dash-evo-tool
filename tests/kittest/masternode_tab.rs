@@ -85,6 +85,19 @@ fn seed_node(app_context: &Arc<AppContext>, byte: u8, alias: &str, node_type: Id
 /// node and its (separately stored) voter identity into the local DB. Returns
 /// the voter identity's id so a test can assert its deletion. The node id is
 /// `[byte; 32]`; the voter id is `[byte ^ 0xFF; 32]`.
+/// Cache a contest that Platform reports as still running.
+fn seed_open_contest(app_context: &Arc<AppContext>, name: &str) {
+    app_context
+        .insert_name_contests_as_normalized_names(vec![name.to_owned()])
+        .expect("list the contest");
+    app_context
+        .update_contested_name_ending_times([(
+            name.to_owned(),
+            dash_evo_tool::utils::time::now_ms() + 600_000,
+        )])
+        .expect("store its end time");
+}
+
 fn seed_node_with_voter(app_context: &Arc<AppContext>, byte: u8, alias: &str) -> Identifier {
     let pv = PlatformVersion::latest();
     let voter_id = Identifier::from([byte ^ 0xFF; 32]);
@@ -448,9 +461,7 @@ fn to_decide_without_a_voting_key_shows_the_load_action() {
 
         let mut harness = mount_app(RootScreenType::RootScreenDPNSActiveContests);
         let app_context = harness.state().current_app_context().clone();
-        app_context
-            .insert_name_contests_as_normalized_names(vec!["alice".to_owned()])
-            .expect("seed active contest");
+        seed_open_contest(&app_context, "alice");
         let Screen::MasternodesScreen(masternodes) = harness
             .state_mut()
             .main_screens
@@ -491,9 +502,7 @@ fn blocker_keyless_node_add_voting_key_opens_reimport_form() {
         let mut harness = mount_app(RootScreenType::RootScreenDPNSActiveContests);
         let app_context = harness.state().current_app_context().clone();
         seed_node(&app_context, 93, "keyless", IdentityType::Masternode);
-        app_context
-            .insert_name_contests_as_normalized_names(vec!["alice".to_owned()])
-            .expect("seed active contest");
+        seed_open_contest(&app_context, "alice");
         let Screen::MasternodesScreen(masternodes) = harness
             .state_mut()
             .main_screens

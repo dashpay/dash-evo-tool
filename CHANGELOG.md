@@ -156,14 +156,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   node sets, bulk choices, and one aggregate confirmation for the batch.
   Cards show weighted tallies and your nodes' influence. The confirmation
   lists names, choices with full contender identities, node counts and timing
-  (scheduled times as explicit UTC timestamps). Node details show remaining
+  (scheduled times in your local time zone). Node details show remaining
   vote changes (four after the initial vote, or Unknown when this device has
   no count). If a first vote becomes a change before
   submission, another review is required. Nodes without available voting
   information are skipped with a refresh action; missing voting keys can be
   added from node detail without replacing other keys.
 
-  Cast now, choose a UTC time, or schedule shortly before voting ends.
+  Cast now, choose a local time, or schedule shortly before voting ends.
   Scheduled decisions can be edited or removed before execution; missed
   schedules and failed attempts offer recovery actions. Mixed batches report
   cast and scheduled results together. A progress drawer shows live results.

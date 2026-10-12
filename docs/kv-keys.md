@@ -129,7 +129,7 @@ Source: `src/context/legacy_scheduled_votes.rs`
 
 ## DPNS vote journal
 
-The journal is the sole store of immediate and scheduled DPNS votes. Every key is Global-scoped and carries the network in its name, so one network's journal cannot be read as another's. `<network>` is one of `mainnet`, `testnet`, `devnet`, `regtest`; `<operation_id>` is the 16-byte `DpnsVoteOperationId` as lowercase hex.
+The journal is the sole store of immediate and scheduled DPNS votes. Every key carries the network in its name (all are Global-scoped except `det:dpns_current_votes:v3:`, which is scoped to the voting node's identity), so one network's journal cannot be read as another's. `<network>` is one of `mainnet`, `testnet`, `devnet`, `regtest`; `<operation_id>` is the 16-byte `DpnsVoteOperationId` as lowercase hex.
 
 | Key | Scope | Store | Value type | Notes |
 |-----|-------|-------|------------|-------|
@@ -144,10 +144,24 @@ The journal is the sole store of immediate and scheduled DPNS votes. Every key i
 | `det:dpns_vote_scheduled_history:v1:<network>` | `None` | `det-<net>.sqlite` | `Vec<DpnsVoteOperationId>` | Completion order of finished scheduled operations, used to bound history |
 | `det:dpns_vote_counts:v1:<network>:<voter_id_base58>:<vote_poll_id_base58>` | `None` | `det-<net>.sqlite` | `u8` | Votes this device saw Platform apply for one node on one contest, used for "changes left". Kept outside the operation records so history pruning does not lose it; dropped only when the contest is proven closed |
 | `det:dpns_vote_counted:v1:<network>:<voter_id_base58>:<vote_poll_id_base58>` | `None` | `det-<net>.sqlite` | `[u8;16]` | Id of the operation whose confirmed vote was last added to the matching `det:dpns_vote_counts:v1:` count, so a repeated confirmation is not counted twice. Dropped together with the count |
+| `det:dpns_current_votes:v3:<network>` | `DetScope::Identity(&voter_id)` | `det-<net>.sqlite` | `StoredCurrentVotes` | Proved current-vote snapshot for one voting node, read by preflight and the attention signal. Fields: `available: bool`, `updated_at: u64` (Unix ms), `votes: BTreeMap<[u8;32], ResourceVoteChoice>` (vote poll id → choice), `confirmed: BTreeMap<[u8;32], (u64, ResourceVoteChoice)>` (vote poll id → (confirmation time Unix ms, choice)). Proof older than the age limits reads as not yet checked. |
 
 Loading the journal fails closed: one unreadable operation record fails every operation that reads the journal. Identity removal is the exception. It deletes the identity's keys regardless and leaves the vote cancellation to the retained `det:vault_cleanup_pending:v1:` manifest, which startup recovery retries.
 
-Source: `src/context/dpns_vote_operations/keys.rs` (key schema), `src/context/dpns_vote_operations/mod.rs`, `src/context/dpns_vote_operations/retention.rs`, `src/context/dpns_vote_operations/counts.rs`
+Source: `src/context/dpns_vote_operations/keys.rs` (key schema), `src/context/dpns_vote_operations/mod.rs`, `src/context/dpns_vote_operations/retention.rs`, `src/context/dpns_vote_operations/counts.rs`, `src/context/dpns_vote_state.rs` (`det:dpns_current_votes:v3:`)
+
+---
+
+## DPNS voting preferences
+
+Per-network operator preferences for Masternodes ▸ Votes, kept in the cross-network `det-app.sqlite` so they are readable before the wallet backend is wired. `<network>` here is the `Display` text of the `Network` value (not `network_prefix`), so the spelling for mainnet may differ from the other keys; verify against the running build before relying on it.
+
+| Key | Scope | Store | Value type | Notes |
+|-----|-------|-------|------------|-------|
+| `<network>:dpns_voting:masternodes_segment` | `None` | `det-app.sqlite` | `MasternodesSegment` | Last-opened Masternodes segment: `Votes` or `Nodes` (default `Nodes`). Unit enum, encoded by variant index, so variants must not be reordered |
+| `<network>:dpns_voting:node_set` | `None` | `det-app.sqlite` | `NodeSet` | Which nodes vote: `All` (default), `EvonodesOnly`, `MasternodesOnly`, `Custom(BTreeSet<Identifier>)`. Encoded by variant index, so variants must not be reordered |
+
+Source: `src/context/dpns_vote_preferences.rs`, `src/model/dpns_voting/operator.rs`
 
 ---
 
@@ -263,9 +277,9 @@ Source: `src/wallet_backend/single_key.rs` (`SINGLE_KEY_PRIV_LABEL_PREFIX`, `SIN
 
 | Store | Key count |
 |-------|-----------|
-| `det-app.sqlite` | 4 (settings, wallet-meta sidecar, single-key-meta sidecar, migration sentinel) |
-| `det-<net>.sqlite` | 24 (across 8 domains) |
+| `det-app.sqlite` | 6 (settings, wallet-meta sidecar, single-key-meta sidecar, migration sentinel, voting segment, voting node set) |
+| `det-<net>.sqlite` | 24 (across 8 domains; counted before the DPNS journal, usernames and current-votes keys were added, not recounted) |
 | `SecretStore` | 2 label patterns (seed envelopes, imported-key private bytes) |
-| **Total** | **30** |
+| **Total** | **30 + keys added since the last recount** |
 
 Prefixed/templated keys (e.g. `det:identity:<id>`) are counted once per prefix, not per instance. `SecretStore` entries are counted as label-pattern families, not per-wallet instances.

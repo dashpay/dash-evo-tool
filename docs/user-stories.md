@@ -1791,14 +1791,14 @@ As a masternode operator, I want to load my masternode by its ProTxHash and DIP3
 
 As a masternode operator, I want a card list of my loaded masternodes showing type, voter readiness, key status, and voting status, so that I can assess each node in seconds.
 
-- Each card shows a shortened ProTxHash (or alias as heading), a Masternode/Evonode type badge, voter-identity readiness ("Voting ready" / "No voting key"), a compact Voting/Owner/Payout key-status indicator, a DPNS-voting status line, and an identity status dot with a text label.
+- Each card shows a shortened ProTxHash (or alias as heading), a Masternode/Evonode type badge, voter-identity readiness ("Voting ready" / "No voting key"), a compact Voting/Owner/Payout key-status indicator, a username-voting status line, and an identity status dot with a text label.
 - An empty state explains what a masternode identity is for and offers a primary "Load a masternode" action when none are loaded.
 - The Masternodes tab and its nav entry are visible only at the Detailed view interface mode or above; dropping below Detailed view while the tab is active falls back to the Identities screen.
 
-### MN-003: Open a masternode and vote [Implemented]
+### MN-003: Open a masternode and see its votes [Implemented]
 **Persona:** Priya
 
-As a masternode operator, I want to open a node, see its votes, and vote with just that node when needed, so that I can fulfil and check my node's governance role.
+As a masternode operator, I want to open a node, see its votes, and jump to voting with just that node when needed, so that I can fulfil and check my node's governance role.
 
 - Clicking a card opens a detail view with the keys summary, node actions, the node's type and voting weight, its masternode-list status, and a "This node's votes" table (name, choice, changes left, deadline).
 - `Vote with this node` opens Masternodes ▸ Votes with the node set limited to that node, shown on the node-set chip. No draft is carried.

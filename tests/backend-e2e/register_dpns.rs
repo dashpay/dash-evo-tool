@@ -457,9 +457,15 @@ async fn sampling_balance<T>(
             seen
         }
     });
-    let result = registering.await;
+    // A panic in `registering` must still stop the sampler, or it keeps reading
+    // balances for the rest of the shared-runtime test process.
+    let outcome = AssertUnwindSafe(registering).catch_unwind().await;
     done.store(true, Ordering::Release);
-    (result, sampler.await.unwrap_or_default())
+    let seen = sampler.await.unwrap_or_default();
+    match outcome {
+        Ok(result) => (result, seen),
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
 }
 
 /// Create an identity from credits already on the framework wallet's platform

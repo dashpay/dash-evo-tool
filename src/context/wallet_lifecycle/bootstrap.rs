@@ -772,8 +772,7 @@ impl AppContext {
         status.set_wallet_load(None);
     }
 
-    /// Update wallet platform address info from SDK-returned AddressInfos.
-    /// This uses the proof-verified data from SDK operations rather than fetching.
+    /// Update this wallet's owned Platform addresses from a proof-verified SDK response.
     pub(crate) fn update_wallet_platform_address_info_from_sdk(
         &self,
         seed_hash: WalletSeedHash,
@@ -782,9 +781,18 @@ impl AppContext {
         let wallet_arc = self.wallet_arc(&seed_hash)?;
 
         let mut wallet = wallet_arc.write()?;
+        // Responses also contain recipient addresses belonging to other wallets.
+        // Ownership comes from the wallet's derivation paths, not its balance cache.
+        let owned_addresses: std::collections::BTreeSet<_> = wallet
+            .platform_addresses(self.network)
+            .into_iter()
+            .map(|(_, platform_address)| platform_address)
+            .collect();
 
         for (platform_addr, maybe_info) in address_infos.iter() {
-            if let Some(info) = maybe_info {
+            if owned_addresses.contains(platform_addr)
+                && let Some(info) = maybe_info
+            {
                 // Convert PlatformAddress to core Address using the network
                 let core_addr = platform_addr.to_address_with_network(self.network);
 
@@ -800,5 +808,93 @@ impl AppContext {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::test_support::test_app_context;
+    use dash_sdk::dpp::address_funds::PlatformAddress;
+    use dash_sdk::query_types::{AddressInfo, AddressInfos};
+
+    #[test]
+    fn sdk_address_balances_remain_scoped_to_owning_wallet() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ctx = test_app_context(dir.path());
+        let mut wallets = Vec::new();
+        let mut response = AddressInfos::new();
+        for (seed_byte, balance) in [(0x31, 205_741_823_420), (0x32, 68_892_360)] {
+            let seed = [seed_byte; 64];
+            let mut wallet = Wallet::new_from_seed(seed, ctx.network, None, None).expect("wallet");
+            let address = wallet
+                .generate_platform_receive_address_with_seed(&seed, ctx.network)
+                .expect("platform address");
+            let platform_address = PlatformAddress::try_from(address.clone()).expect("address");
+            response.insert(
+                platform_address,
+                Some(AddressInfo {
+                    address: platform_address,
+                    balance,
+                    nonce: 2,
+                }),
+            );
+            let seed_hash = wallet.seed_hash();
+            let wallet = Arc::new(RwLock::new(wallet));
+            ctx.wallet_context()
+                .insert_test_wallet(seed_hash, wallet.clone());
+            wallets.push((seed_hash, wallet, address, balance));
+        }
+        let external = PlatformAddress::P2pkh([0x99; 20]);
+        response.insert(
+            external,
+            Some(AddressInfo {
+                address: external,
+                balance: 900,
+                nonce: 1,
+            }),
+        );
+
+        // Identity-to-address transfers return recipients from multiple wallets.
+        for (seed_hash, _, _, _) in &wallets {
+            ctx.update_wallet_platform_address_info_from_sdk(*seed_hash, &response)
+                .expect("update");
+        }
+        for (_, wallet, address, balance) in &wallets {
+            let wallet = wallet.read().expect("wallet");
+            assert_eq!(
+                wallet.total_platform_balance(),
+                *balance,
+                "Another wallet's address must not inflate the available balance"
+            );
+            assert_eq!(wallet.platform_address_info.len(), 1);
+            let info = wallet
+                .get_platform_address_info(address)
+                .expect("owned balance");
+            assert_eq!(info.nonce, 2);
+        }
+
+        // A later spend must still refresh the owner's balance down to zero.
+        let (seed_hash, wallet, address, _) = &wallets[1];
+        let platform_address = PlatformAddress::try_from(address.clone()).expect("address");
+        response.insert(
+            platform_address,
+            Some(AddressInfo {
+                address: platform_address,
+                balance: 0,
+                nonce: 3,
+            }),
+        );
+        ctx.update_wallet_platform_address_info_from_sdk(*seed_hash, &response)
+            .expect("update spent address");
+        let wallet = wallet.read().expect("wallet");
+        assert_eq!(wallet.total_platform_balance(), 0);
+        assert_eq!(
+            wallet
+                .get_platform_address_info(address)
+                .expect("owned balance")
+                .nonce,
+            3
+        );
     }
 }

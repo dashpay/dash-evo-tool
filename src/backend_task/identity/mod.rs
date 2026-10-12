@@ -1088,16 +1088,12 @@ impl AppContext {
 
         // Update destination address balances in any wallets that contain them
         // (using proof-verified data from the SDK response)
-        {
-            let wallets = self.wallet_context().wallets();
-            for (seed_hash, wallet_arc) in wallets.iter() {
-                if let Err(e) =
-                    self.update_wallet_platform_address_info_from_sdk(*seed_hash, &address_infos)
-                {
-                    tracing::warn!("Failed to update wallet platform address info: {}", e);
-                }
-                // Break early since all wallets share the same network addresses
-                let _ = wallet_arc; // silence unused warning
+        let wallet_seed_hashes: Vec<_> = self.wallet_context().wallets().keys().copied().collect();
+        for seed_hash in wallet_seed_hashes {
+            if let Err(e) =
+                self.update_wallet_platform_address_info_from_sdk(seed_hash, &address_infos)
+            {
+                tracing::warn!("Failed to update wallet platform address info: {}", e);
             }
         }
 

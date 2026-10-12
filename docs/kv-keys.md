@@ -109,15 +109,23 @@ Source: `src/context/identity_db.rs`, `src/wallet_backend/identity_ops.rs`
 
 ## Scheduled votes (retired)
 
-These keys are **retired**. No current code reads or writes them; scheduled votes live only in the DPNS vote journal below. Entries left behind by an earlier development build are ignored: they are neither imported nor reported.
+These keys are **retired**. No current code writes them; scheduled votes live only in the DPNS vote journal below. Entries left behind by an earlier development build are never imported, executed or reported on their own. The startup check described below reads the first two, only to leave out an old SQLite schedule that build still records as cast.
 
 | Key | Scope | Store | Status |
 |-----|-------|-------|--------|
-| `det:scheduled_vote:<contested_name>` | `DetScope::Identity(&voter_id)` | `det-<net>.sqlite` | Retired; never read |
-| `det:scheduled_vote_voters:v1` | `None` | `det-<net>.sqlite` | Retired; never read |
+| `det:scheduled_vote:<contested_name>` | `DetScope::Identity(&voter_id)` | `det-<net>.sqlite` | Retired; never written, read only by the startup check below |
+| `det:scheduled_vote_voters:v1` | `None` | `det-<net>.sqlite` | Retired; never written, read only by the startup check below |
 | `det:migration:unreadable_votes:<network>:v1` | `None` | `det-app.sqlite` | Retired; never read (the storage update no longer inspects legacy scheduled votes) |
 
-Unexecuted schedules in the legacy SQLite `scheduled_votes` table of `data.db` are detected read-only at startup (`src/context/legacy_scheduled_votes.rs`) and raise a notice; they are never imported. One live key bounds that notice:
+Unexecuted schedules in the legacy SQLite `scheduled_votes` table of `data.db` are detected read-only at startup (`src/context/legacy_scheduled_votes.rs`) and raise a notice; they are never imported.
+
+An earlier development build copied those rows into the retired keys above and cast them from there without updating `data.db`, so a row it handled still reads as unexecuted. The check therefore consults the retired keys:
+
+- `det:scheduled_vote_voters:v1` absent — no such build took the schedules over; every unexecuted row raises the notice. Clearing the whole queue in that build deleted the index too, so such a profile is treated the same way.
+- `det:scheduled_vote_voters:v1` present, even as an empty list — only a row whose `det:scheduled_vote:<contested_name>` entry is marked cast raises nothing. An entry marked uncast raises the notice, and so does a missing entry: that build removed it (cleared after casting, or removed by the user) or stopped before copying it, and nothing stored tells those apart.
+- An undecodable index or entry proves nothing, so the row raises the notice.
+
+One live key bounds that notice:
 
 | Key | Scope | Store | Value type | Notes |
 |-----|-------|-------|------------|-------|

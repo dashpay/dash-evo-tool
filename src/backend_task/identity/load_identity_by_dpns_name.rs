@@ -79,40 +79,12 @@ impl AppContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dash_sdk::dpp::document::{DocumentV0, DocumentV0Getters};
+    use dash_sdk::dpp::document::DocumentV0Getters;
     use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
     use dash_sdk::dpp::platform_value::Value;
     use dash_sdk::dpp::version::PlatformVersion;
     use dash_sdk::platform::{Document, Identifier};
     use dash_sdk::query_types::Documents;
-    use std::collections::BTreeMap;
-
-    /// A registered-name document for `label` whose record points at `identity`.
-    fn domain_document(label: &str, identity: Value) -> Document {
-        Document::V0(DocumentV0 {
-            id: Identifier::from([0x5D; 32]),
-            owner_id: Identifier::from([0x5E; 32]),
-            creator_id: None,
-            properties: BTreeMap::from([
-                ("label".to_string(), Value::Text(label.to_string())),
-                (
-                    "records".to_string(),
-                    Value::Map(vec![(Value::Text("identity".to_string()), identity)]),
-                ),
-            ]),
-            revision: None,
-            created_at: Some(100),
-            updated_at: None,
-            transferred_at: None,
-            created_at_block_height: None,
-            updated_at_block_height: None,
-            transferred_at_block_height: None,
-            created_at_core_block_height: None,
-            updated_at_core_block_height: None,
-            transferred_at_core_block_height: None,
-            contract_version: None,
-        })
-    }
 
     fn documents(found: Document) -> Documents {
         Documents::from_iter([(found.id(), Some(found))])
@@ -127,7 +99,11 @@ mod tests {
                 .await;
         let ctx = &staged.ctx;
         let target = Identifier::from([7; 32]);
-        let name = domain_document("Alice", Value::Bytes32(target.to_buffer()));
+        let name = crate::context::test_support::dpns_name_document(
+            Identifier::from([0x5E; 32]),
+            "Alice",
+            Value::Bytes32(target.to_buffer()),
+        );
         let mut sdk = crate::context::test_support::mock_sdk_for(ctx);
         sdk.mock()
             .expect_fetch_many::<Identifier, Document, _, Documents>(

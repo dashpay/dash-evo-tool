@@ -420,49 +420,18 @@ mod tests {
     /// at, which after a transfer is not the document's owner.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn search_lists_the_identity_each_matching_name_points_at() {
-        use dash_sdk::dpp::document::DocumentV0;
         use dash_sdk::drive::query::OrderClause;
         use dash_sdk::query_types::Documents;
-        use std::collections::BTreeMap;
 
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = crate::context::test_support::test_app_context(dir.path());
         let previous_owner = Identifier::from([1; 32]);
         let holder = Identifier::from([2; 32]);
-        let name = Document::V0(DocumentV0 {
-            id: Identifier::from([3; 32]),
-            owner_id: previous_owner,
-            creator_id: None,
-            properties: BTreeMap::from([
-                ("label".to_string(), Value::Text("Alice".to_string())),
-                (
-                    "normalizedLabel".to_string(),
-                    Value::Text("a11ce".to_string()),
-                ),
-                (
-                    "normalizedParentDomainName".to_string(),
-                    Value::Text("dash".to_string()),
-                ),
-                (
-                    "records".to_string(),
-                    Value::Map(vec![(
-                        Value::Text("identity".to_string()),
-                        Value::Identifier(holder.to_buffer()),
-                    )]),
-                ),
-            ]),
-            revision: None,
-            created_at: None,
-            updated_at: None,
-            transferred_at: None,
-            created_at_block_height: None,
-            updated_at_block_height: None,
-            transferred_at_block_height: None,
-            created_at_core_block_height: None,
-            updated_at_core_block_height: None,
-            transferred_at_core_block_height: None,
-            contract_version: None,
-        });
+        let name = crate::context::test_support::dpns_name_document(
+            previous_owner,
+            "Alice",
+            Value::Identifier(holder.to_buffer()),
+        );
         let mut prefix_query = DocumentQuery::new(ctx.dpns_contract.clone(), "domain")
             .expect("domain query")
             .with_where(WhereClause {

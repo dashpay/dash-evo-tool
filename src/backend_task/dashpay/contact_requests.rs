@@ -1307,20 +1307,6 @@ mod tests {
         })
     }
 
-    /// A registered-name document for `label` whose record points at `identity`.
-    fn domain_doc(label: &str, identity: Value) -> Document {
-        let mut doc = request_doc(id(50), None);
-        let DppDocument::V0(inner) = &mut doc;
-        inner.properties = BTreeMap::from([
-            ("label".to_string(), Value::Text(label.to_string())),
-            (
-                "records".to_string(),
-                Value::Map(vec![(Value::Text("identity".to_string()), identity)]),
-            ),
-        ]);
-        doc
-    }
-
     /// Mock the registered-name lookup for the normalized label `normalized`.
     async fn expect_name_lookup(
         sdk: &mut Sdk,
@@ -1357,7 +1343,11 @@ mod tests {
         let ctx = crate::context::test_support::test_app_context(dir.path());
         let target = id(7);
         let mut sdk = crate::context::test_support::mock_sdk_for(&ctx);
-        let found = domain_doc("Alice", Value::Bytes32(target.to_buffer()));
+        let found = crate::context::test_support::dpns_name_document(
+            id(50),
+            "Alice",
+            Value::Bytes32(target.to_buffer()),
+        );
         expect_name_lookup(&mut sdk, &ctx, "a11ce", Some(found)).await;
         let identity = Identity::create_basic_identity(
             target,

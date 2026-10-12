@@ -1,8 +1,7 @@
-//! DPNS name normalization and document helpers.
+//! DPNS name normalization, validation and contest rules.
 //!
 //! Centralizes the "trim → strip `.dash` suffix → homograph-safe normalize"
-//! pipeline so every DPNS lookup uses the same logic, and provides shared
-//! extraction utilities for DPNS domain documents.
+//! pipeline so every DPNS lookup uses the same logic.
 
 use std::collections::BTreeMap;
 use std::sync::LazyLock;
@@ -32,23 +31,23 @@ pub enum DpnsRegistrationOutcome {
 
 /// Classify registering `label` using the contest rules of its document type.
 ///
-/// Applies Platform's own rule to the fields a `domain` document for `label`
-/// would carry, so the answer follows the contract it is given rather than a
-/// copy of the rule. Accepts a bare label or a `.dash` name.
+/// Applies Platform's own rule to the name fields a `domain` document for
+/// `label` would carry, so the answer follows the contract it is given rather
+/// than a copy of the rule. Accepts a bare label or a `.dash` name.
 pub fn classify_dpns_registration_outcome(
     document_type: &impl DocumentTypeV0Methods,
     label: &str,
     platform_version: &PlatformVersion,
 ) -> Result<DpnsRegistrationOutcome, Box<ProtocolError>> {
+    let text = |value: &str| Value::Text(value.to_string());
     let properties = BTreeMap::from([
-        (
-            "normalizedParentDomainName".to_string(),
-            Value::Text("dash".to_string()),
-        ),
+        ("label".to_string(), text(strip_dash_suffix(label))),
         (
             "normalizedLabel".to_string(),
-            Value::Text(normalize_dpns_label(label)),
+            text(&normalize_dpns_label(label)),
         ),
+        ("parentDomainName".to_string(), text("dash")),
+        ("normalizedParentDomainName".to_string(), text("dash")),
     ]);
     match document_type
         .contested_vote_poll_for_document_properties(&properties, platform_version)

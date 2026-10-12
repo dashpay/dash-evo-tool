@@ -1402,7 +1402,13 @@ mod tests {
             },
             IdentityHubScreen::new(&context),
         );
-        harness.run();
+        // Avatar fetching stays pending in this offline harness, so its spinner keeps repainting.
+        harness.run_steps(2);
+        assert!(
+            harness
+                .state()
+                .is_waiting_for_avatar("https://example.com/cached.png")
+        );
         let fields = harness
             .state_mut()
             .profile_cache
@@ -1417,7 +1423,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        harness.run();
+        harness.run_steps(2);
         assert_eq!(
             harness
                 .state_mut()
@@ -1446,7 +1452,7 @@ mod tests {
                 profile: None
             })
         ));
-        harness.run();
+        harness.run_steps(2);
         assert!(
             harness
                 .state_mut()

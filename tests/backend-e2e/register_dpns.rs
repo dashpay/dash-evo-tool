@@ -376,7 +376,7 @@ async fn return_credits(
     funded: &PlatformFunded,
 ) -> Result<(), String> {
     let id = funded.identity.identity.id();
-    let Some(balance) = network_balance(app_context, id).await else {
+    let Some(mut balance) = network_balance(app_context, id).await else {
         return Err(format!(
             "Credits were not returned from identity {id}: its balance could not be read"
         ));
@@ -407,16 +407,25 @@ async fn return_credits(
                 );
                 return Ok(());
             }
-            // The refusal names the balance the network wanted for this amount.
-            Err(TaskError::IdentityInsufficientBalance { required, .. }) if required > amount => {
+            // The refusal names the balance the network holds and the one it
+            // wanted for this amount. The balance read above can come from a
+            // node that lags behind, so the retry starts from the network's own.
+            Err(TaskError::IdentityInsufficientBalance {
+                available,
+                required,
+                ..
+            }) if required > amount => {
                 tracing::warn!(
                     %id,
                     amount,
                     kept_for_fee = reserve,
+                    available,
                     required,
-                    "Returning identity credits was refused; trying with the reserve asked for"
+                    "Returning identity credits was refused; trying with the balance and reserve the network named"
                 );
                 reserve = required - amount;
+                balance = available;
+                identity.identity.set_balance(available);
             }
             Err(error) => {
                 return Err(format!(

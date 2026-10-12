@@ -19,48 +19,12 @@ impl AppContext {
         dpns_name: String,
         selected_wallet_seed_hash: Option<WalletSeedHash>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        let normalized_name = crate::model::dpns::normalize_dpns_label(&dpns_name);
-
-        // Query the DPNS contract for the domain document
-        let domain_query = DocumentQuery {
-            sub_queries: Vec::new(),
-            select: SelectProjection::documents(),
-            data_contract: self.dpns_contract.clone(),
-            document_type_name: "domain".to_string(),
-            where_clauses: vec![
-                WhereClause {
-                    field: "normalizedParentDomainName".to_string(),
-                    operator: WhereOperator::Equal,
-                    value: Value::Text("dash".to_string()),
-                },
-                WhereClause {
-                    field: "normalizedLabel".to_string(),
-                    operator: WhereOperator::Equal,
-                    value: Value::Text(normalized_name.clone()),
-                },
-            ],
-            time_range_clauses: Vec::new(),
-            group_by: Vec::new(),
-            having: Vec::new(),
-            order_by_clauses: vec![],
-            limit: 1,
-            offset: None,
-            start: None,
-        };
-
-        let documents = Document::fetch_many(sdk, domain_query)
+        // The name's own record names its identity, which after a transfer is
+        // not the document's owner.
+        let identity_id = sdk
+            .resolve_dpns_name(dpns_name.trim())
             .await
-            .map_err(TaskError::from)?;
-
-        // Get the first (and should be only) document
-        let domain_doc = documents
-            .values()
-            .filter_map(|maybe_doc| maybe_doc.as_ref())
-            .next()
-            .ok_or(TaskError::IdentityNotFound)?;
-
-        // Extract the identity ID from the records.identity field
-        let identity_id = crate::model::dpns::extract_identity_id_from_dpns_document(domain_doc)
+            .map_err(TaskError::from)?
             .ok_or(TaskError::IdentityNotFound)?;
 
         // Fetch the identity
@@ -159,5 +123,92 @@ impl AppContext {
         self.insert_local_qualified_identity(&qualified_identity, &wallet_info)?;
 
         Ok(BackendTaskSuccessResult::LoadedIdentity(qualified_identity))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dash_sdk::dpp::document::DocumentV0;
+    use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+    use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::platform::Identifier;
+    use dash_sdk::query_types::Documents;
+    use std::collections::BTreeMap;
+
+    /// A registered-name document for `label` whose record points at `identity`.
+    fn domain_document(label: &str, identity: Value) -> Document {
+        Document::V0(DocumentV0 {
+            id: Identifier::from([0x5D; 32]),
+            owner_id: Identifier::from([0x5E; 32]),
+            creator_id: None,
+            properties: BTreeMap::from([
+                ("label".to_string(), Value::Text(label.to_string())),
+                (
+                    "records".to_string(),
+                    Value::Map(vec![(Value::Text("identity".to_string()), identity)]),
+                ),
+            ]),
+            revision: None,
+            created_at: Some(100),
+            updated_at: None,
+            transferred_at: None,
+            created_at_block_height: None,
+            updated_at_block_height: None,
+            transferred_at_block_height: None,
+            created_at_core_block_height: None,
+            updated_at_core_block_height: None,
+            transferred_at_core_block_height: None,
+            contract_version: None,
+        })
+    }
+
+    fn documents(found: Document) -> Documents {
+        Documents::from_iter([(found.id(), Some(found))])
+    }
+
+    /// The name's record, not its document owner, says whose identity to load;
+    /// the network may hand that record back as plain bytes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn loading_by_name_follows_the_identity_the_name_points_at() {
+        let staged =
+            crate::context::test_staging::stage_identity_with_vaulted_keys([0x11; 32], [0x22; 32])
+                .await;
+        let ctx = &staged.ctx;
+        let target = Identifier::from([7; 32]);
+        let name = domain_document("Alice", Value::Bytes32(target.to_buffer()));
+        let mut sdk = crate::context::test_support::mock_sdk_for(ctx);
+        sdk.mock()
+            .expect_fetch_many::<Identifier, Document, _, Documents>(
+                ctx.dpns_domain_query("a11ce"),
+                Some(documents(name.clone())),
+            )
+            .await
+            .expect("name lookup expectation");
+        let identity =
+            Identity::create_basic_identity(target, PlatformVersion::latest()).expect("identity");
+        sdk.mock()
+            .expect_fetch(target, Some(identity))
+            .await
+            .expect("identity expectation");
+        sdk.mock()
+            .expect_fetch_many::<Identifier, Document, _, Documents>(
+                ctx.owned_dpns_names_query(target),
+                Some(documents(name)),
+            )
+            .await
+            .expect("owned names expectation");
+
+        let loaded = ctx
+            .load_identity_by_dpns_name(&sdk, " Alice.dash ".to_string(), None)
+            .await
+            .expect("the identity loads");
+
+        let BackendTaskSuccessResult::LoadedIdentity(loaded) = loaded else {
+            panic!("expected a loaded identity, got {loaded:?}");
+        };
+        assert_eq!(loaded.identity.id(), target);
+        let names: Vec<&str> = loaded.dpns_names.iter().map(|n| n.name.as_str()).collect();
+        assert_eq!(names, ["Alice"]);
     }
 }

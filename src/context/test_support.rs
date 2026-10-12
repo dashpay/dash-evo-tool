@@ -6,6 +6,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use dash_sdk::Sdk;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::platform::Identifier;
 
@@ -81,4 +82,16 @@ fn test_app_context_with_kv_and_network(
         UserRoleCell::default(),
     )
     .expect("AppContext")
+}
+
+/// A mock SDK that reads data contracts through `ctx`, as the app's own SDK does.
+pub(crate) fn mock_sdk_for(ctx: &AppContext) -> Sdk {
+    let sdk = Sdk::new_mock();
+    let provider = ctx
+        .spv_context_provider
+        .read()
+        .expect("context provider lock")
+        .clone();
+    sdk.set_context_provider(provider);
+    sdk
 }

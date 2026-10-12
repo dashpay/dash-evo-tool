@@ -15,13 +15,12 @@ use dash_sdk::dpp::data_contract::document_type::ContestedIndexFieldMatch;
 use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
 use dash_sdk::dpp::data_contract::document_type::methods::DocumentTypeV0Methods;
 use dash_sdk::dpp::data_contracts::SystemDataContract;
-use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::dpp::system_data_contracts::load_system_data_contract;
 use dash_sdk::dpp::util::strings::convert_to_homograph_safe_chars;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::dpp::voting::vote_polls::VotePoll;
-use dash_sdk::platform::{Document, Identifier};
+use dash_sdk::platform::Document;
 
 /// The immediate result of submitting a DPNS registration document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -276,33 +275,6 @@ pub fn has_dash_suffix(input: &str) -> bool {
             .is_some_and(|tail| tail.eq_ignore_ascii_case(DASH_SUFFIX))
 }
 
-/// Extract the identity ID from a DPNS domain document's `records.identity` field.
-///
-/// This is the authoritative identity reference for a DPNS name — unlike
-/// `document.owner_id()`, it correctly reflects ownership after name transfers.
-///
-/// Returns `None` if the document lacks the `records` map or the `identity` entry.
-pub fn extract_identity_id_from_dpns_document(document: &Document) -> Option<Identifier> {
-    document
-        .get("records")
-        .and_then(|records| {
-            if let Value::Map(map) = records {
-                map.iter()
-                    .find(|(k, _)| matches!(k, Value::Text(key) if key == "identity"))
-                    .map(|(_, v)| v.clone())
-            } else {
-                None
-            }
-        })
-        .and_then(|id_value| {
-            if let Value::Identifier(id_bytes) = id_value {
-                Some(Identifier::from(id_bytes))
-            } else {
-                None
-            }
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -313,6 +285,7 @@ mod tests {
     use dash_sdk::dpp::document::DocumentV0;
     use dash_sdk::dpp::system_data_contracts::load_system_data_contract;
     use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::platform::Identifier;
 
     fn domain_document(label: &str) -> Document {
         let owner_id = Identifier::from([1; 32]);

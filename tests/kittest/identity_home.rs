@@ -148,6 +148,55 @@ fn last_result<'a>(
 }
 
 #[test]
+fn home_contacts_start_beside_actions_and_username_notice_stays_with_history() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let id = seed_identity(&app_context, vec![], vec![]);
+        let request = dash_evo_tool::model::dpns_usernames::UsernameRequest::submitted(
+            "layout-name",
+            dash_evo_tool::utils::time::now_ms(),
+            dash_evo_tool::model::dpns::ContestDurations {
+                total: std::time::Duration::from_secs(14 * 86_400),
+                join: std::time::Duration::from_secs(7 * 86_400),
+            },
+            None,
+        );
+        app_context
+            .store_username_requests(&id, vec![request])
+            .expect("request");
+        let mut harness = mount_home(app_context);
+        harness.state_mut().0.dismissed_checklist = true;
+        harness.state_mut().0.payments = vec![(
+            String::new(),
+            "History contact".into(),
+            100,
+            true,
+            String::new(),
+        )];
+        harness.run();
+
+        let send = harness.get_by_label("Send").rect();
+        let contacts = harness.get_by_label("Contacts").rect();
+        let status = harness.get_by_label("View status").rect();
+        let history = harness.get_by_label("Recent payments").rect();
+        assert!(
+            contacts.top() < send.bottom(),
+            "Contacts must start beside the actions: {contacts:?} vs {send:?}"
+        );
+        assert!(
+            status.right() < contacts.left(),
+            "The username notice belongs in the left column"
+        );
+        assert!(status.top() > send.bottom());
+        assert!(history.top() > status.bottom());
+        assert!(
+            (status.left() - history.left()).abs() < 8.0,
+            "Notices and history must share the left alignment"
+        );
+    });
+}
+
+#[test]
 fn home_send_to_wallet_disabled_for_everyday_without_local_withdrawal_key() {
     with_isolated_data_dir(|| {
         let (_runtime, app_context) = fresh_app_context();

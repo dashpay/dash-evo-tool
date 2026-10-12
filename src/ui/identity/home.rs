@@ -204,7 +204,6 @@ pub fn render(
     };
     let mut action = AppAction::None;
     let mut outcome = HomeOutcome::None;
-    let dark = ui.visuals().dark_mode;
     let has_profile = profiles
         .get_or_request(&identity)
         .and_then(Option::as_ref)
@@ -213,63 +212,61 @@ pub fn render(
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                if ComponentStyles::add_primary_button(ui, "Send").clicked() {
-                    action = AppAction::AddScreen(
-                        ScreenType::IdentitySendScreen(identity.clone(), IdentitySendMode::Send)
-                            .create_screen(app_context),
-                    );
-                }
-                if ComponentStyles::add_secondary_button(ui, "Receive", dark).clicked() {
-                    state.receive_open = true;
-                }
-                if ComponentStyles::add_secondary_button(ui, "Top up", dark).clicked() {
-                    action = AppAction::AddScreen(
-                        ScreenType::IdentitySendScreen(identity.clone(), IdentitySendMode::TopUp)
-                            .create_screen(app_context),
-                    );
-                }
-            });
-            ui.add_space(Spacing::MD);
-            action |= super::username_notices::render(ui, app_context, &identity);
             if ui.available_width() >= 760.0 {
-                ui.columns(2, |columns| {
-                    outcome = render_setup(
-                        &mut columns[0],
+                let content_width = ui.available_width() - Spacing::LG;
+                // A05 uses a 620:360 split, with contacts beside the action row.
+                let left_width = content_width * 620.0 / 980.0;
+                let right_width = content_width - left_width;
+                ui.spacing_mut().item_spacing.x = Spacing::LG;
+                ui.horizontal_top(|ui| {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(left_width, 0.0),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            ui.set_width(left_width);
+                            (action, outcome) = render_main_column(
+                                ui,
+                                app_context,
+                                &identity,
+                                state,
+                                has_profile,
+                                contacts,
+                            );
+                        },
+                    );
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(right_width, 0.0),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            ui.set_width(right_width);
+                            action |= super::contacts::render_preview(
+                                ui,
+                                app_context,
+                                &identity,
+                                contacts,
+                                &mut outcome,
+                            );
+                        },
+                    );
+                });
+            } else {
+                ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                    (action, outcome) = render_main_column(
+                        ui,
                         app_context,
                         &identity,
                         state,
                         has_profile,
                         contacts,
-                        &mut action,
                     );
-                    action |= render_payments(&mut columns[0], app_context, state);
                     action |= super::contacts::render_preview(
-                        &mut columns[1],
+                        ui,
                         app_context,
                         &identity,
                         contacts,
                         &mut outcome,
                     );
                 });
-            } else {
-                outcome = render_setup(
-                    ui,
-                    app_context,
-                    &identity,
-                    state,
-                    has_profile,
-                    contacts,
-                    &mut action,
-                );
-                action |= render_payments(ui, app_context, state);
-                action |= super::contacts::render_preview(
-                    ui,
-                    app_context,
-                    &identity,
-                    contacts,
-                    &mut outcome,
-                );
             }
         });
     if state.receive_open {
@@ -282,6 +279,51 @@ pub fn render(
     if matches!(action, AppAction::None) {
         action = state.load_payments(&identity);
     }
+    (action, outcome)
+}
+
+fn render_main_column(
+    ui: &mut Ui,
+    app_context: &Arc<AppContext>,
+    identity: &QualifiedIdentity,
+    state: &mut HomeState,
+    has_profile: bool,
+    contacts: &ContactsState,
+) -> (AppAction, HomeOutcome) {
+    let mut action = AppAction::None;
+    let dark = ui.visuals().dark_mode;
+    ui.horizontal_wrapped(|ui| {
+        if ComponentStyles::add_primary_button(ui, "Send").clicked() {
+            action = AppAction::AddScreen(
+                ScreenType::IdentitySendScreen(identity.clone(), IdentitySendMode::Send)
+                    .create_screen(app_context),
+            );
+        }
+        if ComponentStyles::add_secondary_button(ui, "Receive", dark).clicked() {
+            state.receive_open = true;
+        }
+        if ComponentStyles::add_secondary_button(ui, "Top up", dark).clicked() {
+            action = AppAction::AddScreen(
+                ScreenType::IdentitySendScreen(identity.clone(), IdentitySendMode::TopUp)
+                    .create_screen(app_context),
+            );
+        }
+    });
+    ui.add_space(Spacing::MD);
+    let outcome = render_setup(
+        ui,
+        app_context,
+        identity,
+        state,
+        has_profile,
+        contacts,
+        &mut action,
+    );
+    let notice_action = super::username_notices::render(ui, app_context, identity);
+    if matches!(action, AppAction::None) {
+        action = notice_action;
+    }
+    action |= render_payments(ui, app_context, state);
     (action, outcome)
 }
 

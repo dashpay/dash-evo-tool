@@ -11,7 +11,7 @@ Follow the isolated-profile launch and accessibility setup in [the GUI testing g
 ## Procedure
 
 1. Finish testnet synchronization. Open **Identities → Add → Load an existing identity → My username**, enter the public username, and search. Return to Identities and open the loaded identity card.
-2. Check that the summary shows the published avatar, profile name, balance, and first three active usernames, with the main name first. Check that the summary sits above **Home / Contacts / Profile**.
+2. Check that the summary shows the published avatar, profile name, balance, and first three active usernames, with the main name first. Check that the summary sits above **Home / Contacts / Profile**. At desktop width, **Contacts** must start beside the action row at the top of the narrower right column. Setup, username notices, and payment history belong in the wider left column. A pending username notice must have left-aligned, wrapping text and must not push Contacts down.
 3. Click **…** beside the usernames. Verify that Profile opens with all usernames, including pending requests. Click **+** in the summary and verify that registration names the same identity. A view-only import should explain that a key must be added before registration.
 4. Return Home and open **Receive**. Verify the selected username and QR code, then close it.
 5. Open **Send**. Verify the shared send form shows the selected identity as a fixed sender and offers recipient selection. Cancel, then open **Top up** and verify the same identity is the fixed recipient.

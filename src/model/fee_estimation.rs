@@ -1567,6 +1567,22 @@ mod tests {
         }
     }
 
+    /// On testnet the network refused the name document below these balances,
+    /// counting what the first document had cost: 32,090,520 + 83,627,060 for
+    /// 20 characters and 32,400,260 + 88,397,980 for 63.
+    #[test]
+    fn username_registration_estimate_covers_the_balance_testnet_required() {
+        let estimator = PlatformFeeEstimator::new();
+        for (label_chars, required) in [(20, 115_717_580_u64), (63, 120_798_240)] {
+            let estimate = estimator.estimate_username_registration(label_chars, false);
+            assert!(estimate >= required, "{label_chars}: {estimate}");
+            assert!(
+                estimate <= required / 100 * 115,
+                "{label_chars}: {estimate}"
+            );
+        }
+    }
+
     #[test]
     fn username_registration_estimate_follows_the_fee_multiplier() {
         let base = PlatformFeeEstimator::new().estimate_username_registration(29, false);

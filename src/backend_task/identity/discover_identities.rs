@@ -7,7 +7,6 @@ use crate::model::identity_discovery::{
     DiscoveryIntent, DiscoverySummary, IDENTITY_GAP_LIMIT, IDENTITY_SCAN_HARD_CAP,
     should_continue_scan,
 };
-use crate::model::qualified_identity::DPNSNameInfo;
 use crate::model::wallet::Wallet;
 use crate::utils::egui_mpsc::SenderAsync;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -415,59 +414,11 @@ impl AppContext {
             .collect();
 
         // Fetch DPNS names for this identity
-        let dpns_names = {
-            use dash_sdk::dpp::document::DocumentV0Getters;
-            use dash_sdk::dpp::platform_value::Value;
-            use dash_sdk::drive::query::{SelectProjection, WhereClause, WhereOperator};
-            use dash_sdk::platform::{Document, DocumentQuery, FetchMany};
-
-            let query = DocumentQuery {
-                sub_queries: Vec::new(),
-                select: SelectProjection::documents(),
-                data_contract: self.dpns_contract.clone(),
-                document_type_name: "domain".to_string(),
-                where_clauses: vec![WhereClause {
-                    field: "records.identity".to_string(),
-                    operator: WhereOperator::Equal,
-                    value: Value::Identifier(identity.id().into()),
-                }],
-                time_range_clauses: Vec::new(),
-                group_by: Vec::new(),
-                having: Vec::new(),
-                order_by_clauses: vec![],
-                limit: 100,
-                offset: None,
-                start: None,
-            };
-
-            match Document::fetch_many(sdk, query).await {
-                Ok(document_map) => document_map
-                    .values()
-                    .filter_map(|maybe_doc| {
-                        maybe_doc.as_ref().and_then(|doc| {
-                            let name = doc
-                                .get("label")
-                                .map(|label| label.to_str().unwrap_or_default());
-                            let acquired_at = doc
-                                .created_at()
-                                .into_iter()
-                                .chain(doc.transferred_at())
-                                .max();
-
-                            match (name, acquired_at) {
-                                (Some(name), Some(acquired_at)) => Some(DPNSNameInfo {
-                                    name: name.to_string(),
-                                    acquired_at,
-                                }),
-                                _ => None,
-                            }
-                        })
-                    })
-                    .collect::<Vec<DPNSNameInfo>>(),
-                Err(e) => {
-                    tracing::warn!("Failed to fetch DPNS names for identity: {}", e);
-                    Vec::new()
-                }
+        let dpns_names = match self.fetch_owned_dpns_names(sdk, identity.id()).await {
+            Ok(names) => names,
+            Err(error) => {
+                tracing::warn!(?error, "Failed to fetch DPNS names for identity");
+                Vec::new()
             }
         };
 

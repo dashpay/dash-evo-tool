@@ -14,9 +14,7 @@ use crate::model::qualified_identity::encrypted_key_storage::{
     PrivateKeyData, WalletDerivationPath,
 };
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
-use crate::model::qualified_identity::{
-    DPNSNameInfo, IdentityStatus, IdentityType, QualifiedIdentity,
-};
+use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::ui::identity::add_new_identity_screen::MAX_IDENTITY_INDEX;
 use dash_sdk::Sdk;
@@ -24,16 +22,13 @@ use dash_sdk::dashcore_rpc::dashcore::PrivateKey;
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dpp::dashcore::ProTxHash;
 use dash_sdk::dpp::dashcore::hashes::Hash;
-use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::identity::KeyType;
 use dash_sdk::dpp::identity::SecurityLevel;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, KeyDerivationType};
-use dash_sdk::dpp::platform_value::Value;
-use dash_sdk::drive::query::{SelectProjection, WhereClause, WhereOperator};
 use dash_sdk::platform::transition::masternode_vote_keys::{select_voting_key, voter_identity_id};
-use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identity};
+use dash_sdk::platform::{Fetch, Identity};
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::convert::TryInto;
@@ -407,60 +402,12 @@ impl AppContext {
             }
         }
 
-        // Fetch DPNS names using SDK
-        let dpns_names_document_query = DocumentQuery {
-            sub_queries: Vec::new(),
-            select: SelectProjection::documents(),
-            data_contract: self.dpns_contract.clone(),
-            document_type_name: "domain".to_string(),
-            where_clauses: vec![WhereClause {
-                field: "records.identity".to_string(),
-                operator: WhereOperator::Equal,
-                value: Value::Identifier(identity_id.into()),
-            }],
-            time_range_clauses: Vec::new(),
-            group_by: Vec::new(),
-            having: Vec::new(),
-            order_by_clauses: vec![],
-            limit: 100,
-            offset: None,
-            start: None,
-        };
-
         let maybe_owned_dpns_names = await_network_request_with_timeout(
             NETWORK_REQUEST_TIMEOUT,
-            Document::fetch_many(sdk, dpns_names_document_query),
+            self.fetch_owned_dpns_names(sdk, identity_id),
             |source| TaskError::IdentityLoadTimeout { source },
         )
-        .await?
-        .map(|document_map| {
-            document_map
-                .values()
-                .filter_map(|maybe_doc| {
-                    maybe_doc.as_ref().and_then(|doc| {
-                        let name = doc
-                            .get("label")
-                            .map(|label| label.to_str().unwrap_or_default());
-                        let acquired_at = doc
-                            .created_at()
-                            .into_iter()
-                            .chain(doc.transferred_at())
-                            .max();
-
-                        match (name, acquired_at) {
-                            (Some(name), Some(acquired_at)) => Some(DPNSNameInfo {
-                                name: name.to_string(),
-                                acquired_at,
-                            }),
-                            _ => None,
-                        }
-                    })
-                })
-                .collect::<Vec<DPNSNameInfo>>()
-        })
-        .map_err(|e| TaskError::DpnsFetchError {
-            source: Box::new(e),
-        })?;
+        .await??;
 
         let mut qualified_identity = QualifiedIdentity {
             identity,

@@ -1,15 +1,10 @@
 use super::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
-use crate::model::qualified_identity::{
-    DPNSNameInfo, IdentityStatus, IdentityType, QualifiedIdentity,
-};
+use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
 use crate::model::wallet::WalletSeedHash;
 use dash_sdk::Sdk;
-use dash_sdk::dpp::document::DocumentV0Getters;
-use dash_sdk::dpp::platform_value::Value;
-use dash_sdk::drive::query::{SelectProjection, WhereClause, WhereOperator};
-use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identity};
+use dash_sdk::platform::{Fetch, Identity};
 
 impl AppContext {
     /// Load an identity by its DPNS name
@@ -34,52 +29,7 @@ impl AppContext {
             Err(e) => return Err(TaskError::from(e)),
         };
 
-        // Fetch all DPNS names owned by this identity
-        let dpns_names_document_query = DocumentQuery {
-            sub_queries: Vec::new(),
-            select: SelectProjection::documents(),
-            data_contract: self.dpns_contract.clone(),
-            document_type_name: "domain".to_string(),
-            where_clauses: vec![WhereClause {
-                field: "records.identity".to_string(),
-                operator: WhereOperator::Equal,
-                value: Value::Identifier(identity_id.into()),
-            }],
-            time_range_clauses: Vec::new(),
-            group_by: Vec::new(),
-            having: Vec::new(),
-            order_by_clauses: vec![],
-            limit: 100,
-            offset: None,
-            start: None,
-        };
-
-        let owned_dpns_names = Document::fetch_many(sdk, dpns_names_document_query)
-            .await
-            .map(|document_map| {
-                document_map
-                    .values()
-                    .filter_map(|maybe_doc| {
-                        maybe_doc.as_ref().and_then(|doc| {
-                            let name = doc.get("label").map(|l| l.to_str().unwrap_or_default());
-                            let acquired_at = doc
-                                .created_at()
-                                .into_iter()
-                                .chain(doc.transferred_at())
-                                .max();
-
-                            match (name, acquired_at) {
-                                (Some(name), Some(acquired_at)) => Some(DPNSNameInfo {
-                                    name: name.to_string(),
-                                    acquired_at,
-                                }),
-                                _ => None,
-                            }
-                        })
-                    })
-                    .collect::<Vec<DPNSNameInfo>>()
-            })
-            .map_err(TaskError::from)?;
+        let owned_dpns_names = self.fetch_owned_dpns_names(sdk, identity_id).await?;
 
         let wallets = self.wallet_context().wallets();
 
@@ -129,10 +79,11 @@ impl AppContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dash_sdk::dpp::document::DocumentV0;
+    use dash_sdk::dpp::document::{DocumentV0, DocumentV0Getters};
     use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+    use dash_sdk::dpp::platform_value::Value;
     use dash_sdk::dpp::version::PlatformVersion;
-    use dash_sdk::platform::Identifier;
+    use dash_sdk::platform::{Document, Identifier};
     use dash_sdk::query_types::Documents;
     use std::collections::BTreeMap;
 

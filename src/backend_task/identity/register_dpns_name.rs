@@ -1,4 +1,5 @@
-use std::collections::BTreeMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::backend_task::FeeResult;
 use crate::backend_task::error::TaskError;
@@ -10,26 +11,24 @@ use crate::{
             normalize_dpns_label, validate_dpns_name,
         },
         fee_estimation::contest_fee_credits,
-        qualified_identity::DPNSNameInfo,
+        qualified_identity::{DPNSNameInfo, QualifiedIdentity},
     },
 };
-use bip39::rand::{Rng, SeedableRng, rngs::StdRng};
 use dash_sdk::{
     Error as SdkError, Sdk,
     dpp::{
-        data_contract::{
-            accessors::v0::DataContractV0Getters, document_type::accessors::DocumentTypeV0Getters,
-        },
-        document::DocumentV0,
+        data_contract::accessors::v0::DataContractV0Getters,
         identity::accessors::{IdentityGettersV0, IdentitySettersV0},
-        platform_value::Bytes32,
-        util::{hash::hash_double, strings::convert_to_homograph_safe_chars},
         version::PlatformVersion,
     },
     platform::Fetch,
-    platform::{Document, Identifier, transition::put_document::PutDocument},
+    platform::dpns_usernames::{
+        RegisterDpnsNameInput as SdkRegistrationInput, RegisterDpnsNameResult,
+    },
+    platform::{Document, Identifier, IdentityPublicKey},
 };
 
+use super::refresh_loaded_identities_dpns_names::name_acquired_at;
 use super::{BackendTaskSuccessResult, RegisterDpnsNameInput};
 use crate::model::dpns_usernames::{dpns_signing_requirement, key_can_sign_documents};
 
@@ -67,123 +66,110 @@ fn required_contest_fee(
     }
 }
 
+/// A failed registration broadcast, by how far it got.
+#[derive(Debug, thiserror::Error)]
+enum BroadcastFailure {
+    /// The first document was not confirmed, so the name request was never sent.
+    #[error("the first registration document was not confirmed")]
+    Preorder(#[source] Box<SdkError>),
+    /// The first document was confirmed and paid for; the name request failed
+    /// and may have been applied anyway.
+    #[error("the name request failed after the first registration document was confirmed")]
+    Domain(#[source] Box<SdkError>),
+}
+
+impl BroadcastFailure {
+    /// Sort a failed broadcast by whether the first document had been confirmed.
+    fn at_stage(preorder_confirmed: bool, error: SdkError) -> Self {
+        if preorder_confirmed {
+            Self::Domain(Box::new(error))
+        } else {
+            Self::Preorder(Box::new(error))
+        }
+    }
+}
+
+/// Broadcast the two registration documents for `label` through `register`,
+/// the SDK's registration call, returning the confirmed name document.
+///
+/// The SDK reports one error for both documents; it calls back between them,
+/// once the first is confirmed, which is what tells the two failures apart.
+async fn broadcast_name_registration<F, Fut>(
+    identity: &QualifiedIdentity,
+    signing_key: IdentityPublicKey,
+    label: &str,
+    register: F,
+) -> Result<Document, BroadcastFailure>
+where
+    F: FnOnce(SdkRegistrationInput<QualifiedIdentity>) -> Fut,
+    Fut: Future<Output = Result<RegisterDpnsNameResult, SdkError>>,
+{
+    // Written once by the SDK's callback, read only after its call returns.
+    let preorder_confirmed = Arc::new(AtomicBool::new(false));
+    let confirmed = Arc::clone(&preorder_confirmed);
+    let input = SdkRegistrationInput {
+        label: label.to_owned(),
+        identity: identity.identity.clone(),
+        identity_public_key: signing_key,
+        signer: identity.clone(),
+        preorder_callback: Some(Box::new(move |_| confirmed.store(true, Ordering::Release))),
+    };
+    register(input)
+        .await
+        .map(|registered| registered.domain_document)
+        .map_err(|error| {
+            BroadcastFailure::at_stage(preorder_confirmed.load(Ordering::Acquire), error)
+        })
+}
+
 impl AppContext {
     pub(super) async fn register_dpns_name(
         &self,
         sdk: &Sdk,
         input: RegisterDpnsNameInput,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
+        self.register_dpns_name_through(sdk, input, |registration| {
+            sdk.register_dpns_name(registration)
+        })
+        .await
+    }
+
+    /// [`Self::register_dpns_name`] with the SDK's registration call passed in
+    /// as `register`, so everything around the broadcast runs without a network.
+    async fn register_dpns_name_through<F, Fut>(
+        &self,
+        sdk: &Sdk,
+        input: RegisterDpnsNameInput,
+        register: F,
+    ) -> Result<BackendTaskSuccessResult, TaskError>
+    where
+        F: FnOnce(SdkRegistrationInput<QualifiedIdentity>) -> Fut,
+        Fut: Future<Output = Result<RegisterDpnsNameResult, SdkError>>,
+    {
         let validation = validate_dpns_name(&input.name_input);
         if validation != DpnsNameValidationResult::Valid {
             return Err(TaskError::InvalidDpnsName { validation });
         }
 
-        let mut rng = StdRng::from_entropy();
         let dpns_contract = self.dpns_contract.clone();
 
         let qualified_identity = input.qualified_identity;
 
-        let entropy = Bytes32::random_with_rng(&mut rng);
         let preorder_document_type = dpns_contract
             .document_type_for_name("preorder")
             .map_err(|_| TaskError::DataContractNotFound)?;
         let domain_document_type = dpns_contract
             .document_type_for_name("domain")
             .map_err(|_| TaskError::DataContractNotFound)?;
-
-        let preorder_id = Document::generate_document_id_v0(
-            &dpns_contract.id(),
-            &qualified_identity.identity.id(),
-            preorder_document_type.name().as_str(),
-            entropy.as_slice(),
-        );
-        let domain_id = Document::generate_document_id_v0(
-            &dpns_contract.id(),
-            &qualified_identity.identity.id(),
-            domain_document_type.name().as_str(),
-            entropy.as_slice(),
-        );
-
-        let salt: [u8; 32] = rng.r#gen();
-        let mut salted_domain_buffer: Vec<u8> = vec![];
-        salted_domain_buffer.extend(salt);
-        salted_domain_buffer
-            .extend((convert_to_homograph_safe_chars(&input.name_input) + ".dash").as_bytes());
-        let salted_domain_hash = hash_double(salted_domain_buffer);
-
-        let preorder_document = Document::V0(DocumentV0 {
-            id: preorder_id,
-            owner_id: qualified_identity.identity.id(),
-            creator_id: None,
-            properties: BTreeMap::from([(
-                "saltedDomainHash".to_string(),
-                salted_domain_hash.into(),
-            )]),
-            revision: None,
-            created_at: None,
-            updated_at: None,
-            transferred_at: None,
-            created_at_block_height: None,
-            updated_at_block_height: None,
-            transferred_at_block_height: None,
-            created_at_core_block_height: None,
-            updated_at_core_block_height: None,
-            transferred_at_core_block_height: None,
-            contract_version: None,
-        });
-        let domain_document = Document::V0(DocumentV0 {
-            id: domain_id,
-            owner_id: qualified_identity.identity.id(),
-            creator_id: None,
-            properties: BTreeMap::from([
-                ("parentDomainName".to_string(), "dash".into()),
-                ("normalizedParentDomainName".to_string(), "dash".into()),
-                ("label".to_string(), input.name_input.clone().into()),
-                (
-                    "normalizedLabel".to_string(),
-                    convert_to_homograph_safe_chars(&input.name_input).into(),
-                ),
-                ("preorderSalt".to_string(), salt.into()),
-                (
-                    "records".to_string(),
-                    BTreeMap::from([(
-                        "identity".to_string(),
-                        Into::<dash_sdk::dpp::platform_value::Value>::into(
-                            qualified_identity.identity.id(),
-                        ),
-                    )])
-                    .into(),
-                ),
-                (
-                    "subdomainRules".to_string(),
-                    BTreeMap::from([(
-                        "allowSubdomains".to_string(),
-                        Into::<dash_sdk::dpp::platform_value::Value>::into(false),
-                    )])
-                    .into(),
-                ),
-            ]),
-            revision: None,
-            created_at: None,
-            updated_at: None,
-            transferred_at: None,
-            created_at_block_height: None,
-            updated_at_block_height: None,
-            transferred_at_block_height: None,
-            created_at_core_block_height: None,
-            updated_at_core_block_height: None,
-            transferred_at_core_block_height: None,
-            contract_version: None,
-        });
         let outcome = classify_dpns_registration_outcome(
             &domain_document_type,
-            &domain_document,
+            &input.name_input,
             sdk.version(),
         )
         .map_err(|error| SdkError::Protocol(*error))?;
 
-        // The approval is checked against the document that is broadcast, so it
-        // can never cover a different charge than the one Platform applies.
+        // The approval is checked against the network contract's own contest
+        // rule, so it can never cover a different charge than Platform applies.
         if input.approved_contest_fee != required_contest_fee(outcome, sdk.version()) {
             return Err(TaskError::UsernameRegistrationTermsChanged);
         }
@@ -214,41 +200,30 @@ impl AppContext {
 
         let balance_before = qualified_identity.identity.balance();
 
-        let _ = preorder_document
-            .put_to_platform_and_wait_for_response(
-                sdk,
-                preorder_document_type.to_owned_document_type(),
-                Some(entropy.0),
-                public_key.clone(),
-                None,
-                &qualified_identity,
-                None,
-            )
+        let confirmed_at = match broadcast_name_registration(
+            &qualified_identity,
+            public_key.clone(),
+            &input.name_input,
+            register,
+        )
+        .await
+        {
+            Ok(domain_document) => name_acquired_at(&domain_document),
             // Not rebranded: preorder's only unique index, `saltedDomainHash`, is unrelated to
             // usernames, so conflicts keep the generic `PlatformEntryConflict` message.
-            .await?;
-
-        if let Err(error) = domain_document
-            .put_to_platform_and_wait_for_response(
-                sdk,
-                domain_document_type.to_owned_document_type(),
-                Some(entropy.0),
-                public_key.clone(),
-                None,
-                &qualified_identity,
-                None,
-            )
-            .await
-        {
-            self.resolve_failed_domain_broadcast(
-                sdk,
-                qualified_identity.identity.id(),
-                &input.name_input,
-                outcome,
-                error,
-            )
-            .await?;
-        }
+            Err(BroadcastFailure::Preorder(error)) => return Err(TaskError::from(*error)),
+            Err(BroadcastFailure::Domain(error)) => {
+                self.resolve_failed_domain_broadcast(
+                    sdk,
+                    qualified_identity.identity.id(),
+                    &input.name_input,
+                    outcome,
+                    *error,
+                )
+                .await?;
+                None
+            }
+        };
 
         Ok(self
             .finish_username_registration(
@@ -259,6 +234,7 @@ impl AppContext {
                 joined_until,
                 balance_before,
                 estimated_fee,
+                confirmed_at,
             )
             .await)
     }
@@ -333,6 +309,9 @@ impl AppContext {
 
     /// Wrap up a registration whose documents were already broadcast and paid for.
     ///
+    /// `confirmed_at` is when the network confirmed the name document; `None`
+    /// when the registration was accepted as sent without one.
+    ///
     /// Infallible on purpose: the user has paid, so a failed re-read or local
     /// save is logged and the registration still reports success, never inviting
     /// a second payment.
@@ -343,12 +322,13 @@ impl AppContext {
     async fn finish_username_registration(
         &self,
         sdk: &Sdk,
-        identity: crate::model::qualified_identity::QualifiedIdentity,
+        identity: QualifiedIdentity,
         name: &str,
         outcome: DpnsRegistrationOutcome,
         joined_until: Option<u64>,
         balance_before: u64,
         estimated_fee: u64,
+        confirmed_at: Option<u64>,
     ) -> BackendTaskSuccessResult {
         // The name request is broadcast and paid for: from here on nothing may
         // report failure, or the user would be invited to pay again.
@@ -362,17 +342,6 @@ impl AppContext {
                 "Submitted username request could not be stored locally"
             );
         }
-
-        let refreshed_names = match self.fetch_owned_dpns_names(sdk, identity_id).await {
-            Ok(names) => Some(names),
-            Err(error) => {
-                tracing::warn!(
-                    ?error,
-                    "Registered names could not be re-read after registration"
-                );
-                None
-            }
-        };
 
         let mut refreshed_balance = None;
         let fee_result = match dash_sdk::platform::Identity::fetch_by_identifier(sdk, identity_id)
@@ -397,17 +366,12 @@ impl AppContext {
         };
 
         if let Err(error) = self.edit_local_qualified_identity(&identity_id, |fresh| {
-            if let Some(names) = refreshed_names {
-                fresh.dpns_names = names;
-            }
-            // A re-read served by a node that has not seen the new name yet
-            // must not drop it: the registration is already paid for.
             if outcome == DpnsRegistrationOutcome::Registered
                 && !fresh.dpns_names.iter().any(|known| known.name == name)
             {
                 fresh.dpns_names.push(DPNSNameInfo {
                     name: name.to_owned(),
-                    acquired_at: crate::utils::time::now_ms(),
+                    acquired_at: confirmed_at.unwrap_or_else(crate::utils::time::now_ms),
                 });
             }
             if let Some(balance) = refreshed_balance {
@@ -437,7 +401,7 @@ mod tests {
     use dash_sdk::dpp::block::block_info::BlockInfo;
     use dash_sdk::dpp::consensus::ConsensusError::StateError as ConsensusStateError;
     use dash_sdk::dpp::consensus::state::state_error::StateError;
-    use dash_sdk::dpp::document::DocumentV0Getters;
+    use dash_sdk::dpp::document::{DocumentV0, DocumentV0Getters};
     use dash_sdk::dpp::voting::contender_structs::{
         ContenderWithSerializedDocument, ContenderWithSerializedDocumentV0,
     };
@@ -446,6 +410,7 @@ mod tests {
         ContestedDocumentVotePollDriveQuery, ContestedDocumentVotePollDriveQueryResultType,
     };
     use dash_sdk::query_types::{Contenders, Documents};
+    use std::collections::BTreeMap;
 
     #[test]
     fn dpns_registration_needs_a_high_or_critical_key() {
@@ -537,6 +502,7 @@ mod tests {
             None,
             1_000,
             100,
+            None,
         )
         .await;
         let saved = ctx
@@ -548,27 +514,24 @@ mod tests {
         assert!(saved.dpns_names.iter().any(|name| name.name == "alice-123"));
     }
 
-    /// A re-read that succeeds but lags behind the registration must not drop
-    /// the name the user just paid for from the identity.
+    /// The registered name and its date come from the confirmed registration
+    /// itself, next to the names the identity already had, with no re-read.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn registered_name_survives_a_lagging_reread() {
+    async fn registered_name_and_date_come_from_the_confirmed_registration() {
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = crate::context::test_support::test_app_context(dir.path());
         ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(
             std::sync::Arc::new(crate::wallet_backend::kv_test_support::InMemoryKv::default()),
         ));
-        let identity = bare_identity(5);
+        let mut identity = bare_identity(5);
+        identity.dpns_names.push(DPNSNameInfo {
+            name: "earlier-name-2".to_owned(),
+            acquired_at: 7,
+        });
         let id = identity.identity.id();
         ctx.update_local_qualified_identity(&identity).unwrap();
-        // The node answers, but only with a name registered earlier.
-        let mut sdk = Sdk::new_mock();
-        sdk.mock()
-            .expect_fetch_many::<Identifier, Document, _, Documents>(
-                ctx.owned_dpns_names_query(id),
-                Some(documents(Some(domain_document(id, "earlier-name-2")))),
-            )
-            .await
-            .expect("owned names expectation");
+        // No expectations: nothing may depend on reading the names back.
+        let sdk = Sdk::new_mock();
 
         ctx.finish_username_registration(
             &sdk,
@@ -578,12 +541,189 @@ mod tests {
             None,
             1_000,
             100,
+            Some(4_242),
         )
         .await;
 
         let saved = ctx.get_local_qualified_identity(&id).unwrap().unwrap();
-        let names: Vec<&str> = saved.dpns_names.iter().map(|n| n.name.as_str()).collect();
-        assert_eq!(names, ["earlier-name-2", "alice-123"]);
+        let names: Vec<(&str, u64)> = saved
+            .dpns_names
+            .iter()
+            .map(|n| (n.name.as_str(), n.acquired_at))
+            .collect();
+        assert_eq!(names, [("earlier-name-2", 7), ("alice-123", 4_242)]);
+    }
+
+    /// The date saved for a newly registered name is the one on the name
+    /// document the network confirmed, carried there by the registration itself.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn registration_saves_the_date_of_the_confirmed_name_document() {
+        use dash_sdk::dpp::document::DocumentV0Setters;
+        use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+        use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(
+            std::sync::Arc::new(crate::wallet_backend::kv_test_support::InMemoryKv::default()),
+        ));
+        let mut identity = bare_identity(3);
+        // A key allowed to sign name documents; nothing signs while the SDK is stood in for.
+        identity
+            .identity
+            .add_public_keys([IdentityPublicKey::V0(IdentityPublicKeyV0 {
+                id: 1,
+                purpose: Purpose::AUTHENTICATION,
+                security_level: SecurityLevel::HIGH,
+                contract_bounds: None,
+                key_type: KeyType::ECDSA_SECP256K1,
+                read_only: false,
+                data: vec![2; 33].into(),
+                disabled_at: None,
+            })]);
+        let id = identity.identity.id();
+        ctx.update_local_qualified_identity(&identity).unwrap();
+        let mut sdk = Sdk::new_mock();
+        expect_domain_lookup(&mut sdk, &ctx, "alice-123", false).await;
+        let mut confirmed = domain_document(id, "alice-123");
+        confirmed.set_created_at(Some(4_242));
+
+        let result = ctx
+            .register_dpns_name_through(
+                &sdk,
+                RegisterDpnsNameInput {
+                    qualified_identity: identity,
+                    name_input: "alice-123".to_owned(),
+                    approved_contest_fee: 0,
+                    signing_key_id: Some(1),
+                },
+                |_| async move {
+                    Ok(RegisterDpnsNameResult {
+                        preorder_document: confirmed.clone(),
+                        domain_document: confirmed,
+                        full_domain_name: "alice-123.dash".to_owned(),
+                    })
+                },
+            )
+            .await
+            .expect("the registration succeeds");
+
+        assert!(matches!(
+            result,
+            BackendTaskSuccessResult::RegisteredDpnsName {
+                outcome: DpnsRegistrationOutcome::Registered,
+                ..
+            }
+        ));
+        let saved = ctx.get_local_qualified_identity(&id).unwrap().unwrap();
+        let names: Vec<(&str, u64)> = saved
+            .dpns_names
+            .iter()
+            .map(|n| (n.name.as_str(), n.acquired_at))
+            .collect();
+        assert_eq!(names, [("alice-123", 4_242)]);
+    }
+
+    /// A registration accepted as sent after an error has no confirmed
+    /// document, so the name is listed with the local time.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn registered_name_without_a_confirmed_document_gets_the_local_time() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(
+            std::sync::Arc::new(crate::wallet_backend::kv_test_support::InMemoryKv::default()),
+        ));
+        let identity = bare_identity(6);
+        let id = identity.identity.id();
+        ctx.update_local_qualified_identity(&identity).unwrap();
+        let before = crate::utils::time::now_ms();
+
+        ctx.finish_username_registration(
+            &Sdk::new_mock(),
+            identity,
+            "alice-123",
+            DpnsRegistrationOutcome::Registered,
+            None,
+            1_000,
+            100,
+            None,
+        )
+        .await;
+
+        let saved = ctx.get_local_qualified_identity(&id).unwrap().unwrap();
+        assert_eq!(saved.dpns_names.len(), 1);
+        assert_eq!(saved.dpns_names[0].name, "alice-123");
+        assert!(saved.dpns_names[0].acquired_at >= before);
+    }
+
+    /// A broadcast that fails before the first document is confirmed has paid
+    /// for nothing; one that fails after it has, and must never read as a
+    /// plain failure.
+    #[test]
+    fn failed_broadcast_is_sorted_by_whether_the_first_document_was_confirmed() {
+        assert!(matches!(
+            BroadcastFailure::at_stage(false, unproven_broadcast_failure()),
+            BroadcastFailure::Preorder(_)
+        ));
+        assert!(matches!(
+            BroadcastFailure::at_stage(true, unproven_broadcast_failure()),
+            BroadcastFailure::Domain(_)
+        ));
+    }
+
+    /// The SDK calls back once the first document is confirmed. A failure it
+    /// reports after that call is the paid-for stage, which holds only while
+    /// the callback handed to the SDK sets the flag read once it returns.
+    #[tokio::test]
+    async fn failure_after_the_sdk_confirms_the_first_document_is_the_paid_stage() {
+        let identity = bare_identity(4);
+        let key = dash_sdk::platform::IdentityPublicKey::random_key(
+            1,
+            Some(4),
+            PlatformVersion::latest(),
+        );
+        let confirmed_preorder = domain_document(identity.identity.id(), "alice-123");
+
+        let failure =
+            broadcast_name_registration(&identity, key, "alice-123", |input| async move {
+                // As the SDK does: report the confirmed first document if asked to.
+                if let Some(report_confirmed) = input.preorder_callback {
+                    report_confirmed(&confirmed_preorder);
+                }
+                Err(unproven_broadcast_failure())
+            })
+            .await
+            .expect_err("the name request failed");
+
+        assert!(
+            matches!(failure, BroadcastFailure::Domain(_)),
+            "got {failure:?}"
+        );
+    }
+
+    /// With no node to confirm the first document, the broadcast stops there.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn broadcast_that_cannot_confirm_the_first_document_reports_that_stage() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let sdk = crate::context::test_support::mock_sdk_for(&ctx);
+        let identity = bare_identity(4);
+        let key = dash_sdk::platform::IdentityPublicKey::random_key(
+            1,
+            Some(4),
+            PlatformVersion::latest(),
+        );
+
+        let failure = broadcast_name_registration(&identity, key, "alice-123", |input| {
+            sdk.register_dpns_name(input)
+        })
+        .await
+        .expect_err("nothing can be broadcast on a mock");
+
+        assert!(
+            matches!(failure, BroadcastFailure::Preorder(_)),
+            "got {failure:?}"
+        );
     }
 
     /// Once the documents are broadcast and paid for, failed re-reads must not
@@ -612,6 +752,7 @@ mod tests {
                 None,
                 1_000,
                 200,
+                None,
             )
             .await;
         let BackendTaskSuccessResult::RegisteredDpnsName {
@@ -636,6 +777,7 @@ mod tests {
                 None,
                 1_000,
                 100,
+                None,
             )
             .await;
         assert!(matches!(
@@ -670,11 +812,10 @@ mod tests {
         }
     }
 
-    /// The fee the user must have approved follows the document's own
-    /// classification: a document that opens a vote always requires the fee,
-    /// whatever any other predicate said about its label.
+    /// The fee the user must have approved follows the contest rule's verdict:
+    /// a name that opens a vote always requires the fee.
     #[test]
-    fn required_contest_fee_follows_the_broadcast_document() {
+    fn required_contest_fee_follows_the_contest_rule() {
         let version = PlatformVersion::latest();
         let fee = contest_fee_credits(version);
         assert!(fee > 0);
@@ -1053,6 +1194,7 @@ mod tests {
             Some(join_end),
             1_000,
             200,
+            None,
         )
         .await;
 

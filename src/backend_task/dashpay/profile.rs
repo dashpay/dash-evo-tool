@@ -8,7 +8,7 @@ use dash_sdk::Sdk;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::{Value, string_encoding::Encoding};
-use dash_sdk::drive::query::{OrderClause, WhereClause, WhereOperator};
+use dash_sdk::drive::query::{WhereClause, WhereOperator};
 use dash_sdk::platform::{Document, DocumentQuery, FetchMany, Identifier};
 use platform_wallet::ProfileUpdate;
 use std::sync::Arc;
@@ -343,6 +343,9 @@ pub async fn fetch_contact_profile(
     Ok(BackendTaskSuccessResult::DashPayContactProfile(profile_doc))
 }
 
+/// Most names a profile search lists for one prefix.
+const PROFILE_SEARCH_LIMIT: u32 = 20;
+
 /// Search for users on the Platform by DPNS username (per DIP-12/DIP-15)
 ///
 /// Per the DIPs, search should:
@@ -355,7 +358,6 @@ pub async fn search_profiles(
     sdk: &Sdk,
     search_query: String,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
-    let dpns_contract = app_context.dpns_contract.clone();
     let dashpay_contract = app_context.dashpay_contract.clone();
     let mut results: Vec<(Identifier, Option<Document>, String)> = Vec::new();
 
@@ -366,55 +368,15 @@ pub async fn search_profiles(
         ));
     }
 
-    let normalized_query = crate::model::dpns::normalize_dpns_label(query_trimmed);
-
-    // Search DPNS for usernames starting with the query
-    let mut dpns_query =
-        DocumentQuery::new(dpns_contract, "domain").map_err(|e| DashPayError::QueryCreation {
-            query_target: "DPNS domain",
-            source: Box::new(e.into()),
-        })?;
-
-    dpns_query = dpns_query
-        .with_where(WhereClause {
-            field: "normalizedParentDomainName".to_string(),
-            operator: WhereOperator::Equal,
-            value: Value::Text("dash".to_string()),
-        })
-        .with_where(WhereClause {
-            field: "normalizedLabel".to_string(),
-            operator: WhereOperator::StartsWith,
-            value: Value::Text(normalized_query.clone()),
-        })
-        .with_order_by(OrderClause {
-            field: "normalizedLabel".to_string(),
-            ascending: true,
-        }); // Required for StartsWith range query
-    dpns_query.limit = 20; // Limit results
-
-    let dpns_results = Document::fetch_many(sdk, dpns_query).await?;
-
-    // Collect identity IDs and usernames from DPNS results
-    let mut identity_usernames: Vec<(Identifier, String)> = Vec::new();
-    for (_, doc) in dpns_results {
-        if let Some(document) = doc {
-            // Extract identity ID from records.identity — the authoritative
-            // reference, which may differ from owner_id() after name transfers.
-            let identity_id = crate::model::dpns::extract_identity_id_from_dpns_document(&document);
-
-            let Some(identity_id) = identity_id else {
-                continue;
-            };
-
-            let username = document
-                .get("label")
-                .and_then(|v| v.as_text())
-                .map(|s| format!("{}.dash", s))
-                .unwrap_or_else(|| format!("{}.dash", identity_id.to_string(Encoding::Base58)));
-
-            identity_usernames.push((identity_id, username));
-        }
-    }
+    // Each name is listed under the identity its own record points at, which
+    // after a transfer is not the document's owner.
+    let prefix = crate::model::dpns::strip_dash_suffix(query_trimmed);
+    let identity_usernames: Vec<(Identifier, String)> = sdk
+        .search_dpns_names(prefix, Some(PROFILE_SEARCH_LIMIT))
+        .await?
+        .into_iter()
+        .filter_map(|name| Some((name.records_identity_id?, name.full_name)))
+        .collect();
 
     // Fetch profiles for each identity
     for (identity_id, username) in identity_usernames {
@@ -453,6 +415,59 @@ pub async fn search_profiles(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A name found by prefix is listed under the identity its record points
+    /// at, which after a transfer is not the document's owner.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn search_lists_the_identity_each_matching_name_points_at() {
+        use dash_sdk::drive::query::OrderClause;
+        use dash_sdk::query_types::Documents;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let previous_owner = Identifier::from([1; 32]);
+        let holder = Identifier::from([2; 32]);
+        let name = crate::context::test_support::dpns_name_document(
+            previous_owner,
+            "Alice",
+            Value::Identifier(holder.to_buffer()),
+        );
+        let mut prefix_query = DocumentQuery::new(ctx.dpns_contract.clone(), "domain")
+            .expect("domain query")
+            .with_where(WhereClause {
+                field: "normalizedParentDomainName".to_string(),
+                operator: WhereOperator::Equal,
+                value: Value::Text("dash".to_string()),
+            })
+            .with_where(WhereClause {
+                field: "normalizedLabel".to_string(),
+                operator: WhereOperator::StartsWith,
+                value: Value::Text("a11".to_string()),
+            })
+            .with_order_by(OrderClause {
+                field: "normalizedLabel".to_string(),
+                ascending: true,
+            });
+        prefix_query.limit = 20;
+        let mut sdk = crate::context::test_support::mock_sdk_for(&ctx);
+        sdk.mock()
+            .expect_fetch_many::<Identifier, Document, _, Documents>(
+                prefix_query,
+                Some(Documents::from_iter([(name.id(), Some(name))])),
+            )
+            .await
+            .expect("prefix search expectation");
+
+        // The profile lookup has no expectation: a missing profile still lists the user.
+        let found = search_profiles(&ctx, &sdk, " Ali ".to_string())
+            .await
+            .expect("search succeeds");
+
+        let BackendTaskSuccessResult::DashPayProfileSearchResults(found) = found else {
+            panic!("expected search results, got {found:?}");
+        };
+        assert_eq!(found, vec![(holder, None, "Alice.dash".to_string())]);
+    }
 
     fn empty_identity() -> QualifiedIdentity {
         QualifiedIdentity {

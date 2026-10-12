@@ -88,11 +88,7 @@ impl AppContext {
             .flatten()
             .filter_map(|doc| {
                 let name = doc.get("label")?.to_str().ok()?.to_owned();
-                let acquired_at = doc
-                    .created_at()
-                    .into_iter()
-                    .chain(doc.transferred_at())
-                    .max()?;
+                let acquired_at = name_acquired_at(doc)?;
                 Some(DPNSNameInfo { name, acquired_at })
             })
             .collect())
@@ -119,6 +115,16 @@ impl AppContext {
             start: None,
         }
     }
+}
+
+/// When a name document came to its current holder: the later of its
+/// creation and its last transfer.
+pub(super) fn name_acquired_at(document: &Document) -> Option<u64> {
+    document
+        .created_at()
+        .into_iter()
+        .chain(document.transferred_at())
+        .max()
 }
 
 #[cfg(test)]

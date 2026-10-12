@@ -115,6 +115,11 @@ impl AppContext {
             .store(now_ms(), std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// Whether a contest refresh pass is running or waiting for its turn.
+    pub fn dpns_contest_refresh_running(&self) -> bool {
+        self.dpns_contest_refresh_pass.try_lock().is_err()
+    }
+
     /// When the last contest + vote-state refresh completed (Unix ms).
     pub fn dpns_contests_refreshed_at_ms(&self) -> Option<u64> {
         match self
@@ -527,6 +532,48 @@ mod tests {
         let summary = AttentionSummary::new(&attention, 0, 1);
         assert_eq!(summary.needs_decision, 1);
         assert!(summary.soonest_end.is_some());
+    }
+
+    /// A first load proves the node's votes within seconds and stores the
+    /// proof; quitting then leaves it next to hundreds of listed names nobody
+    /// has read. The next start must not count those as waiting for a vote.
+    #[test]
+    fn a_fresh_start_does_not_count_unread_history_as_needing_a_decision() {
+        let store = Arc::new(crate::wallet_backend::kv_test_support::InMemoryKv::default());
+        let context_on_store = |dir: &std::path::Path| {
+            let kv = crate::wallet_backend::DetKv::from_store(store.clone());
+            let context =
+                crate::context::test_support::test_app_context_with_kv(dir, Arc::new(kv.clone()));
+            context.set_det_kv_override_for_test(kv);
+            context
+        };
+        let node = Identifier::from([1; 32]);
+        let history: Vec<String> = (0..300)
+            .map(|index| format!("history-{index:03}"))
+            .collect();
+        {
+            let first_dir = tempfile::tempdir().expect("tempdir");
+            let first_run = context_on_store(first_dir.path());
+            first_run.seed_dpns_contest_for_test("alpha", Some(now_ms() + 600_000), false);
+            first_run
+                .insert_name_contests_as_normalized_names(history)
+                .expect("list the unread history");
+            first_run
+                .seed_proved_dpns_votes_at_for_test(node, BTreeMap::new(), now_ms())
+                .unwrap();
+        }
+
+        let second_dir = tempfile::tempdir().expect("tempdir");
+        let second_run = context_on_store(second_dir.path());
+        let needing_decision: Vec<String> = second_run
+            .dpns_contest_attention(&[node], &[])
+            .expect("attention")
+            .into_iter()
+            .filter(|contest| contest.needs_decision)
+            .map(|contest| contest.name)
+            .collect();
+
+        assert_eq!(needing_decision, ["alpha"]);
     }
 
     #[test]

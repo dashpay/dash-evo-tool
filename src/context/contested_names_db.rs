@@ -102,7 +102,24 @@ fn vote_state_summary(states: &[DpnsCurrentVoteState]) -> MasternodeVoteStateSum
     }
 }
 
+/// The contender queries of one refresh pass, in the order they are sent.
+#[derive(Debug, Default)]
+pub(crate) struct ContenderQueue {
+    /// Contests known to be still open; read first.
+    pub(crate) open: Vec<String>,
+    /// Every other contest, read after them.
+    pub(crate) rest: Vec<String>,
+    /// Those of `rest` never read before: unread history, as far as is known.
+    pub(crate) unread: BTreeSet<String>,
+}
+
 impl StoredContestedName {
+    /// Whether the contest ended and its outcome is stored. That outcome is
+    /// final, so the record has nothing left to refresh.
+    fn has_outcome(&self) -> bool {
+        self.locked || self.awarded_to.is_some()
+    }
+
     fn to_contested_name(&self, network: Network) -> ContestedName {
         let join_window = crate::model::dpns::contest_durations(
             network,
@@ -230,7 +247,9 @@ impl AppContext {
     }
 
     /// Fetches every DPNS contest cached in the per-network k/v store whose
-    /// `end_time` is in the future (or unknown).
+    /// `end_time` is in the future (or unknown), except names that were only
+    /// listed so far ([`ContestedName::is_unread`]). Those are history until
+    /// read: counting them as open would show each as waiting for a vote.
     pub fn ongoing_contested_names(&self) -> std::result::Result<Vec<ContestedName>, TaskError> {
         let current_timestamp = now_ms();
         let kv = self.det_kv()?;
@@ -242,7 +261,12 @@ impl AppContext {
             match kv.get::<StoredContestedName>(DetScope::Global, &key) {
                 Ok(Some(stored)) => match stored.end_time {
                     Some(t) if t <= current_timestamp => {}
-                    _ => out.push(stored.to_contested_name(self.network)),
+                    _ => {
+                        let contest = stored.to_contested_name(self.network);
+                        if !contest.is_unread() {
+                            out.push(contest);
+                        }
+                    }
                 },
                 Ok(None) => {}
                 Err(e) => tracing::warn!(
@@ -727,13 +751,16 @@ impl AppContext {
     /// Apply a batch of newly-seen normalized names. New names are stored
     /// as empty contest skeletons; existing names whose `last_updated` is
     /// older than 30 s are returned alongside new names for the caller to
-    /// refresh — matching pre-C6 staleness gating.
+    /// refresh — matching pre-C6 staleness gating. A contest whose outcome
+    /// is stored is final: it is stamped as current and never returned, as
+    /// the caller spends one query per returned name.
     pub fn insert_name_contests_as_normalized_names(
         &self,
         name_contests: Vec<String>,
     ) -> std::result::Result<Vec<String>, TaskError> {
         let kv = self.det_kv()?;
-        let stale_threshold = chrono::Utc::now().timestamp() - 30;
+        let now = chrono::Utc::now().timestamp();
+        let stale_threshold = now - 30;
         let mut new_names: Vec<String> = Vec::new();
         let mut stale: Vec<(String, Option<i64>)> = Vec::new();
 
@@ -752,6 +779,11 @@ impl AppContext {
                         .map_err(contest_err)?;
                     new_names.push(name);
                 }
+                Some(mut stored) if stored.has_outcome() => {
+                    stored.last_updated = Some(now as u64);
+                    kv.put(DetScope::Global, &key, &stored)
+                        .map_err(contest_err)?;
+                }
                 Some(stored) => {
                     let last_updated = stored.last_updated.map(|t| t as i64);
                     if last_updated.is_none_or(|t| t < stale_threshold) {
@@ -766,6 +798,33 @@ impl AppContext {
         stale.extend(new_names.into_iter().map(|name| (name, None)));
         stale.sort_by_key(|a| a.1.unwrap_or(0));
         Ok(stale.into_iter().map(|(name, _)| name).collect())
+    }
+
+    /// Split the names a pass is about to read: contests known to be still
+    /// open — those with an end time in the future — go first, the order
+    /// within each group is kept.
+    pub(crate) fn contender_queue(
+        &self,
+        names: Vec<String>,
+    ) -> std::result::Result<ContenderQueue, TaskError> {
+        let kv = self.det_kv()?;
+        let now = now_ms();
+        let mut queue = ContenderQueue::default();
+        for name in names {
+            let stored = kv
+                .get::<StoredContestedName>(DetScope::Global, &contested_name_key(&name))
+                .map_err(contest_err)?;
+            let end_time = stored.as_ref().and_then(|stored| stored.end_time);
+            if end_time.is_some_and(|end| end > now) {
+                queue.open.push(name);
+            } else {
+                if stored.is_none_or(|stored| stored.last_updated.is_none()) {
+                    queue.unread.insert(name.clone());
+                }
+                queue.rest.push(name);
+            }
+        }
+        Ok(queue)
     }
 
     /// Update a single contest record with the latest set of contenders.
@@ -1471,6 +1530,189 @@ mod tests {
     #[test]
     fn contest_key_is_prefixed_with_normalized_name() {
         assert_eq!(contested_name_key("dash"), "det:contested_name:dash");
+    }
+
+    /// Every name queued here costs one contender query, so a finished contest
+    /// must not be queued again, however long its history and however old its
+    /// record.
+    #[test]
+    fn a_long_finished_history_queues_only_open_and_new_contests() {
+        const FINISHED_CONTESTS: usize = 600;
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let context = test_app_context(temp_dir.path());
+        let kv = empty_kv();
+        context.set_det_kv_override_for_test(kv.clone());
+        let store = |stored: StoredContestedName| {
+            let key = contested_name_key(&stored.normalized_contested_name);
+            kv.put(DetScope::Global, &key, &stored).unwrap();
+        };
+
+        let mut listed = vec!["open".to_owned(), "brand-new".to_owned()];
+        for index in 0..FINISHED_CONTESTS {
+            let name = format!("finished-{index}");
+            // Half were won, half ended locked; all were last read long ago.
+            store(StoredContestedName {
+                normalized_contested_name: name.clone(),
+                awarded_to: (index % 2 == 0).then_some([7; 32]),
+                locked: index % 2 == 1,
+                last_updated: Some(1),
+                ..Default::default()
+            });
+            listed.push(name);
+        }
+        store(StoredContestedName {
+            normalized_contested_name: "open".to_owned(),
+            contestants: vec![contestant(1, Some(1))],
+            last_updated: Some(1),
+            ..Default::default()
+        });
+
+        let mut queued = context
+            .insert_name_contests_as_normalized_names(listed)
+            .expect("queue contests for refresh");
+        queued.sort();
+
+        assert_eq!(queued, ["brand-new", "open"]);
+    }
+
+    /// A refresh that lists a finished contest has confirmed it, so History
+    /// shows it as just updated although nothing more was asked about it.
+    #[test]
+    fn a_listed_finished_contest_reads_as_just_updated() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let context = test_app_context(temp_dir.path());
+        let kv = empty_kv();
+        context.set_det_kv_override_for_test(kv.clone());
+        let key = contested_name_key("finished");
+        let finished = StoredContestedName {
+            normalized_contested_name: "finished".to_owned(),
+            awarded_to: Some([7; 32]),
+            end_time: Some(1_700),
+            last_updated: Some(1),
+            contestants: vec![contestant(1, Some(10))],
+            ..Default::default()
+        };
+        kv.put(DetScope::Global, &key, &finished).unwrap();
+        let listed_at = chrono::Utc::now().timestamp() as u64;
+
+        let queued = context
+            .insert_name_contests_as_normalized_names(vec!["finished".to_owned()])
+            .expect("queue contests for refresh");
+
+        assert!(queued.is_empty());
+        let stored: StoredContestedName = kv.get(DetScope::Global, &key).unwrap().unwrap();
+        assert!(stored.last_updated.is_some_and(|at| at >= listed_at));
+        assert_eq!(stored.awarded_to, finished.awarded_to);
+        assert_eq!(stored.end_time, finished.end_time);
+        assert_eq!(stored.contestants.len(), 1);
+    }
+
+    /// A store with one open contest, one read earlier that has no end time,
+    /// and `unread` listed names nobody has read yet.
+    fn cold_history(unread: usize) -> (tempfile::TempDir, std::sync::Arc<AppContext>, Vec<String>) {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let context = test_app_context(temp_dir.path());
+        let kv = empty_kv();
+        context.set_det_kv_override_for_test(kv.clone());
+        context.seed_dpns_contest_for_test("open", Some(now_ms() + 600_000), false);
+        let read_earlier = StoredContestedName {
+            normalized_contested_name: "read-earlier".to_owned(),
+            contestants: vec![contestant(1, Some(1))],
+            last_updated: Some(1),
+            ..Default::default()
+        };
+        kv.put(
+            DetScope::Global,
+            &contested_name_key("read-earlier"),
+            &read_earlier,
+        )
+        .unwrap();
+        let history: Vec<String> = (0..unread)
+            .map(|index| format!("history-{index:03}"))
+            .collect();
+        context
+            .insert_name_contests_as_normalized_names(history.clone())
+            .expect("list the unread history");
+        (temp_dir, context, history)
+    }
+
+    fn open_names(context: &AppContext) -> Vec<String> {
+        let mut names: Vec<String> = context
+            .ongoing_contested_names()
+            .expect("open contests")
+            .into_iter()
+            .map(|contest| contest.normalized_contested_name)
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// Only names nobody has read yet are unread history: an open contest and
+    /// one read earlier are shown throughout a pass, as they were before it.
+    #[test]
+    fn only_never_read_contests_without_a_future_end_are_unread_history() {
+        let (_temp_dir, context, history) = cold_history(300);
+        let mut listed = history.clone();
+        listed.extend(["open".to_owned(), "read-earlier".to_owned()]);
+
+        let queue = context.contender_queue(listed).expect("contender queue");
+
+        assert_eq!(queue.open, ["open"]);
+        assert_eq!(queue.rest.len(), history.len() + 1);
+        assert_eq!(queue.unread, history.into_iter().collect());
+    }
+
+    /// With nothing unread there is nothing to hide, so a pass on a filled
+    /// cache shows exactly what it showed before.
+    #[test]
+    fn a_filled_cache_has_no_unread_history() {
+        let (_temp_dir, context, _) = cold_history(0);
+
+        let queue = context
+            .contender_queue(vec!["read-earlier".to_owned(), "open".to_owned()])
+            .expect("contender queue");
+
+        assert_eq!(queue.open, ["open"]);
+        assert_eq!(queue.rest, ["read-earlier"]);
+        assert!(queue.unread.is_empty());
+    }
+
+    /// A listed name is an open contest only once something is known about
+    /// it: an answer that stores nothing leaves it unread, its contenders
+    /// make it open.
+    #[test]
+    fn an_unread_contest_is_open_only_once_its_contenders_are_read() {
+        use dash_sdk::dpp::block::block_info::BlockInfo;
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+        let (_temp_dir, context, _history) = cold_history(3);
+        let document_type = context
+            .dpns_contract
+            .document_type_for_name("domain")
+            .expect("domain document type");
+        let answer = |winner| Contenders {
+            winner,
+            contenders: BTreeMap::new(),
+            abstain_vote_tally: None,
+            lock_vote_tally: None,
+        };
+        assert_eq!(open_names(&context), ["open", "read-earlier"]);
+
+        let undecided = Some((
+            ContestedDocumentVotePollWinnerInfo::NoWinner,
+            BlockInfo::default(),
+        ));
+        context
+            .insert_or_update_contenders("history-001", &answer(undecided), document_type)
+            .expect("an answer that stores nothing");
+        assert_eq!(open_names(&context), ["open", "read-earlier"]);
+
+        context
+            .insert_or_update_contenders("history-001", &answer(None), document_type)
+            .expect("store the contenders");
+        assert_eq!(
+            open_names(&context),
+            ["history-001", "open", "read-earlier"]
+        );
     }
 
     #[test]

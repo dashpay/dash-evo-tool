@@ -36,6 +36,16 @@ impl PlatformInfoScreen {
         }
     }
 
+    /// Drop the fetches and the result that belong to the previous network.
+    pub(crate) fn reset_for_network_switch(&mut self) {
+        self.platform_version = None;
+        self.core_chain_lock_height = None;
+        self.network = self.app_context.network;
+        self.current_result = None;
+        self.current_result_title = None;
+        self.active_tasks.clear();
+    }
+
     fn trigger_task(
         &mut self,
         task_type: PlatformInfoTaskRequestType,
@@ -145,13 +155,9 @@ impl PlatformInfoScreen {
 
 impl ScreenLike for PlatformInfoScreen {
     fn refresh(&mut self) {
-        // Clear all cached data
-        self.platform_version = None;
-        self.core_chain_lock_height = None;
-        self.network = self.app_context.network;
-        self.current_result = None;
-        self.current_result_title = None;
-        self.active_tasks.clear();
+        // Unrelated background work sends refresh notifications, several a
+        // second at times. Nothing here is read from local data, so a fetch in
+        // flight and the result on screen both outlive them.
     }
 
     fn refresh_on_arrival(&mut self) {
@@ -307,5 +313,86 @@ impl ScreenLike for PlatformInfoScreen {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::test_support::{test_app_context, test_app_context_for_network};
+    use crate::ui::Screen;
+
+    const EPOCH_RESULT: &str = "Current epoch: 42";
+
+    fn epoch_result() -> BackendTaskSuccessResult {
+        BackendTaskSuccessResult::PlatformInfo(PlatformInfoTaskResult::TextResult(
+            EPOCH_RESULT.to_owned(),
+        ))
+    }
+
+    fn start_epoch_fetch(screen: &mut PlatformInfoScreen) {
+        let action =
+            screen.trigger_task(PlatformInfoTaskRequestType::CurrentEpochInfo, "epoch_info");
+        assert!(
+            matches!(action, AppAction::BackendTask(_)),
+            "the premise: the fetch is dispatched"
+        );
+    }
+
+    #[test]
+    fn refresh_keeps_a_fetch_in_flight() {
+        let dir = tempfile::tempdir().expect("context dir");
+        let mut screen = PlatformInfoScreen::new(&test_app_context(dir.path()));
+        start_epoch_fetch(&mut screen);
+
+        screen.refresh();
+
+        assert!(
+            screen.active_tasks.contains("epoch_info"),
+            "a refresh notification must not forget a fetch that is still running"
+        );
+    }
+
+    #[test]
+    fn refresh_keeps_the_result_on_screen() {
+        let dir = tempfile::tempdir().expect("context dir");
+        let mut screen = PlatformInfoScreen::new(&test_app_context(dir.path()));
+        start_epoch_fetch(&mut screen);
+        screen.refresh();
+        screen.display_task_result(epoch_result());
+
+        screen.refresh();
+
+        assert_eq!(screen.current_result.as_deref(), Some(EPOCH_RESULT));
+        assert_eq!(
+            screen.current_result_title.as_deref(),
+            Some("Current Epoch Information"),
+            "the result keeps the title of the fetch that produced it"
+        );
+        assert!(screen.active_tasks.is_empty(), "the fetch has finished");
+    }
+
+    #[test]
+    fn a_network_switch_drops_the_previous_network_state() {
+        let old_dir = tempfile::tempdir().expect("old context dir");
+        let new_dir = tempfile::tempdir().expect("new context dir");
+        let mut screen = PlatformInfoScreen::new(&test_app_context(old_dir.path()));
+        start_epoch_fetch(&mut screen);
+        screen.display_task_result(epoch_result());
+        start_epoch_fetch(&mut screen);
+
+        let mut screen = Screen::PlatformInfoScreen(screen);
+        screen.change_context(test_app_context_for_network(
+            new_dir.path(),
+            Network::Mainnet,
+        ));
+
+        let Screen::PlatformInfoScreen(screen) = screen else {
+            panic!("the screen keeps its type across a network switch");
+        };
+        assert_eq!(screen.current_result, None);
+        assert_eq!(screen.current_result_title, None);
+        assert!(screen.active_tasks.is_empty());
+        assert_eq!(screen.network, Network::Mainnet);
     }
 }

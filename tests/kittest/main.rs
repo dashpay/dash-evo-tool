@@ -27,6 +27,7 @@ mod message_banner;
 mod migration_banner;
 mod migration_gate;
 mod network_chooser;
+mod platform_info_screen;
 mod progress_overlay;
 mod register_dpns_name_screen;
 mod restore_single_key;

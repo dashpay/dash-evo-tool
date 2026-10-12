@@ -27,6 +27,8 @@
 > - **J-1 / J-2 / J-3 (journeys) and §6.3 / §6.4 / §6.5 (cancel UX)** — reframe any "Cancel button"
 >   language to the generic-button + escalation model; the safety valve is the bounded-operation
 >   contract + 30 s / 120 s honest escalation, not a dismiss/background control.
+>   *Superseded for the identity top-up block (PR #1054): it offers "Continue in background" after 30 s, designated as
+>   the keyboard escape — see the post-decision note in `04-design-addendum.md`.*
 
 ---
 

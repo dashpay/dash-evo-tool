@@ -1107,6 +1107,14 @@ pub enum TaskError {
         source: rusqlite::Error,
     },
 
+    /// The startup check could not read the retired schedule queue an earlier
+    /// pre-release build left behind.
+    #[error("Your previous scheduled votes could not be checked. Restart the app and try again.")]
+    RetiredScheduledVotesRead {
+        #[source]
+        source: crate::wallet_backend::KvAdapterError,
+    },
+
     /// A scheduled vote failed inside the otherwise successful per-voter result payload.
     #[error("The scheduled vote was not accepted. Wait a moment and try again.")]
     ScheduledVoteRejected {

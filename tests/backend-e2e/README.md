@@ -41,8 +41,21 @@ cargo test --test backend-e2e --all-features -- --ignored --nocapture --test-thr
 | Variable | Required | Description |
 |---|---|---|
 | `E2E_WALLET_MNEMONIC` | Yes | BIP-39 mnemonic for the framework wallet. Must be a pre-funded testnet wallet with at least 10 tDASH. Can be set as a shell env var or in the project root `.env` file (see below). If not set, the test fails with an error message and instructions. |
-| `E2E_DPNS_CONTEST` | No | Set to `1` to run the tests that open a real DPNS community vote (`test_register_contested_dpns_name_funded_from_platform_addresses`, `measure_dpns_registration_contested`). Each run spends the community vote fee (0.1 or 0.2 tDASH, by protocol version), which the network never returns, and leaves a public vote on testnet. Without it these tests return at once, so a plain `--ignored` run does not trigger them. Read from the shell environment, not from `.env`. |
-| `E2E_DPNS_MEASURE` | No | Set to `1` to run the `measure_dpns_registration` module. Its tests spend credits to measure fees rather than to check the app, and one of them pays for a registration step that is refused on purpose. Read from the shell environment, not from `.env`. |
+
+### What the DPNS registration tests cost
+
+The tests in `register_dpns` that fund an identity from platform addresses, and
+every test in `measure_dpns_registration`, spend platform address credits on
+each run: about 190 million to create the identity, 75 to 80 million for the
+registration, and about 13.5 million that cannot be sent back from the identity
+afterwards. The rest returns to the funding address.
+`measure_dpns_registration_balance_the_network_requires` pays for a registration
+step that is refused on purpose.
+
+`test_register_contested_dpns_name_funded_from_platform_addresses` and
+`measure_dpns_registration_contested` request a name that needs a community
+vote. Each also spends the community vote fee (0.1 or 0.2 tDASH, by protocol
+version), which the network never returns, and opens a public vote on testnet.
 
 ### Masternode tests
 
@@ -248,8 +261,8 @@ list; keep this table in sync when adding or removing a module.
 | `identity_masternode_withdraw` | Headless masternode/evonode load + credit withdrawal |
 | `identity_withdraw` | Identity credit withdrawal to a Core address |
 | `platform_info` | Read-only `PlatformInfo` queries: live current-epoch fetch, completed/queued withdrawal queries |
-| `measure_dpns_registration` | Measurements, not checks: what each DPNS registration document costs and what balance the network wants, logged on `MEASURE` lines; runs only with `E2E_DPNS_MEASURE=1` |
-| `register_dpns` | Full flow: identity creation, DPNS name registration, name search verification; also from platform address credits, which are returned afterwards except for about 13.5 million credits per identity that the network does not let a transfer take. The community-vote variant runs only with `E2E_DPNS_CONTEST=1` |
+| `measure_dpns_registration` | Measurements, not checks: what each DPNS registration document costs and what balance the network wants, logged on `MEASURE` lines |
+| `register_dpns` | Full flow: identity creation, DPNS name registration, name search verification; also from platform address credits, which are returned afterwards except for about 13.5 million credits per identity that the network does not let a transfer take |
 | `send_funds` | Core payment between two wallets (send and return) |
 | `spv_wallet` | SPV sync, wallet creation and registration, DB persistence |
 | `tx_is_ours` | `is_ours` flag correctness for SPV transactions |

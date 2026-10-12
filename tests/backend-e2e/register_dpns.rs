@@ -41,8 +41,6 @@ const REFUND_RESERVE: u64 = 17_400_000;
 /// Transfers tried when returning credits; the second uses the reserve the
 /// network's refusal asked for.
 const REFUND_ATTEMPTS: usize = 2;
-/// Opt-in for tests that open a real community vote.
-const CONTEST_OPT_IN_ENV: &str = "E2E_DPNS_CONTEST";
 /// Below this, what is left on the identity is not worth a transfer.
 const SMALLEST_REFUND: u64 = 1_000_000;
 /// Reads of an identity balance tried before giving up, and the pause between them.
@@ -331,24 +329,6 @@ pub(crate) async fn balance_below(
     }
 }
 
-/// Whether the environment variable `variable` is set to `1`; says how to
-/// opt in when it is not.
-pub(crate) fn opted_in(variable: &str) -> bool {
-    let allowed = std::env::var(variable).is_ok_and(|value| value == "1");
-    if !allowed {
-        eprintln!("Skipped: set {variable}=1 to run this test");
-    }
-    allowed
-}
-
-/// Whether tests that open a real community vote may run.
-///
-/// Each one spends the community vote fee for good and leaves a public vote on
-/// the network, so a plain `--ignored` run skips them.
-pub(crate) fn contest_allowed() -> bool {
-    opted_in(CONTEST_OPT_IN_ENV)
-}
-
 /// A random 19-letter label, which opens a community vote.
 pub(crate) fn vote_label() -> String {
     let mut rng = rand::rng();
@@ -538,14 +518,11 @@ async fn test_register_dpns_name_funded_from_platform_addresses() {
 /// Costs the community vote fee on top of the registration: 0.1 DASH from
 /// protocol 14, 0.2 DASH before. The network never returns that fee; when the
 /// vote ends it goes to the masternodes. The run also leaves a vote open on
-/// the network for a random name, so it runs only with `E2E_DPNS_CONTEST=1`.
-/// What is left on the identity goes back to the funding address.
+/// the network for a random name. What is left on the identity goes back to
+/// the funding address.
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn test_register_contested_dpns_name_funded_from_platform_addresses() {
-    if !contest_allowed() {
-        return;
-    }
     let ctx = ctx().await;
     let app_context = &ctx.app_context;
 

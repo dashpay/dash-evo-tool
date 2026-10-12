@@ -20,7 +20,6 @@ use dash_sdk::dpp::system_data_contracts::load_system_data_contract;
 use dash_sdk::dpp::util::strings::convert_to_homograph_safe_chars;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::dpp::voting::vote_polls::VotePoll;
-use dash_sdk::platform::Document;
 
 /// The immediate result of submitting a DPNS registration document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,14 +30,28 @@ pub enum DpnsRegistrationOutcome {
     PendingCommunityVote,
 }
 
-/// Classify a submitted DPNS document using its document type's contest rules.
+/// Classify registering `label` using the contest rules of its document type.
+///
+/// Applies Platform's own rule to the fields a `domain` document for `label`
+/// would carry, so the answer follows the contract it is given rather than a
+/// copy of the rule. Accepts a bare label or a `.dash` name.
 pub fn classify_dpns_registration_outcome(
     document_type: &impl DocumentTypeV0Methods,
-    document: &Document,
+    label: &str,
     platform_version: &PlatformVersion,
 ) -> Result<DpnsRegistrationOutcome, Box<ProtocolError>> {
+    let properties = BTreeMap::from([
+        (
+            "normalizedParentDomainName".to_string(),
+            Value::Text("dash".to_string()),
+        ),
+        (
+            "normalizedLabel".to_string(),
+            Value::Text(normalize_dpns_label(label)),
+        ),
+    ]);
     match document_type
-        .contested_vote_poll_for_document(document, platform_version)
+        .contested_vote_poll_for_document_properties(&properties, platform_version)
         .map_err(Box::new)?
     {
         Some(VotePoll::ContestedDocumentResourceVotePoll(_)) => {
@@ -278,91 +291,55 @@ pub fn has_dash_suffix(input: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
 
     use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
     use dash_sdk::dpp::data_contracts::SystemDataContract;
-    use dash_sdk::dpp::document::DocumentV0;
     use dash_sdk::dpp::system_data_contracts::load_system_data_contract;
     use dash_sdk::dpp::version::PlatformVersion;
-    use dash_sdk::platform::Identifier;
 
-    fn domain_document(label: &str) -> Document {
-        let owner_id = Identifier::from([1; 32]);
-        Document::V0(DocumentV0 {
-            id: Identifier::from([2; 32]),
-            owner_id,
-            creator_id: None,
-            properties: BTreeMap::from([
-                ("parentDomainName".to_string(), "dash".into()),
-                ("normalizedParentDomainName".to_string(), "dash".into()),
-                ("label".to_string(), label.into()),
-                (
-                    "normalizedLabel".to_string(),
-                    convert_to_homograph_safe_chars(label).into(),
-                ),
-                ("preorderSalt".to_string(), [0_u8; 32].into()),
-                (
-                    "records".to_string(),
-                    BTreeMap::from([("identity".to_string(), Value::from(owner_id))]).into(),
-                ),
-                (
-                    "subdomainRules".to_string(),
-                    BTreeMap::from([("allowSubdomains".to_string(), Value::Bool(false))]).into(),
-                ),
-            ]),
-            revision: None,
-            created_at: None,
-            updated_at: None,
-            transferred_at: None,
-            created_at_block_height: None,
-            updated_at_block_height: None,
-            transferred_at_block_height: None,
-            created_at_core_block_height: None,
-            updated_at_core_block_height: None,
-            transferred_at_core_block_height: None,
-            contract_version: None,
-        })
-    }
-
-    #[test]
-    fn registration_outcome_is_pending_for_contested_dpns_document() {
+    fn outcome_for(label: &str) -> DpnsRegistrationOutcome {
         let platform_version = PlatformVersion::latest();
         let contract = load_system_data_contract(SystemDataContract::DPNS, platform_version)
             .expect("bundled DPNS contract");
         let document_type = contract
             .document_type_for_name("domain")
             .expect("domain document type");
+        classify_dpns_registration_outcome(&document_type, label, platform_version)
+            .expect("classification succeeds")
+    }
 
+    #[test]
+    fn registration_outcome_is_pending_for_a_contested_label() {
         assert_eq!(
-            classify_dpns_registration_outcome(
-                &document_type,
-                &domain_document("alice"),
-                platform_version,
-            )
-            .expect("classification succeeds"),
+            outcome_for("alice"),
+            DpnsRegistrationOutcome::PendingCommunityVote
+        );
+        assert_eq!(
+            outcome_for("Alice.dash"),
             DpnsRegistrationOutcome::PendingCommunityVote
         );
     }
 
     #[test]
-    fn registration_outcome_is_registered_for_non_contested_dpns_document() {
-        let platform_version = PlatformVersion::latest();
-        let contract = load_system_data_contract(SystemDataContract::DPNS, platform_version)
-            .expect("bundled DPNS contract");
-        let document_type = contract
-            .document_type_for_name("domain")
-            .expect("domain document type");
-
+    fn registration_outcome_is_registered_for_a_non_contested_label() {
+        assert_eq!(outcome_for("alice2"), DpnsRegistrationOutcome::Registered);
         assert_eq!(
-            classify_dpns_registration_outcome(
-                &document_type,
-                &domain_document("alice2"),
-                platform_version,
-            )
-            .expect("classification succeeds"),
+            outcome_for(&"a".repeat(20)),
             DpnsRegistrationOutcome::Registered
         );
+    }
+
+    /// The vote fee the screen announces and the approval the backend checks
+    /// must come to the same verdict for every label.
+    #[test]
+    fn registration_outcome_agrees_with_the_rule_shown_on_screen() {
+        for label in ["alice", "al1ce", "alice2", "b0b-01", "Alice", "alice-2026"] {
+            assert_eq!(
+                outcome_for(label) == DpnsRegistrationOutcome::PendingCommunityVote,
+                is_contested_label(label),
+                "{label}"
+            );
+        }
     }
 
     #[test]

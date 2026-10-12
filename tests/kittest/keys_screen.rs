@@ -743,9 +743,9 @@ fn key_info_is_reachable_from_the_identity_hub_in_default_view() {
         // The left nav carries its own "Settings" entry. Both are buttons; only
         // the nav one is a toggle, so that is what tells the hub tab apart.
         harness
-            .query_all_by_role_and_label(egui::accesskit::Role::Button, "Settings")
+            .query_all_by_role_and_label(egui::accesskit::Role::Button, "Profile")
             .find(|node| node.accesskit_node().toggled().is_none())
-            .expect("the hub must render a Settings tab")
+            .expect("the hub must render a Profile tab")
             .click();
         harness.run_steps(3);
         harness.get_by_label("Advanced").click();
@@ -807,9 +807,9 @@ fn a_restore_reports_success_and_failure_on_the_keys_list_in_the_running_app() {
         harness.run_steps(5);
 
         harness
-            .query_all_by_role_and_label(egui::accesskit::Role::Button, "Settings")
+            .query_all_by_role_and_label(egui::accesskit::Role::Button, "Profile")
             .find(|node| node.accesskit_node().toggled().is_none())
-            .expect("the hub must render a Settings tab")
+            .expect("the hub must render a Profile tab")
             .click();
         harness.run_steps(3);
         harness.get_by_label("Advanced").click();
@@ -917,9 +917,9 @@ fn returning_from_key_info_refreshes_both_the_keys_and_the_offer() {
         harness.run_steps(5);
 
         harness
-            .query_all_by_role_and_label(egui::accesskit::Role::Button, "Settings")
+            .query_all_by_role_and_label(egui::accesskit::Role::Button, "Profile")
             .find(|node| node.accesskit_node().toggled().is_none())
-            .expect("the hub must render a Settings tab")
+            .expect("the hub must render a Profile tab")
             .click();
         harness.run_steps(3);
         harness.get_by_label("Advanced").click();

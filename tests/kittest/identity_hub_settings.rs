@@ -57,5 +57,5 @@ fn settings_tab_variant_is_part_of_public_api() {
         all.contains(&IdentityHubTab::Settings),
         "IdentityHubTab::ALL must include Settings",
     );
-    assert_eq!(IdentityHubTab::Settings.label(), "Settings");
+    assert_eq!(IdentityHubTab::Settings.label(), "Profile");
 }

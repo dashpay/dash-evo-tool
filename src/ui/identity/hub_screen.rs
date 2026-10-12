@@ -208,6 +208,7 @@ impl IdentityHubScreen {
                     .map(|(_, key)| key),
             ),
         );
+        self.home_state = HomeState::default();
         self.contacts_state.reset_for_identity_change();
         self.pending_contact_info_tasks.clear();
         self.pending_contact_info_confirmations.clear();
@@ -429,6 +430,7 @@ impl ScreenLike for IdentityHubScreen {
         // re-fires the Contacts load.
         self.load_error_banner.take_and_clear();
         self.contacts_state.reset();
+        self.home_state.refresh_payments();
         self.profile_cache.reset();
         self.selection.clear_searches();
         self.avatar_cache.invalidate();
@@ -535,6 +537,20 @@ impl ScreenLike for IdentityHubScreen {
                     // `ui.vertical_centered(...).inner` carries the tab's
                     // `AppAction` back out.
                     let inner = ui.vertical_centered(|ui| {
+                        let (header_action, header_outcome) = super::home::render_header(
+                            ui,
+                            &self.app_context,
+                            &mut self.profile_cache,
+                            &mut self.avatar_cache,
+                            &mut self.pending_avatars,
+                        );
+                        if let Some(tab) =
+                            super::home::apply_outcome(&mut self.home_state, header_outcome)
+                        {
+                            self.selected_tab = tab;
+                            self.settings_tab.focus_section(header_outcome);
+                        }
+                        ui.add_space(16.0);
                         // Hub tab bar; selection state lives on the screen so
                         // refreshes and deep links can update it from outside.
                         let tab_response = IdentityHubTabBar::new(self.selected_tab).show(ui);
@@ -547,13 +563,14 @@ impl ScreenLike for IdentityHubScreen {
                             self.selected_tab = clicked;
                         }
                         ui.add_space(16.0);
-                        match self.selected_tab {
+                        let mut tab_action = match self.selected_tab {
                             IdentityHubTab::Home => {
                                 let (home_action, outcome) = super::home::render(
                                     ui,
                                     &self.app_context,
-                                    &self.home_state,
+                                    &mut self.home_state,
                                     &mut self.profile_cache,
+                                    &mut self.contacts_state,
                                 );
                                 if let Some(next_tab) =
                                     super::home::apply_outcome(&mut self.home_state, outcome)
@@ -562,6 +579,7 @@ impl ScreenLike for IdentityHubScreen {
                                         self.contacts_state.reset();
                                     }
                                     self.selected_tab = next_tab;
+                                    self.settings_tab.focus_section(outcome);
                                 }
                                 home_action
                             }
@@ -579,7 +597,9 @@ impl ScreenLike for IdentityHubScreen {
                                 &self.app_context,
                                 &mut self.profile_cache,
                             ),
-                        }
+                        };
+                        tab_action |= header_action;
+                        tab_action
                     });
                     inner.inner
                 }
@@ -652,6 +672,7 @@ impl ScreenLike for IdentityHubScreen {
         context: &BackendTaskContext,
         result: BackendTaskSuccessResult,
     ) {
+        self.home_state.record_payments(context, &result);
         if self
             .profile_cache
             .record_result(&self.app_context, context, &result)

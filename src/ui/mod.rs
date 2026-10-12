@@ -40,13 +40,14 @@ use crate::ui::tools::proof_visualizer_screen::ProofVisualizerScreen;
 use crate::ui::wallets::asset_lock_detail_screen::AssetLockDetailScreen;
 use crate::ui::wallets::create_asset_lock_screen::CreateAssetLockScreen;
 use crate::ui::wallets::import_mnemonic_screen::ImportMnemonicScreen;
-use crate::ui::wallets::send_screen::{SendFlow, WalletSendScreen};
+use crate::ui::wallets::send_screen::{IdentitySendMode, SendFlow, WalletSendScreen};
 use crate::ui::wallets::single_key_send_screen::SingleKeyWalletSendScreen;
 use crate::ui::wallets::wallets_screen::WalletsBalancesScreen;
 use contracts_documents::add_contracts_screen::AddContractsScreen;
 use contracts_documents::group_actions_screen::GroupActionsScreen;
 use contracts_documents::register_contract_screen::RegisterDataContractScreen;
 use contracts_documents::update_contract_screen::UpdateDataContractScreen;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::prelude::IdentityPublicKey;
 use dash_sdk::platform::Identifier;
 use identity::IdentityHubScreen;
@@ -200,6 +201,7 @@ pub enum ScreenType {
     ImportMnemonic,
     AddNewWallet,
     WalletSendScreen(Arc<RwLock<Wallet>>, SendFlow),
+    IdentitySendScreen(QualifiedIdentity, IdentitySendMode),
     SingleKeyWalletSendScreen(Arc<RwLock<SingleKeyWallet>>),
     AddExistingIdentity,
     TransitionVisualizer,
@@ -334,6 +336,9 @@ impl PartialEq for ScreenType {
             // flow preset distinguishes Shield / Send-Private / Unshield routes
             // so pushing one does not dedup against another.
             (WalletSendScreen(_, fa), WalletSendScreen(_, fb)) => fa == fb,
+            (IdentitySendScreen(a, ma), IdentitySendScreen(b, mb)) => {
+                a.identity.id() == b.identity.id() && ma == mb
+            }
             // All other variants are equal iff they share a discriminant. This covers the
             // fieldless variants and the wallet screens (SingleKeyWalletSendScreen /
             // CreateAssetLock), whose Arc<RwLock<…>> payload is intentionally ignored.
@@ -409,6 +414,9 @@ impl ScreenType {
             ScreenType::ImportMnemonic => {
                 Screen::ImportMnemonicScreen(ImportMnemonicScreen::new(app_context))
             }
+            ScreenType::IdentitySendScreen(identity, mode) => Screen::WalletSendScreen(
+                WalletSendScreen::for_identity(app_context, identity.clone(), *mode),
+            ),
             ScreenType::WalletSendScreen(wallet, flow) => Screen::WalletSendScreen(
                 WalletSendScreen::new(app_context, wallet.clone()).with_flow(*flow),
             ),
@@ -986,13 +994,19 @@ impl Screen {
             Screen::AddNewWalletScreen(_) => ScreenType::AddNewWallet,
             Screen::WalletsBalancesScreen(_) => ScreenType::WalletsBalances,
             Screen::ImportMnemonicScreen(_) => ScreenType::ImportMnemonic,
-            Screen::WalletSendScreen(screen) => ScreenType::WalletSendScreen(
-                screen
-                    .selected_wallet
-                    .clone()
-                    .expect("invariant: a live WalletSendScreen always has a selected wallet"),
-                screen.flow(),
-            ),
+            Screen::WalletSendScreen(screen) => {
+                if let Some((identity, mode)) = screen.identity_flow() {
+                    ScreenType::IdentitySendScreen(identity.clone(), *mode)
+                } else {
+                    ScreenType::WalletSendScreen(
+                        screen
+                            .selected_wallet
+                            .clone()
+                            .expect("invariant: a wallet send screen has a selected wallet"),
+                        screen.flow(),
+                    )
+                }
+            }
             Screen::SingleKeyWalletSendScreen(screen) => {
                 ScreenType::SingleKeyWalletSendScreen(screen.selected_wallet.clone().expect(
                     "invariant: a live SingleKeyWalletSendScreen always has a selected wallet",

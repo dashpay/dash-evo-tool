@@ -207,7 +207,7 @@ fn dispatch_request_shared(
 /// `AppAction::BackendTask`s would not: `AppAction`'s `|=` is last-writer-wins,
 /// so the first load would be dropped on the floor and the active section would
 /// never fill.
-fn load_action(identity: &QualifiedIdentity, state: &mut ContactsState) -> AppAction {
+pub(super) fn load_action(identity: &QualifiedIdentity, state: &mut ContactsState) -> AppAction {
     if !state.claim_load() {
         return AppAction::None;
     }
@@ -758,6 +758,61 @@ fn has_social_profile(
 
 fn contact_profile_screen_type(identity: QualifiedIdentity, contact_id: Identifier) -> ScreenType {
     ScreenType::DashPayContactProfileViewer(identity, contact_id)
+}
+
+/// Compact Home preview; request actions share the Contacts tab's paid-action guards.
+pub(super) fn render_preview(
+    ui: &mut Ui,
+    app_context: &Arc<AppContext>,
+    identity: &QualifiedIdentity,
+    state: &mut ContactsState,
+    outcome: &mut super::home::HomeOutcome,
+) -> AppAction {
+    let mut action = AppAction::None;
+    super::home::card(ui, |ui| {
+        ui.strong("Contacts");
+        let mut clicked = None;
+        for entry in state.incoming().iter().take(3) {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(format!(
+                    "{} wants to connect.",
+                    shorten_id(&entry.counterpart_id.to_string(Encoding::Base58))
+                ));
+                let busy = state.is_in_flight(&entry.request_id)
+                    || app_context.contact_request_action_is_in_flight(&entry.request_id);
+                if ui
+                    .add_enabled(
+                        !busy,
+                        ComponentStyles::secondary_button("Accept", ui.visuals().dark_mode),
+                    )
+                    .clicked()
+                {
+                    clicked = Some((entry.request_id, RequestAction::Accepted));
+                }
+            });
+        }
+        for contact in state.filtered_contacts().iter().take(6) {
+            if ui.button(contact_label(contact)).clicked() {
+                action = AppAction::AddScreen(
+                    contact_profile_screen_type(identity.clone(), contact.identity_id)
+                        .create_screen(app_context),
+                );
+            }
+        }
+        if state.contacts_len() == 0 && state.incoming().is_empty() {
+            ui.label("No contacts yet. Add someone by their username.");
+        }
+        if ui.button("See all contacts").clicked() {
+            *outcome = super::home::HomeOutcome::GoToContacts;
+        }
+        if ComponentStyles::add_secondary_button(ui, "Add contact", ui.visuals().dark_mode)
+            .clicked()
+        {
+            action = resolve_contacts_button(ContactsButton::HeaderAddByUsername, app_context);
+        }
+        action |= dispatch_request_shared(app_context, state, identity, clicked);
+    });
+    action
 }
 
 #[cfg(test)]

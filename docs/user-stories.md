@@ -1724,8 +1724,12 @@ As Alex, I want to open the Identities section on a fresh device and be offered 
 
 As Alex, when I have one identity, opening Identities shows me my balance, username, quick actions, and recent activity without jargon.
 
-- Home tab renders the full layout: `IdentityHeroCard`, quick actions (Send · Receive · Add contact), secondary actions (Add funds · Send to wallet · Send to another identity), `OnboardingChecklist`, and a recent-activity preview.
-- "See all activity" link on Home hops directly to the Activity tab via `HomeOutcome::GoToActivity`.
+- A compact identity summary sits above Home, Contacts, and Profile. It shows the published avatar (initial fallback), balance, and up to three usernames with the main name first. `+` registers another name for this identity; `…` opens its complete username list.
+- Home offers Send, Receive, and Top up. Send reuses the Wallets send form with this identity fixed as sender; Top up fixes it as recipient. Retry and Send another preserve that identity, and switching networks requires reopening the form.
+- Move to wallet uses the same form, restricted to receiving addresses of loaded wallets. Arbitrary destinations remain available through Send.
+- Receive shares the username or identity ID and its QR code; it does not create or send a payment.
+- Setup and actual recent contact payments appear beside a contacts/request preview, stacking on narrow windows. Empty payment history and the unfinished Activity tab are hidden. Pending username requests and their outcomes remain visible.
+- Technical identity details and keys are available from Profile → Advanced or the summary's menu.
 
 ### IDH-003: Multi-identity switching [Implemented]
 **Persona:** Priya
@@ -1742,8 +1746,8 @@ As Priya, with multiple wallets and identities, I can switch between them from t
 
 As Alex, setting up a social profile to unlock DashPay contacts is clearly optional and I can keep using payments and usernames without doing it.
 
-- Contacts tab shows `SocialProfileGateCard` when the active identity has no DashPay profile; the primary CTA deep-links to Settings via `AppAction::SwitchIdentityHubTab(Settings)`.
-- Settings tab hosts the social-profile block where Display name and avatar can be edited. Display name is used on identity cards, navigation, and identity selectors; without it, a username or shortened identity ID is shown. Local identity names are not offered in profile, create, or load screens. Masternode administrative names and contact nicknames remain available.
+- Contacts tab shows `SocialProfileGateCard` when the active identity has no DashPay profile; the primary CTA deep-links to Profile via `AppAction::SwitchIdentityHubTab(Settings)`.
+- Profile tab hosts the social-profile block where Display name and avatar can be edited. Display name is used on identity cards, navigation, and identity selectors; without it, a username or shortened identity ID is shown. Local identity names are not offered in profile, create, or load screens. Masternode administrative names and contact nicknames remain available.
 - Existing identity records remain readable, including records with a saved local name. The saved local name never affects a User identity label. Profile changes update names across the app; identities without a profile continue to use payments and usernames.
 - Home tab renders a `Set up your social profile` entry in the onboarding checklist with a skip affordance — opting in is never forced.
 

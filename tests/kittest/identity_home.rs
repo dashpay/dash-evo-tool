@@ -10,6 +10,7 @@ use dash_evo_tool::model::user_role::UserRole;
 use dash_evo_tool::ui::Screen;
 use dash_evo_tool::ui::identity::home::{self, HomeOutcome, HomeState};
 use dash_evo_tool::ui::identity::profile_cache::{ProfileCache, ProfileFields};
+use dash_evo_tool::ui::wallets::send_screen::IdentitySendMode;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::{
     IdentityPublicKeyGettersV0, IdentityPublicKeySettersV0,
@@ -85,14 +86,31 @@ fn seed_identity(
 /// prior version of this harness did) is what lets tests assert a clicked
 /// button actually routes to its intended destination, not merely that the
 /// click was accepted.
-type HomeHarnessState = (HomeState, ProfileCache, Option<(AppAction, HomeOutcome)>);
+type HomeHarnessState = (
+    HomeState,
+    ProfileCache,
+    Option<(AppAction, HomeOutcome)>,
+    dash_evo_tool::ui::state::AvatarCache,
+    dash_evo_tool::ui::state::contacts_view::ContactsState,
+);
 
 fn mount_home(app_context: Arc<AppContext>) -> Harness<'static, HomeHarnessState> {
     let mut harness = Harness::builder()
         .with_size(egui::vec2(1280.0, 900.0))
         .build_ui_state(
             move |ui, state: &mut HomeHarnessState| {
-                let result = home::render(ui, &app_context, &state.0, &mut state.1);
+                let mut pending = Vec::new();
+                let (header_action, header_outcome) =
+                    home::render_header(ui, &app_context, &mut state.1, &mut state.3, &mut pending);
+                let mut result =
+                    home::render(ui, &app_context, &mut state.0, &mut state.1, &mut state.4);
+                result.0 |= header_action;
+                if header_outcome != HomeOutcome::None {
+                    result.1 = header_outcome;
+                }
+                if let Some(task) = pending.pop() {
+                    result.0 = AppAction::BackendTask(task);
+                }
                 // `Harness::run`/`step` internally renders extra idle frames
                 // (it loops until no immediate repaint is pending), and
                 // `home::render` resets its `(AppAction, HomeOutcome)` pair
@@ -104,7 +122,13 @@ fn mount_home(app_context: Arc<AppContext>) -> Harness<'static, HomeHarnessState
                     state.2 = Some(result);
                 }
             },
-            (HomeState::default(), ProfileCache::default(), None),
+            (
+                HomeState::default(),
+                ProfileCache::default(),
+                None,
+                Default::default(),
+                Default::default(),
+            ),
         );
     harness.run();
     harness
@@ -131,7 +155,7 @@ fn home_send_to_wallet_disabled_for_everyday_without_local_withdrawal_key() {
         seed_identity(&app_context, vec![key(1, Purpose::AUTHENTICATION)], vec![]);
 
         let mut harness = mount_home(app_context);
-        let button = harness.get_by_label("Send to wallet");
+        let button = harness.get_by_label("Move to wallet");
         assert!(button.accesskit_node().is_disabled());
 
         button.hover();
@@ -161,7 +185,7 @@ fn home_send_to_wallet_disabled_for_developer_with_on_chain_key_only() {
         seed_identity(&app_context, vec![key(1, Purpose::AUTHENTICATION)], vec![]);
 
         let harness = mount_home(app_context);
-        let button = harness.get_by_label("Send to wallet");
+        let button = harness.get_by_label("Move to wallet");
         assert!(button.accesskit_node().is_disabled());
     });
 }
@@ -175,7 +199,7 @@ fn home_send_to_wallet_enabled_for_everyday_with_local_transfer_key() {
         seed_identity(&app_context, vec![transfer_key.clone()], vec![transfer_key]);
 
         let harness = mount_home(app_context);
-        let button = harness.get_by_label("Send to wallet");
+        let button = harness.get_by_label("Move to wallet");
         assert!(!button.accesskit_node().is_disabled());
     });
 }
@@ -185,7 +209,7 @@ fn home_send_to_wallet_enabled_for_everyday_with_local_transfer_key() {
 /// render one of them twice, without failing anything here. Assert the full
 /// four-button row is present, each exactly once.
 #[test]
-fn home_action_row_renders_all_four_buttons_exactly_once() {
+fn home_renders_shared_send_actions_and_contact_entry() {
     with_isolated_data_dir(|| {
         let (_runtime, app_context) = fresh_app_context();
         app_context.set_user_role(UserRole::Everyday);
@@ -193,12 +217,7 @@ fn home_action_row_renders_all_four_buttons_exactly_once() {
         seed_identity(&app_context, vec![transfer_key.clone()], vec![transfer_key]);
 
         let harness = mount_home(app_context);
-        for label in [
-            "Add funds",
-            "Send to wallet",
-            "Send to another identity",
-            "Add contact",
-        ] {
+        for label in ["Top up", "Move to wallet", "Send", "Add contact"] {
             assert_eq!(
                 harness.query_all_by_label(label).count(),
                 1,
@@ -213,14 +232,14 @@ fn home_action_row_renders_all_four_buttons_exactly_once() {
 /// `(AppAction, HomeOutcome)`, so a button wired to the wrong destination
 /// (or to none at all) would have passed every test in this file.
 #[test]
-fn home_add_funds_click_opens_top_up_screen() {
+fn home_top_up_opens_shared_send_with_fixed_recipient() {
     with_isolated_data_dir(|| {
         let (_runtime, app_context) = fresh_app_context();
         app_context.set_user_role(UserRole::Everyday);
         seed_identity(&app_context, vec![key(1, Purpose::AUTHENTICATION)], vec![]);
 
         let mut harness = mount_home(app_context);
-        harness.get_by_label("Add funds").click();
+        harness.get_by_label("Top up").click();
         // A single settle pass: `home::render` resets `action` to `None` at
         // the top of every call, so an extra idle frame here (no queued
         // input) would overwrite this frame's real result with a no-op one.
@@ -228,15 +247,15 @@ fn home_add_funds_click_opens_top_up_screen() {
 
         let (action, _outcome) = last_result(&harness);
         assert!(
-            matches!(action, AppAction::AddScreen(Screen::TopUpIdentityScreen(_))),
-            "expected Add funds to open TopUpIdentityScreen, got {action:?}"
+            matches!(action, AppAction::AddScreen(Screen::WalletSendScreen(screen)) if screen.identity_flow().is_some_and(|(identity, mode)| *mode == IdentitySendMode::TopUp && identity.identity.id() == Identifier::from([0xA5; 32]))),
+            "expected Top up to fix the recipient in the shared send form, got {action:?}"
         );
     });
 }
 
-/// Clicking an enabled `Send to wallet` must open the withdrawal screen.
+/// Move to wallet shares the send form with an owned-address restriction.
 #[test]
-fn home_send_to_wallet_click_opens_withdrawal_screen() {
+fn home_move_to_wallet_opens_shared_send() {
     with_isolated_data_dir(|| {
         let (_runtime, app_context) = fresh_app_context();
         app_context.set_user_role(UserRole::Everyday);
@@ -244,43 +263,40 @@ fn home_send_to_wallet_click_opens_withdrawal_screen() {
         seed_identity(&app_context, vec![transfer_key.clone()], vec![transfer_key]);
 
         let mut harness = mount_home(app_context);
-        harness.get_by_label("Send to wallet").click();
+        harness.get_by_label("Move to wallet").click();
         harness.run();
 
         let (action, _outcome) = last_result(&harness);
         assert!(
-            matches!(action, AppAction::AddScreen(Screen::WithdrawalScreen(_))),
-            "expected Send to wallet to open WithdrawalScreen, got {action:?}"
+            matches!(action, AppAction::AddScreen(Screen::WalletSendScreen(screen)) if screen.identity_flow().is_some_and(|(identity, mode)| *mode == IdentitySendMode::MoveToWallet && identity.identity.id() == Identifier::from([0xA5; 32]))),
+            "expected Move to wallet to use the bound withdrawal form, got {action:?}"
         );
     });
 }
 
-/// Clicking `Send to another identity` must open the transfer screen.
+/// Send shares the wallet form with its sender fixed to this identity.
 #[test]
-fn home_send_to_another_identity_click_opens_transfer_screen() {
+fn home_send_opens_shared_send_with_fixed_sender() {
     with_isolated_data_dir(|| {
         let (_runtime, app_context) = fresh_app_context();
         app_context.set_user_role(UserRole::Everyday);
         seed_identity(&app_context, vec![key(1, Purpose::AUTHENTICATION)], vec![]);
 
         let mut harness = mount_home(app_context);
-        harness.get_by_label("Send to another identity").click();
+        harness.get_by_label("Send").click();
         harness.run();
 
         let (action, _outcome) = last_result(&harness);
         assert!(
-            matches!(action, AppAction::AddScreen(Screen::TransferScreen(_))),
-            "expected Send to another identity to open TransferScreen, got {action:?}"
+            matches!(action, AppAction::AddScreen(Screen::WalletSendScreen(screen)) if screen.identity_flow().is_some_and(|(identity, mode)| *mode == IdentitySendMode::Send && identity.identity.id() == Identifier::from([0xA5; 32]))),
+            "expected Send to fix the sender in the shared send form, got {action:?}"
         );
     });
 }
 
-/// `Add contact` is gated behind a social profile (design-spec §B.3). Seed
-/// one via `ProfileCache::record_saved` — the same API the hub uses after a
-/// real profile load — so the enabled path, and its routing to the Contacts
-/// tab, is exercised without a network round-trip.
+/// Add contact opens its existing flow from Home.
 #[test]
-fn home_add_contact_click_routes_to_contacts_when_profile_is_set() {
+fn home_add_contact_opens_contact_screen() {
     with_isolated_data_dir(|| {
         let (_runtime, app_context) = fresh_app_context();
         app_context.set_user_role(UserRole::Everyday);
@@ -305,11 +321,214 @@ fn home_add_contact_click_routes_to_contacts_when_profile_is_set() {
         button.click();
         harness.run();
 
-        let (_action, outcome) = last_result(&harness);
-        assert_eq!(
-            *outcome,
-            HomeOutcome::GoToContacts,
-            "expected Add contact to route to the Contacts tab, got {outcome:?}"
+        let (action, _) = last_result(&harness);
+        assert!(
+            matches!(action, AppAction::AddScreen(_)),
+            "Add contact opens the add-contact screen"
         );
+    });
+}
+
+#[test]
+fn home_profile_avatar_requests_its_image() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let id = seed_identity(&app_context, vec![key(1, Purpose::AUTHENTICATION)], vec![]);
+        let mut harness = mount_home(app_context);
+        harness.state_mut().1.record_saved(
+            id,
+            ProfileFields {
+                display_name: "Alex".into(),
+                avatar_url: "https://example.com/avatar.png".into(),
+                ..Default::default()
+            },
+        );
+        harness.run_steps(1);
+        assert!(
+            matches!(harness.state().2.as_ref(), Some((AppAction::BackendTask(
+            dash_evo_tool::backend_task::BackendTask::DashPayTask(task)), _))
+            if matches!(task.as_ref(), dash_evo_tool::backend_task::dashpay::DashPayTask::FetchAvatar { url }
+                if url == "https://example.com/avatar.png")),
+            "Home must load the published profile photo"
+        );
+    });
+}
+
+#[test]
+fn home_username_summary_limits_to_three_and_routes_add_and_overflow() {
+    with_isolated_data_dir(|| {
+        let (_runtime, ctx) = fresh_app_context();
+        let id = super::identity_usernames::seed_username_identity(
+            &ctx,
+            0xB4,
+            "Alex",
+            &["alex2", "alex3", "alex4", "alex5"],
+            0,
+            true,
+        );
+        let mut harness = mount_home(ctx);
+        assert!(harness.query_by_label("@alex2, @alex3, @alex4").is_some());
+        assert!(harness.query_by_label_contains("@alex5").is_none());
+        harness.get_by_label("…").click();
+        harness.run();
+        assert_eq!(last_result(&harness).1, HomeOutcome::GoToUsernames);
+        harness.get_by_label("Add username").click();
+        harness.run();
+        let AppAction::AddScreen(Screen::RegisterDpnsNameScreen(screen)) = &last_result(&harness).0
+        else {
+            panic!("expected username registration");
+        };
+        assert_eq!(
+            screen
+                .selected_qualified_identity
+                .as_ref()
+                .map(|q| q.identity.id()),
+            Some(id)
+        );
+    });
+}
+
+#[test]
+fn home_without_payments_has_no_empty_activity_placeholder() {
+    with_isolated_data_dir(|| {
+        let (_runtime, ctx) = fresh_app_context();
+        seed_identity(&ctx, vec![], vec![]);
+        let harness = mount_home(ctx);
+        assert!(harness.query_by_label("Recent activity").is_none());
+        assert!(harness.query_by_label("Recent payments").is_none());
+        assert!(harness.query_by_label("Advanced details").is_none());
+        assert!(harness.query_by_label("Receive").is_some());
+    });
+}
+
+#[test]
+fn home_profile_avatar_decodes_and_caches_published_image() {
+    with_isolated_data_dir(|| {
+        let (_runtime, ctx) = fresh_app_context();
+        let id = seed_identity(&ctx, vec![], vec![]);
+        let mut harness = mount_home(ctx);
+        let url = "https://example.com/photo.png";
+        harness.state_mut().1.record_saved(
+            id,
+            ProfileFields {
+                avatar_url: url.into(),
+                display_name: "Alex".into(),
+                ..Default::default()
+            },
+        );
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(8, 8)
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .expect("png");
+        harness.state_mut().3.seed(url, bytes.into_inner());
+        harness.run();
+        assert!(
+            harness.state().3.ready_texture(url).is_some(),
+            "the profile image must be rendered through the shared avatar cache"
+        );
+        harness.run();
+        assert!(!harness.state().3.is_loading(url));
+    });
+}
+
+#[test]
+fn home_failed_avatar_does_not_retry_each_frame() {
+    with_isolated_data_dir(|| {
+        let (_runtime, ctx) = fresh_app_context();
+        let id = seed_identity(&ctx, vec![], vec![]);
+        let mut harness = mount_home(ctx);
+        let url = "https://example.com/broken.png";
+        harness.state_mut().1.record_saved(
+            id,
+            ProfileFields {
+                avatar_url: url.into(),
+                display_name: "Alex".into(),
+                ..Default::default()
+            },
+        );
+        harness.state_mut().3.seed(url, b"not an image".to_vec());
+        harness.run();
+        assert!(harness.state().3.is_failed(url));
+        harness.state_mut().2 = None;
+        harness.run();
+        assert!(
+            harness.state().2.is_none(),
+            "failed image must keep its fallback without a fetch loop"
+        );
+    });
+}
+
+#[test]
+fn home_payment_preview_rejects_stale_dispatches() {
+    use dash_evo_tool::backend_task::BackendTaskSuccessResult;
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        seed_identity(&app_context, vec![], vec![]);
+        let identity = app_context.resolve_selected_identity().expect("identity");
+        let mut state = HomeState::default();
+        let AppAction::BackendTaskWithContext { context: stale, .. } =
+            state.load_payments(&identity)
+        else {
+            panic!("payment load");
+        };
+        state.refresh_payments();
+        let AppAction::BackendTaskWithContext {
+            context: current, ..
+        } = state.load_payments(&identity)
+        else {
+            panic!("new payment load");
+        };
+        let result = BackendTaskSuccessResult::DashPayPaymentHistory(vec![(
+            String::new(),
+            "Alice".into(),
+            1_000,
+            true,
+            String::new(),
+        )]);
+        state.record_payments(&stale, &result);
+        assert!(state.payments.is_empty());
+        state.record_payments(&current, &result);
+        assert_eq!(state.payments.len(), 1);
+        state = HomeState::default();
+        state.record_payments(&current, &result);
+        assert!(
+            state.payments.is_empty(),
+            "switching identities discards the old preview"
+        );
+    });
+}
+
+#[test]
+fn home_receive_shares_identity_id_when_no_username_is_set() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        seed_identity(&app_context, vec![], vec![]);
+        let mut harness = mount_home(app_context);
+        harness.get_by_label("Receive").click();
+        harness.run();
+        assert!(harness.query_by_label("Receive Dash").is_some());
+        assert!(harness.query_by_label("Copy identity ID").is_some());
+        harness.get_by_label("Done").click();
+        harness.run();
+        assert!(harness.query_by_label("Receive Dash").is_none());
+    });
+}
+
+#[test]
+fn home_payment_preview_opens_real_payment_history() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        seed_identity(&app_context, vec![], vec![]);
+        let mut harness = mount_home(app_context);
+        harness.state_mut().0.payments =
+            vec![(String::new(), "Alice".into(), 100_000, true, String::new())];
+        harness.run();
+        assert!(harness.query_by_label("Alice").is_some());
+        harness.get_by_label("See all payments").click();
+        harness.run();
+        assert!(matches!(
+            last_result(&harness).0,
+            AppAction::AddScreen(Screen::DashPayScreen(_))
+        ));
     });
 }

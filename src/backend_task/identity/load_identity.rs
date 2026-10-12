@@ -22,9 +22,9 @@ use crate::ui::identity::add_new_identity_screen::MAX_IDENTITY_INDEX;
 use dash_sdk::Sdk;
 use dash_sdk::dashcore_rpc::dashcore::PrivateKey;
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
+use dash_sdk::dpp::dashcore::ProTxHash;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::document::DocumentV0Getters;
-use dash_sdk::dpp::identifier::MasternodeIdentifiers;
 use dash_sdk::dpp::identity::KeyType;
 use dash_sdk::dpp::identity::SecurityLevel;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -32,7 +32,8 @@ use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicK
 use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, KeyDerivationType};
 use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::drive::query::{SelectProjection, WhereClause, WhereOperator};
-use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identifier, Identity};
+use dash_sdk::platform::transition::masternode_vote_keys::{select_voting_key, voter_identity_id};
+use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identity};
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::convert::TryInto;
@@ -272,11 +273,13 @@ impl AppContext {
                 if let Ok(private_key) =
                     PrivateKey::from_byte_array(&voting_private_key_bytes, self.network)
                 {
-                    // Make the vote identifier
-                    let address = private_key.public_key(&Secp256k1::new()).pubkey_hash();
-                    let voter_identifier = Identifier::create_voter_identifier(
-                        identity_id.as_bytes(),
-                        address.as_ref(),
+                    let voting_address = private_key
+                        .public_key(&Secp256k1::new())
+                        .pubkey_hash()
+                        .to_byte_array();
+                    let voter_identifier = voter_identity_id(
+                        ProTxHash::from_byte_array(identity_id.to_buffer()),
+                        &voting_address,
                     );
 
                     // Fetch the voter identifier
@@ -292,10 +295,8 @@ impl AppContext {
                         Err(e) => return Err(TaskError::from(e)),
                     };
 
-                    let key = self.verify_voting_key_exists_on_identity(
-                        &voter_identity,
-                        &voting_private_key_bytes,
-                    )?;
+                    let key = select_voting_key(&voter_identity, &voting_address)
+                        .ok_or(TaskError::MasternodeVotingKeyNotUsable)?;
                     let qualified_key =
                         QualifiedIdentityPublicKey::from_identity_public_key_with_wallets_check(
                             key.clone(),
@@ -1070,11 +1071,12 @@ mod tests {
     use crate::wallet_backend::IdentityKeyView;
     use crate::wallet_backend::secret_seam::SecretScheme;
     use dash_sdk::dpp::dashcore::Network;
+    use dash_sdk::dpp::identifier::MasternodeIdentifiers;
     use dash_sdk::dpp::identity::Identity;
     use dash_sdk::dpp::identity::KeyID;
     use dash_sdk::dpp::platform_value::string_encoding::Encoding;
     use dash_sdk::dpp::version::PlatformVersion;
-    use dash_sdk::platform::IdentityPublicKey;
+    use dash_sdk::platform::{Identifier, IdentityPublicKey};
     use platform_wallet_storage::secrets::SecretString;
 
     const M: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
@@ -1119,13 +1121,8 @@ mod tests {
                 disabled_at: None,
             },
         )]);
-        staged
-            .ctx
-            .verify_voting_key_exists_on_identity(
-                &other_identity,
-                &private_key.inner.secret_bytes(),
-            )
-            .unwrap();
+        select_voting_key(&other_identity, &address.to_byte_array())
+            .expect("the key is a usable voting key of the other node");
         sdk.mock()
             .expect_fetch(other_voter, Some(other_identity))
             .await
@@ -1165,6 +1162,76 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "This voting key could not be matched to the selected node. Check that node's voting private key and try again."
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn node_voting_key_disabled_on_the_network_is_refused() {
+        let staged = crate::context::test_staging::stage_identity_with_vaulted_keys(
+            rand::random(),
+            rand::random(),
+        )
+        .await;
+        let before = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .unwrap()
+            .unwrap();
+        let private_key = PrivateKey::from_byte_array(&rand::random(), Network::Testnet).unwrap();
+        let address = private_key.public_key(&Secp256k1::new()).pubkey_hash();
+        let voter = Identifier::create_voter_identifier(staged.id.as_bytes(), address.as_ref());
+        let mut voter_identity =
+            Identity::create_basic_identity(voter, PlatformVersion::latest()).unwrap();
+        voter_identity.add_public_keys([IdentityPublicKey::V0(
+            dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0 {
+                id: 0,
+                purpose: dash_sdk::dpp::identity::Purpose::VOTING,
+                security_level: SecurityLevel::HIGH,
+                contract_bounds: None,
+                key_type: KeyType::ECDSA_HASH160,
+                read_only: false,
+                data: address.to_byte_array().to_vec().into(),
+                disabled_at: Some(1),
+            },
+        )]);
+        let mut sdk = Sdk::new_mock();
+        sdk.mock()
+            .expect_fetch(staged.id, Some(before.identity.clone()))
+            .await
+            .unwrap();
+        sdk.mock()
+            .expect_fetch(voter, Some(voter_identity))
+            .await
+            .unwrap();
+        let input = IdentityInputToLoad {
+            identity_id_input: staged.id.to_string(Encoding::Hex),
+            identity_type: IdentityType::Masternode,
+            alias_input: String::new(),
+            voting_private_key_input: Secret::new(private_key.to_wif()),
+            owner_private_key_input: Secret::default(),
+            payout_address_private_key_input: Secret::default(),
+            keys_input: vec![],
+            derive_keys_from_wallets: false,
+            selected_wallet_seed_hash: None,
+            encryption_password: None,
+            load_mode: IdentityLoadMode::MergeIntoExisting,
+            load_token: None,
+        };
+
+        let error = staged.ctx.load_identity(&sdk, input).await.unwrap_err();
+
+        assert!(
+            matches!(error, TaskError::MasternodeVotingKeyNotUsable),
+            "a voting key the network disabled must be refused as such, got {error:?}"
+        );
+        let after = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            after.associated_voter_identity,
+            before.associated_voter_identity
         );
     }
 

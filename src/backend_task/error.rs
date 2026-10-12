@@ -1579,6 +1579,11 @@ pub enum TaskError {
     #[error("This voting key could not be matched to the selected node. Check that node's voting private key and try again.")]
     MasternodeVotingKeyNotFound,
 
+    /// The node's voter identity holds no enabled voting key for the supplied
+    /// key's address, which is what replacing the voting key leaves behind.
+    #[error("This voting key is no longer active on the selected node. Enter that node's current voting private key and try again.")]
+    MasternodeVotingKeyNotUsable,
+
     /// An owner-key withdrawal was directed at an address other than the
     /// masternode's registered payout address, which the network does not allow.
     #[error(

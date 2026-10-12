@@ -751,55 +751,6 @@ impl AppContext {
         clippy::result_large_err,
         reason = "the intermediate error is dpp::ProtocolError, an upstream type we cannot shrink"
     )]
-    fn verify_voting_key_exists_on_identity(
-        &self,
-        voting_identity: &Identity,
-        private_voting_key: &[u8; 32],
-    ) -> Result<IdentityPublicKey, KeyVerificationError> {
-        // We start by getting all the voting keys
-        let voting_keys: Vec<IdentityPublicKey> = voting_identity
-            .public_keys()
-            .values()
-            .filter_map(|key| {
-                if key.purpose() != Purpose::VOTING {
-                    return None;
-                }
-                Some(key.clone())
-            })
-            .collect();
-        if voting_keys.is_empty() {
-            return Err(KeyVerificationError::NoKeysForPurpose { purpose: "voting" });
-        }
-        // Then we get all the key types of the voting keys
-        let key_types: HashSet<KeyType> = voting_keys.iter().map(|key| key.key_type()).collect();
-        // For every key type get the associated public key data
-        let public_key_bytes_for_each_key_type = key_types
-            .into_iter()
-            .map(|key_type| {
-                Ok((
-                    key_type,
-                    key_type
-                        .public_key_data_from_private_key_data(private_voting_key, self.network)?,
-                ))
-            })
-            .collect::<Result<HashMap<KeyType, Vec<u8>>, ProtocolError>>()
-            .map_err(|e| KeyVerificationError::PublicKeyDerivation(Box::new(e)))?;
-        let Some(key) = voting_keys.into_iter().find(|key| {
-            let Some(public_key_bytes) = public_key_bytes_for_each_key_type.get(&key.key_type())
-            else {
-                return false;
-            };
-            key.data().as_slice() == public_key_bytes.as_slice()
-        }) else {
-            return Err(KeyVerificationError::NoMatchingKey { purpose: "voting" });
-        };
-        Ok(key)
-    }
-
-    #[expect(
-        clippy::result_large_err,
-        reason = "the intermediate error is dpp::ProtocolError, an upstream type we cannot shrink"
-    )]
     fn verify_owner_key_exists_on_identity(
         &self,
         identity: &Identity,

@@ -212,6 +212,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Adding a masternode or evonode with a voting key that has since been replaced
+  on the network is now refused when you add it, with a message asking for the
+  node's current voting private key. Before, the node was added as if the key
+  were usable and the problem only showed later, when a vote failed.
+
 - The background refresh of name contests no longer resets the screen you are
   working on. While it ran, a lookup on another screen could lose its spinner
   and its answer, typed search text could be cleared, and an amount field could
@@ -810,6 +815,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   says plainly that the rate shown is fixed rather than read from the network.
 
 ### Changed
+
+- Registering a username, finding an identity or a DashPay contact by name, and
+  searching DashPay users by name now go through the Dash SDK's own name
+  functions instead of the app's own copies. A newly registered username shows
+  the date the network confirmed it.
 
 - Choosing a wallet looks the same on the Wallets page and on the
   create-identity, add-funds and load-identity screens: every wallet shows its

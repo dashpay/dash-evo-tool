@@ -6,8 +6,11 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use dash_sdk::Sdk;
 use dash_sdk::dpp::dashcore::Network;
-use dash_sdk::platform::Identifier;
+use dash_sdk::dpp::document::DocumentV0;
+use dash_sdk::dpp::platform_value::Value;
+use dash_sdk::platform::{Document, Identifier};
 
 use super::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -81,4 +84,51 @@ fn test_app_context_with_kv_and_network(
         UserRoleCell::default(),
     )
     .expect("AppContext")
+}
+
+/// A mock SDK that reads data contracts through `ctx`, as the app's own SDK does.
+pub(crate) fn mock_sdk_for(ctx: &AppContext) -> Sdk {
+    let sdk = Sdk::new_mock();
+    let provider = ctx
+        .spv_context_provider
+        .read()
+        .expect("context provider lock")
+        .clone();
+    sdk.set_context_provider(provider);
+    sdk
+}
+
+/// A registered DPNS name document for `label`, owned by `owner`, whose record
+/// points at `identity`; a [`Value`] so a test picks how the id is encoded.
+pub(crate) fn dpns_name_document(owner: Identifier, label: &str, identity: Value) -> Document {
+    let text = |value: &str| Value::Text(value.to_string());
+    Document::V0(DocumentV0 {
+        id: Identifier::from([0x5D; 32]),
+        owner_id: owner,
+        creator_id: None,
+        properties: [
+            ("label".to_string(), text(label)),
+            (
+                "normalizedLabel".to_string(),
+                text(&crate::model::dpns::normalize_dpns_label(label)),
+            ),
+            ("normalizedParentDomainName".to_string(), text("dash")),
+            (
+                "records".to_string(),
+                Value::Map(vec![(text("identity"), identity)]),
+            ),
+        ]
+        .into(),
+        revision: None,
+        created_at: Some(100),
+        updated_at: None,
+        transferred_at: None,
+        created_at_block_height: None,
+        updated_at_block_height: None,
+        transferred_at_block_height: None,
+        created_at_core_block_height: None,
+        updated_at_core_block_height: None,
+        transferred_at_core_block_height: None,
+        contract_version: None,
+    })
 }

@@ -157,6 +157,61 @@ pub fn can_register_usernames(
         .any(|(_, key)| key_can_sign_documents(&key.identity_public_key, required))
 }
 
+/// Why an identity can or cannot register usernames from this device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegistrationKeyStatus {
+    /// This device holds a key that can sign a registration.
+    Ready,
+    /// The identity has such a key, but this device does not hold it.
+    KeyNotOnDevice,
+    /// The identity has no key that can sign a registration.
+    NoSuitableKey,
+}
+
+/// Whether `identity` can register usernames from this device, and if not,
+/// whether the key it lacks exists at all.
+pub fn registration_key_status(
+    identity: &QualifiedIdentity,
+    required: dash_sdk::dpp::identity::SecurityLevel,
+) -> RegistrationKeyStatus {
+    use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+    if can_register_usernames(identity, required) {
+        RegistrationKeyStatus::Ready
+    } else if identity
+        .identity
+        .public_keys()
+        .values()
+        .any(|key| key_can_sign_documents(key, required))
+    {
+        RegistrationKeyStatus::KeyNotOnDevice
+    } else {
+        RegistrationKeyStatus::NoSuitableKey
+    }
+}
+
+/// Whether restoring `plan` gives this device a key that can register
+/// usernames for `identity`.
+pub fn plan_restores_registration_key(
+    identity: &QualifiedIdentity,
+    plan: &super::legacy_recovery::RecoveryPlan,
+    required: dash_sdk::dpp::identity::SecurityLevel,
+) -> bool {
+    use super::legacy_recovery::RecoveryItem;
+    use super::qualified_identity::PrivateKeyTarget;
+    use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+    plan.items.iter().any(|descriptor| {
+        matches!(
+            &descriptor.item,
+            RecoveryItem::Key { target: PrivateKeyTarget::PrivateKeyOnMainIdentity, key_id }
+                if identity
+                    .identity
+                    .public_keys()
+                    .get(key_id)
+                    .is_some_and(|key| key_can_sign_documents(key, required))
+        )
+    })
+}
+
 /// Whether a username can be requested right now, and on what terms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UsernameAvailability {
@@ -1073,6 +1128,107 @@ mod tests {
         assert!(!key_can_sign_documents(
             &key(Purpose::TRANSFER, SecurityLevel::CRITICAL),
             high
+        ));
+    }
+
+    /// A testnet identity publishing `published` keys and holding `held` of them.
+    fn identity_with_keys(
+        published: &[(u32, dash_sdk::dpp::identity::SecurityLevel)],
+        held: &[u32],
+    ) -> QualifiedIdentity {
+        use crate::model::qualified_identity::PrivateKeyTarget;
+        use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
+        use dash_sdk::dpp::identity::Purpose;
+        use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+        let mut identity = crate::context::test_support::bare_user_identity(
+            id(1),
+            dash_sdk::dpp::dashcore::Network::Testnet,
+        );
+        let mut private_keys = std::collections::BTreeMap::new();
+        for (key_id, level) in published {
+            let mut key = dash_sdk::platform::IdentityPublicKey::random_key(
+                *key_id,
+                Some(u64::from(*key_id)),
+                dash_sdk::dpp::version::PlatformVersion::latest(),
+            );
+            key.set_id(*key_id);
+            key.set_purpose(Purpose::AUTHENTICATION);
+            key.set_security_level(*level);
+            identity.identity.add_public_key(key.clone());
+            if held.contains(key_id) {
+                private_keys.insert(
+                    (PrivateKeyTarget::PrivateKeyOnMainIdentity, *key_id),
+                    (key.into(), PrivateKeyData::InVault),
+                );
+            }
+        }
+        identity.private_keys = KeyStorage::from(private_keys);
+        identity
+    }
+
+    #[test]
+    fn registration_key_status_tells_a_missing_key_from_one_not_on_this_device() {
+        use dash_sdk::dpp::identity::SecurityLevel;
+        let high = SecurityLevel::HIGH;
+        let keys = [(0, SecurityLevel::MASTER), (1, high)];
+        assert_eq!(
+            registration_key_status(&identity_with_keys(&keys, &[0, 1]), high),
+            RegistrationKeyStatus::Ready
+        );
+        // Holding only the master key does not help: it cannot sign documents.
+        assert_eq!(
+            registration_key_status(&identity_with_keys(&keys, &[0]), high),
+            RegistrationKeyStatus::KeyNotOnDevice
+        );
+        assert_eq!(
+            registration_key_status(&identity_with_keys(&keys[..1], &[0]), high),
+            RegistrationKeyStatus::NoSuitableKey
+        );
+        assert_eq!(
+            registration_key_status(&identity_with_keys(&[], &[]), high),
+            RegistrationKeyStatus::NoSuitableKey
+        );
+    }
+
+    #[test]
+    fn only_a_plan_with_a_registration_key_restores_registration() {
+        use crate::model::legacy_recovery::{RecoveryItem, RecoveryItemDescriptor, RecoveryPlan};
+        use crate::model::qualified_identity::PrivateKeyTarget;
+        use dash_sdk::dpp::identity::SecurityLevel;
+        let high = SecurityLevel::HIGH;
+        let identity = identity_with_keys(&[(0, SecurityLevel::MASTER), (1, high)], &[]);
+        let key = |target, key_id| RecoveryItemDescriptor {
+            item: RecoveryItem::Key { target, key_id },
+            purpose: None,
+        };
+        let main = PrivateKeyTarget::PrivateKeyOnMainIdentity;
+        let restores = |items, excluded| {
+            plan_restores_registration_key(&identity, &RecoveryPlan { items, excluded }, high)
+        };
+        assert!(restores(vec![key(main.clone(), 1)], vec![]));
+        assert!(!restores(vec![], vec![]));
+        // The master key, a key the identity does not publish, the same id on
+        // the voter identity, and a link restore no registration key.
+        assert!(!restores(
+            vec![
+                key(main.clone(), 0),
+                key(main.clone(), 9),
+                key(PrivateKeyTarget::PrivateKeyOnVoterIdentity, 1),
+                RecoveryItemDescriptor {
+                    item: RecoveryItem::OwnerKeyAssociation,
+                    purpose: None,
+                },
+            ],
+            vec![],
+        ));
+        // A key the previous version holds but cannot hand back is no offer.
+        assert!(!restores(
+            vec![],
+            vec![(
+                key(main, 1),
+                crate::model::legacy_recovery::ExclusionReason::KeyNoLongerOnIdentity,
+            )],
         ));
     }
 

@@ -225,6 +225,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   node's current voting private key. Before, the node was added as if the key
   were usable and the problem only showed later, when a vote failed.
 
+- An identity whose key is not on this device is no longer told to add a key
+  before it can get a username. After an update from an earlier version, the
+  Usernames card now offers to restore the key right there when the earlier
+  version saved it, and otherwise points to Restore from Previous Version in
+  Settings. On a new installation it says to enter the key. Only an identity
+  that really has no suitable key is still told to add one.
+
 - The background refresh of name contests no longer resets the screen you are
   working on. While it ran, a lookup on another screen could lose its spinner
   and its answer, typed search text could be cleared, and an amount field could

@@ -42,7 +42,7 @@ Stream V test cases live in `../2026-07-16-dpns-voting-experience/03-test-case-s
 | USR-TC-021 | Show as main | 2 active names | Row menu → Show as main on `@b` | Header subtitle `@b`; persists after restart; no backend task | FR-002, FR-043 |
 | USR-TC-022 | No stubs | Any identity | Open Profile | No `Aliases`, `Make primary`, `Remove`, `Add an alias`, `View all usernames` | FR-006 |
 | USR-TC-023 | Empty state | No names | Open Profile | Empty copy + `Get a username` enabled | FR-005 |
-| USR-TC-024 | View-only | Identity without auth key | Open Profile | Button disabled with tooltip; `Add a key` link | FR-005 |
+| USR-TC-024 | View-only | Identity whose auth key is not on this device (no suitable key at all: `Add a key` link) | Open Profile | Button disabled with tooltip; `Open keys` link, or the in-place `Restore keys` offer when an earlier version saved the key | FR-005 |
 | USR-TC-025 | Header pending | No active name, 1 request | Open hub | Subtitle `@{name}` with the request's status: `Open for other requests` in the join window, `Waiting for vote` after it | FR-010 |
 | USR-TC-026 | Home card copy | Leading / no rival / trailing | Open Home | Matching second sentence | FR-011 |
 | USR-TC-027 | Banner once | Request becomes Won | Open hub twice | Success banner first time only | FR-012 |

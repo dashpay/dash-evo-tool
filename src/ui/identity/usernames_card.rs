@@ -7,24 +7,28 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use egui::{ColorImage, RichText, TextureHandle, Ui};
 
 use crate::app::AppAction;
-use crate::backend_task::BackendTask;
 use crate::backend_task::identity::IdentityTask;
+use crate::backend_task::{BackendTask, BackendTaskContext};
 use crate::context::AppContext;
 use crate::model::dpns::normalize_dpns_label;
 use crate::model::dpns_usernames::{
-    RequestPhase, UsernameRequest, can_register_usernames, dpns_signing_requirement,
+    RegistrationKeyStatus, RequestPhase, UsernameRequest, dpns_signing_requirement,
+    plan_restores_registration_key, registration_key_status,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::ui::MessageType;
-use crate::ui::ScreenType;
+use crate::ui::components::legacy_recovery_section::host_offer;
 use crate::ui::components::message_banner::MessageBanner;
 use crate::ui::identity::funding_common::generate_qr_code_image;
 use crate::ui::identity::register_dpns_name_screen::{RegisterDpnsNameSource, status_line};
 use crate::ui::identity::username_copy::{
-    NEEDS_KEY_TO_REGISTER, Tone, finished_request_detail, pending_request_detail, phase_label,
+    ENTER_KEY_TO_REGISTER, NEEDS_KEY_TO_REGISTER, RESTORE_FROM_PREVIOUS_VERSION_TO_REGISTER,
+    RESTORE_KEYS_TO_REGISTER, Tone, finished_request_detail, pending_request_detail, phase_label,
     registered_on_line,
 };
+use crate::ui::masternodes::KeyVocabulary;
+use crate::ui::state::legacy_recovery::LegacyRecoveryState;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
+use crate::ui::{MessageType, RootScreenType, ScreenType};
 
 /// One row of the card, in display order.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,10 +116,80 @@ pub fn username_rows(
     rows
 }
 
+/// What to tell an identity that cannot register a username from this device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KeyHint {
+    /// The identity has no suitable key: add one.
+    AddKey,
+    /// The previous version's saved data holds the key: restore it in place.
+    Restore,
+    /// The install was updated but nothing is offered in place: restore from Settings.
+    PreviousVersion,
+    /// An earlier version saved nothing: enter the key.
+    EnterKey,
+}
+
+impl KeyHint {
+    /// The hint for `status`, or `None` when the identity can register.
+    /// `restorable_here` is whether the restore offer holds the missing key,
+    /// `updated_install` whether an earlier version saved identities at all.
+    pub(crate) fn for_status(
+        status: RegistrationKeyStatus,
+        restorable_here: bool,
+        updated_install: bool,
+    ) -> Option<Self> {
+        match status {
+            RegistrationKeyStatus::Ready => None,
+            RegistrationKeyStatus::NoSuitableKey => Some(Self::AddKey),
+            RegistrationKeyStatus::KeyNotOnDevice if restorable_here => Some(Self::Restore),
+            RegistrationKeyStatus::KeyNotOnDevice if updated_install => Some(Self::PreviousVersion),
+            RegistrationKeyStatus::KeyNotOnDevice => Some(Self::EnterKey),
+        }
+    }
+
+    /// The sentence shown for this hint.
+    pub(crate) fn text(self) -> &'static str {
+        match self {
+            Self::AddKey => NEEDS_KEY_TO_REGISTER,
+            Self::Restore => RESTORE_KEYS_TO_REGISTER,
+            Self::PreviousVersion => RESTORE_FROM_PREVIOUS_VERSION_TO_REGISTER,
+            Self::EnterKey => ENTER_KEY_TO_REGISTER,
+        }
+    }
+}
+
+/// The links that act on `hint`. [`KeyHint::Restore`] has none: its action is
+/// the restore offer the card renders.
+pub(crate) fn key_hint_links(
+    ui: &mut Ui,
+    app_context: &Arc<AppContext>,
+    identity: &QualifiedIdentity,
+    hint: KeyHint,
+) -> AppAction {
+    let mut action = AppAction::None;
+    if hint == KeyHint::PreviousVersion && ui.link("Open Settings").clicked() {
+        action =
+            AppAction::SetMainScreenThenGoToMainScreen(RootScreenType::RootScreenNetworkChooser);
+    }
+    let keys_link = match hint {
+        KeyHint::AddKey => Some("Add a key"),
+        KeyHint::PreviousVersion | KeyHint::EnterKey => Some("Open keys"),
+        KeyHint::Restore => None,
+    };
+    if keys_link.is_some_and(|label| ui.link(label).clicked()) {
+        action =
+            AppAction::AddScreen(ScreenType::Keys(identity.clone()).create_screen(app_context));
+    }
+    action
+}
+
 /// Stateful renderer for the Usernames card (holds the open QR code).
 #[derive(Default)]
 pub struct UsernamesCard {
     qr: Option<(String, TextureHandle)>,
+    /// The restore offer for the identity whose registration key is not on
+    /// this device; dropped once that identity can register.
+    recovery: Option<(dash_sdk::platform::Identifier, LegacyRecoveryState)>,
 }
 
 impl UsernamesCard {
@@ -132,18 +206,14 @@ impl UsernamesCard {
         let main = app_context.main_username(identity);
         let requests = app_context.username_requests_for(&identity_id);
         let rows = username_rows(identity, main.as_deref(), &requests);
-        let can_register = can_register_usernames(
-            identity,
-            dpns_signing_requirement(&app_context.dpns_contract),
-        );
+        let hint = self.key_hint(app_context, identity);
 
         if rows.is_empty() {
             ui.label(
                 "This identity has no username yet. A username lets people pay you as @name instead of a long address.",
             );
             ui.add_space(6.0);
-            action |=
-                get_username_button(ui, app_context, identity, can_register, "Get a username");
+            action |= self.get_username_button(ui, app_context, identity, hint, "Get a username");
             return action;
         }
 
@@ -244,13 +314,7 @@ impl UsernamesCard {
         }
 
         ui.add_space(10.0);
-        action |= get_username_button(
-            ui,
-            app_context,
-            identity,
-            can_register,
-            "Get another username",
-        );
+        action |= self.get_username_button(ui, app_context, identity, hint, "Get another username");
         ui.label(
             RichText::new("Each username is a separate payment from this identity's balance.")
                 .small()
@@ -258,6 +322,88 @@ impl UsernamesCard {
         );
 
         self.show_qr(ui);
+        action
+    }
+
+    /// Decide what to tell `identity`, keeping the restore offer only while its
+    /// registration key is not on this device or a restore of it still runs.
+    fn key_hint(
+        &mut self,
+        app_context: &Arc<AppContext>,
+        identity: &QualifiedIdentity,
+    ) -> Option<KeyHint> {
+        let required = dpns_signing_requirement(&app_context.dpns_contract);
+        let status = registration_key_status(identity, required);
+        let identity_id = identity.identity.id();
+        let key_missing = status == RegistrationKeyStatus::KeyNotOnDevice;
+        let kept = self
+            .recovery
+            .as_ref()
+            .is_some_and(|(id, offer)| *id == identity_id && (key_missing || offer.is_restoring()));
+        if !kept {
+            self.recovery = key_missing.then(|| {
+                (
+                    identity_id,
+                    LegacyRecoveryState::new(app_context, identity_id),
+                )
+            });
+        }
+        let restorable_here = self.recovery().is_some_and(|offer| {
+            offer
+                .plan()
+                .is_some_and(|plan| plan_restores_registration_key(identity, plan, required))
+        });
+        let updated_install = key_missing && app_context.has_legacy_identities();
+        KeyHint::for_status(status, restorable_here, updated_install)
+    }
+
+    /// The restore offer this card hosts, for routing recovery results into it.
+    pub(crate) fn recovery(&self) -> Option<&LegacyRecoveryState> {
+        self.recovery.as_ref().map(|(_, offer)| offer)
+    }
+
+    /// Mutable access to the hosted restore offer.
+    pub(crate) fn recovery_mut(&mut self) -> Option<&mut LegacyRecoveryState> {
+        self.recovery.as_mut().map(|(_, offer)| offer)
+    }
+
+    /// The detection task the hosted offer still needs, marked as sent. The
+    /// host dispatches it on a frame with no other action, so it never
+    /// displaces something the user did.
+    pub(crate) fn recovery_check(&mut self) -> Option<(BackendTask, BackendTaskContext)> {
+        self.recovery_mut()?.ensure_checked()
+    }
+
+    /// The register button, and below it why it is disabled and what helps.
+    fn get_username_button(
+        &mut self,
+        ui: &mut Ui,
+        app_context: &Arc<AppContext>,
+        identity: &QualifiedIdentity,
+        hint: Option<KeyHint>,
+        label: &str,
+    ) -> AppAction {
+        let mut action = AppAction::None;
+        let button = ComponentStyles::add_primary_button_enabled(ui, hint.is_none(), label);
+        let Some(hint) = hint else {
+            if button.clicked() {
+                action = register_action(app_context, identity);
+            }
+            return action;
+        };
+        button.disabled_tooltip(hint.text());
+        ui.horizontal_wrapped(|ui| {
+            ui.label(hint.text());
+            action = key_hint_links(ui, app_context, identity, hint);
+        });
+        if hint == KeyHint::Restore
+            && let Some(offer) = self.recovery_mut()
+            && let Some(approved) =
+                host_offer(offer, KeyVocabulary::from(identity.identity_type), ui)
+            && let Some((task, context)) = offer.restore(approved)
+        {
+            action = AppAction::BackendTaskWithContext { task, context };
+        }
         action
     }
 
@@ -327,34 +473,6 @@ fn request_status_action(
         }
         .create_screen(app_context),
     )
-}
-
-fn get_username_button(
-    ui: &mut Ui,
-    app_context: &Arc<AppContext>,
-    identity: &QualifiedIdentity,
-    can_register: bool,
-    label: &str,
-) -> AppAction {
-    let mut action = AppAction::None;
-    let reason = NEEDS_KEY_TO_REGISTER;
-    let clicked = ComponentStyles::add_primary_button_enabled(ui, can_register, label)
-        .disabled_tooltip(reason)
-        .clicked();
-    if clicked && can_register {
-        action = register_action(app_context, identity);
-    }
-    if !can_register {
-        ui.horizontal(|ui| {
-            ui.label(reason);
-            if ui.link("Add a key").clicked() {
-                action = AppAction::AddScreen(
-                    ScreenType::Keys(identity.clone()).create_screen(app_context),
-                );
-            }
-        });
-    }
-    action
 }
 
 #[cfg(test)]
@@ -457,6 +575,119 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    /// A testnet context whose previous-version database carries one identity
+    /// row, the shape of an upgraded install.
+    fn upgraded_context(dir: &std::path::Path) -> Arc<AppContext> {
+        {
+            let db = crate::database::Database::new(dir.join("data.db")).expect("legacy db");
+            db.create_tables(true).expect("legacy schema");
+            db.set_default_version().expect("legacy version");
+            crate::database::test_helpers::LegacyIdentityFixture::new(
+                [1; 32],
+                Some(vec![0x01]),
+                "testnet",
+            )
+            .insert(&db.locked_conn())
+            .expect("stage a legacy identity row");
+        }
+        crate::context::test_support::test_app_context(dir)
+    }
+
+    /// An identity publishing a key that can register usernames, with or
+    /// without that key held on this device.
+    fn identity_publishing_a_signing_key(held: bool) -> QualifiedIdentity {
+        crate::context::test_support::user_identity_with_signing_key(
+            [1; 32].into(),
+            dash_sdk::dpp::dashcore::Network::Testnet,
+            held,
+        )
+    }
+
+    /// Render the card for `identity`, collecting every action it returns.
+    fn mount_card(
+        app_context: Arc<AppContext>,
+        identity: QualifiedIdentity,
+    ) -> egui_kittest::Harness<'static, (UsernamesCard, Vec<AppAction>)> {
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(900.0, 700.0))
+            .build_ui_state(
+                move |ui, state: &mut (UsernamesCard, Vec<AppAction>)| {
+                    let action = state.0.show(ui, &app_context, &identity);
+                    if !matches!(action, AppAction::None) {
+                        state.1.push(action);
+                    }
+                },
+                (UsernamesCard::default(), Vec::new()),
+            );
+        harness.run();
+        harness
+    }
+
+    fn is_recovery_check(task: &(BackendTask, BackendTaskContext)) -> bool {
+        matches!(
+            task.0,
+            BackendTask::IdentityTask(IdentityTask::CheckLegacyRecovery { .. })
+        )
+    }
+
+    /// The previous version's data exists but has not offered this key (yet, or
+    /// at all): the card points to the Settings restore, which also brings back
+    /// a missing wallet, and has the existing detection to send exactly once.
+    #[test]
+    fn upgraded_install_without_an_offer_points_to_the_settings_restore() {
+        use egui_kittest::kittest::Queryable;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = upgraded_context(dir.path());
+        let mut harness = mount_card(ctx, identity_publishing_a_signing_key(false));
+        harness.run();
+
+        assert!(
+            harness
+                .query_by_label(
+                    "The key this identity needs to register usernames is not on this device. \
+                     If you updated from an earlier version of Dash Evo Tool, open Settings and \
+                     use Restore from Previous Version to bring back missing wallets and keys."
+                )
+                .is_some()
+        );
+        assert!(harness.query_by_label("Add a key").is_none());
+        assert!(harness.query_by_label("Open keys").is_some());
+        let check = harness.state_mut().0.recovery_check();
+        assert!(check.as_ref().is_some_and(is_recovery_check));
+        assert!(
+            harness.state_mut().0.recovery_check().is_none(),
+            "a check already sent must not be sent again",
+        );
+
+        harness.get_by_label("Open Settings").click();
+        harness.run();
+        assert!(harness.state().1.iter().any(|action| matches!(
+            action,
+            AppAction::SetMainScreenThenGoToMainScreen(
+                crate::ui::RootScreenType::RootScreenNetworkChooser
+            )
+        )));
+    }
+
+    /// An identity that can already register asks nothing of the previous
+    /// version's data, and neither does a fresh install.
+    #[test]
+    fn no_recovery_check_without_a_missing_key_or_previous_version_data() {
+        let upgraded = tempfile::tempdir().expect("tempdir");
+        let mut ready = mount_card(
+            upgraded_context(upgraded.path()),
+            identity_publishing_a_signing_key(true),
+        );
+        assert!(ready.state_mut().0.recovery_check().is_none());
+
+        let fresh = tempfile::tempdir().expect("tempdir");
+        let mut keyless = mount_card(
+            crate::context::test_support::test_app_context(fresh.path()),
+            identity_publishing_a_signing_key(false),
+        );
+        assert!(keyless.state_mut().0.recovery_check().is_none());
     }
 
     #[test]

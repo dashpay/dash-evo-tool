@@ -34,10 +34,15 @@ use std::time::{Duration, Instant};
 const PLATFORM_FUNDED_IDENTITY_INDICES: Range<u32> = 1_000_000..2_000_000;
 /// Candidate indices tried before the test gives up.
 const IDENTITY_INDEX_ATTEMPTS: usize = 5;
-/// Credits kept on the identity to pay for sending the rest back, as multiples
-/// of the app's transfer fee estimate. A larger one is tried when the network
-/// refuses the transfer.
-const REFUND_FEE_RESERVES: [u64; 3] = [1, 3, 10];
+/// Credits the network wants left on an identity, beyond the amount sent, to
+/// accept a transfer to one address: 17,331,040 on testnet, plus a little
+/// headroom. The fee it then takes is about 4 million.
+const REFUND_RESERVE: u64 = 17_400_000;
+/// Transfers tried when returning credits; the second uses the reserve the
+/// network's refusal asked for.
+const REFUND_ATTEMPTS: usize = 2;
+/// Opt-in for tests that open a real community vote.
+const CONTEST_OPT_IN_ENV: &str = "E2E_DPNS_CONTEST";
 /// Below this, what is left on the identity is not worth a transfer.
 const SMALLEST_REFUND: u64 = 1_000_000;
 /// Reads of an identity balance tried before giving up, and the pause between them.
@@ -326,6 +331,24 @@ pub(crate) async fn balance_below(
     }
 }
 
+/// Whether the environment variable `variable` is set to `1`; says how to
+/// opt in when it is not.
+pub(crate) fn opted_in(variable: &str) -> bool {
+    let allowed = std::env::var(variable).is_ok_and(|value| value == "1");
+    if !allowed {
+        eprintln!("Skipped: set {variable}=1 to run this test");
+    }
+    allowed
+}
+
+/// Whether tests that open a real community vote may run.
+///
+/// Each one spends the community vote fee for good and leaves a public vote on
+/// the network, so a plain `--ignored` run skips them.
+pub(crate) fn contest_allowed() -> bool {
+    opted_in(CONTEST_OPT_IN_ENV)
+}
+
 /// A random 19-letter label, which opens a community vote.
 pub(crate) fn vote_label() -> String {
     let mut rng = rand::rng();
@@ -378,12 +401,10 @@ async fn return_credits(
             "Credits were not returned from identity {id}: its balance could not be read"
         ));
     };
-    let transfer_fee = app_context
-        .fee_estimator()
-        .estimate_credit_transfer_to_addresses(1);
     let mut identity = funded.identity.clone();
     identity.identity.set_balance(balance);
-    for reserve in REFUND_FEE_RESERVES.map(|times| transfer_fee.saturating_mul(times)) {
+    let mut reserve = REFUND_RESERVE;
+    for _ in 0..REFUND_ATTEMPTS {
         let amount = balance.saturating_sub(reserve);
         if amount < SMALLEST_REFUND {
             tracing::info!(%id, balance, "Nothing worth returning is left on the identity");
@@ -406,13 +427,22 @@ async fn return_credits(
                 );
                 return Ok(());
             }
-            Err(error) => tracing::warn!(
-                %id,
-                amount,
-                kept_for_fee = reserve,
-                ?error,
-                "Returning identity credits was refused"
-            ),
+            // The refusal names the balance the network wanted for this amount.
+            Err(TaskError::IdentityInsufficientBalance { required, .. }) if required > amount => {
+                tracing::warn!(
+                    %id,
+                    amount,
+                    kept_for_fee = reserve,
+                    required,
+                    "Returning identity credits was refused; trying with the reserve asked for"
+                );
+                reserve = required - amount;
+            }
+            Err(error) => {
+                return Err(format!(
+                    "Credits were not returned: {balance} credits stay on identity {id}: {error:?}"
+                ));
+            }
         }
     }
     Err(format!(
@@ -508,11 +538,14 @@ async fn test_register_dpns_name_funded_from_platform_addresses() {
 /// Costs the community vote fee on top of the registration: 0.1 DASH from
 /// protocol 14, 0.2 DASH before. The network never returns that fee; when the
 /// vote ends it goes to the masternodes. The run also leaves a vote open on
-/// the network for a random name. What is left on the identity goes back to
-/// the funding address.
+/// the network for a random name, so it runs only with `E2E_DPNS_CONTEST=1`.
+/// What is left on the identity goes back to the funding address.
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn test_register_contested_dpns_name_funded_from_platform_addresses() {
+    if !contest_allowed() {
+        return;
+    }
     let ctx = ctx().await;
     let app_context = &ctx.app_context;
 

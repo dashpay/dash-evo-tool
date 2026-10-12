@@ -8,12 +8,17 @@
 //! so the app's own balance check does not stop an identity that is funded
 //! too little on purpose. What is left on each identity goes back to the
 //! platform address that funded it.
+//!
+//! Every run spends credits to learn a number, not to check the app, so the
+//! module runs only with `E2E_DPNS_MEASURE=1`. It stays in the suite because
+//! it is the only way to re-measure the split between the two documents and
+//! the balance the network wants after a Platform upgrade.
 
 use crate::framework::harness::ctx;
 use crate::framework::task_runner::run_on_large_stack;
 use crate::register_dpns::{
-    balance_below, network_balance, platform_funded_identity, refused_for_balance,
-    returning_credits, vote_label,
+    balance_below, contest_allowed, network_balance, opted_in, platform_funded_identity,
+    refused_for_balance, returning_credits, vote_label,
 };
 use dash_evo_tool::context::AppContext;
 use dash_evo_tool::model::fee_estimation::contest_fee_credits;
@@ -28,6 +33,8 @@ use rand::prelude::*;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Opt-in for this module.
+const MEASURE_OPT_IN_ENV: &str = "E2E_DPNS_MEASURE";
 /// How long the second document is held back while the balance is read.
 const SECOND_DOCUMENT_HOLD: Duration = Duration::from_secs(90);
 /// Enough for the first document, too little for the network to accept the
@@ -45,6 +52,9 @@ struct Measured {
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn measure_dpns_registration_20_chars() {
+    if !opted_in(MEASURE_OPT_IN_ENV) {
+        return;
+    }
     let measured = measure(twenty_char_label(), false, None).await;
     measured
         .registered
@@ -55,6 +65,9 @@ async fn measure_dpns_registration_20_chars() {
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn measure_dpns_registration_63_chars() {
+    if !opted_in(MEASURE_OPT_IN_ENV) {
+        return;
+    }
     let mut rng = rand::rng();
     let label = format!(
         "e2e-m-{:016x}{:016x}{:016x}{}",
@@ -73,10 +86,13 @@ async fn measure_dpns_registration_63_chars() {
 ///
 /// Costs the community vote fee (0.1 DASH from protocol 14, 0.2 DASH before),
 /// which the network never returns, and leaves a vote open on the network for
-/// a random name.
+/// a random name, so it also needs `E2E_DPNS_CONTEST=1`.
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn measure_dpns_registration_contested() {
+    if !opted_in(MEASURE_OPT_IN_ENV) || !contest_allowed() {
+        return;
+    }
     let measured = measure(vote_label(), true, None).await;
     measured
         .registered
@@ -90,6 +106,9 @@ async fn measure_dpns_registration_contested() {
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn measure_dpns_registration_balance_the_network_requires() {
+    if !opted_in(MEASURE_OPT_IN_ENV) {
+        return;
+    }
     let measured = measure(twenty_char_label(), false, Some(UNDERFUNDED_CREDITS)).await;
 
     assert!(

@@ -26,10 +26,6 @@ use std::sync::{Arc, RwLock};
 const PLATFORM_FUNDED_IDENTITY_INDICES: Range<u32> = 1_000_000..2_000_000;
 /// Candidate indices tried before the test gives up.
 const IDENTITY_INDEX_ATTEMPTS: usize = 5;
-/// Stored bytes allowed for the two name documents and their index entries.
-const NAME_STORAGE_ALLOWANCE_BYTES: usize = 4096;
-/// Tree seeks allowed for storing the two name documents.
-const NAME_SEEKS_ALLOWANCE: usize = 40;
 
 /// Registration data for an identity index of `wallet_arc` that no identity
 /// on the network uses yet.
@@ -164,8 +160,8 @@ async fn test_register_dpns_name() {
 /// addresses, register a DPNS name for it, verify by searching.
 ///
 /// Spends no Core funds: no funded test wallet and no asset lock. The identity
-/// receives only what its creation and one non-contested name are estimated
-/// to cost.
+/// receives exactly the balance the app requires for one non-contested name,
+/// so a pass also shows that this estimate satisfies the network.
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn test_register_dpns_name_funded_from_platform_addresses() {
@@ -202,12 +198,14 @@ async fn test_register_dpns_name_funded_from_platform_addresses() {
         .expect("identity keys should convert to public keys")
         .len();
 
+    // 20+ characters, so the name is registered at once instead of opening a
+    // community vote.
+    let random_suffix: u64 = rand::rng().random();
+    let dpns_name = format!("e2e-platform-{:016x}", random_suffix);
+
     let estimator = app_context.fee_estimator();
     let creation_fee = estimator.estimate_identity_create_from_addresses(1, false, key_count);
-    let name_allowance = estimator.estimate_document_batch(2).saturating_add(
-        estimator.estimate_storage_based_fee(NAME_STORAGE_ALLOWANCE_BYTES, NAME_SEEKS_ALLOWANCE),
-    );
-    let funding = creation_fee.saturating_add(name_allowance);
+    let funding = estimator.estimate_username_registration(dpns_name.len(), false);
     // The creation fee is charged to what stays on the funding address, not to
     // the amount moved (as observed on testnet), so the address must hold both.
     let needed = funding.saturating_add(creation_fee);
@@ -229,7 +227,6 @@ async fn test_register_dpns_name_funded_from_platform_addresses() {
         identity_index,
         funding,
         creation_fee,
-        name_allowance,
         richest_credits,
         "Registering an identity from platform address credits"
     );
@@ -254,10 +251,6 @@ async fn test_register_dpns_name_funded_from_platform_addresses() {
         "Identity registered from platform address credits"
     );
 
-    // 20+ characters, so the name is registered at once instead of opening a
-    // community vote.
-    let random_suffix: u64 = rand::rng().random();
-    let dpns_name = format!("e2e-platform-{:016x}", random_suffix);
     tracing::info!("Registering DPNS name: {}", dpns_name);
 
     let task = BackendTask::IdentityTask(IdentityTask::RegisterDpnsName(RegisterDpnsNameInput {

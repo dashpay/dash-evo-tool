@@ -212,6 +212,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The Platform Info screen under Tools now shows the answer to a fetch started
+  while the app is refreshing name contests in the background. The result area
+  used to fall back to "No results yet" with no spinner and no error, and the
+  answer never appeared until the button was pressed again after the refresh
+  had finished. The spinner now stays until the answer arrives, and the answer
+  stays until another fetch replaces it.
+
 - Adding funds to an identity no longer sends an amount too small to cover the
   network fee. Such a transfer used to leave the wallet and was then refused
   with a message about insufficient funds in the transaction. The amount field

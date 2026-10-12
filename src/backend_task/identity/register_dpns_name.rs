@@ -89,26 +89,12 @@ impl BroadcastFailure {
     }
 }
 
-/// Broadcast the two registration documents for `label`, returning the
-/// confirmed name document.
+/// Broadcast the two registration documents for `label` through `register`,
+/// the SDK's registration call, returning the confirmed name document.
 ///
 /// The SDK reports one error for both documents; it calls back between them,
 /// once the first is confirmed, which is what tells the two failures apart.
-async fn broadcast_name_registration(
-    sdk: &Sdk,
-    identity: &QualifiedIdentity,
-    signing_key: IdentityPublicKey,
-    label: &str,
-) -> Result<Document, BroadcastFailure> {
-    broadcast_name_registration_with(identity, signing_key, label, |input| {
-        sdk.register_dpns_name(input)
-    })
-    .await
-}
-
-/// [`broadcast_name_registration`] with the SDK's registration call passed in,
-/// so what it is handed and how its failure is sorted can be driven directly.
-async fn broadcast_name_registration_with<F, Fut>(
+async fn broadcast_name_registration<F, Fut>(
     identity: &QualifiedIdentity,
     signing_key: IdentityPublicKey,
     label: &str,
@@ -142,6 +128,24 @@ impl AppContext {
         sdk: &Sdk,
         input: RegisterDpnsNameInput,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
+        self.register_dpns_name_through(sdk, input, |registration| {
+            sdk.register_dpns_name(registration)
+        })
+        .await
+    }
+
+    /// [`Self::register_dpns_name`] with the SDK's registration call passed in
+    /// as `register`, so everything around the broadcast runs without a network.
+    async fn register_dpns_name_through<F, Fut>(
+        &self,
+        sdk: &Sdk,
+        input: RegisterDpnsNameInput,
+        register: F,
+    ) -> Result<BackendTaskSuccessResult, TaskError>
+    where
+        F: FnOnce(SdkRegistrationInput<QualifiedIdentity>) -> Fut,
+        Fut: Future<Output = Result<RegisterDpnsNameResult, SdkError>>,
+    {
         let validation = validate_dpns_name(&input.name_input);
         if validation != DpnsNameValidationResult::Valid {
             return Err(TaskError::InvalidDpnsName { validation });
@@ -197,10 +201,10 @@ impl AppContext {
         let balance_before = qualified_identity.identity.balance();
 
         let confirmed_at = match broadcast_name_registration(
-            sdk,
             &qualified_identity,
             public_key.clone(),
             &input.name_input,
+            register,
         )
         .await
         {
@@ -550,6 +554,76 @@ mod tests {
         assert_eq!(names, [("earlier-name-2", 7), ("alice-123", 4_242)]);
     }
 
+    /// The date saved for a newly registered name is the one on the name
+    /// document the network confirmed, carried there by the registration itself.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn registration_saves_the_date_of_the_confirmed_name_document() {
+        use dash_sdk::dpp::document::DocumentV0Setters;
+        use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+        use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(
+            std::sync::Arc::new(crate::wallet_backend::kv_test_support::InMemoryKv::default()),
+        ));
+        let mut identity = bare_identity(3);
+        // A key allowed to sign name documents; nothing signs while the SDK is stood in for.
+        identity
+            .identity
+            .add_public_keys([IdentityPublicKey::V0(IdentityPublicKeyV0 {
+                id: 1,
+                purpose: Purpose::AUTHENTICATION,
+                security_level: SecurityLevel::HIGH,
+                contract_bounds: None,
+                key_type: KeyType::ECDSA_SECP256K1,
+                read_only: false,
+                data: vec![2; 33].into(),
+                disabled_at: None,
+            })]);
+        let id = identity.identity.id();
+        ctx.update_local_qualified_identity(&identity).unwrap();
+        let mut sdk = Sdk::new_mock();
+        expect_domain_lookup(&mut sdk, &ctx, "alice-123", false).await;
+        let mut confirmed = domain_document(id, "alice-123");
+        confirmed.set_created_at(Some(4_242));
+
+        let result = ctx
+            .register_dpns_name_through(
+                &sdk,
+                RegisterDpnsNameInput {
+                    qualified_identity: identity,
+                    name_input: "alice-123".to_owned(),
+                    approved_contest_fee: 0,
+                    signing_key_id: Some(1),
+                },
+                |_| async move {
+                    Ok(RegisterDpnsNameResult {
+                        preorder_document: confirmed.clone(),
+                        domain_document: confirmed,
+                        full_domain_name: "alice-123.dash".to_owned(),
+                    })
+                },
+            )
+            .await
+            .expect("the registration succeeds");
+
+        assert!(matches!(
+            result,
+            BackendTaskSuccessResult::RegisteredDpnsName {
+                outcome: DpnsRegistrationOutcome::Registered,
+                ..
+            }
+        ));
+        let saved = ctx.get_local_qualified_identity(&id).unwrap().unwrap();
+        let names: Vec<(&str, u64)> = saved
+            .dpns_names
+            .iter()
+            .map(|n| (n.name.as_str(), n.acquired_at))
+            .collect();
+        assert_eq!(names, [("alice-123", 4_242)]);
+    }
+
     /// A registration accepted as sent after an error has no confirmed
     /// document, so the name is listed with the local time.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -611,7 +685,7 @@ mod tests {
         let confirmed_preorder = domain_document(identity.identity.id(), "alice-123");
 
         let failure =
-            broadcast_name_registration_with(&identity, key, "alice-123", |input| async move {
+            broadcast_name_registration(&identity, key, "alice-123", |input| async move {
                 // As the SDK does: report the confirmed first document if asked to.
                 if let Some(report_confirmed) = input.preorder_callback {
                     report_confirmed(&confirmed_preorder);
@@ -640,9 +714,11 @@ mod tests {
             PlatformVersion::latest(),
         );
 
-        let failure = broadcast_name_registration(&sdk, &identity, key, "alice-123")
-            .await
-            .expect_err("nothing can be broadcast on a mock");
+        let failure = broadcast_name_registration(&identity, key, "alice-123", |input| {
+            sdk.register_dpns_name(input)
+        })
+        .await
+        .expect_err("nothing can be broadcast on a mock");
 
         assert!(
             matches!(failure, BroadcastFailure::Preorder(_)),

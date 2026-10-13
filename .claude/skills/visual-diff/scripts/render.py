@@ -12,7 +12,7 @@ SPEC: {"<image name>": [{"kind": "new|changed|removed|screen",
 
 Reads <new-dir>/<name>.png (and <old-dir>/<name>.png for the self-check and
 insets); writes <out-dir>/<name>.png (labelled) and <out-dir>/clean/<name>.png.
-Exit code 1 if a self-check fails (see selfcheck()).
+Exit code 1 if a self-check fails (see selfcheck()); warnings do not change it.
 """
 
 import argparse
@@ -31,6 +31,11 @@ FONTS = [
     "/Library/Fonts/DejaVuSans{}.ttf",
 ]
 BAD = []
+WARN = []
+# A rect with fewer than NOISE_PIXELS pixels differing by more than NOISE_LEVEL
+# (per channel, 0-255) gets a warning: check by eye that it marks the change.
+NOISE_LEVEL = 24
+NOISE_PIXELS = 20
 
 
 def font(size, scale, bold=True):
@@ -167,21 +172,32 @@ def build(name, els, a, labels):
 
 def selfcheck(name, els, a):
     """Every new/changed rect must differ between the NEW and OLD capture of the
-    same screen; a highlight over identical pixels means a wrong rect."""
+    same screen; a highlight over identical pixels means a wrong rect.
+
+    Compared in RGB, so a change of colour alone counts. Only a rect with no
+    differing pixel at all fails; a rect that differs very little is reported
+    as a warning, because a subtle restyle is a legitimate highlight."""
     op = os.path.join(a.old_dir, name + ".png")
     if not os.path.exists(op):
         return  # new-only screen: nothing to compare
-    n = Image.open(os.path.join(a.new_dir, name + ".png")).convert("L")
-    o = Image.open(op).convert("L")
+    n = Image.open(os.path.join(a.new_dir, name + ".png")).convert("RGB")
+    o = Image.open(op).convert("RGB")
     for e in els:
         if e["kind"] not in ("new", "changed"):
             continue
         ca = np.asarray(n.crop(e["rect"]), dtype=int)
         cb = np.asarray(o.crop(e["rect"]), dtype=int)
-        diff = int((abs(ca - cb) > 24).sum())
-        if diff < 20:
-            BAD.append(
-                (name, e["label"], f"rect identical in old and new ({diff} px differ)")
+        delta = abs(ca - cb).max(axis=2)  # largest channel difference per pixel
+        if not delta.any():
+            BAD.append((name, e["label"], "rect identical in old and new"))
+        elif int((delta > NOISE_LEVEL).sum()) < NOISE_PIXELS:
+            WARN.append(
+                (
+                    name,
+                    e["label"],
+                    f"rect barely differs between old and new "
+                    f"({int((delta > 0).sum())} px, largest difference {int(delta.max())} of 255)",
+                )
             )
 
 
@@ -201,6 +217,10 @@ def main():
         selfcheck(name, els, a)
         build(name, els, a, True).save(os.path.join(a.out_dir, name + ".png"))
         build(name, els, a, False).save(os.path.join(a.out_dir, "clean", name + ".png"))
+    if WARN:
+        print("SELFCHECK WARNING (not a failure, check these rects by eye):")
+        for w in sorted(set(WARN)):
+            print("  ", *w)
     if BAD:
         print("SELFCHECK FAIL:")
         for b in sorted(set(BAD)):

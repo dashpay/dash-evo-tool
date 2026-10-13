@@ -47,7 +47,7 @@ Related: `release-review` (QA campaign, uses this for presentation images), `des
 - Every rect comes from THAT image's own capture. A rect reused from another screen once landed on an error banner.
 
 ## 6. Verify
-- `render.py` exits 1 if a new/changed rect is identical in the OLD and NEW capture (wrong rect) or a pill leaves the image. Fix and rerun.
+- `render.py` exits 1 if a new/changed rect is identical in the OLD and NEW capture (wrong rect) or a pill leaves the image. Fix and rerun. A rect that barely differs gets a warning only: confirm by eye that it marks a real change.
 - Then READ every labelled image: each outline encloses exactly what its label names; no pill clipped or covering content; the screen is the intended state (no banner, data present).
 
 ## 7. Gallery and report

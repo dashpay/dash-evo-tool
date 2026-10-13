@@ -164,7 +164,7 @@ skill may still provide convenient screenshot and input tooling.
    directory (or the default location if unset) for a Rust panic
    (`location=...` line) even when the UI appeared to work.
 
-For annotated before/after screenshots of two builds (slides, release review), see the `visual-diff` skill in `.claude/skills/visual-diff/`.
+For annotated screenshots that show what changed in the UI between two builds (slides, release review), see the `visual-diff` skill in `.claude/skills/visual-diff/`.
 
 ## Scenario file format
 

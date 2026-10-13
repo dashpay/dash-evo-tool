@@ -8,7 +8,7 @@ description: "Use to produce a visual diff of dash-evo-tool: annotated screensho
 Two builds in, a gallery out: one annotated image per changed screen of the NEW build, a
 clean variant of each, and an `index.html` that maps every commit to an image or says why none
 exists. Scripts live in `scripts/` beside this file; all take paths as arguments. Do not
-hard-code machine paths; the caller names the output folder (e.g. under `/data/artifacts/<project>/<date>/`).
+hard-code machine paths; the caller names the output folder, outside the repository.
 
 Related: `release-review` (QA campaign, uses this for presentation images), `desktop-gui` skill
 (display, a11y tree, launch), `docs/gui-testing/README.md` (safety rules). Read both before driving the GUI.
@@ -27,7 +27,7 @@ Related: `release-review` (QA campaign, uses this for presentation images), `des
 - Wait for SPV "Synced" first. A red banner ("network is still syncing") before that is timing and must not be on screen, unless the banner itself is the change.
 - Persisted state (last screen/tab/scroll) survives restarts; re-check the screen after relaunch.
 
-## 4. Data (a shot without data is useless on a slide)
+## 4. Data (a shot without data is useless on a slide; load it before the first capture round)
 - Load a public identity view-only (identity ID or username, no key). Typing a PUBLIC id is fine; do not refuse it.
 - Wallet-bound screens need a wallet: use the test credentials only through `scripts/type-secret.sh [--env-file F] VAR [WORD_INDEX]` (default env file: `.env` at the repo root). Allowed names: `E2E_WALLET_MNEMONIC` (word index for one-field-per-word forms), `E2E_MN_PROTX_HASH`, `E2E_MN_VOTING_KEY`, `E2E_MN_OWNER_KEY`, `E2E_IDENTITY_ID`. It types into the focused field and never prints.
 - Never read, cat or grep the env file or the app's real config dirs.
@@ -53,4 +53,4 @@ Related: `release-review` (QA campaign, uses this for presentation images), `des
 ## 7. Gallery and report
 - Write `meta.json` (see `scripts/example-meta.json`), run `scripts/gallery.py --root OUT --meta meta.json`; `old/`, `new/`, `annotated/` under OUT. Every commit row points at an image or says why not visible (backend only, needs state that was not reachable).
 - Report: what was not reached and why (e.g. no open contests on testnet; do not create one); presenter notes: real faces in profile pictures, error banners, data that differs between shots (balances change during a session: data, not UI).
-- The first pass without data was a mistake: load data before the first full capture round.
+- Captures, generated images and data dirs never go into the repository.

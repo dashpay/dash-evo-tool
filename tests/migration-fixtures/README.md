@@ -86,7 +86,24 @@ and `clippy.yml` on the release branch, plus the latest completed `schedule`
 run of `tests.yml` for fixture coverage and pin checks. Each result is checked
 independently, so a passing schedule cannot replace a failed push result or
 vice versa. Missing run history is allowed, including before the first schedule.
-Manually dispatched runs cannot replace these results.
+
+A manually dispatched run never replaces a push result. It can decide the
+scheduled result, under these rules:
+
+- Only a `tests.yml` run of the release branch at exactly the commit being
+  released counts. On a `v*-dev` branch such a run also checks fixture
+  coverage; on any other branch it skips that job.
+- It counts only when it is not older than the latest scheduled run, by run
+  creation time. Re-running a run does not change that time; dispatch a new one.
+- A failed, cancelled or timed-out manual run blocks the release, also when
+  both runs were created at the same time.
+- A green manual run replaces the scheduled result only when it was created
+  later and its `Fixture coverage` and `Platform pin guard` jobs both passed.
+  A run that skipped either job is ignored.
+
+To release after closing a coverage gap, wait for the push run of the merge,
+run `gh workflow run tests.yml --ref v1.0-dev`, and start the weekly workflow
+once that run is green. A commit merged in between needs a new manual run.
 
 ## Why this exists
 

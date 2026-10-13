@@ -150,10 +150,16 @@ jobs:
 
   coverage:
     name: Fixture coverage
-    # Schedule only: a coverage gap is created by cutting a release, never by
+    # Never per-PR: a coverage gap is created by cutting a release, never by
     # editing code, so running this per-PR would fail pull requests for
-    # something no contributor did or can fix.
-    if: github.event_name == 'schedule'
+    # something no contributor did or can fix. For the same reason a manual run
+    # of an ordinary branch skips it. A manual run of a release branch (`v*-dev`)
+    # does check it: the weekly release gate accepts such a run of the commit
+    # being released in place of the scheduled one, and only with this job green.
+    if: >-
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' &&
+      startsWith(github.ref, 'refs/heads/v') && endsWith(github.ref, '-dev'))
     runs-on: ubuntu-latest
     permissions:
       contents: read

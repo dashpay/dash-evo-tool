@@ -70,8 +70,9 @@ jobs:
           # Use completed branch runs: path filters can leave docs-only HEAD unchecked.
           # Gate push suites and scheduled fixture/pin checks independently.
           # Missing history is absent, not red; force/version never bypass red CI.
+          # A manual run never stands in for a push suite.
           red=false
-          for check in tests.yml:push clippy.yml:push tests.yml:schedule; do
+          for check in tests.yml:push clippy.yml:push; do
             wf="${check%:*}"
             event="${check#*:}"
             concl=$(gh run list --workflow "$wf" --branch "$REF_NAME" --event "$event" --status completed \
@@ -80,6 +81,40 @@ jobs:
               failure | cancelled | timed_out | startup_failure) red=true ;;
             esac
           done
+
+          # Scheduled slot. A manual tests.yml run of this branch at exactly this
+          # commit decides it when not older (run creation time) than the scheduled
+          # run: red blocks, also on a tie; green replaces the scheduled result only
+          # when strictly newer and with both scheduled checks passed.
+          head_sha=$(git rev-parse HEAD)
+          # Prints "<createdAt> <conclusion> <id>" of the newest completed run, or nothing.
+          newest_tests_run() {
+            gh run list --workflow tests.yml --branch "$REF_NAME" --status completed --limit 1 "$@" \
+              --json conclusion,createdAt,databaseId \
+              --jq '.[0] | select(. != null) | "\(.createdAt) \(.conclusion) \(.databaseId)"'
+          }
+          sched=$(newest_tests_run --event schedule)
+          manual=$(newest_tests_run --event workflow_dispatch --commit "$head_sha")
+          read -r sched_at sched_concl _ <<<"$sched"
+          read -r manual_at manual_concl manual_id <<<"$manual"
+          # Equal-width UTC timestamps: string order is time order.
+          if [ -n "$manual_at" ] && [[ ! "$manual_at" < "$sched_at" ]]; then
+            case "$manual_concl" in
+              failure | cancelled | timed_out | startup_failure) red=true ;;
+              success)
+                if [[ "$manual_at" > "$sched_at" ]]; then
+                  # A run that skipped either check proves nothing for this slot.
+                  passed=$(gh run view "$manual_id" --json jobs --jq '[.jobs[]
+                    | select(.conclusion == "success") | .name
+                    | select(. == "Fixture coverage" or . == "Platform pin guard")] | unique | length')
+                  if [ "$passed" = 2 ]; then sched_concl=success; fi
+                fi
+                ;;
+            esac
+          fi
+          case "$sched_concl" in
+            failure | cancelled | timed_out | startup_failure) red=true ;;
+          esac
           if [ "$red" = true ]; then
             {
               echo "should_release=false"

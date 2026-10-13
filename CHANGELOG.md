@@ -843,6 +843,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- On Masternodes ▸ Votes, the Cast and Clear buttons now stay under the list of
+  name contests instead of appearing only after a decision is picked. Until
+  there is something to cast they are greyed out, and hovering Cast says what
+  it is waiting for.
+
 - The weekly release gate accepts a manual Tests run in place of the Monday
   scheduled checks when it ran on the release branch for the exact commit
   being released, was created after the scheduled run, and passed both fixture

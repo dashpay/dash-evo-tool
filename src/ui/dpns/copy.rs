@@ -263,6 +263,19 @@ pub fn sending_with_label(count: usize) -> String {
     }
 }
 
+/// Tray summary while no decision is staged.
+pub const TRAY_NOTHING_PICKED: &str = "No decisions picked yet";
+
+/// Hover hint of the tray's `Cast` while no decision is staged.
+pub const CAST_NEEDS_A_DECISION: &str = "Pick a decision for at least one name, then cast it.";
+
+/// Hover hint of the tray's `Clear` while no decision is staged.
+pub const CLEAR_NEEDS_A_DECISION: &str = "There are no picked decisions to clear.";
+
+/// Hover hint of a decision that cannot be made or cast because no loaded
+/// node has a voting key.
+pub const NO_VOTING_NODE_HINT: &str = "Load a masternode with a voting key to vote.";
+
 /// Tray summary (VOTE-FR-086). With no transaction to send it names the
 /// staged decisions alone.
 pub fn tray_label(decisions: usize, transactions: usize) -> String {

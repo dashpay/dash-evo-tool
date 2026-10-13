@@ -49,6 +49,9 @@ use crate::ui::dpns::contest_card::node_label;
 use crate::ui::dpns::contest_card::{CardEvent, CardView};
 use crate::ui::dpns::copy::needs_attention_line;
 use crate::ui::dpns::copy::{
+    CAST_NEEDS_A_DECISION, CLEAR_NEEDS_A_DECISION, NO_VOTING_NODE_HINT, TRAY_NOTHING_PICKED,
+};
+use crate::ui::dpns::copy::{
     JOURNAL_UNAVAILABLE_MESSAGE, LOCKED_FOR_GOOD, NAME_FILTER_LOOKALIKES_HINT, NOT_VOTED_YET,
     before_end_phrase, changes_left_label, confirm_button_label, confirm_change_warning,
     confirm_title, confirm_transactions_line, decision_row, ends_in_label, relative_schedule_label,
@@ -1354,43 +1357,62 @@ impl DPNSScreen {
         }
     }
 
-    /// The tray under the list: what is staged and the Cast action (VOTE-FR-086).
+    /// Why the tray's Cast cannot be pressed right now, as its hover hint
+    /// says it; `None` when it can.
+    fn cast_blocked_reason(&self, counts: TrayCounts) -> Option<&'static str> {
+        if self.resolved_nodes.included.is_empty() {
+            Some(NO_VOTING_NODE_HINT)
+        } else if self.selected_votes.is_empty() {
+            Some(CAST_NEEDS_A_DECISION)
+        } else if self.pending_vote_operation.is_some() {
+            Some("Votes are being submitted. Wait for the result before sending another batch.")
+        } else if counts.transactions + counts.rechecks == 0 {
+            Some("Your nodes already hold these choices. Pick a different decision.")
+        } else {
+            None
+        }
+    }
+
+    /// The tray under the list: what is staged and the Cast action
+    /// (VOTE-FR-086). It is always there, so Cast and Clear keep their place;
+    /// while one cannot be used it is greyed out and says why on hover.
     fn render_tray(&mut self, ui: &mut Ui) {
         let decisions = self.selected_votes.len();
-        if decisions == 0 {
-            return;
-        }
-        let TrayCounts {
-            transactions,
-            rechecks,
-        } = self.tray_counts();
+        let counts = self.tray_counts();
+        let blocked = self.cast_blocked_reason(counts);
+        let dark_mode = ui.style().visuals.dark_mode;
         ui.separator();
         ui.horizontal(|ui| {
             // The buttons take their room first; the sentences wrap in what is left.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ComponentStyles::add_primary_button_enabled(
-                    ui,
-                    transactions + rechecks > 0 && self.pending_vote_operation.is_none(),
-                    "Cast",
-                )
-                .disabled_tooltip(if self.pending_vote_operation.is_some() {
-                    "Votes are being submitted. Wait for the result before sending another batch."
-                } else {
-                    "Your nodes already hold these choices. Pick a different decision."
-                })
-                .clicked()
+                if ComponentStyles::add_primary_button_enabled(ui, blocked.is_none(), "Cast")
+                    .disabled_tooltip(blocked.unwrap_or_default())
+                    .clicked()
                 {
                     self.open_review_for_node_set();
                 }
-                if ui.button("Clear").clicked() {
+                if ui
+                    .add_enabled(decisions > 0, Button::new("Clear"))
+                    .disabled_tooltip(CLEAR_NEEDS_A_DECISION)
+                    .clicked()
+                {
                     self.selected_votes.clear();
                 }
                 ui.with_layout(
                     egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
                     |ui| {
-                        ui.label(RichText::new(tray_label(decisions, transactions)).strong());
-                        if rechecks > 0 {
-                            ui.label(tray_recheck_label(rechecks));
+                        if decisions == 0 {
+                            ui.label(
+                                RichText::new(TRAY_NOTHING_PICKED)
+                                    .color(DashColors::text_secondary(dark_mode)),
+                            );
+                            return;
+                        }
+                        ui.label(
+                            RichText::new(tray_label(decisions, counts.transactions)).strong(),
+                        );
+                        if counts.rechecks > 0 {
+                            ui.label(tray_recheck_label(counts.rechecks));
                         }
                     },
                 );
@@ -4922,6 +4944,109 @@ mod tests {
                 "the tray item at {rect:?} ends below the window"
             );
         }
+    }
+
+    /// Mount the Votes body and check that `Cast` is shown but cannot be
+    /// pressed, and that hovering it explains why with `hint`.
+    fn assert_cast_waits(
+        screen: Arc<Mutex<DPNSScreen>>,
+        hint: &str,
+    ) -> egui_kittest::Harness<'static> {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        let rendering = Arc::clone(&screen);
+        let mut harness = app_styled_harness(egui::vec2(1260.0, 1200.0), move |ui| {
+            rendering.lock_recover().ui(ui);
+        });
+        harness.get_by_role_and_label(Role::Button, "Cast").click();
+        harness.run();
+        assert!(
+            !screen.lock_recover().confirm_open,
+            "Cast opened the confirm step although it should wait: {hint}"
+        );
+        assert!(
+            harness.query_by_label(hint).is_none(),
+            "control: no hint yet"
+        );
+        harness.get_by_role_and_label(Role::Button, "Cast").hover();
+        harness.run();
+        assert!(
+            harness.query_by_label(hint).is_some(),
+            "hovering Cast does not say: {hint}"
+        );
+        harness
+    }
+
+    /// The tray is under the list before anything is picked: Cast and Clear
+    /// are greyed out and say what they wait for. Picking a decision enables
+    /// them where they already stood.
+    #[tokio::test]
+    async fn cast_waits_in_the_tray_until_a_decision_is_picked() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::{NodeT, Queryable};
+        let (screen, _dir) = two_contest_screen().await;
+        let mut harness = assert_cast_waits(Arc::clone(&screen), CAST_NEEDS_A_DECISION);
+        let button = |harness: &egui_kittest::Harness<'_>, label: &str| -> (egui::Rect, bool) {
+            let node = harness.get_by_role_and_label(Role::Button, label);
+            (node.rect(), node.accesskit_node().is_disabled())
+        };
+        let (cast_waiting, _) = button(&harness, "Cast");
+        let (clear_waiting, clear_disabled) = button(&harness, "Clear");
+        assert!(clear_disabled, "there is nothing to clear yet");
+        assert!(harness.query_by_label(TRAY_NOTHING_PICKED).is_some());
+        harness.get_by_role_and_label(Role::Button, "Clear").hover();
+        harness.run();
+        assert!(harness.query_by_label(CLEAR_NEEDS_A_DECISION).is_some());
+
+        {
+            let mut screen = screen.lock_recover();
+            let contest = Arc::clone(&screen.cards[0].contest);
+            screen.stage_choice(&contest, ResourceVoteChoice::Abstain);
+        }
+        harness.run();
+        assert!(harness.query_by_label(TRAY_NOTHING_PICKED).is_none());
+        assert!(harness.query_by_label(&tray_label(1, 1)).is_some());
+        assert_eq!(button(&harness, "Cast").0, cast_waiting, "Cast moved");
+        assert_eq!(
+            button(&harness, "Clear"),
+            (clear_waiting, false),
+            "Clear moved or stayed greyed out"
+        );
+        harness.get_by_role_and_label(Role::Button, "Cast").click();
+        harness.run();
+        assert!(screen.lock_recover().confirm_open);
+    }
+
+    /// Whatever keeps the staged decisions from being cast, Cast stays in
+    /// place and names it.
+    #[tokio::test]
+    async fn cast_names_what_it_waits_for() {
+        let (ctx, _dir) = kv_ctx();
+        ctx.seed_dpns_contest_for_test("alpha", None, false);
+        let mut no_node = DPNSScreen::new(&ctx, VotesView::ToDecide);
+        no_node.rebuild_cards();
+        assert_eq!(no_node.cards.len(), 1);
+        assert_cast_waits(Arc::new(Mutex::new(no_node)), NO_VOTING_NODE_HINT);
+
+        let (submitting, _dir) = two_contest_screen().await;
+        {
+            let mut screen = submitting.lock_recover();
+            let contest = Arc::clone(&screen.cards[0].contest);
+            screen.stage_choice(&contest, ResourceVoteChoice::Abstain);
+            screen.pending_vote_operation = Some(DpnsVoteOperationId::from_bytes([11; 16]));
+        }
+        assert_cast_waits(
+            submitting,
+            "Votes are being submitted. Wait for the result before sending another batch.",
+        );
+
+        let (mut held, _dir) = voting_ui_review_fixture();
+        stage_lock_on_alpha_card(&mut held);
+        assert_eq!(held.tray_counts(), TrayCounts::default());
+        assert_cast_waits(
+            Arc::new(Mutex::new(held)),
+            "Your nodes already hold these choices. Pick a different decision.",
+        );
     }
 
     /// VOTE-TC-098: J, 1, J, L, Enter stages both decisions and opens the

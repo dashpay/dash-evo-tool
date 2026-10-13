@@ -860,6 +860,7 @@ As a power user, I want to review past contests so that I can see outcomes and h
 As a masternode operator, I want to make one decision per contest and have all my chosen nodes cast it so that voting with many nodes takes seconds.
 
 - One choice per card (Vote for a requester, Lock name, Abstain) applies to every node in the remembered node set. The choices are listed one per row as a pick-one list. Cast opens one confirm step for all decisions.
+- Cast and Clear stay under the list of contests at all times. While they cannot be used they are greyed out, and hovering one says why: no decision is picked yet, no loaded node has a voting key, votes are still being submitted, or the nodes already hold the picked choices.
 - Each node votes in its own transaction (Platform has no batching). The confirm shows decisions × nodes = transactions, warns once when votes change earlier choices, and lists skipped nodes with reasons (already voted this way, no changes left, vote state unavailable, not in the masternode list).
 - A node may vote five times per contest: the initial vote plus four changes. Changes left are shown per node, counted on this device, or marked unknown when the node voted outside Dash Evo Tool. Nodes with none left are skipped.
 - Choosing the current choice submits nothing. The node's proved current choice is shown before casting.

@@ -214,7 +214,7 @@ fn wallet_send_waits_while_a_top_up_runs_in_background()
     let wallet = Wallet::new_from_seed([0x54; 64], app_context.network(), None, None)
         .expect("wallet fixture");
     let mut wallet_send = WalletSendScreen::new(&app_context, Arc::new(RwLock::new(wallet)));
-    wallet_send.mark_sending_for_test();
+    wallet_send.mark_sending_for_test(BackendTaskContext::IdentityTopUp(identity.identity.id()));
     let state = harness.state_mut();
     state.screen_stack.clear();
     state
@@ -324,6 +324,77 @@ fn background_top_up_failure_leaves_wallet_send_waiting() {
             "the failed top-up is still reported"
         );
         assert_eq!(count(&harness, BACKGROUND_BANNER), 0);
+    });
+}
+
+/// Home starts its own loads, and they can still be running when the user
+/// confirms a send from it. One of them failing is reported, but it is not the
+/// answer Wallet Send waits on: handing the form back would let the user send,
+/// and pay, a second time.
+#[test]
+fn a_failed_load_of_another_screen_leaves_wallet_send_waiting() {
+    use dash_evo_tool::backend_task::BackendTask;
+    use dash_evo_tool::backend_task::dashpay::DashPayTask;
+    in_app(|| {
+        let mut harness = mount_app(RootScreenType::RootScreenWalletsBalances);
+        let app_context = harness.state().current_app_context().clone();
+        let identity = test_identity(app_context.network());
+        let wallet = Wallet::new_from_seed([0x54; 64], app_context.network(), None, None)
+            .expect("wallet fixture");
+        let mut wallet_send = WalletSendScreen::new(&app_context, Arc::new(RwLock::new(wallet)));
+        let own_send = BackendTaskContext::IdentityTopUp(identity.identity.id());
+        wallet_send.mark_sending_for_test(own_send.clone());
+        harness
+            .state_mut()
+            .screen_stack
+            .push(Screen::WalletSendScreen(wallet_send));
+        // Results are drained at the start of a frame, before it renders.
+        harness.step();
+        assert_eq!(count(&harness, WALLET_SEND_WAITING), 1);
+
+        let home_load = BackendTask::DashPayTask(Box::new(DashPayTask::LoadContactRequests {
+            identity: identity.clone(),
+        }));
+        let load_failure = TaskError::NoIdentitiesFound;
+        let load_message = load_failure.to_string();
+        assert!(
+            harness
+                .state()
+                .task_result_sender
+                .try_send(TaskResult::Error {
+                    context: BackendTaskContext::from(&home_load),
+                    error: load_failure,
+                })
+                .is_ok()
+        );
+        harness.step();
+        assert_eq!(
+            count(&harness, WALLET_SEND_WAITING),
+            1,
+            "Wallet Send keeps waiting on the send it dispatched"
+        );
+        assert_eq!(
+            count(&harness, &load_message),
+            1,
+            "the failed load is still reported"
+        );
+
+        assert!(
+            harness
+                .state()
+                .task_result_sender
+                .try_send(TaskResult::Error {
+                    context: own_send,
+                    error: TaskError::DocumentNotFound,
+                })
+                .is_ok()
+        );
+        harness.step();
+        assert_eq!(
+            count(&harness, WALLET_SEND_WAITING),
+            0,
+            "the failure of its own send ends the wait"
+        );
     });
 }
 

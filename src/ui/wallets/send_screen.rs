@@ -1,4 +1,4 @@
-use crate::app::{AppAction, BackendTasksExecutionMode};
+use crate::app::AppAction;
 use crate::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
 use crate::backend_task::error::{TaskError, ensure_funding_covers_network_fee};
 use crate::backend_task::identity::{IdentityTask, IdentityTopUpInfo, TopUpIdentityFundingMethod};
@@ -339,6 +339,10 @@ pub struct WalletSendScreen {
 
     // State
     send_status: SendStatus,
+    /// The send this screen dispatched and waits on. While it waits, only the
+    /// outcome of that send ends the wait: failures of other tasks reach the
+    /// visible screen too, and are not about this payment.
+    pending_send: Option<BackendTaskContext>,
     send_banner: Option<BannerHandle>,
     send_confirmation: Option<PendingSendConfirmation>,
     asset_lock_balance: AssetLockBalanceCache,
@@ -354,26 +358,13 @@ pub struct WalletSendScreen {
 }
 
 /// Merge the confirmation dialog's action into the frame action. The dialog
-/// consumes the click and clears itself, so a confirmed send is one-shot:
-/// it appends to a compatible task batch, and otherwise takes the pre-existing
-/// `AppAction` `|=` precedence over a same-frame navigation action — it is
-/// never silently dropped.
+/// consumes the click and clears itself, so a confirmed send is one-shot: it
+/// takes the `AppAction` `|=` precedence over a same-frame navigation action
+/// and is never silently dropped. It goes out under a context of its own, which
+/// a task batch cannot carry, so it does not join one.
 fn merge_confirmation_action(mut action: AppAction, confirmation_action: AppAction) -> AppAction {
-    if can_append_concurrent_backend_tasks(&action) {
-        match confirmation_action {
-            AppAction::BackendTask(task) => append_concurrent_backend_tasks(action, vec![task]),
-            AppAction::BackendTasks(tasks, BackendTasksExecutionMode::Concurrent) => {
-                append_concurrent_backend_tasks(action, tasks)
-            }
-            other => {
-                action |= other;
-                action
-            }
-        }
-    } else {
-        action |= confirmation_action;
-        action
-    }
+    action |= confirmation_action;
+    action
 }
 
 impl WalletSendScreen {
@@ -410,6 +401,7 @@ impl WalletSendScreen {
             fee_strategy: PlatformFeeStrategy::default(),
             selected_identity: None,
             send_status: SendStatus::NotStarted,
+            pending_send: None,
             send_banner: None,
             send_confirmation: None,
             asset_lock_balance: AssetLockBalanceCache::default(),
@@ -621,13 +613,35 @@ impl WalletSendScreen {
         }];
         self.fee_strategy = PlatformFeeStrategy::default();
         self.send_status = SendStatus::NotStarted;
+        self.pending_send = None;
         self.send_confirmation = None;
         self.asset_lock_balance.invalidate();
         self.refresh_bound_identity();
     }
 
-    fn mark_sending(&mut self) {
+    /// Enters the waiting state for the send dispatched as `request`.
+    fn mark_sending(&mut self, request: BackendTaskContext) {
         self.send_status = SendStatus::WaitingForResult;
+        self.pending_send = Some(request);
+    }
+
+    /// Whether this screen waits on the outcome of a send it dispatched.
+    fn awaits_own_send(&self) -> bool {
+        self.pending_send.is_some() && matches!(self.send_status, SendStatus::WaitingForResult)
+    }
+
+    /// Dispatches a confirmed send under a context of its own, so that its
+    /// outcome can be told apart from every other task's.
+    fn dispatch_send(&mut self, action: AppAction) -> AppAction {
+        let AppAction::BackendTask(task) = action else {
+            // Every send is prepared as one task; anything else has no context to wait on.
+            self.send_status = SendStatus::WaitingForResult;
+            self.pending_send = None;
+            return action;
+        };
+        let context = BackendTaskContext::for_dispatch_on(&task, self.app_context.network());
+        self.mark_sending(context.clone());
+        AppAction::BackendTaskWithContext { task, context }
     }
 
     /// Renders the fee summary appended to a completed-send message. Shows the
@@ -3667,9 +3681,8 @@ impl WalletSendScreen {
                 let Some(pending) = self.send_confirmation.take() else {
                     return AppAction::None;
                 };
-                self.mark_sending();
                 self.set_send_progress_banner(ui.ctx());
-                *pending.action
+                self.dispatch_send(*pending.action)
             }
             Some(ConfirmationStatus::Canceled) => {
                 self.send_confirmation = None;
@@ -3773,8 +3786,8 @@ impl WalletSendScreen {
     #[cfg(feature = "testing")]
     #[doc(hidden)]
     /// Enters the waiting state a dispatched transfer leaves the screen in.
-    pub fn mark_sending_for_test(&mut self) {
-        self.mark_sending();
+    pub fn mark_sending_for_test(&mut self, request: BackendTaskContext) {
+        self.mark_sending(request);
     }
 
     #[cfg(feature = "testing")]
@@ -4811,6 +4824,11 @@ impl ScreenLike for WalletSendScreen {
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
+        // A message carries no task context, so while this screen waits on its
+        // own send it cannot be that send's outcome.
+        if self.awaits_own_send() {
+            return;
+        }
         match message_type {
             MessageType::Error | MessageType::Warning => {
                 self.send_banner.take_and_clear();
@@ -4982,6 +5000,12 @@ impl ScreenLike for WalletSendScreen {
     }
 
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+        if self.awaits_own_send() && self.pending_send.as_ref() == Some(context) {
+            // The global banner says why; the form is handed back.
+            self.pending_send = None;
+            self.send_banner.take_and_clear();
+            self.send_status = SendStatus::Error;
+        }
         if let Some((seed_hash, snapshot_generation, request_id)) =
             context.asset_lock_max_amount_request()
         {
@@ -5005,6 +5029,7 @@ impl ScreenLike for WalletSendScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::BackendTasksExecutionMode;
     use crate::context::connection_status::ConnectionStatus;
     use crate::database::test_helpers::create_database_at_path;
     use crate::utils::tasks::TaskManager;
@@ -5546,9 +5571,16 @@ mod tests {
         harness.get_by_label("Confirm and Send").click_accesskit();
         harness.step();
         match &*observed_action.borrow() {
-            AppAction::BackendTask(BackendTask::IdentityTask(
-                IdentityTask::WithdrawFromIdentity(sender, destination, credits, _),
-            )) => {
+            AppAction::BackendTaskWithContext {
+                task:
+                    BackendTask::IdentityTask(IdentityTask::WithdrawFromIdentity(
+                        sender,
+                        destination,
+                        credits,
+                        _,
+                    )),
+                ..
+            } => {
                 assert_eq!(sender.identity.id(), identity.identity.id());
                 assert_eq!(destination.as_ref(), Some(&owned));
                 assert_eq!(*credits, amount.value());
@@ -5756,25 +5788,41 @@ mod tests {
             !crate::ui::can_append_concurrent_backend_tasks(&AppAction::PopScreen),
             "navigation must keep priority instead of being overwritten by a probe"
         );
+        let send = BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { seed_hash });
+        assert!(
+            !crate::ui::can_append_concurrent_backend_tasks(&AppAction::BackendTaskWithContext {
+                context: BackendTaskContext::for_dispatch_on(&send, Network::Testnet),
+                task: send,
+            }),
+            "a confirmed send keeps its own context; the probe is asked for on the next frame"
+        );
     }
 
     #[test]
     fn confirmed_send_action_survives_same_frame_navigation() {
         let seed_hash = [0x44; 32];
         let confirmation = || {
-            AppAction::BackendTask(BackendTask::WalletTask(
-                WalletTask::GenerateReceiveAddress { seed_hash },
-            ))
+            let task = BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { seed_hash });
+            AppAction::BackendTaskWithContext {
+                context: BackendTaskContext::for_dispatch_on(&task, Network::Testnet),
+                task,
+            }
+        };
+        let is_the_send = |action: &AppAction| {
+            matches!(
+                action,
+                AppAction::BackendTaskWithContext {
+                    task: BackendTask::WalletTask(WalletTask::GenerateReceiveAddress {
+                        seed_hash: sh
+                    }),
+                    ..
+                } if *sh == seed_hash
+            )
         };
 
         let merged = merge_confirmation_action(AppAction::PopScreen, confirmation());
         assert!(
-            matches!(
-                merged,
-                AppAction::BackendTask(BackendTask::WalletTask(
-                    WalletTask::GenerateReceiveAddress { .. }
-                ))
-            ),
+            is_the_send(&merged),
             "a confirmed send must outrank a same-frame navigation action, never be dropped"
         );
 
@@ -5788,12 +5836,7 @@ mod tests {
         );
         let merged = merge_confirmation_action(sequential, confirmation());
         assert!(
-            matches!(
-                merged,
-                AppAction::BackendTask(BackendTask::WalletTask(
-                    WalletTask::GenerateReceiveAddress { seed_hash: sh }
-                )) if sh == seed_hash
-            ),
+            is_the_send(&merged),
             "a confirmed send must take the pre-existing |= precedence over a sequential batch"
         );
 
@@ -5805,11 +5848,10 @@ mod tests {
             "without a confirmation the navigation action must pass through unchanged"
         );
 
-        let merged = merge_confirmation_action(AppAction::None, confirmation());
-        let AppAction::BackendTasks(tasks, BackendTasksExecutionMode::Concurrent) = merged else {
-            panic!("an appendable frame action must batch the confirmation concurrently");
-        };
-        assert_eq!(tasks.len(), 1);
+        assert!(
+            is_the_send(&merge_confirmation_action(AppAction::None, confirmation())),
+            "a confirmed send goes out alone, under its own context"
+        );
     }
 
     #[test]
@@ -6185,9 +6227,61 @@ mod tests {
             "the confirmation dialog must close after confirmation"
         );
         let observed_action = observed_action.borrow();
-        assert!(
-            matches!(*observed_action, AppAction::BackendTask(_)),
-            "the confirm action must dispatch the prepared backend task, got {observed_action:?}"
+        let AppAction::BackendTaskWithContext { context, .. } = &*observed_action else {
+            panic!(
+                "the confirm action must dispatch the prepared backend task, got {observed_action:?}"
+            );
+        };
+        assert_eq!(
+            harness.state().pending_send.as_ref(),
+            Some(context),
+            "the screen waits on the send it dispatched, and on no other task"
+        );
+    }
+
+    /// The app hands every failure and message to the visible screen. While
+    /// this screen waits on a send, only that send's own failure gives the form
+    /// back: anything else would let the user send, and pay, a second time.
+    #[test]
+    fn only_the_failure_of_its_own_send_ends_the_wait() {
+        let (mut screen, _temp_dir) = send_screen();
+        let send = BackendTask::WalletTask(WalletTask::GenerateReceiveAddress {
+            seed_hash: [0x46; 32],
+        });
+        let own = BackendTaskContext::for_dispatch_on(&send, Network::Testnet);
+        let same_task_sent_again = BackendTaskContext::for_dispatch_on(&send, Network::Testnet);
+        let error = TaskError::NoIdentitiesFound;
+        screen.mark_sending(own.clone());
+
+        screen.display_backend_task_error(&same_task_sent_again, &error);
+        screen.display_backend_task_error(&BackendTaskContext::Unknown, &error);
+        for message_type in [
+            MessageType::Error,
+            MessageType::Warning,
+            MessageType::Success,
+            MessageType::Info,
+        ] {
+            screen.display_message("Another task reported this.", message_type);
+        }
+        assert_eq!(
+            screen.send_status,
+            SendStatus::WaitingForResult,
+            "nothing but its own send's outcome ends the wait"
+        );
+
+        screen.display_backend_task_error(&own, &error);
+        assert_eq!(screen.send_status, SendStatus::Error);
+
+        // With no send in flight a message is a side effect of this screen's
+        // own work again.
+        screen.display_message("The amount is too high.", MessageType::Error);
+        assert_eq!(screen.send_status, SendStatus::Error);
+        screen.send_status = SendStatus::NotStarted;
+        screen.display_backend_task_error(&own, &error);
+        assert_eq!(
+            screen.send_status,
+            SendStatus::NotStarted,
+            "a failure that was already taken is not taken twice"
         );
     }
 
@@ -6300,7 +6394,7 @@ mod tests {
 
         let observed_action = observed_action.borrow();
         assert!(
-            matches!(*observed_action, AppAction::BackendTask(_)),
+            matches!(*observed_action, AppAction::BackendTaskWithContext { .. }),
             "the confirm action must dispatch the prepared backend task, got {observed_action:?}"
         );
     }

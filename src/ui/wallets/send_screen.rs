@@ -2264,11 +2264,12 @@ impl WalletSendScreen {
         let mut outputs = BTreeMap::new();
         outputs.insert(platform_addr, amount_credits);
 
+        let key_id = Self::transfer_signing_key_id(&qualified_identity)?;
         Ok(AppAction::BackendTask(BackendTask::IdentityTask(
             IdentityTask::TransferToAddresses {
                 identity: qualified_identity,
                 outputs,
-                key_id: None,
+                key_id: Some(key_id),
             },
         )))
     }
@@ -2310,9 +2311,25 @@ impl WalletSendScreen {
             );
         }
 
+        let key_id = Self::transfer_signing_key_id(&qualified_identity)?;
         Ok(AppAction::BackendTask(BackendTask::IdentityTask(
-            IdentityTask::Transfer(qualified_identity, to_identity_id, amount_credits, None),
+            IdentityTask::Transfer(
+                qualified_identity,
+                to_identity_id,
+                amount_credits,
+                Some(key_id),
+            ),
         )))
+    }
+
+    /// The key that signs a transfer from `identity`, chosen here so a send no
+    /// key in this app can sign is refused before the confirmation.
+    fn transfer_signing_key_id(
+        identity: &QualifiedIdentity,
+    ) -> Result<dash_sdk::dpp::identity::KeyID, String> {
+        identity
+            .resolve_transfer_signing_key(None)
+            .map_err(|_| TaskError::NoUsableTransferKey.to_string())
     }
 
     fn render_source_selection(&mut self, ui: &mut Ui) {
@@ -5306,9 +5323,11 @@ mod tests {
 
     #[test]
     fn identity_send_without_wallet_can_reach_confirmation() {
+        use crate::model::qualified_identity::withdrawal_key_tests::key;
         let (ctx, _dir) = offline_ctx();
-        let mut screen =
-            WalletSendScreen::for_identity(&ctx, bound_identity(), IdentitySendMode::Send);
+        let transfer_key = key(1, dash_sdk::dpp::identity::Purpose::TRANSFER);
+        let sender = sender_with_keys(vec![transfer_key.clone()], vec![transfer_key]);
+        let mut screen = WalletSendScreen::for_identity(&ctx, sender, IdentitySendMode::Send);
         screen.validated_destination = Some(identity_destination());
         screen.amount = Some(Amount::new_dash(0.01));
         let mut harness = Harness::builder().build_ui_state(
@@ -5442,6 +5461,101 @@ mod tests {
         screen.validated_destination = Some(identity_destination());
         screen.amount = Some(Amount::new_dash(0.01));
         assert!(screen.validated_send_route().is_err());
+    }
+
+    /// A funded sender with `on_chain` keys, of which only `held` can sign here.
+    fn sender_with_keys(
+        on_chain: Vec<dash_sdk::platform::IdentityPublicKey>,
+        held: Vec<dash_sdk::platform::IdentityPublicKey>,
+    ) -> QualifiedIdentity {
+        use crate::model::qualified_identity::IdentityType;
+        use crate::model::qualified_identity::withdrawal_key_tests::build_identity;
+        use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+        let mut sender = build_identity(IdentityType::User, on_chain, held);
+        sender.identity.set_balance(100_000_000_000);
+        sender
+    }
+
+    /// The signing key a validated identity transfer to `destination` carries.
+    fn dispatched_transfer_key(
+        screen: &mut WalletSendScreen,
+        destination: ValidatedAddress,
+    ) -> Option<dash_sdk::dpp::identity::KeyID> {
+        screen.validated_destination = Some(destination);
+        match screen
+            .validate_and_send()
+            .expect("a usable transfer key lets the send proceed")
+        {
+            AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::Transfer(
+                _,
+                _,
+                _,
+                key_id,
+            )))
+            | AppAction::BackendTask(BackendTask::IdentityTask(
+                IdentityTask::TransferToAddresses { key_id, .. },
+            )) => key_id,
+            other => panic!("expected an identity transfer, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn identity_send_signs_with_the_active_transfer_key_when_an_earlier_one_is_disabled() {
+        use crate::model::qualified_identity::withdrawal_key_tests::{disabled_key, key};
+        use dash_sdk::dpp::identity::Purpose;
+        let (ctx, _dir) = offline_ctx();
+        let disabled = disabled_key(0, Purpose::TRANSFER);
+        let active = key(1, Purpose::TRANSFER);
+        let sender = sender_with_keys(
+            vec![disabled.clone(), active.clone()],
+            vec![disabled, active],
+        );
+        let mut screen = WalletSendScreen::for_identity(&ctx, sender, IdentitySendMode::Send);
+        screen.amount = Some(Amount::new_dash(0.01));
+        for destination in [identity_destination(), platform_destination()] {
+            assert_eq!(
+                dispatched_transfer_key(&mut screen, destination),
+                Some(1),
+                "the network rejects a disabled key, so the active one must sign"
+            );
+        }
+    }
+
+    #[test]
+    fn identity_send_signs_with_the_locally_held_transfer_key_on_a_partial_import() {
+        use crate::model::qualified_identity::withdrawal_key_tests::key;
+        use dash_sdk::dpp::identity::Purpose;
+        let (ctx, _dir) = offline_ctx();
+        let not_imported = key(3, Purpose::TRANSFER);
+        let imported = key(5, Purpose::TRANSFER);
+        let sender = sender_with_keys(vec![not_imported, imported.clone()], vec![imported]);
+        let mut screen = WalletSendScreen::for_identity(&ctx, sender, IdentitySendMode::Send);
+        screen.amount = Some(Amount::new_dash(0.01));
+        for destination in [identity_destination(), platform_destination()] {
+            assert_eq!(
+                dispatched_transfer_key(&mut screen, destination),
+                Some(5),
+                "only a key held in this app can sign"
+            );
+        }
+    }
+
+    #[test]
+    fn identity_send_without_a_usable_transfer_key_is_refused_before_confirmation() {
+        use crate::model::qualified_identity::withdrawal_key_tests::key;
+        use dash_sdk::dpp::identity::Purpose;
+        let (ctx, _dir) = offline_ctx();
+        let sender = sender_with_keys(vec![key(3, Purpose::TRANSFER)], vec![]);
+        let mut screen = WalletSendScreen::for_identity(&ctx, sender, IdentitySendMode::Send);
+        screen.amount = Some(Amount::new_dash(0.01));
+        for destination in [identity_destination(), platform_destination()] {
+            screen.validated_destination = Some(destination);
+            assert_eq!(
+                screen.validate_and_send().err(),
+                Some(TaskError::NoUsableTransferKey.to_string()),
+                "a transfer no key here can sign must not reach the confirmation"
+            );
+        }
     }
 
     fn asset_lock_request_id(task: Option<BackendTask>) -> u64 {

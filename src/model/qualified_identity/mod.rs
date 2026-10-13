@@ -121,6 +121,13 @@ pub struct OwnerKeyWithdrawalNotAllowed;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NoUsableWithdrawalKey;
 
+/// No key could be resolved to sign an identity credit transfer: the explicitly
+/// requested key is unknown, disabled, or not one this app can sign with, or —
+/// when no key was requested — the identity holds no active, locally-signable
+/// `TRANSFER` key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NoUsableTransferKey;
+
 /// Which of an identity's key stores a private half is filed under.
 ///
 /// Deliberately has no conversion from [`Purpose`]: a key's purpose does not
@@ -1326,6 +1333,37 @@ impl QualifiedIdentity {
         }
     }
 
+    /// Resolves the key to sign an identity credit transfer, returning its
+    /// [`KeyID`].
+    ///
+    /// `requested` is the caller's explicit key choice, or `None` to take the
+    /// usable key with the lowest id. A key is usable when `self.identity`
+    /// lists it as an active `TRANSFER` key and this app holds its private
+    /// half — the signer's own [`Signer::can_sign_with`] test.
+    ///
+    /// An explicit `requested` id that is unknown, disabled, or not locally
+    /// signable is rejected — never silently replaced with a different key.
+    /// Returns [`NoUsableTransferKey`] when nothing usable remains, so the
+    /// caller can say so instead of letting the SDK take the identity's first
+    /// `TRANSFER` key, which may be disabled or not held here.
+    pub fn resolve_transfer_signing_key(
+        &self,
+        requested: Option<KeyID>,
+    ) -> Result<KeyID, NoUsableTransferKey> {
+        let usable = |key: &&IdentityPublicKey| {
+            key.purpose() == Purpose::TRANSFER && !key.is_disabled() && self.can_sign_with(key)
+        };
+        match requested {
+            Some(requested_id) => self
+                .identity
+                .get_public_key_by_id(requested_id)
+                .filter(usable),
+            None => self.identity.public_keys().values().find(usable),
+        }
+        .map(|key| key.id())
+        .ok_or(NoUsableTransferKey)
+    }
+
     pub fn available_transfer_keys(&self) -> Vec<&QualifiedIdentityPublicKey> {
         let mut keys = vec![];
 
@@ -2460,14 +2498,14 @@ mod masternode_key_presence_tests {
 }
 
 #[cfg(test)]
-mod withdrawal_key_tests {
+pub(crate) mod withdrawal_key_tests {
     use super::*;
     use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
     use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
     use dash_sdk::dpp::version::PlatformVersion;
     use dash_sdk::platform::Identifier;
 
-    fn key(id: KeyID, purpose: Purpose) -> IdentityPublicKey {
+    pub(crate) fn key(id: KeyID, purpose: Purpose) -> IdentityPublicKey {
         let mut k = IdentityPublicKey::random_key(id, Some(id as u64), PlatformVersion::latest());
         k.set_id(id);
         k.set_purpose(purpose);
@@ -2475,7 +2513,7 @@ mod withdrawal_key_tests {
         k
     }
 
-    fn build_identity(
+    pub(crate) fn build_identity(
         identity_type: IdentityType,
         on_chain: Vec<IdentityPublicKey>,
         with_private: Vec<IdentityPublicKey>,
@@ -2559,7 +2597,7 @@ mod withdrawal_key_tests {
         assert_eq!(selected.identity_public_key.purpose(), Purpose::TRANSFER);
     }
 
-    fn disabled_key(id: KeyID, purpose: Purpose) -> IdentityPublicKey {
+    pub(crate) fn disabled_key(id: KeyID, purpose: Purpose) -> IdentityPublicKey {
         let mut k = key(id, purpose);
         k.set_disabled_at(1);
         k
@@ -2746,6 +2784,104 @@ mod withdrawal_key_tests {
         assert_eq!(
             qi.resolve_withdrawal_signing_key(None),
             Err(NoUsableWithdrawalKey)
+        );
+    }
+
+    /// An earlier disabled `TRANSFER` key must not win over a later active
+    /// one: the network rejects a transfer signed with a disabled key.
+    #[test]
+    fn transfer_key_resolution_skips_a_disabled_earlier_key() {
+        let disabled = disabled_key(0, Purpose::TRANSFER);
+        let active = key(1, Purpose::TRANSFER);
+        let qi = build_identity(
+            IdentityType::User,
+            vec![disabled.clone(), active.clone()],
+            vec![disabled, active],
+        );
+        assert_eq!(qi.resolve_transfer_signing_key(None), Ok(1));
+    }
+
+    /// A partial import holds only a later key; the earlier on-chain key the
+    /// signer has no private half for must be passed over.
+    #[test]
+    fn transfer_key_resolution_uses_the_only_locally_held_key() {
+        let not_imported = key(3, Purpose::TRANSFER);
+        let imported = key(5, Purpose::TRANSFER);
+        let qi = build_identity(
+            IdentityType::User,
+            vec![not_imported, imported.clone()],
+            vec![imported],
+        );
+        assert_eq!(qi.resolve_transfer_signing_key(None), Ok(5));
+    }
+
+    /// A key disabled on the network after its private half was stored here is
+    /// not usable, even though the stored copy still looks active.
+    #[test]
+    fn transfer_key_resolution_rejects_a_key_disabled_since_it_was_stored() {
+        let stored = key(1, Purpose::TRANSFER);
+        let qi = build_identity(
+            IdentityType::User,
+            vec![disabled_key(1, Purpose::TRANSFER)],
+            vec![stored],
+        );
+        assert_eq!(
+            qi.resolve_transfer_signing_key(None),
+            Err(NoUsableTransferKey)
+        );
+    }
+
+    /// Only a `TRANSFER` key may sign a transfer; an `OWNER` or
+    /// `AUTHENTICATION` key held here is never a fallback.
+    #[test]
+    fn transfer_key_resolution_never_falls_back_to_another_purpose() {
+        let owner = key(1, Purpose::OWNER);
+        let authentication = key(2, Purpose::AUTHENTICATION);
+        let qi = build_identity(
+            IdentityType::Masternode,
+            vec![owner.clone(), authentication.clone()],
+            vec![owner, authentication],
+        );
+        assert_eq!(
+            qi.resolve_transfer_signing_key(None),
+            Err(NoUsableTransferKey)
+        );
+    }
+
+    /// An explicit choice is honoured when usable and refused otherwise — it
+    /// is never silently replaced with a different key.
+    #[test]
+    fn transfer_key_resolution_honours_or_refuses_an_explicit_key() {
+        let disabled = disabled_key(0, Purpose::TRANSFER);
+        let first = key(1, Purpose::TRANSFER);
+        let second = key(2, Purpose::TRANSFER);
+        let not_imported = key(3, Purpose::TRANSFER);
+        let qi = build_identity(
+            IdentityType::User,
+            vec![
+                disabled.clone(),
+                first.clone(),
+                second.clone(),
+                not_imported,
+            ],
+            vec![disabled, first, second],
+        );
+        assert_eq!(qi.resolve_transfer_signing_key(Some(2)), Ok(2));
+        for unusable in [0, 3, 99] {
+            assert_eq!(
+                qi.resolve_transfer_signing_key(Some(unusable)),
+                Err(NoUsableTransferKey),
+                "key {unusable} cannot sign and must not be swapped for another"
+            );
+        }
+    }
+
+    #[test]
+    fn transfer_key_resolution_errors_when_no_key_is_held() {
+        let qi = build_identity(IdentityType::User, vec![key(1, Purpose::TRANSFER)], vec![]);
+        assert_eq!(
+            qi.resolve_transfer_signing_key(None),
+            Err(NoUsableTransferKey)
         );
     }
 

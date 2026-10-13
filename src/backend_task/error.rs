@@ -1599,6 +1599,14 @@ pub enum TaskError {
     )]
     NoUsableWithdrawalKey,
 
+    /// No active key this app can sign with was available for the transfer —
+    /// the chosen key may have been disabled, or no transfer key is loaded for
+    /// this identity.
+    #[error(
+        "This transfer can't be signed because no active transfer key for this identity is available in this app. Load an active transfer key for this identity and try again."
+    )]
+    NoUsableTransferKey,
+
     /// Timed out waiting for transaction confirmation.
     #[error(
         "The transaction was not confirmed within the expected time. Please check your network connection and retry."

@@ -1067,8 +1067,7 @@ impl AppContext {
         // Get the identity
         let identity = qualified_identity.identity.clone();
 
-        // Get the signing key if specified
-        let signing_key = key_id.and_then(|id| identity.get_public_key_by_id(id));
+        let signing_key = transfer::transfer_signing_key(&qualified_identity, key_id)?;
 
         // Track balance before transfer for fee calculation
         let balance_before = identity.balance();
@@ -1080,7 +1079,7 @@ impl AppContext {
             .transfer_credits_to_addresses(
                 sdk,
                 outputs.clone(),
-                signing_key,
+                Some(&signing_key),
                 &qualified_identity,
                 None,
             )

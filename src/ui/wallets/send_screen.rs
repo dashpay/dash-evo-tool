@@ -977,6 +977,7 @@ impl WalletSendScreen {
         let fee_estimator = self.app_context.fee_estimator();
         match self.destination_kind() {
             Some(AddressKind::Core) => fee_estimator.estimate_credit_withdrawal(),
+            Some(AddressKind::Platform) => fee_estimator.estimate_credit_transfer_to_addresses(1),
             _ => fee_estimator.estimate_credit_transfer(),
         }
     }
@@ -2201,20 +2202,7 @@ impl WalletSendScreen {
             ));
         }
 
-        // The fee is paid on top of the amount, from the same balance.
-        let spendable = max_spendable_credits(identity_balance, self.identity_source_fee_reserve());
-        if spendable == 0 {
-            return Err(
-                "This identity's balance is too low to cover the network fee. Top up the identity and try again."
-                    .to_string(),
-            );
-        }
-        if amount_credits > spendable {
-            let max = format_credits_as_dash(spendable);
-            return Err(format!(
-                "This amount leaves too little in the identity to pay the network fee. Enter {max} or less."
-            ));
-        }
+        self.ensure_identity_amount_leaves_fee(amount_credits, identity_balance)?;
 
         let core_address = self
             .validated_destination
@@ -2230,6 +2218,29 @@ impl WalletSendScreen {
                 None,
             ),
         )))
+    }
+
+    /// Refuses an amount that, with the fee the destination reserves paid on top
+    /// from the same balance, the identity cannot cover.
+    fn ensure_identity_amount_leaves_fee(
+        &self,
+        amount_credits: u64,
+        identity_balance: u64,
+    ) -> Result<(), String> {
+        let spendable = max_spendable_credits(identity_balance, self.identity_source_fee_reserve());
+        if spendable == 0 {
+            return Err(
+                "This identity's balance is too low to cover the network fee. Top up the identity and try again."
+                    .to_string(),
+            );
+        }
+        if amount_credits > spendable {
+            let max = format_credits_as_dash(spendable);
+            return Err(format!(
+                "This amount leaves too little in the identity to pay the network fee. Enter {max} or less."
+            ));
+        }
+        Ok(())
     }
 
     /// Transfer identity credits to Platform address (Identity -> Platform).
@@ -2254,6 +2265,8 @@ impl WalletSendScreen {
                 format_credits_as_dash(identity_balance)
             ));
         }
+
+        self.ensure_identity_amount_leaves_fee(amount_credits, identity_balance)?;
 
         let platform_addr = self
             .validated_destination
@@ -3321,7 +3334,7 @@ impl WalletSendScreen {
             }
             // Identity → Platform / Identity: credit-transfer fee, paid on top.
             (SourceSelection::Identity(_), AddressKind::Platform | AddressKind::Identity) => {
-                let fee_credits = fee_estimator.estimate_credit_transfer();
+                let fee_credits = self.identity_source_fee_reserve();
                 Some(FeePreview::on_top(amount_credits, fee_credits))
             }
             // Identity → Shielded, Shielded → anything, Core → Identity: the fee
@@ -5275,6 +5288,71 @@ mod tests {
             max, expected,
             "a transfer between identities keeps its own, smaller reserve"
         );
+    }
+
+    #[test]
+    fn identity_send_max_to_a_platform_address_reserves_the_address_transfer_fee() {
+        let (max, expected) = identity_max_and_expected(
+            IdentitySendMode::Send,
+            platform_destination(),
+            |estimator| estimator.estimate_credit_transfer_to_addresses(1),
+        );
+        assert_eq!(
+            max, expected,
+            "Max must leave the fee of a transfer to a Platform address in the identity"
+        );
+    }
+
+    #[test]
+    fn identity_transfer_to_a_platform_address_rejects_an_amount_that_leaves_no_fee() {
+        use crate::model::qualified_identity::withdrawal_key_tests::key;
+        let (ctx, _dir) = offline_ctx();
+        let transfer_key = key(1, dash_sdk::dpp::identity::Purpose::TRANSFER);
+        let sender = sender_with_keys(vec![transfer_key.clone()], vec![transfer_key]);
+        let highest = sender.identity.balance()
+            - ctx.fee_estimator().estimate_credit_transfer_to_addresses(1);
+        let mut screen = WalletSendScreen::for_identity(&ctx, sender, IdentitySendMode::Send);
+        screen.validated_destination = Some(platform_destination());
+
+        screen.amount = Some(Amount::dash_from_credits(highest));
+        assert!(
+            screen.validate_and_send().is_ok(),
+            "the amount Max offers must be accepted"
+        );
+
+        screen.amount = Some(Amount::dash_from_credits(highest + 1));
+        let refusal = screen
+            .validate_and_send()
+            .expect_err("an amount that cannot also pay the fee must not reach the confirmation");
+        assert!(
+            refusal.contains(&format_credits_as_dash(highest)),
+            "the refusal must name the highest amount that works: {refusal}"
+        );
+    }
+
+    #[test]
+    fn identity_fee_preview_shows_the_fee_its_destination_reserves() {
+        let (ctx, _dir) = offline_ctx();
+        let estimator = ctx.fee_estimator();
+        let mut screen =
+            WalletSendScreen::for_identity(&ctx, bound_identity(), IdentitySendMode::Send);
+        screen.amount = Some(Amount::new_dash(0.01));
+        for (destination, fee) in [
+            (
+                platform_destination(),
+                estimator.estimate_credit_transfer_to_addresses(1),
+            ),
+            (identity_destination(), estimator.estimate_credit_transfer()),
+        ] {
+            screen.validated_destination = Some(destination);
+            assert_eq!(
+                screen
+                    .current_fee_preview()
+                    .map(|preview| preview.fee_credits),
+                Some(fee),
+                "the fee shown must be the fee Max and validation keep back"
+            );
+        }
     }
 
     #[test]

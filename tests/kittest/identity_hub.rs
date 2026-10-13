@@ -59,15 +59,16 @@ mod loads {
     //! that is lost on the way out or on the way back never comes again.
 
     use crate::identity_home::{key, seed_identity};
-    use crate::support::{fresh_app_context, with_isolated_data_dir};
+    use crate::support::{fresh_app_context, mount_app, with_isolated_data_dir};
     use dash_evo_tool::app::AppAction;
     use dash_evo_tool::backend_task::dashpay::DashPayTask;
-    use dash_evo_tool::backend_task::{BackendTask, BackendTaskContext};
+    use dash_evo_tool::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
     use dash_evo_tool::context::AppContext;
     use dash_evo_tool::model::user_role::UserRole;
-    use dash_evo_tool::ui::ScreenLike;
     use dash_evo_tool::ui::identity::IdentityHubScreen;
+    use dash_evo_tool::ui::{RootScreenType, ScreenLike};
     use dash_sdk::dpp::identity::Purpose;
+    use dash_sdk::platform::Identifier;
     use egui_kittest::Harness;
     use egui_kittest::kittest::Queryable;
     use std::sync::Arc;
@@ -148,10 +149,10 @@ mod loads {
         );
     }
 
-    fn seed_identity_that_can_move_funds(app_context: &Arc<AppContext>) {
+    fn seed_identity_that_can_move_funds(app_context: &Arc<AppContext>) -> Identifier {
         app_context.set_user_role(UserRole::Everyday);
         let transfer_key = key(1, Purpose::TRANSFER);
-        seed_identity(app_context, vec![transfer_key.clone()], vec![transfer_key]);
+        seed_identity(app_context, vec![transfer_key.clone()], vec![transfer_key])
     }
 
     /// A header button can be clicked on the very frame a load would go out.
@@ -181,76 +182,168 @@ mod loads {
         });
     }
 
+    /// Puts the hub behind the Send screen Home opens, delivers `results`
+    /// there, then cancels that screen: the hub comes back to `hub` the way
+    /// Cancel leaves it, without a refresh.
+    fn receive_behind_the_send_screen(
+        runtime: &tokio::runtime::Runtime,
+        app: &mut Harness<'static, dash_evo_tool::app::AppState>,
+        hub: &mut HubHarness,
+        results: Vec<(BackendTaskContext, BackendTaskSuccessResult)>,
+    ) {
+        use dash_evo_tool::app::TaskResult;
+        use dash_evo_tool::ui::wallets::send_screen::IdentitySendMode;
+        use dash_evo_tool::ui::{RootScreenType, Screen, ScreenType};
+
+        let app_context = app.state().current_app_context().clone();
+        let identity = app_context.resolve_selected_identity().expect("identity");
+        let fresh_hub = IdentityHubScreen::new(&app_context);
+        let hub_screen = std::mem::replace(&mut hub.state_mut().0, fresh_hub);
+        let state = app.state_mut();
+        state.main_screens.insert(
+            RootScreenType::RootScreenIdentityHub,
+            Screen::IdentityHubScreen(hub_screen),
+        );
+        state.selected_main_screen = RootScreenType::RootScreenIdentityHub;
+        state.screen_stack.push(
+            ScreenType::IdentitySendScreen(identity, IdentitySendMode::Send)
+                .create_screen(&app_context),
+        );
+
+        for (context, result) in results {
+            runtime
+                .block_on(app.state().task_result_sender.send(TaskResult::Success {
+                    context,
+                    result: Box::new(result),
+                }))
+                .expect("deliver the result");
+        }
+        // One frame drains the result queue before it renders.
+        app.step();
+
+        app.get_by_label("Cancel").click_accesskit();
+        app.step();
+        assert!(
+            app.state().screen_stack.is_empty(),
+            "Cancel must return to the hub"
+        );
+
+        let Some(Screen::IdentityHubScreen(hub_screen)) = app
+            .state_mut()
+            .main_screens
+            .remove(&RootScreenType::RootScreenIdentityHub)
+        else {
+            panic!("the hub must still be a root screen");
+        };
+        hub.state_mut().0 = hub_screen;
+        hub.run();
+    }
+
     /// Home asks for its payment history, then Send is opened before the answer
     /// arrives. The answer must still reach the hub behind that screen: Cancel
     /// returns without refreshing, so nothing would ask for it again.
     #[test]
     fn payment_history_reaches_the_hub_behind_an_open_send_screen() {
-        use crate::support::mount_app;
-        use dash_evo_tool::app::TaskResult;
-        use dash_evo_tool::backend_task::BackendTaskSuccessResult;
-        use dash_evo_tool::ui::wallets::send_screen::IdentitySendMode;
-        use dash_evo_tool::ui::{RootScreenType, Screen, ScreenType};
         with_isolated_data_dir(|| {
             let runtime = tokio::runtime::Runtime::new().expect("runtime");
             let _guard = runtime.enter();
             let mut app = mount_app(RootScreenType::RootScreenWalletsBalances);
             let app_context = app.state().current_app_context().clone();
             seed_identity_that_can_move_funds(&app_context);
-            let identity = app_context.resolve_selected_identity().expect("identity");
 
             let mut hub = mount_hub(&app_context);
             let request = step_until(&mut hub, "the payment history load", payments_load);
             assert!(hub.query_by_label("Recent payments").is_none());
 
-            // The hub goes behind the Send screen it opened.
-            let fresh_hub = IdentityHubScreen::new(&app_context);
-            let hub_screen = std::mem::replace(&mut hub.state_mut().0, fresh_hub);
-            let state = app.state_mut();
-            state.main_screens.insert(
-                RootScreenType::RootScreenIdentityHub,
-                Screen::IdentityHubScreen(hub_screen),
-            );
-            state.selected_main_screen = RootScreenType::RootScreenIdentityHub;
-            state.screen_stack.push(
-                ScreenType::IdentitySendScreen(identity, IdentitySendMode::Send)
-                    .create_screen(&app_context),
-            );
-
-            runtime
-                .block_on(app.state().task_result_sender.send(TaskResult::Success {
-                    context: request,
-                    result: Box::new(BackendTaskSuccessResult::DashPayPaymentHistory(vec![(
-                        String::new(),
-                        "Alice".into(),
-                        1_000,
-                        true,
-                        String::new(),
-                    )])),
-                }))
-                .expect("deliver the payment history");
-            // One frame drains the result queue before it renders.
-            app.step();
-
-            app.get_by_label("Cancel").click_accesskit();
-            app.step();
-            assert!(
-                app.state().screen_stack.is_empty(),
-                "Cancel must return to the hub"
-            );
-
-            let Some(Screen::IdentityHubScreen(hub_screen)) = app
-                .state_mut()
-                .main_screens
-                .remove(&RootScreenType::RootScreenIdentityHub)
-            else {
-                panic!("the hub must still be a root screen");
-            };
-            hub.state_mut().0 = hub_screen;
-            hub.run();
+            let history = BackendTaskSuccessResult::DashPayPaymentHistory(vec![(
+                String::new(),
+                "Alice".into(),
+                1_000,
+                true,
+                String::new(),
+            )]);
+            receive_behind_the_send_screen(&runtime, &mut app, &mut hub, vec![(request, history)]);
             assert!(
                 hub.query_by_label("Recent payments").is_some(),
                 "the payment history that arrived behind the Send screen must be shown"
+            );
+        });
+    }
+
+    /// The same for Home's contact lists: they are asked for once per arrival,
+    /// so answers that arrive behind the Send screen must reach the hub — but
+    /// only those loaded for the identity it shows.
+    #[test]
+    fn contact_lists_reach_the_hub_behind_an_open_send_screen() {
+        use crate::identity_home::seed_identity_with_id;
+        use dash_evo_tool::backend_task::dashpay::ContactData;
+        use dash_sdk::dpp::document::{Document, DocumentV0};
+        with_isolated_data_dir(|| {
+            let runtime = tokio::runtime::Runtime::new().expect("runtime");
+            let _guard = runtime.enter();
+            let mut app = mount_app(RootScreenType::RootScreenWalletsBalances);
+            let app_context = app.state().current_app_context().clone();
+            let other = seed_identity_with_id(&app_context, 0xB6, vec![], vec![]);
+            let shown = seed_identity_that_can_move_funds(&app_context);
+
+            let mut hub = mount_hub(&app_context);
+            step_until(&mut hub, "the contact load", contacts_load);
+            assert!(hub.query_by_label("Bao").is_none());
+
+            let contact = |name: &str| ContactData {
+                identity_id: Identifier::from([0xD8; 32]),
+                nickname: Some(name.into()),
+                note: None,
+                is_hidden: false,
+                account_reference: 0,
+                username: None,
+                display_name: None,
+                avatar_url: None,
+                bio: None,
+            };
+            let request = Identifier::from([0xC7; 32]);
+            let answer = |result: BackendTaskSuccessResult| {
+                let task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadContacts {
+                    identity: app_context.resolve_selected_identity().expect("identity"),
+                }));
+                (BackendTaskContext::from(&task), result)
+            };
+            let results = vec![
+                answer(BackendTaskSuccessResult::DashPayContactsWithInfo {
+                    identity: shown,
+                    contacts: vec![contact("Bao")],
+                }),
+                answer(BackendTaskSuccessResult::DashPayContactRequests {
+                    identity: shown,
+                    incoming: vec![(
+                        request,
+                        Document::V0(DocumentV0 {
+                            id: request,
+                            owner_id: other,
+                            ..Default::default()
+                        }),
+                    )],
+                    outgoing: vec![],
+                }),
+                // A load some other screen ran for another identity.
+                answer(BackendTaskSuccessResult::DashPayContactsWithInfo {
+                    identity: other,
+                    contacts: vec![contact("Zed")],
+                }),
+            ];
+            receive_behind_the_send_screen(&runtime, &mut app, &mut hub, results);
+
+            assert!(
+                hub.query_by_label("Zed").is_none(),
+                "another identity's contacts must never be shown"
+            );
+            assert!(
+                hub.query_by_label("Bao").is_some(),
+                "the contacts that arrived behind the Send screen must be shown"
+            );
+            assert!(
+                hub.query_by_label("Accept").is_some(),
+                "and so must the request received meanwhile"
             );
         });
     }

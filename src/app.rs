@@ -2795,9 +2795,12 @@ impl AppState {
             let needs_completion = match result {
                 BackendTaskSuccessResult::DashPayProfile(_)
                 | BackendTaskSuccessResult::DashPayProfileUpdated(_) => true,
-                // Home asks for its payment history once per arrival, so an
-                // answer that misses the hub is never asked for again.
-                BackendTaskSuccessResult::DashPayPaymentHistory(_) => true,
+                // The hub asks for its payment history and contact lists once
+                // per arrival, so an answer that misses it is never asked for
+                // again. It drops answers that are not for what it shows.
+                BackendTaskSuccessResult::DashPayPaymentHistory(_)
+                | BackendTaskSuccessResult::DashPayContactsWithInfo { .. }
+                | BackendTaskSuccessResult::DashPayContactRequests { .. } => true,
                 BackendTaskSuccessResult::DashPayAvatar { url, .. } => {
                     hub.is_waiting_for_avatar(url)
                 }

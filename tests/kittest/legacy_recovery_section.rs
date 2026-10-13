@@ -207,6 +207,37 @@ fn unrestorable_keys_are_listed_separately_with_no_restore_offered() {
     );
 }
 
+/// A key stranded behind a missing wallet is still one the identity uses, so
+/// it is told to bring the wallet back, never that the identity dropped it.
+#[test]
+fn a_key_from_a_missing_wallet_says_to_bring_the_wallet_back() {
+    let plan = RecoveryPlan {
+        items: vec![],
+        excluded: vec![(
+            key(MAIN.clone(), 1, Purpose::AUTHENTICATION),
+            ExclusionReason::WalletNotOnDevice,
+        )],
+    };
+
+    let (harness, _) = render(plan, false);
+
+    assert!(
+        harness
+            .query_by_label(
+                "This key comes from a wallet that is not on this device. Import that wallet \
+                 again from its recovery phrase, then restore again. You can also load this \
+                 identity again and enter the key to bring it back."
+            )
+            .is_some()
+    );
+    assert!(
+        harness
+            .query_by_label_contains("not one of the keys this identity uses now")
+            .is_none(),
+        "the identity still uses this key; only its wallet is missing",
+    );
+}
+
 /// A plan with both kinds keeps them apart: the restorable list under the
 /// section lead-in with its button, the rest under their own heading, each with
 /// its reason on screen.

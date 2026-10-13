@@ -232,6 +232,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Settings. On a new installation it says to enter the key. Only an identity
   that really has no suitable key is still told to add one.
 
+- Get a username is no longer offered when the identity's key comes from a
+  wallet that is not on this device. Before, the button was enabled and the
+  registration failed when it tried to sign. The Usernames card now says to
+  import that wallet again and links to the wallets screen; after an update
+  from an earlier version it also points to Restore from Previous Version. A
+  wallet that is on this device but locked does not disable the button.
+
+- Restoring keys from a previous version no longer says a key is "not one of
+  the keys this identity uses now" when the real cause is that its wallet is not
+  on this device. Such a key now says to import the wallet again and restore
+  once more.
+
 - The background refresh of name contests no longer resets the screen you are
   working on. While it ran, a lookup on another screen could lose its spinner
   and its answer, typed search text could be cleared, and an amount field could

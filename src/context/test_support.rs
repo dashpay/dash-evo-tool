@@ -75,6 +75,45 @@ pub(crate) fn user_identity_with_signing_key(
     identity
 }
 
+/// Hold published key `key_id` of `identity` as a reference into the wallet
+/// with `seed_hash`, the way a key found by a wallet scan is kept.
+pub(crate) fn hold_as_wallet_reference(
+    identity: &mut QualifiedIdentity,
+    key_id: dash_sdk::dpp::identity::KeyID,
+    seed_hash: crate::model::wallet::WalletSeedHash,
+) {
+    use crate::model::qualified_identity::PrivateKeyTarget;
+    use crate::model::qualified_identity::encrypted_key_storage::{
+        PrivateKeyData, WalletDerivationPath,
+    };
+    use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+
+    let key = identity.identity.public_keys()[&key_id].clone();
+    identity.private_keys.insert_at(
+        (PrivateKeyTarget::PrivateKeyOnMainIdentity, key_id),
+        (
+            key.into(),
+            PrivateKeyData::AtWalletDerivationPath(WalletDerivationPath {
+                wallet_seed_hash: seed_hash,
+                derivation_path: Default::default(),
+            }),
+        ),
+    );
+}
+
+/// [`test_app_context`] with its wallet backend wired, so identities can be
+/// stored and read back the way screens read them.
+pub(crate) async fn wired_test_app_context(dir: &Path) -> Arc<AppContext> {
+    let context = test_app_context(dir);
+    let (tx, _rx) = tokio::sync::mpsc::channel(32);
+    let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, context.egui_ctx().clone());
+    context
+        .ensure_wallet_backend(sender)
+        .await
+        .expect("wire wallet backend");
+    context
+}
+
 /// Build a network-free [`AppContext`] backed by throwaway temp storage — enough
 /// to exercise the settings read-modify-write and feature-gate paths.
 pub(crate) fn test_app_context(dir: &Path) -> Arc<AppContext> {

@@ -76,6 +76,11 @@ pub fn exclusion_explanation(reason: ExclusionReason) -> &'static str {
             "This saved key is not one of the keys this identity uses now. \
              Load this identity again and enter the current key to bring it back."
         }
+        ExclusionReason::WalletNotOnDevice => {
+            "This key comes from a wallet that is not on this device. \
+             Import that wallet again from its recovery phrase, then restore again. \
+             You can also load this identity again and enter the key to bring it back."
+        }
         ExclusionReason::LinkedIdentityUnverified => {
             "Only the previous version's saved data connects this to a separate voting or operator \
              identity, and that alone is not enough to restore it safely. \

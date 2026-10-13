@@ -459,6 +459,35 @@ impl WalletSendScreen {
         self.restore_identity_constraint();
     }
 
+    /// Whether the bound identity still occupies its fixed side of the form.
+    /// Holds trivially when the form has no bound identity.
+    fn identity_constraint_holds(&self) -> bool {
+        let Some((identity, mode)) = &self.identity_flow else {
+            return true;
+        };
+        identity.network == self.app_context.network()
+            && match mode {
+                IdentitySendMode::Send | IdentitySendMode::MoveToWallet => {
+                    matches!(&self.selected_source,
+                        Some(SourceSelection::Identity(source)) if source.identity.id() == identity.identity.id())
+                }
+                IdentitySendMode::TopUp => {
+                    self.validated_destination
+                        .as_ref()
+                        .and_then(ValidatedAddress::as_identity_id)
+                        == Some(&identity.identity.id())
+                }
+            }
+    }
+
+    /// Per-frame guard: rebinds only when a frame finds the binding changed,
+    /// so an intact binding costs no clone.
+    fn keep_identity_constraint(&mut self) {
+        if !self.identity_constraint_holds() {
+            self.restore_identity_constraint();
+        }
+    }
+
     fn restore_identity_constraint(&mut self) {
         let Some((identity, mode)) = &self.identity_flow else {
             return;
@@ -951,23 +980,8 @@ impl WalletSendScreen {
     }
 
     fn validated_send_route(&self) -> Result<ValidatedSendRoute, String> {
-        if let Some((identity, mode)) = &self.identity_flow {
-            let matches = identity.network == self.app_context.network()
-                && match mode {
-                    IdentitySendMode::Send | IdentitySendMode::MoveToWallet => {
-                        matches!(&self.selected_source,
-                    Some(SourceSelection::Identity(source)) if source.identity.id() == identity.identity.id())
-                    }
-                    IdentitySendMode::TopUp => {
-                        self.validated_destination
-                            .as_ref()
-                            .and_then(ValidatedAddress::as_identity_id)
-                            == Some(&identity.identity.id())
-                    }
-                };
-            if !matches {
-                return Err("This form no longer matches the selected identity or network. Return to the identity and open it again.".into());
-            }
+        if !self.identity_constraint_holds() {
+            return Err("This form no longer matches the selected identity or network. Return to the identity and open it again.".into());
         }
         if matches!(
             self.identity_flow,
@@ -1543,7 +1557,7 @@ impl WalletSendScreen {
     fn render_unified_send(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
 
-        self.restore_identity_constraint();
+        self.keep_identity_constraint();
         let identity_sender = matches!(
             self.identity_flow,
             Some((_, IdentitySendMode::Send | IdentitySendMode::MoveToWallet))
@@ -1584,7 +1598,7 @@ impl WalletSendScreen {
         if let Some((identity, IdentitySendMode::TopUp)) = &self.identity_flow {
             ui.label("Send to");
             ui.strong(self.app_context.identity_display_label(identity));
-            self.restore_identity_constraint();
+            self.keep_identity_constraint();
         } else {
             self.render_destination_input(ui);
         }
@@ -5061,6 +5075,83 @@ mod tests {
         assert!(
             screen.validated_send_route().is_err(),
             "a fixed sender cannot be replaced"
+        );
+    }
+
+    fn render_identity_form(screen: WalletSendScreen) -> Harness<'static, WalletSendScreen> {
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, screen: &mut WalletSendScreen| {
+                screen.render_unified_send(ui);
+            },
+            screen,
+        );
+        harness.run();
+        harness
+    }
+
+    /// Text the binding never writes, so it survives only while frames leave
+    /// the bound values alone.
+    const UNTOUCHED: &str = "untouched";
+
+    #[test]
+    fn identity_binding_is_not_rebuilt_on_frames_where_it_still_holds() {
+        let (ctx, _dir) = offline_ctx();
+
+        let mut screen =
+            WalletSendScreen::for_identity(&ctx, bound_identity(), IdentitySendMode::Send);
+        let Some(SourceSelection::Identity(sender)) = &mut screen.selected_source else {
+            panic!("Send binds the identity as the sender");
+        };
+        sender.alias = Some(UNTOUCHED.into());
+        let harness = render_identity_form(screen);
+        assert!(
+            matches!(&harness.state().selected_source,
+                Some(SourceSelection::Identity(sender)) if sender.alias.as_deref() == Some(UNTOUCHED)),
+            "an intact sender binding must not be cloned again every frame"
+        );
+
+        let mut screen =
+            WalletSendScreen::for_identity(&ctx, bound_identity(), IdentitySendMode::TopUp);
+        let Some(ValidatedAddress::Identity { dpns_name, .. }) = &mut screen.validated_destination
+        else {
+            panic!("Top up binds the identity as the recipient");
+        };
+        *dpns_name = Some(UNTOUCHED.into());
+        let harness = render_identity_form(screen);
+        assert!(
+            matches!(&harness.state().validated_destination,
+                Some(ValidatedAddress::Identity { dpns_name, .. }) if dpns_name.as_deref() == Some(UNTOUCHED)),
+            "an intact recipient binding must not be rebuilt every frame"
+        );
+    }
+
+    #[test]
+    fn identity_binding_is_restored_when_a_frame_finds_it_broken() {
+        let (ctx, _dir) = offline_ctx();
+        let identity = bound_identity();
+
+        let mut screen =
+            WalletSendScreen::for_identity(&ctx, identity.clone(), IdentitySendMode::Send);
+        screen.selected_source = Some(SourceSelection::CoreWallet);
+        let harness = render_identity_form(screen);
+        assert!(
+            matches!(&harness.state().selected_source,
+                Some(SourceSelection::Identity(sender)) if sender.identity.id() == identity.identity.id()),
+            "a replaced sender must be bound again"
+        );
+
+        let mut screen =
+            WalletSendScreen::for_identity(&ctx, identity.clone(), IdentitySendMode::TopUp);
+        screen.validated_destination = None;
+        let harness = render_identity_form(screen);
+        assert_eq!(
+            harness
+                .state()
+                .validated_destination
+                .as_ref()
+                .and_then(ValidatedAddress::as_identity_id),
+            Some(&identity.identity.id()),
+            "a cleared recipient must be bound again"
         );
     }
 

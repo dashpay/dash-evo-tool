@@ -5041,6 +5041,26 @@ impl ScreenLike for WalletSendScreen {
         }
     }
 
+    fn display_backend_task_result(
+        &mut self,
+        context: &BackendTaskContext,
+        backend_task_success_result: crate::backend_task::BackendTaskSuccessResult,
+    ) {
+        // Other tasks end with results of the kinds a send ends with. While
+        // this screen waits on its own send, such a result may refresh what
+        // the form offers, but it neither completes that send nor ends its
+        // progress banner.
+        let waits_on_another_task = self.awaits_own_send() && !self.awaits_send(context);
+        let progress_banner = waits_on_another_task
+            .then(|| self.send_banner.take())
+            .flatten();
+        self.display_task_result(backend_task_success_result);
+        if waits_on_another_task {
+            self.send_banner = progress_banner;
+            self.send_status = SendStatus::WaitingForResult;
+        }
+    }
+
     fn refresh_on_arrival(&mut self) {
         self.refresh_bound_identity();
         self.address_input_snapshot_signature = None;
@@ -5970,6 +5990,35 @@ mod tests {
         assert!(
             refusal.contains(&format_credits_as_dash(highest)),
             "the refusal must name the highest amount that works: {refusal}"
+        );
+    }
+
+    /// Other tasks report results of the kinds a send ends with. While this
+    /// screen waits on its own send, only that send's result completes it.
+    #[test]
+    fn only_the_result_of_its_own_send_completes_the_wait() {
+        use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
+        let (mut screen, _temp_dir) = send_screen();
+        let send = BackendTask::WalletTask(WalletTask::GenerateReceiveAddress {
+            seed_hash: [0x48; 32],
+        });
+        let _action = screen.dispatch_send(AppAction::BackendTask(send.clone()));
+        let own = screen.pending_send.clone().expect("the dispatched send");
+        let same_task_sent_again = BackendTaskContext::for_dispatch_on(&send, Network::Testnet);
+        let credits_moved = || BackendTaskSuccessResult::TransferredCredits(FeeResult::new(1, 1));
+
+        screen.display_backend_task_result(&same_task_sent_again, credits_moved());
+        screen.display_backend_task_result(&BackendTaskContext::Unknown, credits_moved());
+        assert_eq!(
+            screen.send_status,
+            SendStatus::WaitingForResult,
+            "a result of another task is not the outcome of this send"
+        );
+
+        screen.display_backend_task_result(&own, credits_moved());
+        assert!(
+            matches!(screen.send_status, SendStatus::Complete(_)),
+            "its own result completes the send"
         );
     }
 

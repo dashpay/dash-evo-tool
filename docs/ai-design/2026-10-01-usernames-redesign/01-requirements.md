@@ -51,8 +51,13 @@ Scope: identity-side usernames. Voting is Stream V in
   `Each username is a separate payment from this identity's balance.`
 - **USR-FR-005** — Empty state: `This identity has no username yet. A username
   lets people pay you as @name instead of a long address.` [Get a username].
-  View-only identity (no auth key): button disabled, tooltip `Add a key to this
-  identity to register usernames.` + `Add a key` link.
+  Identity with no suitable key at all: button disabled, tooltip `Add a key to
+  this identity to register usernames.` + `Add a key` link. Identity whose
+  suitable key is not on this device: button disabled, and the text names what
+  helps instead of adding a key — the in-place `Restore keys` offer when an
+  earlier version saved the key, `Open Settings` (Restore from Previous
+  Version) + `Open keys` on an updated install with nothing to offer in place,
+  `Open keys` on a new install.
 - **USR-FR-006** — Remove the "Aliases" block, the disabled `Make primary`,
   `Remove` and `Add an alias` controls, and the `View all usernames` jump. Never
   offer delete (PF §2). Transfer/sale is deferred; reserve no visible control.

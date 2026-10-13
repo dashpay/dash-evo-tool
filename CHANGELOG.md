@@ -212,10 +212,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Registering a username now shows a realistic cost. The review step used to
+  show a registration fee of about 0.000002 DASH, while the network charges
+  roughly 0.0008 DASH and wants about 0.0012 DASH on the identity before it
+  accepts the request. The amount shown, and the balance required to pay, is
+  now what the network needs, with a small margin. An identity that holds less
+  is asked to top up before anything is sent; before, it could pay for the
+  first registration step and be turned down at the second.
+
 - Adding a masternode or evonode with a voting key that has since been replaced
   on the network is now refused when you add it, with a message asking for the
   node's current voting private key. Before, the node was added as if the key
   were usable and the problem only showed later, when a vote failed.
+
+- An identity whose key is not on this device is no longer told to add a key
+  before it can get a username. After an update from an earlier version, the
+  Usernames card now offers to restore the key right there when the earlier
+  version saved it, and otherwise points to Restore from Previous Version in
+  Settings. On a new installation it says to enter the key. Only an identity
+  that really has no suitable key is still told to add one.
 
 - The background refresh of name contests no longer resets the screen you are
   working on. While it ran, a lookup on another screen could lose its spinner

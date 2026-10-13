@@ -2176,6 +2176,16 @@ pub enum TaskError {
     #[error("The username payment terms changed. Nothing was spent. Review the name and fees again.")]
     UsernameRegistrationTermsChanged,
 
+    /// The identity cannot cover both registration documents (and the community
+    /// vote fee, when the name needs one); refused before anything is sent.
+    #[error(
+        "This identity has {available_dash}, but registering this username needs {required_dash}. \
+         Nothing was spent. Top up the identity and try again.",
+        available_dash = format_credits_as_dash(*.available),
+        required_dash = format_credits_as_dash(*.required)
+    )]
+    UsernameRegistrationBalanceTooLow { available: u64, required: u64 },
+
     /// The name request was sent, but nothing proves whether the network applied
     /// it. It may already be paid for, so this never reads as a plain failure.
     #[error(

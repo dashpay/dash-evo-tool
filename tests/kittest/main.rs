@@ -42,6 +42,7 @@ mod tools_screen;
 #[cfg(feature = "testing")]
 mod top_up_identity_screen;
 mod transfer_screen;
+mod username_key_hint;
 mod wallet_selector;
 mod wallets_screen;
 mod welcome_screen;

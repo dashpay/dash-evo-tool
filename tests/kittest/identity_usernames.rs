@@ -258,7 +258,9 @@ fn confirm_step_shows_fees_low_balance_and_sync_gate() {
         );
         assert!(harness.query_by_label(&contest_fee).is_some());
         let total = format_credits_as_dash(
-            app_context.fee_estimator().estimate_document_batch(2)
+            app_context
+                .fee_estimator()
+                .estimate_username_registration("nova".len(), true)
                 + contest_fee_credits(app_context.sdk_platform_version()),
         );
         assert!(harness.query_by_label("Total").is_some());
@@ -291,9 +293,10 @@ fn confirm_step_shows_fees_low_balance_and_sync_gate() {
     });
 }
 
-/// USR-FR-005: an identity without a signing key is told how to proceed.
+/// USR-FR-005: an identity whose signing key is not on this device is told to
+/// enter it, not to add a new one.
 #[test]
-fn view_only_identity_is_told_to_add_a_key() {
+fn identity_without_its_key_on_this_device_is_told_to_enter_it() {
     with_isolated_data_dir(|| {
         let (_rt, app_context) = fresh_app_context();
         seed_username_identity(&app_context, 0x05, "Viewer", &[], 0, false);
@@ -303,9 +306,17 @@ fn view_only_identity_is_told_to_add_a_key() {
         ));
         assert!(
             harness
-                .query_by_label_contains("Add a key to this identity to register usernames.")
+                .query_by_label_contains(
+                    "Open this identity's keys and enter the key to use it here."
+                )
                 .is_some()
         );
+        assert!(
+            harness
+                .query_by_label_contains("Add a key to this identity")
+                .is_none()
+        );
+        assert!(harness.query_by_label("Open keys").is_some());
     });
 }
 
@@ -443,19 +454,26 @@ fn usernames_card_empty_state() {
     });
 }
 
-/// USR-TC-024: a view-only identity gets the reason and an `Add a key` link.
+/// USR-TC-024: an identity whose signing key is not on this device gets the
+/// reason and an `Open keys` link, never the advice to add a key.
 #[test]
-fn usernames_card_view_only_offers_add_a_key() {
+fn usernames_card_without_the_key_on_this_device_offers_to_enter_it() {
     with_isolated_data_dir(|| {
         let (_rt, app_context) = fresh_app_context();
         seed_username_identity(&app_context, 0x24, "Viewer", &[], 0, false);
-        let harness = mount_settings(app_context);
-        assert!(harness.query_by_label("Add a key").is_some());
+        let mut harness = mount_settings(app_context);
         assert!(
             harness
-                .query_by_label("Add a key to this identity to register usernames.")
+                .query_by_label(
+                    "The key this identity needs to register usernames is not on this device. \
+                     Open this identity's keys and enter the key to use it here."
+                )
                 .is_some()
         );
+        assert!(harness.query_by_label("Add a key").is_none());
+        harness.get_by_label("Open keys").click();
+        harness.run();
+        assert!(matches!(harness.state().1, Some(AppAction::AddScreen(_))));
     });
 }
 

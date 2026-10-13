@@ -12,7 +12,7 @@ use crate::model::dpns::{
     validate_dpns_name,
 };
 use crate::model::dpns_usernames::{
-    UsernameAvailability, can_register_usernames, dpns_signing_requirement,
+    RegistrationKeyStatus, UsernameAvailability, dpns_signing_requirement, registration_key_status,
 };
 use crate::model::fee_estimation::{contest_fee_credits, format_credits_as_dash};
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -33,6 +33,7 @@ use crate::ui::helpers::{TransactionType, add_key_chooser_with_doc_type};
 use crate::ui::identity::username_copy::{
     self, AvailabilityRow, Tone, USERNAME_RULES, availability_line, offers_suggestions,
 };
+use crate::ui::identity::usernames_card::{KeyHint, key_hint_links};
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
@@ -200,8 +201,10 @@ impl RegisterDpnsNameScreen {
         }
     }
 
-    fn registration_fee(&self) -> u64 {
-        self.app_context.fee_estimator().estimate_document_batch(2)
+    fn registration_fee(&self, needs_vote: bool) -> u64 {
+        self.app_context
+            .fee_estimator()
+            .estimate_username_registration(self.label().chars().count(), needs_vote)
     }
 
     fn contest_fee(&self) -> u64 {
@@ -266,7 +269,7 @@ impl RegisterDpnsNameScreen {
             identity_id: self.selected_qualified_identity.as_ref()?.identity.id(),
             network: self.app_context.network,
             needs_vote: availability.needs_vote(),
-            registration_fee: self.registration_fee(),
+            registration_fee: self.registration_fee(availability.needs_vote()),
             contest_fee: if availability.needs_vote() {
                 self.contest_fee()
             } else {
@@ -879,16 +882,17 @@ impl ScreenLike for RegisterDpnsNameScreen {
                         );
                         return;
                     };
-                    if !can_register_usernames(
+                    // The restore offer lives on the identity's Usernames card
+                    // and Keys screen; this page only says what helps.
+                    let key_status = registration_key_status(
                         identity,
                         dpns_signing_requirement(&self.app_context.dpns_contract),
-                    ) {
-                        status_line(
-                            ui,
-                            Tone::Negative,
-                            username_copy::NEEDS_KEY_TO_REGISTER,
-                            dark_mode,
-                        );
+                    );
+                    let updated_install = key_status == RegistrationKeyStatus::KeyNotOnDevice
+                        && self.app_context.has_legacy_identities();
+                    if let Some(hint) = KeyHint::for_status(key_status, false, updated_install) {
+                        status_line(ui, Tone::Negative, hint.text(), dark_mode);
+                        inner = key_hint_links(ui, &self.app_context, identity, hint);
                         return;
                     }
                     inner = match self.step.clone() {

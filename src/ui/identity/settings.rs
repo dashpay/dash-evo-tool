@@ -210,6 +210,23 @@ impl SettingsTab {
         }
     }
 
+    /// The Usernames card, so the hub can route recovery results and its
+    /// pending detection through the restore offer the card hosts.
+    pub(crate) fn usernames_card_mut(&mut self) -> &mut super::usernames_card::UsernamesCard {
+        &mut self.usernames_card
+    }
+
+    /// Whether a recovery outcome belongs to the card's restore offer.
+    pub(crate) fn accepts_legacy_recovery_result(
+        &self,
+        context: &crate::backend_task::BackendTaskContext,
+        completed: bool,
+    ) -> bool {
+        self.usernames_card
+            .recovery()
+            .is_some_and(|offer| offer.accepts_result(context, completed))
+    }
+
     /// Render the profile tab and its actions.
     pub fn render(
         &mut self,

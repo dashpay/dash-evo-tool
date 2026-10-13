@@ -162,8 +162,19 @@ pub const LENGTH_CHECK_LABEL: &str = "Between 3 and 63 characters";
 /// Per-keystroke character check under the name field.
 pub const CHARACTERS_CHECK_LABEL: &str = "Only letters, numbers, and hyphens";
 
-/// Why an identity without a usable key cannot register a username.
+/// Why an identity that has no suitable key at all cannot register a username.
 pub const NEEDS_KEY_TO_REGISTER: &str = "Add a key to this identity to register usernames.";
+
+/// Why an identity cannot register yet when the previous version's saved data
+/// holds its key, shown above the offer to restore it.
+pub const RESTORE_KEYS_TO_REGISTER: &str = "The key this identity needs to register usernames is not on this device yet. Restore your keys to register usernames.";
+
+/// Why an identity cannot register on an install updated from an earlier
+/// version, when no restore is offered in place.
+pub const RESTORE_FROM_PREVIOUS_VERSION_TO_REGISTER: &str = "The key this identity needs to register usernames is not on this device. If you updated from an earlier version of Dash Evo Tool, open Settings and use Restore from Previous Version to bring back missing wallets and keys.";
+
+/// Why an identity cannot register when its key was never saved on this device.
+pub const ENTER_KEY_TO_REGISTER: &str = "The key this identity needs to register usernames is not on this device. Open this identity's keys and enter the key to use it here.";
 
 /// What a registered name gives its owner: the done page and the won banner.
 pub const NAME_REGISTERED_LINE: &str = "People can now find and pay you by this name.";

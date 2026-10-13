@@ -1316,6 +1316,44 @@ mod tests {
         offline.shutdown().await;
     }
 
+    /// The state behind a disabled "Get a username" button after an upgrade:
+    /// the identity publishes a key that can register usernames, this device's
+    /// record does not hold it, and the previous version's data does. Restoring
+    /// is what makes the identity able to register.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn restoring_a_stranded_signing_key_lets_the_identity_register_usernames() {
+        use crate::model::dpns_usernames::can_register_usernames;
+
+        let offline = Offline::new(None).await;
+        let ctx = &offline.ctx;
+
+        let signing = test_key(1, Purpose::AUTHENTICATION, 0x5A);
+        let modern = identity_with_keys(0xD1, IdentityType::User, &[&signing], vec![]);
+        let identity_id = modern.identity.id();
+        ctx.insert_local_qualified_identity(&modern, &None)
+            .expect("insert modern record");
+        offline.stage_legacy(&identity_with_keys(
+            0xD1,
+            IdentityType::User,
+            &[],
+            vec![(M, &signing, signing.clear())],
+        ));
+        let stored = || {
+            ctx.get_local_qualified_identity(&identity_id)
+                .expect("read identity")
+                .expect("identity is stored")
+        };
+        assert!(!can_register_usernames(&stored(), SecurityLevel::HIGH));
+
+        let summary = crate::backend_task::migration::legacy_restore::run(ctx)
+            .await
+            .expect("restore");
+        assert_eq!(summary.identity_keys_restored, 1);
+        assert!(can_register_usernames(&stored(), SecurityLevel::HIGH));
+
+        offline.shutdown().await;
+    }
+
     /// B12 — the wallet link lives beside the blob, not inside it, and the
     /// update writer preserves it from the existing record. A legacy row with
     /// no wallet of its own must not null it out.

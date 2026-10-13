@@ -47,6 +47,31 @@ pub(crate) const MAX_PLATFORM_INPUTS: usize = 16;
 /// Estimated serialized bytes per input (address + signature/witness data).
 const ESTIMATED_BYTES_PER_INPUT: usize = 225;
 
+// TODO(dashpay/platform#5383): the `USERNAME_*` figures are fitted to how Drive
+// bills the DPNS contract; replace them with Platform's own numbers. The charge
+// comes from `drive::document::cost::document_create_cost`
+// (dashpay/platform#5159), which the pinned Platform revision does not have
+// yet. The balance Drive wants before it accepts a document has no function
+// yet; dashpay/platform#5265 asks for one.
+
+/// Bytes Platform bills for a username's first registration document and its
+/// index entry: 726, plus 428 the first time an identity writes to the name
+/// contract.
+const USERNAME_FIRST_DOCUMENT_BYTES: usize = 1_154;
+/// Processing Platform charges for the first document on top of its storage.
+const USERNAME_FIRST_DOCUMENT_PROCESSING_CREDITS: u64 = 3_500_000;
+/// Balance Platform wants before it accepts the name document of an empty
+/// label, in bytes at the storage rate. It reserves about twice what it then
+/// charges, and more for a name that needs a community vote.
+const USERNAME_NAME_RESERVED_BYTES: usize = 3_019;
+const USERNAME_VOTED_NAME_RESERVED_BYTES: usize = 4_517;
+/// Bytes each label character adds to the name document and its index entries.
+const USERNAME_NAME_BYTES_PER_CHAR: usize = 4;
+const USERNAME_VOTED_NAME_BYTES_PER_CHAR: usize = 5;
+/// Headroom over the figures above, which were read from Platform's engine on
+/// an empty network; a live network charges somewhat more processing.
+const USERNAME_REGISTRATION_MARGIN_PERCENT: u64 = 10;
+
 /// Storage fee constants from FEE_STORAGE_VERSION1 in rs-platform-version.
 /// These determine the cost of storing and processing data on Platform.
 #[derive(Debug, Clone, Copy)]
@@ -564,12 +589,40 @@ impl PlatformFeeEstimator {
     }
 
     /// Estimate fee for document batch transition
+    // TODO(dashpay/platform#5383): mirrors Platform's minimum-fee floor; it is
+    // not an estimate of the charge.
     pub fn estimate_document_batch(&self, transition_count: usize) -> u64 {
         let base_fee = self
             .min_fees
             .document_batch_sub_transition
             .saturating_mul(transition_count.max(1) as u64);
         self.apply_multiplier(base_fee)
+    }
+
+    /// Balance an identity needs to register a username of `label_chars`
+    /// characters, without the community vote fee.
+    ///
+    /// Covers both registration documents of an identity's first name. Platform
+    /// accepts the second one only while the balance holds a reserve above what
+    /// it then charges, so the amount actually charged is lower than this.
+    pub fn estimate_username_registration(&self, label_chars: usize, needs_vote: bool) -> u64 {
+        let (name_bytes, bytes_per_char) = if needs_vote {
+            (
+                USERNAME_VOTED_NAME_RESERVED_BYTES,
+                USERNAME_VOTED_NAME_BYTES_PER_CHAR,
+            )
+        } else {
+            (USERNAME_NAME_RESERVED_BYTES, USERNAME_NAME_BYTES_PER_CHAR)
+        };
+        let bytes = USERNAME_FIRST_DOCUMENT_BYTES
+            .saturating_add(name_bytes)
+            .saturating_add(bytes_per_char.saturating_mul(label_chars));
+        let base_fee = self
+            .calculate_storage_fee(bytes)
+            .saturating_add(USERNAME_FIRST_DOCUMENT_PROCESSING_CREDITS);
+        self.apply_multiplier(
+            base_fee.saturating_mul(100 + USERNAME_REGISTRATION_MARGIN_PERCENT) / 100,
+        )
     }
 
     /// Estimate fee for document creation with known size.
@@ -1481,6 +1534,70 @@ mod tests {
         // 3 documents - base fee only
         let fee = estimator.estimate_document_batch(3);
         assert_eq!(fee, 3 * 100_000);
+    }
+
+    /// Registering a 29-character name for a newly created identity was
+    /// charged 75,646,740 credits on testnet. The estimate must cover that
+    /// without being several times larger.
+    #[test]
+    fn username_registration_estimate_covers_the_charge_measured_on_testnet() {
+        const CHARGED_ON_TESTNET: u64 = 75_646_740;
+        let estimate = PlatformFeeEstimator::new().estimate_username_registration(29, false);
+        assert!(estimate >= CHARGED_ON_TESTNET, "{estimate}");
+        assert!(estimate <= 2 * CHARGED_ON_TESTNET, "{estimate}");
+    }
+
+    /// Platform accepts the second document only while the balance covers a
+    /// reserve well above what it then charges. These are the smallest balances
+    /// its engine (protocol 14) accepted for both documents of an identity's
+    /// first name, without the community vote fee. The estimate must reach
+    /// each one and stay within 15% of it.
+    #[test]
+    fn username_registration_estimate_covers_the_balance_the_network_requires() {
+        let smallest_accepted_balance = [
+            (6, false, 115_965_270_u64),
+            (29, false, 118_309_783),
+            (63, false, 122_264_862),
+            (3, true, 156_187_414),
+            (5, true, 156_750_678),
+            (19, true, 158_495_902),
+        ];
+        let estimator = PlatformFeeEstimator::new();
+        for (label_chars, needs_vote, required) in smallest_accepted_balance {
+            let estimate = estimator.estimate_username_registration(label_chars, needs_vote);
+            assert!(
+                estimate >= required,
+                "{label_chars} characters, vote {needs_vote}: {estimate} is below {required}"
+            );
+            assert!(
+                estimate <= required / 100 * 115,
+                "{label_chars} characters, vote {needs_vote}: {estimate} is far above {required}"
+            );
+        }
+    }
+
+    /// On testnet the network refused the name document below these balances,
+    /// counting what the first document had cost: 32,090,520 + 83,627,060 for
+    /// 20 characters and 32,400,260 + 88,397,980 for 63.
+    #[test]
+    fn username_registration_estimate_covers_the_balance_testnet_required() {
+        let estimator = PlatformFeeEstimator::new();
+        for (label_chars, required) in [(20, 115_717_580_u64), (63, 120_798_240)] {
+            let estimate = estimator.estimate_username_registration(label_chars, false);
+            assert!(estimate >= required, "{label_chars}: {estimate}");
+            assert!(
+                estimate <= required / 100 * 115,
+                "{label_chars}: {estimate}"
+            );
+        }
+    }
+
+    #[test]
+    fn username_registration_estimate_follows_the_fee_multiplier() {
+        let base = PlatformFeeEstimator::new().estimate_username_registration(29, false);
+        let doubled = PlatformFeeEstimator::with_fee_multiplier(2000)
+            .estimate_username_registration(29, false);
+        assert_eq!(doubled, 2 * base);
     }
 
     #[test]

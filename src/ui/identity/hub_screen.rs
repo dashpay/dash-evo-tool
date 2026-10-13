@@ -664,7 +664,21 @@ impl ScreenLike for IdentityHubScreen {
         if matches!(action, AppAction::None) {
             action = self.username_refresh_action(ctx);
         }
+        if matches!(action, AppAction::None)
+            && let Some((task, context)) = self.settings_tab.usernames_card_mut().recovery_check()
+        {
+            action = AppAction::BackendTaskWithContext { task, context };
+        }
         action
+    }
+
+    fn accepts_legacy_recovery_result(
+        &self,
+        context: &BackendTaskContext,
+        completed: bool,
+    ) -> bool {
+        self.settings_tab
+            .accepts_legacy_recovery_result(context, completed)
     }
 
     fn display_backend_task_result(
@@ -699,6 +713,11 @@ impl ScreenLike for IdentityHubScreen {
     }
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
+        // The record a finished restore wrote is re-read by the Settings tab on
+        // its next frame, so the offer's own outcome needs no follow-up here.
+        if let Some(offer) = self.settings_tab.usernames_card_mut().recovery_mut() {
+            offer.absorb_result(self.app_context.egui_ctx(), &result);
+        }
         if matches!(
             result,
             BackendTaskSuccessResult::MyUsernameRequestsRefreshed
@@ -806,6 +825,9 @@ impl ScreenLike for IdentityHubScreen {
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
         self.profile_cache.record_error(context);
         self.settings_tab.clear_pending_save(context);
+        if let Some(offer) = self.settings_tab.usernames_card_mut().recovery_mut() {
+            offer.absorb_error(context);
+        }
     }
 
     fn display_task_error(&mut self, error: &TaskError) -> bool {
@@ -1188,6 +1210,56 @@ mod tests {
             .insert_local_qualified_identity(&qualified_identity, &None)
             .expect("seed identity");
         identity_id
+    }
+
+    /// On an updated install the hub sends the Usernames card's check of the
+    /// previous version's data exactly once and accepts its answer, so the
+    /// restore offer can reach an identity whose key is not on this device.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn hub_sends_the_usernames_card_recovery_check_once_and_accepts_its_answer() {
+        let (_dir, context) = wired_test_context().await;
+        crate::database::test_helpers::LegacyIdentityFixture::new(
+            [0x31; 32],
+            Some(vec![0x01]),
+            "testnet",
+        )
+        .insert(&context.db.locked_conn())
+        .expect("stage a legacy identity row");
+        let identity = crate::context::test_support::user_identity_with_signing_key(
+            id(0x31),
+            Network::Testnet,
+            false,
+        );
+        context
+            .insert_local_qualified_identity(&identity, &None)
+            .expect("seed identity");
+        context.set_selected_identity(Some(identity.identity.id()));
+
+        let mut hub = IdentityHubScreen::new(&context);
+        hub.select_tab(IdentityHubTab::Settings);
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 1000.0))
+            .build_ui_state(
+                |ui, state: &mut (IdentityHubScreen, Vec<BackendTaskContext>)| {
+                    if let AppAction::BackendTaskWithContext {
+                        task: BackendTask::IdentityTask(IdentityTask::CheckLegacyRecovery { .. }),
+                        context,
+                    } = state.0.ui(ui)
+                    {
+                        state.1.push(context);
+                    }
+                },
+                (hub, Vec::new()),
+            );
+        harness.run_steps(12);
+
+        let (hub, checks) = harness.state();
+        assert_eq!(checks.len(), 1);
+        assert!(hub.accepts_legacy_recovery_result(&checks[0], false));
+        assert!(!hub.accepts_legacy_recovery_result(
+            &BackendTaskContext::LegacyRecoveryCheck(id(0x32)),
+            false
+        ));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -192,12 +192,17 @@ fn summary_balance(
 }
 
 /// Home content below the identity summary and tabs.
+///
+/// `may_load` is false on a frame whose action the caller already has from
+/// elsewhere on the screen: a load returned then would be replaced after
+/// claiming its one dispatch slot, and never go out.
 pub fn render(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
     state: &mut HomeState,
     profiles: &mut ProfileCache,
     contacts: &mut ContactsState,
+    may_load: bool,
 ) -> (AppAction, HomeOutcome) {
     let Some(identity) = app_context.resolve_selected_identity() else {
         return (AppAction::None, HomeOutcome::None);
@@ -275,10 +280,10 @@ pub fn render(
         action |= render_receive(ui, app_context, &identity, state);
     }
     // Loads only claim their dispatch slots when no user action would be overwritten.
-    if matches!(action, AppAction::None) {
+    if may_load && matches!(action, AppAction::None) {
         action = super::contacts::load_action(&identity, contacts);
     }
-    if matches!(action, AppAction::None) {
+    if may_load && matches!(action, AppAction::None) {
         action = state.load_payments(&identity);
     }
     (action, outcome)

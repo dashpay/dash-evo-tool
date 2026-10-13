@@ -563,6 +563,9 @@ impl ScreenLike for IdentityHubScreen {
                             self.selected_tab = clicked;
                         }
                         ui.add_space(16.0);
+                        // The header's action replaces the tab's below, so the
+                        // tab must not spend a load on a frame the header took.
+                        let may_load = matches!(header_action, AppAction::None);
                         let mut tab_action = match self.selected_tab {
                             IdentityHubTab::Home => {
                                 let (home_action, outcome) = super::home::render(
@@ -571,6 +574,7 @@ impl ScreenLike for IdentityHubScreen {
                                     &mut self.home_state,
                                     &mut self.profile_cache,
                                     &mut self.contacts_state,
+                                    may_load,
                                 );
                                 if let Some(next_tab) =
                                     super::home::apply_outcome(&mut self.home_state, outcome)
@@ -588,6 +592,7 @@ impl ScreenLike for IdentityHubScreen {
                                 &self.app_context,
                                 &mut self.contacts_state,
                                 &mut self.profile_cache,
+                                may_load,
                             ),
                             IdentityHubTab::Activity => {
                                 super::activity::render(ui, &self.app_context)

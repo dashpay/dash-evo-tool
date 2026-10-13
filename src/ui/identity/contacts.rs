@@ -272,14 +272,19 @@ pub fn unhide_task(identity: QualifiedIdentity, contact: &ContactData) -> DashPa
 ///
 /// The caller owns a [`ContactsState`] so the populated shell only dispatches
 /// its backend tasks once per tab entry — not once per paint.
+///
+/// `may_load` is false on a frame whose action the caller already has from
+/// elsewhere on the screen: a load returned then would be replaced after
+/// claiming its one dispatch slot, and never go out.
 pub fn render(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
     state: &mut ContactsState,
     profiles: &mut super::profile_cache::ProfileCache,
+    may_load: bool,
 ) -> AppAction {
     let tab_state = ContactsTabState::resolve(app_context, profiles);
-    render_state(ui, app_context, &tab_state, state)
+    render_state(ui, app_context, &tab_state, state, may_load)
 }
 
 /// Resolved rendering mode for the Contacts tab.
@@ -333,11 +338,12 @@ fn render_state(
     app_context: &Arc<AppContext>,
     tab_state: &ContactsTabState,
     state: &mut ContactsState,
+    may_load: bool,
 ) -> AppAction {
     match tab_state {
         ContactsTabState::Gated { handle } => render_gated(ui, handle.as_deref()),
         ContactsTabState::Populated { identity } => {
-            render_populated(ui, app_context, identity, state)
+            render_populated(ui, app_context, identity, state, may_load)
         }
     }
 }
@@ -376,6 +382,7 @@ fn render_populated(
     app_context: &Arc<AppContext>,
     identity: &QualifiedIdentity,
     state: &mut ContactsState,
+    may_load: bool,
 ) -> AppAction {
     state.reconcile_owner(identity);
     let dark_mode = ui.ctx().global_style().visuals.dark_mode;
@@ -395,7 +402,7 @@ fn render_populated(
     // load dispatched alongside a click would swallow one of the two. The load
     // guard is untouched until it actually dispatches, so it simply goes out on
     // the next paint.
-    if matches!(action, AppAction::None) {
+    if may_load && matches!(action, AppAction::None) {
         action = load_action(identity, state);
     }
 
@@ -978,6 +985,36 @@ mod tests {
             !state.begin_request(request),
             "the same request must not be acted on a second time"
         );
+    }
+
+    /// A frame whose action is already taken elsewhere on the screen keeps the
+    /// load for a later frame instead of spending it.
+    #[test]
+    fn a_frame_taken_elsewhere_does_not_spend_the_contact_load() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let app_context = crate::context::test_support::test_app_context(dir.path());
+        let identity = qualified_identity(id(1));
+        let mut harness = egui_kittest::Harness::builder().build_ui_state(
+            move |ui, state: &mut (ContactsState, bool, Vec<AppAction>)| {
+                let action = render_populated(ui, &app_context, &identity, &mut state.0, state.1);
+                state.2.push(action);
+            },
+            (ContactsState::default(), false, Vec::new()),
+        );
+        harness.run();
+        assert!(
+            harness
+                .state()
+                .2
+                .iter()
+                .all(|action| matches!(action, AppAction::None)),
+            "no load may go out while the frame belongs to something else"
+        );
+
+        harness.state_mut().1 = true;
+        harness.step();
+        let load = harness.state_mut().2.pop().expect("a rendered frame");
+        assert_eq!(load_owner_ids(load), [id(1), id(1)]);
     }
 
     #[test]

@@ -637,8 +637,14 @@ fn mount_home(app_context: Arc<AppContext>) -> Harness<'static, HomeHarnessState
                 let mut pending = Vec::new();
                 let (header, _) =
                     home::render_header(ui, &app_context, &mut state.1, &mut state.3, &mut pending);
-                let (mut action, _) =
-                    home::render(ui, &app_context, &mut state.0, &mut state.1, &mut state.4);
+                let (mut action, _) = home::render(
+                    ui,
+                    &app_context,
+                    &mut state.0,
+                    &mut state.1,
+                    &mut state.4,
+                    matches!(header, AppAction::None),
+                );
                 action |= header;
                 if !matches!(action, AppAction::None) {
                     state.2 = Some(action);

@@ -133,7 +133,7 @@ fn contacts_tab_follows_an_identity_selected_outside_the_hub() {
             .with_size(egui::vec2(960.0, 720.0))
             .build_ui_state(
                 move |ui, state: &mut (ContactsState, ProfileCache)| {
-                    let _ = contacts::render(ui, &render_context, &mut state.0, &mut state.1);
+                    let _ = contacts::render(ui, &render_context, &mut state.0, &mut state.1, true);
                 },
                 (ContactsState::default(), profiles),
             );

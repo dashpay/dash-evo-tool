@@ -23,7 +23,7 @@ use egui_kittest::kittest::{NodeT, Queryable};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-fn key(id: KeyID, purpose: Purpose) -> IdentityPublicKey {
+pub(crate) fn key(id: KeyID, purpose: Purpose) -> IdentityPublicKey {
     let mut key = IdentityPublicKey::random_key(id, Some(id as u64), PlatformVersion::latest());
     key.set_id(id);
     key.set_purpose(purpose);
@@ -112,8 +112,14 @@ fn mount_home(app_context: Arc<AppContext>) -> Harness<'static, HomeHarnessState
                 let mut pending = Vec::new();
                 let (header_action, header_outcome) =
                     home::render_header(ui, &app_context, &mut state.1, &mut state.3, &mut pending);
-                let mut result =
-                    home::render(ui, &app_context, &mut state.0, &mut state.1, &mut state.4);
+                let mut result = home::render(
+                    ui,
+                    &app_context,
+                    &mut state.0,
+                    &mut state.1,
+                    &mut state.4,
+                    matches!(header_action, AppAction::None),
+                );
                 result.0 |= header_action;
                 if header_outcome != HomeOutcome::None {
                     result.1 = header_outcome;

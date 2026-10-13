@@ -65,7 +65,7 @@ pub(crate) fn clear_profile_saving_banner(ctx: &egui::Context, identity_id: &Ide
     ctx.data_mut(|data| data.remove::<Identifier>(Id::new(PROFILE_SAVING_OWNER_ID)));
 }
 /// Guidance for updating the profile photo by URL.
-const AVATAR_URL_HINT: &str = "Paste a direct link to a public image, then choose \"Save social profile\" to update your photo. A square JPEG, PNG, WebP, or GIF of at least 256×256 pixels is recommended.";
+const AVATAR_URL_HINT: &str = "Paste a direct link to a public image, then choose \"Save social profile\" to update your photo. A square JPEG or PNG of at least 256×256 pixels is recommended.";
 const TIP_SAVE_NO_CHANGES: &str = "There are no changes to save.";
 const TIP_SAVE_INVALID: &str = "Fix the highlighted fields before saving.";
 const TIP_DELETE_PROFILE: &str = "Remove the display name, bio, and avatar from DashPay. Your identity, usernames, and \

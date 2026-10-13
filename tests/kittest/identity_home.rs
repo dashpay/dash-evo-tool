@@ -112,20 +112,18 @@ fn mount_home(app_context: Arc<AppContext>) -> Harness<'static, HomeHarnessState
                 let mut pending = Vec::new();
                 let (header_action, header_outcome) =
                     home::render_header(ui, &app_context, &mut state.1, &mut state.3, &mut pending);
-                let mut result = home::render(
-                    ui,
-                    &app_context,
-                    &mut state.0,
-                    &mut state.1,
-                    &mut state.4,
-                    matches!(header_action, AppAction::None),
-                );
+                let mut result =
+                    home::render(ui, &app_context, &mut state.0, &mut state.1, &mut state.4);
                 result.0 |= header_action;
                 if header_outcome != HomeOutcome::None {
                     result.1 = header_outcome;
                 }
                 if let Some(task) = pending.pop() {
                     result.0 = AppAction::BackendTask(task);
+                }
+                // As in the hub, a load goes out only on a frame nothing else took.
+                if matches!(result.0, AppAction::None) {
+                    result.0 = home::load_action(&app_context, &mut state.0, &mut state.4);
                 }
                 // `Harness::run`/`step` internally renders extra idle frames
                 // (it loops until no immediate repaint is pending), and

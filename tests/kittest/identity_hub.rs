@@ -69,6 +69,7 @@ mod loads {
     use dash_evo_tool::ui::{RootScreenType, ScreenLike};
     use dash_sdk::dpp::identity::Purpose;
     use dash_sdk::platform::Identifier;
+    use egui::accesskit::Role;
     use egui_kittest::Harness;
     use egui_kittest::kittest::Queryable;
     use std::sync::Arc;
@@ -136,17 +137,34 @@ mod loads {
         }
     }
 
+    /// Clicks `label` in the very next frame and hands over what that frame
+    /// returned.
+    fn click_in_one_frame(hub: &mut HubHarness, label: &str) -> Vec<AppAction> {
+        hub.state_mut().1.clear();
+        hub.get_by_role_and_label(Role::Button, label)
+            .click_accesskit();
+        hub.step();
+        std::mem::take(&mut hub.state_mut().1)
+    }
+
     /// Clicks the header's `Move to wallet` in the very next frame, which must
     /// return nothing but the screen it opens.
     fn click_move_to_wallet(hub: &mut HubHarness) {
-        hub.state_mut().1.clear();
-        hub.get_by_label("Move to wallet").click_accesskit();
-        hub.step();
+        let actions = click_in_one_frame(hub, "Move to wallet");
         assert!(
-            matches!(hub.state().1.as_slice(), [AppAction::AddScreen(_)]),
-            "the click must open the Move to wallet screen, got {:?}",
-            hub.state().1
+            matches!(actions.as_slice(), [AppAction::AddScreen(_)]),
+            "the click must open the Move to wallet screen, got {actions:?}"
         );
+    }
+
+    /// The hub with both of Home's loads already sent, then re-armed the way a
+    /// refresh re-arms them: the contact load is due on the next frame.
+    fn hub_with_loads_due(app_context: &Arc<AppContext>) -> HubHarness {
+        let mut hub = mount_hub(app_context);
+        step_until(&mut hub, "the first contact load", contacts_load);
+        step_until(&mut hub, "the first payment history load", payments_load);
+        hub.state_mut().0.refresh();
+        hub
     }
 
     fn seed_identity_that_can_move_funds(app_context: &Arc<AppContext>) -> Identifier {
@@ -163,12 +181,7 @@ mod loads {
         with_isolated_data_dir(|| {
             let (_runtime, app_context) = fresh_app_context();
             seed_identity_that_can_move_funds(&app_context);
-            let mut hub = mount_hub(&app_context);
-            step_until(&mut hub, "the first contact load", contacts_load);
-            step_until(&mut hub, "the first payment history load", payments_load);
-
-            // A refresh re-arms both loads; the contact load is due next frame.
-            hub.state_mut().0.refresh();
+            let mut hub = hub_with_loads_due(&app_context);
             click_move_to_wallet(&mut hub);
             step_until(&mut hub, "the contact load after the click", contacts_load);
 
@@ -179,6 +192,157 @@ mod loads {
                 "the payment history load after the click",
                 payments_load,
             );
+        });
+    }
+
+    /// A sidebar click on the frame a load is due must still navigate: an
+    /// automatic load never takes a frame the user has claimed.
+    #[test]
+    fn a_sidebar_click_is_not_replaced_by_the_load_due_on_its_frame() {
+        with_isolated_data_dir(|| {
+            let (_runtime, app_context) = fresh_app_context();
+            seed_identity_that_can_move_funds(&app_context);
+            let mut hub = hub_with_loads_due(&app_context);
+
+            let actions = click_in_one_frame(&mut hub, "Wallets");
+            assert!(
+                matches!(
+                    actions.as_slice(),
+                    [
+                        AppAction::SetMainScreen(RootScreenType::RootScreenWalletsBalances)
+                            | AppAction::SetMainScreenThenGoToMainScreen(
+                                RootScreenType::RootScreenWalletsBalances
+                            )
+                    ]
+                ),
+                "the click must open Wallets, got {actions:?}"
+            );
+            step_until(&mut hub, "the contact load after the click", contacts_load);
+            step_until(&mut hub, "the payment history load after it", payments_load);
+        });
+    }
+
+    /// The breadcrumb's add-identity entries are applied after the tab has
+    /// rendered. Opening one on the frame a load is due must not spend the load.
+    #[test]
+    fn a_breadcrumb_add_does_not_swallow_the_load_due_on_its_frame() {
+        with_isolated_data_dir(|| {
+            let (_runtime, app_context) = fresh_app_context();
+            seed_identity_that_can_move_funds(&app_context);
+            let mut hub = mount_hub(&app_context);
+            // The breadcrumb's identity crumb opens the menu with the add entries.
+            let identity = app_context.resolve_selected_identity().expect("identity");
+            let crumb = app_context.identity_display_label(&identity);
+            hub.get_by_role_and_label(Role::Link, &crumb).click();
+            hub.run();
+            step_until(&mut hub, "the first contact load", contacts_load);
+            step_until(&mut hub, "the first payment history load", payments_load);
+            hub.state_mut().0.refresh();
+
+            let actions = click_in_one_frame(&mut hub, "Load an existing identity");
+            assert!(
+                matches!(actions.as_slice(), [AppAction::AddScreen(_)]),
+                "the click must open the load-identity screen, got {actions:?}"
+            );
+            step_until(&mut hub, "the contact load after the click", contacts_load);
+            step_until(&mut hub, "the payment history load after it", payments_load);
+        });
+    }
+
+    /// Choosing another identity in the breadcrumb is applied after the tab has
+    /// rendered, on the frame that then asks for the loads. The new identity's
+    /// lists must be asked for once, not again when its Home first renders.
+    #[test]
+    fn switching_identity_in_the_breadcrumb_loads_the_new_identity_once() {
+        use crate::identity_home::seed_identity_with_id;
+        use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+        with_isolated_data_dir(|| {
+            let (_runtime, app_context) = fresh_app_context();
+            let second = seed_identity_with_id(&app_context, 0xB6, vec![], vec![]);
+            let shown = seed_identity_that_can_move_funds(&app_context);
+            let label_of = |identity: &Identifier| {
+                let identity = app_context
+                    .get_identity_by_id(identity)
+                    .expect("identity store")
+                    .expect("seeded identity");
+                app_context.identity_display_label(&identity)
+            };
+            let mut hub = mount_hub(&app_context);
+            hub.get_by_role_and_label(Role::Link, &label_of(&shown))
+                .click();
+            hub.run();
+            step_until(&mut hub, "the first contact load", contacts_load);
+            step_until(&mut hub, "the first payment history load", payments_load);
+
+            let load = |action: &AppAction| match action {
+                AppAction::BackendTasks(tasks, _) => tasks.iter().find_map(|task| match task {
+                    BackendTask::DashPayTask(task) => match &**task {
+                        DashPayTask::LoadContacts { identity } => {
+                            Some(("contacts", identity.identity.id()))
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                }),
+                AppAction::BackendTaskWithContext {
+                    task: BackendTask::DashPayTask(task),
+                    ..
+                } => match &**task {
+                    DashPayTask::LoadPaymentHistory { identity } => {
+                        Some(("payments", identity.identity.id()))
+                    }
+                    _ => None,
+                },
+                _ => None,
+            };
+            hub.state_mut().1.clear();
+            hub.get_by_role_and_label(Role::Button, &label_of(&second))
+                .click_accesskit();
+            hub.step();
+            assert_eq!(
+                step_until(&mut hub, "the first load after the switch", load),
+                ("contacts", second)
+            );
+            assert_eq!(
+                step_until(&mut hub, "the load after it", load),
+                ("payments", second),
+                "the contact lists must be asked for once"
+            );
+        });
+    }
+
+    /// The Contacts tab's own load is settled in the same place as Home's: it
+    /// goes out once the tab is populated, on a frame nothing else took.
+    #[test]
+    fn the_contacts_tab_load_goes_out_once_its_tab_is_populated() {
+        use dash_evo_tool::model::dashpay::ProfileSnapshot;
+        use dash_evo_tool::ui::identity::IdentityHubTab;
+        with_isolated_data_dir(|| {
+            let (_runtime, app_context) = fresh_app_context();
+            let owner = seed_identity_that_can_move_funds(&app_context);
+            let mut hub = mount_hub(&app_context);
+            hub.state_mut().0.select_tab(IdentityHubTab::Contacts);
+            hub.state_mut().0.refresh();
+            hub.state_mut().1.clear();
+
+            // Without a social profile the tab is gated; the hub asks for one.
+            let profile_request = step_until(&mut hub, "the profile load", |action| match action {
+                AppAction::BackendTaskWithContext {
+                    task: BackendTask::DashPayTask(task),
+                    context,
+                } if matches!(**task, DashPayTask::LoadProfile { .. }) => Some(context.clone()),
+                _ => None,
+            });
+            hub.state_mut().0.display_backend_task_result(
+                &profile_request,
+                BackendTaskSuccessResult::DashPayProfile(ProfileSnapshot {
+                    network: app_context.network(),
+                    owner,
+                    revision: app_context.identity_profile_revision(owner),
+                    profile: Some(("Alex".into(), String::new(), String::new())),
+                }),
+            );
+            step_until(&mut hub, "the Contacts tab's load", contacts_load);
         });
     }
 

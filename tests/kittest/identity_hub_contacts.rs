@@ -133,7 +133,7 @@ fn contacts_tab_follows_an_identity_selected_outside_the_hub() {
             .with_size(egui::vec2(960.0, 720.0))
             .build_ui_state(
                 move |ui, state: &mut (ContactsState, ProfileCache)| {
-                    let _ = contacts::render(ui, &render_context, &mut state.0, &mut state.1, true);
+                    let _ = contacts::render(ui, &render_context, &mut state.0, &mut state.1);
                 },
                 (ContactsState::default(), profiles),
             );
@@ -159,5 +159,50 @@ fn contacts_tab_follows_an_identity_selected_outside_the_hub() {
             "one identity's contacts must never be listed under another"
         );
         assert_eq!(harness.state().0.contacts_len(), 0);
+    });
+}
+
+/// The tab's load is asked for separately from rendering. A gated tab has
+/// nothing to load; a populated one loads its two lists once.
+#[test]
+fn contacts_tab_load_is_for_a_populated_tab_and_goes_out_once() {
+    use crate::identity_home::seed_identity;
+    use crate::support::{fresh_app_context, with_isolated_data_dir};
+    use dash_evo_tool::app::AppAction;
+    use dash_evo_tool::ui::identity::profile_cache::{ProfileCache, ProfileFields};
+    use dash_evo_tool::ui::state::contacts_view::ContactsState;
+
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let identity = seed_identity(&app_context, vec![], vec![]);
+        let mut state = ContactsState::default();
+        let mut profiles = ProfileCache::default();
+        assert!(
+            matches!(
+                contacts::tab_load_action(&app_context, &mut state, &mut profiles),
+                AppAction::None
+            ),
+            "a tab gated on a missing social profile must not load contacts"
+        );
+
+        profiles.record_saved(
+            identity,
+            ProfileFields {
+                display_name: "Alex".into(),
+                ..Default::default()
+            },
+        );
+        let load = contacts::tab_load_action(&app_context, &mut state, &mut profiles);
+        assert!(
+            matches!(&load, AppAction::BackendTasks(tasks, _) if tasks.len() == 2),
+            "the populated tab loads its contacts and its requests, got {load:?}"
+        );
+        assert!(
+            matches!(
+                contacts::tab_load_action(&app_context, &mut state, &mut profiles),
+                AppAction::None
+            ),
+            "and does not ask for them again"
+        );
     });
 }

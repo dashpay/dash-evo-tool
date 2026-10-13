@@ -98,6 +98,11 @@ impl ContactsState {
         });
     }
 
+    /// Whether the lists have not been asked for since the load was last armed.
+    pub fn load_is_due(&self) -> bool {
+        !self.load_requested
+    }
+
     /// Reset identity-scoped view data while retaining live paid-action guards.
     pub fn reset_for_identity_change(&mut self) {
         self.reset();

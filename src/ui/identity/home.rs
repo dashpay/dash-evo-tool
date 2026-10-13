@@ -191,18 +191,14 @@ fn summary_balance(
     });
 }
 
-/// Home content below the identity summary and tabs.
-///
-/// `may_load` is false on a frame whose action the caller already has from
-/// elsewhere on the screen: a load returned then would be replaced after
-/// claiming its one dispatch slot, and never go out.
+/// Home content below the identity summary and tabs. Its data loads are not
+/// part of rendering: see [`load_action`].
 pub fn render(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
     state: &mut HomeState,
     profiles: &mut ProfileCache,
     contacts: &mut ContactsState,
-    may_load: bool,
 ) -> (AppAction, HomeOutcome) {
     let Some(identity) = app_context.resolve_selected_identity() else {
         return (AppAction::None, HomeOutcome::None);
@@ -279,14 +275,34 @@ pub fn render(
     if state.receive_open {
         action |= render_receive(ui, app_context, &identity, state);
     }
-    // Loads only claim their dispatch slots when no user action would be overwritten.
-    if may_load && matches!(action, AppAction::None) {
-        action = super::contacts::load_action(&identity, contacts);
-    }
-    if may_load && matches!(action, AppAction::None) {
-        action = state.load_payments(&identity);
-    }
     (action, outcome)
+}
+
+/// Home's next due load for the selected identity: its contact lists, then its
+/// payment history.
+///
+/// Returning a load claims its one dispatch slot, so the caller must ask only
+/// once nothing else on the screen produced an action this frame, and must
+/// return what it gets: a load that is replaced never goes out again.
+pub fn load_action(
+    app_context: &Arc<AppContext>,
+    state: &mut HomeState,
+    contacts: &mut ContactsState,
+) -> AppAction {
+    if !contacts.load_is_due() && !state.payments_load_is_due() {
+        return AppAction::None;
+    }
+    let Some(identity) = app_context.resolve_selected_identity() else {
+        return AppAction::None;
+    };
+    state.reconcile_owner(&identity);
+    contacts.reconcile_owner(&identity);
+    let action = super::contacts::load_action(&identity, contacts);
+    if matches!(action, AppAction::None) {
+        state.load_payments(&identity)
+    } else {
+        action
+    }
 }
 
 fn render_main_column(

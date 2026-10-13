@@ -41,6 +41,11 @@ impl HomeState {
         self.pending_payments = None;
     }
 
+    /// Whether the payment history has not been asked for since its last refresh.
+    pub fn payments_load_is_due(&self) -> bool {
+        !self.requested_payments
+    }
+
     /// Request once per arrival; the dispatch identity rejects late results after switching.
     pub fn load_payments(&mut self, identity: &QualifiedIdentity) -> AppAction {
         if self.requested_payments {

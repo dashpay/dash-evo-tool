@@ -270,21 +270,39 @@ pub fn unhide_task(identity: QualifiedIdentity, contact: &ContactData) -> DashPa
 /// identity is loaded, or the active identity has no DashPay profile, the gated
 /// state is rendered.
 ///
-/// The caller owns a [`ContactsState`] so the populated shell only dispatches
-/// its backend tasks once per tab entry — not once per paint.
-///
-/// `may_load` is false on a frame whose action the caller already has from
-/// elsewhere on the screen: a load returned then would be replaced after
-/// claiming its one dispatch slot, and never go out.
+/// The caller owns the [`ContactsState`]. The tab's data load is not part of
+/// rendering: see [`tab_load_action`].
 pub fn render(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
     state: &mut ContactsState,
     profiles: &mut super::profile_cache::ProfileCache,
-    may_load: bool,
 ) -> AppAction {
     let tab_state = ContactsTabState::resolve(app_context, profiles);
-    render_state(ui, app_context, &tab_state, state, may_load)
+    render_state(ui, app_context, &tab_state, state)
+}
+
+/// The populated Contacts tab's load, when it is due: the contact list and the
+/// request lists of the identity the tab shows. A gated tab loads nothing.
+///
+/// Returning the load claims its one dispatch slot, so the caller must ask only
+/// once nothing else on the screen produced an action this frame, and must
+/// return what it gets: a load that is replaced never goes out again.
+pub fn tab_load_action(
+    app_context: &Arc<AppContext>,
+    state: &mut ContactsState,
+    profiles: &mut super::profile_cache::ProfileCache,
+) -> AppAction {
+    if !state.load_is_due() {
+        return AppAction::None;
+    }
+    match ContactsTabState::resolve(app_context, profiles) {
+        ContactsTabState::Populated { identity } => {
+            state.reconcile_owner(&identity);
+            load_action(&identity, state)
+        }
+        ContactsTabState::Gated { .. } => AppAction::None,
+    }
 }
 
 /// Resolved rendering mode for the Contacts tab.
@@ -338,12 +356,11 @@ fn render_state(
     app_context: &Arc<AppContext>,
     tab_state: &ContactsTabState,
     state: &mut ContactsState,
-    may_load: bool,
 ) -> AppAction {
     match tab_state {
         ContactsTabState::Gated { handle } => render_gated(ui, handle.as_deref()),
         ContactsTabState::Populated { identity } => {
-            render_populated(ui, app_context, identity, state, may_load)
+            render_populated(ui, app_context, identity, state)
         }
     }
 }
@@ -382,7 +399,6 @@ fn render_populated(
     app_context: &Arc<AppContext>,
     identity: &QualifiedIdentity,
     state: &mut ContactsState,
-    may_load: bool,
 ) -> AppAction {
     state.reconcile_owner(identity);
     let dark_mode = ui.ctx().global_style().visuals.dark_mode;
@@ -393,19 +409,6 @@ fn render_populated(
     action |= received_section(ui, app_context, identity, state, dark_mode);
     action |= active_section(ui, app_context, identity, state, dark_mode);
     action |= sent_section(ui, app_context, identity, state, dark_mode);
-
-    // Fire LoadContacts + LoadContactRequests once per tab entry. The hub
-    // resets the guard in `refresh_on_arrival()` so a tab switch or explicit
-    // refresh triggers another load.
-    //
-    // Only when nothing else claimed this frame: `|=` is last-writer-wins, so a
-    // load dispatched alongside a click would swallow one of the two. The load
-    // guard is untouched until it actually dispatches, so it simply goes out on
-    // the next paint.
-    if may_load && matches!(action, AppAction::None) {
-        action = load_action(identity, state);
-    }
-
     action
 }
 
@@ -985,36 +988,6 @@ mod tests {
             !state.begin_request(request),
             "the same request must not be acted on a second time"
         );
-    }
-
-    /// A frame whose action is already taken elsewhere on the screen keeps the
-    /// load for a later frame instead of spending it.
-    #[test]
-    fn a_frame_taken_elsewhere_does_not_spend_the_contact_load() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let app_context = crate::context::test_support::test_app_context(dir.path());
-        let identity = qualified_identity(id(1));
-        let mut harness = egui_kittest::Harness::builder().build_ui_state(
-            move |ui, state: &mut (ContactsState, bool, Vec<AppAction>)| {
-                let action = render_populated(ui, &app_context, &identity, &mut state.0, state.1);
-                state.2.push(action);
-            },
-            (ContactsState::default(), false, Vec::new()),
-        );
-        harness.run();
-        assert!(
-            harness
-                .state()
-                .2
-                .iter()
-                .all(|action| matches!(action, AppAction::None)),
-            "no load may go out while the frame belongs to something else"
-        );
-
-        harness.state_mut().1 = true;
-        harness.step();
-        let load = harness.state_mut().2.pop().expect("a rendered frame");
-        assert_eq!(load_owner_ids(load), [id(1), id(1)]);
     }
 
     #[test]

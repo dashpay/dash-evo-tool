@@ -664,7 +664,6 @@ impl KeyStorage {
     /// Names a placement directly, so it answers "is *this* slot occupied", not
     /// "where is this key". Prefer [`candidates`](Self::candidates) for the
     /// latter: this cannot tell a key from a different one sharing its id.
-    #[cfg(test)]
     pub(crate) fn entry_at(
         &self,
         key: &(PrivateKeyTarget, KeyID),

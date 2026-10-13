@@ -1353,8 +1353,8 @@ impl QualifiedIdentity {
     ///
     /// `requested` is the caller's explicit key choice, or `None` to take the
     /// usable key with the lowest id. A key is usable when `self.identity`
-    /// lists it as an active `TRANSFER` key and this app holds its private
-    /// half — the signer's own [`Signer::can_sign_with`] test.
+    /// lists it as an active `TRANSFER` key and this device can obtain its
+    /// private half ([`holds_obtainable_key`](Self::holds_obtainable_key)).
     ///
     /// An explicit `requested` id that is unknown, disabled, or not locally
     /// signable is rejected — never silently replaced with a different key.
@@ -1366,7 +1366,9 @@ impl QualifiedIdentity {
         requested: Option<KeyID>,
     ) -> Result<KeyID, NoUsableTransferKey> {
         let usable = |key: &&IdentityPublicKey| {
-            key.purpose() == Purpose::TRANSFER && !key.is_disabled() && self.can_sign_with(key)
+            key.purpose() == Purpose::TRANSFER
+                && !key.is_disabled()
+                && self.holds_obtainable_key(key)
         };
         match requested {
             Some(requested_id) => self
@@ -1377,6 +1379,43 @@ impl QualifiedIdentity {
         }
         .map(|key| key.id())
         .ok_or(NoUsableTransferKey)
+    }
+
+    /// Whether the private half behind a held key entry can be obtained on this
+    /// device. A key kept as a reference into a wallet needs that wallet here. A
+    /// locked wallet and a vault or password-protected key count as obtainable:
+    /// the app asks for what they need when it signs.
+    ///
+    /// Reads which wallets are on this device from `associated_wallets`, so the
+    /// record must be one read from the store, not a bare decoded blob.
+    pub(crate) fn key_secret_is_obtainable(
+        &self,
+        data: &encrypted_key_storage::PrivateKeyData,
+    ) -> bool {
+        use encrypted_key_storage::PrivateKeyData;
+        match data {
+            PrivateKeyData::AtWalletDerivationPath(path) => {
+                self.associated_wallets.contains_key(&path.wallet_seed_hash)
+            }
+            PrivateKeyData::AlwaysClear(_) | PrivateKeyData::Clear(_) | PrivateKeyData::InVault => {
+                true
+            }
+            // TODO(legacy-encrypted-key-gate): this version cannot open the legacy
+            // per-key envelope either, so such a key fails at signing; it needs its
+            // own status and guidance before it can be reported here.
+            PrivateKeyData::Encrypted(_) => true,
+        }
+    }
+
+    /// Whether this device holds `key` under a placement whose private half it
+    /// can obtain. Stricter than [`Signer::can_sign_with`], which also accepts a
+    /// key that only refers to a wallet this device does not hold.
+    fn holds_obtainable_key(&self, key: &IdentityPublicKey) -> bool {
+        self.private_keys.candidates(key).any(|placement| {
+            self.private_keys
+                .entry_at(&placement)
+                .is_some_and(|(_, data)| self.key_secret_is_obtainable(data))
+        })
     }
 
     pub fn available_transfer_keys(&self) -> Vec<&QualifiedIdentityPublicKey> {
@@ -2828,6 +2867,47 @@ pub(crate) mod withdrawal_key_tests {
             vec![imported],
         );
         assert_eq!(qi.resolve_transfer_signing_key(None), Ok(5));
+    }
+
+    /// A key held only as a reference into a wallet needs that wallet on this
+    /// device: without it nothing here can produce the private half, so a later
+    /// key whose material is here must sign instead.
+    #[test]
+    fn transfer_key_resolution_skips_a_key_whose_wallet_is_not_on_this_device() {
+        let from_missing_wallet = key(1, Purpose::TRANSFER);
+        let imported = key(2, Purpose::TRANSFER);
+        let mut qi = build_identity(
+            IdentityType::User,
+            vec![from_missing_wallet, imported.clone()],
+            vec![imported],
+        );
+        crate::context::test_support::hold_as_wallet_reference(&mut qi, 1, [0x5A; 32]);
+        assert_eq!(qi.resolve_transfer_signing_key(None), Ok(2));
+        assert_eq!(
+            qi.resolve_transfer_signing_key(Some(1)),
+            Err(NoUsableTransferKey),
+            "an explicit choice of the key without its wallet is refused, not replaced"
+        );
+    }
+
+    /// The wallet only has to be on this device. A locked one still counts: the
+    /// app asks for its password when it signs.
+    #[test]
+    fn transfer_key_resolution_uses_a_wallet_key_once_its_wallet_is_on_this_device() {
+        let mut wallet = crate::model::wallet::test_support::open_wallet();
+        let seed_hash = wallet.seed_hash();
+        let mut qi = build_identity(IdentityType::User, vec![key(1, Purpose::TRANSFER)], vec![]);
+        crate::context::test_support::hold_as_wallet_reference(&mut qi, 1, seed_hash);
+        assert_eq!(
+            qi.resolve_transfer_signing_key(None),
+            Err(NoUsableTransferKey)
+        );
+
+        wallet.wallet_seed.close();
+        assert!(!wallet.is_open(), "the fixture wallet must be locked");
+        qi.associated_wallets
+            .insert(seed_hash, Arc::new(RwLock::new(wallet)));
+        assert_eq!(qi.resolve_transfer_signing_key(None), Ok(1));
     }
 
     /// A key disabled on the network after its private half was stored here is

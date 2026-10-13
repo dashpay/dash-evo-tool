@@ -5675,6 +5675,47 @@ mod tests {
         }
     }
 
+    /// A transfer key kept only as a reference into a wallet this device does
+    /// not hold cannot sign. The form must pass over it for a key it can use,
+    /// and refuse before the confirmation when it is the only one.
+    #[test]
+    fn identity_send_passes_over_a_transfer_key_whose_wallet_is_not_on_this_device() {
+        use crate::context::test_support::hold_as_wallet_reference;
+        use crate::model::qualified_identity::withdrawal_key_tests::key;
+        use dash_sdk::dpp::identity::Purpose;
+        let (ctx, _dir) = offline_ctx();
+        let from_missing_wallet = key(1, Purpose::TRANSFER);
+        let imported = key(2, Purpose::TRANSFER);
+
+        let mut sender = sender_with_keys(
+            vec![from_missing_wallet.clone(), imported.clone()],
+            vec![imported],
+        );
+        hold_as_wallet_reference(&mut sender, 1, [0x5A; 32]);
+        let mut screen = WalletSendScreen::for_identity(&ctx, sender, IdentitySendMode::Send);
+        screen.amount = Some(Amount::new_dash(0.01));
+        for destination in [identity_destination(), platform_destination()] {
+            assert_eq!(
+                dispatched_transfer_key(&mut screen, destination),
+                Some(2),
+                "the key whose material is on this device must sign"
+            );
+        }
+
+        let mut sender = sender_with_keys(vec![from_missing_wallet], vec![]);
+        hold_as_wallet_reference(&mut sender, 1, [0x5A; 32]);
+        let mut screen = WalletSendScreen::for_identity(&ctx, sender, IdentitySendMode::Send);
+        screen.amount = Some(Amount::new_dash(0.01));
+        for destination in [identity_destination(), platform_destination()] {
+            screen.validated_destination = Some(destination);
+            assert_eq!(
+                screen.validate_and_send().err(),
+                Some(TaskError::NoUsableTransferKey.to_string()),
+                "a transfer only a missing wallet could sign must not reach the confirmation"
+            );
+        }
+    }
+
     fn asset_lock_request_id(task: Option<BackendTask>) -> u64 {
         match task {
             Some(BackendTask::WalletTask(WalletTask::GetAssetLockMaxAmount {

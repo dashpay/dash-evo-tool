@@ -202,6 +202,7 @@ pub fn render(
     let Some(identity) = app_context.resolve_selected_identity() else {
         return (AppAction::None, HomeOutcome::None);
     };
+    state.reconcile_owner(&identity);
     let mut action = AppAction::None;
     let mut outcome = HomeOutcome::None;
     let has_profile = profiles

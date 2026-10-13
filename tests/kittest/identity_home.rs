@@ -36,9 +36,19 @@ fn seed_identity(
     on_chain: Vec<IdentityPublicKey>,
     with_private: Vec<IdentityPublicKey>,
 ) -> Identifier {
+    seed_identity_with_id(app_context, 0xA5, on_chain, with_private)
+}
+
+/// Seeds an identity whose ID repeats `id_byte` and selects it.
+fn seed_identity_with_id(
+    app_context: &Arc<AppContext>,
+    id_byte: u8,
+    on_chain: Vec<IdentityPublicKey>,
+    with_private: Vec<IdentityPublicKey>,
+) -> Identifier {
     let public_keys = on_chain.into_iter().map(|key| (key.id(), key)).collect();
     let identity = Identity::new_with_id_and_keys(
-        Identifier::from([0xA5; 32]),
+        Identifier::from([id_byte; 32]),
         public_keys,
         PlatformVersion::latest(),
     )
@@ -543,6 +553,122 @@ fn home_payment_preview_rejects_stale_dispatches() {
         assert!(
             state.payments.is_empty(),
             "switching identities discards the old preview"
+        );
+    });
+}
+
+/// One recorded payment for the selected identity, loaded the way an arrival
+/// refresh loads it.
+fn record_one_payment(harness: &mut Harness<'static, HomeHarnessState>, app_context: &AppContext) {
+    use dash_evo_tool::backend_task::BackendTaskSuccessResult;
+    let identity = app_context.resolve_selected_identity().expect("identity");
+    let state = &mut harness.state_mut().0;
+    state.refresh_payments();
+    let AppAction::BackendTaskWithContext { context, .. } = state.load_payments(&identity) else {
+        panic!("payment load");
+    };
+    state.record_payments(
+        &context,
+        &BackendTaskSuccessResult::DashPayPaymentHistory(vec![(
+            String::new(),
+            "Alice".into(),
+            1_000,
+            true,
+            String::new(),
+        )]),
+    );
+}
+
+#[test]
+fn home_payments_follow_an_identity_selected_outside_the_hub() {
+    use dash_evo_tool::backend_task::dashpay::DashPayTask;
+    use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let second = seed_identity_with_id(&app_context, 0xB6, vec![], vec![]);
+        let first = seed_identity(&app_context, vec![], vec![]);
+        let mut harness = mount_home(app_context.clone());
+        record_one_payment(&mut harness, &app_context);
+        let first_request = {
+            let state = &mut harness.state_mut().0;
+            state.refresh_payments();
+            let identity = app_context.resolve_selected_identity().expect("identity");
+            assert_eq!(identity.identity.id(), first);
+            let AppAction::BackendTaskWithContext { context, .. } = state.load_payments(&identity)
+            else {
+                panic!("payment load");
+            };
+            context
+        };
+        harness.run();
+        assert!(harness.query_by_label("Recent payments").is_some());
+
+        // Another screen's identity selector changes the selection and returns
+        // without refreshing the hub; the same `HomeState` keeps rendering.
+        app_context.set_selected_identity(Some(second));
+        harness.state_mut().2 = None;
+        harness.run();
+
+        assert!(
+            harness.query_by_label("Recent payments").is_none(),
+            "one identity's payments must never be shown under another"
+        );
+        let second_request = match harness.state().2.as_ref().map(|(action, _)| action) {
+            Some(AppAction::BackendTaskWithContext {
+                task: BackendTask::DashPayTask(task),
+                context,
+            }) => match &**task {
+                DashPayTask::LoadPaymentHistory { identity } => {
+                    assert_eq!(identity.identity.id(), second);
+                    context.clone()
+                }
+                other => panic!("expected a payment history load, got {other:?}"),
+            },
+            other => panic!("the newly selected identity's payments must load, got {other:?}"),
+        };
+
+        let late = BackendTaskSuccessResult::DashPayPaymentHistory(vec![(
+            String::new(),
+            "Alice".into(),
+            1_000,
+            true,
+            String::new(),
+        )]);
+        harness.state_mut().0.record_payments(&first_request, &late);
+        harness.run();
+        assert!(
+            harness.query_by_label("Recent payments").is_none(),
+            "a late answer for the previous identity must be discarded"
+        );
+
+        let current = BackendTaskSuccessResult::DashPayPaymentHistory(vec![(
+            String::new(),
+            "Bob".into(),
+            2_000,
+            false,
+            String::new(),
+        )]);
+        harness
+            .state_mut()
+            .0
+            .record_payments(&second_request, &current);
+        harness.run();
+        assert!(harness.query_by_label("Bob").is_some());
+    });
+}
+
+#[test]
+fn home_payments_survive_a_refresh_for_the_same_identity() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        seed_identity(&app_context, vec![], vec![]);
+        let mut harness = mount_home(app_context.clone());
+        record_one_payment(&mut harness, &app_context);
+        harness.state_mut().0.refresh_payments();
+        harness.run();
+        assert!(
+            harness.query_by_label("Alice").is_some(),
+            "a refresh keeps the preview on screen while it reloads"
         );
     });
 }

@@ -29,11 +29,11 @@ use crate::model::dpns_voting::composer::{
     AggregatePlan, BatchTiming, ComposeError, ComposerNode, Decision, NodeStanding, NodeTiming,
     SkipReason, compose,
 };
-use crate::model::dpns_voting::operator::NodeExclusion;
 use crate::model::dpns_voting::operator::{
     ChangesLeft, NodeSet, ResolvedNodeSet, VotingNode, relative_schedule_preset, time_left,
     vote_proof_can_decide,
 };
+use crate::model::dpns_voting::operator::{NodeExclusion, node_exclusion};
 use crate::model::dpns_voting::progress::needs_attention;
 use crate::model::dpns_voting::{
     DpnsCurrentVoteState, DpnsScheduledVoteKey, DpnsVoteFailure, DpnsVoteOperation,
@@ -49,7 +49,8 @@ use crate::ui::dpns::contest_card::node_label;
 use crate::ui::dpns::contest_card::{CardEvent, CardView};
 use crate::ui::dpns::copy::needs_attention_line;
 use crate::ui::dpns::copy::{
-    CAST_NEEDS_A_DECISION, CLEAR_NEEDS_A_DECISION, NO_VOTING_NODE_HINT, TRAY_NOTHING_PICKED,
+    CAST_NEEDS_A_DECISION, CHANGE_VOTING_NODES_HINT, CLEAR_NEEDS_A_DECISION, NO_VOTING_NODE_HINT,
+    TRAY_NOTHING_PICKED,
 };
 use crate::ui::dpns::copy::{
     JOURNAL_UNAVAILABLE_MESSAGE, LOCKED_FOR_GOOD, NAME_FILTER_LOOKALIKES_HINT, NOT_VOTED_YET,
@@ -1076,6 +1077,7 @@ impl DPNSScreen {
         let durations = contest_durations(network, self.app_context.platform_version());
         let urgency = urgency_window(network);
         let has_voting_nodes = !self.resolved_nodes.included.is_empty();
+        let no_voting_node_hint = self.no_voting_node_hint();
         let matches_filter =
             |card: &VoteCard| filter.is_empty() || card.name().to_lowercase().contains(&filter);
         let listed: Vec<usize> = self
@@ -1143,6 +1145,7 @@ impl DPNSScreen {
                         urgency,
                         durations,
                         has_voting_nodes,
+                        no_voting_node_hint,
                     }
                     .show(ui);
                     events.extend(card_events.into_iter().map(|event| (index, event)));
@@ -1357,11 +1360,22 @@ impl DPNSScreen {
         }
     }
 
+    /// What to do when none of the nodes voted with can vote: pick other
+    /// nodes if a loaded one can, load one otherwise.
+    fn no_voting_node_hint(&self) -> &'static str {
+        let can_vote = |node: &VotingNode| node_exclusion(node).is_none();
+        if self.voting_nodes.iter().any(can_vote) {
+            CHANGE_VOTING_NODES_HINT
+        } else {
+            NO_VOTING_NODE_HINT
+        }
+    }
+
     /// Why the tray's Cast cannot be pressed right now, as its hover hint
     /// says it; `None` when it can.
     fn cast_blocked_reason(&self, counts: TrayCounts) -> Option<&'static str> {
         if self.resolved_nodes.included.is_empty() {
-            Some(NO_VOTING_NODE_HINT)
+            Some(self.no_voting_node_hint())
         } else if self.selected_votes.is_empty() {
             Some(CAST_NEEDS_A_DECISION)
         } else if self.pending_vote_operation.is_some() {
@@ -5028,6 +5042,20 @@ mod tests {
         assert_eq!(no_node.cards.len(), 1);
         assert_cast_waits(Arc::new(Mutex::new(no_node)), NO_VOTING_NODE_HINT);
 
+        // A loaded node without a voting key is no reason to pick other nodes.
+        let (wired, _dir, _events) = wired_ctx().await;
+        wired.seed_dpns_contest_for_test("alpha", None, false);
+        wired
+            .insert_local_qualified_identity(
+                &masternode_identity(41, "read-only-node", false, wired.network()),
+                &None,
+            )
+            .unwrap();
+        let mut keyless = DPNSScreen::new(&wired, VotesView::ToDecide);
+        keyless.rebuild_cards();
+        assert_eq!(keyless.voting_nodes.len(), 1, "control: the node is loaded");
+        assert_cast_waits(Arc::new(Mutex::new(keyless)), NO_VOTING_NODE_HINT);
+
         let (submitting, _dir) = two_contest_screen().await;
         {
             let mut screen = submitting.lock_recover();
@@ -5047,6 +5075,42 @@ mod tests {
             Arc::new(Mutex::new(held)),
             "Your nodes already hold these choices. Pick a different decision.",
         );
+    }
+
+    /// A node that can vote is loaded, but the nodes voted with include none
+    /// that can: Cast and the cards' choices ask for another selection, since
+    /// loading a node again would change nothing.
+    #[tokio::test]
+    async fn cast_asks_for_other_nodes_when_the_selection_has_none_that_can_vote() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        for node_set in [NodeSet::Custom(BTreeSet::new()), NodeSet::EvonodesOnly] {
+            let (screen, _dir) = two_contest_screen().await;
+            {
+                let mut screen = screen.lock_recover();
+                assert_eq!(screen.resolved_nodes.included.len(), 1, "control");
+                screen.apply_node_set(node_set.clone());
+                assert!(
+                    screen.resolved_nodes.included.is_empty(),
+                    "control: {node_set:?} must leave out the loaded masternode"
+                );
+            }
+            assert_cast_waits(Arc::clone(&screen), CHANGE_VOTING_NODES_HINT);
+
+            let mut harness = app_styled_harness(egui::vec2(1260.0, 1200.0), move |ui| {
+                screen.lock_recover().ui(ui);
+            });
+            harness
+                .get_all_by_role(Role::RadioButton)
+                .next()
+                .expect("a decision choice")
+                .hover();
+            harness.run();
+            assert!(
+                harness.query_by_label(CHANGE_VOTING_NODES_HINT).is_some(),
+                "{node_set:?}: a greyed-out choice does not ask for another selection"
+            );
+        }
     }
 
     /// VOTE-TC-098: J, 1, J, L, Enter stages both decisions and opens the

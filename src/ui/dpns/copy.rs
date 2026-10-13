@@ -273,8 +273,13 @@ pub const CAST_NEEDS_A_DECISION: &str = "Pick a decision for at least one name, 
 pub const CLEAR_NEEDS_A_DECISION: &str = "There are no picked decisions to clear.";
 
 /// Hover hint of a decision that cannot be made or cast because no loaded
-/// node has a voting key.
+/// node can vote.
 pub const NO_VOTING_NODE_HINT: &str = "Load a masternode with a voting key to vote.";
+
+/// The same hint when a loaded node can vote but is not among the nodes voted
+/// with.
+pub const CHANGE_VOTING_NODES_HINT: &str =
+    "Change the nodes you vote with so that at least one of them can vote.";
 
 /// Tray summary (VOTE-FR-086). With no transaction to send it names the
 /// staged decisions alone.

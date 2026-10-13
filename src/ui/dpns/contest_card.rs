@@ -167,6 +167,8 @@ pub struct CardView<'a> {
     pub urgency: Duration,
     pub durations: ContestDurations,
     pub has_voting_nodes: bool,
+    /// What the choices say on hover while `has_voting_nodes` is false.
+    pub no_voting_node_hint: &'static str,
 }
 
 impl CardView<'_> {
@@ -332,7 +334,7 @@ impl CardView<'_> {
         ui.label(RichText::new("Your decision").strong());
         let enabled = card.accepts_decision();
         let disabled_reason = if !self.has_voting_nodes {
-            copy::NO_VOTING_NODE_HINT
+            self.no_voting_node_hint
         } else if card.in_flight_count() > 0 {
             "These nodes are still sending a vote on this name. Wait for the result."
         } else if card.scheduled_count() > 0 {
@@ -566,6 +568,7 @@ mod tests {
                 join: Duration::from_millis(4_000_000),
             },
             has_voting_nodes: true,
+            no_voting_node_hint: copy::NO_VOTING_NODE_HINT,
         }
     }
 

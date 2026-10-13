@@ -100,3 +100,64 @@ fn it_contacts_01_gated_handles_absent_dpns_handle() {
         "gated Contacts tab must never render the raw `{{handle}}` placeholder"
     );
 }
+
+/// The selected identity can change while another screen is open, without the
+/// hub resetting its contact lists. The tab must then show the new identity's
+/// own lists, never the previous identity's.
+#[test]
+fn contacts_tab_follows_an_identity_selected_outside_the_hub() {
+    use crate::identity_home::{seed_identity, seed_identity_with_id};
+    use crate::support::{fresh_app_context, with_isolated_data_dir};
+    use dash_evo_tool::backend_task::dashpay::ContactData;
+    use dash_evo_tool::ui::identity::profile_cache::{ProfileCache, ProfileFields};
+    use dash_evo_tool::ui::state::contacts_view::ContactsState;
+    use dash_sdk::platform::Identifier;
+
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let second = seed_identity_with_id(&app_context, 0xB6, vec![], vec![]);
+        let first = seed_identity(&app_context, vec![], vec![]);
+        let mut profiles = ProfileCache::default();
+        for identity in [first, second] {
+            profiles.record_saved(
+                identity,
+                ProfileFields {
+                    display_name: "Alex".into(),
+                    ..Default::default()
+                },
+            );
+        }
+        let heading = |count: usize| format!("{} · {count}", contacts::ACTIVE_HEADING_PREFIX);
+        let render_context = app_context.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(960.0, 720.0))
+            .build_ui_state(
+                move |ui, state: &mut (ContactsState, ProfileCache)| {
+                    let _ = contacts::render(ui, &render_context, &mut state.0, &mut state.1);
+                },
+                (ContactsState::default(), profiles),
+            );
+        harness.run();
+        harness.state_mut().0.record_contacts(vec![ContactData {
+            identity_id: Identifier::from([0xD8; 32]),
+            nickname: Some("Bao".into()),
+            note: None,
+            is_hidden: false,
+            account_reference: 0,
+            username: None,
+            display_name: None,
+            avatar_url: None,
+            bio: None,
+        }]);
+        harness.run();
+        assert!(harness.query_by_label(&heading(1)).is_some());
+
+        app_context.set_selected_identity(Some(second));
+        harness.run();
+        assert!(
+            harness.query_by_label(&heading(0)).is_some(),
+            "one identity's contacts must never be listed under another"
+        );
+        assert_eq!(harness.state().0.contacts_len(), 0);
+    });
+}

@@ -377,6 +377,7 @@ fn render_populated(
     identity: &QualifiedIdentity,
     state: &mut ContactsState,
 ) -> AppAction {
+    state.reconcile_owner(identity);
     let dark_mode = ui.ctx().global_style().visuals.dark_mode;
     let mut action = AppAction::None;
 
@@ -886,6 +887,96 @@ mod tests {
             format!("{ACTIVE_HEADING_PREFIX} · {}", state.contacts_len()),
             "Active contacts · 1",
             "the heading count must reflect the loaded contacts, not a hardcoded zero"
+        );
+    }
+
+    fn contact_named(nickname: &str) -> ContactData {
+        ContactData {
+            identity_id: id(5),
+            nickname: Some(nickname.into()),
+            note: None,
+            is_hidden: false,
+            account_reference: 0,
+            username: None,
+            display_name: None,
+            avatar_url: None,
+            bio: None,
+        }
+    }
+
+    fn request_from(
+        request_id: Identifier,
+        sender: Identifier,
+    ) -> (Identifier, dash_sdk::platform::Document) {
+        use dash_sdk::dpp::document::DocumentV0;
+        (
+            request_id,
+            dash_sdk::platform::Document::V0(DocumentV0 {
+                id: request_id,
+                owner_id: sender,
+                ..Default::default()
+            }),
+        )
+    }
+
+    fn load_owner_ids(action: AppAction) -> Vec<Identifier> {
+        let AppAction::BackendTasks(tasks, _) = action else {
+            panic!("expected the contact loads, got {action:?}");
+        };
+        tasks
+            .into_iter()
+            .map(|task| match task {
+                BackendTask::DashPayTask(task) => match *task {
+                    DashPayTask::LoadContacts { identity }
+                    | DashPayTask::LoadContactRequests { identity } => identity.identity.id(),
+                    other => panic!("unexpected task {other:?}"),
+                },
+                other => panic!("unexpected task {other:?}"),
+            })
+            .collect()
+    }
+
+    /// The selection can change without the hub resetting this state. The lists
+    /// must then follow the identity on screen, while an action already paid
+    /// for and still running for the previous identity keeps its guard.
+    #[test]
+    fn lists_follow_the_identity_and_running_request_guards_survive_the_change() {
+        let first = qualified_identity(id(1));
+        let second = qualified_identity(id(2));
+        let request = id(9);
+        let mut state = ContactsState::default();
+
+        state.reconcile_owner(&first);
+        assert_eq!(
+            load_owner_ids(load_action(&first, &mut state)),
+            [id(1), id(1)]
+        );
+        state.record_contacts(vec![contact_named("Bao")]);
+        state.record_requests(vec![request_from(request, id(3))], vec![]);
+        assert!(state.begin_request(request));
+
+        state.reconcile_owner(&first);
+        assert_eq!(state.contacts_len(), 1, "the same identity keeps its lists");
+        assert!(
+            matches!(load_action(&first, &mut state), AppAction::None),
+            "and its load is not dispatched again"
+        );
+
+        state.reconcile_owner(&second);
+        assert_eq!(state.contacts_len(), 0);
+        assert!(state.incoming().is_empty());
+        assert_eq!(
+            load_owner_ids(load_action(&second, &mut state)),
+            [id(2), id(2)],
+            "the lists of the identity on screen must load"
+        );
+        assert!(
+            state.is_in_flight(&request),
+            "the action still running for the previous identity keeps its guard"
+        );
+        assert!(
+            !state.begin_request(request),
+            "the same request must not be acted on a second time"
         );
     }
 

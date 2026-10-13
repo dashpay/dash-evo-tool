@@ -9,7 +9,10 @@
 use crate::backend_task::dashpay::ContactData;
 use crate::model::dashpay::contact_request_recipient;
 use crate::model::identity_name::display_label as profile_display_label;
+use crate::model::qualified_identity::QualifiedIdentity;
+use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::document::DocumentV0Getters;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Document, Identifier};
 use std::collections::HashMap;
@@ -65,6 +68,8 @@ pub struct ContactsState {
     /// A matching task outcome, abandoned confirmation, or reset after
     /// [`REQUEST_IN_FLIGHT_TIMEOUT`] releases the guard.
     in_flight: HashMap<Identifier, Instant>,
+    /// The identity the lists belong to, once a renderer has bound them.
+    owner: Option<(Network, Identifier)>,
 }
 
 impl ContactsState {
@@ -96,6 +101,20 @@ impl ContactsState {
     /// Reset identity-scoped view data while retaining live paid-action guards.
     pub fn reset_for_identity_change(&mut self) {
         self.reset();
+    }
+
+    /// Bind the lists to the identity on screen. The selection can change
+    /// without the hub hearing of it, so every renderer calls this before it
+    /// reads or loads them: lists of another identity are dropped and the load
+    /// re-armed, the same identity keeps its own. Paid-action guards are keyed
+    /// by request, not by identity, and outlive the change — a request both
+    /// identities can see stays guarded while its action runs.
+    pub fn reconcile_owner(&mut self, identity: &QualifiedIdentity) {
+        let owner = Some((identity.network, identity.identity.id()));
+        if self.owner != owner {
+            self.reset_for_identity_change();
+            self.owner = owner;
+        }
     }
 
     /// Re-arm the load without clearing what is already on screen. Used after a

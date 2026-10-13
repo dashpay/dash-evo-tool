@@ -31,7 +31,7 @@ fn key(id: KeyID, purpose: Purpose) -> IdentityPublicKey {
     key
 }
 
-fn seed_identity(
+pub(crate) fn seed_identity(
     app_context: &Arc<AppContext>,
     on_chain: Vec<IdentityPublicKey>,
     with_private: Vec<IdentityPublicKey>,
@@ -40,7 +40,7 @@ fn seed_identity(
 }
 
 /// Seeds an identity whose ID repeats `id_byte` and selects it.
-fn seed_identity_with_id(
+pub(crate) fn seed_identity_with_id(
     app_context: &Arc<AppContext>,
     id_byte: u8,
     on_chain: Vec<IdentityPublicKey>,
@@ -557,6 +557,28 @@ fn home_payment_preview_rejects_stale_dispatches() {
     });
 }
 
+/// Renders one frame at a time until `wanted` recognises the action a frame
+/// produced, so a test does not depend on which frame a load goes out in.
+fn step_until<T>(
+    harness: &mut Harness<'static, HomeHarnessState>,
+    what: &str,
+    wanted: impl Fn(&AppAction) -> Option<T>,
+) -> T {
+    for _ in 0..8 {
+        harness.state_mut().2 = None;
+        harness.step();
+        let found = harness
+            .state()
+            .2
+            .as_ref()
+            .and_then(|(action, _)| wanted(action));
+        if let Some(found) = found {
+            return found;
+        }
+    }
+    panic!("{what} was never dispatched");
+}
+
 /// One recorded payment for the selected identity, loaded the way an arrival
 /// refresh loads it.
 fn record_one_payment(harness: &mut Harness<'static, HomeHarnessState>, app_context: &AppContext) {
@@ -606,26 +628,29 @@ fn home_payments_follow_an_identity_selected_outside_the_hub() {
         // Another screen's identity selector changes the selection and returns
         // without refreshing the hub; the same `HomeState` keeps rendering.
         app_context.set_selected_identity(Some(second));
-        harness.state_mut().2 = None;
+        let second_request = step_until(
+            &mut harness,
+            "the newly selected identity's payment history load",
+            |action| match action {
+                AppAction::BackendTaskWithContext {
+                    task: BackendTask::DashPayTask(task),
+                    context,
+                } => match &**task {
+                    DashPayTask::LoadPaymentHistory { identity }
+                        if identity.identity.id() == second =>
+                    {
+                        Some(context.clone())
+                    }
+                    _ => None,
+                },
+                _ => None,
+            },
+        );
         harness.run();
-
         assert!(
             harness.query_by_label("Recent payments").is_none(),
             "one identity's payments must never be shown under another"
         );
-        let second_request = match harness.state().2.as_ref().map(|(action, _)| action) {
-            Some(AppAction::BackendTaskWithContext {
-                task: BackendTask::DashPayTask(task),
-                context,
-            }) => match &**task {
-                DashPayTask::LoadPaymentHistory { identity } => {
-                    assert_eq!(identity.identity.id(), second);
-                    context.clone()
-                }
-                other => panic!("expected a payment history load, got {other:?}"),
-            },
-            other => panic!("the newly selected identity's payments must load, got {other:?}"),
-        };
 
         let late = BackendTaskSuccessResult::DashPayPaymentHistory(vec![(
             String::new(),
@@ -654,6 +679,110 @@ fn home_payments_follow_an_identity_selected_outside_the_hub() {
             .record_payments(&second_request, &current);
         harness.run();
         assert!(harness.query_by_label("Bob").is_some());
+    });
+}
+
+#[test]
+fn home_contacts_follow_an_identity_selected_outside_the_hub() {
+    use dash_evo_tool::backend_task::BackendTask;
+    use dash_evo_tool::backend_task::dashpay::{ContactData, DashPayTask};
+    use dash_sdk::dpp::document::{Document, DocumentV0};
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let second = seed_identity_with_id(&app_context, 0xB6, vec![], vec![]);
+        let first = seed_identity(&app_context, vec![], vec![]);
+        // A request the first identity sent to the second: one document, listed
+        // as sent for one identity and as received for the other.
+        let request = Identifier::from([0xC7; 32]);
+        let incoming_for_second = vec![(
+            request,
+            Document::V0(DocumentV0 {
+                id: request,
+                owner_id: first,
+                ..Default::default()
+            }),
+        )];
+        let mut harness = mount_home(app_context.clone());
+        {
+            let contacts = &mut harness.state_mut().4;
+            contacts.record_contacts(vec![ContactData {
+                identity_id: Identifier::from([0xD8; 32]),
+                nickname: Some("Bao".into()),
+                note: None,
+                is_hidden: false,
+                account_reference: 0,
+                username: None,
+                display_name: None,
+                avatar_url: None,
+                bio: None,
+            }]);
+            // The first identity withdraws that request; the paid action runs.
+            assert!(contacts.begin_request(request));
+        }
+        harness.run();
+        assert!(harness.query_by_label("Bao").is_some());
+
+        // Another screen's identity selector changes the selection and returns
+        // without refreshing the hub; the same `ContactsState` keeps rendering.
+        app_context.set_selected_identity(Some(second));
+        let loaded_for = step_until(
+            &mut harness,
+            "the newly selected identity's contact load",
+            |action| match action {
+                AppAction::BackendTasks(tasks, _) => Some(
+                    tasks
+                        .iter()
+                        .filter_map(|task| match task {
+                            BackendTask::DashPayTask(task) => match &**task {
+                                DashPayTask::LoadContacts { identity }
+                                | DashPayTask::LoadContactRequests { identity } => {
+                                    Some(identity.identity.id())
+                                }
+                                _ => None,
+                            },
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>(),
+                ),
+                _ => None,
+            },
+        );
+        assert_eq!(loaded_for, [second, second]);
+        harness.run();
+        assert!(
+            harness.query_by_label("Bao").is_none(),
+            "one identity's contacts must never be shown under another"
+        );
+        assert!(
+            harness
+                .query_by_label("No contacts yet. Add someone by their username.")
+                .is_some()
+        );
+
+        // The second identity's list arrives and holds the very request the
+        // first identity is still withdrawing: it must stay guarded.
+        harness
+            .state_mut()
+            .4
+            .record_requests(incoming_for_second, vec![]);
+        harness.run();
+        assert!(
+            harness
+                .get_by_label("Accept")
+                .accesskit_node()
+                .is_disabled(),
+            "a request with a paid action still running must not be acted on again"
+        );
+
+        // The withdrawal fails and releases its guard.
+        harness.state_mut().4.release_request(&request);
+        harness.run();
+        assert!(
+            !harness
+                .get_by_label("Accept")
+                .accesskit_node()
+                .is_disabled()
+        );
     });
 }
 

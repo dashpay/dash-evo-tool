@@ -203,6 +203,7 @@ pub fn render(
         return (AppAction::None, HomeOutcome::None);
     };
     state.reconcile_owner(&identity);
+    contacts.reconcile_owner(&identity);
     let mut action = AppAction::None;
     let mut outcome = HomeOutcome::None;
     let has_profile = profiles

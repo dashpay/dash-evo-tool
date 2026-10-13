@@ -1268,8 +1268,9 @@ impl QualifiedIdentity {
     ) -> Result<KeyID, NoUsableWithdrawalKey> {
         // Locally-held TRANSFER/OWNER keys that are also active in the current
         // (refreshed) identity snapshot. `available_withdrawal_keys` filters on
-        // the stored copy's disabled flag; the extra check catches a key that was
-        // disabled on-chain after this identity was loaded.
+        // the stored copy's disabled flag; the extra checks catch a key that was
+        // disabled on-chain after this identity was loaded, and one whose
+        // private half this device cannot obtain.
         let usable: Vec<&QualifiedIdentityPublicKey> = self
             .available_withdrawal_keys()
             .into_iter()
@@ -1277,7 +1278,7 @@ impl QualifiedIdentity {
                 matches!(
                     self.identity.get_public_key_by_id(qk.identity_public_key.id()),
                     Some(current) if !current.is_disabled()
-                )
+                ) && self.holds_obtainable_key(&qk.identity_public_key)
             })
             .collect();
 
@@ -2959,6 +2960,48 @@ pub(crate) mod withdrawal_key_tests {
             (transfer.into(), PrivateKeyData::Clear([0u8; 32])),
         );
         assert_eq!(held_twice.resolve_transfer_signing_key(None), Ok(1));
+    }
+
+    /// A withdrawal is signed under the same rule as a transfer: a key that
+    /// only refers to a wallet this device does not hold, or that is kept only
+    /// in the legacy encrypted format, is passed over for one that can sign.
+    #[test]
+    fn withdrawal_key_resolution_skips_keys_whose_private_half_cannot_be_obtained() {
+        use crate::context::test_support::{hold_as_legacy_encrypted, hold_as_wallet_reference};
+        let from_missing_wallet = key(1, Purpose::TRANSFER);
+        let legacy = key(2, Purpose::TRANSFER);
+        let imported = key(3, Purpose::TRANSFER);
+        let mut qi = build_identity(
+            IdentityType::User,
+            vec![
+                from_missing_wallet.clone(),
+                legacy.clone(),
+                imported.clone(),
+            ],
+            vec![imported],
+        );
+        hold_as_wallet_reference(&mut qi, 1, [0x5A; 32]);
+        hold_as_legacy_encrypted(&mut qi, 2);
+        assert_eq!(qi.resolve_withdrawal_signing_key(None), Ok(3));
+        for unusable in [1, 2] {
+            assert_eq!(
+                qi.resolve_withdrawal_signing_key(Some(unusable)),
+                Err(NoUsableWithdrawalKey),
+                "key {unusable} cannot sign and must not be accepted when asked for"
+            );
+        }
+
+        let mut none_usable = build_identity(
+            IdentityType::User,
+            vec![from_missing_wallet, legacy],
+            vec![],
+        );
+        hold_as_wallet_reference(&mut none_usable, 1, [0x5A; 32]);
+        hold_as_legacy_encrypted(&mut none_usable, 2);
+        assert_eq!(
+            none_usable.resolve_withdrawal_signing_key(None),
+            Err(NoUsableWithdrawalKey)
+        );
     }
 
     /// A key disabled on the network after its private half was stored here is

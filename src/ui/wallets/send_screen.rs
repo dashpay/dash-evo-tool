@@ -2243,6 +2243,12 @@ impl WalletSendScreen {
 
         self.ensure_identity_amount_leaves_fee(amount_credits, identity_balance)?;
 
+        // The backend chooses the key by the same rule; asking here refuses a
+        // withdrawal no key can sign before the confirmation.
+        qualified_identity
+            .resolve_withdrawal_signing_key(None)
+            .map_err(|_| TaskError::NoUsableWithdrawalKey.to_string())?;
+
         let core_address = self
             .validated_destination
             .as_ref()
@@ -5521,7 +5527,7 @@ mod tests {
     #[test]
     fn identity_withdrawal_rejects_an_amount_that_leaves_no_fee() {
         let (ctx, _dir) = offline_ctx();
-        let identity = bound_identity();
+        let identity = sender_holding_a_transfer_key();
         let highest =
             identity.identity.balance() - ctx.fee_estimator().estimate_credit_withdrawal();
         let mut screen = WalletSendScreen::for_identity(&ctx, identity, IdentitySendMode::Send);
@@ -5621,7 +5627,7 @@ mod tests {
         let external = testnet_core_address(9);
         assert_ne!(owned, external);
 
-        let identity = bound_identity();
+        let identity = sender_holding_a_transfer_key();
         let amount = Amount::new_dash(0.01);
         let mut screen =
             WalletSendScreen::for_identity(&ctx, identity.clone(), IdentitySendMode::MoveToWallet);
@@ -5714,6 +5720,13 @@ mod tests {
         let mut sender = build_identity(IdentityType::User, on_chain, held);
         sender.identity.set_balance(100_000_000_000);
         sender
+    }
+
+    /// A sender holding the one active transfer key it has, so it can sign.
+    fn sender_holding_a_transfer_key() -> QualifiedIdentity {
+        use crate::model::qualified_identity::withdrawal_key_tests::key;
+        let transfer_key = key(1, dash_sdk::dpp::identity::Purpose::TRANSFER);
+        sender_with_keys(vec![transfer_key.clone()], vec![transfer_key])
     }
 
     /// The signing key a validated identity transfer to `destination` carries.
@@ -5875,6 +5888,43 @@ mod tests {
                 "a transfer only an unreadable key could sign must not reach the confirmation"
             );
         }
+    }
+
+    /// Moving funds to a wallet is signed too: with no key that can sign it,
+    /// the form refuses before the confirmation instead of after it.
+    #[test]
+    fn identity_withdrawal_without_a_usable_key_is_refused_before_confirmation() {
+        use crate::context::test_support::hold_as_wallet_reference;
+        use crate::model::qualified_identity::withdrawal_key_tests::key;
+        use dash_sdk::dpp::identity::Purpose;
+        let (ctx, _dir) = offline_ctx();
+        let from_missing_wallet = key(1, Purpose::TRANSFER);
+        let imported = key(2, Purpose::TRANSFER);
+        let to_core = || Some(ValidatedAddress::Core(testnet_core_address(9)));
+
+        let mut sender = sender_with_keys(vec![from_missing_wallet.clone()], vec![]);
+        hold_as_wallet_reference(&mut sender, 1, [0x5A; 32]);
+        let mut screen =
+            WalletSendScreen::for_identity(&ctx, sender.clone(), IdentitySendMode::Send);
+        screen.amount = Some(Amount::new_dash(0.01));
+        screen.validated_destination = to_core();
+        assert_eq!(
+            screen.send_identity_to_core(sender).err(),
+            Some(TaskError::NoUsableWithdrawalKey.to_string()),
+            "a withdrawal no key here can sign must not reach the confirmation"
+        );
+
+        let mut sender =
+            sender_with_keys(vec![from_missing_wallet, imported.clone()], vec![imported]);
+        hold_as_wallet_reference(&mut sender, 1, [0x5A; 32]);
+        let mut screen =
+            WalletSendScreen::for_identity(&ctx, sender.clone(), IdentitySendMode::Send);
+        screen.amount = Some(Amount::new_dash(0.01));
+        screen.validated_destination = to_core();
+        assert!(
+            screen.send_identity_to_core(sender).is_ok(),
+            "a key that can sign lets the withdrawal proceed"
+        );
     }
 
     /// The fee of a transfer to another identity is paid on top from the same

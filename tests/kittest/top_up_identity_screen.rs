@@ -7,20 +7,31 @@
 //! entered through a test seam and its result is injected.
 
 use crate::support::{mount_app, with_isolated_data_dir};
-use dash_evo_tool::app::{AppState, BootPhase, TaskResult};
+use dash_evo_tool::app::{AppAction, AppState, BootPhase, TaskResult};
 use dash_evo_tool::backend_task::error::TaskError;
-use dash_evo_tool::backend_task::{BackendTaskContext, BackendTaskSuccessResult, FeeResult};
+use dash_evo_tool::backend_task::identity::IdentityTask;
+use dash_evo_tool::backend_task::{
+    BackendTask, BackendTaskContext, BackendTaskSuccessResult, FeeResult,
+};
+use dash_evo_tool::model::address::ValidatedAddress;
+use dash_evo_tool::model::amount::Amount;
 use dash_evo_tool::model::qualified_identity::encrypted_key_storage::KeyStorage;
 use dash_evo_tool::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
 use dash_evo_tool::model::wallet::Wallet;
 use dash_evo_tool::ui::identity::top_up_identity_screen::TopUpIdentityScreen;
-use dash_evo_tool::ui::wallets::send_screen::WalletSendScreen;
-use dash_evo_tool::ui::{RootScreenType, Screen};
-use dash_sdk::dpp::dashcore::Network;
+use dash_evo_tool::ui::wallets::send_screen::{
+    IdentitySendMode, SourceSelection, WalletSendScreen,
+};
+use dash_evo_tool::ui::{RootScreenType, Screen, ScreenType};
+use dash_sdk::dpp::address_funds::PlatformAddress;
+use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
+use dash_sdk::dpp::dashcore::secp256k1::{Secp256k1, SecretKey};
+use dash_sdk::dpp::dashcore::{Address, Network, PublicKey};
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::Identifier;
+use egui::accesskit::Role;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use std::collections::BTreeMap;
@@ -35,6 +46,7 @@ const FORM: &str = "Follow these steps to add funds to your identity:";
 const FORM_PAUSED: &str = "You can add more funds when this transfer finishes.";
 const WALLET_SEND_WAITING: &str = "Sending...";
 const WALLET_SEND_COMPLETE: &str = "Identity topped up successfully!";
+const TOP_UP_ALREADY_RUNNING: &str = "Funds are already being added to this identity. Wait for that transfer to finish, then try again.";
 
 /// How long the dialog stays a hard block before it offers the background.
 const BACKGROUND_OFFER_AFTER: Duration = Duration::from_secs(30);
@@ -394,6 +406,179 @@ fn a_failed_load_of_another_screen_leaves_wallet_send_waiting() {
             count(&harness, WALLET_SEND_WAITING),
             0,
             "the failure of its own send ends the wait"
+        );
+    });
+}
+
+/// The identity with a wallet of its own, stored where the send form reads it.
+fn stored_identity_with_wallet(harness: &App) -> QualifiedIdentity {
+    let app_context = harness.state().current_app_context().clone();
+    let mut identity = test_identity(app_context.network());
+    let wallet = Wallet::new_from_seed([0x54; 64], app_context.network(), None, None)
+        .expect("wallet fixture");
+    identity
+        .associated_wallets
+        .insert(wallet.seed_hash(), Arc::new(RwLock::new(wallet)));
+    app_context
+        .insert_local_qualified_identity(&identity, &None)
+        .expect("store the identity");
+    identity
+}
+
+/// Open Home's Top up form for `identity` on top of the mounted app.
+fn open_top_up_form(harness: &mut App, identity: &QualifiedIdentity) {
+    let app_context = harness.state().current_app_context().clone();
+    let screen = ScreenType::IdentitySendScreen(identity.clone(), IdentitySendMode::TopUp)
+        .create_screen(&app_context);
+    harness.state_mut().screen_stack.push(screen);
+    harness.run_steps(3);
+}
+
+fn top_up_form(harness: &mut App) -> &mut WalletSendScreen {
+    match harness.state_mut().screen_stack.last_mut() {
+        Some(Screen::WalletSendScreen(screen)) => screen,
+        _ => panic!("the Top up form must be the visible screen"),
+    }
+}
+
+/// Confirm a top-up on the visible form the way its dialog does, and return
+/// the dispatch. The task itself is not run: no funds may move in a test.
+fn confirm_top_up(harness: &mut App, identity: &QualifiedIdentity) -> BackendTaskContext {
+    let dispatch = top_up_form(harness)
+        .dispatch_send_for_test(BackendTask::IdentityTask(
+            IdentityTask::TopUpIdentityFromPlatformAddresses {
+                identity: identity.clone(),
+                inputs: Default::default(),
+                wallet_seed_hash: Default::default(),
+            },
+        ))
+        .expect("a confirmed send records its dispatch");
+    harness.run_steps(3);
+    assert_eq!(count(harness, WALLET_SEND_WAITING), 1);
+    dispatch
+}
+
+/// Fill the visible Top up form and ask it for the send it would confirm.
+fn prepare_top_up(harness: &mut App, identity: &QualifiedIdentity) -> Result<AppAction, String> {
+    let core = Address::p2pkh(
+        &PublicKey::new(
+            SecretKey::from_slice(&[0x31; 32])
+                .expect("secret key")
+                .public_key(&Secp256k1::new()),
+        ),
+        identity.network,
+    );
+    let source = SourceSelection::PlatformAddresses(vec![(
+        PlatformAddress::try_from(core.clone()).expect("platform source"),
+        core,
+        3 * CREDITS_PER_DUFF * 100_000_000,
+    )]);
+    let destination = ValidatedAddress::Identity {
+        id: identity.identity.id(),
+        dpns_name: None,
+    };
+    let form = top_up_form(harness);
+    form.set_simple_send_input_for_test(
+        Some(source),
+        Some(destination),
+        Some(Amount::new_dash(1.0)),
+    );
+    form.validate_and_send_for_test()
+}
+
+/// Home's Top up used to open Add Funds, which refuses a second top-up of an
+/// identity while one runs, wherever the user went in between. The shared form
+/// must keep that: two top-ups prepared before either is saved would be paid
+/// twice and recorded under one index.
+#[test]
+fn a_top_up_left_running_blocks_another_from_a_reopened_form() {
+    in_app(|| {
+        // The Wallets root asks for nothing of its own while it is in view.
+        let mut harness = mount_app(RootScreenType::RootScreenWalletsBalances);
+        let identity = stored_identity_with_wallet(&harness);
+        open_top_up_form(&mut harness, &identity);
+        assert!(
+            prepare_top_up(&mut harness, &identity).is_ok(),
+            "with nothing running the form offers the top-up"
+        );
+        let dispatch = confirm_top_up(&mut harness, &identity);
+
+        // The breadcrumb stays enabled while the form waits. It sits above
+        // the navigation entry of the same name.
+        harness
+            .query_all_by_role_and_label(Role::Button, "Identities")
+            .min_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
+            .expect("the breadcrumb back to Identities")
+            .click();
+        harness.run_steps(3);
+        assert!(
+            harness.state().screen_stack.is_empty(),
+            "the breadcrumb closes the waiting form"
+        );
+
+        open_top_up_form(&mut harness, &identity);
+        assert_eq!(
+            prepare_top_up(&mut harness, &identity).err().as_deref(),
+            Some(TOP_UP_ALREADY_RUNNING),
+            "a reopened form must not offer a second top-up while the first runs"
+        );
+
+        // Another transfer to the same identity ending is not this top-up ending.
+        let other_transfer = BackendTaskContext::IdentityTopUp(identity.identity.id());
+        deliver(&mut harness, topped_up(other_transfer, &identity));
+        assert_eq!(
+            prepare_top_up(&mut harness, &identity).err().as_deref(),
+            Some(TOP_UP_ALREADY_RUNNING),
+            "only the result of the running top-up lets the next one start"
+        );
+
+        deliver(&mut harness, topped_up(dispatch, &identity));
+        assert!(
+            prepare_top_up(&mut harness, &identity).is_ok(),
+            "the form offers a top-up again once the first has ended"
+        );
+    });
+}
+
+/// A failed top-up frees the identity for the next one just as a finished one
+/// does, and the form that waited on it is told and handed back.
+#[test]
+fn the_top_up_form_is_told_how_its_own_top_up_ended() {
+    in_app(|| {
+        // The Wallets root asks for nothing of its own while it is in view.
+        let mut harness = mount_app(RootScreenType::RootScreenWalletsBalances);
+        let identity = stored_identity_with_wallet(&harness);
+
+        open_top_up_form(&mut harness, &identity);
+        let dispatch = confirm_top_up(&mut harness, &identity);
+        deliver(&mut harness, topped_up(dispatch, &identity));
+        assert_eq!(
+            count(&harness, WALLET_SEND_COMPLETE),
+            1,
+            "the form that sent the top-up shows that it succeeded"
+        );
+
+        harness.state_mut().screen_stack.clear();
+        open_top_up_form(&mut harness, &identity);
+        let dispatch = confirm_top_up(&mut harness, &identity);
+        let error = TaskError::NoIdentitiesFound;
+        let message = error.to_string();
+        deliver(
+            &mut harness,
+            TaskResult::Error {
+                context: dispatch,
+                error,
+            },
+        );
+        assert_eq!(
+            count(&harness, WALLET_SEND_WAITING),
+            0,
+            "the form that sent the top-up is handed back when it fails"
+        );
+        assert_eq!(count(&harness, &message), 1);
+        assert!(
+            prepare_top_up(&mut harness, &identity).is_ok(),
+            "a failed top-up does not keep the identity blocked"
         );
     });
 }

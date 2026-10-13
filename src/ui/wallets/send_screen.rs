@@ -35,6 +35,9 @@ use crate::ui::components::wallet_unlock_popup::{
 };
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::identity::funding_common::{FUNDING_FEE_NOT_COVERED, network_fee_refusal};
+use crate::ui::identity::top_up_identity_screen::{
+    top_up_in_flight_for, track_top_up_sent_elsewhere,
+};
 use crate::ui::state::AssetLockBalanceCache;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::wallets::shielded_tab::SHIELDED_FROM_CORE_WITHOUT_AMOUNT;
@@ -357,6 +360,9 @@ pub struct WalletSendScreen {
     wallet_open_attempted: bool,
 }
 
+/// Refusal of a top-up while another top-up of the same identity runs.
+const TOP_UP_ALREADY_RUNNING: &str = "Funds are already being added to this identity. Wait for that transfer to finish, then try again.";
+
 /// Merge the confirmation dialog's action into the frame action. The dialog
 /// consumes the click and clears itself, so a confirmed send is one-shot: it
 /// takes the `AppAction` `|=` precedence over a same-frame navigation action
@@ -630,6 +636,11 @@ impl WalletSendScreen {
         self.pending_send.is_some() && matches!(self.send_status, SendStatus::WaitingForResult)
     }
 
+    /// Whether `context` is the send this screen dispatched and still waits on.
+    pub(crate) fn awaits_send(&self, context: &BackendTaskContext) -> bool {
+        self.awaits_own_send() && self.pending_send.as_ref() == Some(context)
+    }
+
     /// Dispatches a confirmed send under a context of its own, so that its
     /// outcome can be told apart from every other task's.
     fn dispatch_send(&mut self, action: AppAction) -> AppAction {
@@ -640,6 +651,7 @@ impl WalletSendScreen {
             return action;
         };
         let context = BackendTaskContext::for_dispatch_on(&task, self.app_context.network());
+        track_top_up_sent_elsewhere(&self.app_context, &context);
         self.mark_sending(context.clone());
         AppAction::BackendTaskWithContext { task, context }
     }
@@ -1107,6 +1119,19 @@ impl WalletSendScreen {
     /// Validate and execute the send based on detected types
     fn validate_and_send(&mut self) -> Result<AppAction, String> {
         let route = self.validated_send_route()?;
+        if matches!(
+            route,
+            ValidatedSendRoute::CoreToIdentity | ValidatedSendRoute::PlatformToIdentity(_)
+        ) && self
+            .validated_destination
+            .as_ref()
+            .and_then(|destination| destination.as_identity_id())
+            .is_some_and(|identity_id| {
+                top_up_in_flight_for(self.app_context.egui_ctx(), identity_id)
+            })
+        {
+            return Err(TOP_UP_ALREADY_RUNNING.to_string());
+        }
         // Identity signing uses its own key access, including identities imported without a wallet.
         match route {
             ValidatedSendRoute::IdentityToCore(qi) => return self.send_identity_to_core(*qi),
@@ -3792,6 +3817,16 @@ impl WalletSendScreen {
 
     #[cfg(feature = "testing")]
     #[doc(hidden)]
+    /// Dispatches `task` the way a confirmed send does and returns its context,
+    /// without handing the task to the backend.
+    pub fn dispatch_send_for_test(&mut self, task: BackendTask) -> Option<BackendTaskContext> {
+        // The task is dropped on purpose: no funds may move in a test.
+        let _action = self.dispatch_send(AppAction::BackendTask(task));
+        self.pending_send.clone()
+    }
+
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
     /// Runs the production simple-send validation and dispatch selection.
     pub fn validate_and_send_for_test(&mut self) -> Result<AppAction, String> {
         self.validate_and_send()
@@ -5000,7 +5035,7 @@ impl ScreenLike for WalletSendScreen {
     }
 
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
-        if self.awaits_own_send() && self.pending_send.as_ref() == Some(context) {
+        if self.awaits_send(context) {
             // The global banner says why; the form is handed back.
             self.pending_send = None;
             self.send_banner.take_and_clear();
@@ -5306,6 +5341,67 @@ mod tests {
             panic!("expected a wallet-funded top-up");
         };
         assert_eq!(index, 3, "indexes 0 and 2 already hold earlier top-ups");
+    }
+
+    /// A top-up is refused while another top-up of the same identity runs,
+    /// whichever funds would pay for it. Other identities are not held back,
+    /// and a send that is not a top-up holds nothing back.
+    #[test]
+    fn a_running_top_up_holds_back_another_top_up_of_the_same_identity() {
+        use crate::backend_task::identity::IdentityTask;
+        let (ctx, _dir) = offline_ctx();
+        let wallet = || {
+            let wallet = Wallet::new_from_seed([1u8; 64], Network::Testnet, None, None)
+                .expect("wallet from seed");
+            Arc::new(RwLock::new(wallet))
+        };
+        let recipient = bound_identity();
+        let recipient_id = recipient.identity.id();
+        let to = |id| ValidatedAddress::Identity {
+            id,
+            dpns_name: None,
+        };
+        let ValidatedAddress::Identity { id: other_id, .. } = identity_destination() else {
+            panic!("an identity destination");
+        };
+
+        let mut first = WalletSendScreen::new(&ctx, wallet());
+        let _not_a_top_up = first.dispatch_send(AppAction::BackendTask(BackendTask::WalletTask(
+            WalletTask::GenerateReceiveAddress {
+                seed_hash: [0x47; 32],
+            },
+        )));
+        assert!(!top_up_in_flight_for(ctx.egui_ctx(), &recipient_id));
+        let _top_up = first.dispatch_send(AppAction::BackendTask(BackendTask::IdentityTask(
+            IdentityTask::TopUpIdentityFromPlatformAddresses {
+                identity: recipient,
+                inputs: Default::default(),
+                wallet_seed_hash: [0x47; 32],
+            },
+        )));
+
+        let mut second = WalletSendScreen::new(&ctx, wallet());
+        second.amount = Some(Amount::new_dash(0.01));
+        let core = testnet_core_address(2);
+        let platform = PlatformAddress::try_from(core.clone()).expect("platform source");
+        for source in [
+            SourceSelection::CoreWallet,
+            SourceSelection::PlatformAddresses(vec![(platform, core, 100_000_000_000)]),
+        ] {
+            second.selected_source = Some(source);
+            second.validated_destination = Some(to(recipient_id));
+            assert_eq!(
+                second.validate_and_send().err().as_deref(),
+                Some(TOP_UP_ALREADY_RUNNING),
+                "a second top-up of the identity must wait for the first"
+            );
+            second.validated_destination = Some(to(other_id));
+            assert_ne!(
+                second.validate_and_send().err().as_deref(),
+                Some(TOP_UP_ALREADY_RUNNING),
+                "a top-up of another identity is not held back"
+            );
+        }
     }
 
     /// What the Max button offers an identity sender for `destination`, next to

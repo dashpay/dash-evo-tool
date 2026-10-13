@@ -120,7 +120,7 @@ fn store_top_ups_in_flight(ctx: &egui::Context, top_ups: Vec<TopUpInFlight>) {
 }
 
 /// Whether a top-up of `identity_id` is in flight.
-fn top_up_in_flight_for(ctx: &egui::Context, identity_id: &Identifier) -> bool {
+pub(crate) fn top_up_in_flight_for(ctx: &egui::Context, identity_id: &Identifier) -> bool {
     top_ups_in_flight(ctx)
         .iter()
         .any(|top_up| top_up.dispatch.identity_top_up_identity() == Some(*identity_id))
@@ -136,6 +136,26 @@ fn track_top_up(ctx: &egui::Context, dispatch: BackendTaskContext, confirmation:
         in_background: false,
     });
     store_top_ups_in_flight(ctx, top_ups);
+}
+
+/// Record `dispatch` when another screen sends it and it tops up an identity.
+/// Until its own result arrives no screen may start another top-up of that
+/// identity: two prepared side by side are paid for twice and are recorded
+/// under one index.
+pub(crate) fn track_top_up_sent_elsewhere(app_context: &AppContext, dispatch: &BackendTaskContext) {
+    let Some(identity_id) = dispatch.identity_top_up_identity() else {
+        return;
+    };
+    let name = app_context
+        .get_identity_by_id(&identity_id)
+        .ok()
+        .flatten()
+        .and_then(|identity| app_context.identity_name(&identity));
+    track_top_up(
+        app_context.egui_ctx(),
+        dispatch.clone(),
+        top_up_done_message(name.as_deref(), &identity_id),
+    );
 }
 
 /// Raise the background-progress banner and keep its handle, the only witness

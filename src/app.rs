@@ -340,11 +340,15 @@ fn clear_profile_saving_banner_after_success(
     }
 }
 
-/// Whether `screen` is the Add Funds screen that sent the top-up `context`
-/// and still waits on it. No other screen may take that top-up's outcome for
-/// its own: Wallet Send, for one, completes on any top-up result.
+/// Whether `screen` is the screen that sent the top-up `context` and still
+/// waits on it. No other screen may take that top-up's outcome for its own:
+/// Wallet Send, for one, completes on any top-up result.
 fn screen_awaits_top_up(screen: &Screen, context: &BackendTaskContext) -> bool {
-    matches!(screen, Screen::TopUpIdentityScreen(screen) if screen.awaits_top_up(context))
+    match screen {
+        Screen::TopUpIdentityScreen(screen) => screen.awaits_top_up(context),
+        Screen::WalletSendScreen(screen) => screen.awaits_send(context),
+        _ => false,
+    }
 }
 
 /// How often local state re-derives the voting attention summary.

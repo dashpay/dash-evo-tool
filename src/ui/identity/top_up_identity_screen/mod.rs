@@ -846,14 +846,7 @@ impl TopUpIdentityScreen {
             FundingMethod::UseUnusedAssetLock => {
                 if let Some(out_point) = self.funding_asset_lock {
                     let identity_index = self.identity.wallet_index.unwrap_or(u32::MAX >> 1);
-                    let top_up_index = self
-                        .identity
-                        .top_ups
-                        .keys()
-                        .max()
-                        .cloned()
-                        .map(|i| i + 1)
-                        .unwrap_or_default();
+                    let top_up_index = self.identity.next_top_up_index();
                     let identity_input = IdentityTopUpInfo {
                         qualified_identity: self.identity.clone(),
                         wallet: Arc::clone(selected_wallet),
@@ -934,13 +927,7 @@ impl TopUpIdentityScreen {
                     identity_funding_method: TopUpIdentityFundingMethod::FundWithWallet(
                         amount,
                         self.identity.wallet_index.unwrap_or(u32::MAX >> 1),
-                        self.identity
-                            .top_ups
-                            .keys()
-                            .max()
-                            .cloned()
-                            .map(|i| i + 1)
-                            .unwrap_or_default(),
+                        self.identity.next_top_up_index(),
                     ),
                 };
 

@@ -2036,7 +2036,7 @@ impl WalletSendScreen {
             })?;
 
         let identity_index = qualified_identity.wallet_index.unwrap_or(0);
-        let top_up_index = qualified_identity.top_ups.len() as u32;
+        let top_up_index = qualified_identity.next_top_up_index();
 
         let wallet = self
             .selected_wallet
@@ -5234,6 +5234,53 @@ mod tests {
             screen.validated_send_route().is_err(),
             "the bound recipient cannot be edited"
         );
+    }
+
+    /// Top up from Home for an identity whose stored history has a gap: the new
+    /// top-up must be recorded under an index no earlier one holds.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn identity_top_up_is_recorded_under_an_index_no_earlier_top_up_holds() {
+        use crate::backend_task::identity::{IdentityTask, TopUpIdentityFundingMethod};
+        let (ctx, _dir) = offline_ctx();
+        // Identities and their top-up history live in the wallet backend's store.
+        let (sender, _receiver) = tokio::sync::mpsc::channel(32);
+        ctx.ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+            sender,
+            ctx.egui_ctx().clone(),
+        ))
+        .await
+        .expect("wallet backend");
+        let wallet = Wallet::new_from_seed([1u8; 64], Network::Testnet, None, None)
+            .expect("wallet from seed");
+        let mut identity = bound_identity();
+        identity
+            .associated_wallets
+            .insert(wallet.seed_hash(), Arc::new(RwLock::new(wallet)));
+        ctx.insert_local_qualified_identity(&identity, &None)
+            .expect("store the identity");
+        ctx.save_top_ups(
+            &identity.identity.id(),
+            &BTreeMap::from([(0, 60_000), (2, 70_000)]),
+        )
+        .expect("store the top-up history");
+
+        let mut screen = WalletSendScreen::for_identity(&ctx, identity, IdentitySendMode::TopUp);
+        let seed_hash = core_source_with_ceiling(&mut screen, 10_000_000);
+        screen.amount = Some(Amount::dash_from_duffs(100_000));
+        let action = screen
+            .send_core_to_identity(seed_hash)
+            .expect("the top-up must be dispatched");
+        let AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::TopUpIdentity(top_up))) =
+            action
+        else {
+            panic!("expected a top-up, got {action:?}");
+        };
+        let TopUpIdentityFundingMethod::FundWithWallet(_, _, index) =
+            top_up.identity_funding_method
+        else {
+            panic!("expected a wallet-funded top-up");
+        };
+        assert_eq!(index, 3, "indexes 0 and 2 already hold earlier top-ups");
     }
 
     /// What the Max button offers an identity sender for `destination`, next to

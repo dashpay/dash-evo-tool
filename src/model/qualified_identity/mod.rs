@@ -1333,6 +1333,21 @@ impl QualifiedIdentity {
         }
     }
 
+    /// Index under which this identity's next top-up is recorded: one past the
+    /// highest index in the stored history, so a history with gaps never has an
+    /// entry replaced. If the highest possible index is already taken, the
+    /// lowest free one is used instead.
+    pub fn next_top_up_index(&self) -> u32 {
+        match self.top_ups.keys().next_back() {
+            None => 0,
+            Some(highest) => highest.checked_add(1).unwrap_or_else(|| {
+                (0..u32::MAX)
+                    .find(|index| !self.top_ups.contains_key(index))
+                    .unwrap_or(u32::MAX)
+            }),
+        }
+    }
+
     /// Resolves the key to sign an identity credit transfer, returning its
     /// [`KeyID`].
     ///
@@ -3224,5 +3239,39 @@ mod identity_display_name_tests {
             bincode::encode_to_vec(restored, bincode::config::standard()).unwrap(),
             bytes
         );
+    }
+}
+
+#[cfg(test)]
+mod top_up_index_tests {
+    use super::withdrawal_key_tests::build_identity;
+    use super::*;
+
+    fn next_index_after(history: &[u32]) -> u32 {
+        let mut identity = build_identity(IdentityType::User, vec![], vec![]);
+        identity.top_ups = history.iter().map(|index| (*index, 1_000)).collect();
+        identity.next_top_up_index()
+    }
+
+    #[test]
+    fn the_first_top_up_takes_index_zero() {
+        assert_eq!(next_index_after(&[]), 0);
+    }
+
+    #[test]
+    fn a_top_up_follows_the_highest_stored_index() {
+        assert_eq!(next_index_after(&[0, 1]), 2);
+    }
+
+    #[test]
+    fn a_history_with_a_gap_does_not_reuse_a_stored_index() {
+        assert_eq!(next_index_after(&[0, 2]), 3);
+        assert_eq!(next_index_after(&[5]), 6);
+    }
+
+    #[test]
+    fn a_history_holding_the_highest_index_falls_back_to_the_lowest_free_one() {
+        assert_eq!(next_index_after(&[u32::MAX]), 0);
+        assert_eq!(next_index_after(&[0, 1, u32::MAX]), 2);
     }
 }

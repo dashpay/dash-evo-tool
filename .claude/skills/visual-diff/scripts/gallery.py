@@ -37,12 +37,15 @@ def main():
     a = p.parse_args()
     m = json.load(open(a.meta))
     known = {i["name"] for i in m.get("images", [])}
+    for n in sorted(known):
+        for sub in ("annotated", os.path.join("annotated", "clean")):
+            path = os.path.join(a.root, sub, n + ".png")
+            if not os.path.exists(path):
+                raise SystemExit(f"image file is missing: {path}")
     for r in m.get("coverage", []):
         for n in r.get("images", []):
-            if n not in known or not os.path.exists(
-                os.path.join(a.root, "annotated", n + ".png")
-            ):
-                raise SystemExit(f"coverage refers to a missing image: {n}")
+            if n not in known:
+                raise SystemExit(f"coverage refers to an image not listed: {n}")
     o = [
         f"<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>{e(a.title)}</title><style>{CSS}</style></head><body>"
     ]

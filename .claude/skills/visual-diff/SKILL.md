@@ -19,7 +19,7 @@ Related: `release-review` (QA campaign, uses this for presentation images), `des
 
 ## 2. History first
 - `git log --no-merges --format='%h %s' OLD..NEW`; map every user-visible commit to the screen that shows it. That is the shot list and the coverage table.
-- Also walk every reachable screen in both builds and run `scripts/diff.py`: it finds changes the history does not name. Clocks, sync progress, banners, scroll offsets, panel widths and the title-bar version are noise.
+- Also walk every reachable screen in both builds and run `scripts/diff.py`: it finds changes the history does not name, including screens present in one build only. Clocks, sync progress, banners, scroll offsets, panel widths and the title-bar version are noise.
 
 ## 3. Capture (same state in both builds)
 - Per build: own `DASH_EVO_DATA_DIR` (never the real config dirs), same network, view mode, data, window size. Normalise: `xdotool windowsize $WID 1260 780; xdotool windowmove $WID 10 0`. `scripts/cap.sh DIR NAME` (scrot) includes the title bar, so capture pixels = screen pixels; spec rects use these.
@@ -48,6 +48,8 @@ Related: `release-review` (QA campaign, uses this for presentation images), `des
 
 ## 6. Verify
 - `render.py` exits 1 if a new/changed rect is identical in the OLD and NEW capture (wrong rect) or a pill leaves the image. Fix and rerun. A rect that barely differs gets a warning only: confirm by eye that it marks a real change.
+- `gallery.py` stops if a listed image lacks its labelled or clean file.
+- After changing a script run `scripts/selftest.py` (synthetic images, no display needed).
 - Then READ every labelled image: each outline encloses exactly what its label names; no pill clipped or covering content; the screen is the intended state (no banner, data present).
 
 ## 7. Gallery and report

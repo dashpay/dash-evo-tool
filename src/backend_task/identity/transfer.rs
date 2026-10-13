@@ -115,6 +115,52 @@ mod tests {
         assert!(!signing_key.is_disabled());
     }
 
+    /// Both transfer tasks, dispatched the way the app dispatches them, must
+    /// refuse before they reach the SDK. The mock SDK answers nothing, so a
+    /// task that got that far would fail with a different error.
+    #[tokio::test]
+    async fn transfer_tasks_refuse_to_start_without_a_usable_key() {
+        use crate::backend_task::identity::IdentityTask;
+        use dash_sdk::dpp::address_funds::PlatformAddress;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let sdk = dash_sdk::Sdk::new_mock();
+        // A transfer between identities uses the SDK the context holds.
+        ctx.sdk.store(std::sync::Arc::new(sdk.clone()));
+        let (sender, _receiver) = tokio::sync::mpsc::channel(8);
+        let sender = crate::utils::egui_mpsc::SenderAsync::new(sender, ctx.egui_ctx().clone());
+
+        let not_held = build_identity(IdentityType::User, vec![key(1, Purpose::TRANSFER)], vec![]);
+        let disabled = disabled_key(1, Purpose::TRANSFER);
+        let held_but_disabled =
+            build_identity(IdentityType::User, vec![disabled.clone()], vec![disabled]);
+        for (identity, requested) in [
+            (not_held.clone(), None),
+            (not_held, Some(1)),
+            (held_but_disabled, Some(1)),
+        ] {
+            let to_identity = IdentityTask::Transfer(
+                identity.clone(),
+                Identifier::from([0x4E; 32]),
+                1_000,
+                requested,
+            );
+            let to_address = IdentityTask::TransferToAddresses {
+                identity,
+                outputs: [(PlatformAddress::P2pkh([0x4E; 20]), 1_000)].into(),
+                key_id: requested,
+            };
+            for task in [to_identity, to_address] {
+                let outcome = ctx.run_identity_task(task, &sdk, sender.clone()).await;
+                assert!(
+                    matches!(outcome, Err(TaskError::NoUsableTransferKey)),
+                    "requested key {requested:?}: {outcome:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn transfer_without_a_usable_key_fails_with_its_own_error() {
         let identity = build_identity(IdentityType::User, vec![key(1, Purpose::TRANSFER)], vec![]);

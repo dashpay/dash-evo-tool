@@ -17,7 +17,8 @@ use crate::model::fee_estimation::{
     allocate_platform_addresses_with_fee, core_max_send_amount_duffs, core_max_send_reserve_duffs,
     estimate_address_funding_fee_from_transition, estimate_core_l1_send_fee_duffs,
     estimate_platform_fee, estimate_withdrawal_fee_from_transition, format_credits_as_dash,
-    format_duffs_as_dash, identity_topup_min_funding_duffs, shield_from_balance_fee_headroom,
+    format_duffs_as_dash, identity_topup_min_funding_duffs, max_spendable_credits,
+    shield_from_balance_fee_headroom,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::user_role::UserRole;
@@ -968,6 +969,16 @@ impl WalletSendScreen {
     /// Returns the address kind of the current validated destination, if any.
     fn destination_kind(&self) -> Option<AddressKind> {
         self.validated_destination.as_ref().map(|v| v.kind())
+    }
+
+    /// Fee an identity sender keeps back for the chosen destination. Max and
+    /// send validation both read it, so they cannot reserve different amounts.
+    fn identity_source_fee_reserve(&self) -> u64 {
+        let fee_estimator = self.app_context.fee_estimator();
+        match self.destination_kind() {
+            Some(AddressKind::Core) => fee_estimator.estimate_credit_withdrawal(),
+            _ => fee_estimator.estimate_credit_transfer(),
+        }
     }
 
     /// Returns the destination address string, from the validated address if
@@ -2190,6 +2201,21 @@ impl WalletSendScreen {
             ));
         }
 
+        // The fee is paid on top of the amount, from the same balance.
+        let spendable = max_spendable_credits(identity_balance, self.identity_source_fee_reserve());
+        if spendable == 0 {
+            return Err(
+                "This identity's balance is too low to cover the network fee. Top up the identity and try again."
+                    .to_string(),
+            );
+        }
+        if amount_credits > spendable {
+            let max = format_credits_as_dash(spendable);
+            return Err(format!(
+                "This amount leaves too little in the identity to pay the network fee. Enter {max} or less."
+            ));
+        }
+
         let core_address = self
             .validated_destination
             .as_ref()
@@ -2999,9 +3025,8 @@ impl WalletSendScreen {
                 Some("The maximum is based on your shielded pool balance.".to_string()),
             ),
             Some(SourceSelection::Identity(qi)) => {
-                let balance = qi.identity.balance();
-                let estimated_fee = fee_estimator.estimate_credit_transfer();
-                let available = balance.saturating_sub(estimated_fee);
+                let estimated_fee = self.identity_source_fee_reserve();
+                let available = max_spendable_credits(qi.identity.balance(), estimated_fee);
                 let fee = format_credits_as_dash(estimated_fee);
                 (
                     Some(available),
@@ -5178,6 +5203,104 @@ mod tests {
         assert!(
             screen.validated_send_route().is_err(),
             "the bound recipient cannot be edited"
+        );
+    }
+
+    /// What the Max button offers an identity sender for `destination`, next to
+    /// its balance less the `reserve` estimate.
+    fn identity_max_and_expected(
+        mode: IdentitySendMode,
+        destination: ValidatedAddress,
+        reserve: fn(&PlatformFeeEstimator) -> u64,
+    ) -> (u64, u64) {
+        let (ctx, _dir) = offline_ctx();
+        let identity = bound_identity();
+        let expected = identity.identity.balance() - reserve(&ctx.fee_estimator());
+        let mut screen = WalletSendScreen::for_identity(&ctx, identity, mode);
+        screen.validated_destination = Some(destination);
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, screen: &mut WalletSendScreen| screen.render_amount_input(ui),
+            screen,
+        );
+        harness.run();
+        harness.get_by_label("Max").click_accesskit();
+        harness.step();
+        let max = harness
+            .state()
+            .amount
+            .as_ref()
+            .expect("Max sets the amount")
+            .value();
+        (max, expected)
+    }
+
+    #[test]
+    fn identity_move_to_wallet_max_reserves_the_withdrawal_fee() {
+        let (max, expected) = identity_max_and_expected(
+            IdentitySendMode::MoveToWallet,
+            ValidatedAddress::Core(testnet_core_address(9)),
+            PlatformFeeEstimator::estimate_credit_withdrawal,
+        );
+        assert_eq!(
+            max, expected,
+            "Max must leave the withdrawal fee in the identity"
+        );
+    }
+
+    #[test]
+    fn identity_send_max_to_an_identity_reserves_the_transfer_fee() {
+        let (max, expected) = identity_max_and_expected(
+            IdentitySendMode::Send,
+            identity_destination(),
+            PlatformFeeEstimator::estimate_credit_transfer,
+        );
+        assert_eq!(
+            max, expected,
+            "a transfer between identities keeps its own, smaller reserve"
+        );
+    }
+
+    #[test]
+    fn identity_withdrawal_rejects_an_amount_that_leaves_no_fee() {
+        let (ctx, _dir) = offline_ctx();
+        let identity = bound_identity();
+        let highest =
+            identity.identity.balance() - ctx.fee_estimator().estimate_credit_withdrawal();
+        let mut screen = WalletSendScreen::for_identity(&ctx, identity, IdentitySendMode::Send);
+        screen.validated_destination = Some(ValidatedAddress::Core(testnet_core_address(9)));
+
+        screen.amount = Some(Amount::dash_from_credits(highest));
+        assert!(
+            screen.validate_and_send().is_ok(),
+            "the amount Max offers must be accepted"
+        );
+
+        screen.amount = Some(Amount::dash_from_credits(highest + 1));
+        let refusal = screen
+            .validate_and_send()
+            .expect_err("an amount that cannot also pay the fee must not reach the confirmation");
+        assert!(
+            refusal.contains(&format_credits_as_dash(highest)),
+            "the refusal must name the highest amount that works: {refusal}"
+        );
+    }
+
+    #[test]
+    fn identity_withdrawal_from_a_balance_that_only_covers_the_fee_asks_for_a_top_up() {
+        use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+        let (ctx, _dir) = offline_ctx();
+        let mut identity = bound_identity();
+        let fee = ctx.fee_estimator().estimate_credit_withdrawal();
+        identity.identity.set_balance(fee);
+        let mut screen = WalletSendScreen::for_identity(&ctx, identity, IdentitySendMode::Send);
+        screen.validated_destination = Some(ValidatedAddress::Core(testnet_core_address(9)));
+        screen.amount = Some(Amount::dash_from_credits(fee / 2));
+        let refusal = screen
+            .validate_and_send()
+            .expect_err("a balance that only covers the fee leaves nothing to withdraw");
+        assert!(
+            refusal.contains("Top up") && !refusal.contains(&format_credits_as_dash(0)),
+            "the refusal must not suggest an amount when none works: {refusal}"
         );
     }
 

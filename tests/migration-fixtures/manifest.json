@@ -156,14 +156,13 @@
       },
       "artifact": {
         "workflow_name": "migration-fixture-bootstrap.yml",
-        "workflow_run_id": null,
+        "workflow_run_id": 38359167767,
         "artifact_name": "migration-fixture-v1.0.0-weekly.20260929-wallet-only",
         "archive_filename": "v1.0.0-weekly.20260929-wallet-only.tar.zst",
         "sha256": "25b141aa57187ca64dbd45ff0040d8cb0be97ccd78077188ae438ecb0a2fd644",
         "bytes": 267239,
-        "retention_days": null,
-        "expires_at": null,
-        "staging_note": "Packed, not uploaded yet. The archive exceeds the archive_b64 limit, so it reaches Actions storage through migration-fixture-bootstrap.yml with a temporary draft release (release_tag input)."
+        "retention_days": 90,
+        "expires_at": "2027-01-11T06:52:03Z"
       },
       "expect": {
         "wallet_aliases": [
@@ -200,14 +199,13 @@
       },
       "artifact": {
         "workflow_name": "migration-fixture-bootstrap.yml",
-        "workflow_run_id": null,
+        "workflow_run_id": 38359179297,
         "artifact_name": "migration-fixture-v1.0.0-weekly.20261006-wallet-only",
         "archive_filename": "v1.0.0-weekly.20261006-wallet-only.tar.zst",
         "sha256": "08ee4723a3409393e97cafde56f946483d21c0e5b748a3c144329ebada818493",
         "bytes": 267550,
-        "retention_days": null,
-        "expires_at": null,
-        "staging_note": "Packed, not uploaded yet. The archive exceeds the archive_b64 limit, so it reaches Actions storage through migration-fixture-bootstrap.yml with a temporary draft release (release_tag input)."
+        "retention_days": 90,
+        "expires_at": "2027-01-11T06:52:10Z"
       },
       "expect": {
         "wallet_aliases": [

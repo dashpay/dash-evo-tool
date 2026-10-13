@@ -189,7 +189,9 @@ jobs:
           path: fixture
 
       - name: Attest the archive and its manifest entry
-        uses: actions/attest-build-provenance@v1
+        # With only a subject it writes SLSA build provenance, which is what
+        # `gh attestation verify` checks by default.
+        uses: actions/attest@v4
         with:
           subject-path: "fixture/*"
 

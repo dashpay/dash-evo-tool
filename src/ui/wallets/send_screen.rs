@@ -2349,6 +2349,8 @@ impl WalletSendScreen {
             ));
         }
 
+        self.ensure_identity_amount_leaves_fee(amount_credits, identity_balance)?;
+
         let to_identity_id = self
             .validated_destination
             .as_ref()
@@ -5873,6 +5875,34 @@ mod tests {
                 "a transfer only an unreadable key could sign must not reach the confirmation"
             );
         }
+    }
+
+    /// The fee of a transfer to another identity is paid on top from the same
+    /// balance, so an amount that leaves nothing for it must be refused.
+    #[test]
+    fn identity_transfer_to_an_identity_rejects_an_amount_that_leaves_no_fee() {
+        use crate::model::qualified_identity::withdrawal_key_tests::key;
+        let (ctx, _dir) = offline_ctx();
+        let transfer_key = key(1, dash_sdk::dpp::identity::Purpose::TRANSFER);
+        let sender = sender_with_keys(vec![transfer_key.clone()], vec![transfer_key]);
+        let highest = sender.identity.balance() - ctx.fee_estimator().estimate_credit_transfer();
+        let mut screen = WalletSendScreen::for_identity(&ctx, sender, IdentitySendMode::Send);
+        screen.validated_destination = Some(identity_destination());
+
+        screen.amount = Some(Amount::dash_from_credits(highest));
+        assert!(
+            screen.validate_and_send().is_ok(),
+            "the amount Max offers must be accepted"
+        );
+
+        screen.amount = Some(Amount::dash_from_credits(highest + 1));
+        let refusal = screen
+            .validate_and_send()
+            .expect_err("an amount that cannot also pay the fee must not reach the confirmation");
+        assert!(
+            refusal.contains(&format_credits_as_dash(highest)),
+            "the refusal must name the highest amount that works: {refusal}"
+        );
     }
 
     fn asset_lock_request_id(task: Option<BackendTask>) -> u64 {

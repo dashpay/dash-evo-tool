@@ -1751,7 +1751,7 @@ As Alex, setting up a social profile to unlock DashPay contacts is clearly optio
 - Contacts tab shows `SocialProfileGateCard` when the active identity has no DashPay profile; the primary CTA deep-links to Profile via `AppAction::SwitchIdentityHubTab(Settings)`.
 - Profile tab hosts the social-profile block where Display name and avatar can be edited. Display name is used on identity cards, navigation, and identity selectors; without it, a username or shortened identity ID is shown. Local identity names are not offered in profile, create, or load screens. Masternode administrative names and contact nicknames remain available.
 - Existing identity records remain readable, including records with a saved local name. The saved local name never affects a User identity label. Profile changes update names across the app; identities without a profile continue to use payments and usernames.
-- Home tab renders a `Set up your social profile` entry in the onboarding checklist with a skip affordance — opting in is never forced.
+- Home tab's setup checklist offers an optional `Set a display name` step that opens Profile. `Hide this for now` hides the whole checklist — opting in is never forced.
 
 ### IDH-005: Bulk identity creation [Gap]
 **Persona:** Priya, Jordan

@@ -59,12 +59,13 @@ fn count(harness: &App, text: &str) -> usize {
 }
 
 fn test_identity(network: Network) -> QualifiedIdentity {
+    identity_with_id([0x54; 32], network)
+}
+
+fn identity_with_id(id: [u8; 32], network: Network) -> QualifiedIdentity {
     QualifiedIdentity {
-        identity: Identity::create_basic_identity(
-            Identifier::from([0x54; 32]),
-            PlatformVersion::latest(),
-        )
-        .expect("basic identity"),
+        identity: Identity::create_basic_identity(Identifier::from(id), PlatformVersion::latest())
+            .expect("basic identity"),
         associated_voter_identity: None,
         associated_operator_identity: None,
         associated_owner_key_id: None,
@@ -214,19 +215,49 @@ fn top_up_continues_in_background_on_space() {
     top_up_leaves_its_dialog(|harness| harness.key_press(egui::Key::Space));
 }
 
-/// The user sends a top-up to the background, leaves Add Funds and starts a
-/// transfer on Wallet Send, which now waits on its own result.
-fn wallet_send_waits_while_a_top_up_runs_in_background()
--> (App, BackendTaskContext, QualifiedIdentity) {
-    let (mut harness, identity) = mount_add_funds();
-    let dispatch = begin_top_up(&mut harness);
-    continue_in_background(&mut harness);
+/// A top-up of `identity`, as a send form prepares it. It is never run.
+fn top_up_of(identity: &QualifiedIdentity) -> BackendTask {
+    BackendTask::IdentityTask(IdentityTask::TopUpIdentityFromPlatformAddresses {
+        identity: identity.clone(),
+        inputs: Default::default(),
+        wallet_seed_hash: Default::default(),
+    })
+}
 
+/// A Wallet Send screen that confirmed a top-up of `recipient` and waits on
+/// it, with the dispatch it waits on.
+fn waiting_wallet_send(
+    harness: &App,
+    recipient: &QualifiedIdentity,
+) -> (WalletSendScreen, BackendTaskContext) {
     let app_context = harness.state().current_app_context().clone();
     let wallet = Wallet::new_from_seed([0x54; 64], app_context.network(), None, None)
         .expect("wallet fixture");
     let mut wallet_send = WalletSendScreen::new(&app_context, Arc::new(RwLock::new(wallet)));
-    wallet_send.mark_sending_for_test(BackendTaskContext::IdentityTopUp(identity.identity.id()));
+    let dispatch = wallet_send
+        .dispatch_send_for_test(top_up_of(recipient))
+        .expect("a confirmed send records its dispatch");
+    (wallet_send, dispatch)
+}
+
+/// What [`wallet_send_waits_while_a_top_up_runs_in_background`] leaves running.
+struct TwoTopUps {
+    harness: App,
+    /// The identity Add Funds tops up in the background, and that top-up.
+    add_funds: (QualifiedIdentity, BackendTaskContext),
+    /// The identity Wallet Send tops up, and the dispatch it waits on.
+    wallet_send: (QualifiedIdentity, BackendTaskContext),
+}
+
+/// The user sends a top-up to the background, leaves Add Funds and starts a
+/// top-up of another identity on Wallet Send, which now waits on its own result.
+fn wallet_send_waits_while_a_top_up_runs_in_background() -> TwoTopUps {
+    let (mut harness, identity) = mount_add_funds();
+    let dispatch = begin_top_up(&mut harness);
+    continue_in_background(&mut harness);
+
+    let other = identity_with_id([0x55; 32], identity.network);
+    let (wallet_send, own_dispatch) = waiting_wallet_send(&harness, &other);
     let state = harness.state_mut();
     state.screen_stack.clear();
     state
@@ -238,7 +269,11 @@ fn wallet_send_waits_while_a_top_up_runs_in_background()
         1,
         "Wallet Send waits on its own transfer"
     );
-    (harness, dispatch, identity)
+    TwoTopUps {
+        harness,
+        add_funds: (identity, dispatch),
+        wallet_send: (other, own_dispatch),
+    }
 }
 
 /// Wallet Send completes on a top-up result, so a background top-up ending
@@ -246,8 +281,11 @@ fn wallet_send_waits_while_a_top_up_runs_in_background()
 #[test]
 fn background_top_up_success_leaves_wallet_send_waiting() {
     in_app(|| {
-        let (mut harness, dispatch, identity) =
-            wallet_send_waits_while_a_top_up_runs_in_background();
+        let TwoTopUps {
+            mut harness,
+            add_funds: (identity, dispatch),
+            wallet_send: (other, own_dispatch),
+        } = wallet_send_waits_while_a_top_up_runs_in_background();
 
         deliver(&mut harness, topped_up(dispatch, &identity));
         assert_eq!(
@@ -263,9 +301,7 @@ fn background_top_up_success_leaves_wallet_send_waiting() {
         );
         assert_eq!(count(&harness, BACKGROUND_BANNER), 0);
 
-        // Wallet Send's own top-up reports without a dispatch from Add Funds.
-        let own_transfer = BackendTaskContext::IdentityTopUp(identity.identity.id());
-        deliver(&mut harness, topped_up(own_transfer, &identity));
+        deliver(&mut harness, topped_up(own_dispatch, &other));
         assert_eq!(
             count(&harness, WALLET_SEND_COMPLETE),
             1,
@@ -313,8 +349,11 @@ fn reopened_add_funds_shows_the_balance_its_top_up_left() {
 #[test]
 fn background_top_up_failure_leaves_wallet_send_waiting() {
     in_app(|| {
-        let (mut harness, dispatch, _identity) =
-            wallet_send_waits_while_a_top_up_runs_in_background();
+        let TwoTopUps {
+            mut harness,
+            add_funds: (_identity, dispatch),
+            ..
+        } = wallet_send_waits_while_a_top_up_runs_in_background();
         let error = TaskError::NoIdentitiesFound;
         let message = error.to_string();
 
@@ -351,11 +390,7 @@ fn a_failed_load_of_another_screen_leaves_wallet_send_waiting() {
         let mut harness = mount_app(RootScreenType::RootScreenWalletsBalances);
         let app_context = harness.state().current_app_context().clone();
         let identity = test_identity(app_context.network());
-        let wallet = Wallet::new_from_seed([0x54; 64], app_context.network(), None, None)
-            .expect("wallet fixture");
-        let mut wallet_send = WalletSendScreen::new(&app_context, Arc::new(RwLock::new(wallet)));
-        let own_send = BackendTaskContext::IdentityTopUp(identity.identity.id());
-        wallet_send.mark_sending_for_test(own_send.clone());
+        let (wallet_send, own_send) = waiting_wallet_send(&harness, &identity);
         harness
             .state_mut()
             .screen_stack
@@ -445,13 +480,7 @@ fn top_up_form(harness: &mut App) -> &mut WalletSendScreen {
 /// the dispatch. The task itself is not run: no funds may move in a test.
 fn confirm_top_up(harness: &mut App, identity: &QualifiedIdentity) -> BackendTaskContext {
     let dispatch = top_up_form(harness)
-        .dispatch_send_for_test(BackendTask::IdentityTask(
-            IdentityTask::TopUpIdentityFromPlatformAddresses {
-                identity: identity.clone(),
-                inputs: Default::default(),
-                wallet_seed_hash: Default::default(),
-            },
-        ))
+        .dispatch_send_for_test(top_up_of(identity))
         .expect("a confirmed send records its dispatch");
     harness.run_steps(3);
     assert_eq!(count(harness, WALLET_SEND_WAITING), 1);

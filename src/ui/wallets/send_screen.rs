@@ -3810,13 +3810,6 @@ impl WalletSendScreen {
 
     #[cfg(feature = "testing")]
     #[doc(hidden)]
-    /// Enters the waiting state a dispatched transfer leaves the screen in.
-    pub fn mark_sending_for_test(&mut self, request: BackendTaskContext) {
-        self.mark_sending(request);
-    }
-
-    #[cfg(feature = "testing")]
-    #[doc(hidden)]
     /// Dispatches `task` the way a confirmed send does and returns its context,
     /// without handing the task to the backend.
     pub fn dispatch_send_for_test(&mut self, task: BackendTask) -> Option<BackendTaskContext> {

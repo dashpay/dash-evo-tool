@@ -843,6 +843,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Masternodes → Votes → History now opens with the contest that ended most
+  recently at the top, instead of in name order. Contests that ended at the
+  same time follow their names. The column headings show which column orders
+  the list and in which direction; choosing a heading reorders the list as
+  before.
+
 - The weekly release gate accepts a manual Tests run in place of the Monday
   scheduled checks when it ran on the release branch for the exact commit
   being released, was created after the scheduled run, and passed both fixture

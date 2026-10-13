@@ -180,4 +180,78 @@ mod loads {
             );
         });
     }
+
+    /// Home asks for its payment history, then Send is opened before the answer
+    /// arrives. The answer must still reach the hub behind that screen: Cancel
+    /// returns without refreshing, so nothing would ask for it again.
+    #[test]
+    fn payment_history_reaches_the_hub_behind_an_open_send_screen() {
+        use crate::support::mount_app;
+        use dash_evo_tool::app::TaskResult;
+        use dash_evo_tool::backend_task::BackendTaskSuccessResult;
+        use dash_evo_tool::ui::wallets::send_screen::IdentitySendMode;
+        use dash_evo_tool::ui::{RootScreenType, Screen, ScreenType};
+        with_isolated_data_dir(|| {
+            let runtime = tokio::runtime::Runtime::new().expect("runtime");
+            let _guard = runtime.enter();
+            let mut app = mount_app(RootScreenType::RootScreenWalletsBalances);
+            let app_context = app.state().current_app_context().clone();
+            seed_identity_that_can_move_funds(&app_context);
+            let identity = app_context.resolve_selected_identity().expect("identity");
+
+            let mut hub = mount_hub(&app_context);
+            let request = step_until(&mut hub, "the payment history load", payments_load);
+            assert!(hub.query_by_label("Recent payments").is_none());
+
+            // The hub goes behind the Send screen it opened.
+            let fresh_hub = IdentityHubScreen::new(&app_context);
+            let hub_screen = std::mem::replace(&mut hub.state_mut().0, fresh_hub);
+            let state = app.state_mut();
+            state.main_screens.insert(
+                RootScreenType::RootScreenIdentityHub,
+                Screen::IdentityHubScreen(hub_screen),
+            );
+            state.selected_main_screen = RootScreenType::RootScreenIdentityHub;
+            state.screen_stack.push(
+                ScreenType::IdentitySendScreen(identity, IdentitySendMode::Send)
+                    .create_screen(&app_context),
+            );
+
+            runtime
+                .block_on(app.state().task_result_sender.send(TaskResult::Success {
+                    context: request,
+                    result: Box::new(BackendTaskSuccessResult::DashPayPaymentHistory(vec![(
+                        String::new(),
+                        "Alice".into(),
+                        1_000,
+                        true,
+                        String::new(),
+                    )])),
+                }))
+                .expect("deliver the payment history");
+            // One frame drains the result queue before it renders.
+            app.step();
+
+            app.get_by_label("Cancel").click_accesskit();
+            app.step();
+            assert!(
+                app.state().screen_stack.is_empty(),
+                "Cancel must return to the hub"
+            );
+
+            let Some(Screen::IdentityHubScreen(hub_screen)) = app
+                .state_mut()
+                .main_screens
+                .remove(&RootScreenType::RootScreenIdentityHub)
+            else {
+                panic!("the hub must still be a root screen");
+            };
+            hub.state_mut().0 = hub_screen;
+            hub.run();
+            assert!(
+                hub.query_by_label("Recent payments").is_some(),
+                "the payment history that arrived behind the Send screen must be shown"
+            );
+        });
+    }
 }

@@ -5111,19 +5111,109 @@ mod tests {
         );
     }
 
-    #[test]
-    fn identity_move_to_wallet_rejects_external_addresses() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn identity_move_to_wallet_withdraws_only_to_an_address_of_a_loaded_wallet() {
+        use crate::model::wallet::DerivationPathHelpers;
+        const SEED: [u8; 64] = [9; 64];
+
         let (ctx, _dir) = offline_ctx();
+        let (sender, _receiver) = tokio::sync::mpsc::channel(32);
+        ctx.ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+            sender,
+            ctx.egui_ctx().clone(),
+        ))
+        .await
+        .expect("offline wallet backend");
+        let wallet = Wallet::new_from_seed(SEED, Network::Testnet, None, None).expect("wallet");
+        let (seed_hash, _) = ctx
+            .register_wallet(
+                wallet,
+                &SEED,
+                crate::model::wallet::birth_height::WalletOrigin::Fresh,
+            )
+            .expect("loaded wallet");
+        ctx.wallet_backend()
+            .expect("wallet backend")
+            .register_wallet_from_seed(&seed_hash, &SEED, None)
+            .await
+            .expect("wallet addresses");
+        // `register_wallet` also registers in the background, and either
+        // registration can return just before the addresses are published.
+        let owned = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            loop {
+                let receiving = ctx.snapshot_address_paths(&seed_hash).into_iter().find_map(
+                    |(address, path)| path.is_bip44_external(Network::Testnet).then_some(address),
+                );
+                if let Some(address) = receiving {
+                    break address;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("a loaded wallet owns a receiving address");
+        let external = testnet_core_address(9);
+        assert_ne!(owned, external);
+
+        let identity = bound_identity();
+        let amount = Amount::new_dash(0.01);
         let mut screen =
-            WalletSendScreen::for_identity(&ctx, bound_identity(), IdentitySendMode::MoveToWallet);
-        screen.validated_destination = Some(ValidatedAddress::Core(testnet_core_address(9)));
-        screen.amount = Some(Amount::new_dash(0.01));
-        assert!(screen.validated_send_route().is_err());
+            WalletSendScreen::for_identity(&ctx, identity.clone(), IdentitySendMode::MoveToWallet);
+        screen.amount = Some(amount.clone());
+        screen.validated_destination = Some(ValidatedAddress::Core(external));
+        assert!(
+            screen.validated_send_route().is_err(),
+            "an address outside the loaded wallets must be refused"
+        );
         screen.reset_form();
         assert!(matches!(
             screen.selected_source,
             Some(SourceSelection::Identity(_))
         ));
+
+        screen.amount = Some(amount.clone());
+        screen.validated_destination = Some(ValidatedAddress::Core(owned.clone()));
+        let observed_action = Rc::new(RefCell::new(AppAction::None));
+        let captured_action = observed_action.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(700.0, 500.0))
+            .build_ui_state(
+                move |ui, screen: &mut WalletSendScreen| {
+                    let mut action = screen.render_send_button(ui);
+                    action |= screen.render_send_confirmation(ui);
+                    if !matches!(action, AppAction::None) {
+                        *captured_action.borrow_mut() = action;
+                    }
+                },
+                screen,
+            );
+        harness.run();
+        click_in_one_frame(&mut harness, "Withdraw Credits");
+        assert!(
+            matches!(*observed_action.borrow(), AppAction::None),
+            "nothing is dispatched before the user confirms"
+        );
+        harness.get_by_label("Confirm and Send").click_accesskit();
+        harness.step();
+        match &*observed_action.borrow() {
+            AppAction::BackendTask(BackendTask::IdentityTask(
+                IdentityTask::WithdrawFromIdentity(sender, destination, credits, _),
+            )) => {
+                assert_eq!(sender.identity.id(), identity.identity.id());
+                assert_eq!(destination.as_ref(), Some(&owned));
+                assert_eq!(*credits, amount.value());
+            }
+            other => panic!("expected the bound identity's withdrawal, got {other:?}"),
+        }
+
+        ctx.remove_wallet(&seed_hash).expect("wallet removal");
+        let screen = harness.state_mut();
+        screen.amount = Some(amount);
+        screen.validated_destination = Some(ValidatedAddress::Core(owned));
+        assert!(
+            screen.validated_send_route().is_err(),
+            "an address stops being a valid destination once its wallet is removed"
+        );
     }
 
     #[test]

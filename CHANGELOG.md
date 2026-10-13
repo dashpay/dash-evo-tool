@@ -843,6 +843,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- A release's migration fixture can be captured by the new Migration Fixture
+  Capture workflow and attached to that release instead of being recorded in
+  the fixture manifest. Fixture coverage accepts a release that carries its
+  fixture, and the migration tests use the eight newest attached fixtures after
+  verifying their build attestation and checksum. Manifest fixtures stored as
+  build artifacts work as before.
+
 - The weekly release gate accepts a manual Tests run in place of the Monday
   scheduled checks when it ran on the release branch for the exact commit
   being released, was created after the scheduled run, and passed both fixture

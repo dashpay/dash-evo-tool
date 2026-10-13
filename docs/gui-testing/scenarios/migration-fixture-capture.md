@@ -6,6 +6,10 @@ has written a data directory holding the
 [`wallet-identity-dpns`](../../../tests/migration-fixtures/profiles/wallet-identity-dpns.md)
 profile, and that directory has been packed as a fixture archive.
 
+**Scope:** hand captures only. A current release's `wallet-only` fixture is
+captured and attached to the release by the `Migration Fixture Capture`
+workflow; see [`tests/migration-fixtures/README.md`](../../../tests/migration-fixtures/README.md).
+
 **Tier justification:** v0.9.3 predates det-cli, the MCP server and the SPV
 stack, so it has no headless entry point of any kind — the only way to make
 that binary write its own on-disk shapes is to drive its real GUI. Nothing in

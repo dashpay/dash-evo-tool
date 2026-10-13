@@ -1,0 +1,217 @@
+name: Migration Fixture Capture
+
+# Produces the migration fixture of one release with that release's own det-cli
+# and attaches it to the release, so no commit has to record it. The newest
+# older fixture is advanced by scripts/migration-fixtures/chain.py; the result
+# is an archive plus its manifest entry, both attested, which
+# download-fixtures.sh and check-coverage.sh find on the published release.
+# See tests/migration-fixtures/README.md.
+#
+# Three jobs keep the release binaries away from every write token:
+# - `capture` runs them. It holds read permissions only, receives no secret,
+#   and starts them from an emptied environment.
+# - `attest` signs the two files. It never executes or unpacks them.
+# - `attach` uploads them to the release. Skipped on a dry run.
+#
+# USAGE, a published release without a fixture (oldest first):
+#   gh workflow run migration-fixture-capture.yml --repo dashpay/dash-evo-tool \
+#     --ref v1.0-dev -f tag=v1.0.0-weekly.20261013 -f attach=true
+# Only a run from v1.0-dev produces a fixture the consumers trust: they verify
+# the attestation against this workflow on that branch. A run from any other
+# ref is for trying the capture out; leave `attach` off there, because an
+# attached fixture that fails verification fails the Tests workflow.
+#
+# A draft release is visible only to tokens with push access, so a manual run
+# cannot capture one: its binary comes from the release assets. A workflow that
+# calls this one passes its own build through `binary_artifact` instead, and
+# must grant `contents: write`, `actions: read`, `id-token: write` and
+# `attestations: write`: a called job cannot hold more than its caller grants.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "Release tag to capture, e.g. v1.0.0-weekly.20261013"
+        required: true
+        type: string
+      binary_artifact:
+        description: "Artifact of the calling run that holds dash-evo-tool-linux-x86_64.zip. Empty downloads the release asset."
+        required: false
+        type: string
+        default: ""
+      attach:
+        description: "Attach the fixture to the release"
+        required: false
+        type: boolean
+        default: true
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Published release tag to capture, e.g. v1.0.0-weekly.20261013"
+        required: true
+        type: string
+      attach:
+        description: "Attach the fixture to the release. Off is a dry run."
+        required: false
+        type: boolean
+        default: false
+  # Registration only: lets the pull request that adds or edits this file
+  # dispatch it with `--ref` before it reaches the default branch. No job runs.
+  pull_request:
+    paths:
+      - ".github/workflows/migration-fixture-capture.yml"
+
+concurrency:
+  group: migration-fixture-capture-${{ inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+permissions: {}
+
+env:
+  FIXTURE: migration-fixture-${{ inputs.tag }}-wallet-only
+
+jobs:
+  capture:
+    name: Capture fixture
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read # Fixture artifacts of earlier runs; the caller's binary.
+      attestations: read # Verify release binaries and attached fixtures.
+    env:
+      TAG: ${{ inputs.tag }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Download the release binary from the calling run
+        if: inputs.binary_artifact != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.binary_artifact }}
+          path: ${{ runner.temp }}/binaries/new
+
+      - name: Resolve the binaries and the source fixture
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BINARY_ARTIFACT: ${{ inputs.binary_artifact }}
+          ASSET: dash-evo-tool-linux-x86_64.zip
+        run: |
+          set -euo pipefail
+          binaries="$RUNNER_TEMP/binaries"
+          command -v zstd >/dev/null || sudo apt-get install -y zstd
+          # The tag becomes part of file names: hold it to SemVer first.
+          jq -L scripts/migration-fixtures -en --arg tag "$TAG" 'include "semver"; $tag | semver_key' >/dev/null
+
+          # A release's Linux build, verified as built by this repository's release workflow.
+          release_binary() { # TAG DIRECTORY
+            mkdir -p "$2"
+            gh release download "$1" --repo "$GITHUB_REPOSITORY" --pattern "$ASSET" --dir "$2"
+            gh attestation verify "$2/$ASSET" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" >/dev/null
+          }
+          if [ -z "$BINARY_ARTIFACT" ]; then release_binary "$TAG" "$binaries/new"; fi
+
+          scripts/migration-fixtures/download-fixtures.sh --strict \
+            --dest "$RUNNER_TEMP/fixtures" --merged-manifest "$RUNNER_TEMP/fixtures/manifest.json"
+          gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+            --jq '.[] | select(.draft == false) | .tag_name' >"$RUNNER_TEMP/published.txt"
+          python3 scripts/migration-fixtures/release_fixture.py source --tag "$TAG" \
+            --manifest "$RUNNER_TEMP/fixtures/manifest.json" \
+            --published "$RUNNER_TEMP/published.txt" >"$RUNNER_TEMP/source.json"
+          release_binary "$(jq -r .git_tag "$RUNNER_TEMP/source.json")" "$binaries/source"
+          for side in new source; do unzip -q "$binaries/$side/$ASSET" -d "$binaries/$side"; done
+          gh api -H 'Accept: application/vnd.github.raw' \
+            "repos/$GITHUB_REPOSITORY/contents/Cargo.toml?ref=$TAG" |
+            sed -n 's/^platform-wallet = .*rev = "\([0-9a-f]\{40\}\)".*/\1/p' |
+            head -n1 >"$RUNNER_TEMP/platform-rev.txt"
+
+      # No token in this step: it is the only one that runs release binaries.
+      - name: Advance the fixture with the release's own det-cli
+        run: |
+          set -euo pipefail
+          repo="$PWD"
+          binaries="$RUNNER_TEMP/binaries"
+          stage="$RUNNER_TEMP/chain"
+          out="$RUNNER_TEMP/fixture"
+          mkdir -m 700 "$stage" "$stage/home" "$stage/cwd"
+          mkdir "$out"
+          source_tag="$(jq -r .git_tag "$RUNNER_TEMP/source.json")"
+          new_cli="$binaries/new/dash-evo-tool/det-cli"
+          # They see no runner variable and no real HOME either.
+          isolated() { (cd "$stage/cwd" && env -i PATH=/usr/bin:/bin HOME="$stage/home" LANG=C.UTF-8 "$@"); }
+          isolated python3 -I "$repo/scripts/migration-fixtures/chain.py" \
+            --archive "$RUNNER_TEMP/fixtures/$(jq -r .artifact.archive_filename "$RUNNER_TEMP/source.json")" \
+            --sha256 "$(jq -r .artifact.sha256 "$RUNNER_TEMP/source.json")" \
+            --source-tag "$source_tag" \
+            --release "$source_tag=$binaries/source/dash-evo-tool/det-cli" \
+            --release "$TAG=$new_cli" \
+            --work-dir "$stage/work" --output-dir "$stage/out"
+          version="$(isolated "$new_cli" --version)"
+          cp "$stage/out/$TAG-wallet-only.tar.zst" "$out/$FIXTURE.tar.zst"
+          python3 scripts/migration-fixtures/release_fixture.py build --tag "$TAG" \
+            --receipt "$stage/out/$TAG-wallet-only.receipt.json" --archive "$out/$FIXTURE.tar.zst" \
+            --det-version "${version#det-cli }" \
+            --platform-rev "$(cat "$RUNNER_TEMP/platform-rev.txt")" \
+            --run-id "$GITHUB_RUN_ID" --out "$out/$FIXTURE.json"
+          {
+            echo "### Fixture for \`$TAG\`"
+            echo
+            echo "Advanced from \`$source_tag\`; archive sha256 \`$(jq -r .artifact.sha256 "$out/$FIXTURE.json")\`."
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Hand the fixture to the signing job
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.FIXTURE }}
+          path: ${{ runner.temp }}/fixture
+          retention-days: 90
+          if-no-files-found: error
+          # Already zstd-compressed; zipping it again gains nothing.
+          compression-level: 0
+
+  attest:
+    name: Attest fixture
+    needs: capture
+    runs-on: ubuntu-24.04
+    permissions:
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download the fixture
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.FIXTURE }}
+          path: fixture
+
+      - name: Attest the archive and its manifest entry
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: "fixture/*"
+
+  attach:
+    name: Attach fixture to the release
+    needs: [capture, attest]
+    if: inputs.attach
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download the fixture
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.FIXTURE }}
+          path: fixture
+
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" "fixture/$FIXTURE.tar.zst" "fixture/$FIXTURE.json" \
+            --clobber --repo "$GITHUB_REPOSITORY"

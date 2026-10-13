@@ -7,11 +7,10 @@
 #
 # WHY THIS IS NOT `actions/download-artifact`
 # -------------------------------------------
-# Fixtures are stored as GitHub Actions build artifacts, not Release assets (a
-# deliberate decision in the migration-matrix plan). The consequence is that the
-# artifact a matrix run needs was almost never produced by that run: the v0.9.3
-# baseline is uploaded once and then consumed by every future run, and each
-# release's fixture is uploaded by the capture job that follows that release.
+# Manifest fixtures are stored as GitHub Actions build artifacts. The consequence
+# is that the artifact a matrix run needs was almost never produced by that run:
+# a hand capture such as the v0.9.3 baseline is uploaded once and then consumed
+# by every future run.
 # `actions/download-artifact` without a `run-id` only sees the CURRENT run's
 # artifacts, so it finds nothing here. It does accept `run-id` + `github-token`
 # for cross-run downloads, but only one artifact per step and only when the id
@@ -33,6 +32,16 @@
 # name-pattern search cannot. If a maintainer later prefers the action, it is a
 # drop-in replacement for this script's fallback branch only.
 #
+# FIXTURES ATTACHED TO RELEASES
+# -----------------------------
+# migration-fixture-capture.yml attaches a release's fixture to that release: an
+# archive and its manifest entry, both attested. No commit records them, so with
+# --merged-manifest this script finds them on the published releases, verifies
+# them, and writes the manifest plus their entries for the matrix to read. The
+# attestation is the only thing that vouches for an attached fixture — anyone
+# with write access can replace a release asset — so one that fails it is never
+# used. A release the manifest already covers is not looked at.
+#
 # ARTIFACT RETENTION is the standing hazard: artifacts expire (90 days by
 # default). An entry whose artifact has expired resolves to nothing and is
 # reported as such rather than silently skipped — see --strict.
@@ -43,6 +52,12 @@ MANIFEST=""
 DEST=""
 REPO="${GITHUB_REPOSITORY:-dashpay/dash-evo-tool}"
 STRICT=0
+MERGED_MANIFEST=""
+# Only fixtures the capture workflow attested from this branch are trusted.
+TRUSTED_REF="refs/heads/v1.0-dev"
+# Attached fixtures used per run, newest first. Provisional: every weekly adds
+# one, and the matrix boots each, so the number bounds CI time.
+RELEASE_FIXTURE_LIMIT=8
 
 die() {
     echo "::error::$*" >&2
@@ -60,6 +75,9 @@ usage: download-fixtures.sh --dest DIR [options]
   --repo OWNER/NAME  repository owning the artifacts (default: $GITHUB_REPOSITORY)
   --strict           exit non-zero when the manifest is empty or any entry
                      cannot be resolved (default: warn and continue)
+  --merged-manifest PATH
+                     also resolve the fixtures attached to published releases
+                     and write the manifest plus their entries to PATH
 EOF
 }
 
@@ -78,6 +96,10 @@ while [ $# -gt 0 ]; do
         shift
         ;;
     --strict) STRICT=1 ;;
+    --merged-manifest)
+        MERGED_MANIFEST="${2:-}"
+        shift
+        ;;
     -h | --help)
         usage
         exit 0
@@ -258,6 +280,58 @@ The artifact does not match what the manifest describes. Refusing to run migrati
 
     resolved=$((resolved + 1))
 done <<<"$ENTRIES"
+
+# --------------------------------------------------------------------------
+# Fixtures attached to releases.
+# --------------------------------------------------------------------------
+
+if [ -n "$MERGED_MANIFEST" ]; then
+    releases="$(gh api "repos/$REPO/releases" --paginate | jq -s 'add // []')" ||
+        die "Could not list releases for $REPO."
+    release_tags="$(jq -L "$SCRIPT_DIR" -r --argjson limit "$RELEASE_FIXTURE_LIMIT" \
+        --slurpfile manifest "$MANIFEST" 'include "semver";
+        [$manifest[0] | if type == "array" then . else (.fixtures // []) end | .[].git_tag] as $covered
+        | [.[] | select(.draft == false) | .tag_name as $tag
+           | "migration-fixture-\($tag)-wallet-only" as $fixture
+           | select(any(.assets[].name; . == "\($fixture).tar.zst")
+                    and any(.assets[].name; . == "\($fixture).json"))
+           | $tag | select(try (semver_key | true) catch false)]
+        | sort_by(semver_key) | reverse | .[:$limit] | map(select(IN($covered[]) | not)) | .[]' <<<"$releases")" ||
+        die "Could not read the release list of $REPO."
+
+    entries="$DEST/.release-fixtures.jsonl"
+    : >"$entries"
+    while IFS= read -r tag; do
+        [ -n "$tag" ] || continue
+        note "Fixture attached to release '$tag'"
+        fixture="migration-fixture-$tag-wallet-only"
+        stage="$DEST/.staging-release-$tag"
+        rm -rf "$stage"
+        mkdir -p "$stage"
+        # The entry is what the attestation vouches for; it pins the archive's
+        # size and digest, which release_fixture.py then holds the archive to.
+        if gh release download "$tag" --repo "$REPO" --dir "$stage" \
+            --pattern "$fixture.tar.zst" --pattern "$fixture.json" &&
+            gh attestation verify "$stage/$fixture.json" --repo "$REPO" \
+                --signer-workflow "$REPO/.github/workflows/migration-fixture-capture.yml" \
+                --source-ref "$TRUSTED_REF" >/dev/null &&
+            python3 "$SCRIPT_DIR/release_fixture.py" check --tag "$tag" \
+                --metadata "$stage/$fixture.json" --archive "$stage/$fixture.tar.zst"; then
+            jq -c . "$stage/$fixture.json" >>"$entries"
+            mv "$stage/$fixture.tar.zst" "$DEST/"
+            resolved=$((resolved + 1))
+            note "  attestation and checksum OK"
+        else
+            warn "Fixture attached to release '$tag' could not be downloaded or verified as attested by migration-fixture-capture.yml on $TRUSTED_REF — not used."
+            failed=$((failed + 1))
+        fi
+        rm -rf "$stage"
+    done <<<"$release_tags"
+    jq --slurpfile attached "$entries" \
+        'if type == "array" then {fixtures: .} else . end | .fixtures += $attached' \
+        "$MANIFEST" >"$MERGED_MANIFEST"
+    rm -f "$entries"
+fi
 
 note "Resolved $resolved fixture(s) into $DEST; $failed unresolved."
 

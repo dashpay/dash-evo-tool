@@ -10,8 +10,9 @@ the current build: it must come from the old binary itself, because the whole
 point is to exercise the on-disk shapes that binary actually wrote — schema
 version, table set, blob encodings, vault format, config keys.
 
-The manifest's wallet archives live outside git as GitHub Actions build artifacts;
-[`manifest.json`](manifest.json) indexes them. The additional
+The wallet archives live outside git. Hand captures are GitHub Actions build
+artifacts indexed by [`manifest.json`](manifest.json); a release's own fixture
+is attached to that release (see [Storage model](#storage-model)). The additional
 [`v0.9.3-public-identities`](v0.9.3-public-identities/PROVENANCE.md) profile is a
 small, checked-in SQL snapshot containing only public explorer data, written
 using the actual v0.9.3 schema and serializer. It contains a user identity with
@@ -163,14 +164,48 @@ covered by the [exception above](#authorized-mainnet-fixture-exception).
 
 ## Storage model
 
-The manifest's fixture archives are stored as **GitHub Actions build artifacts**
-(`actions/upload-artifact` / `actions/download-artifact`), not as GitHub
-Release assets.
+Fixture archives live in one of two places:
+
+- **Attached to the release they belong to.** `Migration Fixture Capture`
+  (`.github/workflows/migration-fixture-capture.yml`) advances the newest older
+  fixture with the release's own `det-cli` (`release-chain`) and uploads two
+  release assets: `migration-fixture-<git_tag>-wallet-only.tar.zst` and
+  `migration-fixture-<git_tag>-wallet-only.json`, the archive's manifest entry.
+  No commit records them.
+- **As GitHub Actions build artifacts indexed by `manifest.json`.** Hand
+  captures and every fixture recorded before releases carried their own.
 
 The bundled public-identity SQL snapshot and authorized mainnet database live
-in git with their provenance; the artifact rules below do not apply to them.
+in git with their provenance; none of the rules below apply to them.
 
-Consequences that any workflow consuming this directory must handle:
+### Fixtures attached to releases
+
+- **Found, not listed.** `check-coverage.sh` counts a published release as
+  covered when it carries both assets. `download-fixtures.sh --merged-manifest`
+  downloads them and writes the manifest plus their entries to the file the
+  matrix reads. Draft releases are invisible to both. An entry in
+  `manifest.json` wins over the assets of the same release.
+- **Verified before use.** A release asset can be replaced by anyone with write
+  access, so the downloader accepts a fixture only if the build attestation of
+  its entry names `migration-fixture-capture.yml` on `v1.0-dev`, the entry
+  describes exactly that release, and the archive matches the entry's size and
+  SHA-256. An entry may only describe a password-free, offline `wallet-only`
+  profile and may carry no field outside the manifest schema. A fixture that
+  fails any check is never used, and fails the `Tests` workflow.
+- **The newest 8 are used.** Every weekly adds a fixture and the matrix boots
+  each one, so the downloader takes the 8 newest attached fixtures
+  (`RELEASE_FIXTURE_LIMIT`, a provisional number). Coverage still requires
+  every published release to carry one.
+- **No expiry and no renewal.** Release assets do not expire; the renewal
+  workflow below never sees them.
+- **Capturing a published release that has none**, oldest first:
+  `gh workflow run migration-fixture-capture.yml --ref v1.0-dev -f tag=<git_tag> -f attach=true`.
+  The run refuses to skip an older published release without a fixture, and
+  refuses a release that already has one. Without `attach=true` it is a dry run.
+
+### Fixtures stored as build artifacts
+
+Consequences that any workflow consuming these must handle:
 
 - **Artifacts expire.** The repository default is bounded (typically 90 days).
   A baseline that has to survive every future matrix run therefore needs an
@@ -357,6 +392,12 @@ cannot be supplied headlessly. Archive that completed hop, then resume the CLI
 chain from it. Never use today's binary to manufacture an older release's data.
 
 ## Adding a fixture for a new version
+
+A release's own `wallet-only` fixture is captured and attached by
+`Migration Fixture Capture`, as described under
+[Storage model](#storage-model). The steps below are for a hand capture — a
+profile that workflow cannot produce, such as a protected wallet, an identity,
+or a release without `det-cli`.
 
 1. **Pick the profile.** See [`profiles/`](profiles/). `wallet-only` is the
    floor; `wallet-identity-dpns` is what the baseline matrix asserts against.

@@ -190,7 +190,7 @@ pub(crate) fn restore_top_up_background_banner(ctx: &egui::Context) {
 
 /// Follow the top-up sent as `dispatch` with the progress banner instead of
 /// the blocking overlay. The banner outlives the screen.
-fn send_top_up_to_background(ctx: &egui::Context, dispatch: &BackendTaskContext) {
+pub(crate) fn send_top_up_to_background(ctx: &egui::Context, dispatch: &BackendTaskContext) {
     let mut top_ups = top_ups_in_flight(ctx);
     let Some(top_up) = top_ups
         .iter_mut()

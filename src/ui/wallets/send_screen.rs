@@ -36,7 +36,8 @@ use crate::ui::components::wallet_unlock_popup::{
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::identity::funding_common::{FUNDING_FEE_NOT_COVERED, network_fee_refusal};
 use crate::ui::identity::top_up_identity_screen::{
-    top_up_awaits_result, top_up_in_flight_for, track_top_up_sent_elsewhere,
+    send_top_up_to_background, top_up_awaits_result, top_up_in_flight_for,
+    track_top_up_sent_elsewhere,
 };
 use crate::ui::state::AssetLockBalanceCache;
 use crate::ui::theme::{ComponentStyles, DashColors};
@@ -656,6 +657,12 @@ impl WalletSendScreen {
         // The top-up may have succeeded, so the form must not offer it again.
         self.send_banner.take_and_clear();
         self.reset_form();
+    }
+
+    /// What confirming a send does: show its progress and dispatch it.
+    fn confirm_send(&mut self, ctx: &Context, action: AppAction) -> AppAction {
+        self.set_send_progress_banner(ctx);
+        self.dispatch_send(action)
     }
 
     /// Dispatches a confirmed send under a context of its own, so that its
@@ -3731,8 +3738,7 @@ impl WalletSendScreen {
                 let Some(pending) = self.send_confirmation.take() else {
                     return AppAction::None;
                 };
-                self.set_send_progress_banner(ui.ctx());
-                self.dispatch_send(*pending.action)
+                self.confirm_send(ui.ctx(), *pending.action)
             }
             Some(ConfirmationStatus::Canceled) => {
                 self.send_confirmation = None;
@@ -3835,11 +3841,12 @@ impl WalletSendScreen {
 
     #[cfg(feature = "testing")]
     #[doc(hidden)]
-    /// Dispatches `task` the way a confirmed send does and returns its context,
-    /// without handing the task to the backend.
-    pub fn dispatch_send_for_test(&mut self, task: BackendTask) -> Option<BackendTaskContext> {
+    /// Confirms `task` the way the confirmation dialog does and returns its
+    /// context, without handing the task to the backend.
+    pub fn confirm_send_for_test(&mut self, task: BackendTask) -> Option<BackendTaskContext> {
+        let ctx = self.app_context.egui_ctx().clone();
         // The task is dropped on purpose: no funds may move in a test.
-        let _action = self.dispatch_send(AppAction::BackendTask(task));
+        let _action = self.confirm_send(&ctx, AppAction::BackendTask(task));
         self.pending_send.clone()
     }
 
@@ -4746,6 +4753,18 @@ impl WalletSendScreen {
                 | BackendTaskSuccessResult::RegisteredDpnsName { .. }
                 | BackendTaskSuccessResult::RefreshedOwnedDpnsNames
         )
+    }
+}
+
+/// A send keeps running when its form is closed, and nothing is left to end
+/// the form's progress banner, so the banner goes with the form. A top-up
+/// still in flight is followed by the background banner, as from Add Funds.
+impl Drop for WalletSendScreen {
+    fn drop(&mut self) {
+        self.send_banner.take_and_clear();
+        if let Some(dispatch) = &self.pending_send {
+            send_top_up_to_background(self.app_context.egui_ctx(), dispatch);
+        }
     }
 }
 
@@ -5990,6 +6009,28 @@ mod tests {
         assert!(
             refusal.contains(&format_credits_as_dash(highest)),
             "the refusal must name the highest amount that works: {refusal}"
+        );
+    }
+
+    /// A send keeps running when its form is closed, and nothing is left to
+    /// end the form's progress banner. The banner goes with the form.
+    #[test]
+    fn closing_the_form_takes_its_progress_banner_along() {
+        let (mut screen, _temp_dir) = send_screen();
+        let ctx = screen.app_context.egui_ctx().clone();
+        let send = BackendTask::WalletTask(WalletTask::GenerateReceiveAddress {
+            seed_hash: [0x49; 32],
+        });
+        let _action = screen.confirm_send(&ctx, AppAction::BackendTask(send));
+        assert!(
+            MessageBanner::has_global(&ctx),
+            "a confirmed send shows its progress"
+        );
+
+        drop(screen);
+        assert!(
+            !MessageBanner::has_global(&ctx),
+            "no progress banner may outlive the form that owns it"
         );
     }
 

@@ -33,7 +33,7 @@ use crate::model::dpns_voting::operator::{
     ChangesLeft, NodeSet, ResolvedNodeSet, VotingNode, relative_schedule_preset, time_left,
     vote_proof_can_decide,
 };
-use crate::model::dpns_voting::operator::{NodeExclusion, node_exclusion};
+use crate::model::dpns_voting::operator::{ListMembership, NodeExclusion, node_exclusion};
 use crate::model::dpns_voting::progress::needs_attention;
 use crate::model::dpns_voting::{
     DpnsCurrentVoteState, DpnsScheduledVoteKey, DpnsVoteFailure, DpnsVoteOperation,
@@ -49,8 +49,8 @@ use crate::ui::dpns::contest_card::node_label;
 use crate::ui::dpns::contest_card::{CardEvent, CardView};
 use crate::ui::dpns::copy::needs_attention_line;
 use crate::ui::dpns::copy::{
-    CAST_NEEDS_A_DECISION, CHANGE_VOTING_NODES_HINT, CLEAR_NEEDS_A_DECISION, NO_VOTING_NODE_HINT,
-    TRAY_NOTHING_PICKED,
+    CAST_NEEDS_A_DECISION, CHANGE_VOTING_NODES_HINT, CLEAR_NEEDS_A_DECISION, NO_LISTED_NODE_HINT,
+    NO_VOTING_NODE_HINT, TRAY_NOTHING_PICKED,
 };
 use crate::ui::dpns::copy::{
     JOURNAL_UNAVAILABLE_MESSAGE, LOCKED_FOR_GOOD, NAME_FILTER_LOOKALIKES_HINT, NOT_VOTED_YET,
@@ -1361,11 +1361,17 @@ impl DPNSScreen {
     }
 
     /// What to do when none of the nodes voted with can vote: pick other
-    /// nodes if a loaded one can, load one otherwise.
+    /// nodes if a loaded one can, load a listed one if every loaded node is
+    /// outside the masternode list, load a voting key otherwise. A node the
+    /// list holds, or may hold, votes once its key is loaded, so the key
+    /// comes before the list.
     fn no_voting_node_hint(&self) -> &'static str {
-        let can_vote = |node: &VotingNode| node_exclusion(node).is_none();
-        if self.voting_nodes.iter().any(can_vote) {
+        let nodes = &self.voting_nodes;
+        let unlisted = |node: &VotingNode| node.membership == ListMembership::NotListed;
+        if nodes.iter().any(|node| node_exclusion(node).is_none()) {
             CHANGE_VOTING_NODES_HINT
+        } else if !nodes.is_empty() && nodes.iter().all(unlisted) {
+            NO_LISTED_NODE_HINT
         } else {
             NO_VOTING_NODE_HINT
         }
@@ -5075,6 +5081,91 @@ mod tests {
             Arc::new(Mutex::new(held)),
             "Your nodes already hold these choices. Pick a different decision.",
         );
+    }
+
+    /// The loaded node has its voting key but is outside the masternode list:
+    /// Cast and the cards' choices name the list, since loading the key again
+    /// would change nothing.
+    #[tokio::test]
+    async fn cast_names_the_masternode_list_when_no_loaded_node_is_in_it() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        let (screen, _dir) = two_contest_screen().await;
+        {
+            let mut screen = screen.lock_recover();
+            let another_node = Identifier::from([200; 32]);
+            screen
+                .app_context
+                .set_masternode_list_membership(Some(BTreeMap::from([(another_node, true)])));
+            screen.rebuild_cards();
+            assert!(screen.resolved_nodes.included.is_empty(), "control");
+            let node = &screen.voting_nodes[0];
+            assert!(
+                node.has_voting_key && node.membership == ListMembership::NotListed,
+                "control: the node has its key and is outside the list"
+            );
+        }
+        assert_cast_waits(Arc::clone(&screen), NO_LISTED_NODE_HINT);
+
+        let mut harness = app_styled_harness(egui::vec2(1260.0, 1200.0), move |ui| {
+            screen.lock_recover().ui(ui);
+        });
+        harness
+            .get_all_by_role(Role::RadioButton)
+            .next()
+            .expect("a decision choice")
+            .hover();
+        harness.run();
+        assert!(
+            harness.query_by_label(NO_LISTED_NODE_HINT).is_some(),
+            "a greyed-out choice does not name the masternode list"
+        );
+    }
+
+    /// Which hint the loaded nodes call for when none of the nodes voted with
+    /// can vote: the one whose advice can actually help.
+    #[test]
+    fn no_voting_node_hint_names_what_can_help() {
+        use crate::model::dpns_voting::operator::VotingNodeKind;
+        use ListMembership::{Listed, NotListed, Unknown};
+        let (ctx, _dir) = kv_ctx();
+        let mut screen = DPNSScreen::new(&ctx, VotesView::ToDecide);
+        let cases: [(&[(bool, ListMembership)], &str); 9] = [
+            (&[], NO_VOTING_NODE_HINT),
+            (&[(false, Listed)], NO_VOTING_NODE_HINT),
+            (&[(false, Unknown)], NO_VOTING_NODE_HINT),
+            (&[(true, NotListed)], NO_LISTED_NODE_HINT),
+            (&[(false, NotListed)], NO_LISTED_NODE_HINT),
+            (
+                &[(true, NotListed), (false, NotListed)],
+                NO_LISTED_NODE_HINT,
+            ),
+            // The key of the listed node would let it vote.
+            (&[(true, NotListed), (false, Listed)], NO_VOTING_NODE_HINT),
+            (
+                &[(true, NotListed), (true, Listed)],
+                CHANGE_VOTING_NODES_HINT,
+            ),
+            (&[(true, Unknown)], CHANGE_VOTING_NODES_HINT),
+        ];
+        for (nodes, hint) in cases {
+            screen.voting_nodes = nodes
+                .iter()
+                .zip(1u8..)
+                .map(|(&(has_voting_key, membership), id)| VotingNode {
+                    id: Identifier::from([id; 32]),
+                    kind: VotingNodeKind::Masternode,
+                    has_voting_key,
+                    membership,
+                    alias: None,
+                })
+                .collect();
+            assert_eq!(
+                screen.no_voting_node_hint(),
+                hint,
+                "loaded nodes: {nodes:?}"
+            );
+        }
     }
 
     /// A node that can vote is loaded, but the nodes voted with include none

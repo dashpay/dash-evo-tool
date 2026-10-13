@@ -276,6 +276,10 @@ pub const CLEAR_NEEDS_A_DECISION: &str = "There are no picked decisions to clear
 /// node can vote.
 pub const NO_VOTING_NODE_HINT: &str = "Load a masternode with a voting key to vote.";
 
+/// The same hint when every loaded node is outside the masternode list, where
+/// a voting key changes nothing.
+pub const NO_LISTED_NODE_HINT: &str = "None of your nodes is in the masternode list, so load a masternode that is in the list to vote.";
+
 /// The same hint when a loaded node can vote but is not among the nodes voted
 /// with.
 pub const CHANGE_VOTING_NODES_HINT: &str =

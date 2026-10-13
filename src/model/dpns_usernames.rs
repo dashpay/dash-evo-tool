@@ -171,6 +171,27 @@ fn key_secret_is_obtainable(identity: &QualifiedIdentity, data: &PrivateKeyData)
     }
 }
 
+/// The wallets `identity`'s registration keys come from that its record does
+/// not list as on this device. Checked against a live wallet list, they tell a
+/// caller holding a snapshot of the record when it is worth reading again.
+pub fn missing_registration_wallets(
+    identity: &QualifiedIdentity,
+    required: dash_sdk::dpp::identity::SecurityLevel,
+) -> impl Iterator<Item = &super::wallet::WalletSeedHash> {
+    identity
+        .private_keys
+        .values()
+        .filter_map(move |(key, data)| match data {
+            PrivateKeyData::AtWalletDerivationPath(path)
+                if key_can_sign_documents(&key.identity_public_key, required)
+                    && !key_secret_is_obtainable(identity, data) =>
+            {
+                Some(&path.wallet_seed_hash)
+            }
+            _ => None,
+        })
+}
+
 /// Why an identity can or cannot register usernames from this device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegistrationKeyStatus {
@@ -1258,6 +1279,33 @@ mod tests {
             RegistrationKeyStatus::Ready
         );
         assert!(can_register_usernames(&identity, high));
+    }
+
+    /// Only a registration key's missing wallet is worth watching for: it is
+    /// listed until the record holds it, and a wallet behind a key that cannot
+    /// register is never listed.
+    #[test]
+    fn missing_registration_wallets_lists_what_would_lift_the_refusal() {
+        use dash_sdk::dpp::identity::SecurityLevel;
+        use std::sync::{Arc, RwLock};
+        let high = SecurityLevel::HIGH;
+        let wallet = crate::model::wallet::test_support::open_wallet();
+        let seed_hash = wallet.seed_hash();
+        let mut identity = identity_with_keys(&[(0, SecurityLevel::MASTER), (1, high)], &[]);
+        crate::context::test_support::hold_as_wallet_reference(&mut identity, 0, [0x5A; 32]);
+        crate::context::test_support::hold_as_wallet_reference(&mut identity, 1, seed_hash);
+        let missing = |identity: &QualifiedIdentity| {
+            missing_registration_wallets(identity, high)
+                .copied()
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(missing(&identity), vec![seed_hash]);
+
+        identity
+            .associated_wallets
+            .insert(seed_hash, Arc::new(RwLock::new(wallet)));
+        assert!(missing(&identity).is_empty());
     }
 
     /// One usable key is enough: a second key stranded in a missing wallet

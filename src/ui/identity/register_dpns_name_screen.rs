@@ -12,7 +12,8 @@ use crate::model::dpns::{
     validate_dpns_name,
 };
 use crate::model::dpns_usernames::{
-    RegistrationKeyStatus, UsernameAvailability, dpns_signing_requirement, registration_key_status,
+    UsernameAvailability, dpns_signing_requirement, missing_registration_wallets,
+    registration_key_status,
 };
 use crate::model::fee_estimation::{contest_fee_credits, format_credits_as_dash};
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -187,20 +188,20 @@ impl RegisterDpnsNameScreen {
         self.wallet_open_attempted = false;
     }
 
-    /// Read the identity again when its snapshot says it cannot register, so a
-    /// wallet or key that arrived while this page stayed open lifts the refusal.
-    fn recheck_registration_key(&mut self) {
-        let required = dpns_signing_requirement(&self.app_context.dpns_contract);
-        let ready = |identity: &Option<QualifiedIdentity>| {
-            identity.as_ref().is_none_or(|identity| {
-                registration_key_status(identity, required) == RegistrationKeyStatus::Ready
-            })
-        };
-        if ready(&self.selected_qualified_identity) {
+    /// Read the identity again once a wallet its registration key comes from
+    /// is on this device, so the refusal lifts without reopening this page.
+    /// Decided from the loaded wallet list, which costs no storage read; a key
+    /// added through this page's links arrives with `refresh` instead.
+    fn reload_when_registration_wallet_arrives(&mut self) {
+        let Some(identity) = &self.selected_qualified_identity else {
             return;
-        }
-        self.reload_identity();
-        if ready(&self.selected_qualified_identity) {
+        };
+        let required = dpns_signing_requirement(&self.app_context.dpns_contract);
+        let wallets = self.app_context.wallet_context();
+        let arrived = missing_registration_wallets(identity, required)
+            .any(|seed_hash| wallets.contains_hd(seed_hash));
+        if arrived {
+            self.reload_identity();
             self.select_wallet();
         }
     }
@@ -899,7 +900,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
                         inner = self.render_done(ui, outcome);
                         return;
                     }
-                    self.recheck_registration_key();
+                    self.reload_when_registration_wallet_arrives();
                     let Some(identity) = &self.selected_qualified_identity else {
                         status_line(
                             ui,
@@ -1046,6 +1047,67 @@ mod tests {
                 .as_ref()
                 .is_some_and(|selected| Arc::ptr_eq(selected, &wallet)),
             "the wallet that now holds the key must be the one offered for unlock",
+        );
+    }
+
+    /// A refusal left on screen must cost no storage read per repaint. The page
+    /// reads the identity again only once the wallet its key comes from is on
+    /// this device, and then stops reading again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_shown_refusal_reads_storage_only_when_the_wallet_arrives() {
+        use egui_kittest::kittest::Queryable;
+        const MISSING_WALLET: &str = "comes from a wallet that is not on this device";
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let wallet = crate::model::wallet::test_support::open_wallet();
+        let seed_hash = wallet.seed_hash();
+        let mut identity = crate::context::test_support::user_identity_with_signing_key(
+            [1; 32].into(),
+            dash_sdk::dpp::dashcore::Network::Testnet,
+            false,
+        );
+        crate::context::test_support::hold_as_wallet_reference(&mut identity, 1, seed_hash);
+        ctx.insert_local_qualified_identity(&identity, &None)
+            .expect("seed identity");
+        ctx.set_selected_identity(Some(identity.identity.id()));
+        let storage = ctx.det_kv().expect("k/v store").failing_store();
+        ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(storage.clone()));
+
+        let screen = RegisterDpnsNameScreen::new(&ctx, RegisterDpnsNameSource::Identities);
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut RegisterDpnsNameScreen| {
+                    screen.ui(ui);
+                },
+                screen,
+            );
+        harness.run();
+        assert!(harness.query_by_label_contains(MISSING_WALLET).is_some());
+
+        let while_refused = storage.read_count();
+        harness.run();
+        assert_eq!(
+            storage.read_count(),
+            while_refused,
+            "repainting a refusal that nothing can have changed must not read storage",
+        );
+
+        ctx.wallet_context()
+            .insert_test_wallet(seed_hash, Arc::new(RwLock::new(wallet)));
+        harness.run();
+        assert!(harness.query_by_label_contains(MISSING_WALLET).is_none());
+        let after_arrival = storage.read_count();
+        assert!(
+            after_arrival > while_refused,
+            "the wallet's arrival is what the identity is read again for",
+        );
+
+        harness.run();
+        assert_eq!(
+            storage.read_count(),
+            after_arrival,
+            "once the refusal is lifted nothing is left to read again",
         );
     }
 

@@ -75,6 +75,23 @@ pub(crate) fn user_identity_with_signing_key(
     identity
 }
 
+/// Hold published key `key_id` of `identity` only in the per-key encrypted
+/// format of early versions, which this version keeps but cannot open.
+pub(crate) fn hold_as_legacy_encrypted(
+    identity: &mut QualifiedIdentity,
+    key_id: dash_sdk::dpp::identity::KeyID,
+) {
+    use crate::model::qualified_identity::PrivateKeyTarget;
+    use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
+    use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+
+    let key = identity.identity.public_keys()[&key_id].clone();
+    identity.private_keys.insert_at(
+        (PrivateKeyTarget::PrivateKeyOnMainIdentity, key_id),
+        (key.into(), PrivateKeyData::Encrypted(vec![0x5A; 48])),
+    );
+}
+
 /// Hold published key `key_id` of `identity` as a reference into the wallet
 /// with `seed_hash`, the way a key found by a wallet scan is kept.
 pub(crate) fn hold_as_wallet_reference(

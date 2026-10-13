@@ -1384,7 +1384,9 @@ impl QualifiedIdentity {
     /// Whether the private half behind a held key entry can be obtained on this
     /// device. A key kept as a reference into a wallet needs that wallet here. A
     /// locked wallet and a vault or password-protected key count as obtainable:
-    /// the app asks for what they need when it signs.
+    /// the app asks for what they need when it signs. A key kept only in the
+    /// per-key encrypted format of early versions does not: this version stores
+    /// that format but cannot open it, with or without a password.
     ///
     /// Reads which wallets are on this device from `associated_wallets`, so the
     /// record must be one read from the store, not a bare decoded blob.
@@ -1400,10 +1402,7 @@ impl QualifiedIdentity {
             PrivateKeyData::AlwaysClear(_) | PrivateKeyData::Clear(_) | PrivateKeyData::InVault => {
                 true
             }
-            // TODO(legacy-encrypted-key-gate): this version cannot open the legacy
-            // per-key envelope either, so such a key fails at signing; it needs its
-            // own status and guidance before it can be reported here.
-            PrivateKeyData::Encrypted(_) => true,
+            PrivateKeyData::Encrypted(_) => false,
         }
     }
 
@@ -2908,6 +2907,58 @@ pub(crate) mod withdrawal_key_tests {
         qi.associated_wallets
             .insert(seed_hash, Arc::new(RwLock::new(wallet)));
         assert_eq!(qi.resolve_transfer_signing_key(None), Ok(1));
+    }
+
+    /// A key kept only in the per-key encrypted format of early versions cannot
+    /// be opened by this version, with or without a password, so it cannot sign.
+    #[test]
+    fn transfer_key_resolution_skips_a_key_held_only_in_the_legacy_encrypted_format() {
+        use crate::context::test_support::hold_as_legacy_encrypted;
+        let legacy = key(1, Purpose::TRANSFER);
+        let imported = key(2, Purpose::TRANSFER);
+        let mut qi = build_identity(
+            IdentityType::User,
+            vec![legacy.clone(), imported.clone()],
+            vec![imported],
+        );
+        hold_as_legacy_encrypted(&mut qi, 1);
+        assert_eq!(qi.resolve_transfer_signing_key(None), Ok(2));
+        assert_eq!(
+            qi.resolve_transfer_signing_key(Some(1)),
+            Err(NoUsableTransferKey),
+            "an explicit choice of the key that cannot be opened is refused, not replaced"
+        );
+
+        let mut only_legacy = build_identity(IdentityType::User, vec![legacy], vec![]);
+        hold_as_legacy_encrypted(&mut only_legacy, 1);
+        assert_eq!(
+            only_legacy.resolve_transfer_signing_key(None),
+            Err(NoUsableTransferKey)
+        );
+    }
+
+    /// The legacy format rules out one way of holding a key, not the key: a
+    /// password-protected key in the vault signs, and so does a key that is
+    /// also held in a way this version can read.
+    #[test]
+    fn transfer_key_resolution_keeps_a_vault_key_and_a_key_also_held_readably() {
+        use crate::context::test_support::hold_as_legacy_encrypted;
+        let transfer = key(1, Purpose::TRANSFER);
+
+        let mut in_vault = build_identity(IdentityType::User, vec![transfer.clone()], vec![]);
+        in_vault.private_keys.insert_at(
+            (PrivateKeyTarget::PrivateKeyOnMainIdentity, 1),
+            (transfer.clone().into(), PrivateKeyData::InVault),
+        );
+        assert_eq!(in_vault.resolve_transfer_signing_key(None), Ok(1));
+
+        let mut held_twice = build_identity(IdentityType::User, vec![transfer.clone()], vec![]);
+        hold_as_legacy_encrypted(&mut held_twice, 1);
+        held_twice.private_keys.insert_at(
+            (PrivateKeyTarget::PrivateKeyOnVoterIdentity, 1),
+            (transfer.into(), PrivateKeyData::Clear([0u8; 32])),
+        );
+        assert_eq!(held_twice.resolve_transfer_signing_key(None), Ok(1));
     }
 
     /// A key disabled on the network after its private half was stored here is

@@ -212,7 +212,10 @@ pub fn registration_key_status(
         if !key_can_sign_documents(&key.identity_public_key, required) {
             continue;
         }
-        if identity.key_secret_is_obtainable(data) {
+        // TODO(legacy-encrypted-key-gate): this version cannot open the legacy
+        // per-key envelope, so such a key fails at signing; it is still reported
+        // as ready because it needs its own status and guidance first.
+        if identity.key_secret_is_obtainable(data) || matches!(data, PrivateKeyData::Encrypted(_)) {
             return RegistrationKeyStatus::Ready;
         }
         held_without_its_wallet = true;

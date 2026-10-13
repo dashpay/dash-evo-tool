@@ -861,6 +861,43 @@ fn home_receive_shares_identity_id_when_no_username_is_set() {
     });
 }
 
+/// The hub refreshes usernames by itself, so an identity can gain one while
+/// Receive is open. The dialog then names and copies the username, and its QR
+/// code must encode the same value, not the identity ID it opened with.
+#[test]
+fn home_receive_code_follows_a_username_gained_while_it_is_open() {
+    use super::identity_usernames::seed_username_identity;
+    use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let id = seed_username_identity(&app_context, 0x61, "Receiver", &[], 1_000, true);
+        let mut harness = mount_home(app_context.clone());
+        harness.get_by_label("Receive").click();
+        harness.run();
+        let encoded = |harness: &Harness<'static, HomeHarnessState>| -> Option<String> {
+            harness
+                .state()
+                .0
+                .receive_qr
+                .as_ref()
+                .map(|qr| qr.value.clone())
+        };
+        assert_eq!(encoded(&harness), Some(id.to_string(Encoding::Base58)));
+
+        seed_username_identity(&app_context, 0x61, "Receiver", &["alice"], 1_000, true);
+        harness.run();
+        assert!(
+            harness.query_by_label("Copy username").is_some(),
+            "the open dialog offers the username it now has"
+        );
+        assert_eq!(
+            encoded(&harness).as_deref(),
+            Some("alice.dash"),
+            "the code must encode what the dialog shows and copies"
+        );
+    });
+}
+
 #[test]
 fn home_payment_preview_opens_real_payment_history() {
     with_isolated_data_dir(|| {

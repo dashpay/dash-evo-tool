@@ -12,7 +12,8 @@ use crate::model::dpns::{
     validate_dpns_name,
 };
 use crate::model::dpns_usernames::{
-    RegistrationKeyStatus, UsernameAvailability, dpns_signing_requirement, registration_key_status,
+    UsernameAvailability, dpns_signing_requirement, missing_registration_wallets,
+    registration_key_status,
 };
 use crate::model::fee_estimation::{contest_fee_credits, format_credits_as_dash};
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -166,17 +167,43 @@ impl RegisterDpnsNameScreen {
         let identity = wanted
             .and_then(|id| identities.iter().find(|qi| qi.identity.id() == id).cloned())
             .or_else(|| identities.first().cloned());
-        if identity.as_ref().map(|qi| qi.identity.id()) != current {
+        let changed = identity.as_ref().map(|qi| qi.identity.id()) != current;
+        if changed {
             self.on_label_changed();
             self.selected_key = None;
-            self.selected_wallet = identity.as_ref().and_then(|qi| {
-                get_selected_wallet(qi, Some(&self.app_context), None)
-                    .or_show_error(self.app_context.egui_ctx())
-                    .unwrap_or(None)
-            });
-            self.wallet_open_attempted = false;
         }
         self.selected_qualified_identity = identity;
+        if changed {
+            self.select_wallet();
+        }
+    }
+
+    /// Pick the wallet the identity's signing key comes from, to offer its unlock.
+    fn select_wallet(&mut self) {
+        self.selected_wallet = self.selected_qualified_identity.as_ref().and_then(|qi| {
+            get_selected_wallet(qi, Some(&self.app_context), None)
+                .or_show_error(self.app_context.egui_ctx())
+                .unwrap_or(None)
+        });
+        self.wallet_open_attempted = false;
+    }
+
+    /// Read the identity again once a wallet its registration key comes from
+    /// is on this device, so the refusal lifts without reopening this page.
+    /// Decided from the loaded wallet list, which costs no storage read; a key
+    /// added through this page's links arrives with `refresh` instead.
+    fn reload_when_registration_wallet_arrives(&mut self) {
+        let Some(identity) = &self.selected_qualified_identity else {
+            return;
+        };
+        let required = dpns_signing_requirement(&self.app_context.dpns_contract);
+        let wallets = self.app_context.wallet_context();
+        let arrived = missing_registration_wallets(identity, required)
+            .any(|seed_hash| wallets.contains_hd(seed_hash));
+        if arrived {
+            self.reload_identity();
+            self.select_wallet();
+        }
     }
 
     fn identity_label(&self) -> String {
@@ -873,6 +900,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
                         inner = self.render_done(ui, outcome);
                         return;
                     }
+                    self.reload_when_registration_wallet_arrives();
                     let Some(identity) = &self.selected_qualified_identity else {
                         status_line(
                             ui,
@@ -888,7 +916,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
                         identity,
                         dpns_signing_requirement(&self.app_context.dpns_contract),
                     );
-                    let updated_install = key_status == RegistrationKeyStatus::KeyNotOnDevice
+                    let updated_install = key_status.key_is_unusable_here()
                         && self.app_context.has_legacy_identities();
                     if let Some(hint) = KeyHint::for_status(key_status, false, updated_install) {
                         status_line(ui, Tone::Negative, hint.text(), dark_mode);
@@ -971,6 +999,116 @@ mod tests {
         assert!(screen.display_task_error(&error));
         assert_eq!(screen.step, Step::Choose);
         assert!(screen.op_overlay.is_none());
+    }
+
+    /// The page keeps a snapshot of the identity. A wallet imported while it is
+    /// open must lift the refusal: the snapshot is read again before refusing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn importing_the_wallet_lifts_the_missing_wallet_hint() {
+        use egui_kittest::kittest::Queryable;
+        const MISSING_WALLET: &str = "comes from a wallet that is not on this device";
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let wallet = crate::model::wallet::test_support::open_wallet();
+        let seed_hash = wallet.seed_hash();
+        let mut identity = crate::context::test_support::user_identity_with_signing_key(
+            [1; 32].into(),
+            dash_sdk::dpp::dashcore::Network::Testnet,
+            false,
+        );
+        crate::context::test_support::hold_as_wallet_reference(&mut identity, 1, seed_hash);
+        ctx.insert_local_qualified_identity(&identity, &None)
+            .expect("seed identity");
+        ctx.set_selected_identity(Some(identity.identity.id()));
+
+        let screen = RegisterDpnsNameScreen::new(&ctx, RegisterDpnsNameSource::Identities);
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut RegisterDpnsNameScreen| {
+                    screen.ui(ui);
+                },
+                screen,
+            );
+        harness.run();
+        assert!(harness.query_by_label_contains(MISSING_WALLET).is_some());
+        assert!(harness.query_by_label("Open wallets").is_some());
+        assert!(harness.query_by_label("Open keys").is_none());
+
+        let wallet = Arc::new(RwLock::new(wallet));
+        ctx.wallet_context()
+            .insert_test_wallet(seed_hash, Arc::clone(&wallet));
+        harness.run();
+        assert!(harness.query_by_label_contains(MISSING_WALLET).is_none());
+        assert!(
+            harness
+                .state()
+                .selected_wallet
+                .as_ref()
+                .is_some_and(|selected| Arc::ptr_eq(selected, &wallet)),
+            "the wallet that now holds the key must be the one offered for unlock",
+        );
+    }
+
+    /// A refusal left on screen must cost no storage read per repaint. The page
+    /// reads the identity again only once the wallet its key comes from is on
+    /// this device, and then stops reading again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_shown_refusal_reads_storage_only_when_the_wallet_arrives() {
+        use egui_kittest::kittest::Queryable;
+        const MISSING_WALLET: &str = "comes from a wallet that is not on this device";
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let wallet = crate::model::wallet::test_support::open_wallet();
+        let seed_hash = wallet.seed_hash();
+        let mut identity = crate::context::test_support::user_identity_with_signing_key(
+            [1; 32].into(),
+            dash_sdk::dpp::dashcore::Network::Testnet,
+            false,
+        );
+        crate::context::test_support::hold_as_wallet_reference(&mut identity, 1, seed_hash);
+        ctx.insert_local_qualified_identity(&identity, &None)
+            .expect("seed identity");
+        ctx.set_selected_identity(Some(identity.identity.id()));
+        let storage = ctx.det_kv().expect("k/v store").failing_store();
+        ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(storage.clone()));
+
+        let screen = RegisterDpnsNameScreen::new(&ctx, RegisterDpnsNameSource::Identities);
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut RegisterDpnsNameScreen| {
+                    screen.ui(ui);
+                },
+                screen,
+            );
+        harness.run();
+        assert!(harness.query_by_label_contains(MISSING_WALLET).is_some());
+
+        let while_refused = storage.read_count();
+        harness.run();
+        assert_eq!(
+            storage.read_count(),
+            while_refused,
+            "repainting a refusal that nothing can have changed must not read storage",
+        );
+
+        ctx.wallet_context()
+            .insert_test_wallet(seed_hash, Arc::new(RwLock::new(wallet)));
+        harness.run();
+        assert!(harness.query_by_label_contains(MISSING_WALLET).is_none());
+        let after_arrival = storage.read_count();
+        assert!(
+            after_arrival > while_refused,
+            "the wallet's arrival is what the identity is read again for",
+        );
+
+        harness.run();
+        assert_eq!(
+            storage.read_count(),
+            after_arrival,
+            "once the refusal is lifted nothing is left to read again",
+        );
     }
 
     /// USR-TC-035: on a protocol 14 network the confirm step charges the

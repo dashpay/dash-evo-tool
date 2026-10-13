@@ -176,6 +176,14 @@ pub const RESTORE_FROM_PREVIOUS_VERSION_TO_REGISTER: &str = "The key this identi
 /// Why an identity cannot register when its key was never saved on this device.
 pub const ENTER_KEY_TO_REGISTER: &str = "The key this identity needs to register usernames is not on this device. Open this identity's keys and enter the key to use it here.";
 
+/// Why an identity cannot register when its key comes from a wallet that is
+/// not on this device.
+pub const IMPORT_WALLET_TO_REGISTER: &str = "The key this identity needs to register usernames comes from a wallet that is not on this device. Import that wallet again from its recovery phrase to register usernames.";
+
+/// The same on an install updated from an earlier version, where the restore
+/// in Settings can also bring the wallet back.
+pub const IMPORT_OR_RESTORE_WALLET_TO_REGISTER: &str = "The key this identity needs to register usernames comes from a wallet that is not on this device. Import that wallet again from its recovery phrase. If you updated from an earlier version of Dash Evo Tool, you can also open Settings and use Restore from Previous Version to bring back missing wallets and keys.";
+
 /// What a registered name gives its owner: the done page and the won banner.
 pub const NAME_REGISTERED_LINE: &str = "People can now find and pay you by this name.";
 

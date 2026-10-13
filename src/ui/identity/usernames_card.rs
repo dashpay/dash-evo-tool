@@ -21,9 +21,9 @@ use crate::ui::components::message_banner::MessageBanner;
 use crate::ui::identity::funding_common::generate_qr_code_image;
 use crate::ui::identity::register_dpns_name_screen::{RegisterDpnsNameSource, status_line};
 use crate::ui::identity::username_copy::{
-    ENTER_KEY_TO_REGISTER, NEEDS_KEY_TO_REGISTER, RESTORE_FROM_PREVIOUS_VERSION_TO_REGISTER,
-    RESTORE_KEYS_TO_REGISTER, Tone, finished_request_detail, pending_request_detail, phase_label,
-    registered_on_line,
+    ENTER_KEY_TO_REGISTER, IMPORT_OR_RESTORE_WALLET_TO_REGISTER, IMPORT_WALLET_TO_REGISTER,
+    NEEDS_KEY_TO_REGISTER, RESTORE_FROM_PREVIOUS_VERSION_TO_REGISTER, RESTORE_KEYS_TO_REGISTER,
+    Tone, finished_request_detail, pending_request_detail, phase_label, registered_on_line,
 };
 use crate::ui::masternodes::KeyVocabulary;
 use crate::ui::state::legacy_recovery::LegacyRecoveryState;
@@ -127,6 +127,10 @@ pub(crate) enum KeyHint {
     PreviousVersion,
     /// An earlier version saved nothing: enter the key.
     EnterKey,
+    /// The key comes from a wallet that is not on this device: import it.
+    ImportWallet,
+    /// The same on an updated install: import the wallet or restore from Settings.
+    ImportWalletOrPreviousVersion,
 }
 
 impl KeyHint {
@@ -141,9 +145,17 @@ impl KeyHint {
         match status {
             RegistrationKeyStatus::Ready => None,
             RegistrationKeyStatus::NoSuitableKey => Some(Self::AddKey),
-            RegistrationKeyStatus::KeyNotOnDevice if restorable_here => Some(Self::Restore),
+            RegistrationKeyStatus::KeyNotOnDevice | RegistrationKeyStatus::KeyWalletNotOnDevice
+                if restorable_here =>
+            {
+                Some(Self::Restore)
+            }
             RegistrationKeyStatus::KeyNotOnDevice if updated_install => Some(Self::PreviousVersion),
             RegistrationKeyStatus::KeyNotOnDevice => Some(Self::EnterKey),
+            RegistrationKeyStatus::KeyWalletNotOnDevice if updated_install => {
+                Some(Self::ImportWalletOrPreviousVersion)
+            }
+            RegistrationKeyStatus::KeyWalletNotOnDevice => Some(Self::ImportWallet),
         }
     }
 
@@ -154,6 +166,8 @@ impl KeyHint {
             Self::Restore => RESTORE_KEYS_TO_REGISTER,
             Self::PreviousVersion => RESTORE_FROM_PREVIOUS_VERSION_TO_REGISTER,
             Self::EnterKey => ENTER_KEY_TO_REGISTER,
+            Self::ImportWallet => IMPORT_WALLET_TO_REGISTER,
+            Self::ImportWalletOrPreviousVersion => IMPORT_OR_RESTORE_WALLET_TO_REGISTER,
         }
     }
 }
@@ -167,14 +181,28 @@ pub(crate) fn key_hint_links(
     hint: KeyHint,
 ) -> AppAction {
     let mut action = AppAction::None;
-    if hint == KeyHint::PreviousVersion && ui.link("Open Settings").clicked() {
+    if matches!(
+        hint,
+        KeyHint::PreviousVersion | KeyHint::ImportWalletOrPreviousVersion
+    ) && ui.link("Open Settings").clicked()
+    {
         action =
             AppAction::SetMainScreenThenGoToMainScreen(RootScreenType::RootScreenNetworkChooser);
     }
+    if matches!(
+        hint,
+        KeyHint::ImportWallet | KeyHint::ImportWalletOrPreviousVersion
+    ) && ui.link("Open wallets").clicked()
+    {
+        action =
+            AppAction::SetMainScreenThenGoToMainScreen(RootScreenType::RootScreenWalletsBalances);
+    }
+    // No keys link for a key that comes from a missing wallet: the keys screen
+    // has nowhere to enter a key this identity already has an entry for.
     let keys_link = match hint {
         KeyHint::AddKey => Some("Add a key"),
         KeyHint::PreviousVersion | KeyHint::EnterKey => Some("Open keys"),
-        KeyHint::Restore => None,
+        KeyHint::Restore | KeyHint::ImportWallet | KeyHint::ImportWalletOrPreviousVersion => None,
     };
     if keys_link.is_some_and(|label| ui.link(label).clicked()) {
         action =
@@ -335,7 +363,7 @@ impl UsernamesCard {
         let required = dpns_signing_requirement(&app_context.dpns_contract);
         let status = registration_key_status(identity, required);
         let identity_id = identity.identity.id();
-        let key_missing = status == RegistrationKeyStatus::KeyNotOnDevice;
+        let key_missing = status.key_is_unusable_here();
         let kept = self
             .recovery
             .as_ref()
@@ -688,6 +716,166 @@ mod tests {
             identity_publishing_a_signing_key(false),
         );
         assert!(keyless.state_mut().0.recovery_check().is_none());
+    }
+
+    const IMPORT_WALLET: &str = "The key this identity needs to register usernames comes from a wallet that is not \
+         on this device. Import that wallet again from its recovery phrase to register usernames.";
+
+    /// An identity whose registration key is on file only as a reference into
+    /// the wallet with `seed_hash`.
+    fn identity_with_a_wallet_signing_key(
+        seed_hash: crate::model::wallet::WalletSeedHash,
+    ) -> QualifiedIdentity {
+        let mut identity = identity_publishing_a_signing_key(false);
+        crate::context::test_support::hold_as_wallet_reference(&mut identity, 1, seed_hash);
+        identity
+    }
+
+    /// Press the register button and say whether it opened the registration
+    /// screen. The disabled button is drawn in its own style and ignores
+    /// clicks, so what it does is the only thing that tells the two apart.
+    fn register_button_opens_registration<State>(
+        harness: &mut egui_kittest::Harness<'static, (State, Vec<AppAction>)>,
+    ) -> bool {
+        use egui_kittest::kittest::Queryable;
+        harness.get_by_label("Get a username").click();
+        harness.run();
+        harness
+            .state()
+            .1
+            .iter()
+            .any(|action| matches!(action, AppAction::AddScreen(_)))
+    }
+
+    /// The reported case: the key's wallet is not on this device, so signing
+    /// would fail. The button is off and the card says to bring the wallet
+    /// back — not to enter a key the keys screen has no field for.
+    #[test]
+    fn key_from_a_missing_wallet_says_to_import_the_wallet() {
+        use egui_kittest::kittest::Queryable;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let mut harness = mount_card(ctx, identity_with_a_wallet_signing_key([0x5A; 32]));
+
+        assert!(!register_button_opens_registration(&mut harness));
+        assert!(harness.query_by_label(IMPORT_WALLET).is_some());
+        for absent in ["Open keys", "Add a key", "Open Settings"] {
+            assert!(harness.query_by_label(absent).is_none(), "{absent}");
+        }
+
+        harness.get_by_label("Open wallets").click();
+        harness.run();
+        assert!(harness.state().1.iter().any(|action| matches!(
+            action,
+            AppAction::SetMainScreenThenGoToMainScreen(
+                crate::ui::RootScreenType::RootScreenWalletsBalances
+            )
+        )));
+    }
+
+    /// On an updated install the Settings restore can bring the wallet back
+    /// too, and the previous version's data is still asked for another key.
+    #[test]
+    fn upgraded_install_with_a_missing_wallet_also_points_to_the_settings_restore() {
+        use egui_kittest::kittest::Queryable;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = upgraded_context(dir.path());
+        let mut harness = mount_card(ctx, identity_with_a_wallet_signing_key([0x5A; 32]));
+
+        assert!(!register_button_opens_registration(&mut harness));
+        assert!(
+            harness
+                .query_by_label(
+                    "The key this identity needs to register usernames comes from a wallet that \
+                     is not on this device. Import that wallet again from its recovery phrase. \
+                     If you updated from an earlier version of Dash Evo Tool, you can also open \
+                     Settings and use Restore from Previous Version to bring back missing wallets \
+                     and keys."
+                )
+                .is_some()
+        );
+        assert!(harness.query_by_label("Open wallets").is_some());
+        assert!(harness.query_by_label("Open Settings").is_some());
+        assert!(harness.query_by_label("Open keys").is_none());
+        let check = harness.state_mut().0.recovery_check();
+        assert!(check.as_ref().is_some_and(is_recovery_check));
+    }
+
+    /// A wallet that is on this device keeps the identity ready even while
+    /// locked: unlocking is something the app asks for when it signs.
+    #[test]
+    fn key_from_a_locked_wallet_on_this_device_stays_ready() {
+        use egui_kittest::kittest::Queryable;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let mut wallet = crate::model::wallet::test_support::open_wallet();
+        wallet.wallet_seed.close();
+        let seed_hash = wallet.seed_hash();
+        let mut identity = identity_with_a_wallet_signing_key(seed_hash);
+        identity
+            .associated_wallets
+            .insert(seed_hash, Arc::new(std::sync::RwLock::new(wallet)));
+        let mut harness = mount_card(ctx, identity);
+
+        assert!(harness.query_by_label("Open wallets").is_none());
+        assert!(register_button_opens_registration(&mut harness));
+    }
+
+    /// The in-place restore outranks the wallet advice: a key the previous
+    /// version can hand back makes the identity ready without the wallet.
+    #[test]
+    fn a_restorable_key_outranks_the_missing_wallet_advice() {
+        let status = RegistrationKeyStatus::KeyWalletNotOnDevice;
+        assert_eq!(
+            KeyHint::for_status(status, true, true),
+            Some(KeyHint::Restore)
+        );
+        assert_eq!(
+            KeyHint::for_status(status, false, true),
+            Some(KeyHint::ImportWalletOrPreviousVersion)
+        );
+        assert_eq!(
+            KeyHint::for_status(status, false, false),
+            Some(KeyHint::ImportWallet)
+        );
+    }
+
+    /// The hub reads the identity again on every frame, so a wallet imported
+    /// while the card is open enables the button without reopening anything.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn importing_the_wallet_enables_registration_on_the_open_card() {
+        use crate::ui::identity::settings::SettingsTab;
+        use egui_kittest::kittest::Queryable;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let wallet = crate::model::wallet::test_support::open_wallet();
+        let seed_hash = wallet.seed_hash();
+        let identity = identity_with_a_wallet_signing_key(seed_hash);
+        ctx.insert_local_qualified_identity(&identity, &None)
+            .expect("seed identity");
+        ctx.set_selected_identity(Some(identity.identity.id()));
+
+        let render_ctx = Arc::clone(&ctx);
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1400.0, 1200.0))
+            .build_ui_state(
+                move |ui, state: &mut (SettingsTab, Vec<AppAction>)| {
+                    let action = state.0.render(ui, &render_ctx, &mut Default::default());
+                    if !matches!(action, AppAction::None) {
+                        state.1.push(action);
+                    }
+                },
+                (SettingsTab::new(), Vec::new()),
+            );
+        harness.run();
+        assert!(harness.query_by_label(IMPORT_WALLET).is_some());
+        assert!(!register_button_opens_registration(&mut harness));
+
+        ctx.wallet_context()
+            .insert_test_wallet(seed_hash, Arc::new(std::sync::RwLock::new(wallet)));
+        harness.run();
+        assert!(harness.query_by_label(IMPORT_WALLET).is_none());
+        assert!(register_button_opens_registration(&mut harness));
     }
 
     #[test]

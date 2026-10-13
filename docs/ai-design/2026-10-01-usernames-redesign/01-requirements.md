@@ -57,7 +57,12 @@ Scope: identity-side usernames. Voting is Stream V in
   helps instead of adding a key — the in-place `Restore keys` offer when an
   earlier version saved the key, `Open Settings` (Restore from Previous
   Version) + `Open keys` on an updated install with nothing to offer in place,
-  `Open keys` on a new install.
+  `Open keys` on a new install. Identity whose suitable key is held only as a
+  reference into a wallet that is not on this device: button disabled, text
+  says to import that wallet again + `Open wallets` link (plus `Open Settings`
+  on an updated install), and no `Open keys` link; the in-place `Restore keys`
+  offer still takes priority when an earlier version saved another suitable
+  key. A wallet that is on this device but locked leaves the button enabled.
 - **USR-FR-006** — Remove the "Aliases" block, the disabled `Make primary`,
   `Remove` and `Add an alias` controls, and the `View all usernames` jump. Never
   offer delete (PF §2). Transfer/sale is deferred; reserve no visible control.

@@ -198,6 +198,15 @@ in git with their provenance; none of the rules below apply to them.
   every published release to carry one.
 - **No expiry and no renewal.** Release assets do not expire; the renewal
   workflow below never sees them.
+- **Every weekly carries one.** `weekly-build.yml` calls the capture for the
+  version it is cutting, with the binary it just built, once the draft exists
+  and before the release is published or handed over as a draft. A failed
+  capture blocks that release: nothing is published, the tag and the draft are
+  removed as for a failed build, and the Slack message names the capture. To
+  retry, fix the cause and start the weekly again with
+  `gh workflow run weekly-build.yml --ref v1.0-dev`; a manual run leaves a
+  draft to publish by hand. A weekly cut from any ref other than `v1.0-dev`
+  is captured as a dry run and gets no fixture attached.
 - **Capturing a published release that has none**, oldest first:
   `gh workflow run migration-fixture-capture.yml --ref v1.0-dev -f tag=<git_tag> -f attach=true`.
   The run refuses to skip an older published release without a fixture, and

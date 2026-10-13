@@ -60,6 +60,7 @@ jobs:
           bash scripts/migration-fixtures/test-scripts.sh
           bash scripts/ci/test-run-tests.sh
           bash scripts/ci/test-weekly-gate.sh
+          bash scripts/ci/test-weekly-jobs.sh
 
       # Fetches only the upstream commit graph plus the pinned rev's migration
       # sources — seconds, not a full platform clone. See the script header for

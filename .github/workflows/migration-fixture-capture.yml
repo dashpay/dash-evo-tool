@@ -13,19 +13,23 @@ name: Migration Fixture Capture
 # - `attest` signs the two files. It never executes or unpacks them.
 # - `attach` uploads them to the release. Skipped on a dry run.
 #
-# USAGE, a published release without a fixture (oldest first):
+# weekly-build.yml calls this for the version it is cutting, with the binary it
+# just built, before that release is published. Dispatch it by hand for a
+# published release that has no fixture (oldest first):
 #   gh workflow run migration-fixture-capture.yml --repo dashpay/dash-evo-tool \
 #     --ref v1.0-dev -f tag=v1.0.0-weekly.20261013 -f attach=true
-# Only a run from v1.0-dev produces a fixture the consumers trust: they verify
-# the attestation against this workflow on that branch. A run from any other
-# ref is for trying the capture out; leave `attach` off there, because an
-# attached fixture that fails verification fails the Tests workflow.
+# Only a run on v1.0-dev produces a fixture the consumers trust: they verify
+# the attestation against this workflow and that branch, whether it was
+# dispatched or called. A run on any other ref is for trying the capture out;
+# leave `attach` off there, because an attached fixture that fails
+# verification fails the Tests workflow.
 #
 # A draft release is visible only to tokens with push access, so a manual run
-# cannot capture one: its binary comes from the release assets. A workflow that
-# calls this one passes its own build through `binary_artifact` instead, and
-# must grant `contents: write`, `actions: read`, `id-token: write` and
-# `attestations: write`: a called job cannot hold more than its caller grants.
+# cannot capture one: its binary comes from the release assets. A caller passes
+# its own build through `binary_artifact` instead, and must grant
+# `contents: write`, `actions: read`, `id-token: write` and
+# `attestations: write`: a called job cannot hold more than its caller grants
+# (scripts/ci/test-weekly-jobs.sh checks the weekly workflow against this file).
 
 on:
   workflow_call:

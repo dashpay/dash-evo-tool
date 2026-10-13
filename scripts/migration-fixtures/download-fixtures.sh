@@ -42,6 +42,10 @@
 # with write access can replace a release asset — so one that fails it is never
 # used. A release the manifest already covers is not looked at.
 #
+# The capture itself needs one fixture, the newest older than the release it
+# captures. --source-for resolves exactly that one, from the manifest or from a
+# release, however many newer fixtures exist.
+#
 # ARTIFACT RETENTION is the standing hazard: artifacts expire (90 days by
 # default). An entry whose artifact has expired resolves to nothing and is
 # reported as such rather than silently skipped — see --strict.
@@ -53,10 +57,12 @@ DEST=""
 REPO="${GITHUB_REPOSITORY:-dashpay/dash-evo-tool}"
 STRICT=0
 MERGED_MANIFEST=""
+SOURCE_FOR=""
 # Only fixtures the capture workflow attested from this branch are trusted.
 TRUSTED_REF="refs/heads/v1.0-dev"
 # Attached fixtures used per run, newest first. Provisional: every weekly adds
-# one, and the matrix boots each, so the number bounds CI time.
+# one, and the matrix boots each, so the number bounds CI time. It does not
+# bound --source-for.
 RELEASE_FIXTURE_LIMIT=8
 
 die() {
@@ -78,6 +84,9 @@ usage: download-fixtures.sh --dest DIR [options]
   --merged-manifest PATH
                      also resolve the fixtures attached to published releases
                      and write the manifest plus their entries to PATH
+  --source-for TAG   with --merged-manifest: resolve only the fixture a capture
+                     of release TAG starts from and write that entry alone to
+                     PATH; implies --strict
 EOF
 }
 
@@ -98,6 +107,11 @@ while [ $# -gt 0 ]; do
     --strict) STRICT=1 ;;
     --merged-manifest)
         MERGED_MANIFEST="${2:-}"
+        shift
+        ;;
+    --source-for)
+        SOURCE_FOR="${2:-}"
+        STRICT=1
         shift
         ;;
     -h | --help)
@@ -147,6 +161,19 @@ if [ -z "$ENTRIES" ]; then
     fi
     warn "Manifest $MANIFEST lists no fixtures yet — nothing to download."
     exit 0
+fi
+
+only=""
+if [ -n "$MERGED_MANIFEST" ]; then
+    releases="$(gh api "repos/$REPO/releases" --paginate | jq -s 'add // []')" ||
+        die "Could not list releases for $REPO."
+fi
+if [ -n "$SOURCE_FOR" ]; then
+    [ -n "$MERGED_MANIFEST" ] || die "--source-for needs --merged-manifest"
+    only="$(python3 "$SCRIPT_DIR/release_fixture.py" source --tag "$SOURCE_FOR" \
+        --manifest "$MANIFEST" --releases <(printf '%s' "$releases"))" ||
+        die "No fixture to start the capture of $SOURCE_FOR from."
+    ENTRIES="$(jq -c --arg only "$only" 'select(.git_tag == $only)' <<<"$ENTRIES")"
 fi
 
 resolved=0
@@ -286,17 +313,17 @@ done <<<"$ENTRIES"
 # --------------------------------------------------------------------------
 
 if [ -n "$MERGED_MANIFEST" ]; then
-    releases="$(gh api "repos/$REPO/releases" --paginate | jq -s 'add // []')" ||
-        die "Could not list releases for $REPO."
     release_tags="$(jq -L "$SCRIPT_DIR" -r --argjson limit "$RELEASE_FIXTURE_LIMIT" \
-        --slurpfile manifest "$MANIFEST" 'include "semver";
+        --arg only "$only" --slurpfile manifest "$MANIFEST" 'include "semver";
         [$manifest[0] | if type == "array" then . else (.fixtures // []) end | .[].git_tag] as $covered
         | [.[] | select(.draft == false) | .tag_name as $tag
            | "migration-fixture-\($tag)-wallet-only" as $fixture
            | select(any(.assets[].name; . == "\($fixture).tar.zst")
                     and any(.assets[].name; . == "\($fixture).json"))
            | $tag | select(try (semver_key | true) catch false)]
-        | sort_by(semver_key) | reverse | .[:$limit] | map(select(IN($covered[]) | not)) | .[]' <<<"$releases")" ||
+        | sort_by(semver_key) | reverse
+        | if $only == "" then .[:$limit] else map(select(. == $only)) end
+        | map(select(IN($covered[]) | not)) | .[]' <<<"$releases")" ||
         die "Could not read the release list of $REPO."
 
     entries="$DEST/.release-fixtures.jsonl"
@@ -327,9 +354,10 @@ if [ -n "$MERGED_MANIFEST" ]; then
         fi
         rm -rf "$stage"
     done <<<"$release_tags"
-    jq --slurpfile attached "$entries" \
-        'if type == "array" then {fixtures: .} else . end | .fixtures += $attached' \
-        "$MANIFEST" >"$MERGED_MANIFEST"
+    jq --arg only "$only" --slurpfile attached "$entries" \
+        'if type == "array" then {fixtures: .} else . end
+         | if $only == "" then . else .fixtures |= map(select(.git_tag == $only)) end
+         | .fixtures += $attached' "$MANIFEST" >"$MERGED_MANIFEST"
     rm -f "$entries"
 fi
 

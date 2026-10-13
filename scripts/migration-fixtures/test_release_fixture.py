@@ -117,34 +117,73 @@ class ReleaseFixtureTests(unittest.TestCase):
             "fixtures": [{"id": f"{tag}-wallet-only", "git_tag": tag} for tag in tags]
         }
 
+    def release(self, tag, extensions=("tar.zst", "json"), draft=False):
+        """A release as the API lists it, carrying the named fixture assets."""
+        assets = [{"name": release_fixture.asset_name(tag, e)} for e in extensions]
+        return {"tag_name": tag, "draft": draft, "assets": assets}
+
     def test_source_is_the_newest_fixture_older_than_the_release(self):
         manifest = self.fixtures(
             "v0.9.3", "v1.0.0-weekly.9", "v1.0.0-weekly.10", "v1.0.0-weekly.30"
         )
-        source = release_fixture.source(
-            manifest,
-            "v1.0.0-weekly.20",
-            ["v0.9.3", "v1.0.0-weekly.10", "v1.0.0-weekly.30"],
+        releases = [
+            self.release(tag, ())
+            for tag in ("v0.9.3", "v1.0.0-weekly.10", "v1.0.0-weekly.30")
+        ]
+        self.assertEqual(
+            release_fixture.source(manifest, "v1.0.0-weekly.20", releases),
+            "v1.0.0-weekly.10",
         )
-        self.assertEqual(source["git_tag"], "v1.0.0-weekly.10")
+
+    def test_source_is_an_attached_fixture_however_many_newer_ones_exist(self):
+        manifest = self.fixtures("v1.0.0")
+        attached = [self.release(f"v1.1.{patch}") for patch in range(1, 11)]
+        self.assertEqual(
+            release_fixture.source(manifest, "v1.1.11", attached), "v1.1.10"
+        )
+        # v1.1.2 lost its fixture and is captured again; nine releases are newer.
+        attached[1] = self.release("v1.1.2", ())
+        self.assertEqual(release_fixture.source(manifest, "v1.1.2", attached), "v1.1.1")
 
     def test_source_refuses_a_release_that_already_has_a_fixture(self):
         with self.assertRaisesRegex(ValueError, "already"):
             release_fixture.source(self.fixtures("v1.0.0", "v1.0.1"), "v1.0.1", [])
+        with self.assertRaisesRegex(ValueError, "already"):
+            release_fixture.source(
+                self.fixtures("v1.0.0"), "v1.0.1", [self.release("v1.0.1")]
+            )
 
     def test_source_refuses_to_skip_a_published_release_without_a_fixture(self):
-        with self.assertRaisesRegex(ValueError, "v1.0.1"):
-            release_fixture.source(
-                self.fixtures("v1.0.0"), "v1.0.2", ["v1.0.0", "v1.0.1", "v1.0.2"]
-            )
+        manifest = self.fixtures("v1.0.0")
+        for name, uncovered in {
+            "no asset": self.release("v1.0.1", ()),
+            "archive only": self.release("v1.0.1", ("tar.zst",)),
+            "entry only": self.release("v1.0.1", ("json",)),
+        }.items():
+            with self.subTest(name), self.assertRaisesRegex(ValueError, "v1.0.1"):
+                release_fixture.source(manifest, "v1.0.2", [uncovered])
+
+    def test_source_ignores_draft_releases(self):
+        manifest = self.fixtures("v1.0.0")
+        drafts = [
+            self.release("v1.0.1", (), draft=True),
+            self.release("v1.0.2", draft=True),
+            self.release("v1.0.3", draft=True),
+        ]
+        self.assertEqual(release_fixture.source(manifest, "v1.0.3", drafts), "v1.0.0")
 
     def test_source_needs_an_older_fixture_and_a_semver_release(self):
         with self.assertRaisesRegex(ValueError, "older"):
             release_fixture.source(self.fixtures("v1.0.1"), "v1.0.0", [])
         with self.assertRaises(ValueError):
             release_fixture.source(self.fixtures("v1.0.0"), "not-a-release", [])
-        release_fixture.source(
-            self.fixtures("v1.0.0"), "v1.0.1", ["test-fix-directory-searching"]
+        self.assertEqual(
+            release_fixture.source(
+                self.fixtures("v1.0.0"),
+                "v1.0.1",
+                [self.release("test-fix-directory-searching")],
+            ),
+            "v1.0.0",
         )
 
 

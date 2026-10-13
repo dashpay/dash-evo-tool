@@ -238,5 +238,31 @@ for patch in 10 9 8 7 6 5 4 3; do expected+=" v1.1.$patch-wallet-only"; done
 [ "$(merged_ids)" = "$expected" ] || fail "expected the 8 newest attached fixtures, got: $(merged_ids)"
 echo 'PASS: only the 8 newest attached fixtures are used'
 
+# A capture resolves the one fixture it starts from, outside that limit too.
+# source_for EXPECTED_STATUS TAG: leaves the fetch counts in $fetched.
+source_for() {
+    download "$1" v1.0.0 --merged-manifest "$scratch/merged.json" --source-for "$2"
+    fetched="$(grep -c 'run download' "$GH_CALL_LOG" || true) stored, $(grep -c 'release download' "$GH_CALL_LOG" || true) attached, $(grep -c 'attestation verify' "$GH_CALL_LOG" || true) verified"
+}
+source_for 0 v1.1.11
+[ "$(merged_ids)" = 'v1.1.10-wallet-only' ] || fail "the capture of v1.1.11 starts from: $(merged_ids)"
+[ "$fetched" = '0 stored, 1 attached, 1 verified' ] || fail "the capture of v1.1.11 fetched: $fetched"
+[ -f "$(release_archive v1.1.10)" ] || fail 'the source archive is missing'
+TEST_RELEASES="$(grep -v '^v1\.1\.2|' <<<"$releases")"$'\nv1.1.2'
+source_for 0 v1.1.2
+[ "$(merged_ids)" = 'v1.1.1-wallet-only' ] || fail "the capture of v1.1.2 starts from: $(merged_ids)"
+[ "$fetched" = '0 stored, 1 attached, 1 verified' ] || fail "the capture of v1.1.2 fetched: $fetched"
+echo 'migration-fixture-v1.1.1-wallet-only.json' > "$TEST_ASSETS/unattested"
+source_for 1 v1.1.2
+: > "$TEST_ASSETS/unattested"
+TEST_RELEASES=$'v1.0.0\nv1.1.1'
+source_for 1 v1.1.2
+grep -q 'no fixture: v1.1.1' "$scratch/download.log" || fail 'the capture of v1.1.2 was not refused for skipping v1.1.1'
+[ "$fetched" = '0 stored, 0 attached, 0 verified' ] || fail "a refused capture fetched: $fetched"
+source_for 0 v1.1.1
+[ "$(merged_ids)" = 'v1.0.0-wallet-only' ] || fail "the capture of v1.1.1 starts from: $(merged_ids)"
+[ "$fetched" = '1 stored, 0 attached, 0 verified' ] || fail "the capture of v1.1.1 fetched: $fetched"
+echo 'PASS: a capture resolves only the fixture it starts from, however many are newer'
+
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "$SCRIPT_DIR" -p test_release_fixture.py -v
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "$SCRIPT_DIR" -p test_chain.py -v

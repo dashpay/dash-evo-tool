@@ -2,7 +2,7 @@
 
 build   turn a chain.py receipt into the manifest entry published beside the archive
 check   accept a downloaded entry only if it describes exactly this release and archive
-source  choose the fixture a release's chain starts from
+source  name the release whose fixture a release's chain starts from
 Requires jq for SemVer ordering, like chain.py.
 """
 
@@ -160,9 +160,23 @@ def ordered(tags: list[str]) -> list[str]:
     return json.loads(result.stdout)
 
 
-def source(manifest: dict, tag: str, published: list[str]) -> dict:
-    """Pick the newest fixture older than `tag`, never skipping an uncovered release."""
-    fixtures = {fixture["git_tag"]: fixture for fixture in manifest["fixtures"]}
+def source(manifest: dict, tag: str, releases: list[dict]) -> str:
+    """Tag of the newest fixture older than `tag`, never skipping an uncovered release.
+
+    A fixture is a manifest entry or the asset pair on a published release in
+    `releases`, the API's release list. Presence only: the caller verifies it.
+    """
+    published = {
+        release["tag_name"]: {asset["name"] for asset in release["assets"]}
+        for release in releases
+        if not release["draft"]
+    }
+    pair = {"tar.zst", "json"}
+    fixtures = {fixture["git_tag"] for fixture in manifest["fixtures"]} | {
+        name
+        for name, assets in published.items()
+        if {asset_name(name, extension) for extension in pair} <= assets
+    }
     if tag in fixtures:
         raise ValueError(f"{tag} already has a fixture")
     order = ordered(sorted({*fixtures, *published, tag}))
@@ -172,16 +186,12 @@ def source(manifest: dict, tag: str, published: list[str]) -> dict:
     covered = [candidate for candidate in older if candidate in fixtures]
     if not covered:
         raise ValueError(f"No fixture older than {tag} to start from")
-    skipped = [
-        candidate
-        for candidate in older[older.index(covered[-1]) + 1 :]
-        if candidate in published and candidate not in fixtures
-    ]
+    skipped = older[older.index(covered[-1]) + 1 :]
     if skipped:
         raise ValueError(
             f"Capture these published releases first, they have no fixture: {', '.join(skipped)}"
         )
-    return fixtures[covered[-1]]
+    return covered[-1]
 
 
 def main() -> None:
@@ -195,10 +205,8 @@ def main() -> None:
     parser.add_argument("--run-id", type=int)
     parser.add_argument("--out", type=Path, help="entry to write (build)")
     parser.add_argument("--metadata", type=Path, help="entry to verify (check)")
-    parser.add_argument("--manifest", type=Path, help="merged manifest (source)")
-    parser.add_argument(
-        "--published", type=Path, help="published tags, one per line (source)"
-    )
+    parser.add_argument("--manifest", type=Path, help="fixture manifest (source)")
+    parser.add_argument("--releases", type=Path, help="API release list (source)")
     args = parser.parse_args()
     try:
         if args.command == "build":
@@ -218,12 +226,13 @@ def main() -> None:
         elif args.command == "check":
             check(json.loads(args.metadata.read_text()), args.archive, args.tag)
         else:
-            chosen = source(
-                json.loads(args.manifest.read_text()),
-                args.tag,
-                args.published.read_text().split(),
+            print(
+                source(
+                    json.loads(args.manifest.read_text()),
+                    args.tag,
+                    json.loads(args.releases.read_text()),
+                )
             )
-            print(json.dumps(chosen))
     except (ValueError, KeyError, TypeError) as error:
         raise SystemExit(f"release_fixture {args.command}: {error}") from error
 

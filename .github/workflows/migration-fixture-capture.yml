@@ -120,13 +120,10 @@ jobs:
           }
           if [ -z "$BINARY_ARTIFACT" ]; then release_binary "$TAG" "$binaries/new"; fi
 
-          scripts/migration-fixtures/download-fixtures.sh --strict \
+          # Only the fixture this capture starts from: the newest older one.
+          scripts/migration-fixtures/download-fixtures.sh --source-for "$TAG" \
             --dest "$RUNNER_TEMP/fixtures" --merged-manifest "$RUNNER_TEMP/fixtures/manifest.json"
-          gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
-            --jq '.[] | select(.draft == false) | .tag_name' >"$RUNNER_TEMP/published.txt"
-          python3 scripts/migration-fixtures/release_fixture.py source --tag "$TAG" \
-            --manifest "$RUNNER_TEMP/fixtures/manifest.json" \
-            --published "$RUNNER_TEMP/published.txt" >"$RUNNER_TEMP/source.json"
+          jq -e '.fixtures[-1]' "$RUNNER_TEMP/fixtures/manifest.json" >"$RUNNER_TEMP/source.json"
           release_binary "$(jq -r .git_tag "$RUNNER_TEMP/source.json")" "$binaries/source"
           for side in new source; do unzip -q "$binaries/$side/$ASSET" -d "$binaries/$side"; done
           gh api -H 'Accept: application/vnd.github.raw' \

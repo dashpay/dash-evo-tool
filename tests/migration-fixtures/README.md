@@ -195,7 +195,9 @@ in git with their provenance; none of the rules below apply to them.
 - **The newest 8 are used.** Every weekly adds a fixture and the matrix boots
   each one, so the downloader takes the 8 newest attached fixtures
   (`RELEASE_FIXTURE_LIMIT`, a provisional number). Coverage still requires
-  every published release to carry one.
+  every published release to carry one. The limit bounds the matrix only: a
+  capture resolves the one fixture it starts from (`--source-for`), however
+  many newer ones exist.
 - **No expiry and no renewal.** Release assets do not expire; the renewal
   workflow below never sees them.
 - **Every weekly carries one.** `weekly-build.yml` calls the capture for the
@@ -210,7 +212,8 @@ in git with their provenance; none of the rules below apply to them.
 - **Capturing a published release that has none**, oldest first:
   `gh workflow run migration-fixture-capture.yml --ref v1.0-dev -f tag=<git_tag> -f attach=true`.
   The run refuses to skip an older published release without a fixture, and
-  refuses a release that already has one. Without `attach=true` it is a dry run.
+  refuses a release that already has one; to replace a fixture, delete both
+  assets first. Without `attach=true` it is a dry run.
 
 ### Fixtures stored as build artifacts
 

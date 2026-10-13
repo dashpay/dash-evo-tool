@@ -9,6 +9,14 @@ use crate::ui::dpns::copy::{NOT_IN_MASTERNODE_LIST, node_set_chip_label};
 use eframe::egui::{self, RichText, Ui};
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Tallest the node list in the popover grows before it scrolls.
+const LIST_MAX_HEIGHT: f32 = 400.0;
+/// Shortest it is squeezed to in a low window.
+const LIST_MIN_HEIGHT: f32 = 80.0;
+/// Height of everything in the popover but the node list: the presets above
+/// it, the button below it and the frame.
+const POPOVER_CHROME_HEIGHT: f32 = 220.0;
+
 /// Display name of a node set.
 pub fn node_set_name(set: &NodeSet) -> &'static str {
     match set {
@@ -53,6 +61,12 @@ pub fn show(
         resolved.included.len(),
         resolved.weight,
     ));
+    // The popover opens on the roomier side of the chip. The list is sized
+    // from that room, not from where the popover is: its place follows its
+    // size, so the two must not depend on each other.
+    let window = ui.ctx().content_rect();
+    let room = (chip.rect.top() - window.top()).max(window.bottom() - chip.rect.bottom());
+    let list_height = (room - POPOVER_CHROME_HEIGHT).clamp(LIST_MIN_HEIGHT, LIST_MAX_HEIGHT);
     egui::Popup::from_toggle_button_response(&chip)
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .show(|ui| {
@@ -77,41 +91,52 @@ pub fn show(
                 .iter()
                 .filter_map(|node| node.alias.clone().map(|alias| (node.id, alias)))
                 .collect();
-            for node in nodes {
-                let usable = node_exclusion(node).is_none();
-                let mut checked = set.selects(node) && usable;
-                let kind = match node.kind {
-                    VotingNodeKind::Evonode => "Evonode",
-                    VotingNodeKind::Masternode => "Masternode",
-                };
-                ui.horizontal(|ui| {
-                    let toggled = ui
-                        .add_enabled(
-                            usable,
-                            egui::Checkbox::new(
-                                &mut checked,
-                                format!("{label} · {kind}", label = node_label(node.id, &labels)),
-                            ),
-                        )
-                        .changed();
-                    if toggled {
-                        let mut ids: BTreeSet<_> = nodes
-                            .iter()
-                            .filter(|other| set.selects(other) && node_exclusion(other).is_none())
-                            .map(|other| other.id)
-                            .collect();
-                        if checked {
-                            ids.insert(node.id);
-                        } else {
-                            ids.remove(&node.id);
-                        }
-                        response.changed = Some(NodeSet::Custom(ids));
-                    }
-                    if let Some(note) = node_row_note(node) {
-                        ui.label(RichText::new(note).small().weak());
+            // Every loaded node is listed, which can be more than the window is
+            // tall; the list scrolls and the button below it stays in view.
+            egui::ScrollArea::vertical()
+                .max_height(list_height)
+                .show(ui, |ui| {
+                    for node in nodes {
+                        let usable = node_exclusion(node).is_none();
+                        let mut checked = set.selects(node) && usable;
+                        let kind = match node.kind {
+                            VotingNodeKind::Evonode => "Evonode",
+                            VotingNodeKind::Masternode => "Masternode",
+                        };
+                        ui.horizontal(|ui| {
+                            let toggled = ui
+                                .add_enabled(
+                                    usable,
+                                    egui::Checkbox::new(
+                                        &mut checked,
+                                        format!(
+                                            "{label} · {kind}",
+                                            label = node_label(node.id, &labels)
+                                        ),
+                                    ),
+                                )
+                                .changed();
+                            if toggled {
+                                let mut ids: BTreeSet<_> = nodes
+                                    .iter()
+                                    .filter(|other| {
+                                        set.selects(other) && node_exclusion(other).is_none()
+                                    })
+                                    .map(|other| other.id)
+                                    .collect();
+                                if checked {
+                                    ids.insert(node.id);
+                                } else {
+                                    ids.remove(&node.id);
+                                }
+                                response.changed = Some(NodeSet::Custom(ids));
+                            }
+                            if let Some(note) = node_row_note(node) {
+                                ui.label(RichText::new(note).small().weak());
+                            }
+                        });
                     }
                 });
-            }
             ui.separator();
             if ui.button("Save as my default").clicked() {
                 response.save_default = true;

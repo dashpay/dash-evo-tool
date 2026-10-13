@@ -212,6 +212,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Long lists of masternodes can be scrolled everywhere. In Masternodes →
+  Votes, the "Vote with" list named every loaded node but did not scroll: with
+  more nodes than fit in the window, the rest of the list and the "Save as my
+  default" button could not be reached. It now scrolls and keeps the button
+  in view. In Masternodes → Nodes, the list scrolled only while the pointer
+  was over a card, and its scroll bar sat at the edge of the last card; it
+  now scrolls from anywhere in the panel, with the scroll bar at the panel's
+  edge.
+
 - Registering a username now shows a realistic cost. The review step used to
   show a registration fee of about 0.000002 DASH, while the network charges
   roughly 0.0008 DASH and wants about 0.0012 DASH on the identity before it

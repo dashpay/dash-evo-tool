@@ -20,6 +20,8 @@ on:
       - "scripts/ci/**"
       - ".github/workflows/tests.yml"
       - ".github/workflows/weekly-build.yml"
+      # Its permissions are checked against the weekly job that calls it.
+      - ".github/workflows/migration-fixture-capture.yml"
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     paths: *code_paths
@@ -60,6 +62,7 @@ jobs:
           bash scripts/migration-fixtures/test-scripts.sh
           bash scripts/ci/test-run-tests.sh
           bash scripts/ci/test-weekly-gate.sh
+          bash scripts/ci/test-weekly-jobs.sh
 
       # Fetches only the upstream commit graph plus the pinned rev's migration
       # sources — seconds, not a full platform clone. See the script header for
@@ -75,6 +78,7 @@ jobs:
     permissions:
       contents: read
       actions: read # Download fixture artifacts from earlier workflow runs.
+      attestations: read # Verify the fixtures attached to releases.
 
     steps:
       - name: Checkout code
@@ -131,19 +135,24 @@ jobs:
           set -euo pipefail
           dest="$RUNNER_TEMP/migration-fixtures"
           mkdir -p "$dest"
-          scripts/migration-fixtures/download-fixtures.sh --strict --dest "$dest"
+          # The manifest plus the verified fixtures attached to releases.
+          scripts/migration-fixtures/download-fixtures.sh --strict --dest "$dest" \
+            --merged-manifest "$dest/manifest.json"
           count="$(find "$dest" -maxdepth 1 \( -name '*.tar.zst' -o -name '*.tar.gz' \) | wc -l)"
           if [ "$count" -eq 0 ]; then
             echo "::error::No migration fixture archives were downloaded."
             exit 1
           fi
           echo "Resolved $count fixture archive(s)."
-          echo "dir=$dest" >>"$GITHUB_OUTPUT"
+          {
+            echo "dir=$dest"
+            echo "manifest=$dest/manifest.json"
+          } >>"$GITHUB_OUTPUT"
 
       - name: Run tests and migration matrix in parallel
         env:
           MIGRATION_FIXTURES_DIR: ${{ steps.fixtures.outputs.dir }}
-          MIGRATION_FIXTURES_MANIFEST: ${{ github.workspace }}/tests/migration-fixtures/manifest.json
+          MIGRATION_FIXTURES_MANIFEST: ${{ steps.fixtures.outputs.manifest }}
           MIGRATION_V093_WALLET_PASSWORD: ${{ secrets.MIGRATION_V093_WALLET_PASSWORD }}
           MIGRATION_MATRIX_SKIP_PASSWORDS: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
         run: bash scripts/ci/run-tests.sh "$RUNNER_TEMP/test-logs"

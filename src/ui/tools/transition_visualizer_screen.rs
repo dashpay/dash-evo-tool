@@ -23,10 +23,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Successfully parsed transition plus the text shown in the visualizer pane.
-///
-/// Keeping both values in one struct makes the broadcast invariant type-enforced:
-/// if a transition is displayed, a typed `StateTransition` is always available
-/// for broadcast without re-parsing the rendered output.
 struct ParsedTransition {
     state_transition: StateTransition,
     rendered: String,
@@ -37,30 +33,18 @@ struct ParsedTransition {
 /// Prefer pretty JSON. When serialization fails (e.g. non-string map keys in
 /// platform-address transitions), fall back to a plain-text header plus the
 /// multi-line `Debug` representation so newlines stay readable in the UI.
-fn state_transition_to_display(state_transition: &StateTransition) -> String {
-    match serde_json::to_string_pretty(state_transition) {
-        Ok(json) => json,
-        Err(error) => {
-            let error = error.to_string();
-            let debug_output = format!("{state_transition:#?}");
-            tracing::warn!(
-                error = %error,
-                "parsed state transition but failed to serialize it to JSON; using debug fallback"
-            );
-            // Full transition payload only at DEBUG — never at WARN.
-            tracing::debug!(
-                state_transition = %debug_output,
-                "debug representation of state transition that failed JSON serialization"
-            );
-
-            format!(
-                "State transition parsed successfully, but JSON serialization failed.\n\
-                 Serialization error: {error}\n\n\
-                 Debug representation:\n\
-                 {debug_output}"
-            )
-        }
-    }
+fn state_transition_to_display(
+    state_transition: &(impl serde::Serialize + std::fmt::Debug),
+) -> String {
+    serde_json::to_string_pretty(state_transition).unwrap_or_else(|error| {
+        tracing::debug!(%error, "Transition JSON serialization failed; using debug fallback");
+        format!(
+            "State transition parsed successfully, but JSON serialization failed.\n\
+             Serialization error: {error}\n\n\
+             Debug representation:\n\
+             {state_transition:#?}"
+        )
+    })
 }
 
 #[derive(PartialEq)]
@@ -585,157 +569,82 @@ impl ScreenLike for TransitionVisualizerScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app_dir::{copy_env_file_if_not_exists, ensure_env_file};
-    use crate::database::test_helpers::create_database_at_path;
+    use crate::context::test_support::test_app_context_for_network;
     use dash_sdk::dpp::dashcore::Network;
-    use std::sync::Once;
+    use dash_sdk::dpp::serialization::PlatformSerializable;
+    use egui_kittest::{Harness, kittest::Queryable};
 
-    /// Issue #573 AddressFundsTransfer payload. Historically this hit a
-    /// `serde_json` non-string map-key failure; on current platform pins it may
-    /// serialize as JSON. Either path must still deserialize and remain visible.
+    /// Historical AddressFundsTransfer payload from issue #573.
     const ISSUE_573_BASE64: &str = "DAABAEZJ8lqSWSBK4JRgM6A4o7EoAM/IDPwAD0JAAQA2I7Ax2quQXVnyAKnezuNPE75q7vwAD0JAAQAAAAEAQR/vseNQooUa8QVJbujMgP22M8EzL3C9AAEibx6iMtmWHA1ou89lGCCtHgJmKcieCtdhZMhqcnU9O+fc4Y575ryF";
-
-    /// True when the rendered pane identifies the issue #573 variant.
-    /// JSON uses `$type: "addressFundsTransfer"`; Debug uses `AddressFundsTransfer(...)`.
-    fn renders_address_funds_transfer(rendered: &str) -> bool {
-        rendered.contains("addressFundsTransfer") || rendered.contains("AddressFundsTransfer")
-    }
-
-    fn ensure_test_env() {
-        static INIT: Once = Once::new();
-        INIT.call_once(|| {
-            copy_env_file_if_not_exists();
-
-            // Safety: tests set env vars once for deterministic config.
-            unsafe {
-                std::env::set_var("MAINNET_dapi_addresses", "http://127.0.0.1:1443");
-                std::env::set_var("MAINNET_core_host", "127.0.0.1");
-                std::env::set_var("MAINNET_core_rpc_port", "9998");
-                std::env::set_var("MAINNET_core_rpc_user", "dashrpc");
-                std::env::set_var("MAINNET_core_rpc_password", "password");
-
-                std::env::set_var("LOCAL_dapi_addresses", "http://127.0.0.1:2443");
-                std::env::set_var("LOCAL_core_host", "127.0.0.1");
-                std::env::set_var("LOCAL_core_rpc_port", "20302");
-                std::env::set_var("LOCAL_core_rpc_user", "dashmate");
-                std::env::set_var("LOCAL_core_rpc_password", "password");
-            }
-        });
-    }
-
-    /// Hold the tempdir for the lifetime of the screen so the app k/v and
-    /// secret store files stay available for the duration of the test.
-    struct TestScreen {
-        screen: TransitionVisualizerScreen,
-        _dir: tempfile::TempDir,
-    }
-
-    fn make_test_screen() -> TestScreen {
-        ensure_test_env();
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        let data_dir = dir.path().to_path_buf();
-        ensure_env_file(&data_dir);
-
-        let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("test db"));
-        // Each test gets its own scratch directory for app k/v + secret store
-        // so concurrent tests do not fight over the same SQLite file.
-        let app_kv = AppContext::open_app_kv(&data_dir).expect("open app k/v");
-        let secret_store = AppContext::open_secret_store(&data_dir).expect("open secret store");
-
-        let app_context = AppContext::new(
-            data_dir,
-            Network::Regtest,
-            db,
-            Default::default(),
-            Default::default(),
-            egui::Context::default(),
-            app_kv,
-            secret_store,
-            crate::model::user_role::UserRoleCell::default(),
-        )
-        .expect("Expected to create AppContext");
-
-        TestScreen {
-            screen: TransitionVisualizerScreen::new(&app_context),
-            _dir: dir,
-        }
-    }
 
     #[test]
     fn issue_573_platform_address_transition_deserializes_and_renders() {
-        let bytes = STANDARD
-            .decode(ISSUE_573_BASE64)
-            .expect("issue #573 base64 should decode");
-        let state_transition = StateTransition::deserialize_from_bytes(&bytes)
-            .expect("issue #573 transition should deserialize");
-
-        let rendered = state_transition_to_display(&state_transition);
-
-        assert!(
-            !rendered.trim().is_empty(),
-            "parsed transition must produce visible output"
+        let bytes = STANDARD.decode(ISSUE_573_BASE64).expect("base64");
+        let transition =
+            StateTransition::deserialize_from_bytes_untrusted(&bytes).expect("transition");
+        // The current Platform pin serializes this historical payload successfully.
+        assert_eq!(
+            state_transition_to_display(&transition),
+            serde_json::to_string_pretty(&transition).expect("JSON")
         );
-        assert!(
-            renders_address_funds_transfer(&rendered),
-            "rendered output should identify the AddressFundsTransfer variant"
-        );
-
-        let json_ok = serde_json::to_string_pretty(&state_transition).is_ok();
-        if json_ok {
-            // Prefer the JSON path when the current pin can serialize it.
-            assert!(
-                rendered.trim_start().starts_with('{'),
-                "successful JSON serialization should yield pretty JSON"
-            );
-            assert!(
-                serde_json::from_str::<Value>(&rendered).is_ok(),
-                "JSON path must produce parseable JSON"
-            );
-        } else {
-            // Fallback path: plain-text header + multi-line Debug body (not an
-            // escaped JSON string blob). Do not assert upstream error wording.
-            assert!(
-                rendered.contains("parsed successfully"),
-                "fallback should explain that parsing succeeded"
-            );
-            assert!(
-                rendered.contains("Debug representation:"),
-                "fallback should include a debug section"
-            );
-            assert!(
-                rendered.lines().count() > 3,
-                "fallback should preserve multi-line debug output"
-            );
-        }
     }
 
     #[test]
-    fn parse_input_retains_typed_transition_for_issue_573_payload() {
-        let mut fixture = make_test_screen();
-        fixture.screen.input_data = ISSUE_573_BASE64.to_owned();
-        fixture.screen.parse_input();
+    fn non_string_map_keys_use_readable_debug_fallback() {
+        let value = std::collections::BTreeMap::from([((1u8, 2u8), 3u8)]);
+        assert!(serde_json::to_string_pretty(&value).is_err());
+        let rendered = state_transition_to_display(&value);
+        assert!(rendered.starts_with("State transition parsed successfully"));
+        assert!(rendered.ends_with(&format!("Debug representation:\n{value:#?}")));
+        assert!(rendered.lines().count() > 3);
+    }
 
-        let parsed = fixture
-            .screen
-            .parsed
-            .as_ref()
-            .expect("issue #573 payload should parse into a retained transition");
+    #[test]
+    fn issue_573_broadcast_uses_retained_transition_not_display_text() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = test_app_context_for_network(dir.path(), Network::Regtest);
+        let mut screen = TransitionVisualizerScreen::new(&context);
+        screen.input_data = ISSUE_573_BASE64.to_owned();
+        screen.parse_input();
+        assert!(screen.parse_error.is_none());
+        let parsed = screen.parsed.as_mut().expect("parsed transition");
+        let bytes = STANDARD.decode(ISSUE_573_BASE64).expect("base64");
+        assert!(matches!(
+            parsed.state_transition,
+            StateTransition::AddressFundsTransfer(_)
+        ));
+        assert_eq!(
+            parsed.state_transition.serialize_to_bytes().expect("bytes"),
+            bytes
+        );
+        // Simulate a non-JSON fallback pane: broadcasting must ignore its text.
+        parsed.rendered = "Debug representation:\nnot JSON".to_owned();
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, (screen, action): &mut (TransitionVisualizerScreen, AppAction)| {
+                let next = screen.show_output(ui);
+                if !matches!(next, AppAction::None) {
+                    *action = next;
+                }
+            },
+            (screen, AppAction::None),
+        );
+        harness.run();
+        harness
+            .get_by_label("Broadcast Transition to Platform")
+            .click();
+        harness.run();
+        let AppAction::BackendTask(BackendTask::BroadcastStateTransition(transition)) =
+            &harness.state().1
+        else {
+            panic!("expected a broadcast task");
+        };
+        assert_eq!(transition.serialize_to_bytes().expect("bytes"), bytes);
 
-        assert!(
-            fixture.screen.parse_error.is_none(),
-            "successful deserialize must not set a parse error regardless of JSON serialization"
-        );
-        assert!(
-            !parsed.rendered.trim().is_empty(),
-            "rendered pane must show the parsed transition"
-        );
-        assert!(
-            renders_address_funds_transfer(&parsed.rendered),
-            "rendered pane should identify the AddressFundsTransfer variant"
-        );
-        // Typed transition is retained — broadcast must not need to re-parse rendered text.
-        // Touch the field so a future refactor that drops it fails this test.
-        let _retained: &StateTransition = &parsed.state_transition;
+        // A subsequent invalid input must discard the old broadcast payload.
+        let screen = &mut harness.state_mut().0;
+        screen.input_data = "not a transition".to_owned();
+        screen.parse_input();
+        assert!(screen.parsed.is_none());
+        assert!(screen.parse_error.is_some());
     }
 }

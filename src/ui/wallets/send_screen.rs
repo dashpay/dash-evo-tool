@@ -5350,13 +5350,8 @@ mod tests {
         const SEED: [u8; 64] = [9; 64];
 
         let (ctx, _dir) = offline_ctx();
-        let (sender, _receiver) = tokio::sync::mpsc::channel(32);
-        ctx.ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
-            sender,
-            ctx.egui_ctx().clone(),
-        ))
-        .await
-        .expect("offline wallet backend");
+        // Loaded before the backend is wired, so nothing registers the wallet
+        // in the background and the awaited calls below are the only writers.
         let wallet = Wallet::new_from_seed(SEED, Network::Testnet, None, None).expect("wallet");
         let (seed_hash, _) = ctx
             .register_wallet(
@@ -5365,26 +5360,23 @@ mod tests {
                 crate::model::wallet::birth_height::WalletOrigin::Fresh,
             )
             .expect("loaded wallet");
+        let (sender, _receiver) = tokio::sync::mpsc::channel(32);
+        ctx.ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+            sender,
+            ctx.egui_ctx().clone(),
+        ))
+        .await
+        .expect("offline wallet backend");
         ctx.wallet_backend()
             .expect("wallet backend")
             .register_wallet_from_seed(&seed_hash, &SEED, None)
             .await
             .expect("wallet addresses");
-        // `register_wallet` also registers in the background, and either
-        // registration can return just before the addresses are published.
-        let owned = tokio::time::timeout(std::time::Duration::from_secs(30), async {
-            loop {
-                let receiving = ctx.snapshot_address_paths(&seed_hash).into_iter().find_map(
-                    |(address, path)| path.is_bip44_external(Network::Testnet).then_some(address),
-                );
-                if let Some(address) = receiving {
-                    break address;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .expect("a loaded wallet owns a receiving address");
+        let owned = ctx
+            .snapshot_address_paths(&seed_hash)
+            .into_iter()
+            .find_map(|(address, path)| path.is_bip44_external(Network::Testnet).then_some(address))
+            .expect("a loaded wallet owns a receiving address");
         let external = testnet_core_address(9);
         assert_ne!(owned, external);
 

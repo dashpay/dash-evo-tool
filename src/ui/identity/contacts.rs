@@ -799,7 +799,7 @@ pub(super) fn render_preview(
                 }
             });
         }
-        for contact in state.filtered_contacts().iter().take(6) {
+        for contact in state.matching_contacts().take(6) {
             if ui.button(contact_label(contact)).clicked() {
                 action = AppAction::AddScreen(
                     contact_profile_screen_type(identity.clone(), contact.identity_id)

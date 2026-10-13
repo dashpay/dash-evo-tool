@@ -190,11 +190,15 @@ impl ContactsState {
 
     /// Contacts matching the current search query, in list order. An empty or
     /// whitespace-only query matches every contact.
-    pub fn filtered_contacts(&self) -> Vec<&ContactData> {
+    pub fn matching_contacts(&self) -> impl Iterator<Item = &ContactData> {
         self.contacts
             .iter()
             .filter(|c| matches_contact_search((*c).into(), &self.search))
-            .collect()
+    }
+
+    /// All of [`Self::matching_contacts`], for a caller that needs their number.
+    pub fn filtered_contacts(&self) -> Vec<&ContactData> {
+        self.matching_contacts().collect()
     }
 
     /// Established contacts currently flagged hidden. Never search-filtered:

@@ -793,6 +793,45 @@ fn home_contacts_follow_an_identity_selected_outside_the_hub() {
 }
 
 #[test]
+fn home_contact_preview_shows_the_first_six_contacts() {
+    use dash_evo_tool::backend_task::dashpay::ContactData;
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        seed_identity(&app_context, vec![], vec![]);
+        let mut harness = mount_home(app_context);
+        let names = ["Ana", "Bao", "Cy", "Dee", "Eli", "Fay", "Gus"];
+        harness.state_mut().4.record_contacts(
+            names
+                .iter()
+                .zip(1u8..)
+                .map(|(name, byte)| ContactData {
+                    identity_id: Identifier::from([byte; 32]),
+                    nickname: Some((*name).into()),
+                    note: None,
+                    is_hidden: false,
+                    account_reference: 0,
+                    username: None,
+                    display_name: None,
+                    avatar_url: None,
+                    bio: None,
+                })
+                .collect(),
+        );
+        harness.run();
+        for name in &names[..6] {
+            assert!(
+                harness.query_by_label(name).is_some(),
+                "{name} must be shown"
+            );
+        }
+        assert!(
+            harness.query_by_label("Gus").is_none(),
+            "the preview stops at six contacts"
+        );
+    });
+}
+
+#[test]
 fn home_payments_survive_a_refresh_for_the_same_identity() {
     with_isolated_data_dir(|| {
         let (_runtime, app_context) = fresh_app_context();

@@ -112,11 +112,14 @@ pub enum ExclusionReason {
     NoMaterial,
     /// The saved key does not correspond to the key this identity uses now at
     /// the saved slot: the identity publishes no such key there, has retired
-    /// it, the slot and the public half filed in it name different key ids, the
-    /// saved private half does not derive that public half (or cannot be
-    /// checked against it), or the entry names a wallet this install does not
-    /// hold.
+    /// it, the slot and the public half filed in it name different key ids, or
+    /// the saved private half does not derive that public half (or cannot be
+    /// checked against it).
     KeyNoLongerOnIdentity,
+    /// The key is one the identity still uses, saved as a reference into a
+    /// wallet this install does not hold, so the reference resolves to nothing
+    /// until that wallet is back.
+    WalletNotOnDevice,
     /// The item rests on a voter or operator identity that only the legacy file
     /// names — a key held there, or the operator link itself. Nothing outside
     /// that file vouches for it, and the file is exactly what cannot be taken
@@ -243,6 +246,10 @@ pub struct AppliedRecovery {
 /// would write the legacy file's own claim into the record, and a later pass
 /// would read that claim back as the outside witness for the same file's
 /// operator keys.
+///
+/// A wallet derivation reference that passes those checks still needs the
+/// wallet it names on this install; without it the reference resolves to
+/// nothing and the key is excluded as [`ExclusionReason::WalletNotOnDevice`].
 pub fn compute_recovery_plan(
     modern: &QualifiedIdentity,
     legacy: &QualifiedIdentity,
@@ -279,17 +286,16 @@ pub fn compute_recovery_plan(
                 .contains_key(&path.wallet_seed_hash),
             _ => true,
         };
-        let exclusion = if derivable {
-            key_exclusion(
-                modern,
-                &target,
-                key_id,
-                &public_key.identity_public_key,
-                plaintext,
-            )
-        } else {
-            Some(ExclusionReason::KeyNoLongerOnIdentity)
-        };
+        // The key's own faults first: bringing a wallet back helps only a
+        // key the identity still uses.
+        let exclusion = key_exclusion(
+            modern,
+            &target,
+            key_id,
+            &public_key.identity_public_key,
+            plaintext,
+        )
+        .or((!derivable).then_some(ExclusionReason::WalletNotOnDevice));
         match exclusion {
             None => plan.items.push(descriptor),
             Some(reason) => plan.excluded.push((descriptor, reason)),
@@ -1351,8 +1357,9 @@ mod tests {
         let unknown_wallet = compute_recovery_plan(&modern, &legacy);
         assert_eq!(
             excluded_items(&unknown_wallet),
-            vec![(key_item(M, 1), ExclusionReason::KeyNoLongerOnIdentity)],
-            "a reference to a wallet this install does not hold resolves to nothing",
+            vec![(key_item(M, 1), ExclusionReason::WalletNotOnDevice)],
+            "a reference to a wallet this install does not hold resolves to nothing, \
+             and the reason must name the wallet, not the key",
         );
 
         modern
@@ -1365,6 +1372,32 @@ mod tests {
         assert_eq!(
             key_data(&applied.merged, M, 1),
             PrivateKeyData::AtWalletDerivationPath(reference),
+        );
+    }
+
+    /// Bringing the wallet back would not help a key the identity no longer
+    /// uses, so that key keeps its own reason even when its wallet is missing.
+    #[test]
+    fn a_key_the_identity_no_longer_uses_keeps_that_reason_without_its_wallet() {
+        let modern = bare_identity(0x0D);
+        let mut legacy = bare_identity(0x0D);
+        let orphan = test_key(1, Purpose::AUTHENTICATION, 0x0D);
+        hold(
+            &mut legacy,
+            M,
+            &orphan,
+            PrivateKeyData::AtWalletDerivationPath(WalletDerivationPath {
+                wallet_seed_hash: open_wallet().seed_hash(),
+                derivation_path: DerivationPath::from(vec![]),
+            }),
+        );
+
+        let plan = compute_recovery_plan(&modern, &legacy);
+
+        assert!(plan.items.is_empty());
+        assert_eq!(
+            excluded_items(&plan),
+            vec![(key_item(M, 1), ExclusionReason::KeyNoLongerOnIdentity)],
         );
     }
 

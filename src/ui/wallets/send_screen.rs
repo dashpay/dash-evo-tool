@@ -36,7 +36,7 @@ use crate::ui::components::wallet_unlock_popup::{
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::identity::funding_common::{FUNDING_FEE_NOT_COVERED, network_fee_refusal};
 use crate::ui::identity::top_up_identity_screen::{
-    top_up_in_flight_for, track_top_up_sent_elsewhere,
+    top_up_awaits_result, top_up_in_flight_for, track_top_up_sent_elsewhere,
 };
 use crate::ui::state::AssetLockBalanceCache;
 use crate::ui::theme::{ComponentStyles, DashColors};
@@ -639,6 +639,23 @@ impl WalletSendScreen {
     /// Whether `context` is the send this screen dispatched and still waits on.
     pub(crate) fn awaits_send(&self, context: &BackendTaskContext) -> bool {
         self.awaits_own_send() && self.pending_send.as_ref() == Some(context)
+    }
+
+    /// Hand the form back once the top-up it sent has ended without the result
+    /// reaching it: only a screen in view when its top-up ends is told how.
+    fn resume_after_unseen_top_up_end(&mut self) {
+        let Some(dispatch) = &self.pending_send else {
+            return;
+        };
+        if !self.awaits_own_send()
+            || dispatch.identity_top_up_identity().is_none()
+            || top_up_awaits_result(self.app_context.egui_ctx(), dispatch)
+        {
+            return;
+        }
+        // The top-up may have succeeded, so the form must not offer it again.
+        self.send_banner.take_and_clear();
+        self.reset_form();
     }
 
     /// Dispatches a confirmed send under a context of its own, so that its
@@ -4737,6 +4754,7 @@ impl ScreenLike for WalletSendScreen {
         let ctx = ui.ctx().clone();
         let ctx = &ctx;
         let mut action = AppAction::None;
+        self.resume_after_unseen_top_up_end();
 
         action |= add_top_panel(
             ui,

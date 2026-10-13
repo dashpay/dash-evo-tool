@@ -532,18 +532,7 @@ fn a_top_up_left_running_blocks_another_from_a_reopened_form() {
         );
         let dispatch = confirm_top_up(&mut harness, &identity);
 
-        // The breadcrumb stays enabled while the form waits. It sits above
-        // the navigation entry of the same name.
-        harness
-            .query_all_by_role_and_label(Role::Button, "Identities")
-            .min_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
-            .expect("the breadcrumb back to Identities")
-            .click();
-        harness.run_steps(3);
-        assert!(
-            harness.state().screen_stack.is_empty(),
-            "the breadcrumb closes the waiting form"
-        );
+        leave_by_breadcrumb(&mut harness);
 
         open_top_up_form(&mut harness, &identity);
         assert_eq!(
@@ -586,6 +575,11 @@ fn the_top_up_form_is_told_how_its_own_top_up_ended() {
             1,
             "the form that sent the top-up shows that it succeeded"
         );
+        assert_eq!(
+            count(&harness, DONE_BANNER),
+            0,
+            "a form in view says so itself; no banner repeats it"
+        );
 
         harness.state_mut().screen_stack.clear();
         open_top_up_form(&mut harness, &identity);
@@ -608,6 +602,76 @@ fn the_top_up_form_is_told_how_its_own_top_up_ended() {
         assert!(
             prepare_top_up(&mut harness, &identity).is_ok(),
             "a failed top-up does not keep the identity blocked"
+        );
+    });
+}
+
+/// The breadcrumb back to Identities. It sits above the navigation entry of
+/// the same name and stays enabled while the form waits.
+fn leave_by_breadcrumb(harness: &mut App) {
+    harness
+        .query_all_by_role_and_label(Role::Button, "Identities")
+        .min_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
+        .expect("the breadcrumb back to Identities")
+        .click();
+    harness.run_steps(3);
+    assert!(
+        harness.state().screen_stack.is_empty(),
+        "the breadcrumb closes the waiting form"
+    );
+}
+
+/// A top-up keeps running after its form is closed. With nobody left to show
+/// how it ended, its success is confirmed the way Add Funds confirms one
+/// continued in the background.
+#[test]
+fn a_top_up_that_succeeds_after_its_form_was_left_is_confirmed() {
+    in_app(|| {
+        let mut harness = mount_app(RootScreenType::RootScreenWalletsBalances);
+        let identity = stored_identity_with_wallet(&harness);
+        open_top_up_form(&mut harness, &identity);
+        let dispatch = confirm_top_up(&mut harness, &identity);
+        leave_by_breadcrumb(&mut harness);
+
+        deliver(&mut harness, topped_up(dispatch, &identity));
+        assert_eq!(
+            count(&harness, DONE_BANNER),
+            1,
+            "the top-up the user walked away from is confirmed"
+        );
+    });
+}
+
+/// A form covered by another screen is not told how its top-up ended. Back in
+/// view it must not go on waiting for a result that already came.
+#[test]
+fn a_top_up_form_covered_while_its_top_up_ends_stops_waiting() {
+    in_app(|| {
+        let mut harness = mount_app(RootScreenType::RootScreenWalletsBalances);
+        let identity = stored_identity_with_wallet(&harness);
+        open_top_up_form(&mut harness, &identity);
+        let dispatch = confirm_top_up(&mut harness, &identity);
+
+        let other = identity_with_id([0x55; 32], identity.network);
+        open_add_funds(&mut harness, &other);
+        assert_eq!(count(&harness, WALLET_SEND_WAITING), 0);
+        deliver(&mut harness, topped_up(dispatch, &identity));
+
+        harness.state_mut().screen_stack.pop();
+        harness.run_steps(3);
+        assert_eq!(
+            count(&harness, WALLET_SEND_WAITING),
+            0,
+            "the top-up it waited on has ended"
+        );
+        assert!(
+            prepare_top_up(&mut harness, &identity).is_ok(),
+            "the form is usable again"
+        );
+        assert_eq!(
+            count(&harness, DONE_BANNER),
+            1,
+            "the covered form could not say how it ended, so a banner did"
         );
     });
 }

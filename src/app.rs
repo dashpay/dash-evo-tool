@@ -3303,8 +3303,11 @@ impl App for AppState {
             // Keyed on the dispatch alone and ahead of every arm below, so that
             // none of them can leave an ended top-up in flight.
             let tracked_top_up = match &task_result {
-                TaskResult::Success { context, .. } => finish_top_up(ctx, context, true),
-                TaskResult::Error { context, .. } => finish_top_up(ctx, context, false),
+                TaskResult::Success { context, .. } => {
+                    let watched = screen_awaits_top_up(self.visible_screen_mut(), context);
+                    finish_top_up(ctx, context, true, watched)
+                }
+                TaskResult::Error { context, .. } => finish_top_up(ctx, context, false, true),
                 TaskResult::Refresh | TaskResult::DpnsContestsChanged | TaskResult::Repaint => {
                     false
                 }

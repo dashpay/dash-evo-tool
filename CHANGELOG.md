@@ -847,8 +847,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   scheduled checks when it ran on the release branch for the exact commit
   being released, was created after the scheduled run, and passed both fixture
   coverage and the platform pin guard. A failed or cancelled manual run of that
-  commit blocks the release. Manual Tests runs of a `v*-dev` branch now check
-  fixture coverage. Push results are never replaced by a manual run.
+  commit blocks the release unless a scheduled run was created after it. Manual
+  Tests runs of a `v*-dev` branch now check fixture coverage. Push results are
+  never replaced by a manual run.
 
 - Registering a username, finding an identity or a DashPay contact by name, and
   searching DashPay users by name now go through the Dash SDK's own name

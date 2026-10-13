@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use super::dpns::{ContestDurations, is_contested_label};
 use super::qualified_identity::QualifiedIdentity;
+use super::qualified_identity::encrypted_key_storage::PrivateKeyData;
 
 /// How long a finished request stays listed on the identity.
 pub const OUTCOME_RETENTION: Duration = Duration::from_secs(30 * 24 * 60 * 60);
@@ -145,16 +146,29 @@ pub fn dpns_signing_requirement(
 }
 
 /// Whether this device holds a private key that can sign username registrations
-/// (documents requiring `required` security) for `identity`.
+/// (documents requiring `required` security) for `identity`, and can obtain it.
 pub fn can_register_usernames(
     identity: &QualifiedIdentity,
     required: dash_sdk::dpp::identity::SecurityLevel,
 ) -> bool {
-    identity
-        .private_keys
-        .identity_public_keys()
-        .iter()
-        .any(|(_, key)| key_can_sign_documents(&key.identity_public_key, required))
+    registration_key_status(identity, required) == RegistrationKeyStatus::Ready
+}
+
+/// Whether the private half behind a held key entry can be obtained on this
+/// device. A key kept as a reference into a wallet needs that wallet here. A
+/// locked wallet and a vault or password-protected key count as obtainable:
+/// the app asks for what they need when it signs.
+fn key_secret_is_obtainable(identity: &QualifiedIdentity, data: &PrivateKeyData) -> bool {
+    match data {
+        PrivateKeyData::AtWalletDerivationPath(path) => identity
+            .associated_wallets
+            .contains_key(&path.wallet_seed_hash),
+        PrivateKeyData::AlwaysClear(_) | PrivateKeyData::Clear(_) | PrivateKeyData::InVault => true,
+        // TODO(legacy-encrypted-key-gate): this version cannot open the legacy
+        // per-key envelope either, so such a key fails at signing; it needs its
+        // own status and guidance before it can be reported here.
+        PrivateKeyData::Encrypted(_) => true,
+    }
 }
 
 /// Why an identity can or cannot register usernames from this device.
@@ -162,21 +176,45 @@ pub fn can_register_usernames(
 pub enum RegistrationKeyStatus {
     /// This device holds a key that can sign a registration.
     Ready,
+    /// This device holds such a key only as a reference into a wallet that is
+    /// not on this device, so nothing here can produce its private half.
+    KeyWalletNotOnDevice,
     /// The identity has such a key, but this device does not hold it.
     KeyNotOnDevice,
     /// The identity has no key that can sign a registration.
     NoSuitableKey,
 }
 
+impl RegistrationKeyStatus {
+    /// Whether the identity has a key that can sign a registration, but this
+    /// device cannot use it.
+    pub fn key_is_unusable_here(self) -> bool {
+        matches!(self, Self::KeyNotOnDevice | Self::KeyWalletNotOnDevice)
+    }
+}
+
 /// Whether `identity` can register usernames from this device, and if not,
 /// whether the key it lacks exists at all.
+///
+/// Reads which wallets are on this device from `identity.associated_wallets`,
+/// so the record must be one read from the store, not a bare decoded blob.
 pub fn registration_key_status(
     identity: &QualifiedIdentity,
     required: dash_sdk::dpp::identity::SecurityLevel,
 ) -> RegistrationKeyStatus {
     use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-    if can_register_usernames(identity, required) {
-        RegistrationKeyStatus::Ready
+    let mut held_without_its_wallet = false;
+    for (key, data) in identity.private_keys.values() {
+        if !key_can_sign_documents(&key.identity_public_key, required) {
+            continue;
+        }
+        if key_secret_is_obtainable(identity, data) {
+            return RegistrationKeyStatus::Ready;
+        }
+        held_without_its_wallet = true;
+    }
+    if held_without_its_wallet {
+        RegistrationKeyStatus::KeyWalletNotOnDevice
     } else if identity
         .identity
         .public_keys()
@@ -1188,6 +1226,68 @@ mod tests {
         assert_eq!(
             registration_key_status(&identity_with_keys(&[], &[]), high),
             RegistrationKeyStatus::NoSuitableKey
+        );
+    }
+
+    /// The reported case: the key is on file only as a reference into a wallet
+    /// this device does not hold, so signing would fail. Once the wallet is
+    /// here — locked or not, the app can ask for what it needs — it is ready.
+    #[test]
+    fn a_key_from_a_wallet_not_on_this_device_is_not_ready_until_the_wallet_is_back() {
+        use dash_sdk::dpp::identity::SecurityLevel;
+        use std::sync::{Arc, RwLock};
+        let high = SecurityLevel::HIGH;
+        let mut wallet = crate::model::wallet::test_support::open_wallet();
+        let seed_hash = wallet.seed_hash();
+        let mut identity = identity_with_keys(&[(0, SecurityLevel::MASTER), (1, high)], &[0]);
+        crate::context::test_support::hold_as_wallet_reference(&mut identity, 1, seed_hash);
+
+        assert_eq!(
+            registration_key_status(&identity, high),
+            RegistrationKeyStatus::KeyWalletNotOnDevice
+        );
+        assert!(!can_register_usernames(&identity, high));
+
+        wallet.wallet_seed.close();
+        assert!(!wallet.is_open(), "the fixture wallet must be locked");
+        identity
+            .associated_wallets
+            .insert(seed_hash, Arc::new(RwLock::new(wallet)));
+        assert_eq!(
+            registration_key_status(&identity, high),
+            RegistrationKeyStatus::Ready
+        );
+        assert!(can_register_usernames(&identity, high));
+    }
+
+    /// One usable key is enough: a second key stranded in a missing wallet
+    /// does not take the identity's ability to register away.
+    #[test]
+    fn a_usable_key_outranks_one_from_a_missing_wallet() {
+        use dash_sdk::dpp::identity::SecurityLevel;
+        let high = SecurityLevel::HIGH;
+        let mut identity = identity_with_keys(&[(1, high), (2, SecurityLevel::CRITICAL)], &[2]);
+        crate::context::test_support::hold_as_wallet_reference(&mut identity, 1, [0x5A; 32]);
+
+        assert_eq!(
+            registration_key_status(&identity, high),
+            RegistrationKeyStatus::Ready
+        );
+    }
+
+    /// A reference into a missing wallet for a key that cannot register anyway
+    /// says nothing about registration: the key the identity needs is simply
+    /// not held.
+    #[test]
+    fn a_missing_wallet_behind_an_unsuitable_key_is_not_the_reason() {
+        use dash_sdk::dpp::identity::SecurityLevel;
+        let high = SecurityLevel::HIGH;
+        let mut identity = identity_with_keys(&[(0, SecurityLevel::MASTER), (1, high)], &[]);
+        crate::context::test_support::hold_as_wallet_reference(&mut identity, 0, [0x5A; 32]);
+
+        assert_eq!(
+            registration_key_status(&identity, high),
+            RegistrationKeyStatus::KeyNotOnDevice
         );
     }
 

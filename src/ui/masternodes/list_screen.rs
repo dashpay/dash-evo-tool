@@ -284,9 +284,10 @@ impl MasternodesScreen {
 
     /// Settle the submitted load against the phase its own task reported, and
     /// release the gate once that load is finished. The single place this screen
-    /// decides a load is over — its result and error callbacks fire only while it
-    /// is the visible screen, so a load that ran while the user was elsewhere is
-    /// settled here, on the next arrival.
+    /// decides a load is over — the load is not a dispatched task, so its result
+    /// and error callbacks fire only while this is the visible screen (see
+    /// `app/request_routing.rs`), and a load that ran while the user was
+    /// elsewhere is settled here, on the next arrival.
     ///
     /// Only the phase decides. Neither of the tempting proxies is sound: a load is
     /// outstanding from the moment it is dispatched, before its task claims the
@@ -919,8 +920,8 @@ impl MasternodesScreen {
         self.reconcile_pending_load();
         // An open detail view was built from records a finished task may have
         // rewritten, so re-read it — in place. Re-opening it would rebuild it,
-        // and results reach whichever screen is visible: a result this page
-        // never asked for would then take away an `Add voting key` prompt the
+        // and undispatched results reach whichever screen is visible: a result
+        // this page never asked for would then take away an `Add voting key` prompt the
         // user is still typing into, along with the key in it.
         if let MasternodesView::Detail(detail) = &mut self.view {
             detail.refresh_from_store();

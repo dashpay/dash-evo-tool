@@ -18,7 +18,7 @@ use crate::ui::components::wallet_unlock_popup::{
 use crate::ui::components::{MessageBanner, ResultBannerExt};
 use crate::ui::helpers::{ModalOpeningGuard, clicked_outside_window_after_open};
 use crate::ui::identity::get_selected_wallet;
-use crate::ui::state::AvatarCache;
+use crate::ui::state::{AvatarCache, PendingRequest};
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use egui::{Frame, Margin, RichText, ScrollArea, TextEdit, Ui};
@@ -59,8 +59,8 @@ pub struct ProfileScreen {
     loading: bool,
     saving: bool, // Track if we're saving vs loading
     profile_load_attempted: bool,
-    pending_load: Option<(dash_sdk::platform::Identifier, BackendTaskContext)>,
-    pending_save: Option<(dash_sdk::platform::Identifier, BackendTaskContext)>,
+    pending_load: PendingRequest<dash_sdk::platform::Identifier>,
+    pending_save: PendingRequest<dash_sdk::platform::Identifier>,
     validation_errors: Vec<ProfileFieldError>,
     has_unsaved_changes: bool,
     original_display_name: String,
@@ -94,8 +94,8 @@ impl ProfileScreen {
             loading: false,
             saving: false,
             profile_load_attempted: false,
-            pending_load: None,
-            pending_save: None,
+            pending_load: PendingRequest::default(),
+            pending_save: PendingRequest::default(),
             validation_errors: Vec::new(),
             has_unsaved_changes: false,
             original_display_name: String::new(),
@@ -177,16 +177,14 @@ impl ProfileScreen {
             self.profile_load_attempted = true;
             let owner = identity.identity.id();
             let task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadProfile { identity }));
-            let context = BackendTaskContext::for_dispatch(&task);
-            self.pending_load = Some((owner, context.clone()));
-            AppAction::BackendTaskWithContext { task, context }
+            self.pending_load.dispatch_with(task, owner)
         } else {
             AppAction::None
         }
     }
 
     pub fn refresh(&mut self) {
-        if self.pending_load.take().is_some() {
+        if self.pending_load.clear().is_some() {
             self.profile_load_attempted = false;
         }
         // Don't set loading here - it will be set when actually triggering a backend task
@@ -289,11 +287,9 @@ impl ProfileScreen {
                     Some(avatar_url.to_string())
                 },
             }));
-            let context = BackendTaskContext::for_dispatch(&task);
-            self.pending_save = Some((owner, context.clone()));
-            self.pending_load = None;
+            self.pending_load.clear();
             self.loading = false;
-            AppAction::BackendTaskWithContext { task, context }
+            self.pending_save.dispatch_with(task, owner)
         } else {
             MessageBanner::set_global(
                 self.app_context.egui_ctx(),
@@ -392,8 +388,8 @@ impl ProfileScreen {
                     );
 
                     if response.changed() {
-                        self.pending_load = None;
-                        self.pending_save = None;
+                        self.pending_load.clear();
+                        self.pending_save.clear();
                         self.saving = false;
                         // Reset state when identity changes
                         self.profile = None;
@@ -1056,15 +1052,13 @@ impl ProfileScreen {
 
     fn owns_request(
         &self,
-        pending: &Option<(dash_sdk::platform::Identifier, BackendTaskContext)>,
+        pending: &PendingRequest<dash_sdk::platform::Identifier>,
         context: &BackendTaskContext,
     ) -> bool {
-        pending.as_ref().is_some_and(|(owner, expected)| {
-            expected == context
-                && self
-                    .selected_identity
-                    .as_ref()
-                    .is_some_and(|identity| identity.identity.id() == *owner)
+        pending.subject_for(context).is_some_and(|owner| {
+            self.selected_identity
+                .as_ref()
+                .is_some_and(|identity| identity.identity.id() == *owner)
         })
     }
 
@@ -1079,7 +1073,7 @@ impl ProfileScreen {
             BackendTaskSuccessResult::DashPayProfile(_)
                 if self.owns_request(&self.pending_load, context) =>
             {
-                self.pending_load = None;
+                self.pending_load.clear();
                 self.loading = false;
                 self.profile_load_attempted = true;
             }
@@ -1090,8 +1084,8 @@ impl ProfileScreen {
                         .as_ref()
                         .is_some_and(|identity| identity.identity.id() == snapshot.owner) =>
             {
-                self.pending_save = None;
-                self.pending_load = None;
+                self.pending_save.clear();
+                self.pending_load.clear();
                 self.loading = false;
                 self.saving = false;
             }
@@ -1115,11 +1109,11 @@ impl ProfileScreen {
     /// Release only the matching pending operation after a backend failure.
     pub fn display_backend_task_error(&mut self, context: &BackendTaskContext) {
         if self.owns_request(&self.pending_load, context) {
-            self.pending_load = None;
+            self.pending_load.clear();
             self.loading = false;
         }
         if self.owns_request(&self.pending_save, context) {
-            self.pending_save = None;
+            self.pending_save.clear();
             self.saving = false;
         }
     }
@@ -1292,7 +1286,7 @@ mod profile_race_tests {
                 }),
             );
             assert_eq!(screen.profile.as_ref().unwrap().display_name, "Current");
-            assert!(!screen.loading && screen.pending_load.is_none());
+            assert!(!screen.loading && !screen.pending_load.is_pending());
             assert!(!screen.profile_load_attempted, "stale loads can be retried");
         }
         screen.edit_display_name = "Submitted".into();
@@ -1311,7 +1305,7 @@ mod profile_race_tests {
             }),
         );
         assert_eq!(screen.profile.as_ref().unwrap().display_name, "Current");
-        assert!(!screen.saving && screen.pending_save.is_none());
+        assert!(!screen.saving && !screen.pending_save.is_pending());
         assert!(
             screen.pending_action.is_some() && screen.loading && screen.editing,
             "reload current fields while retaining the draft"

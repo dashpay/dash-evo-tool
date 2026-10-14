@@ -346,9 +346,12 @@ fn mount_settings(app_context: Arc<AppContext>) -> Harness<'static, SettingsStat
         .with_size(egui::vec2(1400.0, 1200.0))
         .build_ui_state(
             move |ui, state: &mut SettingsState| {
-                let action = state
-                    .0
-                    .render(ui, &app_context, &mut ProfileCache::default());
+                let action = state.0.render(
+                    ui,
+                    &app_context,
+                    app_context.resolve_selected_identity().as_ref(),
+                    &mut ProfileCache::default(),
+                );
                 if !matches!(action, AppAction::None) {
                     state.1 = Some(action);
                 }

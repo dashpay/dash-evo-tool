@@ -536,7 +536,7 @@ impl ScreenLike for IdentityHubScreen {
                     Some(&mut picked_identity),
                 ),
                 HubView::Home => {
-                    // One roster read per frame serves the header and Home.
+                    // One roster read per frame serves the header and every tab.
                     let selected = self.app_context.resolve_selected_identity();
                     // `ui.vertical_centered(...).inner` carries the tab's
                     // `AppAction` back out.
@@ -599,6 +599,7 @@ impl ScreenLike for IdentityHubScreen {
                             IdentityHubTab::Contacts => super::contacts::render(
                                 ui,
                                 &self.app_context,
+                                selected.as_ref(),
                                 &mut self.contacts_state,
                                 &mut self.profile_cache,
                             ),
@@ -608,6 +609,7 @@ impl ScreenLike for IdentityHubScreen {
                             IdentityHubTab::Settings => self.settings_tab.render(
                                 ui,
                                 &self.app_context,
+                                selected.as_ref(),
                                 &mut self.profile_cache,
                             ),
                         };
@@ -1317,9 +1319,13 @@ mod tests {
                     .build_ui_state(
                         |ui, state: &mut (IdentityHubScreen, Option<BackendTask>)| {
                             let hub = &mut state.0;
-                            if let AppAction::BackendTaskWithContext { task, .. } = hub
-                                .settings_tab
-                                .render(ui, &hub.app_context, &mut hub.profile_cache)
+                            if let AppAction::BackendTaskWithContext { task, .. } =
+                                hub.settings_tab.render(
+                                    ui,
+                                    &hub.app_context,
+                                    hub.app_context.resolve_selected_identity().as_ref(),
+                                    &mut hub.profile_cache,
+                                )
                             {
                                 state.1 = Some(task);
                             }

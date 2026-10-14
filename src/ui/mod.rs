@@ -897,6 +897,11 @@ pub trait ScreenLike {
     /// Called for a successful task result with the same UI-safe operation
     /// context used for failures. Existing screens default to the legacy result
     /// callback; screens that track concurrent operations can override this.
+    ///
+    /// A task this screen dispatched under a
+    /// [`BackendTaskContext::Dispatched`] context reports here even while the
+    /// screen is hidden behind another one, so the screen must not assume it
+    /// is in view. Every other result goes to the screen in view.
     fn display_backend_task_result(
         &mut self,
         _context: &BackendTaskContext,
@@ -906,7 +911,8 @@ pub trait ScreenLike {
     }
 
     /// Called before [`display_task_error`](Self::display_task_error) with a
-    /// UI-safe operation context; unattributed errors use `Unknown`.
+    /// UI-safe operation context; unattributed errors use `Unknown`. Routed
+    /// like [`display_backend_task_result`](Self::display_backend_task_result).
     fn display_backend_task_error(&mut self, _context: &BackendTaskContext, _error: &TaskError) {}
 
     /// Whether a recovery outcome belongs to this host's pending operation or settled offer.

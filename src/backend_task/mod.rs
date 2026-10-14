@@ -457,6 +457,16 @@ impl BackendTaskContext {
         }
     }
 
+    /// The id of the one dispatch this context belongs to, or `None` for an
+    /// undispatched task. Looks through the network binding of recovery tasks.
+    pub(crate) fn dispatch_id(&self) -> Option<u64> {
+        match self {
+            Self::Dispatched { dispatch_id, .. } => Some(*dispatch_id),
+            Self::LegacyRecoveryOnNetwork { operation, .. } => operation.dispatch_id(),
+            _ => None,
+        }
+    }
+
     pub(crate) fn is_dpns_vote_task(&self) -> bool {
         matches!(
             self.operation(),
@@ -2142,6 +2152,32 @@ mod tests {
                 .payment_broadcast_network(),
             None,
         );
+    }
+
+    #[test]
+    fn dispatch_id_names_one_dispatch_through_its_network_binding() {
+        let check = BackendTask::IdentityTask(IdentityTask::CheckLegacyRecovery {
+            identity_id: Identifier::from([5; 32]),
+        });
+        let first = BackendTaskContext::for_dispatch(&check);
+        let second = BackendTaskContext::for_dispatch(&check);
+        assert!(first.dispatch_id().is_some());
+        assert_ne!(first.dispatch_id(), second.dispatch_id());
+
+        let bound = BackendTaskContext::for_dispatch_on(&check, Network::Testnet);
+        assert!(bound.dispatch_id().is_some());
+        let wrapped = BackendTaskContext::LegacyRecoveryOnNetwork {
+            network: Network::Testnet,
+            operation: Box::new(first.clone()),
+        };
+        assert_eq!(wrapped.dispatch_id(), first.dispatch_id());
+
+        assert_eq!(BackendTaskContext::from(&check).dispatch_id(), None);
+        assert_eq!(
+            BackendTaskContext::for_task_on(&check, Network::Testnet).dispatch_id(),
+            None
+        );
+        assert_eq!(BackendTaskContext::Unknown.dispatch_id(), None);
     }
 
     /// `is_wallet_touching` covers every task family that funnels

@@ -2,10 +2,13 @@
 use crate::model::dpns_voting::{DpnsVoteOperation, DpnsVoteTargetStatus};
 use crate::ui::dpns::copy::{DPNS_ALL_VOTES_ALREADY_CAST, dpns_vote_feedback};
 mod reconcilers;
+pub mod request_routing;
+
 use reconcilers::{
     AccessibilityActivator, ConnectionBanner, GateEvent, MigrationReconciler, PendingConfirmation,
     SpvBlockReconciler, StoragePrepGate,
 };
+use request_routing::{RequestOwners, ScreenOwner, ScreenStack};
 
 #[cfg(not(feature = "testing"))]
 use crate::app_dir::data_file_path;
@@ -60,7 +63,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use std::vec;
 use tokio::sync::mpsc as tokiompsc;
 use tokio::sync::watch;
 
@@ -340,17 +342,6 @@ fn clear_profile_saving_banner_after_success(
     }
 }
 
-/// Whether `screen` is the screen that sent the top-up `context` and still
-/// waits on it. No other screen may take that top-up's outcome for its own:
-/// Wallet Send, for one, completes on any top-up result.
-fn screen_awaits_top_up(screen: &Screen, context: &BackendTaskContext) -> bool {
-    match screen {
-        Screen::TopUpIdentityScreen(screen) => screen.awaits_top_up(context),
-        Screen::WalletSendScreen(screen) => screen.awaits_send(context),
-        _ => false,
-    }
-}
-
 /// How often local state re-derives the voting attention summary.
 const DPNS_ATTENTION_RECOMPUTE_INTERVAL: Duration = Duration::from_secs(60);
 
@@ -459,6 +450,15 @@ pub const SPV_CANCEL_QUESTION: &str = "Stop syncing? You can start again from th
 /// no way onward. `left_panel::tests::fallback_root_screen_has_an_ungated_nav_entry`
 /// locks that invariant.
 pub(crate) const FALLBACK_ROOT_SCREEN: RootScreenType = RootScreenType::RootScreenIdentityHub;
+
+/// Whether the root screen `root` is the one a task result goes to: the screen
+/// that dispatched the task while it is open, or else the screen in view.
+fn root_takes_result(root: RootScreenType, owner: Option<ScreenOwner>, root_in_view: bool) -> bool {
+    match owner {
+        Some(owner) => owner == ScreenOwner::Root(root),
+        None => root_in_view,
+    }
+}
 
 fn identity_hub_is_visible(selected: RootScreenType, screen_stack_is_empty: bool) -> bool {
     selected == RootScreenType::RootScreenIdentityHub && screen_stack_is_empty
@@ -1284,7 +1284,10 @@ impl ThemeState {
 pub struct AppState {
     pub main_screens: BTreeMap<RootScreenType, Screen>,
     pub selected_main_screen: RootScreenType,
-    pub screen_stack: Vec<Screen>,
+    pub screen_stack: ScreenStack,
+    /// Which screen sent each dispatched task still running, so its result can
+    /// reach that screen wherever it is.
+    request_owners: RequestOwners,
     pub chosen_network: Network,
     pub connection_status: Arc<ConnectionStatus>,
     pub network_contexts: BTreeMap<Network, Arc<AppContext>>,
@@ -1600,24 +1603,6 @@ impl BackendInitReason {
     }
 }
 
-fn route_username_refresh_to_hidden_screens(
-    stack: &mut [Screen],
-    context: &BackendTaskContext,
-    result: Result<&BackendTaskSuccessResult, &TaskError>,
-) {
-    let Some((_, hidden)) = stack.split_last_mut() else {
-        return;
-    };
-    for screen in hidden {
-        if let Screen::UsernameRequestScreen(screen) = screen {
-            match result {
-                Ok(result) => screen.display_backend_task_result(context, result.clone()),
-                Err(error) => screen.display_backend_task_error(context, error),
-            }
-        }
-    }
-}
-
 impl AppState {
     /// Creates a new `AppState`, opening the seed vault keyless.
     ///
@@ -1909,7 +1894,8 @@ impl AppState {
         let mut app_state = Self {
             main_screens,
             selected_main_screen,
-            screen_stack: vec![],
+            screen_stack: ScreenStack::default(),
+            request_owners: RequestOwners::default(),
             chosen_network,
             connection_status,
             network_contexts,
@@ -2412,6 +2398,14 @@ impl AppState {
     }
 
     pub fn active_root_screen_mut(&mut self) -> &mut Screen {
+        let root = self.active_root();
+        self.main_screens
+            .get_mut(&root)
+            .expect("invariant: the network chooser is registered from construction")
+    }
+
+    /// The root screen in view when no screen is pushed.
+    fn active_root(&mut self) -> RootScreenType {
         // Live de-gating (§10.11): if the role dropped below Power while the
         // Masternodes tab was active, fall back to `FALLBACK_ROOT_SCREEN` so the
         // gated screen is never shown without its gate. Skipped while the
@@ -2430,14 +2424,11 @@ impl AppState {
         // arriving mid-preparation lands somewhere harmless instead of
         // panicking, and the user's persisted route survives the wait —
         // `finish_boot_phase` re-resolves it once the map is real.
-        let root = if self.main_screens.contains_key(&self.selected_main_screen) {
+        if self.main_screens.contains_key(&self.selected_main_screen) {
             self.selected_main_screen
         } else {
             RootScreenType::RootScreenNetworkChooser
-        };
-        self.main_screens
-            .get_mut(&root)
-            .expect("invariant: the network chooser is registered from construction")
+        }
     }
 
     /// Make `root_screen_type` the selected root screen, telling the screen being
@@ -2578,6 +2569,9 @@ impl AppState {
         // network chooser is a root screen, so no stacked screen can start the
         // switch that removes it.
         self.screen_stack.clear();
+        // Results of tasks sent before the switch go to the screen in view:
+        // pushed screens are gone, and root screens now show the new network.
+        self.request_owners.clear();
 
         self.connection_status.reset();
 
@@ -2761,6 +2755,86 @@ impl AppState {
         }
     }
 
+    /// The screen in view, as an owner of the tasks it dispatches.
+    fn visible_owner(&mut self) -> ScreenOwner {
+        match self.screen_stack.top_id() {
+            Some(id) => ScreenOwner::Stacked(id),
+            None => ScreenOwner::Root(self.active_root()),
+        }
+    }
+
+    /// Whether `owner` is still open: a root screen, or a pushed screen not yet
+    /// closed.
+    fn has_screen(&self, owner: ScreenOwner) -> bool {
+        match owner {
+            ScreenOwner::Root(root) => self.main_screens.contains_key(&root),
+            ScreenOwner::Stacked(id) => self.screen_stack.contains_id(id),
+        }
+    }
+
+    /// The screen a task result is for: the screen that dispatched it while it
+    /// is open, otherwise the screen in view.
+    fn result_screen_mut(&mut self, owner: Option<ScreenOwner>) -> &mut Screen {
+        match owner.filter(|owner| self.has_screen(*owner)) {
+            Some(ScreenOwner::Root(root)) => self
+                .main_screens
+                .get_mut(&root)
+                .expect("invariant: has_screen found this root"),
+            Some(ScreenOwner::Stacked(id)) => self
+                .screen_stack
+                .by_id_mut(id)
+                .expect("invariant: has_screen found this pushed screen"),
+            None => self.visible_screen_mut(),
+        }
+    }
+
+    /// Tell the open screen that dispatched a task that the task failed, for an
+    /// error the general error path does not deliver. A screen waiting on its
+    /// own task would otherwise wait for good.
+    fn tell_owner_its_task_failed(
+        &mut self,
+        owner: Option<ScreenOwner>,
+        context: &BackendTaskContext,
+        error: &TaskError,
+    ) {
+        if owner.is_some_and(|owner| self.has_screen(owner)) {
+            self.result_screen_mut(owner)
+                .display_backend_task_error(context, error);
+        }
+    }
+
+    /// The open screen that dispatched the task behind `task_result`, taken off
+    /// the record: each dispatch reports once. `None` for undispatched tasks
+    /// and for a screen closed since.
+    fn take_result_owner(&mut self, task_result: &TaskResult) -> Option<ScreenOwner> {
+        let context = match task_result {
+            TaskResult::Success { context, .. } | TaskResult::Error { context, .. } => context,
+            TaskResult::Refresh | TaskResult::DpnsContestsChanged | TaskResult::Repaint => {
+                return None;
+            }
+        };
+        self.request_owners
+            .take(context)
+            .filter(|owner| self.has_screen(*owner))
+    }
+
+    /// Test seam: record the screen in view as the sender of `context`, as the
+    /// frame loop does for a task that screen returns. Lets a kittest stand in
+    /// for a dispatch whose task must not run.
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    pub fn test_record_visible_dispatch(&mut self, context: &BackendTaskContext) {
+        let owner = self.visible_owner();
+        self.request_owners.record(context, owner);
+    }
+
+    /// Test seam: how many dispatched tasks still have a recorded sender.
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    pub fn test_dispatch_owner_count(&self) -> usize {
+        self.request_owners.len()
+    }
+
     pub fn visible_screen_mut(&mut self) -> &mut Screen {
         if self.screen_stack.is_empty() {
             self.active_root_screen_mut()
@@ -2784,12 +2858,25 @@ impl AppState {
         }
     }
 
+    /// Whether the hub is the screen a result goes to: the screen that
+    /// dispatched it, or else the screen in view.
+    fn hub_takes_result(&self, owner: Option<ScreenOwner>) -> bool {
+        root_takes_result(
+            RootScreenType::RootScreenIdentityHub,
+            owner,
+            identity_hub_is_visible(self.selected_main_screen, self.screen_stack.is_empty()),
+        )
+    }
+
+    /// Tell the hub about results it would otherwise miss: those of loads it
+    /// starts without a dispatch context, and other screens' profile saves.
     fn route_identity_result_to_hidden_hub(
         &mut self,
+        owner: Option<ScreenOwner>,
         context: &BackendTaskContext,
         result: &BackendTaskSuccessResult,
     ) {
-        if identity_hub_is_visible(self.selected_main_screen, self.screen_stack.is_empty()) {
+        if self.hub_takes_result(owner) {
             return;
         }
         if let Some(Screen::IdentityHubScreen(hub)) = self
@@ -2797,13 +2884,12 @@ impl AppState {
             .get_mut(&RootScreenType::RootScreenIdentityHub)
         {
             let needs_completion = match result {
-                BackendTaskSuccessResult::DashPayProfile(_)
-                | BackendTaskSuccessResult::DashPayProfileUpdated(_) => true,
-                // The hub asks for its payment history and contact lists once
-                // per arrival, so an answer that misses it is never asked for
-                // again. It drops answers that are not for what it shows.
-                BackendTaskSuccessResult::DashPayPaymentHistory(_)
-                | BackendTaskSuccessResult::DashPayContactsWithInfo { .. }
+                // Another screen's save changes the profile the hub caches.
+                BackendTaskSuccessResult::DashPayProfileUpdated(_) => true,
+                // The hub asks for its contact lists once per arrival, so an
+                // answer that misses it is never asked for again. It drops
+                // answers that are not for what it shows.
+                BackendTaskSuccessResult::DashPayContactsWithInfo { .. }
                 | BackendTaskSuccessResult::DashPayContactRequests { .. } => true,
                 BackendTaskSuccessResult::DashPayAvatar { url, .. } => {
                     hub.is_waiting_for_avatar(url)
@@ -2818,19 +2904,21 @@ impl AppState {
         }
     }
 
+    /// Release the hub's contact-request guards on a failed request action,
+    /// which it dispatches without a dispatch context, when the error goes to
+    /// another screen.
     fn route_identity_error_to_hidden_hub(
         &mut self,
-        context: &BackendTaskContext,
+        owner: Option<ScreenOwner>,
         error: &TaskError,
     ) {
-        if identity_hub_is_visible(self.selected_main_screen, self.screen_stack.is_empty()) {
+        if self.hub_takes_result(owner) {
             return;
         }
         if let Some(Screen::IdentityHubScreen(hub)) = self
             .main_screens
             .get_mut(&RootScreenType::RootScreenIdentityHub)
         {
-            hub.display_backend_task_error(context, error);
             hub.handle_contact_request_error(error);
         }
     }
@@ -2861,20 +2949,39 @@ impl AppState {
         }
     }
 
-    /// Deliver a vote result to the voting panel while Masternodes is hidden.
-    /// While it is visible, the Masternodes screen forwards it itself.
+    /// Whether the voting root is not the screen a result goes to — the
+    /// screen that dispatched it, or else the screen in view — so the result
+    /// needs its own route to the voting panel.
+    fn voting_panel_misses_result(&self, owner: Option<ScreenOwner>) -> bool {
+        !root_takes_result(
+            VOTING_ROOT_SCREEN,
+            owner,
+            !dpns_screen_is_hidden(
+                VOTING_ROOT_SCREEN,
+                self.selected_main_screen,
+                self.screen_stack.is_empty(),
+            ),
+        )
+    }
+
+    /// Deliver a vote result to the voting panel when it goes to another
+    /// screen. Results the Masternodes screen takes, it forwards itself.
     fn route_dpns_vote_result_to_hidden_screens(
         &mut self,
+        owner: Option<ScreenOwner>,
         context: &BackendTaskContext,
         result: &BackendTaskSuccessResult,
     ) {
-        if dpns_result_needs_hidden_route(
-            VOTING_ROOT_SCREEN,
-            self.selected_main_screen,
-            self.screen_stack.is_empty(),
-            result,
-        ) && let Some(masternodes) = self.masternodes_screen_mut()
-        {
+        let needs_route = match owner {
+            Some(_) => DPNSScreen::handles_result(result) && self.voting_panel_misses_result(owner),
+            None => dpns_result_needs_hidden_route(
+                VOTING_ROOT_SCREEN,
+                self.selected_main_screen,
+                self.screen_stack.is_empty(),
+                result,
+            ),
+        };
+        if needs_route && let Some(masternodes) = self.masternodes_screen_mut() {
             let votes = masternodes.votes_mut();
             votes.display_backend_task_result(context, result.clone());
         }
@@ -2882,17 +2989,15 @@ impl AppState {
 
     fn route_dpns_vote_error_to_hidden_screens(
         &mut self,
+        owner: Option<ScreenOwner>,
         context: &BackendTaskContext,
         error: &TaskError,
     ) {
         if !context.is_dpns_vote_task() {
             return;
         }
-        if dpns_screen_is_hidden(
-            VOTING_ROOT_SCREEN,
-            self.selected_main_screen,
-            self.screen_stack.is_empty(),
-        ) && let Some(masternodes) = self.masternodes_screen_mut()
+        if self.voting_panel_misses_result(owner)
+            && let Some(masternodes) = self.masternodes_screen_mut()
         {
             let votes = masternodes.votes_mut();
             votes.display_backend_task_error(context, error);
@@ -3300,12 +3405,18 @@ impl App for AppState {
                 .connection_status()
                 .handle_task_result(&task_result, active_context.network);
 
+            // The open screen that dispatched this task, if any. Its result is
+            // delivered there, in view or not; everything else goes to the
+            // screen in view.
+            let owner = self.take_result_owner(&task_result);
+            let owner_in_view = owner.is_some_and(|owner| owner == self.visible_owner());
+
             // Keyed on the dispatch alone and ahead of every arm below, so that
-            // none of them can leave an ended top-up in flight.
+            // none of them can leave an ended top-up in flight. A top-up whose
+            // screen is covered or closed is confirmed by a banner.
             let tracked_top_up = match &task_result {
                 TaskResult::Success { context, .. } => {
-                    let watched = screen_awaits_top_up(self.visible_screen_mut(), context);
-                    finish_top_up(ctx, context, true, watched)
+                    finish_top_up(ctx, context, true, owner_in_view)
                 }
                 TaskResult::Error { context, .. } => finish_top_up(ctx, context, false, true),
                 TaskResult::Refresh | TaskResult::DpnsContestsChanged | TaskResult::Repaint => {
@@ -3333,13 +3444,12 @@ impl App for AppState {
                         self.retry_incomplete_dpns_background_refresh(*network);
                     }
                     clear_profile_saving_banner_after_success(ctx, &context, &unboxed_message);
-                    route_username_refresh_to_hidden_screens(
-                        &mut self.screen_stack,
+                    self.route_identity_result_to_hidden_hub(owner, &context, &unboxed_message);
+                    self.route_dpns_vote_result_to_hidden_screens(
+                        owner,
                         &context,
-                        Ok(&unboxed_message),
+                        &unboxed_message,
                     );
-                    self.route_identity_result_to_hidden_hub(&context, &unboxed_message);
-                    self.route_dpns_vote_result_to_hidden_screens(&context, &unboxed_message);
                     if restarts_unconfirmed_vote_checks(&unboxed_message) {
                         self.unconfirmed_vote_checks.clear();
                     }
@@ -3424,7 +3534,7 @@ impl App for AppState {
                             // types through task results instead of string messages.
                             // See https://github.com/dashpay/dash-evo-tool/issues/660 .
                             MessageBanner::set_global(ctx, msg, MessageType::Success);
-                            self.visible_screen_mut()
+                            self.result_screen_mut(owner)
                                 .display_backend_task_result(&context, unboxed_message);
                         }
                         BackendTaskSuccessResult::AssetLockBroadcast { ref txid } => {
@@ -3432,7 +3542,7 @@ impl App for AppState {
                                 "Asset lock transaction broadcast successfully. Transaction ID: {txid}"
                             );
                             MessageBanner::set_global(ctx, &msg, MessageType::Success);
-                            self.visible_screen_mut()
+                            self.result_screen_mut(owner)
                                 .display_backend_task_result(&context, unboxed_message);
                         }
                         BackendTaskSuccessResult::DashPayAddressesRegistered {
@@ -3450,7 +3560,7 @@ impl App for AppState {
                                 )
                             };
                             MessageBanner::set_global(ctx, &msg, MessageType::Success);
-                            self.visible_screen_mut()
+                            self.result_screen_mut(owner)
                                 .display_backend_task_result(&context, unboxed_message);
                         }
                         BackendTaskSuccessResult::IdentitiesLoaded { count } => {
@@ -3460,17 +3570,16 @@ impl App for AppState {
                                 format!("Successfully loaded {count} identities from your wallet.")
                             };
                             MessageBanner::set_global(ctx, &msg, MessageType::Success);
-                            self.visible_screen_mut()
+                            self.result_screen_mut(owner)
                                 .display_backend_task_result(&context, unboxed_message);
                         }
                         BackendTaskSuccessResult::Progress { .. } => {
                             // Progress updates only go to the screen — no global banner.
                             // The screen updates its existing banner handle in-place.
-                            // TODO: Routes via visible_screen_mut(), so if the user
-                            // navigates away from the originating screen, progress
-                            // updates land on the wrong screen. Adding task-to-screen
-                            // affinity would fix this (same limitation as Message).
-                            self.visible_screen_mut()
+                            // TODO: Progress is sent mid-task without the dispatch
+                            // context, so it reaches the screen in view rather than
+                            // the one that started the task.
+                            self.result_screen_mut(owner)
                                 .display_backend_task_result(&context, unboxed_message);
                         }
                         BackendTaskSuccessResult::UpdatedThemePreference(new_theme) => {
@@ -3542,7 +3651,7 @@ impl App for AppState {
                                     "Could not find the originating network for DPNS vote feedback"
                                 ),
                             }
-                            self.visible_screen_mut().display_backend_task_result(
+                            self.result_screen_mut(owner).display_backend_task_result(
                                 &context,
                                 BackendTaskSuccessResult::DpnsVoteOperationUpdated {
                                     network,
@@ -3563,7 +3672,7 @@ impl App for AppState {
                             ) {
                                 self.scheduled_vote_recovery_last_attempt.remove(&network);
                             }
-                            self.visible_screen_mut().display_backend_task_result(
+                            self.result_screen_mut(owner).display_backend_task_result(
                                 &context,
                                 BackendTaskSuccessResult::ScheduledVoteSweepCompleted {
                                     network,
@@ -3574,7 +3683,7 @@ impl App for AppState {
                         BackendTaskSuccessResult::ScheduledVotesCleared(outcomes) => {
                             let (message, message_type) = scheduled_vote_clear_feedback(&outcomes);
                             MessageBanner::set_global(ctx, message, message_type);
-                            self.visible_screen_mut().display_backend_task_result(
+                            self.result_screen_mut(owner).display_backend_task_result(
                                 &context,
                                 BackendTaskSuccessResult::ScheduledVotesCleared(outcomes),
                             );
@@ -3606,36 +3715,41 @@ impl App for AppState {
                                 "Token balances are already refreshing. Wait a moment before refreshing again.",
                                 MessageType::Info,
                             );
-                            self.visible_screen_mut()
+                            self.result_screen_mut(owner)
                                 .display_backend_task_result(&context, unboxed_message);
                         }
                         _ => {
                             // For all other success results, let the screen decide how to display
                             // the outcome without showing a generic global success banner.
-                            let visible = self.visible_screen_mut();
-                            if !tracked_top_up || screen_awaits_top_up(visible, &context) {
-                                visible.display_backend_task_result(&context, unboxed_message);
-                            } else {
+                            if tracked_top_up && !owner_in_view {
                                 // Not this screen's top-up, but the balances it shows changed.
-                                visible.refresh();
+                                self.visible_screen_mut().refresh();
+                            }
+                            // A top-up whose screen is closed is answered by the
+                            // banner alone; the screen in view did not send it.
+                            if owner.is_some() || !tracked_top_up {
+                                self.result_screen_mut(owner)
+                                    .display_backend_task_result(&context, unboxed_message);
                             }
                         }
                     }
                 }
                 TaskResult::Error {
+                    context,
                     error: err @ TaskError::CoreWalletAutoDetected { .. },
-                    ..
                 } => {
                     let msg = err.to_string();
                     MessageBanner::set_global(ctx, &msg, MessageType::Success);
                     self.visible_screen_mut()
                         .display_message(&msg, MessageType::Success);
                     self.visible_screen_mut().refresh();
+                    self.tell_owner_its_task_failed(owner, &context, &err);
                 }
                 TaskResult::Error {
+                    context,
                     error: err @ TaskError::NetworkContextCreationFailed { .. },
-                    ..
                 } => {
+                    self.tell_owner_its_task_failed(owner, &context, &err);
                     self.network_switch_pending = None;
                     self.network_switch_banner.take_and_clear();
                     let current_context = self.current_app_context().clone();
@@ -3649,15 +3763,16 @@ impl App for AppState {
                         .disable_auto_dismiss();
                 }
                 TaskResult::Error {
+                    context,
                     error:
-                        TaskError::MigrationFailed { .. }
+                        err @ (TaskError::MigrationFailed { .. }
                         | TaskError::SavedDataTooOld { .. }
-                        | TaskError::SavedDataTooNew { .. },
-                    ..
+                        | TaskError::SavedDataTooNew { .. }),
                 } => {
                     // The migration task already published `MigrationState::Failed`.
                     // Its reconciler supplies the typed details and applicable
                     // recovery path, so suppress the duplicate generic banner.
+                    self.tell_owner_its_task_failed(owner, &context, &err);
                 }
                 TaskResult::Error {
                     context: BackendTaskContext::DpnsBackgroundRefresh { network },
@@ -3679,7 +3794,7 @@ impl App for AppState {
                         &context,
                         &err,
                     );
-                    self.route_dpns_vote_error_to_hidden_screens(&context, &err);
+                    self.route_dpns_vote_error_to_hidden_screens(owner, &context, &err);
                     self.visible_screen_mut()
                         .display_backend_task_error(&context, &err);
                     let handled = self.visible_screen_mut().display_task_error(&err);
@@ -3702,22 +3817,16 @@ impl App for AppState {
                         &context,
                         &err,
                     );
-                    route_username_refresh_to_hidden_screens(
-                        &mut self.screen_stack,
-                        &context,
-                        Err(&err),
-                    );
-                    self.route_identity_error_to_hidden_hub(&context, &err);
-                    self.route_dpns_vote_error_to_hidden_screens(&context, &err);
+                    self.route_identity_error_to_hidden_hub(owner, &err);
+                    self.route_dpns_vote_error_to_hidden_screens(owner, &context, &err);
                     let chooser_owned = network_chooser_owns_task(&context);
-                    // A top-up can fail while another screen is in view. That
-                    // screen did not send it: the banner alone reports it.
-                    let foreign_top_up = tracked_top_up
-                        && !screen_awaits_top_up(self.visible_screen_mut(), &context);
-                    let visible_owned = !chooser_owned && !recovery_delivered && !foreign_top_up;
-                    let suppress_stale_error = visible_owned
+                    // A top-up whose screen is closed did not come from the
+                    // screen in view: the banner alone reports it.
+                    let foreign_top_up = tracked_top_up && owner.is_none();
+                    let screen_owned = !chooser_owned && !recovery_delivered && !foreign_top_up;
+                    let suppress_stale_error = screen_owned
                         && self
-                            .visible_screen_mut()
+                            .result_screen_mut(owner)
                             .should_suppress_backend_task_error(&context, &err);
                     if chooser_owned {
                         if let Some(screen) = self
@@ -3726,16 +3835,20 @@ impl App for AppState {
                         {
                             screen.display_backend_task_error(&context, &err);
                         }
-                    } else if visible_owned {
-                        self.visible_screen_mut()
+                    } else if screen_owned {
+                        self.result_screen_mut(owner)
                             .display_backend_task_error(&context, &err);
                     }
                     // Let the screen handle specific error types first.
                     // If handled, skip the generic error banner.
                     let handled = suppress_stale_error
-                        || (visible_owned && self.visible_screen_mut().display_task_error(&err));
+                        || (screen_owned && self.result_screen_mut(owner).display_task_error(&err));
+                    // A screen out of view cannot show how it handled the
+                    // error, so the banner still tells the user.
+                    let owner_hidden = owner.is_some() && !owner_in_view;
+                    let banner_shown = !suppress_stale_error && (!handled || owner_hidden);
 
-                    if !handled {
+                    if banner_shown {
                         let msg = err.to_string();
                         let handle = MessageBanner::set_global(ctx, &msg, MessageType::Error);
                         handle.disable_auto_dismiss();
@@ -3768,8 +3881,8 @@ impl App for AppState {
                             }
                             _ => {}
                         }
-                        if visible_owned {
-                            self.visible_screen_mut()
+                        if screen_owned && !handled {
+                            self.result_screen_mut(owner)
                                 .display_message(&msg, MessageType::Error);
                         }
                     }
@@ -3976,22 +4089,28 @@ impl App for AppState {
         }
 
         // Show welcome screen if onboarding not completed
-        let mut actions = Vec::new();
+        // Each action with the screen that returned it, if a screen did: the
+        // tasks a screen dispatches report back to that screen.
+        let mut actions: Vec<(Option<ScreenOwner>, AppAction)> = Vec::new();
         if !self.boot.phase().renders_screens() {
             // Preparing: the gate is the entire interaction surface.
         } else if self.show_welcome_screen
             && let Some(welcome_screen) = &mut self.welcome_screen
         {
-            actions.push(welcome_screen.ui(ui));
+            actions.push((None, welcome_screen.ui(ui)));
         } else {
-            actions.push(self.visible_screen_mut().ui(ui));
+            let owner = self.visible_owner();
+            actions.push((Some(owner), self.visible_screen_mut().ui(ui)));
             if !self.network_selection_required
                 && FeatureGate::Masternodes.is_available(&active_context)
             {
-                actions.push(crate::ui::dpns::progress_drawer::show(
-                    ctx,
-                    &active_context,
-                    &mut self.dpns_progress_drawer,
+                actions.push((
+                    None,
+                    crate::ui::dpns::progress_drawer::show(
+                        ctx,
+                        &active_context,
+                        &mut self.dpns_progress_drawer,
+                    ),
                 ));
             }
         };
@@ -4009,11 +4128,12 @@ impl App for AppState {
         self.render_secret_prompt(ctx);
 
         // Schedule connection status refresh
-        actions.push(
+        actions.push((
+            None,
             active_context
                 .connection_status()
                 .trigger_refresh(active_context.as_ref()),
-        );
+        ));
 
         // The SPV-sync block was already driven at frame start (above), before the
         // input claim + screen, to close the one-frame interactive gap. It still
@@ -4023,7 +4143,7 @@ impl App for AppState {
         // The block's own Cancel confirmation resolves to a real disconnect, but
         // stopping sync is dispatch work this loop owns — so it joins the frame's
         // action list rather than being applied inside the reconciler.
-        actions.extend(spv_block_action);
+        actions.extend(spv_block_action.map(|action| (None, action)));
         if let Some(task) = self.connection_banner.update(
             ctx,
             &active_context,
@@ -4048,7 +4168,7 @@ impl App for AppState {
         }
         self.drain_overlay_actions(ctx);
 
-        for action in actions {
+        for (owner, action) in actions {
             if !network_selection_allows_action(self.network_selection_required, &action) {
                 tracing::debug!("Blocked an action until the user confirms a network");
                 MessageBanner::set_global(
@@ -4060,7 +4180,9 @@ impl App for AppState {
             }
             match action {
                 AppAction::None => {}
-                AppAction::AddScreen(screen) => self.screen_stack.push(screen),
+                AppAction::AddScreen(screen) => {
+                    self.screen_stack.push(screen);
+                }
                 AppAction::Refresh => self.visible_screen_mut().refresh(),
                 AppAction::PopScreen => {
                     if !self.screen_stack.is_empty() {
@@ -4090,13 +4212,16 @@ impl App for AppState {
                     }
                 }
                 AppAction::GoToMainScreen => {
-                    self.screen_stack = vec![];
+                    self.screen_stack.clear();
                     self.active_root_screen_mut().refresh_on_arrival();
                 }
                 AppAction::BackendTask(task) => {
                     self.handle_backend_task(task);
                 }
                 AppAction::BackendTaskWithContext { task, context } => {
+                    if let Some(owner) = owner {
+                        self.request_owners.record(&context, owner);
+                    }
                     self.handle_backend_task_with_context(task, context);
                 }
                 AppAction::BackendTasks(tasks, mode) => {
@@ -4107,7 +4232,7 @@ impl App for AppState {
                 }
                 AppAction::SetMainScreenThenGoToMainScreen(root_screen_type) => {
                     self.set_main_screen(root_screen_type);
-                    self.screen_stack = vec![];
+                    self.screen_stack.clear();
                 }
                 AppAction::SetMainScreenThenPopScreen(root_screen_type) => {
                     self.set_main_screen(root_screen_type);
@@ -4119,7 +4244,7 @@ impl App for AppState {
                     self.change_network(network);
                 }
                 AppAction::PopThenAddScreenToMainScreen(root_screen_type, screen) => {
-                    self.screen_stack = vec![screen];
+                    self.screen_stack.replace_with(screen);
                     self.set_main_screen(root_screen_type);
                 }
                 AppAction::StartSpv => {
@@ -4960,6 +5085,28 @@ mod contact_request_routing_tests {
             true
         ));
     }
+
+    /// A root screen hears about a result it would not otherwise get: one
+    /// another open screen dispatched, even while the root is in view, and
+    /// one nobody open dispatched while the root is hidden.
+    #[test]
+    fn a_root_takes_its_own_results_and_undispatched_ones_in_view() {
+        use super::request_routing::ScreenStack;
+        let hub = RootScreenType::RootScreenIdentityHub;
+        let other_root = ScreenOwner::Root(RootScreenType::RootScreenWalletsBalances);
+        let stacked = ScreenOwner::Stacked(ScreenStack::default().push(()));
+
+        for in_view in [false, true] {
+            assert!(root_takes_result(
+                hub,
+                Some(ScreenOwner::Root(hub)),
+                in_view
+            ));
+            assert!(!root_takes_result(hub, Some(other_root), in_view));
+            assert!(!root_takes_result(hub, Some(stacked), in_view));
+            assert_eq!(root_takes_result(hub, None, in_view), in_view);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -4969,57 +5116,6 @@ mod dpns_result_routing_tests {
         DpnsScheduledVoteClearDisposition, DpnsScheduledVoteClearOutcome, DpnsScheduledVoteKey,
         DpnsVoteOperationId,
     };
-
-    #[test]
-    fn username_refresh_completes_under_registration_and_after_pop() {
-        use crate::ui::identity::register_dpns_name_screen::{
-            RegisterDpnsNameScreen, RegisterDpnsNameSource,
-        };
-        use crate::ui::identity::username_request_screen::UsernameRequestScreen;
-        for fail in [false, true] {
-            let dir = tempfile::tempdir().unwrap();
-            let app_context = crate::context::test_support::test_app_context(dir.path());
-            let mut status =
-                UsernameRequestScreen::new(&app_context, Identifier::from([1; 32]), "alice".into());
-            let AppAction::BackendTaskWithContext { context, .. } = status.begin_refresh() else {
-                panic!("expected refresh dispatch");
-            };
-            let mut stack = vec![
-                Screen::UsernameRequestScreen(status),
-                Screen::RegisterDpnsNameScreen(RegisterDpnsNameScreen::new(
-                    &app_context,
-                    RegisterDpnsNameSource::Identities,
-                )),
-            ];
-            let completed = BackendTaskSuccessResult::MyUsernameRequestsRefreshed;
-            let error = TaskError::DataContractNotFound;
-            let result = if fail { Err(&error) } else { Ok(&completed) };
-            route_username_refresh_to_hidden_screens(
-                &mut stack,
-                &BackendTaskContext::Unknown,
-                result,
-            );
-            let Screen::UsernameRequestScreen(status) = &mut stack[0] else {
-                unreachable!()
-            };
-            assert!(
-                matches!(status.begin_refresh(), AppAction::None),
-                "unrelated completions must not release the pending refresh"
-            );
-            route_username_refresh_to_hidden_screens(&mut stack, &context, result);
-            stack.pop();
-            let Screen::UsernameRequestScreen(status) = &mut stack[0] else {
-                unreachable!()
-            };
-            assert!(
-                matches!(
-                    status.begin_refresh(),
-                    AppAction::BackendTaskWithContext { .. }
-                ),
-                "refresh must be enabled after returning to the status page"
-            );
-        }
-    }
 
     /// A vote can stay unconfirmed until its contest closes: it is re-checked
     /// on a few sweeps, then rarely, and promptly again after vote activity.

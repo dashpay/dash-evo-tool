@@ -126,13 +126,6 @@ pub(crate) fn top_up_in_flight_for(ctx: &egui::Context, identity_id: &Identifier
         .any(|top_up| top_up.dispatch.identity_top_up_identity() == Some(*identity_id))
 }
 
-/// Whether the top-up sent as `dispatch` still waits for its result.
-pub(crate) fn top_up_awaits_result(ctx: &egui::Context, dispatch: &BackendTaskContext) -> bool {
-    top_ups_in_flight(ctx)
-        .iter()
-        .any(|top_up| top_up.dispatch == *dispatch)
-}
-
 /// Record the top-up sent as `dispatch`. It stays in flight until
 /// [`finish_top_up`] sees that dispatch's own result.
 fn track_top_up(ctx: &egui::Context, dispatch: BackendTaskContext, confirmation: String) {
@@ -363,11 +356,6 @@ impl TopUpIdentityScreen {
         AppAction::BackendTaskWithContext { task, context }
     }
 
-    /// Whether `dispatch` is the top-up this screen sent and still waits on.
-    pub(crate) fn awaits_top_up(&self, dispatch: &BackendTaskContext) -> bool {
-        self.top_up_context.owns(dispatch)
-    }
-
     /// Stop waiting on the top-up: lower the overlay and forget its dispatch.
     fn release_top_up(&mut self) {
         self.top_up_overlay.take_and_clear();
@@ -387,7 +375,6 @@ impl TopUpIdentityScreen {
     /// Notice the end of the top-up, offer the background button once it runs
     /// long, and act on a click of it.
     fn sync_top_up_overlay(&mut self) {
-        self.resume_after_unseen_top_up_end();
         let Some(handle) = self.top_up_overlay.clone() else {
             return;
         };
@@ -418,23 +405,6 @@ impl TopUpIdentityScreen {
         if let Some(dispatch) = self.top_up_context.context() {
             send_top_up_to_background(self.app_context.egui_ctx(), dispatch);
         }
-    }
-
-    /// Bring back an empty form once the top-up this screen sent has ended
-    /// without its result reaching the screen: only a screen in view when its
-    /// top-up ends is told how it ended.
-    fn resume_after_unseen_top_up_end(&mut self) {
-        let Some(dispatch) = self.top_up_context.context() else {
-            return;
-        };
-        if top_up_awaits_result(self.app_context.egui_ctx(), dispatch) {
-            return;
-        }
-        self.release_top_up();
-        // The top-up may have succeeded, so the form must not offer it again.
-        self.forget_sent_funding();
-        self.set_step(step_after_task_failure(self.current_step()));
-        self.reload_identity();
     }
 
     /// Re-read the identity: a top-up changes its stored balance and top-up
@@ -2633,9 +2603,8 @@ mod tests {
         );
     }
 
-    /// A screen that is not in view when its top-up ends never learns how it
-    /// ended, so the form it brings back must not still hold the amount that
-    /// was just sent.
+    /// A screen out of view when its background top-up ends is still told how
+    /// it ended, and it must not offer the amount that was just sent again.
     #[test]
     fn form_comes_back_clean_when_a_background_top_up_ends_out_of_sight() {
         let (mut screen, _temp_dir) = funded_form_screen(0x47);
@@ -2652,17 +2621,18 @@ mod tests {
         screen.continue_top_up_in_background();
         assert!(screen_shows(&mut screen, TOP_UP_FORM_PAUSED));
 
-        assert!(finish_top_up(&ctx, &context, true, true));
+        assert!(finish_top_up(&ctx, &context, true, false));
+        let identity = screen.identity.clone();
+        screen.display_backend_task_result(
+            &context,
+            BackendTaskSuccessResult::ToppedUpIdentity(identity, FeeResult::new(1, 1)),
+        );
         assert!(
             !screen_shows(&mut screen, TOP_UP_FORM_PAUSED),
-            "the form must come back once the background top-up ended"
+            "the screen leaves the paused form once its top-up ended"
         );
         assert!(!screen.top_up_in_flight());
-        assert_eq!(screen.current_step(), WalletFundedScreenStep::ReadyToCreate);
-        assert!(
-            !screen_shows(&mut screen, ADD_FUNDS_BUTTON),
-            "the form must not offer the amount that was just sent"
-        );
+        assert_eq!(screen.current_step(), WalletFundedScreenStep::Success);
         assert_eq!(screen.funding_amount_exact, None);
         assert_eq!(screen.funding_asset_lock, None);
         assert!(screen.platform_top_up_amount.is_none());

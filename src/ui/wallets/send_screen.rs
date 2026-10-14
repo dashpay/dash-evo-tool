@@ -36,8 +36,7 @@ use crate::ui::components::wallet_unlock_popup::{
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::identity::funding_common::{FUNDING_FEE_NOT_COVERED, network_fee_refusal};
 use crate::ui::identity::top_up_identity_screen::{
-    send_top_up_to_background, top_up_awaits_result, top_up_in_flight_for,
-    track_top_up_sent_elsewhere,
+    send_top_up_to_background, top_up_in_flight_for, track_top_up_sent_elsewhere,
 };
 use crate::ui::state::{AssetLockBalanceCache, PendingRequest};
 use crate::ui::theme::{ComponentStyles, DashColors};
@@ -638,25 +637,8 @@ impl WalletSendScreen {
     }
 
     /// Whether `context` is the send this screen dispatched and still waits on.
-    pub(crate) fn awaits_send(&self, context: &BackendTaskContext) -> bool {
+    fn awaits_send(&self, context: &BackendTaskContext) -> bool {
         self.awaits_own_send() && self.pending_send.owns(context)
-    }
-
-    /// Hand the form back once the top-up it sent has ended without the result
-    /// reaching it: only a screen in view when its top-up ends is told how.
-    fn resume_after_unseen_top_up_end(&mut self) {
-        let Some(dispatch) = self.pending_send.context() else {
-            return;
-        };
-        if !self.awaits_own_send()
-            || dispatch.identity_top_up_identity().is_none()
-            || top_up_awaits_result(self.app_context.egui_ctx(), dispatch)
-        {
-            return;
-        }
-        // The top-up may have succeeded, so the form must not offer it again.
-        self.send_banner.take_and_clear();
-        self.reset_form();
     }
 
     /// What confirming a send does: show its progress and dispatch it.
@@ -4754,6 +4736,38 @@ impl WalletSendScreen {
                 | BackendTaskSuccessResult::RefreshedOwnedDpnsNames
         )
     }
+
+    /// Take what `result` says about the form's inputs: a new asset-lock
+    /// ceiling, or a change to the addresses the form offers. Returns whether
+    /// that is all the result is.
+    fn refresh_form_inputs(
+        &mut self,
+        result: &crate::backend_task::BackendTaskSuccessResult,
+    ) -> bool {
+        if let crate::backend_task::BackendTaskSuccessResult::AssetLockMaxAmount {
+            seed_hash,
+            snapshot_generation,
+            request_id,
+            amount_duffs,
+            observed_inputs,
+            is_partial,
+        } = result
+        {
+            self.asset_lock_balance.store(
+                *seed_hash,
+                *snapshot_generation,
+                *request_id,
+                *amount_duffs,
+                observed_inputs.clone(),
+                *is_partial,
+            );
+            return true;
+        }
+        if Self::task_result_updates_address_input(result) {
+            self.address_input_snapshot_signature = None;
+        }
+        false
+    }
 }
 
 /// A send keeps running when its form is closed, and nothing is left to end
@@ -4773,7 +4787,6 @@ impl ScreenLike for WalletSendScreen {
         let ctx = ui.ctx().clone();
         let ctx = &ctx;
         let mut action = AppAction::None;
-        self.resume_after_unseen_top_up_end();
 
         action |= add_top_panel(
             ui,
@@ -4921,29 +4934,10 @@ impl ScreenLike for WalletSendScreen {
         &mut self,
         backend_task_success_result: crate::backend_task::BackendTaskSuccessResult,
     ) {
-        if let crate::backend_task::BackendTaskSuccessResult::AssetLockMaxAmount {
-            seed_hash,
-            snapshot_generation,
-            request_id,
-            amount_duffs,
-            observed_inputs,
-            is_partial,
-        } = &backend_task_success_result
-        {
-            self.asset_lock_balance.store(
-                *seed_hash,
-                *snapshot_generation,
-                *request_id,
-                *amount_duffs,
-                observed_inputs.clone(),
-                *is_partial,
-            );
+        if self.refresh_form_inputs(&backend_task_success_result) {
             return;
         }
         self.send_banner.take_and_clear();
-        if Self::task_result_updates_address_input(&backend_task_success_result) {
-            self.address_input_snapshot_signature = None;
-        }
         match backend_task_success_result {
             crate::backend_task::BackendTaskSuccessResult::WalletPayment {
                 txid: _,
@@ -5069,15 +5063,11 @@ impl ScreenLike for WalletSendScreen {
         // this screen waits on its own send, such a result may refresh what
         // the form offers, but it neither completes that send nor ends its
         // progress banner.
-        let waits_on_another_task = self.awaits_own_send() && !self.awaits_send(context);
-        let progress_banner = waits_on_another_task
-            .then(|| self.send_banner.take())
-            .flatten();
-        self.display_task_result(backend_task_success_result);
-        if waits_on_another_task {
-            self.send_banner = progress_banner;
-            self.send_status = SendStatus::WaitingForResult;
+        if self.awaits_own_send() && !self.awaits_send(context) {
+            self.refresh_form_inputs(&backend_task_success_result);
+            return;
         }
+        self.display_task_result(backend_task_success_result);
     }
 
     fn refresh_on_arrival(&mut self) {

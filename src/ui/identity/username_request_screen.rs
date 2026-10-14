@@ -77,6 +77,17 @@ impl UsernameRequestScreen {
             .dispatch_on(task, self.app_context.network())
     }
 
+    /// Test seam: start a status refresh as the Refresh button does, without
+    /// running its task. Returns its dispatch, or `None` while one is running.
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    pub fn begin_refresh_for_test(&mut self) -> Option<BackendTaskContext> {
+        match self.begin_refresh() {
+            AppAction::BackendTaskWithContext { context, .. } => Some(context),
+            _ => None,
+        }
+    }
+
     fn request(&self) -> Option<UsernameRequest> {
         self.app_context
             .username_requests_for(&self.identity_id)

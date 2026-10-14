@@ -417,6 +417,7 @@ by side per scenario/story, with a verdict badge and a one-line rationale each �
 (e.g. base64) so the page has no external file dependencies. Run the pre-embedding secret check from
 § Security incidents during GUI testing over every image and caption first: once inlined, a leaked
 secret travels with every copy of the page. Save it to your artifacts location.
+For presentation-grade annotated images (one spotlight-style image per changed screen), use the `visual-diff` skill.
 Merge Phase 4's findings into Phase 2's report as an additional section, re-validate the combined
 report against whatever schema/format it uses, and re-render any human-readable version. The
 combined report is then ready to hand to the user for triage — code-review and GUI-regression

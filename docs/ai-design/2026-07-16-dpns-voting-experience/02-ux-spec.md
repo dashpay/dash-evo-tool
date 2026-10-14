@@ -11,7 +11,7 @@ durable operation coordinator remains the safety model. What changed:
 - The confirm step is an aggregate.
 - Progress is a non-blocking drawer.
 - Each node shows its weight and changes left.
-- Keyboard and bulk shortcuts are added.
+- Keyboard shortcuts are added.
 
 Stream V. Wireframes: `../2026-10-01-usernames-redesign/wireframes.html`
 frames V0–V6. Requirement IDs: `01-requirements.md`.
@@ -65,8 +65,8 @@ Card (two columns):
   `Changing 4 earlier votes uses 1 of each node's 4 changes.` Unavailable state:
   `Vote state is unavailable for 3 nodes; they're left out.` with
   [Refresh voting].
-- Checkbox at top-left for bulk selection. Keyboard focus ring on the focused
-  card.
+- Keyboard focus ring on the focused card. A card is picked by its decision;
+  it has no checkbox.
 
 Below the cards, a collapsed `Can't vote with your nodes ({n})` group (dimmed,
 reason per card).

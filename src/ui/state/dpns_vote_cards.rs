@@ -174,7 +174,7 @@ impl VoteCard {
 }
 
 /// A contest-list shortcut (VOTE-FR-082). Each has a visible control: card
-/// focus by click, decision choices, the card checkbox, and the tray's Cast.
+/// focus by click, decision choices, and the tray's Cast.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shortcut {
     Next,
@@ -184,7 +184,6 @@ pub enum Shortcut {
     Lock,
     Abstain,
     Clear,
-    ToggleSelected,
     Confirm,
 }
 
@@ -206,20 +205,18 @@ pub fn shortcut_for(key: eframe::egui::Key) -> Option<Shortcut> {
         Key::L => Shortcut::Lock,
         Key::A => Shortcut::Abstain,
         Key::Num0 => Shortcut::Clear,
-        Key::Space => Shortcut::ToggleSelected,
         Key::Enter => Shortcut::Confirm,
         _ => return None,
     })
 }
 
 /// The `Shortcuts` popover rows: keys and what they do.
-pub const SHORTCUT_HELP: [(&str, &str); 7] = [
+pub const SHORTCUT_HELP: [(&str, &str); 6] = [
     ("J / ↓", "Next name"),
     ("K / ↑", "Previous name"),
     ("1–9", "Vote for that contender"),
     ("L / A", "Lock name / Abstain"),
     ("0", "Clear the decision"),
-    ("Space", "Select for a bulk decision"),
     ("Enter", "Review and cast"),
 ];
 
@@ -418,6 +415,9 @@ mod tests {
         assert_eq!(shortcut_for(Key::L), Some(Shortcut::Lock));
         assert_eq!(shortcut_for(Key::Num0), Some(Shortcut::Clear));
         assert_eq!(shortcut_for(Key::Q), None);
+        // A name is picked by its decision; there is nothing else to select.
+        assert_eq!(shortcut_for(Key::Space), None);
+        assert!(SHORTCUT_HELP.iter().all(|(keys, _)| *keys != "Space"));
         assert_eq!(move_focus(None, 3, Shortcut::Next), Some(0));
         assert_eq!(move_focus(Some(2), 3, Shortcut::Next), Some(2));
         assert_eq!(move_focus(Some(0), 3, Shortcut::Previous), Some(0));

@@ -346,6 +346,156 @@ mod loads {
         });
     }
 
+    const SETUP_CHECKLIST: &str = "Finish setting up your identity";
+
+    fn profile_load(action: &AppAction) -> Option<BackendTaskContext> {
+        match action {
+            AppAction::BackendTaskWithContext {
+                task: BackendTask::DashPayTask(task),
+                context,
+            } if matches!(**task, DashPayTask::LoadProfile { .. }) => Some(context.clone()),
+            _ => None,
+        }
+    }
+
+    fn named_contact(name: &str) -> dash_evo_tool::backend_task::dashpay::ContactData {
+        dash_evo_tool::backend_task::dashpay::ContactData {
+            identity_id: Identifier::from([0xD8; 32]),
+            nickname: Some(name.into()),
+            note: None,
+            is_hidden: false,
+            account_reference: 0,
+            username: None,
+            display_name: None,
+            avatar_url: None,
+            bio: None,
+        }
+    }
+
+    fn deliver_contacts(hub: &mut HubHarness, owner: Identifier, name: &str) {
+        let app_context = hub.state().0.app_context.clone();
+        let task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadContacts {
+            identity: app_context.resolve_selected_identity().expect("identity"),
+        }));
+        hub.state_mut().0.display_backend_task_result(
+            &BackendTaskContext::from(&task),
+            BackendTaskSuccessResult::DashPayContactsWithInfo {
+                identity: owner,
+                contacts: vec![named_contact(name)],
+            },
+        );
+    }
+
+    /// Mount the hub for `owner` and answer its profile and contact loads.
+    fn hub_with_loaded_home(app_context: &Arc<AppContext>, owner: Identifier) -> HubHarness {
+        use dash_evo_tool::model::dashpay::ProfileSnapshot;
+        let mut hub = mount_hub(app_context);
+        let request = step_until(&mut hub, "the profile load", profile_load);
+        hub.state_mut().0.display_backend_task_result(
+            &request,
+            BackendTaskSuccessResult::DashPayProfile(ProfileSnapshot {
+                network: app_context.network(),
+                owner,
+                revision: app_context.identity_profile_revision(owner),
+                profile: Some(("Alex".into(), String::new(), String::new())),
+            }),
+        );
+        deliver_contacts(&mut hub, owner, "Bao");
+        hub.run();
+        assert!(hub.query_by_label("Bao").is_some(), "the contact is shown");
+        assert!(
+            hub.query_by_label(SETUP_CHECKLIST).is_some(),
+            "profile and contacts are known"
+        );
+        hub
+    }
+
+    /// Whether the hub asks for the contact lists and the profile again,
+    /// rendering one frame at a time until both went out.
+    fn reloads_both(hub: &mut HubHarness) -> bool {
+        let (mut contacts, mut profile) = (false, false);
+        for _ in 0..16 {
+            for action in hub.state_mut().1.drain(..) {
+                contacts |= contacts_load(&action).is_some();
+                profile |= profile_load(&action).is_some();
+            }
+            if contacts && profile {
+                return true;
+            }
+            hub.step();
+        }
+        false
+    }
+
+    /// Coming back to the hub for the same identity shows what it already had
+    /// from the first frame on, and reloads it behind.
+    #[test]
+    fn returning_to_the_same_identity_keeps_its_home_and_reloads_it() {
+        with_isolated_data_dir(|| {
+            let (_runtime, app_context) = fresh_app_context();
+            let owner = seed_identity_that_can_move_funds(&app_context);
+            let mut hub = hub_with_loaded_home(&app_context, owner);
+
+            hub.state_mut().0.refresh_on_arrival();
+            hub.state_mut().1.clear();
+            hub.step();
+            assert!(
+                hub.query_by_label("Bao").is_some(),
+                "the contacts must stay on screen"
+            );
+            assert!(
+                hub.query_by_label(SETUP_CHECKLIST).is_some(),
+                "the profile and the contacts must stay known"
+            );
+            assert!(
+                reloads_both(&mut hub),
+                "the profile and the contacts must be reloaded"
+            );
+        });
+    }
+
+    /// Coming back after another identity was selected shows nothing of the
+    /// previous one.
+    #[test]
+    fn returning_to_another_identity_drops_the_previous_home() {
+        use crate::identity_home::seed_identity_with_id;
+        with_isolated_data_dir(|| {
+            let (_runtime, app_context) = fresh_app_context();
+            let other = seed_identity_with_id(&app_context, 0xB6, vec![], vec![]);
+            let owner = seed_identity_that_can_move_funds(&app_context);
+            let mut hub = hub_with_loaded_home(&app_context, owner);
+
+            app_context.set_selected_identity(Some(other));
+            hub.state_mut().0.refresh_on_arrival();
+            hub.step();
+            assert!(hub.query_by_label("Bao").is_none());
+            assert!(
+                hub.query_by_label(SETUP_CHECKLIST).is_none(),
+                "nothing is known yet about the identity now shown"
+            );
+        });
+    }
+
+    /// The reload after coming back replaces what was kept.
+    #[test]
+    fn the_reload_after_returning_replaces_the_kept_contacts() {
+        with_isolated_data_dir(|| {
+            let (_runtime, app_context) = fresh_app_context();
+            let owner = seed_identity_that_can_move_funds(&app_context);
+            let mut hub = hub_with_loaded_home(&app_context, owner);
+
+            hub.state_mut().0.refresh_on_arrival();
+            hub.step();
+            deliver_contacts(&mut hub, owner, "Cy");
+            hub.run();
+            assert!(
+                hub.query_by_label("Cy").is_some(),
+                "the fresh list is shown"
+            );
+            assert!(hub.query_by_label("Bao").is_none(), "the kept list is gone");
+        });
+    }
+
     /// Puts the hub behind the Send screen Home opens, delivers `results`
     /// there, then cancels that screen: the hub comes back to `hub` the way
     /// Cancel leaves it, without a refresh.

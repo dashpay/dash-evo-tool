@@ -245,6 +245,25 @@ impl IdentityHubScreen {
         }
     }
 
+    /// Clear the stale load-error banner so the next `landing()` call can try
+    /// again cleanly, and re-arm the per-tab loads. With `keep_shown`, the
+    /// profile and contacts stay on screen until their reload lands.
+    fn reload(&mut self, keep_shown: bool) {
+        self.load_error_banner.take_and_clear();
+        if keep_shown {
+            self.contacts_state.invalidate();
+            self.contacts_state.search_mut().clear();
+            self.profile_cache.reload_kept();
+        } else {
+            self.contacts_state.reset();
+            self.profile_cache.reset();
+        }
+        self.home_state.refresh_payments();
+        self.selection.clear_searches();
+        self.avatar_cache.invalidate();
+        self.pending_avatars.clear();
+    }
+
     /// Reset all identity-scoped state after the owning application context
     /// changes. Abandoned confirmations release their guards; live paid actions
     /// remain guarded, and stale guards are pruned during the contacts reset.
@@ -425,20 +444,13 @@ impl IdentityHubScreen {
 
 impl ScreenLike for IdentityHubScreen {
     fn refresh(&mut self) {
-        // Clear the stale load-error banner so the next `landing()` call can
-        // try again cleanly, and reset per-tab load guards so a refresh
-        // re-fires the Contacts load.
-        self.load_error_banner.take_and_clear();
-        self.contacts_state.reset();
-        self.home_state.refresh_payments();
-        self.profile_cache.reset();
-        self.selection.clear_searches();
-        self.avatar_cache.invalidate();
-        self.pending_avatars.clear();
+        self.reload(false);
     }
 
+    /// Returning keeps the profile and contacts already shown and reloads them
+    /// behind; lists of another identity are dropped as the hub renders.
     fn refresh_on_arrival(&mut self) {
-        self.refresh();
+        self.reload(true);
         self.usernames_arriving = true;
     }
 

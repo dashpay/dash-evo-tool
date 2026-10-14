@@ -503,7 +503,6 @@ pub struct DPNSScreen {
     vote_state: DpnsVoteStateSnapshot,
     pending_vote_operation: Option<DpnsVoteOperationId>,
     submitted_votes: BTreeMap<String, SelectedVote>,
-    submitted_cards: BTreeSet<String>,
     pending_scheduled_actions: BTreeMap<DpnsScheduledVoteKey, BackendTaskContext>,
     /// Set by `display_backend_task_error` when the failed task is this
     /// panel's pending submission; `display_task_error` then releases it.
@@ -563,8 +562,6 @@ pub struct DPNSScreen {
     relative_schedule_labels: BTreeMap<(DpnsVoteTargetKey, u64), std::time::Duration>,
     /// Settled failures older than this are not raised in `Needs attention`.
     session_started_ms: u64,
-    /// Cards ticked for a bulk decision, by contest name.
-    selected_cards: BTreeSet<String>,
     focused_card: Option<String>,
     /// Whether the contest list has keyboard focus for shortcuts.
     list_focused: bool,
@@ -636,7 +633,6 @@ impl DPNSScreen {
             vote_state,
             pending_vote_operation: None,
             submitted_votes: BTreeMap::new(),
-            submitted_cards: BTreeSet::new(),
             pending_scheduled_actions: BTreeMap::new(),
             release_pending_on_error: false,
             session_started_ms: now_ms(),
@@ -666,7 +662,6 @@ impl DPNSScreen {
             node_labels: BTreeMap::new(),
             cards: Vec::new(),
             relative_schedule_labels: BTreeMap::new(),
-            selected_cards: BTreeSet::new(),
             focused_card: None,
             list_focused: false,
             tray_height: 0.0,
@@ -709,7 +704,6 @@ impl DPNSScreen {
         self.pending_preference = None;
         self.pending_vote_operation = None;
         self.submitted_votes.clear();
-        self.submitted_cards.clear();
         self.pending_scheduled_actions.clear();
         self.release_pending_on_error = false;
         self.scheduled_clear_dialog = None;
@@ -731,7 +725,6 @@ impl DPNSScreen {
         self.voting_nodes.clear();
         self.resolved_nodes = ResolvedNodeSet::default();
         self.cards.clear();
-        self.selected_cards.clear();
         self.focused_card = None;
         self.list_focused = false;
     }
@@ -977,9 +970,6 @@ impl DPNSScreen {
             .collect();
         sort_by_time_left(&mut cards);
         self.cards = cards;
-        let names: BTreeSet<&str> = self.cards.iter().map(VoteCard::name).collect();
-        self.selected_cards
-            .retain(|name| names.contains(name.as_str()));
     }
 
     /// What the staged decisions would submit across their submittable
@@ -1037,7 +1027,6 @@ impl DPNSScreen {
     /// that node as the node set and no staged decisions carried over.
     pub fn vote_with_node(&mut self, node: Identifier) {
         self.selected_votes.clear();
-        self.selected_cards.clear();
         self.view = VotesView::ToDecide;
         // The node may have been loaded after this panel last read its nodes.
         self.refresh_on_arrival();
@@ -1142,7 +1131,6 @@ impl DPNSScreen {
         };
 
         let scroll_to = self.handle_shortcuts(ui, &listed);
-        self.render_bulk_bar(ui);
 
         let mut events: Vec<(usize, CardEvent)> = Vec::new();
         let list = egui::ScrollArea::vertical()
@@ -1166,7 +1154,6 @@ impl DPNSScreen {
                     let card_events = CardView {
                         card,
                         staged,
-                        selected: self.selected_cards.contains(card.name()),
                         focused: self.focused_card.as_deref() == Some(card.name()),
                         scroll_into_view: scroll_to.as_deref() == Some(card.name()),
                         node_labels: &self.node_labels,
@@ -1221,11 +1208,6 @@ impl DPNSScreen {
                 CardEvent::Choose(choice) => {
                     let contest = Arc::clone(&self.cards[index].contest);
                     self.set_selected_vote(&contest, choice);
-                }
-                CardEvent::ToggleSelected => {
-                    if !self.selected_cards.remove(&name) {
-                        self.selected_cards.insert(name.clone());
-                    }
                 }
                 CardEvent::RefreshVoting
                     if self.refreshing_status != RefreshingStatus::Refreshing =>
@@ -1335,14 +1317,6 @@ impl DPNSScreen {
                         self.clear_choice(&name);
                     }
                 }
-                Shortcut::ToggleSelected => {
-                    if let Some(index) = focused {
-                        let name = self.cards[index].name().to_owned();
-                        if !self.selected_cards.remove(&name) {
-                            self.selected_cards.insert(name);
-                        }
-                    }
-                }
                 Shortcut::Confirm => {
                     if !self.selected_votes.is_empty() {
                         self.open_review_for_node_set();
@@ -1351,43 +1325,6 @@ impl DPNSScreen {
             }
         }
         scroll_to
-    }
-
-    /// Bulk bar for two or more selected names (VOTE-FR-082).
-    fn render_bulk_bar(&mut self, ui: &mut Ui) {
-        let selected = self.selected_cards.len();
-        if selected < 2 {
-            return;
-        }
-        let mut apply: Option<Option<ResourceVoteChoice>> = None;
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(format!("{selected} names selected")).strong());
-            if ui.button("Lock name").clicked() {
-                apply = Some(Some(ResourceVoteChoice::Lock));
-            }
-            if ui.button("Abstain").clicked() {
-                apply = Some(Some(ResourceVoteChoice::Abstain));
-            }
-            if ui.button("Clear").clicked() {
-                apply = Some(None);
-            }
-        });
-        let Some(apply) = apply else {
-            return;
-        };
-        let targets: Vec<Arc<ContestedName>> = self
-            .cards
-            .iter()
-            .filter(|card| self.selected_cards.contains(card.name()))
-            .filter(|card| apply.is_none() || card.accepts_decision())
-            .map(|card| Arc::clone(&card.contest))
-            .collect();
-        for contest in targets {
-            match apply {
-                Some(choice) => self.stage_choice(&contest, choice),
-                None => self.clear_choice(&contest.normalized_contested_name),
-            }
-        }
     }
 
     /// What to do when none of the nodes voted with can vote: pick other
@@ -2681,7 +2618,6 @@ impl DPNSScreen {
             // A retried target is not one of the staged decisions, so its
             // result must not clear any of them from the tray.
             self.submitted_votes.clear();
-            self.submitted_cards.clear();
         } else {
             self.submitted_votes = self
                 .selected_votes
@@ -2689,7 +2625,6 @@ impl DPNSScreen {
                 .cloned()
                 .map(|vote| (vote.contested_name.clone(), vote))
                 .collect();
-            self.submitted_cards = self.selected_cards.clone();
         }
         AppAction::BackendTask(BackendTask::ContestedResourceTask(
             ContestedResourceTask::SubmitDpnsVoteOperation {
@@ -2799,7 +2734,6 @@ impl ScreenLike for DPNSScreen {
         if self.release_pending_on_error {
             self.pending_vote_operation = None;
             self.submitted_votes.clear();
-            self.submitted_cards.clear();
             self.release_pending_on_error = false;
             let retried = self.submitted_retry.take();
             // The confirm step closed when the submission was dispatched and
@@ -2858,16 +2792,7 @@ impl ScreenLike for DPNSScreen {
                     self.selected_votes.retain(|vote| {
                         self.submitted_votes.get(&vote.contested_name) != Some(vote)
                     });
-                    let staged: BTreeSet<&String> = self
-                        .selected_votes
-                        .iter()
-                        .map(|vote| &vote.contested_name)
-                        .collect();
-                    self.selected_cards.retain(|name| {
-                        !self.submitted_cards.contains(name) || staged.contains(name)
-                    });
                     self.submitted_votes.clear();
-                    self.submitted_cards.clear();
                 }
                 if let Err(error) = self.vote_operations.refresh(&self.app_context) {
                     tracing::warn!(
@@ -4129,7 +4054,6 @@ mod tests {
                 .seed_dpns_contest_for_test(name, Some(now_ms() + 600_000), false);
         }
         screen.refresh();
-        screen.selected_cards.insert("alpha".to_owned());
         assert!(matches!(
             screen.submit_confirmed_votes(),
             AppAction::BackendTask(_)
@@ -4141,13 +4065,11 @@ mod tests {
             end_time: None,
         };
         screen.selected_votes.push(new_vote.clone());
-        screen.selected_cards.insert("beta".to_owned());
         screen.display_task_result(BackendTaskSuccessResult::DpnsVoteOperationUpdated {
             network: screen.app_context.network(),
             operation_id,
         });
         assert_eq!(screen.selected_votes, vec![new_vote]);
-        assert_eq!(screen.selected_cards, BTreeSet::from(["beta".to_owned()]));
         assert!(screen.pending_vote_operation.is_none());
     }
 
@@ -5397,40 +5319,63 @@ mod tests {
         );
     }
 
-    /// VOTE-TC-099: with several names selected, the bulk bar stages one
-    /// decision on each.
+    /// VOTE-TC-099: a name counts as picked once it has a decision; there is
+    /// no selection besides it. Cards carry no checkbox, Space picks nothing,
+    /// and decided names bring no bar beside the tray.
     #[tokio::test]
-    async fn bulk_bar_applies_a_decision_to_every_selected_name() {
+    async fn a_decision_is_the_only_way_to_pick_a_name() {
+        use egui::accesskit::Role;
         use egui_kittest::kittest::Queryable;
         let (screen, _dir) = two_contest_screen().await;
-        screen.lock_recover().selected_cards =
-            BTreeSet::from(["alpha".to_owned(), "beta".to_owned()]);
         let rendering = screen.clone();
-        let mut harness = egui_kittest::Harness::builder()
-            .with_size(egui::vec2(1400.0, 1200.0))
-            .build_ui(move |ui| {
-                rendering.lock_recover().ui(ui);
-            });
-        harness.run();
-        assert!(harness.query_by_label("2 names selected").is_some());
-        harness
-            .get_by_role_and_label(egui::accesskit::Role::Button, "Abstain")
-            .click();
-        harness.run();
+        let mut harness = app_styled_harness(egui::vec2(1260.0, 1200.0), move |ui| {
+            rendering.lock_recover().ui(ui);
+        });
+        assert_eq!(
+            harness.query_all_by_role(Role::CheckBox).count(),
+            0,
+            "a card offers a checkbox"
+        );
+
+        screen.lock_recover().list_focused = true;
+        for key in [
+            egui::Key::J,
+            egui::Key::Space,
+            egui::Key::J,
+            egui::Key::Space,
+        ] {
+            harness.key_press(key);
+            harness.run();
+        }
+        assert!(staged(&screen).is_empty(), "Space picked a name");
+        assert!(harness.query_by_label_contains("names selected").is_none());
+
+        for key in [egui::Key::L, egui::Key::K, egui::Key::A] {
+            harness.key_press(key);
+            harness.run();
+        }
         assert_eq!(
             staged(&screen),
             vec![
+                ("beta".to_owned(), ResourceVoteChoice::Lock),
                 ("alpha".to_owned(), ResourceVoteChoice::Abstain),
-                ("beta".to_owned(), ResourceVoteChoice::Abstain),
             ]
         );
-        harness
-            .get_all_by_role_and_label(egui::accesskit::Role::Button, "Clear")
-            .next()
-            .expect("the bulk bar's Clear")
-            .click();
-        harness.run();
-        assert!(staged(&screen).is_empty());
+        for label in ["Lock name", "Abstain"] {
+            assert!(
+                harness
+                    .query_by_role_and_label(Role::Button, label)
+                    .is_none(),
+                "a bar offers {label} for the decided names"
+            );
+        }
+        assert_eq!(
+            harness
+                .get_all_by_role_and_label(Role::Button, "Clear")
+                .count(),
+            1,
+            "only the tray clears the decisions"
+        );
     }
 
     #[tokio::test]

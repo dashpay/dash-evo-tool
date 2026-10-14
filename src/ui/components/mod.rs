@@ -22,6 +22,7 @@ pub mod passphrase_modal;
 pub mod password_input;
 pub mod pill;
 pub mod progress_overlay;
+pub mod qr_code_image;
 pub mod secret_prompt_host;
 pub mod selection_dialog;
 pub mod styled;

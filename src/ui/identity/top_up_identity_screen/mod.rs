@@ -25,6 +25,7 @@ use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::qr_code_image::QrCodeImage;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_selector::WalletSelector;
@@ -253,6 +254,7 @@ pub struct TopUpIdentityScreen {
     wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_selector: Option<WalletSelector>,
     funding_address: Option<Address>,
+    qr_code: Option<QrCodeImage>,
     /// A queued deposit-address derivation for the "Receive a new deposit"
     /// method. Set when the QR view needs an address; drained at the end of
     /// `ui()` into a [`WalletTask::GenerateReceiveAddress`] task.
@@ -306,6 +308,7 @@ impl TopUpIdentityScreen {
             wallet: None,
             wallet_selector: None,
             funding_address: None,
+            qr_code: None,
             pending_funding_address_request: None,
             funding_address_request_in_flight: false,
             funding_address_request_failed: false,

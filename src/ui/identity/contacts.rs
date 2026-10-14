@@ -275,10 +275,11 @@ pub fn unhide_task(identity: QualifiedIdentity, contact: &ContactData) -> DashPa
 pub fn render(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
+    identity: Option<&QualifiedIdentity>,
     state: &mut ContactsState,
     profiles: &mut super::profile_cache::ProfileCache,
 ) -> AppAction {
-    let tab_state = ContactsTabState::resolve(app_context, profiles);
+    let tab_state = ContactsTabState::resolve(app_context, identity, profiles);
     render_state(ui, app_context, &tab_state, state)
 }
 
@@ -296,7 +297,8 @@ pub fn tab_load_action(
     if !state.load_is_due() {
         return AppAction::None;
     }
-    match ContactsTabState::resolve(app_context, profiles) {
+    let active = app_context.resolve_selected_identity();
+    match ContactsTabState::resolve(app_context, active.as_ref(), profiles) {
         ContactsTabState::Populated { identity } => {
             state.reconcile_owner(&identity);
             load_action(&identity, state)
@@ -329,19 +331,20 @@ impl ContactsTabState {
     /// identity has no DashPay profile (or one has not loaded yet).
     pub fn resolve(
         app_context: &Arc<AppContext>,
+        active: Option<&QualifiedIdentity>,
         profiles: &mut super::profile_cache::ProfileCache,
     ) -> Self {
-        // The app-scoped active identity (selected → first → none). `None` on a
-        // load error or no identities falls back to Gated so the hub never
-        // draws a half-broken populated UI.
-        let Some(active) = app_context.resolve_selected_identity() else {
+        // `active` is the app-scoped active identity (selected → first → none).
+        // `None` on a load error or no identities falls back to Gated so the
+        // hub never draws a half-broken populated UI.
+        let Some(active) = active else {
             return ContactsTabState::Gated { handle: None };
         };
 
-        let handle = app_context.main_username(&active);
-        if has_social_profile(profiles, &active) {
+        let handle = app_context.main_username(active);
+        if has_social_profile(profiles, active) {
             ContactsTabState::Populated {
-                identity: Box::new(active),
+                identity: Box::new(active.clone()),
             }
         } else {
             ContactsTabState::Gated { handle }

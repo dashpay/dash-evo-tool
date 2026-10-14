@@ -4,6 +4,7 @@ use crate::app::AppAction;
 use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::ui::state::PendingRequest;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
 use std::collections::{HashMap, HashSet};
@@ -34,7 +35,7 @@ pub struct ProfileCache {
     /// Identities a load has already been dispatched for (debounce).
     requested: HashSet<Identifier>,
     /// The owner and exact dispatch whose completion this cache accepts.
-    in_flight: Option<(Identifier, BackendTaskContext)>,
+    in_flight: PendingRequest<Identifier>,
     /// Identities a tab asked for this frame that still need a load dispatched.
     wanted: Vec<QualifiedIdentity>,
 }
@@ -83,7 +84,7 @@ impl ProfileCache {
     /// Dispatch one queued profile load, if any and none is in flight. Call
     /// after rendering the tabs; fold the returned action into the frame's.
     pub fn dispatch_pending(&mut self) -> AppAction {
-        if self.in_flight.is_some() {
+        if self.in_flight.is_pending() {
             return AppAction::None;
         }
         let Some(identity) = self.wanted.pop() else {
@@ -92,9 +93,7 @@ impl ProfileCache {
         let id = identity.identity.id();
         self.requested.insert(id);
         let task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadProfile { identity }));
-        let context = BackendTaskContext::for_dispatch(&task);
-        self.in_flight = Some((id, context.clone()));
-        AppAction::BackendTaskWithContext { task, context }
+        self.in_flight.dispatch_with(task, id)
     }
 
     /// Record a `LoadProfile` result against the in-flight identity. Returns
@@ -108,14 +107,9 @@ impl ProfileCache {
         let BackendTaskSuccessResult::DashPayProfile(data) = result else {
             return false;
         };
-        let Some((id, expected)) = self.in_flight.as_ref() else {
+        let Some(id) = self.in_flight.settle(context) else {
             return false;
         };
-        if expected != context {
-            return false;
-        }
-        let id = *id;
-        self.in_flight = None;
         if data.owner != id || !app_context.profile_snapshot_is_current(data) {
             self.requested.remove(&id);
             self.loaded.remove(&id);
@@ -135,13 +129,7 @@ impl ProfileCache {
 
     /// Release a failed load so other identities can load; retry it on refresh.
     pub fn record_error(&mut self, context: &BackendTaskContext) {
-        if self
-            .in_flight
-            .as_ref()
-            .is_some_and(|(_, expected)| expected == context)
-        {
-            self.in_flight = None;
-        }
+        self.in_flight.settle(context);
     }
 
     /// Record the normalized fields confirmed by the backend.
@@ -154,12 +142,8 @@ impl ProfileCache {
     pub(crate) fn invalidate(&mut self, id: Identifier) {
         self.loaded.remove(&id);
         self.requested.remove(&id);
-        if self
-            .in_flight
-            .as_ref()
-            .is_some_and(|(loading, _)| *loading == id)
-        {
-            self.in_flight = None;
+        if self.in_flight.subject() == Some(&id) {
+            self.in_flight.clear();
         }
         self.wanted.retain(|q| q.identity.id() != id);
     }
@@ -168,7 +152,7 @@ impl ProfileCache {
     pub fn reset(&mut self) {
         self.loaded.clear();
         self.requested.clear();
-        self.in_flight = None;
+        self.in_flight.clear();
         self.wanted.clear();
     }
 }
@@ -189,10 +173,8 @@ mod race_tests {
                     assert!(app.record_identity_profile_name(id, revision, Some("Old")));
                 }
                 let context = BackendTaskContext::Other;
-                let mut cache = ProfileCache {
-                    in_flight: Some((id, context.clone())),
-                    ..Default::default()
-                };
+                let mut cache = ProfileCache::default();
+                cache.in_flight.track_with(context.clone(), id);
                 app.save_identity_profile_name(id, Some("Saved"));
                 if !accepted_before_save {
                     assert!(!app.record_identity_profile_name(id, revision, Some("Old")));
@@ -214,7 +196,7 @@ mod race_tests {
                     "a queued load must not undo a completed save"
                 );
                 assert!(
-                    cache.in_flight.is_none(),
+                    !cache.in_flight.is_pending(),
                     "stale results must terminate the load"
                 );
             }

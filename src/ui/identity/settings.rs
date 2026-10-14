@@ -164,7 +164,7 @@ pub struct SettingsTab {
     /// current edit-field state (which may have changed while the round-trip
     /// was in-flight). Cleared on identity switch or when committed. (T21)
     pending_save: Option<(String, String, String)>,
-    pending_save_context: Option<crate::backend_task::BackendTaskContext>,
+    pending_save_context: crate::ui::state::PendingRequest,
     /// `Advanced` expander state. Defaults closed per §B.8; callers (tests)
     /// may flip this via `open_advanced_for_test` to assert the section
     /// renders without a click.
@@ -400,9 +400,7 @@ impl SettingsTab {
                     bio: string_if_set(&self.edit_bio),
                     avatar_url: string_if_set(&self.edit_avatar_url),
                 }));
-                let context = crate::backend_task::BackendTaskContext::for_dispatch(&task);
-                self.pending_save_context = Some(context.clone());
-                action = AppAction::BackendTaskWithContext { task, context };
+                action = self.pending_save_context.dispatch(task);
             }
 
             ui.add_space(12.0);
@@ -715,7 +713,7 @@ impl SettingsTab {
             // A pending save for the old identity must not be committed for
             // the new one — clear it on switch (T21).
             self.pending_save = None;
-            self.pending_save_context = None;
+            self.pending_save_context.clear();
         }
 
         if self.selected_identity.is_some() && !self.profile_loaded {
@@ -815,7 +813,7 @@ impl SettingsTab {
     /// after an identity switch cleared it).
     pub fn on_profile_saved(&mut self) -> Option<super::profile_cache::ProfileFields> {
         let (dn, bio, url) = self.pending_save.take()?;
-        self.pending_save_context = None;
+        self.pending_save_context.clear();
         self.profile_loaded = true;
         self.original_display_name = dn.clone();
         self.original_bio = bio.clone();
@@ -831,7 +829,7 @@ impl SettingsTab {
         &self,
         context: &crate::backend_task::BackendTaskContext,
     ) -> bool {
-        self.pending_save_context.as_ref() == Some(context)
+        self.pending_save_context.owns(context)
     }
 
     pub(crate) fn retry_stale_profile_save(
@@ -846,9 +844,8 @@ impl SettingsTab {
 
     /// Release only the matching dispatch, including obsolete completions.
     pub(crate) fn clear_pending_save(&mut self, context: &crate::backend_task::BackendTaskContext) {
-        if self.owns_profile_save(context) {
+        if self.pending_save_context.settle(context).is_some() {
             self.pending_save = None;
-            self.pending_save_context = None;
         }
     }
 
@@ -1145,7 +1142,7 @@ mod tests {
         tab.selected_identity = Some(identity.clone());
         tab.edit_display_name = "Own submitted".into();
         tab.pending_save = Some(("Own submitted".into(), String::new(), String::new()));
-        tab.pending_save_context = Some(own.clone());
+        tab.pending_save_context.track(own.clone());
         let mut cache = ProfileCache::default();
         let revision = app.save_identity_profile_name(owner, Some("Other consumer"));
         let mut snapshot = ProfileSnapshot {
@@ -1194,7 +1191,7 @@ mod tests {
         );
         assert!(!MessageBanner::has_global(app.egui_ctx()));
         tab.pending_save = Some(("Own submitted".into(), String::new(), String::new()));
-        tab.pending_save_context = Some(own.clone());
+        tab.pending_save_context.track(own.clone());
         snapshot.revision = app.save_identity_profile_name(owner, Some("Own submitted"));
         snapshot.profile = Some(("Own submitted".into(), String::new(), String::new()));
         handle_profile_updated(&app, &mut tab, &mut cache, &own, &snapshot);
@@ -1455,7 +1452,7 @@ mod tests {
         }));
         let older = crate::backend_task::BackendTaskContext::for_dispatch(&task);
         let current = crate::backend_task::BackendTaskContext::for_dispatch(&task);
-        tab.pending_save_context = Some(current.clone());
+        tab.pending_save_context.track(current.clone());
         tab.clear_pending_save(&older);
         assert!(
             tab.pending_save.is_some(),

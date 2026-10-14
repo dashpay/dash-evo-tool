@@ -213,7 +213,7 @@ pub struct WalletsBalancesScreen {
     /// when the user saves.
     rename_alias_input: AliasInput,
     /// The exact in-flight dispatch whose result may close or re-enable the dialog.
-    pending_rename_context: Option<BackendTaskContext>,
+    pending_rename_context: crate::ui::state::PendingRequest,
     wallet_selector: Option<WalletSelector>,
     wallet_unlock_popup: WalletUnlockPopup,
     show_sk_unlock_dialog: bool,
@@ -354,7 +354,7 @@ impl WalletsBalancesScreen {
                 .with_hint_text("Enter wallet name")
                 .with_helper_text("Leave the name blank to reset it to a default name.")
                 .with_desired_width(250.0),
-            pending_rename_context: None,
+            pending_rename_context: Default::default(),
             wallet_selector: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             show_sk_unlock_dialog: false,
@@ -406,7 +406,7 @@ impl WalletsBalancesScreen {
                 }
             })
         };
-        self.pending_rename_context = None;
+        self.pending_rename_context.clear();
         self.rename_dialog_opening_guard.arm();
     }
 
@@ -624,7 +624,7 @@ impl WalletsBalancesScreen {
                     // Clone wallet arcs before using to avoid borrow conflicts
                     let hd_wallet_opt = self.selected_wallet.clone();
                     let single_key_wallet_opt = self.selected_single_key_wallet.clone();
-                    let rename_enabled = self.pending_rename_context.is_none();
+                    let rename_enabled = !self.pending_rename_context.is_pending();
 
                     // Buttons for HD wallet
                     if let Some(wallet_arc) = hd_wallet_opt {
@@ -871,7 +871,7 @@ impl WalletsBalancesScreen {
                 self.set_selected_hd_wallet(next_wallet);
 
                 self.rename_task = None;
-                self.pending_rename_context = None;
+                self.pending_rename_context.clear();
                 self.wallet_unlock_popup.close();
                 self.refreshing = false;
 
@@ -2541,7 +2541,7 @@ impl ScreenLike for WalletsBalancesScreen {
         }
 
         if let Some(mut rename_task) = self.rename_task.take() {
-            let is_saving = self.pending_rename_context.is_some();
+            let is_saving = self.pending_rename_context.is_pending();
             let mut cancel = false;
             let mut save = false;
             let window_response = egui::Window::new("Rename Wallet")
@@ -2584,7 +2584,7 @@ impl ScreenLike for WalletsBalancesScreen {
                     )
                 });
             if cancel || clicked_outside {
-                self.pending_rename_context = None;
+                self.pending_rename_context.clear();
             } else if save {
                 match &mut rename_task {
                     WalletTask::RenameHdWallet { alias, .. }
@@ -2594,10 +2594,8 @@ impl ScreenLike for WalletsBalancesScreen {
                     _ => unreachable!("rename dialog stores only rename tasks"),
                 }
                 let task = BackendTask::WalletTask(rename_task.clone());
-                let context = BackendTaskContext::for_dispatch(&task);
-                self.pending_rename_context = Some(context.clone());
                 self.rename_task = Some(rename_task);
-                return AppAction::BackendTaskWithContext { task, context };
+                return self.pending_rename_context.dispatch(task);
             } else {
                 self.rename_task = Some(rename_task);
             }
@@ -2841,22 +2839,20 @@ impl ScreenLike for WalletsBalancesScreen {
         context: &BackendTaskContext,
         result: crate::ui::BackendTaskSuccessResult,
     ) {
-        let rename_succeeded = self.pending_rename_context.as_ref() == Some(context)
+        let rename_succeeded = self.pending_rename_context.owns(context)
             && context
                 .wallet_rename_task()
                 .is_some_and(|task| rename_result_matches_task(task, &result));
         self.display_task_result(result);
         if rename_succeeded {
             self.rename_task = None;
-            self.pending_rename_context = None;
+            self.pending_rename_context.clear();
         }
     }
 
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
-        if self.pending_rename_context.as_ref() == Some(context)
-            && context.wallet_rename_task().is_some()
-        {
-            self.pending_rename_context = None;
+        if context.wallet_rename_task().is_some() {
+            self.pending_rename_context.settle(context);
         }
     }
 

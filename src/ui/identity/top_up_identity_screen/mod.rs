@@ -40,7 +40,7 @@ use crate::ui::identity::funding_common::{
     receive_deposit_ceiling_duffs, required_deposit_credits, required_wallet_credits,
     show_network_fee_minimum, step_after_task_failure,
 };
-use crate::ui::state::{AssetLockBalanceCache, TrackedAssetLockCache};
+use crate::ui::state::{AssetLockBalanceCache, PendingRequest, TrackedAssetLockCache};
 use crate::ui::theme::DashColors;
 use crate::ui::{
     MessageType, ScreenLike, append_concurrent_backend_tasks, can_append_concurrent_backend_tasks,
@@ -296,7 +296,7 @@ pub struct TopUpIdentityScreen {
     asset_lock_cache: TrackedAssetLockCache,
     asset_lock_balance: AssetLockBalanceCache,
     /// The dispatch of the top-up this screen is waiting on.
-    top_up_context: Option<BackendTaskContext>,
+    top_up_context: PendingRequest,
     /// Blocks the app while the top-up runs, until it ends or the user
     /// continues in the background.
     top_up_overlay: Option<OverlayHandle>,
@@ -333,7 +333,7 @@ impl TopUpIdentityScreen {
             completed_fee_result: None,
             asset_lock_cache: TrackedAssetLockCache::default(),
             asset_lock_balance: AssetLockBalanceCache::default(),
-            top_up_context: None,
+            top_up_context: PendingRequest::default(),
             top_up_overlay: None,
             top_up_background_offered: false,
         }
@@ -359,19 +359,19 @@ impl TopUpIdentityScreen {
                 &self.identity.identity.id(),
             ),
         );
-        self.top_up_context = Some(context.clone());
+        self.top_up_context.track(context.clone());
         AppAction::BackendTaskWithContext { task, context }
     }
 
     /// Whether `dispatch` is the top-up this screen sent and still waits on.
     pub(crate) fn awaits_top_up(&self, dispatch: &BackendTaskContext) -> bool {
-        self.top_up_context.as_ref() == Some(dispatch)
+        self.top_up_context.owns(dispatch)
     }
 
     /// Stop waiting on the top-up: lower the overlay and forget its dispatch.
     fn release_top_up(&mut self) {
         self.top_up_overlay.take_and_clear();
-        self.top_up_context = None;
+        self.top_up_context.clear();
     }
 
     /// Whether a top-up of this identity is running — one this screen
@@ -415,7 +415,7 @@ impl TopUpIdentityScreen {
     /// to a progress banner that follows the user to other screens.
     fn continue_top_up_in_background(&mut self) {
         self.top_up_overlay.take_and_clear();
-        if let Some(dispatch) = &self.top_up_context {
+        if let Some(dispatch) = self.top_up_context.context() {
             send_top_up_to_background(self.app_context.egui_ctx(), dispatch);
         }
     }
@@ -424,7 +424,7 @@ impl TopUpIdentityScreen {
     /// without its result reaching the screen: only a screen in view when its
     /// top-up ends is told how it ended.
     fn resume_after_unseen_top_up_end(&mut self) {
-        let Some(dispatch) = &self.top_up_context else {
+        let Some(dispatch) = self.top_up_context.context() else {
             return;
         };
         if top_up_awaits_result(self.app_context.egui_ctx(), dispatch) {
@@ -462,7 +462,7 @@ impl TopUpIdentityScreen {
             },
             WalletFundedScreenStep::WaitingForPlatformAcceptance,
         );
-        self.top_up_context.clone()
+        self.top_up_context.context().cloned()
     }
 
     /// Test seam: age the blocking overlay of the running top-up by `by`.
@@ -1090,7 +1090,7 @@ impl ScreenLike for TopUpIdentityScreen {
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
         // Only the top-up's own failure releases the screen; an unrelated
         // error must leave a running top-up blocked.
-        if self.top_up_context.as_ref() == Some(context) {
+        if self.top_up_context.owns(context) {
             self.release_top_up();
             self.set_step(step_after_task_failure(self.current_step()));
         }
@@ -1140,7 +1140,7 @@ impl ScreenLike for TopUpIdentityScreen {
         self.identity = qualified_identity;
         // Another transfer to this identity, such as one from Wallet Send, is
         // not the top-up this screen waits on.
-        if self.top_up_context.as_ref() != Some(context) {
+        if !self.top_up_context.owns(context) {
             return;
         }
         self.release_top_up();

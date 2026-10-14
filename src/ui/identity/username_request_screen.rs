@@ -24,6 +24,7 @@ use crate::ui::identity::username_copy::{
     TALLY_ABSTAIN_LABEL, TALLY_LOCK_LABEL, Tone, format_date_time, phase_label, what_happens_next,
 };
 use crate::ui::identity::usernames_card::register_action_for;
+use crate::ui::state::PendingRequest;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{RootScreenType, ScreenLike};
 
@@ -32,7 +33,7 @@ pub struct UsernameRequestScreen {
     pub app_context: Arc<AppContext>,
     identity_id: Identifier,
     normalized_label: String,
-    refresh_context: Option<BackendTaskContext>,
+    refresh_context: PendingRequest,
     /// Whether a loaded node can vote; computed on arrival, not per frame.
     can_vote: bool,
     /// The identity's display name; computed on arrival, not per frame.
@@ -49,7 +50,7 @@ impl UsernameRequestScreen {
             app_context: app_context.clone(),
             identity_id,
             normalized_label,
-            refresh_context: None,
+            refresh_context: PendingRequest::default(),
             can_vote: false,
             identity_label: String::new(),
         };
@@ -68,13 +69,12 @@ impl UsernameRequestScreen {
     }
 
     pub(crate) fn begin_refresh(&mut self) -> AppAction {
-        if self.refresh_context.is_some() {
+        if self.refresh_context.is_pending() {
             return AppAction::None;
         }
         let task = BackendTask::IdentityTask(IdentityTask::RefreshMyUsernameRequests);
-        let context = BackendTaskContext::for_dispatch_on(&task, self.app_context.network());
-        self.refresh_context = Some(context.clone());
-        AppAction::BackendTaskWithContext { task, context }
+        self.refresh_context
+            .dispatch_on(task, self.app_context.network())
     }
 
     fn request(&self) -> Option<UsernameRequest> {
@@ -213,13 +213,13 @@ impl UsernameRequestScreen {
         ui.add_space(12.0);
         ui.horizontal(|ui| {
             ui.label(RichText::new("How the vote is going").strong());
-            let label = if self.refresh_context.is_some() {
+            let label = if self.refresh_context.is_pending() {
                 "Refreshing…"
             } else {
                 "Refresh status"
             };
             if ui
-                .add_enabled(self.refresh_context.is_none(), egui::Button::new(label))
+                .add_enabled(!self.refresh_context.is_pending(), egui::Button::new(label))
                 .clicked()
             {
                 action = self.begin_refresh();
@@ -277,9 +277,7 @@ impl ScreenLike for UsernameRequestScreen {
     }
 
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
-        if self.refresh_context.as_ref() == Some(context) {
-            self.refresh_context = None;
-        }
+        self.refresh_context.settle(context);
     }
 
     fn display_backend_task_result(
@@ -287,13 +285,11 @@ impl ScreenLike for UsernameRequestScreen {
         context: &BackendTaskContext,
         result: BackendTaskSuccessResult,
     ) {
-        if self.refresh_context.as_ref() == Some(context)
-            && matches!(
-                result,
-                BackendTaskSuccessResult::MyUsernameRequestsRefreshed
-            )
-        {
-            self.refresh_context = None;
+        if matches!(
+            result,
+            BackendTaskSuccessResult::MyUsernameRequestsRefreshed
+        ) {
+            self.refresh_context.settle(context);
         }
     }
 

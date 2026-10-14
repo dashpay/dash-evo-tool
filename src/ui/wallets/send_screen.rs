@@ -39,7 +39,7 @@ use crate::ui::identity::top_up_identity_screen::{
     send_top_up_to_background, top_up_awaits_result, top_up_in_flight_for,
     track_top_up_sent_elsewhere,
 };
-use crate::ui::state::AssetLockBalanceCache;
+use crate::ui::state::{AssetLockBalanceCache, PendingRequest};
 use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::wallets::shielded_tab::SHIELDED_FROM_CORE_WITHOUT_AMOUNT;
 use crate::ui::{
@@ -346,7 +346,7 @@ pub struct WalletSendScreen {
     /// The send this screen dispatched and waits on. While it waits, only the
     /// outcome of that send ends the wait: failures of other tasks reach the
     /// visible screen too, and are not about this payment.
-    pending_send: Option<BackendTaskContext>,
+    pending_send: PendingRequest,
     send_banner: Option<BannerHandle>,
     send_confirmation: Option<PendingSendConfirmation>,
     asset_lock_balance: AssetLockBalanceCache,
@@ -408,7 +408,7 @@ impl WalletSendScreen {
             fee_strategy: PlatformFeeStrategy::default(),
             selected_identity: None,
             send_status: SendStatus::NotStarted,
-            pending_send: None,
+            pending_send: PendingRequest::default(),
             send_banner: None,
             send_confirmation: None,
             asset_lock_balance: AssetLockBalanceCache::default(),
@@ -620,7 +620,7 @@ impl WalletSendScreen {
         }];
         self.fee_strategy = PlatformFeeStrategy::default();
         self.send_status = SendStatus::NotStarted;
-        self.pending_send = None;
+        self.pending_send.clear();
         self.send_confirmation = None;
         self.asset_lock_balance.invalidate();
         self.refresh_bound_identity();
@@ -629,23 +629,23 @@ impl WalletSendScreen {
     /// Enters the waiting state for the send dispatched as `request`.
     fn mark_sending(&mut self, request: BackendTaskContext) {
         self.send_status = SendStatus::WaitingForResult;
-        self.pending_send = Some(request);
+        self.pending_send.track(request);
     }
 
     /// Whether this screen waits on the outcome of a send it dispatched.
     fn awaits_own_send(&self) -> bool {
-        self.pending_send.is_some() && matches!(self.send_status, SendStatus::WaitingForResult)
+        self.pending_send.is_pending() && matches!(self.send_status, SendStatus::WaitingForResult)
     }
 
     /// Whether `context` is the send this screen dispatched and still waits on.
     pub(crate) fn awaits_send(&self, context: &BackendTaskContext) -> bool {
-        self.awaits_own_send() && self.pending_send.as_ref() == Some(context)
+        self.awaits_own_send() && self.pending_send.owns(context)
     }
 
     /// Hand the form back once the top-up it sent has ended without the result
     /// reaching it: only a screen in view when its top-up ends is told how.
     fn resume_after_unseen_top_up_end(&mut self) {
-        let Some(dispatch) = &self.pending_send else {
+        let Some(dispatch) = self.pending_send.context() else {
             return;
         };
         if !self.awaits_own_send()
@@ -671,7 +671,7 @@ impl WalletSendScreen {
         let AppAction::BackendTask(task) = action else {
             // Every send is prepared as one task; anything else has no context to wait on.
             self.send_status = SendStatus::WaitingForResult;
-            self.pending_send = None;
+            self.pending_send.clear();
             return action;
         };
         let context = BackendTaskContext::for_dispatch_on(&task, self.app_context.network());
@@ -3847,7 +3847,7 @@ impl WalletSendScreen {
         let ctx = self.app_context.egui_ctx().clone();
         // The task is dropped on purpose: no funds may move in a test.
         let _action = self.confirm_send(&ctx, AppAction::BackendTask(task));
-        self.pending_send.clone()
+        self.pending_send.context().cloned()
     }
 
     #[cfg(feature = "testing")]
@@ -4762,7 +4762,7 @@ impl WalletSendScreen {
 impl Drop for WalletSendScreen {
     fn drop(&mut self) {
         self.send_banner.take_and_clear();
-        if let Some(dispatch) = &self.pending_send {
+        if let Some(dispatch) = self.pending_send.context() {
             send_top_up_to_background(self.app_context.egui_ctx(), dispatch);
         }
     }
@@ -5095,7 +5095,7 @@ impl ScreenLike for WalletSendScreen {
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
         if self.awaits_send(context) {
             // The global banner says why; the form is handed back.
-            self.pending_send = None;
+            self.pending_send.clear();
             self.send_banner.take_and_clear();
             self.send_status = SendStatus::Error;
         }
@@ -6044,7 +6044,11 @@ mod tests {
             seed_hash: [0x48; 32],
         });
         let _action = screen.dispatch_send(AppAction::BackendTask(send.clone()));
-        let own = screen.pending_send.clone().expect("the dispatched send");
+        let own = screen
+            .pending_send
+            .context()
+            .cloned()
+            .expect("the dispatched send");
         let same_task_sent_again = BackendTaskContext::for_dispatch_on(&send, Network::Testnet);
         let credits_moved = || BackendTaskSuccessResult::TransferredCredits(FeeResult::new(1, 1));
 
@@ -6548,7 +6552,7 @@ mod tests {
             );
         };
         assert_eq!(
-            harness.state().pending_send.as_ref(),
+            harness.state().pending_send.context(),
             Some(context),
             "the screen waits on the send it dispatched, and on no other task"
         );

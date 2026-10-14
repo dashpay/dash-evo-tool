@@ -860,6 +860,7 @@ As a power user, I want to review past contests so that I can see outcomes and h
 As a masternode operator, I want to make one decision per contest and have all my chosen nodes cast it so that voting with many nodes takes seconds.
 
 - One choice per card (Vote for a requester, Lock name, Abstain) applies to every node in the remembered node set. The choices are listed one per row as a pick-one list. Cast opens one confirm step for all decisions.
+- Cast and Clear stay under the list of contests at all times. While they cannot be used they are greyed out, and hovering one says why: no decision is picked yet, no loaded node can vote, the nodes I vote with include none that can vote, votes are still being submitted, or the nodes already hold the picked choices.
 - Each node votes in its own transaction (Platform has no batching). The confirm shows decisions × nodes = transactions, warns once when votes change earlier choices, and lists skipped nodes with reasons (already voted this way, no changes left, vote state unavailable, not in the masternode list).
 - A node may vote five times per contest: the initial vote plus four changes. Changes left are shown per node, counted on this device, or marked unknown when the node voted outside Dash Evo Tool. Nodes with none left are skipped.
 - Choosing the current choice submits nothing. The node's proved current choice is shown before casting.
@@ -884,7 +885,8 @@ As a masternode operator, I want to schedule votes so that they are cast before 
 As a masternode operator, I want to choose which nodes vote and decide many contests quickly so that I do not repeat work per node or per contest.
 
 - A node-set selector (All my nodes, Evonodes only, Masternodes only, Custom) shows node count and total weight, is saved per network, and lists nodes that can't vote with the reason.
-- Keyboard: J/K move between cards, 1–9 vote for a requester, L lock, A abstain, Space select, Enter cast. Shortcuts act only in the contest list. Selecting several cards shows a bulk bar (Lock name, Abstain, Clear).
+- Keyboard: J/K move between cards, 1–9 vote for a requester, L lock, A abstain, 0 clear, Enter opens the cast confirmation. Shortcuts act only in the contest list.
+- A name is picked by giving it a decision; there is no separate selection. The decided names are what Cast submits and what Clear clears.
 - Adjust nodes in the confirm step shows every node × contest target (current → new choice, timing, changes left) and allows per-node timing or Don't use this node.
 - A vote for a requester shows their name and a shortened identity ID, or the ID alone when the name is unavailable, so similar names remain distinguishable.
 - Switching networks clears drafts and open dialogs.

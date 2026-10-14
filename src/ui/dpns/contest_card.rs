@@ -26,7 +26,6 @@ const TWO_COLUMN_MIN_WIDTH: f32 = 960.0;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CardEvent {
     Choose(ResourceVoteChoice),
-    ToggleSelected,
     RefreshVoting,
 }
 
@@ -157,7 +156,6 @@ pub fn schedule_caption(
 pub struct CardView<'a> {
     pub card: &'a VoteCard,
     pub staged: Option<ResourceVoteChoice>,
-    pub selected: bool,
     pub focused: bool,
     /// Scroll the card into view this frame (keyboard focus moved to it).
     pub scroll_into_view: bool,
@@ -167,6 +165,8 @@ pub struct CardView<'a> {
     pub urgency: Duration,
     pub durations: ContestDurations,
     pub has_voting_nodes: bool,
+    /// What the choices say on hover while `has_voting_nodes` is false.
+    pub no_voting_node_hint: &'static str,
 }
 
 impl CardView<'_> {
@@ -184,12 +184,12 @@ impl CardView<'_> {
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
                 if ui.available_width() < TWO_COLUMN_MIN_WIDTH {
-                    self.show_tally(ui, &mut events);
+                    self.show_tally(ui);
                     ui.add_space(8.0);
                     self.show_decision(ui, &mut events);
                 } else {
                     ui.columns(2, |columns| {
-                        self.show_tally(&mut columns[0], &mut events);
+                        self.show_tally(&mut columns[0]);
                         self.show_decision(&mut columns[1], &mut events);
                     });
                 }
@@ -200,25 +200,15 @@ impl CardView<'_> {
         events
     }
 
-    fn show_tally(&self, ui: &mut Ui, events: &mut Vec<CardEvent>) {
+    fn show_tally(&self, ui: &mut Ui) {
         let dark_mode = ui.visuals().dark_mode;
         let card = self.card;
-        ui.horizontal(|ui| {
-            let mut selected = self.selected;
-            if ui
-                .checkbox(&mut selected, "")
-                .on_hover_text("Select this name for a bulk decision.")
-                .changed()
-            {
-                events.push(CardEvent::ToggleSelected);
-            }
-            ui.label(
-                RichText::new(format!("{name}.dash", name = card.name()))
-                    .heading()
-                    .strong()
-                    .color(DashColors::text_primary(dark_mode)),
-            );
-        });
+        ui.label(
+            RichText::new(format!("{name}.dash", name = card.name()))
+                .heading()
+                .strong()
+                .color(DashColors::text_primary(dark_mode)),
+        );
         let remaining = card
             .contest
             .end_time
@@ -332,7 +322,7 @@ impl CardView<'_> {
         ui.label(RichText::new("Your decision").strong());
         let enabled = card.accepts_decision();
         let disabled_reason = if !self.has_voting_nodes {
-            "Load a masternode with a voting key to vote."
+            self.no_voting_node_hint
         } else if card.in_flight_count() > 0 {
             "These nodes are still sending a vote on this name. Wait for the result."
         } else if card.scheduled_count() > 0 {
@@ -554,7 +544,6 @@ mod tests {
         CardView {
             card,
             staged: Some(ResourceVoteChoice::Lock),
-            selected: false,
             focused: false,
             scroll_into_view: false,
             node_labels,
@@ -566,6 +555,7 @@ mod tests {
                 join: Duration::from_millis(4_000_000),
             },
             has_voting_nodes: true,
+            no_voting_node_hint: copy::NO_VOTING_NODE_HINT,
         }
     }
 

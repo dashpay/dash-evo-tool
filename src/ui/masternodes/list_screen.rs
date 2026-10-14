@@ -406,32 +406,37 @@ impl MasternodesScreen {
         // `self.nodes` immutably; `selected_node` is written after the loop.
         let mut clicked: Option<Identifier> = None;
 
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            for row_start in (0..count).step_by(columns) {
-                ui.horizontal(|ui| {
-                    for idx in row_start..(row_start + columns).min(count) {
-                        if idx > row_start {
-                            ui.add_space(GRID_GAP);
+        // The list takes the whole panel, not just the width of its cards: it
+        // scrolls, and shows its scroll bar at the panel's edge, wherever in
+        // the panel the pointer is.
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                for row_start in (0..count).step_by(columns) {
+                    ui.horizontal(|ui| {
+                        for idx in row_start..(row_start + columns).min(count) {
+                            if idx > row_start {
+                                ui.add_space(GRID_GAP);
+                            }
+                            let node = &self.nodes[idx];
+                            let card = MasternodeCard::new(
+                                node.node_id.to_string(Encoding::Hex),
+                                node.node_id_short.clone(),
+                                node.node_type,
+                                node.key_presence,
+                                node.contest_summary,
+                                node.status,
+                            )
+                            .with_alias(node.alias.clone())
+                            .with_balance_credits(node.balance_credits);
+                            if card.show(ui).clicked {
+                                clicked = Some(node.node_id);
+                            }
                         }
-                        let node = &self.nodes[idx];
-                        let card = MasternodeCard::new(
-                            node.node_id.to_string(Encoding::Hex),
-                            node.node_id_short.clone(),
-                            node.node_type,
-                            node.key_presence,
-                            node.contest_summary,
-                            node.status,
-                        )
-                        .with_alias(node.alias.clone())
-                        .with_balance_credits(node.balance_credits);
-                        if card.show(ui).clicked {
-                            clicked = Some(node.node_id);
-                        }
-                    }
-                });
-                ui.add_space(GRID_GAP);
-            }
-        });
+                    });
+                    ui.add_space(GRID_GAP);
+                }
+            });
 
         if let Some(node_id) = clicked {
             self.open_detail(node_id);

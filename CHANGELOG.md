@@ -212,6 +212,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Long lists of masternodes can be scrolled everywhere. In Masternodes →
+  Votes, the "Vote with" list named every loaded node but did not scroll: with
+  more nodes than fit in the window, the rest of the list and the "Save as my
+  default" button could not be reached. It now scrolls and keeps the button
+  in view. In Masternodes → Nodes, the list scrolled only while the pointer
+  was over a card, and its scroll bar sat at the edge of the last card; it
+  now scrolls from anywhere in the panel, with the scroll bar at the panel's
+  edge.
+
 - Sending credits out of an identity now keeps back what the network needs.
   Max, and the check made before sending, used to keep back about 0.000001
   DASH for a transfer to another identity and 0.000065 DASH for a transfer to

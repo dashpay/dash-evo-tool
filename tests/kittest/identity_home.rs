@@ -880,7 +880,7 @@ fn home_receive_code_follows_a_username_gained_while_it_is_open() {
                 .0
                 .receive_qr
                 .as_ref()
-                .map(|qr| qr.value.clone())
+                .and_then(|qr| qr.value().map(str::to_owned))
         };
         assert_eq!(encoded(&harness), Some(id.to_string(Encoding::Base58)));
 

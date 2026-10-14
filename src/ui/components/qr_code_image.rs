@@ -69,6 +69,12 @@ impl QrCodeImage {
         self
     }
 
+    /// The value last handed to [`show`](Self::show), whether or not it could
+    /// be encoded.
+    pub fn value(&self) -> Option<&str> {
+        self.cached.as_ref().map(|c| c.value.as_str())
+    }
+
     /// Draw the QR code for `value`, or the fallback sentence if it cannot be
     /// encoded.
     pub fn show(&mut self, ui: &mut Ui, value: &str) -> Response {
@@ -136,6 +142,7 @@ mod tests {
         let second = qr.texture_for(&ctx, "dash:Xabc").map(|t| t.id());
         assert!(first.is_some());
         assert_eq!(first, second);
+        assert_eq!(qr.value(), Some("dash:Xabc"));
     }
 
     #[test]

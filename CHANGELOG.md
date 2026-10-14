@@ -853,6 +853,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Masternodes → Votes → History now opens with the contest that ended most
+  recently at the top, instead of in name order. Contests that ended at the
+  same time follow their names. The column headings show which column orders
+  the list and in which direction; choosing a heading reorders the list as
+  before.
+
 - Every weekly release carries its own migration fixture. The weekly workflow
   captures it with the binary it just built and attaches it to the release
   before publishing, instead of someone recording it in the fixture manifest

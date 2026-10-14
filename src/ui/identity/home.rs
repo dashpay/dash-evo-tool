@@ -35,26 +35,24 @@ pub enum HomeOutcome {
 pub fn render_header(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
+    identity: &QualifiedIdentity,
     profiles: &mut ProfileCache,
     avatars: &mut AvatarCache,
     pending_avatars: &mut Vec<BackendTask>,
 ) -> (AppAction, HomeOutcome) {
-    let Some(identity) = app_context.resolve_selected_identity() else {
-        return (AppAction::None, HomeOutcome::None);
-    };
-    profiles.seed_cached(app_context, &identity);
-    let profile = profiles.get_or_request(&identity).and_then(Option::as_ref);
+    profiles.seed_cached(app_context, identity);
+    let profile = profiles.get_or_request(identity).and_then(Option::as_ref);
     let name = app_context.identity_display_name_or(
         identity.identity.id(),
         profile.and_then(|p| p.display_name_opt()),
     );
-    let heading = name.unwrap_or_else(|| app_context.identity_display_label(&identity));
+    let heading = name.unwrap_or_else(|| app_context.identity_display_label(identity));
     let avatar_url = profile
         .map(|p| p.avatar_url.as_str())
         .filter(|url| !url.is_empty());
-    let main = app_context.main_username(&identity);
+    let main = app_context.main_username(identity);
     let requests = app_context.username_requests_for(&identity.identity.id());
-    let names: Vec<_> = username_rows(&identity, main.as_deref(), &requests)
+    let names: Vec<_> = username_rows(identity, main.as_deref(), &requests)
         .into_iter()
         .filter_map(|row| match row {
             UsernameRow::Active { name, .. } => {
@@ -136,12 +134,12 @@ pub fn render_header(
                 },
             );
             if wide {
-                summary_balance(ui, app_context, &identity, &mut action, &mut outcome);
+                summary_balance(ui, app_context, identity, &mut action, &mut outcome);
             }
         });
         if !wide {
             ui.add_space(Spacing::SM);
-            summary_balance(ui, app_context, &identity, &mut action, &mut outcome);
+            summary_balance(ui, app_context, identity, &mut action, &mut outcome);
         }
     });
     (action, outcome)
@@ -197,19 +195,17 @@ fn summary_balance(
 pub fn render(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
+    identity: &QualifiedIdentity,
     state: &mut HomeState,
     profiles: &mut ProfileCache,
     contacts: &mut ContactsState,
 ) -> (AppAction, HomeOutcome) {
-    let Some(identity) = app_context.resolve_selected_identity() else {
-        return (AppAction::None, HomeOutcome::None);
-    };
-    state.reconcile_owner(&identity);
-    contacts.reconcile_owner(&identity);
+    state.reconcile_owner(identity);
+    contacts.reconcile_owner(identity);
     let mut action = AppAction::None;
     let mut outcome = HomeOutcome::None;
     // `None` until the profile is read.
-    let has_profile = profiles.get_or_request(&identity).map(|profile| {
+    let has_profile = profiles.get_or_request(identity).map(|profile| {
         profile
             .as_ref()
             .and_then(|p| p.display_name_opt())
@@ -233,7 +229,7 @@ pub fn render(
                             (action, outcome) = render_main_column(
                                 ui,
                                 app_context,
-                                &identity,
+                                identity,
                                 state,
                                 has_profile,
                                 contacts,
@@ -248,7 +244,7 @@ pub fn render(
                             action |= super::contacts::render_preview(
                                 ui,
                                 app_context,
-                                &identity,
+                                identity,
                                 contacts,
                                 &mut outcome,
                             );
@@ -257,18 +253,12 @@ pub fn render(
                 });
             } else {
                 ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                    (action, outcome) = render_main_column(
-                        ui,
-                        app_context,
-                        &identity,
-                        state,
-                        has_profile,
-                        contacts,
-                    );
+                    (action, outcome) =
+                        render_main_column(ui, app_context, identity, state, has_profile, contacts);
                     action |= super::contacts::render_preview(
                         ui,
                         app_context,
-                        &identity,
+                        identity,
                         contacts,
                         &mut outcome,
                     );
@@ -276,7 +266,7 @@ pub fn render(
             }
         });
     if state.receive_open {
-        action |= render_receive(ui, app_context, &identity, state);
+        action |= render_receive(ui, app_context, identity, state);
     }
     (action, outcome)
 }

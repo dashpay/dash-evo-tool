@@ -29,11 +29,11 @@ use crate::model::dpns_voting::composer::{
     AggregatePlan, BatchTiming, ComposeError, ComposerNode, Decision, NodeStanding, NodeTiming,
     SkipReason, compose,
 };
-use crate::model::dpns_voting::operator::NodeExclusion;
 use crate::model::dpns_voting::operator::{
     ChangesLeft, NodeSet, ResolvedNodeSet, VotingNode, relative_schedule_preset, time_left,
     vote_proof_can_decide,
 };
+use crate::model::dpns_voting::operator::{ListMembership, NodeExclusion, node_exclusion};
 use crate::model::dpns_voting::progress::needs_attention;
 use crate::model::dpns_voting::{
     DpnsCurrentVoteState, DpnsScheduledVoteKey, DpnsVoteFailure, DpnsVoteOperation,
@@ -48,6 +48,10 @@ use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::dpns::contest_card::node_label;
 use crate::ui::dpns::contest_card::{CardEvent, CardView};
 use crate::ui::dpns::copy::needs_attention_line;
+use crate::ui::dpns::copy::{
+    CAST_NEEDS_A_DECISION, CHANGE_VOTING_NODES_HINT, CLEAR_NEEDS_A_DECISION, NO_LISTED_NODE_HINT,
+    NO_VOTING_NODE_HINT, TRAY_NOTHING_PICKED,
+};
 use crate::ui::dpns::copy::{
     JOURNAL_UNAVAILABLE_MESSAGE, LOCKED_FOR_GOOD, NAME_FILTER_LOOKALIKES_HINT, NOT_VOTED_YET,
     before_end_phrase, changes_left_label, confirm_button_label, confirm_change_warning,
@@ -499,7 +503,6 @@ pub struct DPNSScreen {
     vote_state: DpnsVoteStateSnapshot,
     pending_vote_operation: Option<DpnsVoteOperationId>,
     submitted_votes: BTreeMap<String, SelectedVote>,
-    submitted_cards: BTreeSet<String>,
     pending_scheduled_actions: BTreeMap<DpnsScheduledVoteKey, BackendTaskContext>,
     /// Set by `display_backend_task_error` when the failed task is this
     /// panel's pending submission; `display_task_error` then releases it.
@@ -507,7 +510,7 @@ pub struct DPNSScreen {
     scheduled_clear_dialog: Option<(bool, ConfirmationDialog)>,
     scheduled_vote_editor: Option<ScheduledVoteEditor>,
 
-    /// Sorting
+    /// Order of the History list, the only list that reads it.
     sort_column: SortColumn,
     sort_order: SortOrder,
     active_filter_term: String,
@@ -559,8 +562,6 @@ pub struct DPNSScreen {
     relative_schedule_labels: BTreeMap<(DpnsVoteTargetKey, u64), std::time::Duration>,
     /// Settled failures older than this are not raised in `Needs attention`.
     session_started_ms: u64,
-    /// Cards ticked for a bulk decision, by contest name.
-    selected_cards: BTreeSet<String>,
     focused_card: Option<String>,
     /// Whether the contest list has keyboard focus for shortcuts.
     list_focused: bool,
@@ -621,8 +622,9 @@ impl DPNSScreen {
             scheduled_groups: Arc::from([]),
             selected_votes: Vec::new(),
             app_context: app_context.clone(),
-            sort_column: SortColumn::ContestedName,
-            sort_order: SortOrder::Ascending,
+            // History opens with the contest that ended last on top.
+            sort_column: SortColumn::EndingTime,
+            sort_order: SortOrder::Descending,
             active_filter_term: String::new(),
             past_filter_term: String::new(),
             pending_backend_task: None,
@@ -631,7 +633,6 @@ impl DPNSScreen {
             vote_state,
             pending_vote_operation: None,
             submitted_votes: BTreeMap::new(),
-            submitted_cards: BTreeSet::new(),
             pending_scheduled_actions: BTreeMap::new(),
             release_pending_on_error: false,
             session_started_ms: now_ms(),
@@ -661,7 +662,6 @@ impl DPNSScreen {
             node_labels: BTreeMap::new(),
             cards: Vec::new(),
             relative_schedule_labels: BTreeMap::new(),
-            selected_cards: BTreeSet::new(),
             focused_card: None,
             list_focused: false,
             tray_height: 0.0,
@@ -704,7 +704,6 @@ impl DPNSScreen {
         self.pending_preference = None;
         self.pending_vote_operation = None;
         self.submitted_votes.clear();
-        self.submitted_cards.clear();
         self.pending_scheduled_actions.clear();
         self.release_pending_on_error = false;
         self.scheduled_clear_dialog = None;
@@ -726,7 +725,6 @@ impl DPNSScreen {
         self.voting_nodes.clear();
         self.resolved_nodes = ResolvedNodeSet::default();
         self.cards.clear();
-        self.selected_cards.clear();
         self.focused_card = None;
         self.list_focused = false;
     }
@@ -756,12 +754,41 @@ impl DPNSScreen {
                 SortColumn::LastUpdated => a.last_updated.cmp(&b.last_updated),
                 SortColumn::AwardedTo => a.awarded_to.cmp(&b.awarded_to),
             };
-            if self.sort_order == SortOrder::Descending {
+            let order = if self.sort_order == SortOrder::Descending {
                 order.reverse()
             } else {
                 order
-            }
+            };
+            // Rows the column cannot tell apart follow their names, so they
+            // keep their places from frame to frame.
+            order.then_with(|| {
+                a.normalized_contested_name
+                    .cmp(&b.normalized_contested_name)
+            })
         });
+    }
+
+    /// The finished contests History lists, filtered and in the order in use.
+    fn past_contests(&self) -> Vec<ContestedName> {
+        let mut contests = self.contested_names.lock_recover().clone();
+        contests.retain(|c| c.awarded_to.is_some() || c.state == ContestState::Locked);
+        if !self.past_filter_term.is_empty() {
+            let filter = normalize_dpns_label(&self.past_filter_term);
+            contests.retain(|c| c.normalized_contested_name.to_lowercase().contains(&filter));
+        }
+        self.sort_contested_names(&mut contests);
+        contests
+    }
+
+    /// A History column heading, marked when the list is ordered by it.
+    fn sort_header_label(&self, column: SortColumn, title: &str) -> String {
+        if self.sort_column != column {
+            return title.to_owned();
+        }
+        match self.sort_order {
+            SortOrder::Ascending => format!("{title} ^"),
+            SortOrder::Descending => format!("{title} v"),
+        }
     }
 
     // ---------------------------
@@ -943,9 +970,6 @@ impl DPNSScreen {
             .collect();
         sort_by_time_left(&mut cards);
         self.cards = cards;
-        let names: BTreeSet<&str> = self.cards.iter().map(VoteCard::name).collect();
-        self.selected_cards
-            .retain(|name| names.contains(name.as_str()));
     }
 
     /// What the staged decisions would submit across their submittable
@@ -1003,7 +1027,6 @@ impl DPNSScreen {
     /// that node as the node set and no staged decisions carried over.
     pub fn vote_with_node(&mut self, node: Identifier) {
         self.selected_votes.clear();
-        self.selected_cards.clear();
         self.view = VotesView::ToDecide;
         // The node may have been loaded after this panel last read its nodes.
         self.refresh_on_arrival();
@@ -1073,6 +1096,7 @@ impl DPNSScreen {
         let durations = contest_durations(network, self.app_context.platform_version());
         let urgency = urgency_window(network);
         let has_voting_nodes = !self.resolved_nodes.included.is_empty();
+        let no_voting_node_hint = self.no_voting_node_hint();
         let matches_filter =
             |card: &VoteCard| filter.is_empty() || card.name().to_lowercase().contains(&filter);
         let listed: Vec<usize> = self
@@ -1107,7 +1131,6 @@ impl DPNSScreen {
         };
 
         let scroll_to = self.handle_shortcuts(ui, &listed);
-        self.render_bulk_bar(ui);
 
         let mut events: Vec<(usize, CardEvent)> = Vec::new();
         let list = egui::ScrollArea::vertical()
@@ -1131,7 +1154,6 @@ impl DPNSScreen {
                     let card_events = CardView {
                         card,
                         staged,
-                        selected: self.selected_cards.contains(card.name()),
                         focused: self.focused_card.as_deref() == Some(card.name()),
                         scroll_into_view: scroll_to.as_deref() == Some(card.name()),
                         node_labels: &self.node_labels,
@@ -1140,6 +1162,7 @@ impl DPNSScreen {
                         urgency,
                         durations,
                         has_voting_nodes,
+                        no_voting_node_hint,
                     }
                     .show(ui);
                     events.extend(card_events.into_iter().map(|event| (index, event)));
@@ -1185,11 +1208,6 @@ impl DPNSScreen {
                 CardEvent::Choose(choice) => {
                     let contest = Arc::clone(&self.cards[index].contest);
                     self.set_selected_vote(&contest, choice);
-                }
-                CardEvent::ToggleSelected => {
-                    if !self.selected_cards.remove(&name) {
-                        self.selected_cards.insert(name.clone());
-                    }
                 }
                 CardEvent::RefreshVoting
                     if self.refreshing_status != RefreshingStatus::Refreshing =>
@@ -1299,14 +1317,6 @@ impl DPNSScreen {
                         self.clear_choice(&name);
                     }
                 }
-                Shortcut::ToggleSelected => {
-                    if let Some(index) = focused {
-                        let name = self.cards[index].name().to_owned();
-                        if !self.selected_cards.remove(&name) {
-                            self.selected_cards.insert(name);
-                        }
-                    }
-                }
                 Shortcut::Confirm => {
                     if !self.selected_votes.is_empty() {
                         self.open_review_for_node_set();
@@ -1317,80 +1327,79 @@ impl DPNSScreen {
         scroll_to
     }
 
-    /// Bulk bar for two or more selected names (VOTE-FR-082).
-    fn render_bulk_bar(&mut self, ui: &mut Ui) {
-        let selected = self.selected_cards.len();
-        if selected < 2 {
-            return;
-        }
-        let mut apply: Option<Option<ResourceVoteChoice>> = None;
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(format!("{selected} names selected")).strong());
-            if ui.button("Lock name").clicked() {
-                apply = Some(Some(ResourceVoteChoice::Lock));
-            }
-            if ui.button("Abstain").clicked() {
-                apply = Some(Some(ResourceVoteChoice::Abstain));
-            }
-            if ui.button("Clear").clicked() {
-                apply = Some(None);
-            }
-        });
-        let Some(apply) = apply else {
-            return;
-        };
-        let targets: Vec<Arc<ContestedName>> = self
-            .cards
-            .iter()
-            .filter(|card| self.selected_cards.contains(card.name()))
-            .filter(|card| apply.is_none() || card.accepts_decision())
-            .map(|card| Arc::clone(&card.contest))
-            .collect();
-        for contest in targets {
-            match apply {
-                Some(choice) => self.stage_choice(&contest, choice),
-                None => self.clear_choice(&contest.normalized_contested_name),
-            }
+    /// What to do when none of the nodes voted with can vote: pick other
+    /// nodes if a loaded one can, load a listed one if every loaded node is
+    /// outside the masternode list, load a voting key otherwise. A node the
+    /// list holds, or may hold, votes once its key is loaded, so the key
+    /// comes before the list.
+    fn no_voting_node_hint(&self) -> &'static str {
+        let nodes = &self.voting_nodes;
+        let unlisted = |node: &VotingNode| node.membership == ListMembership::NotListed;
+        if nodes.iter().any(|node| node_exclusion(node).is_none()) {
+            CHANGE_VOTING_NODES_HINT
+        } else if !nodes.is_empty() && nodes.iter().all(unlisted) {
+            NO_LISTED_NODE_HINT
+        } else {
+            NO_VOTING_NODE_HINT
         }
     }
 
-    /// The tray under the list: what is staged and the Cast action (VOTE-FR-086).
+    /// Why the tray's Cast cannot be pressed right now, as its hover hint
+    /// says it; `None` when it can.
+    fn cast_blocked_reason(&self, counts: TrayCounts) -> Option<&'static str> {
+        if self.resolved_nodes.included.is_empty() {
+            Some(self.no_voting_node_hint())
+        } else if self.selected_votes.is_empty() {
+            Some(CAST_NEEDS_A_DECISION)
+        } else if self.pending_vote_operation.is_some() {
+            Some("Votes are being submitted. Wait for the result before sending another batch.")
+        } else if counts.transactions + counts.rechecks == 0 {
+            Some("Your nodes already hold these choices. Pick a different decision.")
+        } else {
+            None
+        }
+    }
+
+    /// The tray under the list: what is staged and the Cast action
+    /// (VOTE-FR-086). It is always there, so Cast and Clear keep their place;
+    /// while one cannot be used it is greyed out and says why on hover.
     fn render_tray(&mut self, ui: &mut Ui) {
         let decisions = self.selected_votes.len();
-        if decisions == 0 {
-            return;
-        }
-        let TrayCounts {
-            transactions,
-            rechecks,
-        } = self.tray_counts();
+        let counts = self.tray_counts();
+        let blocked = self.cast_blocked_reason(counts);
+        let dark_mode = ui.style().visuals.dark_mode;
         ui.separator();
         ui.horizontal(|ui| {
             // The buttons take their room first; the sentences wrap in what is left.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ComponentStyles::add_primary_button_enabled(
-                    ui,
-                    transactions + rechecks > 0 && self.pending_vote_operation.is_none(),
-                    "Cast",
-                )
-                .disabled_tooltip(if self.pending_vote_operation.is_some() {
-                    "Votes are being submitted. Wait for the result before sending another batch."
-                } else {
-                    "Your nodes already hold these choices. Pick a different decision."
-                })
-                .clicked()
+                if ComponentStyles::add_primary_button_enabled(ui, blocked.is_none(), "Cast")
+                    .disabled_tooltip(blocked.unwrap_or_default())
+                    .clicked()
                 {
                     self.open_review_for_node_set();
                 }
-                if ui.button("Clear").clicked() {
+                if ui
+                    .add_enabled(decisions > 0, Button::new("Clear"))
+                    .disabled_tooltip(CLEAR_NEEDS_A_DECISION)
+                    .clicked()
+                {
                     self.selected_votes.clear();
                 }
                 ui.with_layout(
                     egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
                     |ui| {
-                        ui.label(RichText::new(tray_label(decisions, transactions)).strong());
-                        if rechecks > 0 {
-                            ui.label(tray_recheck_label(rechecks));
+                        if decisions == 0 {
+                            ui.label(
+                                RichText::new(TRAY_NOTHING_PICKED)
+                                    .color(DashColors::text_secondary(dark_mode)),
+                            );
+                            return;
+                        }
+                        ui.label(
+                            RichText::new(tray_label(decisions, counts.transactions)).strong(),
+                        );
+                        if counts.rechecks > 0 {
+                            ui.label(tray_recheck_label(counts.rechecks));
                         }
                     },
                 );
@@ -1559,18 +1568,7 @@ impl DPNSScreen {
                 .on_hover_text(NAME_FILTER_LOOKALIKES_HINT);
         });
 
-        let contested_names = {
-            let guard = self.contested_names.lock_recover();
-            let mut cn = guard.clone();
-            cn.retain(|c| c.awarded_to.is_some() || c.state == ContestState::Locked);
-            if !self.past_filter_term.is_empty() {
-                let filter = normalize_dpns_label(&self.past_filter_term);
-
-                cn.retain(|c| c.normalized_contested_name.to_lowercase().contains(&filter));
-            }
-            self.sort_contested_names(&mut cn);
-            cn
-        };
+        let contested_names = self.past_contests();
 
         // Allocate space for refreshing indicator
         // Space allocation for UI elements is handled by the layout system
@@ -1587,22 +1585,26 @@ impl DPNSScreen {
                 .column(Column::remainder()) // details
                 .header(30.0, |mut header| {
                     header.col(|ui| {
-                        if ui.button("Name").clicked() {
+                        let label = self.sort_header_label(SortColumn::ContestedName, "Name");
+                        if ui.button(label).clicked() {
                             self.toggle_sort(SortColumn::ContestedName);
                         }
                     });
                     header.col(|ui| {
-                        if ui.button("Ended Time").clicked() {
+                        let label = self.sort_header_label(SortColumn::EndingTime, "Ended Time");
+                        if ui.button(label).clicked() {
                             self.toggle_sort(SortColumn::EndingTime);
                         }
                     });
                     header.col(|ui| {
-                        if ui.button("Last Updated").clicked() {
+                        let label = self.sort_header_label(SortColumn::LastUpdated, "Last Updated");
+                        if ui.button(label).clicked() {
                             self.toggle_sort(SortColumn::LastUpdated);
                         }
                     });
                     header.col(|ui| {
-                        if ui.button("Outcome").clicked() {
+                        let label = self.sort_header_label(SortColumn::AwardedTo, "Outcome");
+                        if ui.button(label).clicked() {
                             self.toggle_sort(SortColumn::AwardedTo);
                         }
                     });
@@ -2616,7 +2618,6 @@ impl DPNSScreen {
             // A retried target is not one of the staged decisions, so its
             // result must not clear any of them from the tray.
             self.submitted_votes.clear();
-            self.submitted_cards.clear();
         } else {
             self.submitted_votes = self
                 .selected_votes
@@ -2624,7 +2625,6 @@ impl DPNSScreen {
                 .cloned()
                 .map(|vote| (vote.contested_name.clone(), vote))
                 .collect();
-            self.submitted_cards = self.selected_cards.clone();
         }
         AppAction::BackendTask(BackendTask::ContestedResourceTask(
             ContestedResourceTask::SubmitDpnsVoteOperation {
@@ -2734,7 +2734,6 @@ impl ScreenLike for DPNSScreen {
         if self.release_pending_on_error {
             self.pending_vote_operation = None;
             self.submitted_votes.clear();
-            self.submitted_cards.clear();
             self.release_pending_on_error = false;
             let retried = self.submitted_retry.take();
             // The confirm step closed when the submission was dispatched and
@@ -2793,16 +2792,7 @@ impl ScreenLike for DPNSScreen {
                     self.selected_votes.retain(|vote| {
                         self.submitted_votes.get(&vote.contested_name) != Some(vote)
                     });
-                    let staged: BTreeSet<&String> = self
-                        .selected_votes
-                        .iter()
-                        .map(|vote| &vote.contested_name)
-                        .collect();
-                    self.selected_cards.retain(|name| {
-                        !self.submitted_cards.contains(name) || staged.contains(name)
-                    });
                     self.submitted_votes.clear();
-                    self.submitted_cards.clear();
                 }
                 if let Err(error) = self.vote_operations.refresh(&self.app_context) {
                     tracing::warn!(
@@ -3062,6 +3052,118 @@ mod tests {
     use crate::utils::tasks::TaskManager;
     use chrono::TimeZone;
     use dash_sdk::dpp::dashcore::Network;
+
+    fn finished_contest(name: &str, end_time: Option<u64>) -> ContestedName {
+        ContestedName {
+            normalized_contested_name: name.to_owned(),
+            contestants: None,
+            locked_votes: None,
+            abstain_votes: None,
+            awarded_to: None,
+            end_time,
+            state: ContestState::Locked,
+            last_updated: Some(1),
+            my_votes: BTreeMap::new(),
+        }
+    }
+
+    fn history_names(screen: &DPNSScreen) -> Vec<String> {
+        screen
+            .past_contests()
+            .into_iter()
+            .map(|contest| contest.normalized_contested_name)
+            .collect()
+    }
+
+    /// History opens with the contest that ended last on top. Contests that
+    /// ended together follow their names, and one with no end time comes last.
+    #[test]
+    fn history_opens_with_the_contest_that_ended_last_on_top() {
+        let (ctx, _dir) = kv_ctx();
+        let screen = DPNSScreen::new(&ctx, VotesView::History);
+        *screen.contested_names.lock_recover() = vec![
+            finished_contest("alpha", Some(100)),
+            finished_contest("charlie", Some(300)),
+            finished_contest("delta", None),
+            finished_contest("bravo", Some(300)),
+            finished_contest("echo", Some(200)),
+        ];
+        assert_eq!(
+            history_names(&screen),
+            ["bravo", "charlie", "echo", "alpha", "delta"]
+        );
+    }
+
+    /// The headings say which column orders the list and in which direction,
+    /// from the first frame on.
+    #[test]
+    fn history_headings_show_the_order_in_use() {
+        let (ctx, _dir) = kv_ctx();
+        let mut screen = DPNSScreen::new(&ctx, VotesView::History);
+        let headings = |screen: &DPNSScreen| {
+            [
+                screen.sort_header_label(SortColumn::ContestedName, "Name"),
+                screen.sort_header_label(SortColumn::EndingTime, "Ended Time"),
+            ]
+        };
+        assert_eq!(headings(&screen), ["Name", "Ended Time v"]);
+
+        screen.toggle_sort(SortColumn::EndingTime);
+        assert_eq!(headings(&screen), ["Name", "Ended Time ^"]);
+
+        screen.toggle_sort(SortColumn::ContestedName);
+        assert_eq!(headings(&screen), ["Name ^", "Ended Time"]);
+    }
+
+    /// Choosing a column still reorders the list, and choosing it again turns
+    /// the order around.
+    #[test]
+    fn a_history_heading_still_reorders_the_list() {
+        let (ctx, _dir) = kv_ctx();
+        let mut screen = DPNSScreen::new(&ctx, VotesView::History);
+        *screen.contested_names.lock_recover() = vec![
+            finished_contest("bravo", Some(300)),
+            finished_contest("alpha", Some(100)),
+            finished_contest("charlie", Some(200)),
+        ];
+        screen.toggle_sort(SortColumn::ContestedName);
+        assert_eq!(history_names(&screen), ["alpha", "bravo", "charlie"]);
+        screen.toggle_sort(SortColumn::ContestedName);
+        assert_eq!(history_names(&screen), ["charlie", "bravo", "alpha"]);
+        screen.toggle_sort(SortColumn::EndingTime);
+        assert_eq!(history_names(&screen), ["alpha", "charlie", "bravo"]);
+    }
+
+    /// The table itself opens in that order: the contest that ended last is
+    /// the first row, and the heading that orders the list carries the mark.
+    #[test]
+    fn the_history_table_opens_newest_first_and_marks_its_heading() {
+        use egui_kittest::kittest::Queryable;
+        let (ctx, _dir) = kv_ctx();
+        ctx.seed_dpns_contest_for_test("alpha", Some(100), true);
+        ctx.seed_dpns_contest_for_test("bravo", Some(200), true);
+        let mut screen = DPNSScreen::new(&ctx, VotesView::History);
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1200.0, 900.0))
+            .build_ui(move |ui| {
+                screen.ui(ui);
+            });
+        harness.run();
+        assert!(harness.query_by_label("Ended Time v").is_some());
+        assert!(harness.query_by_label("Name").is_some());
+        let top = |name: &str| harness.get_by_label(name).rect().top();
+        assert!(
+            top("bravo") < top("alpha"),
+            "the contest that ended last is the first row"
+        );
+
+        harness.get_by_label("Name").click();
+        harness.run();
+        assert!(harness.query_by_label("Name ^").is_some());
+        assert!(harness.query_by_label("Ended Time").is_some());
+        let top = |name: &str| harness.get_by_label(name).rect().top();
+        assert!(top("alpha") < top("bravo"), "the chosen heading reorders");
+    }
 
     #[test]
     fn review_regression_failed_manual_contest_refresh_can_be_retried() {
@@ -3952,7 +4054,6 @@ mod tests {
                 .seed_dpns_contest_for_test(name, Some(now_ms() + 600_000), false);
         }
         screen.refresh();
-        screen.selected_cards.insert("alpha".to_owned());
         assert!(matches!(
             screen.submit_confirmed_votes(),
             AppAction::BackendTask(_)
@@ -3964,13 +4065,11 @@ mod tests {
             end_time: None,
         };
         screen.selected_votes.push(new_vote.clone());
-        screen.selected_cards.insert("beta".to_owned());
         screen.display_task_result(BackendTaskSuccessResult::DpnsVoteOperationUpdated {
             network: screen.app_context.network(),
             operation_id,
         });
         assert_eq!(screen.selected_votes, vec![new_vote]);
-        assert_eq!(screen.selected_cards, BTreeSet::from(["beta".to_owned()]));
         assert!(screen.pending_vote_operation.is_none());
     }
 
@@ -4924,6 +5023,244 @@ mod tests {
         }
     }
 
+    /// Mount the Votes body and check that `Cast` is shown but cannot be
+    /// pressed, and that hovering it explains why with `hint`.
+    fn assert_cast_waits(
+        screen: Arc<Mutex<DPNSScreen>>,
+        hint: &str,
+    ) -> egui_kittest::Harness<'static> {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        let rendering = Arc::clone(&screen);
+        let mut harness = app_styled_harness(egui::vec2(1260.0, 1200.0), move |ui| {
+            rendering.lock_recover().ui(ui);
+        });
+        harness.get_by_role_and_label(Role::Button, "Cast").click();
+        harness.run();
+        assert!(
+            !screen.lock_recover().confirm_open,
+            "Cast opened the confirm step although it should wait: {hint}"
+        );
+        assert!(
+            harness.query_by_label(hint).is_none(),
+            "control: no hint yet"
+        );
+        harness.get_by_role_and_label(Role::Button, "Cast").hover();
+        harness.run();
+        assert!(
+            harness.query_by_label(hint).is_some(),
+            "hovering Cast does not say: {hint}"
+        );
+        harness
+    }
+
+    /// The tray is under the list before anything is picked: Cast and Clear
+    /// are greyed out and say what they wait for. Picking a decision enables
+    /// them where they already stood.
+    #[tokio::test]
+    async fn cast_waits_in_the_tray_until_a_decision_is_picked() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::{NodeT, Queryable};
+        let (screen, _dir) = two_contest_screen().await;
+        let mut harness = assert_cast_waits(Arc::clone(&screen), CAST_NEEDS_A_DECISION);
+        let button = |harness: &egui_kittest::Harness<'_>, label: &str| -> (egui::Rect, bool) {
+            let node = harness.get_by_role_and_label(Role::Button, label);
+            (node.rect(), node.accesskit_node().is_disabled())
+        };
+        let (cast_waiting, _) = button(&harness, "Cast");
+        let (clear_waiting, clear_disabled) = button(&harness, "Clear");
+        assert!(clear_disabled, "there is nothing to clear yet");
+        assert!(harness.query_by_label(TRAY_NOTHING_PICKED).is_some());
+        harness.get_by_role_and_label(Role::Button, "Clear").hover();
+        harness.run();
+        assert!(harness.query_by_label(CLEAR_NEEDS_A_DECISION).is_some());
+
+        {
+            let mut screen = screen.lock_recover();
+            let contest = Arc::clone(&screen.cards[0].contest);
+            screen.stage_choice(&contest, ResourceVoteChoice::Abstain);
+        }
+        harness.run();
+        assert!(harness.query_by_label(TRAY_NOTHING_PICKED).is_none());
+        assert!(harness.query_by_label(&tray_label(1, 1)).is_some());
+        assert_eq!(button(&harness, "Cast").0, cast_waiting, "Cast moved");
+        assert_eq!(
+            button(&harness, "Clear"),
+            (clear_waiting, false),
+            "Clear moved or stayed greyed out"
+        );
+        harness.get_by_role_and_label(Role::Button, "Cast").click();
+        harness.run();
+        assert!(screen.lock_recover().confirm_open);
+    }
+
+    /// Whatever keeps the staged decisions from being cast, Cast stays in
+    /// place and names it.
+    #[tokio::test]
+    async fn cast_names_what_it_waits_for() {
+        let (ctx, _dir) = kv_ctx();
+        ctx.seed_dpns_contest_for_test("alpha", None, false);
+        let mut no_node = DPNSScreen::new(&ctx, VotesView::ToDecide);
+        no_node.rebuild_cards();
+        assert_eq!(no_node.cards.len(), 1);
+        assert_cast_waits(Arc::new(Mutex::new(no_node)), NO_VOTING_NODE_HINT);
+
+        // A loaded node without a voting key is no reason to pick other nodes.
+        let (wired, _dir, _events) = wired_ctx().await;
+        wired.seed_dpns_contest_for_test("alpha", None, false);
+        wired
+            .insert_local_qualified_identity(
+                &masternode_identity(41, "read-only-node", false, wired.network()),
+                &None,
+            )
+            .unwrap();
+        let mut keyless = DPNSScreen::new(&wired, VotesView::ToDecide);
+        keyless.rebuild_cards();
+        assert_eq!(keyless.voting_nodes.len(), 1, "control: the node is loaded");
+        assert_cast_waits(Arc::new(Mutex::new(keyless)), NO_VOTING_NODE_HINT);
+
+        let (submitting, _dir) = two_contest_screen().await;
+        {
+            let mut screen = submitting.lock_recover();
+            let contest = Arc::clone(&screen.cards[0].contest);
+            screen.stage_choice(&contest, ResourceVoteChoice::Abstain);
+            screen.pending_vote_operation = Some(DpnsVoteOperationId::from_bytes([11; 16]));
+        }
+        assert_cast_waits(
+            submitting,
+            "Votes are being submitted. Wait for the result before sending another batch.",
+        );
+
+        let (mut held, _dir) = voting_ui_review_fixture();
+        stage_lock_on_alpha_card(&mut held);
+        assert_eq!(held.tray_counts(), TrayCounts::default());
+        assert_cast_waits(
+            Arc::new(Mutex::new(held)),
+            "Your nodes already hold these choices. Pick a different decision.",
+        );
+    }
+
+    /// The loaded node has its voting key but is outside the masternode list:
+    /// Cast and the cards' choices name the list, since loading the key again
+    /// would change nothing.
+    #[tokio::test]
+    async fn cast_names_the_masternode_list_when_no_loaded_node_is_in_it() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        let (screen, _dir) = two_contest_screen().await;
+        {
+            let mut screen = screen.lock_recover();
+            let another_node = Identifier::from([200; 32]);
+            screen
+                .app_context
+                .set_masternode_list_membership(Some(BTreeMap::from([(another_node, true)])));
+            screen.rebuild_cards();
+            assert!(screen.resolved_nodes.included.is_empty(), "control");
+            let node = &screen.voting_nodes[0];
+            assert!(
+                node.has_voting_key && node.membership == ListMembership::NotListed,
+                "control: the node has its key and is outside the list"
+            );
+        }
+        assert_cast_waits(Arc::clone(&screen), NO_LISTED_NODE_HINT);
+
+        let mut harness = app_styled_harness(egui::vec2(1260.0, 1200.0), move |ui| {
+            screen.lock_recover().ui(ui);
+        });
+        harness
+            .get_all_by_role(Role::RadioButton)
+            .next()
+            .expect("a decision choice")
+            .hover();
+        harness.run();
+        assert!(
+            harness.query_by_label(NO_LISTED_NODE_HINT).is_some(),
+            "a greyed-out choice does not name the masternode list"
+        );
+    }
+
+    /// Which hint the loaded nodes call for when none of the nodes voted with
+    /// can vote: the one whose advice can actually help.
+    #[test]
+    fn no_voting_node_hint_names_what_can_help() {
+        use crate::model::dpns_voting::operator::VotingNodeKind;
+        use ListMembership::{Listed, NotListed, Unknown};
+        let (ctx, _dir) = kv_ctx();
+        let mut screen = DPNSScreen::new(&ctx, VotesView::ToDecide);
+        let cases: [(&[(bool, ListMembership)], &str); 9] = [
+            (&[], NO_VOTING_NODE_HINT),
+            (&[(false, Listed)], NO_VOTING_NODE_HINT),
+            (&[(false, Unknown)], NO_VOTING_NODE_HINT),
+            (&[(true, NotListed)], NO_LISTED_NODE_HINT),
+            (&[(false, NotListed)], NO_LISTED_NODE_HINT),
+            (
+                &[(true, NotListed), (false, NotListed)],
+                NO_LISTED_NODE_HINT,
+            ),
+            // The key of the listed node would let it vote.
+            (&[(true, NotListed), (false, Listed)], NO_VOTING_NODE_HINT),
+            (
+                &[(true, NotListed), (true, Listed)],
+                CHANGE_VOTING_NODES_HINT,
+            ),
+            (&[(true, Unknown)], CHANGE_VOTING_NODES_HINT),
+        ];
+        for (nodes, hint) in cases {
+            screen.voting_nodes = nodes
+                .iter()
+                .zip(1u8..)
+                .map(|(&(has_voting_key, membership), id)| VotingNode {
+                    id: Identifier::from([id; 32]),
+                    kind: VotingNodeKind::Masternode,
+                    has_voting_key,
+                    membership,
+                    alias: None,
+                })
+                .collect();
+            assert_eq!(
+                screen.no_voting_node_hint(),
+                hint,
+                "loaded nodes: {nodes:?}"
+            );
+        }
+    }
+
+    /// A node that can vote is loaded, but the nodes voted with include none
+    /// that can: Cast and the cards' choices ask for another selection, since
+    /// loading a node again would change nothing.
+    #[tokio::test]
+    async fn cast_asks_for_other_nodes_when_the_selection_has_none_that_can_vote() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        for node_set in [NodeSet::Custom(BTreeSet::new()), NodeSet::EvonodesOnly] {
+            let (screen, _dir) = two_contest_screen().await;
+            {
+                let mut screen = screen.lock_recover();
+                assert_eq!(screen.resolved_nodes.included.len(), 1, "control");
+                screen.apply_node_set(node_set.clone());
+                assert!(
+                    screen.resolved_nodes.included.is_empty(),
+                    "control: {node_set:?} must leave out the loaded masternode"
+                );
+            }
+            assert_cast_waits(Arc::clone(&screen), CHANGE_VOTING_NODES_HINT);
+
+            let mut harness = app_styled_harness(egui::vec2(1260.0, 1200.0), move |ui| {
+                screen.lock_recover().ui(ui);
+            });
+            harness
+                .get_all_by_role(Role::RadioButton)
+                .next()
+                .expect("a decision choice")
+                .hover();
+            harness.run();
+            assert!(
+                harness.query_by_label(CHANGE_VOTING_NODES_HINT).is_some(),
+                "{node_set:?}: a greyed-out choice does not ask for another selection"
+            );
+        }
+    }
+
     /// VOTE-TC-098: J, 1, J, L, Enter stages both decisions and opens the
     /// confirm step; keys do nothing without list focus or in the filter field.
     #[tokio::test]
@@ -4982,40 +5319,63 @@ mod tests {
         );
     }
 
-    /// VOTE-TC-099: with several names selected, the bulk bar stages one
-    /// decision on each.
+    /// VOTE-TC-099: a name counts as picked once it has a decision; there is
+    /// no selection besides it. Cards carry no checkbox, Space picks nothing,
+    /// and decided names bring no bar beside the tray.
     #[tokio::test]
-    async fn bulk_bar_applies_a_decision_to_every_selected_name() {
+    async fn a_decision_is_the_only_way_to_pick_a_name() {
+        use egui::accesskit::Role;
         use egui_kittest::kittest::Queryable;
         let (screen, _dir) = two_contest_screen().await;
-        screen.lock_recover().selected_cards =
-            BTreeSet::from(["alpha".to_owned(), "beta".to_owned()]);
         let rendering = screen.clone();
-        let mut harness = egui_kittest::Harness::builder()
-            .with_size(egui::vec2(1400.0, 1200.0))
-            .build_ui(move |ui| {
-                rendering.lock_recover().ui(ui);
-            });
-        harness.run();
-        assert!(harness.query_by_label("2 names selected").is_some());
-        harness
-            .get_by_role_and_label(egui::accesskit::Role::Button, "Abstain")
-            .click();
-        harness.run();
+        let mut harness = app_styled_harness(egui::vec2(1260.0, 1200.0), move |ui| {
+            rendering.lock_recover().ui(ui);
+        });
+        assert_eq!(
+            harness.query_all_by_role(Role::CheckBox).count(),
+            0,
+            "a card offers a checkbox"
+        );
+
+        screen.lock_recover().list_focused = true;
+        for key in [
+            egui::Key::J,
+            egui::Key::Space,
+            egui::Key::J,
+            egui::Key::Space,
+        ] {
+            harness.key_press(key);
+            harness.run();
+        }
+        assert!(staged(&screen).is_empty(), "Space picked a name");
+        assert!(harness.query_by_label_contains("names selected").is_none());
+
+        for key in [egui::Key::L, egui::Key::K, egui::Key::A] {
+            harness.key_press(key);
+            harness.run();
+        }
         assert_eq!(
             staged(&screen),
             vec![
+                ("beta".to_owned(), ResourceVoteChoice::Lock),
                 ("alpha".to_owned(), ResourceVoteChoice::Abstain),
-                ("beta".to_owned(), ResourceVoteChoice::Abstain),
             ]
         );
-        harness
-            .get_all_by_role_and_label(egui::accesskit::Role::Button, "Clear")
-            .next()
-            .expect("the bulk bar's Clear")
-            .click();
-        harness.run();
-        assert!(staged(&screen).is_empty());
+        for label in ["Lock name", "Abstain"] {
+            assert!(
+                harness
+                    .query_by_role_and_label(Role::Button, label)
+                    .is_none(),
+                "a bar offers {label} for the decided names"
+            );
+        }
+        assert_eq!(
+            harness
+                .get_all_by_role_and_label(Role::Button, "Clear")
+                .count(),
+            1,
+            "only the tray clears the decisions"
+        );
     }
 
     #[tokio::test]

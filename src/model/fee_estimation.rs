@@ -72,6 +72,27 @@ const USERNAME_VOTED_NAME_BYTES_PER_CHAR: usize = 5;
 /// an empty network; a live network charges somewhat more processing.
 const USERNAME_REGISTRATION_MARGIN_PERCENT: u64 = 10;
 
+// TODO(dashpay/platform#5265): the `*_TRANSFER_RESERVE_*` figures are fitted to
+// the balance Drive wants before it accepts a transfer out of an identity;
+// replace them with Platform's own number once it offers a function for it.
+// Their source is docs/ai-design/2026-10-13-identity-transfer-fee-reserve.
+
+/// Balance Platform wants on an identity, above the amount, before it accepts a
+/// transfer to another identity. It then charges about a third of it.
+const CREDIT_TRANSFER_RESERVE_CREDITS: u64 = 8_755_720;
+/// The same for a transfer to Platform addresses: a part for the transfer and
+/// a part for each address that receives.
+const ADDRESS_TRANSFER_RESERVE_CREDITS: u64 = 11_261_680;
+const ADDRESS_TRANSFER_RESERVE_PER_ADDRESS_CREDITS: u64 = 6_176_980;
+/// Headroom over the figures above. They are for a transfer signed with an
+/// ECDSA key; a BLS key adds 285,000 credits.
+const IDENTITY_TRANSFER_MARGIN_PERCENT: u64 = 10;
+
+/// `reserve` with the headroom for a transfer out of an identity added.
+const fn with_identity_transfer_margin(reserve: u64) -> u64 {
+    reserve.saturating_mul(100 + IDENTITY_TRANSFER_MARGIN_PERCENT) / 100
+}
+
 /// Storage fee constants from FEE_STORAGE_VERSION1 in rs-platform-version.
 /// These determine the cost of storing and processing data on Platform.
 #[derive(Debug, Clone, Copy)]
@@ -302,19 +323,35 @@ impl PlatformFeeEstimator {
         self.apply_multiplier(self.calculate_storage_based_fee(bytes, estimated_seeks))
     }
 
-    /// Estimate fee for credit transfer between identities
+    /// Balance an identity must keep, above the amount, to transfer credits to
+    /// another identity.
+    ///
+    /// Platform accepts the transfer only while the balance holds a reserve
+    /// above the fee it then charges, so the fee actually charged is lower.
     pub fn estimate_credit_transfer(&self) -> u64 {
-        self.apply_multiplier(self.min_fees.credit_transfer)
+        let reserve = with_identity_transfer_margin(CREDIT_TRANSFER_RESERVE_CREDITS);
+        self.apply_multiplier(reserve.max(self.min_fees.credit_transfer))
     }
 
-    /// Estimate fee for credit transfer to platform addresses
-    pub fn estimate_credit_transfer_to_addresses(&self, output_count: usize) -> u64 {
-        let base_fee = self.min_fees.credit_transfer_to_addresses.saturating_add(
+    /// Smallest fee Platform takes for a transfer to `output_count` Platform
+    /// addresses, before the fee multiplier.
+    fn credit_transfer_to_addresses_min_fee(&self, output_count: usize) -> u64 {
+        self.min_fees.credit_transfer_to_addresses.saturating_add(
             self.min_fees
                 .address_funds_transfer_output_cost
                 .saturating_mul(output_count as u64),
-        );
-        self.apply_multiplier(base_fee)
+        )
+    }
+
+    /// Balance an identity must keep, above the amount, to transfer credits to
+    /// `output_count` Platform addresses. As with
+    /// [`Self::estimate_credit_transfer`], the fee actually charged is lower.
+    pub fn estimate_credit_transfer_to_addresses(&self, output_count: usize) -> u64 {
+        let reserve =
+            with_identity_transfer_margin(ADDRESS_TRANSFER_RESERVE_CREDITS.saturating_add(
+                ADDRESS_TRANSFER_RESERVE_PER_ADDRESS_CREDITS.saturating_mul(output_count as u64),
+            ));
+        self.apply_multiplier(reserve.max(self.credit_transfer_to_addresses_min_fee(output_count)))
     }
 
     /// Estimate fee for credit withdrawal to core chain
@@ -335,7 +372,8 @@ impl PlatformFeeEstimator {
         // - Base transfer cost to addresses
         // - Per-output costs
         // We add a 50% buffer to account for any additional costs
-        let base_fee_credits = self.estimate_credit_transfer_to_addresses(output_count);
+        let base_fee_credits =
+            self.apply_multiplier(self.credit_transfer_to_addresses_min_fee(output_count));
         let fee_duffs = base_fee_credits / CREDITS_PER_DUFF;
         // Add 50% buffer and ensure minimum of 10,000 duffs based on observed behavior
         fee_duffs.saturating_add(fee_duffs / 2).max(10_000)
@@ -1308,10 +1346,107 @@ mod tests {
         assert_eq!(contest_fee_credits(pv14), 10_000_000_000);
     }
 
+    /// Balance above the amount below which Platform refuses a transfer between
+    /// identities, as read from its engine and seen in a refusal on testnet.
     #[test]
-    fn test_credit_transfer_estimate() {
+    fn credit_transfer_estimate_covers_the_balance_the_network_requires() {
+        let required_above_amount = [
+            8_555_220_u64, // protocol 11
+            8_753_740,     // protocols 12 to 14
+            8_754_240,     // signed with a hashed ECDSA key
+            8_755_720,     // testnet
+            9_038_740,     // signed with a BLS key
+        ];
+        let estimate = PlatformFeeEstimator::new().estimate_credit_transfer();
+        for required in required_above_amount {
+            assert!(estimate >= required, "{estimate} is below {required}");
+            assert!(
+                estimate <= required / 100 * 115,
+                "{estimate} is far above {required}"
+            );
+        }
+    }
+
+    /// The same for a transfer to Platform addresses, by number of addresses.
+    /// Each address adds a little more once it receives 2,147,483,648 credits
+    /// or more; BLS keys add to that.
+    #[test]
+    fn credit_transfer_to_addresses_estimate_covers_the_balance_the_network_requires() {
+        let required_above_amount = [
+            (1, 17_091_200_u64), // protocol 11
+            (1, 17_329_060),     // protocols 12 to 14
+            (1, 17_331_040),     // testnet
+            (1, 17_438_660),     // a larger amount
+            (1, 17_723_660),     // a larger amount, signed with a BLS key
+            (2, 23_396_440),
+            (2, 23_615_640),
+            (2, 23_900_640),
+            (3, 29_463_820),
+            (3, 29_792_620),
+            (3, 30_077_620),
+        ];
         let estimator = PlatformFeeEstimator::new();
-        assert_eq!(estimator.estimate_credit_transfer(), 100_000);
+        for (addresses, required) in required_above_amount {
+            let estimate = estimator.estimate_credit_transfer_to_addresses(addresses);
+            assert!(
+                estimate >= required,
+                "{addresses} addresses: {estimate} is below {required}"
+            );
+            assert!(
+                estimate <= required / 100 * 115,
+                "{addresses} addresses: {estimate} is far above {required}"
+            );
+        }
+    }
+
+    #[test]
+    fn credit_transfer_estimates_follow_the_fee_multiplier() {
+        let base = PlatformFeeEstimator::new();
+        let doubled = PlatformFeeEstimator::with_fee_multiplier(2000);
+        assert_eq!(
+            doubled.estimate_credit_transfer(),
+            base.estimate_credit_transfer() * 2
+        );
+        assert_eq!(
+            doubled.estimate_credit_transfer_to_addresses(2),
+            base.estimate_credit_transfer_to_addresses(2) * 2
+        );
+    }
+
+    /// Platform refuses any transfer that leaves less than its own minimum
+    /// fee, so an estimate never falls below that minimum, whatever it becomes.
+    #[test]
+    fn credit_transfer_estimates_never_fall_below_the_minimum_fee_of_the_network() {
+        let raised = StateTransitionMinFees {
+            credit_transfer: 50_000_000,
+            credit_transfer_to_addresses: 60_000_000,
+            ..StateTransitionMinFees::default()
+        };
+        let per_address = raised.address_funds_transfer_output_cost;
+        let estimator = PlatformFeeEstimator {
+            min_fees: raised,
+            ..PlatformFeeEstimator::new()
+        };
+        assert_eq!(estimator.estimate_credit_transfer(), 50_000_000);
+        assert_eq!(
+            estimator.estimate_credit_transfer_to_addresses(1),
+            60_000_000 + per_address
+        );
+    }
+
+    /// Funding an address from the wallet is priced from the minimum fee of
+    /// the network, not from what a transfer out of an identity reserves.
+    #[test]
+    fn address_funding_from_the_wallet_keeps_its_own_estimate() {
+        let estimator = PlatformFeeEstimator::new();
+        assert_eq!(
+            estimator.estimate_address_funding_from_asset_lock_duffs(1),
+            10_000
+        );
+        assert_eq!(
+            estimator.estimate_address_funding_from_asset_lock_duffs(2),
+            18_750
+        );
     }
 
     #[test]

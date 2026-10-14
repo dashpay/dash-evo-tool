@@ -2787,7 +2787,19 @@ impl WalletSendScreen {
         } else {
             None
         };
-        self.get_loaded_identities()
+        // An identity-bound send reaches any identity on this device, as the
+        // identity transfer screen did; a wallet send keeps to its wallet's.
+        let identities = if self.identity_flow.is_some() {
+            #[cfg(test)]
+            self.identity_load_count
+                .set(self.identity_load_count.get() + 1);
+            self.app_context
+                .load_local_qualified_identities()
+                .unwrap_or_default()
+        } else {
+            self.get_loaded_identities()
+        };
+        identities
             .into_iter()
             .filter(|qi| Some(qi.identity.id()) != source_identity_id)
             .collect()
@@ -6873,6 +6885,72 @@ mod tests {
 
         let on_top = FeePreview::on_top(u64::MAX, 5);
         assert_eq!(on_top.total_debit_credits, u64::MAX);
+    }
+
+    /// Home → Send fixes the sender. With no wallet on the device, the
+    /// recipient search still offers every other identity stored here.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn identity_bound_send_offers_the_other_local_identities_without_a_wallet() {
+        use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
+        use crate::model::qualified_identity::{DPNSNameInfo, IdentityStatus, IdentityType};
+        use dash_sdk::dpp::{identity::Identity, version::PlatformVersion};
+        let (ctx, _dir) = offline_ctx();
+        let (sender, _receiver) = tokio::sync::mpsc::channel(32);
+        ctx.ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+            sender,
+            ctx.egui_ctx().clone(),
+        ))
+        .await
+        .unwrap();
+        let imported = |byte: u8, name: &str| QualifiedIdentity {
+            identity: Identity::create_basic_identity(
+                dash_sdk::platform::Identifier::from([byte; 32]),
+                PlatformVersion::latest(),
+            )
+            .unwrap(),
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: None,
+            private_keys: KeyStorage::default(),
+            dpns_names: vec![DPNSNameInfo {
+                name: name.into(),
+                acquired_at: 0,
+            }],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: Network::Testnet,
+        };
+        let sender = imported(41, "sender.dash");
+        for identity in [&sender, &imported(42, "payee.dash")] {
+            ctx.insert_local_qualified_identity(identity, &None)
+                .unwrap();
+        }
+        assert!(ctx.wallet_context().wallets().is_empty());
+
+        let screen = WalletSendScreen::for_identity(&ctx, sender, IdentitySendMode::Send);
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, screen: &mut WalletSendScreen| screen.render_destination_input(ui),
+            screen,
+        );
+        harness.run();
+        for (query, offered) in [("payee", Some("payee.dash")), ("sender", None)] {
+            let input = harness.state_mut().address_input.take().unwrap();
+            harness.state_mut().address_input = Some(input.with_initial_value(query));
+            harness.run();
+            let rows = harness
+                .state()
+                .address_input
+                .as_ref()
+                .unwrap()
+                .rendered_rows();
+            let names: Vec<_> = rows.iter().map(|row| row.name.as_deref()).collect();
+            assert_eq!(names, Vec::from_iter(offered.map(Some)), "query {query}");
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

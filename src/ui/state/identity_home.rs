@@ -4,22 +4,17 @@ use crate::app::AppAction;
 use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::ui::components::qr_code_image::QrCodeImage;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
-
-/// The QR code Receive shows, with the value it encodes.
-pub struct ReceiveQr {
-    pub value: String,
-    pub texture: egui::TextureHandle,
-}
 
 /// Cached Home content for the currently selected identity.
 #[derive(Default)]
 pub struct HomeState {
     pub dismissed_checklist: bool,
     pub receive_open: bool,
-    pub receive_qr: Option<ReceiveQr>,
+    pub receive_qr: Option<QrCodeImage>,
     pub payments: Vec<(String, String, u64, bool, String)>,
     requested_payments: bool,
     pending_payments: Option<BackendTaskContext>,

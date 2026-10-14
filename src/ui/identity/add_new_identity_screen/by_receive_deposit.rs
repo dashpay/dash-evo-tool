@@ -2,15 +2,15 @@ use crate::app::AppAction;
 use crate::model::amount::Amount;
 use crate::ui::MessageType;
 use crate::ui::components::MessageBanner;
+use crate::ui::components::qr_code_image::QrCodeImage;
 use crate::ui::identity::add_new_identity_screen::AddNewIdentityScreen;
 use crate::ui::identity::funding_common::{
-    FundingMethod, WalletFundedScreenStep, generate_qr_code_image, required_deposit_credits,
-    round_up_dash_4dp, should_queue_funding_address, snapshot_deposit_outcome,
-    spendable_covers_minimum,
+    FundingMethod, WalletFundedScreenStep, required_deposit_credits, round_up_dash_4dp,
+    should_queue_funding_address, snapshot_deposit_outcome, spendable_covers_minimum,
 };
 use crate::ui::theme::DashColors;
 use crate::wallet_backend::poison::RwLockRecover;
-use egui::{Color32, RichText, Ui, Vec2};
+use egui::{Color32, RichText, Ui};
 use std::time::Duration;
 
 impl AddNewIdentityScreen {
@@ -73,14 +73,13 @@ impl AddNewIdentityScreen {
         let minimum_amount = format!("{minimum_dash:.4} DASH");
         let dash_uri = format!("dash:{address}?amount={minimum_dash:.4}");
 
-        if let Ok(qr_image) = generate_qr_code_image(&dash_uri) {
-            let texture =
-                ui.ctx()
-                    .load_texture("deposit_qr_code", qr_image, egui::TextureOptions::LINEAR);
-            ui.image((texture.id(), Vec2::new(200.0, 200.0)));
-        } else {
-            ui.label("Could not create the deposit QR code. Copy the address below instead.");
-        }
+        self.qr_code
+            .get_or_insert_with(|| {
+                QrCodeImage::new().with_fallback_text(
+                    "Could not create the deposit QR code. Copy the address below instead.",
+                )
+            })
+            .show(ui, &dash_uri);
 
         ui.add_space(10.0);
         ui.label(format!(

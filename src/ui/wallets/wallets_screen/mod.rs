@@ -2928,8 +2928,6 @@ impl ScreenLike for WalletsBalancesScreen {
                         .push((address.clone(), balance));
                     self.receive_dialog.selected_core_index =
                         self.receive_dialog.core_addresses.len() - 1;
-                    self.receive_dialog.qr_texture = None;
-                    self.receive_dialog.qr_address = None;
                     self.receive_dialog.status = None;
                 }
             }
@@ -2949,8 +2947,6 @@ impl ScreenLike for WalletsBalancesScreen {
                 self.receive_dialog.platform_addresses.push((address, 0));
                 self.receive_dialog.selected_platform_index =
                     self.receive_dialog.platform_addresses.len() - 1;
-                self.receive_dialog.qr_texture = None;
-                self.receive_dialog.qr_address = None;
                 self.receive_dialog.status = Some("New address generated!".to_string());
             }
             crate::ui::BackendTaskSuccessResult::PlatformAddressWithdrawal { .. } => {

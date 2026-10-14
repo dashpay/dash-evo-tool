@@ -185,6 +185,29 @@ impl DocumentQueryScreen {
         self.pending_fetch_context.dispatch(task)
     }
 
+    /// Test seam: start a query of the selected document type as the Query
+    /// button does, without running its task. Returns its dispatch.
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    pub fn begin_fetch_for_test(&mut self) -> Option<BackendTaskContext> {
+        self.current_page = 1;
+        let query = self.build_document_query_with_cursor(&Start::StartAfter(Vec::new()));
+        self.document_query_status = DocumentQueryStatus::WaitingForResult;
+        let task = BackendTask::DocumentTask(Box::new(FetchDocumentsPage(query)));
+        match self.correlate_fetch_action(AppAction::BackendTask(task)) {
+            AppAction::BackendTaskWithContext { context, .. } => Some(context),
+            _ => None,
+        }
+    }
+
+    /// Test seam: whether a query this screen started still waits on its result.
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    pub fn fetch_pending_for_test(&self) -> bool {
+        self.pending_fetch_context.is_pending()
+            && self.document_query_status == DocumentQueryStatus::WaitingForResult
+    }
+
     fn build_document_query_with_cursor(&self, cursor: &Start) -> DocumentQuery {
         let mut query = DocumentQuery::new(
             self.selected_data_contract.contract.clone(),

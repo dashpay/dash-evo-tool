@@ -3437,8 +3437,8 @@ impl App for AppState {
                 .handle_task_result(&task_result, active_context.network);
 
             // The open screen that dispatched this task, if any. Its result is
-            // delivered there, in view or not; everything else goes to the
-            // screen in view.
+            // delivered there, in view or not. A closed sender's result reaches
+            // no screen; undispatched results go to the screen in view.
             let route = self.take_result_route(&task_result);
             let owner = route.owner();
             let owner_in_view = owner.is_some_and(|owner| owner == self.visible_owner());
@@ -3750,12 +3750,14 @@ impl App for AppState {
                         _ => {
                             // For all other success results, let the screen decide how to display
                             // the outcome without showing a generic global success banner.
-                            let closed_owner = route == ResultRoute::ClosedOwner;
-                            if closed_owner || (tracked_top_up && !owner_in_view) {
-                                // Not this screen's task, but what it shows may have changed.
+                            if tracked_top_up && !owner_in_view {
+                                // Not this screen's top-up, but the balances it shows changed.
                                 self.visible_screen_mut().refresh();
                             }
-                            if closed_owner
+                            // No refresh for any other task whose screen is closed:
+                            // `refresh()` resets some screens, such as a running
+                            // document query, and the screen in view did not send it.
+                            if route == ResultRoute::ClosedOwner
                                 && !tracked_top_up
                                 && let Some(message) = closed_send_form_message(&unboxed_message)
                             {

@@ -382,3 +382,80 @@ fn a_closed_send_form_result_leaves_a_new_form_alone() {
         });
     }
 }
+
+/// The Documents screen in view.
+fn documents(
+    harness: &mut App,
+) -> &mut dash_evo_tool::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen {
+    match harness
+        .state_mut()
+        .main_screens
+        .get_mut(&RootScreenType::RootScreenDocumentQuery)
+    {
+        Some(Screen::DocumentQueryScreen(screen)) => screen,
+        _ => panic!("the Documents screen is open"),
+    }
+}
+
+/// A send whose form was closed must not disturb the screen in view: a
+/// document query running there keeps waiting for its own answer, and takes
+/// it when it comes.
+#[test]
+fn a_closed_send_form_result_leaves_a_running_query_alone() {
+    use dash_evo_tool::backend_task::BackendTask;
+    use dash_evo_tool::backend_task::wallet::WalletTask;
+    in_app(|| {
+        let mut harness = mount_app(RootScreenType::RootScreenDocumentQuery);
+        let form = Screen::WalletSendScreen(send_form(&harness));
+        harness.state_mut().screen_stack.push(form);
+        harness.run_steps(3);
+        let send = BackendTask::WalletTask(WalletTask::GenerateReceiveAddress {
+            seed_hash: [0x57; 32],
+        });
+        let dispatch = match harness.state_mut().screen_stack.last_mut() {
+            Some(Screen::WalletSendScreen(form)) => form.confirm_send_for_test(send),
+            _ => panic!("the Send form is in view"),
+        }
+        .expect("the confirmed send is the form's dispatch");
+        harness.state_mut().test_record_visible_dispatch(&dispatch);
+
+        // The user closes the form and starts a query on the Documents screen.
+        harness.state_mut().screen_stack.pop();
+        harness.run_steps(3);
+        let query = documents(&mut harness)
+            .begin_fetch_for_test()
+            .expect("the query is the screen's dispatch");
+        harness.state_mut().test_record_visible_dispatch(&query);
+
+        deliver(
+            &mut harness,
+            TaskResult::Success {
+                context: dispatch,
+                result: Box::new(BackendTaskSuccessResult::WalletPayment {
+                    txid: "00".repeat(32),
+                    recipients: vec![("yTestRecipient".into(), 100_000)],
+                    total_amount: 100_000,
+                }),
+            },
+        );
+        assert!(
+            documents(&mut harness).fetch_pending_for_test(),
+            "the query still waits for its own answer"
+        );
+
+        deliver(
+            &mut harness,
+            TaskResult::Success {
+                context: query,
+                result: Box::new(BackendTaskSuccessResult::PageDocuments(
+                    Default::default(),
+                    None,
+                )),
+            },
+        );
+        assert!(
+            !documents(&mut harness).fetch_pending_for_test(),
+            "the query took its own answer"
+        );
+    });
+}

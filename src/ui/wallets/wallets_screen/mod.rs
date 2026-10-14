@@ -34,10 +34,10 @@ use crate::ui::components::wallet_selector::WalletSelector;
 use crate::ui::components::wallet_unlock_popup::{WalletUnlockPopup, WalletUnlockResult};
 use crate::ui::helpers::copy_text_to_clipboard;
 use crate::ui::helpers::{ModalOpeningGuard, clicked_outside_window_after_open};
-use crate::ui::state::TrackedAssetLockCache;
 use crate::ui::state::account_summary::{
     AccountCategory, AccountSummary, collect_account_summaries,
 };
+use crate::ui::state::{PendingRequest, TrackedAssetLockCache};
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
 use crate::wallet_backend::TransactionHistoryStatus;
@@ -213,7 +213,7 @@ pub struct WalletsBalancesScreen {
     /// when the user saves.
     rename_alias_input: AliasInput,
     /// The exact in-flight dispatch whose result may close or re-enable the dialog.
-    pending_rename_context: crate::ui::state::PendingRequest,
+    pending_rename_context: PendingRequest,
     wallet_selector: Option<WalletSelector>,
     wallet_unlock_popup: WalletUnlockPopup,
     show_sk_unlock_dialog: bool,
@@ -3045,8 +3045,8 @@ impl ScreenLike for WalletsBalancesScreen {
 
     fn refresh_on_arrival(&mut self) {
         // Clear the spinner in case a refresh completed while this screen was not
-        // visible (task results are dispatched to the visible screen, so ours would
-        // have been silently discarded).
+        // visible (the refresh is not a dispatched task, so its result went to the
+        // screen in view and ours was silently discarded).
         self.refreshing = false;
         // Asset-lock mutations happen on pushed screens. Returning to this root
         // screen must re-fetch instead of reusing a terminal Loaded(empty) entry.

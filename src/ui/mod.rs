@@ -883,6 +883,9 @@ pub trait ScreenLike {
     /// Override **only for side-effects** such as clearing a progress banner
     /// (`self.refresh_banner.take_and_clear()`) or updating an internal status enum.
     /// Do **not** set your own banner here — `AppState` already did that.
+    /// For a task error it is routed like
+    /// [`display_backend_task_result`](Self::display_backend_task_result), so
+    /// it can reach this screen while it is hidden.
     fn display_message(&mut self, _message: &str, _message_type: MessageType) {}
 
     /// Called by `AppState` when a backend task completes successfully.
@@ -898,10 +901,14 @@ pub trait ScreenLike {
     /// context used for failures. Existing screens default to the legacy result
     /// callback; screens that track concurrent operations can override this.
     ///
-    /// A task this screen dispatched under a
-    /// [`BackendTaskContext::Dispatched`] context reports here even while the
-    /// screen is hidden behind another one, so the screen must not assume it
-    /// is in view. Every other result goes to the screen in view.
+    /// Routing (`app/request_routing.rs`): a task this screen dispatched under
+    /// a [`BackendTaskContext::Dispatched`] context reports here even while
+    /// the screen is hidden behind another one, so the screen must not assume
+    /// it is in view. A dispatched task whose screen was closed reports to no
+    /// screen. Undispatched results go to the screen in view, and `AppState`'s
+    /// dedicated routers bring some of them to hidden roots as well (the
+    /// identity hub, the voting panel, identity removals, the network chooser,
+    /// legacy-recovery hosts).
     fn display_backend_task_result(
         &mut self,
         _context: &BackendTaskContext,
@@ -925,7 +932,8 @@ pub trait ScreenLike {
     }
 
     /// Returns `true` when an outdated correlated error must not reach the
-    /// global banner.
+    /// global banner. Routed like
+    /// [`display_backend_task_result`](Self::display_backend_task_result).
     fn should_suppress_backend_task_error(
         &self,
         _context: &BackendTaskContext,
@@ -937,7 +945,11 @@ pub trait ScreenLike {
     /// Called by `AppState` when a backend task fails with a typed error.
     ///
     /// Override to handle specific error variants (e.g., `CoreWalletNotConfigured`).
-    /// Return `true` to suppress the default error banner in `AppState`.
+    /// Return `true` to suppress the default error banner while this screen is
+    /// in view. Routed like
+    /// [`display_backend_task_result`](Self::display_backend_task_result); a
+    /// hidden screen's error raises the banner whatever this returns, as the
+    /// user cannot see how the screen handled it.
     fn display_task_error(&mut self, _error: &TaskError) -> bool {
         false
     }

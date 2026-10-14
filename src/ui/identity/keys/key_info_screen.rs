@@ -2138,7 +2138,8 @@ mod tests {
     }
 
     /// A restore that lands while this screen is off-screen never reaches its
-    /// `display_task_result` — results go only to the visible screen. Returning
+    /// `display_task_result` — it is not this screen's dispatched task, so its
+    /// result goes to the screen in view (see `app/request_routing.rs`). Returning
     /// to it must re-read the record, or the clone it opened with is written
     /// back over the restored keys by the next ordinary key edit, silently and
     /// with no error to show for it.

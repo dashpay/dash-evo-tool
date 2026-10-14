@@ -33,6 +33,7 @@ use crate::ui::components::message_banner::MessageBanner;
 use crate::ui::components::pill;
 use crate::ui::identity::IDENTITY_REMOVAL_BLOCKED_BY_STORAGE_UPDATE;
 use crate::ui::identity::identity_hero_card::HeroIdentityKind;
+use crate::ui::state::PendingRequest;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Spacing, Typography};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
@@ -164,7 +165,7 @@ pub struct SettingsTab {
     /// current edit-field state (which may have changed while the round-trip
     /// was in-flight). Cleared on identity switch or when committed. (T21)
     pending_save: Option<(String, String, String)>,
-    pending_save_context: crate::ui::state::PendingRequest,
+    pending_save_context: PendingRequest,
     /// `Advanced` expander state. Defaults closed per §B.8; callers (tests)
     /// may flip this via `open_advanced_for_test` to assert the section
     /// renders without a click.

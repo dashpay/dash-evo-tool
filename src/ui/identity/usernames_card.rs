@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use dash_sdk::dpp::identity::TimestampMillis;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use egui::{RichText, Ui};
+use egui::{Align, Layout, RichText, Ui};
 
 use crate::app::AppAction;
 use crate::backend_task::identity::IdentityTask;
@@ -26,7 +26,7 @@ use crate::ui::identity::username_copy::{
 };
 use crate::ui::masternodes::KeyVocabulary;
 use crate::ui::state::legacy_recovery::LegacyRecoveryState;
-use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Spacing};
 use crate::ui::{RootScreenType, ScreenType};
 
 /// One row of the card, in display order.
@@ -219,6 +219,24 @@ pub struct UsernamesCard {
     recovery: Option<(dash_sdk::platform::Identifier, LegacyRecoveryState)>,
 }
 
+/// Which register button the card offers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GetUsername {
+    /// The identity has no username yet.
+    First,
+    /// The identity already has at least one username.
+    Another,
+}
+
+impl GetUsername {
+    fn label(self) -> &'static str {
+        match self {
+            Self::First => "Get a username",
+            Self::Another => "Get another username",
+        }
+    }
+}
+
 impl UsernamesCard {
     /// Render the card for `identity`; returns any navigation the user asked for.
     pub fn show(
@@ -240,7 +258,7 @@ impl UsernamesCard {
                 "This identity has no username yet. A username lets people pay you as @name instead of a long address.",
             );
             ui.add_space(6.0);
-            action |= self.get_username_button(ui, app_context, identity, hint, "Get a username");
+            action |= self.get_username_button(ui, app_context, identity, hint, GetUsername::First);
             return action;
         }
 
@@ -263,27 +281,31 @@ impl UsernamesCard {
                                 None,
                             );
                         }
-                        ui.menu_button("•••", |ui| {
-                            if ui.button("Copy username").clicked() {
-                                ui.ctx().copy_text(format!("@{name}"));
-                                ui.close();
-                            }
-                            if ui.button("Show QR code").clicked() {
-                                self.open_qr(&name);
-                                ui.close();
-                            }
-                            if !is_main && ui.button("Show as main").clicked() {
-                                action = AppAction::BackendTask(BackendTask::IdentityTask(
-                                    IdentityTask::SetMainUsername {
-                                        identity_id,
-                                        name: name.clone(),
-                                    },
-                                ));
-                                ui.close();
-                            }
-                        })
-                        .response
-                        .clickable_tooltip(format!("More actions for @{name}"));
+                        // The row's actions sit at the card's right edge, as in
+                        // the A08 wireframe, not right after the name.
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            ui.menu_button("•••", |ui| {
+                                if ui.button("Copy username").clicked() {
+                                    ui.ctx().copy_text(format!("@{name}"));
+                                    ui.close();
+                                }
+                                if ui.button("Show QR code").clicked() {
+                                    self.open_qr(&name);
+                                    ui.close();
+                                }
+                                if !is_main && ui.button("Show as main").clicked() {
+                                    action = AppAction::BackendTask(BackendTask::IdentityTask(
+                                        IdentityTask::SetMainUsername {
+                                            identity_id,
+                                            name: name.clone(),
+                                        },
+                                    ));
+                                    ui.close();
+                                }
+                            })
+                            .response
+                            .clickable_tooltip(format!("More actions for @{name}"));
+                        });
                     });
                     if acquired_at > 0 {
                         ui.label(
@@ -340,8 +362,10 @@ impl UsernamesCard {
             }
         }
 
-        ui.add_space(10.0);
-        action |= self.get_username_button(ui, app_context, identity, hint, "Get another username");
+        ui.add_space(Spacing::SM);
+        ui.separator();
+        ui.add_space(Spacing::SM);
+        action |= self.get_username_button(ui, app_context, identity, hint, GetUsername::Another);
         ui.label(
             RichText::new("Each username is a separate payment from this identity's balance.")
                 .small()
@@ -408,10 +432,27 @@ impl UsernamesCard {
         app_context: &Arc<AppContext>,
         identity: &QualifiedIdentity,
         hint: Option<KeyHint>,
-        label: &str,
+        kind: GetUsername,
     ) -> AppAction {
         let mut action = AppAction::None;
-        let button = ComponentStyles::add_primary_button_enabled(ui, hint.is_none(), label);
+        let dark_mode = ui.style().visuals.dark_mode;
+        // The first username is the card's call to action; another one is a
+        // secondary, card-wide button below the list (A08).
+        let button = match kind {
+            GetUsername::First => {
+                ComponentStyles::add_primary_button_enabled(ui, hint.is_none(), kind.label())
+            }
+            GetUsername::Another => {
+                ui.with_layout(Layout::top_down_justified(Align::Min), |ui| {
+                    if hint.is_none() {
+                        ComponentStyles::add_secondary_button(ui, kind.label(), dark_mode)
+                    } else {
+                        ComponentStyles::add_primary_button_enabled(ui, false, kind.label())
+                    }
+                })
+                .inner
+            }
+        };
         let Some(hint) = hint else {
             if button.clicked() {
                 action = register_action(app_context, identity);

@@ -246,14 +246,33 @@ impl SettingsTab {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                // Two-column layout. egui's `columns` takes care of splitting
-                // the available width evenly; on narrow panels the individual
-                // rows inside each column wrap gracefully because we use
-                // `set_max_width` on the text fields.
+                // Two columns as in the A08 wireframe: the social profile form
+                // beside the usernames card, split 560:380. Explicit
+                // left-aligned columns, not `ui.columns`, whose justified
+                // layout stretches every button to the column width. Narrow
+                // panels stack the two.
                 if ui.available_width() >= 760.0 {
-                    ui.columns(2, |cols| {
-                        action |= self.render_social_profile(&mut cols[0], app_context, &identity);
-                        action |= self.render_usernames(&mut cols[1], app_context, &identity);
+                    let content_width = ui.available_width() - Spacing::LG;
+                    let left_width = content_width * 560.0 / 940.0;
+                    let right_width = content_width - left_width;
+                    ui.horizontal_top(|ui| {
+                        ui.spacing_mut().item_spacing.x = Spacing::LG;
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(left_width, 0.0),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                ui.set_width(left_width);
+                                action |= self.render_social_profile(ui, app_context, &identity);
+                            },
+                        );
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(right_width, 0.0),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                ui.set_width(right_width);
+                                action |= self.render_usernames(ui, app_context, &identity);
+                            },
+                        );
                     });
                 } else {
                     action |= self.render_social_profile(ui, app_context, &identity);
@@ -457,9 +476,12 @@ impl SettingsTab {
             ui.scroll_to_cursor(Some(egui::Align::TOP));
             self.focus_usernames = false;
         }
-        username_section_header(ui, identity.identity_type, dark_mode);
-        let action = self.usernames_card.show(ui, app_context, identity);
-        ui.add_space(12.0);
+        let action = super::home::card(ui, |ui| {
+            section_heading(ui, "Usernames", dark_mode);
+            ui.add_space(Spacing::XS);
+            self.usernames_card.show(ui, app_context, identity)
+        });
+        ui.add_space(Spacing::MD);
         action
     }
 
@@ -472,8 +494,16 @@ impl SettingsTab {
         let mut action = AppAction::None;
         let dark_mode = ui.ctx().global_style().visuals.dark_mode;
 
-        // 1. Identity type + raw ID + (optional) ProTxHash.
+        // 1. Identity type + raw ID + (optional) ProTxHash. The type badge
+        // lives here, not beside the usernames (A08; design-spec §B.8).
         sub_heading(ui, "Identity", dark_mode);
+        let kind = HeroIdentityKind::from(identity.identity_type);
+        pill::accent_pill(
+            ui,
+            kind.badge_label(),
+            kind.badge_accent(),
+            Some(kind.badge_tooltip()),
+        );
         let id_base58 = identity.identity.id().to_string(Encoding::Base58);
         ui.horizontal(|ui| {
             ui.label(RichText::new("Identity ID").color(DashColors::text_secondary(dark_mode)));
@@ -923,22 +953,6 @@ fn section_heading(ui: &mut Ui, text: &str, dark_mode: bool) {
     ui.add_space(4.0);
 }
 
-fn username_section_header(ui: &mut Ui, identity_type: IdentityType, dark_mode: bool) {
-    let kind = HeroIdentityKind::from(identity_type);
-    ui.horizontal(|ui| {
-        section_heading(ui, "Usernames", dark_mode);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            pill::accent_pill(
-                ui,
-                kind.badge_label(),
-                kind.badge_accent(),
-                Some(kind.badge_tooltip()),
-            );
-        });
-    });
-    ui.add_space(Spacing::XS);
-}
-
 fn sub_heading(ui: &mut Ui, text: &str, dark_mode: bool) {
     ui.label(
         RichText::new(text)
@@ -1341,28 +1355,6 @@ mod tests {
         assert_eq!(string_if_set(""), None);
         assert_eq!(string_if_set("   "), None);
         assert_eq!(string_if_set("  alex  "), Some("alex".to_string()));
-    }
-
-    #[test]
-    fn username_heading_and_identity_badge_share_a_row() {
-        use egui_kittest::Harness;
-        use egui_kittest::kittest::Queryable;
-
-        let mut harness = Harness::builder()
-            .with_size(egui::vec2(400.0, 100.0))
-            .build_ui(|ui| {
-                let dark_mode = ui.ctx().global_style().visuals.dark_mode;
-                username_section_header(ui, IdentityType::User, dark_mode);
-            });
-        harness.run();
-
-        let heading = harness.get_by_label("Usernames").rect().center();
-        let badge = harness.get_by_label("User identity").rect().center();
-        assert!(
-            (heading.y - badge.y).abs() <= 1.0,
-            "the badge and heading must share a visual baseline",
-        );
-        assert!(badge.x > heading.x, "the badge must sit to the right");
     }
 
     /// IT-SETTINGS-01 (section-heading slice) — verifies the three required

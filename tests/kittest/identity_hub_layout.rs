@@ -185,3 +185,56 @@ fn home_stays_within_the_content_width() {
         });
     }
 }
+
+#[test]
+fn profile_keeps_the_form_and_the_usernames_card_side_by_side() {
+    for width in WIDTHS {
+        with_isolated_data_dir(|| {
+            let (_runtime, app_context) = fresh_app_context();
+            let hub = hub_on(&app_context, width, IdentityHubTab::Settings);
+            let tab_bottom = hub.get_by_label("Home").rect().bottom();
+
+            let usernames = hub.get_by_label("Usernames").rect();
+            let form_right = hub
+                .query_all_by_role(Role::TextInput)
+                .chain(hub.query_all_by_role(Role::MultilineTextInput))
+                .map(|field| field.rect().right())
+                .fold(f32::MIN, f32::max);
+            assert!(
+                form_right < usernames.left(),
+                "at {width} px, the profile form ({form_right}) must end before the \
+                 usernames card ({})",
+                usernames.left()
+            );
+
+            let another = hub
+                .get_by_role_and_label(Role::Button, "Get another username")
+                .rect();
+            assert!(
+                another.width() <= 420.0,
+                "at {width} px, Get another username must stay card-sized, is {}",
+                another.width()
+            );
+            assert_within_content(&hub, "the usernames card", another, width);
+
+            let menu = hub
+                .query_all_by_label("•••")
+                .map(|node| node.rect())
+                .find(|rect| rect.top() > tab_bottom)
+                .expect("a username has a menu");
+            assert!(
+                (menu.right() - another.right()).abs() <= 24.0,
+                "at {width} px, a username's menu belongs at the card's right edge: \
+                 {menu:?} vs {another:?}"
+            );
+
+            if let Some(badge) = hub.query_by_label("User identity") {
+                let advanced = hub.get_by_label("Advanced").rect();
+                assert!(
+                    badge.rect().top() > advanced.bottom(),
+                    "at {width} px, the identity type belongs under Advanced"
+                );
+            }
+        });
+    }
+}

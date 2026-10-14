@@ -698,12 +698,9 @@ impl SettingsTab {
         // `incoming` is the app-scoped active identity the hub resolved
         // (selected → first → none), not `.first()`, so the Settings tab agrees
         // with the breadcrumb/hub and does not flip-flop across frames (D4).
-        let incoming = incoming.cloned();
-
-        let changed = self.reconcile_selected_identity(&incoming);
+        let changed = self.reconcile_selected_identity(incoming);
 
         if changed {
-            self.selected_identity = incoming;
             self.profile_loaded = false;
             // Clear the editor to a clean slate; fields repopulate once the
             // async profile load lands (see `load_cached_profile`).
@@ -724,17 +721,17 @@ impl SettingsTab {
         }
     }
 
-    fn reconcile_selected_identity(&mut self, incoming: &Option<QualifiedIdentity>) -> bool {
-        let changed = match (&self.selected_identity, incoming) {
-            (Some(a), Some(b)) => a.identity.id() != b.identity.id(),
+    /// Retain the refreshed snapshot of `incoming` (cloned once) and report
+    /// whether it is a different identity than the one shown, so the caller
+    /// resets the editor only on a switch. A same-identity refresh still
+    /// replaces the snapshot, so key and balance changes reach the tab.
+    fn reconcile_selected_identity(&mut self, incoming: Option<&QualifiedIdentity>) -> bool {
+        let changed = match (self.selected_identity.as_ref(), incoming) {
+            (Some(shown), Some(incoming)) => shown.identity.id() != incoming.identity.id(),
             (None, Some(_)) | (Some(_), None) => true,
             (None, None) => false,
         };
-
-        if !changed {
-            self.selected_identity = incoming.clone();
-        }
-
+        self.selected_identity = incoming.cloned();
         changed
     }
 
@@ -1040,7 +1037,7 @@ mod tests {
         let mut tab = SettingsTab::new();
         tab.selected_identity = Some(stale);
 
-        let changed_identity = tab.reconcile_selected_identity(&Some(refreshed));
+        let changed_identity = tab.reconcile_selected_identity(Some(&refreshed));
 
         assert!(!changed_identity, "the selected identity ID did not change");
         assert_eq!(
@@ -1052,6 +1049,42 @@ mod tests {
                 .len(),
             1,
             "a refresh must replace the selected identity's complete key set",
+        );
+    }
+
+    /// A refresh of the shown identity replaces its snapshot but keeps the
+    /// user's unsaved edits; switching to another identity clears them.
+    #[test]
+    fn same_identity_refresh_keeps_edits_and_a_switch_resets_the_editor() {
+        use super::super::profile_cache::ProfileCache;
+        let shown = qualified_identity();
+        let mut profiles = ProfileCache::default();
+        let mut tab = SettingsTab::new();
+        tab.ensure_selected(Some(&shown), &mut profiles);
+        tab.profile_loaded = true;
+        tab.edit_display_name = "Draft".into();
+
+        let mut refreshed = shown.clone();
+        let key = IdentityPublicKey::random_key(7, Some(7), PlatformVersion::latest());
+        refreshed.identity.public_keys_mut().insert(7, key);
+        tab.ensure_selected(Some(&refreshed), &mut profiles);
+        assert_eq!(tab.edit_display_name, "Draft", "a refresh keeps edits");
+        assert!(
+            tab.selected_identity
+                .as_ref()
+                .is_some_and(|identity| identity.identity.public_keys().len() == 1),
+            "a refresh replaces the snapshot"
+        );
+
+        let other = qualified_identity_with_id(9);
+        tab.ensure_selected(Some(&other), &mut profiles);
+        assert!(
+            tab.edit_display_name.is_empty(),
+            "a switch resets the editor"
+        );
+        assert_eq!(
+            tab.selected_identity.as_ref().map(|i| i.identity.id()),
+            Some(other.identity.id())
         );
     }
 

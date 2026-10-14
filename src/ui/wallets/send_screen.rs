@@ -1,4 +1,4 @@
-use crate::app::{AppAction, BackendTasksExecutionMode};
+use crate::app::AppAction;
 use crate::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
 use crate::backend_task::error::{TaskError, ensure_funding_covers_network_fee};
 use crate::backend_task::identity::{IdentityTask, IdentityTopUpInfo, TopUpIdentityFundingMethod};
@@ -17,7 +17,8 @@ use crate::model::fee_estimation::{
     allocate_platform_addresses_with_fee, core_max_send_amount_duffs, core_max_send_reserve_duffs,
     estimate_address_funding_fee_from_transition, estimate_core_l1_send_fee_duffs,
     estimate_platform_fee, estimate_withdrawal_fee_from_transition, format_credits_as_dash,
-    format_duffs_as_dash, identity_topup_min_funding_duffs, shield_from_balance_fee_headroom,
+    format_duffs_as_dash, identity_topup_min_funding_duffs, max_spendable_credits,
+    shield_from_balance_fee_headroom,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::user_role::UserRole;
@@ -34,6 +35,9 @@ use crate::ui::components::wallet_unlock_popup::{
 };
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::identity::funding_common::{FUNDING_FEE_NOT_COVERED, network_fee_refusal};
+use crate::ui::identity::top_up_identity_screen::{
+    top_up_awaits_result, top_up_in_flight_for, track_top_up_sent_elsewhere,
+};
 use crate::ui::state::AssetLockBalanceCache;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::wallets::shielded_tab::SHIELDED_FROM_CORE_WITHOUT_AMOUNT;
@@ -295,6 +299,17 @@ fn fee_summary_row(ui: &mut Ui, dark_mode: bool, label: &str, value_credits: u64
     ui.end_row();
 }
 
+/// Identity-bound entry points into the shared send form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdentitySendMode {
+    /// Spend the selected identity's balance.
+    Send,
+    /// Fund the selected identity from a selectable source.
+    TopUp,
+    /// Withdraw only to a receiving address belonging to a loaded wallet.
+    MoveToWallet,
+}
+
 pub struct WalletSendScreen {
     pub app_context: Arc<AppContext>,
     pub selected_wallet: Option<Arc<RwLock<Wallet>>>,
@@ -327,6 +342,10 @@ pub struct WalletSendScreen {
 
     // State
     send_status: SendStatus,
+    /// The send this screen dispatched and waits on. While it waits, only the
+    /// outcome of that send ends the wait: failures of other tasks reach the
+    /// visible screen too, and are not about this payment.
+    pending_send: Option<BackendTaskContext>,
     send_banner: Option<BannerHandle>,
     send_confirmation: Option<PendingSendConfirmation>,
     asset_lock_balance: AssetLockBalanceCache,
@@ -334,41 +353,38 @@ pub struct WalletSendScreen {
     /// Preset flow this screen was opened for. `General` is the full send
     /// screen; the shielded presets lock source/destination for that flow.
     flow: SendFlow,
+    identity_flow: Option<(QualifiedIdentity, IdentitySendMode)>,
 
     // Wallet unlock
     wallet_unlock_popup: WalletUnlockPopup,
     wallet_open_attempted: bool,
 }
 
+/// Refusal of a top-up while another top-up of the same identity runs.
+const TOP_UP_ALREADY_RUNNING: &str = "Funds are already being added to this identity. Wait for that transfer to finish, then try again.";
+
 /// Merge the confirmation dialog's action into the frame action. The dialog
-/// consumes the click and clears itself, so a confirmed send is one-shot:
-/// it appends to a compatible task batch, and otherwise takes the pre-existing
-/// `AppAction` `|=` precedence over a same-frame navigation action — it is
-/// never silently dropped.
+/// consumes the click and clears itself, so a confirmed send is one-shot: it
+/// takes the `AppAction` `|=` precedence over a same-frame navigation action
+/// and is never silently dropped. It goes out under a context of its own, which
+/// a task batch cannot carry, so it does not join one.
 fn merge_confirmation_action(mut action: AppAction, confirmation_action: AppAction) -> AppAction {
-    if can_append_concurrent_backend_tasks(&action) {
-        match confirmation_action {
-            AppAction::BackendTask(task) => append_concurrent_backend_tasks(action, vec![task]),
-            AppAction::BackendTasks(tasks, BackendTasksExecutionMode::Concurrent) => {
-                append_concurrent_backend_tasks(action, tasks)
-            }
-            other => {
-                action |= other;
-                action
-            }
-        }
-    } else {
-        action |= confirmation_action;
-        action
-    }
+    action |= confirmation_action;
+    action
 }
 
 impl WalletSendScreen {
     pub fn new(app_context: &Arc<AppContext>, wallet: Arc<RwLock<Wallet>>) -> Self {
-        let seed_hash = wallet.read().ok().map(|w| w.seed_hash());
+        Self::new_with_wallet(app_context, Some(wallet))
+    }
+
+    fn new_with_wallet(app_context: &Arc<AppContext>, wallet: Option<Arc<RwLock<Wallet>>>) -> Self {
+        let seed_hash = wallet
+            .as_ref()
+            .and_then(|w| w.read().ok().map(|w| w.seed_hash()));
         Self {
             app_context: app_context.clone(),
-            selected_wallet: Some(wallet),
+            selected_wallet: wallet,
             selected_wallet_seed_hash: seed_hash,
             selected_source: Some(SourceSelection::CoreWallet),
             address_input: None,
@@ -391,12 +407,112 @@ impl WalletSendScreen {
             fee_strategy: PlatformFeeStrategy::default(),
             selected_identity: None,
             send_status: SendStatus::NotStarted,
+            pending_send: None,
             send_banner: None,
             send_confirmation: None,
             asset_lock_balance: AssetLockBalanceCache::default(),
             flow: SendFlow::General,
+            identity_flow: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             wallet_open_attempted: false,
+        }
+    }
+
+    /// Open Send with a fixed identity sender, or Top up with a fixed recipient.
+    pub fn for_identity(
+        app_context: &Arc<AppContext>,
+        identity: QualifiedIdentity,
+        mode: IdentitySendMode,
+    ) -> Self {
+        let wallet = identity
+            .associated_wallets
+            .values()
+            .next()
+            .cloned()
+            .or_else(|| {
+                app_context
+                    .wallet_context()
+                    .wallets()
+                    .values()
+                    .next()
+                    .cloned()
+            });
+        let mut screen = Self::new_with_wallet(app_context, wallet);
+        screen.identity_flow = Some((identity, mode));
+        screen.restore_identity_constraint();
+        screen
+    }
+
+    /// Identity and mode retained across retries and Send another.
+    pub fn identity_flow(&self) -> Option<&(QualifiedIdentity, IdentitySendMode)> {
+        self.identity_flow.as_ref()
+    }
+
+    fn refresh_bound_identity(&mut self) {
+        if let Some((identity, _)) = &mut self.identity_flow
+            && identity.network == self.app_context.network()
+            && let Ok(Some(current)) = self.app_context.get_identity_by_id(&identity.identity.id())
+        {
+            *identity = current;
+        }
+        self.restore_identity_constraint();
+    }
+
+    /// Whether the bound identity still occupies its fixed side of the form.
+    /// Holds trivially when the form has no bound identity.
+    fn identity_constraint_holds(&self) -> bool {
+        let Some((identity, mode)) = &self.identity_flow else {
+            return true;
+        };
+        identity.network == self.app_context.network()
+            && match mode {
+                IdentitySendMode::Send | IdentitySendMode::MoveToWallet => {
+                    matches!(&self.selected_source,
+                        Some(SourceSelection::Identity(source)) if source.identity.id() == identity.identity.id())
+                }
+                IdentitySendMode::TopUp => {
+                    self.validated_destination
+                        .as_ref()
+                        .and_then(ValidatedAddress::as_identity_id)
+                        == Some(&identity.identity.id())
+                }
+            }
+    }
+
+    /// Per-frame guard: rebinds only when a frame finds the binding changed,
+    /// so an intact binding costs no clone.
+    fn keep_identity_constraint(&mut self) {
+        if !self.identity_constraint_holds() {
+            self.restore_identity_constraint();
+        }
+    }
+
+    fn restore_identity_constraint(&mut self) {
+        let Some((identity, mode)) = &self.identity_flow else {
+            return;
+        };
+        if identity.network != self.app_context.network() {
+            return;
+        }
+        match mode {
+            IdentitySendMode::Send | IdentitySendMode::MoveToWallet => {
+                self.selected_source = Some(SourceSelection::Identity(Box::new(identity.clone())));
+                self.selected_identity = Some(identity.clone());
+            }
+            IdentitySendMode::TopUp => {
+                self.validated_destination = Some(ValidatedAddress::Identity {
+                    id: identity.identity.id(),
+                    dpns_name: self.app_context.main_username(identity),
+                });
+            }
+        }
+    }
+
+    fn heading(&self) -> &'static str {
+        match self.identity_flow.as_ref().map(|(_, mode)| mode) {
+            Some(IdentitySendMode::TopUp) => "Top up identity",
+            Some(IdentitySendMode::MoveToWallet) => "Move to wallet",
+            _ => self.flow.heading(),
         }
     }
 
@@ -503,12 +619,58 @@ impl WalletSendScreen {
         }];
         self.fee_strategy = PlatformFeeStrategy::default();
         self.send_status = SendStatus::NotStarted;
+        self.pending_send = None;
         self.send_confirmation = None;
         self.asset_lock_balance.invalidate();
+        self.refresh_bound_identity();
     }
 
-    fn mark_sending(&mut self) {
+    /// Enters the waiting state for the send dispatched as `request`.
+    fn mark_sending(&mut self, request: BackendTaskContext) {
         self.send_status = SendStatus::WaitingForResult;
+        self.pending_send = Some(request);
+    }
+
+    /// Whether this screen waits on the outcome of a send it dispatched.
+    fn awaits_own_send(&self) -> bool {
+        self.pending_send.is_some() && matches!(self.send_status, SendStatus::WaitingForResult)
+    }
+
+    /// Whether `context` is the send this screen dispatched and still waits on.
+    pub(crate) fn awaits_send(&self, context: &BackendTaskContext) -> bool {
+        self.awaits_own_send() && self.pending_send.as_ref() == Some(context)
+    }
+
+    /// Hand the form back once the top-up it sent has ended without the result
+    /// reaching it: only a screen in view when its top-up ends is told how.
+    fn resume_after_unseen_top_up_end(&mut self) {
+        let Some(dispatch) = &self.pending_send else {
+            return;
+        };
+        if !self.awaits_own_send()
+            || dispatch.identity_top_up_identity().is_none()
+            || top_up_awaits_result(self.app_context.egui_ctx(), dispatch)
+        {
+            return;
+        }
+        // The top-up may have succeeded, so the form must not offer it again.
+        self.send_banner.take_and_clear();
+        self.reset_form();
+    }
+
+    /// Dispatches a confirmed send under a context of its own, so that its
+    /// outcome can be told apart from every other task's.
+    fn dispatch_send(&mut self, action: AppAction) -> AppAction {
+        let AppAction::BackendTask(task) = action else {
+            // Every send is prepared as one task; anything else has no context to wait on.
+            self.send_status = SendStatus::WaitingForResult;
+            self.pending_send = None;
+            return action;
+        };
+        let context = BackendTaskContext::for_dispatch_on(&task, self.app_context.network());
+        track_top_up_sent_elsewhere(&self.app_context, &context);
+        self.mark_sending(context.clone());
+        AppAction::BackendTaskWithContext { task, context }
     }
 
     /// Renders the fee summary appended to a completed-send message. Shows the
@@ -852,6 +1014,17 @@ impl WalletSendScreen {
         self.validated_destination.as_ref().map(|v| v.kind())
     }
 
+    /// Fee an identity sender keeps back for the chosen destination. Max and
+    /// send validation both read it, so they cannot reserve different amounts.
+    fn identity_source_fee_reserve(&self) -> u64 {
+        let fee_estimator = self.app_context.fee_estimator();
+        match self.destination_kind() {
+            Some(AddressKind::Core) => fee_estimator.estimate_credit_withdrawal(),
+            Some(AddressKind::Platform) => fee_estimator.estimate_credit_transfer_to_addresses(1),
+            _ => fee_estimator.estimate_credit_transfer(),
+        }
+    }
+
     /// Returns the destination address string, from the validated address if
     /// available or an empty string otherwise.
     fn destination_address_string(&self) -> String {
@@ -862,6 +1035,24 @@ impl WalletSendScreen {
     }
 
     fn validated_send_route(&self) -> Result<ValidatedSendRoute, String> {
+        if !self.identity_constraint_holds() {
+            return Err("This form no longer matches the selected identity or network. Return to the identity and open it again.".into());
+        }
+        if matches!(
+            self.identity_flow,
+            Some((_, IdentitySendMode::MoveToWallet))
+        ) {
+            let is_own_address = match &self.validated_destination {
+                Some(ValidatedAddress::Core(address)) => self
+                    .address_input_wallets()
+                    .iter()
+                    .any(|(_, _, paths, _)| paths.contains_key(address)),
+                _ => false,
+            };
+            if !is_own_address {
+                return Err("Choose a receiving address from one of your wallets.".into());
+            }
+        }
         let source = self
             .selected_source
             .as_ref()
@@ -944,6 +1135,31 @@ impl WalletSendScreen {
 
     /// Validate and execute the send based on detected types
     fn validate_and_send(&mut self) -> Result<AppAction, String> {
+        let route = self.validated_send_route()?;
+        if matches!(
+            route,
+            ValidatedSendRoute::CoreToIdentity | ValidatedSendRoute::PlatformToIdentity(_)
+        ) && self
+            .validated_destination
+            .as_ref()
+            .and_then(|destination| destination.as_identity_id())
+            .is_some_and(|identity_id| {
+                top_up_in_flight_for(self.app_context.egui_ctx(), identity_id)
+            })
+        {
+            return Err(TOP_UP_ALREADY_RUNNING.to_string());
+        }
+        // Identity signing uses its own key access, including identities imported without a wallet.
+        match route {
+            ValidatedSendRoute::IdentityToCore(qi) => return self.send_identity_to_core(*qi),
+            ValidatedSendRoute::IdentityToPlatform(qi) => {
+                return self.send_identity_to_platform(*qi);
+            }
+            ValidatedSendRoute::IdentityToIdentity(qi) => {
+                return self.send_identity_to_identity(*qi);
+            }
+            _ => {}
+        }
         let wallet = self.selected_wallet.as_ref().ok_or("No wallet selected")?;
 
         let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
@@ -953,8 +1169,6 @@ impl WalletSendScreen {
         }
 
         let seed_hash = wallet_guard.seed_hash();
-
-        let route = self.validated_send_route()?;
 
         drop(wallet_guard);
 
@@ -1373,7 +1587,14 @@ impl WalletSendScreen {
                         self.reset_form();
                     }
                     ui.add_space(8.0);
-                    if ui.button("Back to Wallet").clicked() {
+                    if ui
+                        .button(if self.identity_flow.is_some() {
+                            "Back to identity"
+                        } else {
+                            "Back to Wallet"
+                        })
+                        .clicked()
+                    {
                         action = AppAction::PopScreenAndRefresh;
                     }
 
@@ -1404,25 +1625,51 @@ impl WalletSendScreen {
     fn render_unified_send(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
 
-        // Wallet info
-        self.render_wallet_info(ui);
-
-        // Wallet unlock if needed
-        if !self.render_unlock_gate(ui) {
-            return AppAction::None;
+        self.keep_identity_constraint();
+        let identity_sender = matches!(
+            self.identity_flow,
+            Some((_, IdentitySendMode::Send | IdentitySendMode::MoveToWallet))
+        );
+        if matches!(self.identity_flow, Some((_, IdentitySendMode::TopUp))) {
+            self.render_funding_wallet(ui);
+        } else if !identity_sender {
+            self.render_wallet_info(ui);
         }
 
         ui.add_space(10.0);
 
         // Source selection
-        self.render_source_selection(ui);
+        if let Some((identity, IdentitySendMode::Send | IdentitySendMode::MoveToWallet)) =
+            &self.identity_flow
+        {
+            ui.label("Send from");
+            ui.strong(self.app_context.identity_display_label(identity));
+            ui.label(format!(
+                "Identity balance: {}",
+                format_credits_as_dash(identity.identity.balance())
+            ));
+        } else {
+            self.render_source_selection(ui);
+        }
+
+        if !matches!(self.selected_source, Some(SourceSelection::Identity(_)))
+            && !self.render_unlock_gate(ui)
+        {
+            return AppAction::None;
+        }
 
         ui.add_space(10.0);
         ui.separator();
         ui.add_space(10.0);
 
         // Destination address
-        self.render_destination_input(ui);
+        if let Some((identity, IdentitySendMode::TopUp)) = &self.identity_flow {
+            ui.label("Send to");
+            ui.strong(self.app_context.identity_display_label(identity));
+            self.keep_identity_constraint();
+        } else {
+            self.render_destination_input(ui);
+        }
 
         ui.add_space(10.0);
         ui.separator();
@@ -1450,6 +1697,33 @@ impl WalletSendScreen {
         action |= self.render_send_button(ui);
 
         action
+    }
+
+    fn render_funding_wallet(&mut self, ui: &mut Ui) {
+        use crate::model::wallet::balance_summary::WalletChoice;
+        use crate::ui::components::wallet_selector::WalletSelector;
+        let mut selector = WalletSelector::new("identity_top_up_wallet");
+        selector.set_entries(self.app_context.wallet_selector_entries(false));
+        selector.set_selected(
+            self.selected_wallet
+                .as_deref()
+                .map(WalletChoice::of_hd_wallet),
+        );
+        let response = selector.show(ui).inner;
+        if response.has_changed()
+            && let Some(WalletChoice::Hd(seed_hash)) = response.changed_value()
+        {
+            let wallet = self
+                .app_context
+                .wallet_context()
+                .wallets()
+                .get(seed_hash)
+                .cloned();
+            self.selected_wallet = wallet;
+            self.selected_wallet_seed_hash = Some(*seed_hash);
+            self.wallet_open_attempted = false;
+            self.reset_form();
+        }
     }
 
     /// Keep a preset flow's source (and, for `Shield`, the sentinel own-pool
@@ -1818,7 +2092,7 @@ impl WalletSendScreen {
             })?;
 
         let identity_index = qualified_identity.wallet_index.unwrap_or(0);
-        let top_up_index = qualified_identity.top_ups.len() as u32;
+        let top_up_index = qualified_identity.next_top_up_index();
 
         let wallet = self
             .selected_wallet
@@ -1984,6 +2258,14 @@ impl WalletSendScreen {
             ));
         }
 
+        self.ensure_identity_amount_leaves_fee(amount_credits, identity_balance)?;
+
+        // The backend chooses the key by the same rule; asking here refuses a
+        // withdrawal no key can sign before the confirmation.
+        qualified_identity
+            .resolve_withdrawal_signing_key(None)
+            .map_err(|_| TaskError::NoUsableWithdrawalKey.to_string())?;
+
         let core_address = self
             .validated_destination
             .as_ref()
@@ -1998,6 +2280,29 @@ impl WalletSendScreen {
                 None,
             ),
         )))
+    }
+
+    /// Refuses an amount that, with the fee the destination reserves paid on top
+    /// from the same balance, the identity cannot cover.
+    fn ensure_identity_amount_leaves_fee(
+        &self,
+        amount_credits: u64,
+        identity_balance: u64,
+    ) -> Result<(), String> {
+        let spendable = max_spendable_credits(identity_balance, self.identity_source_fee_reserve());
+        if spendable == 0 {
+            return Err(
+                "This identity's balance is too low to cover the network fee. Top up the identity and try again."
+                    .to_string(),
+            );
+        }
+        if amount_credits > spendable {
+            let max = format_credits_as_dash(spendable);
+            return Err(format!(
+                "This amount leaves too little in the identity to pay the network fee. Enter {max} or less."
+            ));
+        }
+        Ok(())
     }
 
     /// Transfer identity credits to Platform address (Identity -> Platform).
@@ -2023,6 +2328,8 @@ impl WalletSendScreen {
             ));
         }
 
+        self.ensure_identity_amount_leaves_fee(amount_credits, identity_balance)?;
+
         let platform_addr = self
             .validated_destination
             .as_ref()
@@ -2032,11 +2339,12 @@ impl WalletSendScreen {
         let mut outputs = BTreeMap::new();
         outputs.insert(platform_addr, amount_credits);
 
+        let key_id = Self::transfer_signing_key_id(&qualified_identity)?;
         Ok(AppAction::BackendTask(BackendTask::IdentityTask(
             IdentityTask::TransferToAddresses {
                 identity: qualified_identity,
                 outputs,
-                key_id: None,
+                key_id: Some(key_id),
             },
         )))
     }
@@ -2064,6 +2372,8 @@ impl WalletSendScreen {
             ));
         }
 
+        self.ensure_identity_amount_leaves_fee(amount_credits, identity_balance)?;
+
         let to_identity_id = self
             .validated_destination
             .as_ref()
@@ -2078,9 +2388,25 @@ impl WalletSendScreen {
             );
         }
 
+        let key_id = Self::transfer_signing_key_id(&qualified_identity)?;
         Ok(AppAction::BackendTask(BackendTask::IdentityTask(
-            IdentityTask::Transfer(qualified_identity, to_identity_id, amount_credits, None),
+            IdentityTask::Transfer(
+                qualified_identity,
+                to_identity_id,
+                amount_credits,
+                Some(key_id),
+            ),
         )))
+    }
+
+    /// The key that signs a transfer from `identity`, chosen here so a send no
+    /// key in this app can sign is refused before the confirmation.
+    fn transfer_signing_key_id(
+        identity: &QualifiedIdentity,
+    ) -> Result<dash_sdk::dpp::identity::KeyID, String> {
+        identity
+            .resolve_transfer_signing_key(None)
+            .map_err(|_| TaskError::NoUsableTransferKey.to_string())
     }
 
     fn render_source_selection(&mut self, ui: &mut Ui) {
@@ -2195,7 +2521,10 @@ impl WalletSendScreen {
         }
 
         // Identity source option — visible when identities exist or developer mode
-        let identities = self.get_loaded_identities();
+        let mut identities = self.get_loaded_identities();
+        if let Some((recipient, IdentitySendMode::TopUp)) = &self.identity_flow {
+            identities.retain(|source| source.identity.id() != recipient.identity.id());
+        }
         // READ-only seed (R1, W5): if no identity is pre-selected yet, try the app-scoped
         // identity — but only if it belongs to this wallet's identity list.
         // No syncing_global: the send screen is wallet-primary; K1 reconcile would fight it.
@@ -2330,7 +2659,8 @@ impl WalletSendScreen {
         // Shielded balance option (experimental, and only where the network
         // defines the shielded state transitions).
         let shielded_balance = self.get_shielded_balance();
-        if FeatureGate::ShieldedOperations.is_available(&self.app_context)
+        if !matches!(self.identity_flow, Some((_, IdentitySendMode::TopUp)))
+            && FeatureGate::ShieldedOperations.is_available(&self.app_context)
             && let Some((seed_hash, balance)) = shielded_balance
             && balance > 0
         {
@@ -2382,6 +2712,12 @@ impl WalletSendScreen {
     /// the selected source. Shielded destinations are offered only where the
     /// network can settle them and the feature is unlocked.
     fn general_destination_kinds(&self) -> Vec<AddressKind> {
+        if matches!(
+            self.identity_flow,
+            Some((_, IdentitySendMode::MoveToWallet))
+        ) {
+            return vec![AddressKind::Core];
+        }
         let shielded_enabled = FeatureGate::ShieldedOperations.is_available(&self.app_context);
         match &self.selected_source {
             Some(SourceSelection::CoreWallet) => {
@@ -2436,6 +2772,16 @@ impl WalletSendScreen {
             builder = builder.with_wallets(wallets);
         }
 
+        if matches!(
+            self.identity_flow,
+            Some((_, IdentitySendMode::MoveToWallet))
+        ) {
+            builder = builder
+                .with_selection_only(true)
+                .with_dpns_resolution(false)
+                .with_label("Receive in your wallet")
+                .with_hint_text("Choose one of your wallet addresses");
+        }
         // Add identities for autocomplete by profile name or username.
         if !loaded_identities.is_empty() {
             builder = builder.with_identities(&self.app_context, loaded_identities);
@@ -2452,7 +2798,19 @@ impl WalletSendScreen {
         } else {
             None
         };
-        self.get_loaded_identities()
+        // An identity-bound send reaches any identity on this device, as the
+        // identity transfer screen did; a wallet send keeps to its wallet's.
+        let identities = if self.identity_flow.is_some() {
+            #[cfg(test)]
+            self.identity_load_count
+                .set(self.identity_load_count.get() + 1);
+            self.app_context
+                .load_local_qualified_identities()
+                .unwrap_or_default()
+        } else {
+            self.get_loaded_identities()
+        };
+        identities
             .into_iter()
             .filter(|qi| Some(qi.identity.id()) != source_identity_id)
             .collect()
@@ -2773,9 +3131,8 @@ impl WalletSendScreen {
                 Some("The maximum is based on your shielded pool balance.".to_string()),
             ),
             Some(SourceSelection::Identity(qi)) => {
-                let balance = qi.identity.balance();
-                let estimated_fee = fee_estimator.estimate_credit_transfer();
-                let available = balance.saturating_sub(estimated_fee);
+                let estimated_fee = self.identity_source_fee_reserve();
+                let available = max_spendable_credits(qi.identity.balance(), estimated_fee);
                 let fee = format_credits_as_dash(estimated_fee);
                 (
                     Some(available),
@@ -3053,7 +3410,7 @@ impl WalletSendScreen {
             }
             // Identity → Platform / Identity: credit-transfer fee, paid on top.
             (SourceSelection::Identity(_), AddressKind::Platform | AddressKind::Identity) => {
-                let fee_credits = fee_estimator.estimate_credit_transfer();
+                let fee_credits = self.identity_source_fee_reserve();
                 Some(FeePreview::on_top(amount_credits, fee_credits))
             }
             // Identity → Shielded, Shielded → anything, Core → Identity: the fee
@@ -3386,9 +3743,8 @@ impl WalletSendScreen {
                 let Some(pending) = self.send_confirmation.take() else {
                     return AppAction::None;
                 };
-                self.mark_sending();
                 self.set_send_progress_banner(ui.ctx());
-                *pending.action
+                self.dispatch_send(*pending.action)
             }
             Some(ConfirmationStatus::Canceled) => {
                 self.send_confirmation = None;
@@ -3411,7 +3767,9 @@ impl WalletSendScreen {
         let has_source = self.selected_source.is_some();
 
         let is_sending = matches!(self.send_status, SendStatus::WaitingForResult);
-        let can_send = wallet_open && !is_sending && has_destination && has_amount && has_source;
+        let source_ready =
+            matches!(self.selected_source, Some(SourceSelection::Identity(_))) || wallet_open;
+        let can_send = source_ready && !is_sending && has_destination && has_amount && has_source;
 
         ui.horizontal(|ui| {
             if ui.button("Cancel").clicked() {
@@ -3489,9 +3847,12 @@ impl WalletSendScreen {
 
     #[cfg(feature = "testing")]
     #[doc(hidden)]
-    /// Enters the waiting state a dispatched transfer leaves the screen in.
-    pub fn mark_sending_for_test(&mut self) {
-        self.mark_sending();
+    /// Dispatches `task` the way a confirmed send does and returns its context,
+    /// without handing the task to the backend.
+    pub fn dispatch_send_for_test(&mut self, task: BackendTask) -> Option<BackendTaskContext> {
+        // The task is dropped on purpose: no funds may move in a test.
+        let _action = self.dispatch_send(AppAction::BackendTask(task));
+        self.pending_send.clone()
     }
 
     #[cfg(feature = "testing")]
@@ -4405,13 +4766,21 @@ impl ScreenLike for WalletSendScreen {
         let ctx = ui.ctx().clone();
         let ctx = &ctx;
         let mut action = AppAction::None;
+        self.resume_after_unseen_top_up_end();
 
         action |= add_top_panel(
             ui,
             &self.app_context,
             vec![
-                ("Wallets", AppAction::PopScreen),
-                (self.flow.heading(), AppAction::None),
+                (
+                    if self.identity_flow.is_some() {
+                        "Identities"
+                    } else {
+                        "Wallets"
+                    },
+                    AppAction::PopScreen,
+                ),
+                (self.heading(), AppAction::None),
             ],
             vec![],
         );
@@ -4419,13 +4788,29 @@ impl ScreenLike for WalletSendScreen {
         action |= add_left_panel(
             ui,
             &self.app_context,
-            RootScreenType::RootScreenWalletsBalances,
+            if self.identity_flow.is_some() {
+                RootScreenType::RootScreenIdentityHub
+            } else {
+                RootScreenType::RootScreenWalletsBalances
+            },
         );
 
         action |= island_central_panel(ui, |ui| {
             let mut inner_action = AppAction::None;
             let dark_mode = ui.style().visuals.dark_mode;
 
+            if self
+                .identity_flow
+                .as_ref()
+                .is_some_and(|(identity, _)| identity.network != self.app_context.network())
+            {
+                ui.label("The network changed. Return to the identity and open this form again.");
+                return if ui.button("Back to identity").clicked() {
+                    AppAction::PopScreen
+                } else {
+                    AppAction::None
+                };
+            }
             if let Some(status_action) = self.render_send_status(ui) {
                 return status_action;
             }
@@ -4439,11 +4824,11 @@ impl ScreenLike for WalletSendScreen {
                         // shielded presets hide the toggle.
                         ui.horizontal(|ui| {
                             ui.heading(
-                                RichText::new(self.flow.heading())
+                                RichText::new(self.heading())
                                     .color(DashColors::text_primary(dark_mode))
                                     .size(24.0),
                             );
-                            if !self.flow.is_preset() {
+                            if !self.flow.is_preset() && self.identity_flow.is_none() {
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
@@ -4505,6 +4890,11 @@ impl ScreenLike for WalletSendScreen {
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
+        // A message carries no task context, so while this screen waits on its
+        // own send it cannot be that send's outcome.
+        if self.awaits_own_send() {
+            return;
+        }
         match message_type {
             MessageType::Error | MessageType::Warning => {
                 self.send_banner.take_and_clear();
@@ -4663,17 +5053,45 @@ impl ScreenLike for WalletSendScreen {
         }
     }
 
+    fn display_backend_task_result(
+        &mut self,
+        context: &BackendTaskContext,
+        backend_task_success_result: crate::backend_task::BackendTaskSuccessResult,
+    ) {
+        // Other tasks end with results of the kinds a send ends with. While
+        // this screen waits on its own send, such a result may refresh what
+        // the form offers, but it neither completes that send nor ends its
+        // progress banner.
+        let waits_on_another_task = self.awaits_own_send() && !self.awaits_send(context);
+        let progress_banner = waits_on_another_task
+            .then(|| self.send_banner.take())
+            .flatten();
+        self.display_task_result(backend_task_success_result);
+        if waits_on_another_task {
+            self.send_banner = progress_banner;
+            self.send_status = SendStatus::WaitingForResult;
+        }
+    }
+
     fn refresh_on_arrival(&mut self) {
+        self.refresh_bound_identity();
         self.address_input_snapshot_signature = None;
         self.asset_lock_balance.invalidate();
     }
 
     fn refresh(&mut self) {
+        self.refresh_bound_identity();
         self.address_input_snapshot_signature = None;
         self.asset_lock_balance.invalidate();
     }
 
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+        if self.awaits_send(context) {
+            // The global banner says why; the form is handed back.
+            self.pending_send = None;
+            self.send_banner.take_and_clear();
+            self.send_status = SendStatus::Error;
+        }
         if let Some((seed_hash, snapshot_generation, request_id)) =
             context.asset_lock_max_amount_request()
         {
@@ -4697,6 +5115,7 @@ impl ScreenLike for WalletSendScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::BackendTasksExecutionMode;
     use crate::context::connection_status::ConnectionStatus;
     use crate::database::test_helpers::create_database_at_path;
     use crate::utils::tasks::TaskManager;
@@ -4777,6 +5196,844 @@ mod tests {
         )
     }
 
+    fn bound_identity() -> QualifiedIdentity {
+        use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
+        use crate::model::qualified_identity::{IdentityStatus, IdentityType};
+        use dash_sdk::dpp::identity::{Identity, accessors::IdentitySettersV0};
+        let mut identity = Identity::create_basic_identity(
+            dash_sdk::platform::Identifier::from([0xA3; 32]),
+            dash_sdk::dpp::version::PlatformVersion::latest(),
+        )
+        .expect("identity");
+        identity.set_balance(100_000_000_000);
+        QualifiedIdentity {
+            identity,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: None,
+            private_keys: KeyStorage::default(),
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: Network::Testnet,
+        }
+    }
+
+    #[test]
+    fn identity_send_keeps_sender_after_reset_without_a_wallet() {
+        let (ctx, _dir) = offline_ctx();
+        let identity = bound_identity();
+        let mut screen =
+            WalletSendScreen::for_identity(&ctx, identity.clone(), IdentitySendMode::Send);
+        assert!(screen.selected_wallet.is_none());
+        screen.reset_form();
+        screen.validated_destination = Some(identity_destination());
+        screen.amount = Some(Amount::new_dash(0.01));
+        assert!(
+            matches!(screen.validated_send_route(), Ok(ValidatedSendRoute::IdentityToIdentity(q)) if q.identity.id() == identity.identity.id())
+        );
+        screen.selected_source = Some(SourceSelection::CoreWallet);
+        assert!(
+            screen.validated_send_route().is_err(),
+            "a fixed sender cannot be replaced"
+        );
+    }
+
+    fn render_identity_form(screen: WalletSendScreen) -> Harness<'static, WalletSendScreen> {
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, screen: &mut WalletSendScreen| {
+                screen.render_unified_send(ui);
+            },
+            screen,
+        );
+        harness.run();
+        harness
+    }
+
+    /// Text the binding never writes, so it survives only while frames leave
+    /// the bound values alone.
+    const UNTOUCHED: &str = "untouched";
+
+    #[test]
+    fn identity_binding_is_not_rebuilt_on_frames_where_it_still_holds() {
+        let (ctx, _dir) = offline_ctx();
+
+        let mut screen =
+            WalletSendScreen::for_identity(&ctx, bound_identity(), IdentitySendMode::Send);
+        let Some(SourceSelection::Identity(sender)) = &mut screen.selected_source else {
+            panic!("Send binds the identity as the sender");
+        };
+        sender.alias = Some(UNTOUCHED.into());
+        let harness = render_identity_form(screen);
+        assert!(
+            matches!(&harness.state().selected_source,
+                Some(SourceSelection::Identity(sender)) if sender.alias.as_deref() == Some(UNTOUCHED)),
+            "an intact sender binding must not be cloned again every frame"
+        );
+
+        let mut screen =
+            WalletSendScreen::for_identity(&ctx, bound_identity(), IdentitySendMode::TopUp);
+        let Some(ValidatedAddress::Identity { dpns_name, .. }) = &mut screen.validated_destination
+        else {
+            panic!("Top up binds the identity as the recipient");
+        };
+        *dpns_name = Some(UNTOUCHED.into());
+        let harness = render_identity_form(screen);
+        assert!(
+            matches!(&harness.state().validated_destination,
+                Some(ValidatedAddress::Identity { dpns_name, .. }) if dpns_name.as_deref() == Some(UNTOUCHED)),
+            "an intact recipient binding must not be rebuilt every frame"
+        );
+    }
+
+    #[test]
+    fn identity_binding_is_restored_when_a_frame_finds_it_broken() {
+        let (ctx, _dir) = offline_ctx();
+        let identity = bound_identity();
+
+        let mut screen =
+            WalletSendScreen::for_identity(&ctx, identity.clone(), IdentitySendMode::Send);
+        screen.selected_source = Some(SourceSelection::CoreWallet);
+        let harness = render_identity_form(screen);
+        assert!(
+            matches!(&harness.state().selected_source,
+                Some(SourceSelection::Identity(sender)) if sender.identity.id() == identity.identity.id()),
+            "a replaced sender must be bound again"
+        );
+
+        let mut screen =
+            WalletSendScreen::for_identity(&ctx, identity.clone(), IdentitySendMode::TopUp);
+        screen.validated_destination = None;
+        let harness = render_identity_form(screen);
+        assert_eq!(
+            harness
+                .state()
+                .validated_destination
+                .as_ref()
+                .and_then(ValidatedAddress::as_identity_id),
+            Some(&identity.identity.id()),
+            "a cleared recipient must be bound again"
+        );
+    }
+
+    #[test]
+    fn identity_top_up_restores_recipient_and_rejects_other_targets() {
+        let (ctx, _dir) = offline_ctx();
+        let identity = bound_identity();
+        let mut screen =
+            WalletSendScreen::for_identity(&ctx, identity.clone(), IdentitySendMode::TopUp);
+        screen.reset_form();
+        screen.amount = Some(Amount::new_dash(0.01));
+        assert_eq!(
+            screen
+                .validated_destination
+                .as_ref()
+                .and_then(ValidatedAddress::as_identity_id),
+            Some(&identity.identity.id())
+        );
+        assert!(matches!(
+            screen.validated_send_route(),
+            Ok(ValidatedSendRoute::CoreToIdentity)
+        ));
+        screen.validated_destination = Some(identity_destination());
+        assert!(
+            screen.validated_send_route().is_err(),
+            "the bound recipient cannot be edited"
+        );
+    }
+
+    /// Top up from Home for an identity whose stored history has a gap: the new
+    /// top-up must be recorded under an index no earlier one holds.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn identity_top_up_is_recorded_under_an_index_no_earlier_top_up_holds() {
+        use crate::backend_task::identity::{IdentityTask, TopUpIdentityFundingMethod};
+        let (ctx, _dir) = offline_ctx();
+        // Identities and their top-up history live in the wallet backend's store.
+        let (sender, _receiver) = tokio::sync::mpsc::channel(32);
+        ctx.ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+            sender,
+            ctx.egui_ctx().clone(),
+        ))
+        .await
+        .expect("wallet backend");
+        let wallet = Wallet::new_from_seed([1u8; 64], Network::Testnet, None, None)
+            .expect("wallet from seed");
+        let mut identity = bound_identity();
+        identity
+            .associated_wallets
+            .insert(wallet.seed_hash(), Arc::new(RwLock::new(wallet)));
+        ctx.insert_local_qualified_identity(&identity, &None)
+            .expect("store the identity");
+        ctx.save_top_ups(
+            &identity.identity.id(),
+            &BTreeMap::from([(0, 60_000), (2, 70_000)]),
+        )
+        .expect("store the top-up history");
+
+        let mut screen = WalletSendScreen::for_identity(&ctx, identity, IdentitySendMode::TopUp);
+        let seed_hash = core_source_with_ceiling(&mut screen, 10_000_000);
+        screen.amount = Some(Amount::dash_from_duffs(100_000));
+        let action = screen
+            .send_core_to_identity(seed_hash)
+            .expect("the top-up must be dispatched");
+        let AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::TopUpIdentity(top_up))) =
+            action
+        else {
+            panic!("expected a top-up, got {action:?}");
+        };
+        let TopUpIdentityFundingMethod::FundWithWallet(_, _, index) =
+            top_up.identity_funding_method
+        else {
+            panic!("expected a wallet-funded top-up");
+        };
+        assert_eq!(index, 3, "indexes 0 and 2 already hold earlier top-ups");
+    }
+
+    /// A top-up is refused while another top-up of the same identity runs,
+    /// whichever funds would pay for it. Other identities are not held back,
+    /// and a send that is not a top-up holds nothing back.
+    #[test]
+    fn a_running_top_up_holds_back_another_top_up_of_the_same_identity() {
+        use crate::backend_task::identity::IdentityTask;
+        let (ctx, _dir) = offline_ctx();
+        let wallet = || {
+            let wallet = Wallet::new_from_seed([1u8; 64], Network::Testnet, None, None)
+                .expect("wallet from seed");
+            Arc::new(RwLock::new(wallet))
+        };
+        let recipient = bound_identity();
+        let recipient_id = recipient.identity.id();
+        let to = |id| ValidatedAddress::Identity {
+            id,
+            dpns_name: None,
+        };
+        let ValidatedAddress::Identity { id: other_id, .. } = identity_destination() else {
+            panic!("an identity destination");
+        };
+
+        let mut first = WalletSendScreen::new(&ctx, wallet());
+        let _not_a_top_up = first.dispatch_send(AppAction::BackendTask(BackendTask::WalletTask(
+            WalletTask::GenerateReceiveAddress {
+                seed_hash: [0x47; 32],
+            },
+        )));
+        assert!(!top_up_in_flight_for(ctx.egui_ctx(), &recipient_id));
+        let _top_up = first.dispatch_send(AppAction::BackendTask(BackendTask::IdentityTask(
+            IdentityTask::TopUpIdentityFromPlatformAddresses {
+                identity: recipient,
+                inputs: Default::default(),
+                wallet_seed_hash: [0x47; 32],
+            },
+        )));
+
+        let mut second = WalletSendScreen::new(&ctx, wallet());
+        second.amount = Some(Amount::new_dash(0.01));
+        let core = testnet_core_address(2);
+        let platform = PlatformAddress::try_from(core.clone()).expect("platform source");
+        for source in [
+            SourceSelection::CoreWallet,
+            SourceSelection::PlatformAddresses(vec![(platform, core, 100_000_000_000)]),
+        ] {
+            second.selected_source = Some(source);
+            second.validated_destination = Some(to(recipient_id));
+            assert_eq!(
+                second.validate_and_send().err().as_deref(),
+                Some(TOP_UP_ALREADY_RUNNING),
+                "a second top-up of the identity must wait for the first"
+            );
+            second.validated_destination = Some(to(other_id));
+            assert_ne!(
+                second.validate_and_send().err().as_deref(),
+                Some(TOP_UP_ALREADY_RUNNING),
+                "a top-up of another identity is not held back"
+            );
+        }
+    }
+
+    /// What the Max button offers an identity sender for `destination`, next to
+    /// its balance less the `reserve` estimate.
+    fn identity_max_and_expected(
+        mode: IdentitySendMode,
+        destination: ValidatedAddress,
+        reserve: fn(&PlatformFeeEstimator) -> u64,
+    ) -> (u64, u64) {
+        let (ctx, _dir) = offline_ctx();
+        let identity = bound_identity();
+        let expected = identity.identity.balance() - reserve(&ctx.fee_estimator());
+        let mut screen = WalletSendScreen::for_identity(&ctx, identity, mode);
+        screen.validated_destination = Some(destination);
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, screen: &mut WalletSendScreen| screen.render_amount_input(ui),
+            screen,
+        );
+        harness.run();
+        harness.get_by_label("Max").click_accesskit();
+        harness.step();
+        let max = harness
+            .state()
+            .amount
+            .as_ref()
+            .expect("Max sets the amount")
+            .value();
+        (max, expected)
+    }
+
+    #[test]
+    fn identity_move_to_wallet_max_reserves_the_withdrawal_fee() {
+        let (max, expected) = identity_max_and_expected(
+            IdentitySendMode::MoveToWallet,
+            ValidatedAddress::Core(testnet_core_address(9)),
+            PlatformFeeEstimator::estimate_credit_withdrawal,
+        );
+        assert_eq!(
+            max, expected,
+            "Max must leave the withdrawal fee in the identity"
+        );
+    }
+
+    #[test]
+    fn identity_send_max_to_an_identity_reserves_the_transfer_fee() {
+        let (max, expected) = identity_max_and_expected(
+            IdentitySendMode::Send,
+            identity_destination(),
+            PlatformFeeEstimator::estimate_credit_transfer,
+        );
+        assert_eq!(
+            max, expected,
+            "a transfer between identities keeps its own, smaller reserve"
+        );
+    }
+
+    #[test]
+    fn identity_send_max_to_a_platform_address_reserves_the_address_transfer_fee() {
+        let (max, expected) = identity_max_and_expected(
+            IdentitySendMode::Send,
+            platform_destination(),
+            |estimator| estimator.estimate_credit_transfer_to_addresses(1),
+        );
+        assert_eq!(
+            max, expected,
+            "Max must leave the fee of a transfer to a Platform address in the identity"
+        );
+    }
+
+    #[test]
+    fn identity_transfer_to_a_platform_address_rejects_an_amount_that_leaves_no_fee() {
+        use crate::model::qualified_identity::withdrawal_key_tests::key;
+        let (ctx, _dir) = offline_ctx();
+        let transfer_key = key(1, dash_sdk::dpp::identity::Purpose::TRANSFER);
+        let sender = sender_with_keys(vec![transfer_key.clone()], vec![transfer_key]);
+        let highest = sender.identity.balance()
+            - ctx.fee_estimator().estimate_credit_transfer_to_addresses(1);
+        let mut screen = WalletSendScreen::for_identity(&ctx, sender, IdentitySendMode::Send);
+        screen.validated_destination = Some(platform_destination());
+
+        screen.amount = Some(Amount::dash_from_credits(highest));
+        assert!(
+            screen.validate_and_send().is_ok(),
+            "the amount Max offers must be accepted"
+        );
+
+        screen.amount = Some(Amount::dash_from_credits(highest + 1));
+        let refusal = screen
+            .validate_and_send()
+            .expect_err("an amount that cannot also pay the fee must not reach the confirmation");
+        assert!(
+            refusal.contains(&format_credits_as_dash(highest)),
+            "the refusal must name the highest amount that works: {refusal}"
+        );
+    }
+
+    #[test]
+    fn identity_fee_preview_shows_the_fee_its_destination_reserves() {
+        let (ctx, _dir) = offline_ctx();
+        let estimator = ctx.fee_estimator();
+        let mut screen =
+            WalletSendScreen::for_identity(&ctx, bound_identity(), IdentitySendMode::Send);
+        screen.amount = Some(Amount::new_dash(0.01));
+        for (destination, fee) in [
+            (
+                platform_destination(),
+                estimator.estimate_credit_transfer_to_addresses(1),
+            ),
+            (identity_destination(), estimator.estimate_credit_transfer()),
+        ] {
+            screen.validated_destination = Some(destination);
+            assert_eq!(
+                screen
+                    .current_fee_preview()
+                    .map(|preview| preview.fee_credits),
+                Some(fee),
+                "the fee shown must be the fee Max and validation keep back"
+            );
+        }
+    }
+
+    #[test]
+    fn identity_withdrawal_rejects_an_amount_that_leaves_no_fee() {
+        let (ctx, _dir) = offline_ctx();
+        let identity = sender_holding_a_transfer_key();
+        let highest =
+            identity.identity.balance() - ctx.fee_estimator().estimate_credit_withdrawal();
+        let mut screen = WalletSendScreen::for_identity(&ctx, identity, IdentitySendMode::Send);
+        screen.validated_destination = Some(ValidatedAddress::Core(testnet_core_address(9)));
+
+        screen.amount = Some(Amount::dash_from_credits(highest));
+        assert!(
+            screen.validate_and_send().is_ok(),
+            "the amount Max offers must be accepted"
+        );
+
+        screen.amount = Some(Amount::dash_from_credits(highest + 1));
+        let refusal = screen
+            .validate_and_send()
+            .expect_err("an amount that cannot also pay the fee must not reach the confirmation");
+        assert!(
+            refusal.contains(&format_credits_as_dash(highest)),
+            "the refusal must name the highest amount that works: {refusal}"
+        );
+    }
+
+    #[test]
+    fn identity_withdrawal_from_a_balance_that_only_covers_the_fee_asks_for_a_top_up() {
+        use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+        let (ctx, _dir) = offline_ctx();
+        let mut identity = bound_identity();
+        let fee = ctx.fee_estimator().estimate_credit_withdrawal();
+        identity.identity.set_balance(fee);
+        let mut screen = WalletSendScreen::for_identity(&ctx, identity, IdentitySendMode::Send);
+        screen.validated_destination = Some(ValidatedAddress::Core(testnet_core_address(9)));
+        screen.amount = Some(Amount::dash_from_credits(fee / 2));
+        let refusal = screen
+            .validate_and_send()
+            .expect_err("a balance that only covers the fee leaves nothing to withdraw");
+        assert!(
+            refusal.contains("Top up") && !refusal.contains(&format_credits_as_dash(0)),
+            "the refusal must not suggest an amount when none works: {refusal}"
+        );
+    }
+
+    #[test]
+    fn identity_send_without_wallet_can_reach_confirmation() {
+        use crate::model::qualified_identity::withdrawal_key_tests::key;
+        let (ctx, _dir) = offline_ctx();
+        let transfer_key = key(1, dash_sdk::dpp::identity::Purpose::TRANSFER);
+        let sender = sender_with_keys(vec![transfer_key.clone()], vec![transfer_key]);
+        let mut screen = WalletSendScreen::for_identity(&ctx, sender, IdentitySendMode::Send);
+        screen.validated_destination = Some(identity_destination());
+        screen.amount = Some(Amount::new_dash(0.01));
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, screen| {
+                screen.render_send_button(ui);
+            },
+            screen,
+        );
+        harness.get_by_label("Transfer Credits").click();
+        harness.run();
+        assert!(
+            harness.state().send_confirmation.is_some(),
+            "an identity sender needs no unrelated wallet to review its transfer"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn identity_move_to_wallet_withdraws_only_to_an_address_of_a_loaded_wallet() {
+        use crate::model::wallet::DerivationPathHelpers;
+        const SEED: [u8; 64] = [9; 64];
+
+        let (ctx, _dir) = offline_ctx();
+        // Loaded before the backend is wired, so nothing registers the wallet
+        // in the background and the awaited calls below are the only writers.
+        let wallet = Wallet::new_from_seed(SEED, Network::Testnet, None, None).expect("wallet");
+        let (seed_hash, _) = ctx
+            .register_wallet(
+                wallet,
+                &SEED,
+                crate::model::wallet::birth_height::WalletOrigin::Fresh,
+            )
+            .expect("loaded wallet");
+        let (sender, _receiver) = tokio::sync::mpsc::channel(32);
+        ctx.ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+            sender,
+            ctx.egui_ctx().clone(),
+        ))
+        .await
+        .expect("offline wallet backend");
+        ctx.wallet_backend()
+            .expect("wallet backend")
+            .register_wallet_from_seed(&seed_hash, &SEED, None)
+            .await
+            .expect("wallet addresses");
+        let owned = ctx
+            .snapshot_address_paths(&seed_hash)
+            .into_iter()
+            .find_map(|(address, path)| path.is_bip44_external(Network::Testnet).then_some(address))
+            .expect("a loaded wallet owns a receiving address");
+        let external = testnet_core_address(9);
+        assert_ne!(owned, external);
+
+        let identity = sender_holding_a_transfer_key();
+        let amount = Amount::new_dash(0.01);
+        let mut screen =
+            WalletSendScreen::for_identity(&ctx, identity.clone(), IdentitySendMode::MoveToWallet);
+        screen.amount = Some(amount.clone());
+        screen.validated_destination = Some(ValidatedAddress::Core(external));
+        assert!(
+            screen.validated_send_route().is_err(),
+            "an address outside the loaded wallets must be refused"
+        );
+        screen.reset_form();
+        assert!(matches!(
+            screen.selected_source,
+            Some(SourceSelection::Identity(_))
+        ));
+
+        screen.amount = Some(amount.clone());
+        screen.validated_destination = Some(ValidatedAddress::Core(owned.clone()));
+        let observed_action = Rc::new(RefCell::new(AppAction::None));
+        let captured_action = observed_action.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(700.0, 500.0))
+            .build_ui_state(
+                move |ui, screen: &mut WalletSendScreen| {
+                    let mut action = screen.render_send_button(ui);
+                    action |= screen.render_send_confirmation(ui);
+                    if !matches!(action, AppAction::None) {
+                        *captured_action.borrow_mut() = action;
+                    }
+                },
+                screen,
+            );
+        harness.run();
+        click_in_one_frame(&mut harness, "Withdraw Credits");
+        assert!(
+            matches!(*observed_action.borrow(), AppAction::None),
+            "nothing is dispatched before the user confirms"
+        );
+        harness.get_by_label("Confirm and Send").click_accesskit();
+        harness.step();
+        match &*observed_action.borrow() {
+            AppAction::BackendTaskWithContext {
+                task:
+                    BackendTask::IdentityTask(IdentityTask::WithdrawFromIdentity(
+                        sender,
+                        destination,
+                        credits,
+                        _,
+                    )),
+                ..
+            } => {
+                assert_eq!(sender.identity.id(), identity.identity.id());
+                assert_eq!(destination.as_ref(), Some(&owned));
+                assert_eq!(*credits, amount.value());
+            }
+            other => panic!("expected the bound identity's withdrawal, got {other:?}"),
+        }
+
+        ctx.remove_wallet(&seed_hash).expect("wallet removal");
+        let screen = harness.state_mut();
+        screen.amount = Some(amount);
+        screen.validated_destination = Some(ValidatedAddress::Core(owned));
+        assert!(
+            screen.validated_send_route().is_err(),
+            "an address stops being a valid destination once its wallet is removed"
+        );
+    }
+
+    #[test]
+    fn identity_send_network_switch_never_rebinds_the_identity() {
+        let (ctx, _dir) = offline_ctx();
+        let mut identity = bound_identity();
+        identity.network = Network::Mainnet;
+        let mut screen =
+            WalletSendScreen::for_identity(&ctx, identity.clone(), IdentitySendMode::Send);
+        screen.reset_for_network_switch();
+        screen.selected_source = Some(SourceSelection::Identity(Box::new(identity)));
+        screen.validated_destination = Some(identity_destination());
+        screen.amount = Some(Amount::new_dash(0.01));
+        assert!(screen.validated_send_route().is_err());
+    }
+
+    /// A funded sender with `on_chain` keys, of which only `held` can sign here.
+    fn sender_with_keys(
+        on_chain: Vec<dash_sdk::platform::IdentityPublicKey>,
+        held: Vec<dash_sdk::platform::IdentityPublicKey>,
+    ) -> QualifiedIdentity {
+        use crate::model::qualified_identity::IdentityType;
+        use crate::model::qualified_identity::withdrawal_key_tests::build_identity;
+        use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+        let mut sender = build_identity(IdentityType::User, on_chain, held);
+        sender.identity.set_balance(100_000_000_000);
+        sender
+    }
+
+    /// A sender holding the one active transfer key it has, so it can sign.
+    fn sender_holding_a_transfer_key() -> QualifiedIdentity {
+        use crate::model::qualified_identity::withdrawal_key_tests::key;
+        let transfer_key = key(1, dash_sdk::dpp::identity::Purpose::TRANSFER);
+        sender_with_keys(vec![transfer_key.clone()], vec![transfer_key])
+    }
+
+    /// The signing key a validated identity transfer to `destination` carries.
+    fn dispatched_transfer_key(
+        screen: &mut WalletSendScreen,
+        destination: ValidatedAddress,
+    ) -> Option<dash_sdk::dpp::identity::KeyID> {
+        screen.validated_destination = Some(destination);
+        match screen
+            .validate_and_send()
+            .expect("a usable transfer key lets the send proceed")
+        {
+            AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::Transfer(
+                _,
+                _,
+                _,
+                key_id,
+            )))
+            | AppAction::BackendTask(BackendTask::IdentityTask(
+                IdentityTask::TransferToAddresses { key_id, .. },
+            )) => key_id,
+            other => panic!("expected an identity transfer, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn identity_send_signs_with_the_active_transfer_key_when_an_earlier_one_is_disabled() {
+        use crate::model::qualified_identity::withdrawal_key_tests::{disabled_key, key};
+        use dash_sdk::dpp::identity::Purpose;
+        let (ctx, _dir) = offline_ctx();
+        let disabled = disabled_key(0, Purpose::TRANSFER);
+        let active = key(1, Purpose::TRANSFER);
+        let sender = sender_with_keys(
+            vec![disabled.clone(), active.clone()],
+            vec![disabled, active],
+        );
+        let mut screen = WalletSendScreen::for_identity(&ctx, sender, IdentitySendMode::Send);
+        screen.amount = Some(Amount::new_dash(0.01));
+        for destination in [identity_destination(), platform_destination()] {
+            assert_eq!(
+                dispatched_transfer_key(&mut screen, destination),
+                Some(1),
+                "the network rejects a disabled key, so the active one must sign"
+            );
+        }
+    }
+
+    #[test]
+    fn identity_send_signs_with_the_locally_held_transfer_key_on_a_partial_import() {
+        use crate::model::qualified_identity::withdrawal_key_tests::key;
+        use dash_sdk::dpp::identity::Purpose;
+        let (ctx, _dir) = offline_ctx();
+        let not_imported = key(3, Purpose::TRANSFER);
+        let imported = key(5, Purpose::TRANSFER);
+        let sender = sender_with_keys(vec![not_imported, imported.clone()], vec![imported]);
+        let mut screen = WalletSendScreen::for_identity(&ctx, sender, IdentitySendMode::Send);
+        screen.amount = Some(Amount::new_dash(0.01));
+        for destination in [identity_destination(), platform_destination()] {
+            assert_eq!(
+                dispatched_transfer_key(&mut screen, destination),
+                Some(5),
+                "only a key held in this app can sign"
+            );
+        }
+    }
+
+    #[test]
+    fn identity_send_without_a_usable_transfer_key_is_refused_before_confirmation() {
+        use crate::model::qualified_identity::withdrawal_key_tests::key;
+        use dash_sdk::dpp::identity::Purpose;
+        let (ctx, _dir) = offline_ctx();
+        let sender = sender_with_keys(vec![key(3, Purpose::TRANSFER)], vec![]);
+        let mut screen = WalletSendScreen::for_identity(&ctx, sender, IdentitySendMode::Send);
+        screen.amount = Some(Amount::new_dash(0.01));
+        for destination in [identity_destination(), platform_destination()] {
+            screen.validated_destination = Some(destination);
+            assert_eq!(
+                screen.validate_and_send().err(),
+                Some(TaskError::NoUsableTransferKey.to_string()),
+                "a transfer no key here can sign must not reach the confirmation"
+            );
+        }
+    }
+
+    /// A transfer key kept only as a reference into a wallet this device does
+    /// not hold cannot sign. The form must pass over it for a key it can use,
+    /// and refuse before the confirmation when it is the only one.
+    #[test]
+    fn identity_send_passes_over_a_transfer_key_whose_wallet_is_not_on_this_device() {
+        use crate::context::test_support::hold_as_wallet_reference;
+        use crate::model::qualified_identity::withdrawal_key_tests::key;
+        use dash_sdk::dpp::identity::Purpose;
+        let (ctx, _dir) = offline_ctx();
+        let from_missing_wallet = key(1, Purpose::TRANSFER);
+        let imported = key(2, Purpose::TRANSFER);
+
+        let mut sender = sender_with_keys(
+            vec![from_missing_wallet.clone(), imported.clone()],
+            vec![imported],
+        );
+        hold_as_wallet_reference(&mut sender, 1, [0x5A; 32]);
+        let mut screen = WalletSendScreen::for_identity(&ctx, sender, IdentitySendMode::Send);
+        screen.amount = Some(Amount::new_dash(0.01));
+        for destination in [identity_destination(), platform_destination()] {
+            assert_eq!(
+                dispatched_transfer_key(&mut screen, destination),
+                Some(2),
+                "the key whose material is on this device must sign"
+            );
+        }
+
+        let mut sender = sender_with_keys(vec![from_missing_wallet], vec![]);
+        hold_as_wallet_reference(&mut sender, 1, [0x5A; 32]);
+        let mut screen = WalletSendScreen::for_identity(&ctx, sender, IdentitySendMode::Send);
+        screen.amount = Some(Amount::new_dash(0.01));
+        for destination in [identity_destination(), platform_destination()] {
+            screen.validated_destination = Some(destination);
+            assert_eq!(
+                screen.validate_and_send().err(),
+                Some(TaskError::NoUsableTransferKey.to_string()),
+                "a transfer only a missing wallet could sign must not reach the confirmation"
+            );
+        }
+    }
+
+    /// A transfer key kept only in the legacy encrypted format cannot sign.
+    /// The form must pass over it for a key it can use, and refuse before the
+    /// confirmation when it is the only one.
+    #[test]
+    fn identity_send_passes_over_a_transfer_key_held_only_in_the_legacy_encrypted_format() {
+        use crate::context::test_support::hold_as_legacy_encrypted;
+        use crate::model::qualified_identity::withdrawal_key_tests::key;
+        use dash_sdk::dpp::identity::Purpose;
+        let (ctx, _dir) = offline_ctx();
+        let legacy = key(1, Purpose::TRANSFER);
+        let imported = key(2, Purpose::TRANSFER);
+
+        let mut sender = sender_with_keys(vec![legacy.clone(), imported.clone()], vec![imported]);
+        hold_as_legacy_encrypted(&mut sender, 1);
+        let mut screen = WalletSendScreen::for_identity(&ctx, sender, IdentitySendMode::Send);
+        screen.amount = Some(Amount::new_dash(0.01));
+        for destination in [identity_destination(), platform_destination()] {
+            assert_eq!(
+                dispatched_transfer_key(&mut screen, destination),
+                Some(2),
+                "the key this version can read must sign"
+            );
+        }
+
+        let mut sender = sender_with_keys(vec![legacy], vec![]);
+        hold_as_legacy_encrypted(&mut sender, 1);
+        let mut screen = WalletSendScreen::for_identity(&ctx, sender, IdentitySendMode::Send);
+        screen.amount = Some(Amount::new_dash(0.01));
+        for destination in [identity_destination(), platform_destination()] {
+            screen.validated_destination = Some(destination);
+            assert_eq!(
+                screen.validate_and_send().err(),
+                Some(TaskError::NoUsableTransferKey.to_string()),
+                "a transfer only an unreadable key could sign must not reach the confirmation"
+            );
+        }
+    }
+
+    /// Moving funds to a wallet is signed too: with no key that can sign it,
+    /// the form refuses before the confirmation instead of after it.
+    #[test]
+    fn identity_withdrawal_without_a_usable_key_is_refused_before_confirmation() {
+        use crate::context::test_support::hold_as_wallet_reference;
+        use crate::model::qualified_identity::withdrawal_key_tests::key;
+        use dash_sdk::dpp::identity::Purpose;
+        let (ctx, _dir) = offline_ctx();
+        let from_missing_wallet = key(1, Purpose::TRANSFER);
+        let imported = key(2, Purpose::TRANSFER);
+        let to_core = || Some(ValidatedAddress::Core(testnet_core_address(9)));
+
+        let mut sender = sender_with_keys(vec![from_missing_wallet.clone()], vec![]);
+        hold_as_wallet_reference(&mut sender, 1, [0x5A; 32]);
+        let mut screen =
+            WalletSendScreen::for_identity(&ctx, sender.clone(), IdentitySendMode::Send);
+        screen.amount = Some(Amount::new_dash(0.01));
+        screen.validated_destination = to_core();
+        assert_eq!(
+            screen.send_identity_to_core(sender).err(),
+            Some(TaskError::NoUsableWithdrawalKey.to_string()),
+            "a withdrawal no key here can sign must not reach the confirmation"
+        );
+
+        let mut sender =
+            sender_with_keys(vec![from_missing_wallet, imported.clone()], vec![imported]);
+        hold_as_wallet_reference(&mut sender, 1, [0x5A; 32]);
+        let mut screen =
+            WalletSendScreen::for_identity(&ctx, sender.clone(), IdentitySendMode::Send);
+        screen.amount = Some(Amount::new_dash(0.01));
+        screen.validated_destination = to_core();
+        assert!(
+            screen.send_identity_to_core(sender).is_ok(),
+            "a key that can sign lets the withdrawal proceed"
+        );
+    }
+
+    /// The fee of a transfer to another identity is paid on top from the same
+    /// balance, so an amount that leaves nothing for it must be refused.
+    #[test]
+    fn identity_transfer_to_an_identity_rejects_an_amount_that_leaves_no_fee() {
+        use crate::model::qualified_identity::withdrawal_key_tests::key;
+        let (ctx, _dir) = offline_ctx();
+        let transfer_key = key(1, dash_sdk::dpp::identity::Purpose::TRANSFER);
+        let sender = sender_with_keys(vec![transfer_key.clone()], vec![transfer_key]);
+        let highest = sender.identity.balance() - ctx.fee_estimator().estimate_credit_transfer();
+        let mut screen = WalletSendScreen::for_identity(&ctx, sender, IdentitySendMode::Send);
+        screen.validated_destination = Some(identity_destination());
+
+        screen.amount = Some(Amount::dash_from_credits(highest));
+        assert!(
+            screen.validate_and_send().is_ok(),
+            "the amount Max offers must be accepted"
+        );
+
+        screen.amount = Some(Amount::dash_from_credits(highest + 1));
+        let refusal = screen
+            .validate_and_send()
+            .expect_err("an amount that cannot also pay the fee must not reach the confirmation");
+        assert!(
+            refusal.contains(&format_credits_as_dash(highest)),
+            "the refusal must name the highest amount that works: {refusal}"
+        );
+    }
+
+    /// Other tasks report results of the kinds a send ends with. While this
+    /// screen waits on its own send, only that send's result completes it.
+    #[test]
+    fn only_the_result_of_its_own_send_completes_the_wait() {
+        use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
+        let (mut screen, _temp_dir) = send_screen();
+        let send = BackendTask::WalletTask(WalletTask::GenerateReceiveAddress {
+            seed_hash: [0x48; 32],
+        });
+        let _action = screen.dispatch_send(AppAction::BackendTask(send.clone()));
+        let own = screen.pending_send.clone().expect("the dispatched send");
+        let same_task_sent_again = BackendTaskContext::for_dispatch_on(&send, Network::Testnet);
+        let credits_moved = || BackendTaskSuccessResult::TransferredCredits(FeeResult::new(1, 1));
+
+        screen.display_backend_task_result(&same_task_sent_again, credits_moved());
+        screen.display_backend_task_result(&BackendTaskContext::Unknown, credits_moved());
+        assert_eq!(
+            screen.send_status,
+            SendStatus::WaitingForResult,
+            "a result of another task is not the outcome of this send"
+        );
+
+        screen.display_backend_task_result(&own, credits_moved());
+        assert!(
+            matches!(screen.send_status, SendStatus::Complete(_)),
+            "its own result completes the send"
+        );
+    }
+
     fn asset_lock_request_id(task: Option<BackendTask>) -> u64 {
         match task {
             Some(BackendTask::WalletTask(WalletTask::GetAssetLockMaxAmount {
@@ -4817,25 +6074,41 @@ mod tests {
             !crate::ui::can_append_concurrent_backend_tasks(&AppAction::PopScreen),
             "navigation must keep priority instead of being overwritten by a probe"
         );
+        let send = BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { seed_hash });
+        assert!(
+            !crate::ui::can_append_concurrent_backend_tasks(&AppAction::BackendTaskWithContext {
+                context: BackendTaskContext::for_dispatch_on(&send, Network::Testnet),
+                task: send,
+            }),
+            "a confirmed send keeps its own context; the probe is asked for on the next frame"
+        );
     }
 
     #[test]
     fn confirmed_send_action_survives_same_frame_navigation() {
         let seed_hash = [0x44; 32];
         let confirmation = || {
-            AppAction::BackendTask(BackendTask::WalletTask(
-                WalletTask::GenerateReceiveAddress { seed_hash },
-            ))
+            let task = BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { seed_hash });
+            AppAction::BackendTaskWithContext {
+                context: BackendTaskContext::for_dispatch_on(&task, Network::Testnet),
+                task,
+            }
+        };
+        let is_the_send = |action: &AppAction| {
+            matches!(
+                action,
+                AppAction::BackendTaskWithContext {
+                    task: BackendTask::WalletTask(WalletTask::GenerateReceiveAddress {
+                        seed_hash: sh
+                    }),
+                    ..
+                } if *sh == seed_hash
+            )
         };
 
         let merged = merge_confirmation_action(AppAction::PopScreen, confirmation());
         assert!(
-            matches!(
-                merged,
-                AppAction::BackendTask(BackendTask::WalletTask(
-                    WalletTask::GenerateReceiveAddress { .. }
-                ))
-            ),
+            is_the_send(&merged),
             "a confirmed send must outrank a same-frame navigation action, never be dropped"
         );
 
@@ -4849,12 +6122,7 @@ mod tests {
         );
         let merged = merge_confirmation_action(sequential, confirmation());
         assert!(
-            matches!(
-                merged,
-                AppAction::BackendTask(BackendTask::WalletTask(
-                    WalletTask::GenerateReceiveAddress { seed_hash: sh }
-                )) if sh == seed_hash
-            ),
+            is_the_send(&merged),
             "a confirmed send must take the pre-existing |= precedence over a sequential batch"
         );
 
@@ -4866,11 +6134,10 @@ mod tests {
             "without a confirmation the navigation action must pass through unchanged"
         );
 
-        let merged = merge_confirmation_action(AppAction::None, confirmation());
-        let AppAction::BackendTasks(tasks, BackendTasksExecutionMode::Concurrent) = merged else {
-            panic!("an appendable frame action must batch the confirmation concurrently");
-        };
-        assert_eq!(tasks.len(), 1);
+        assert!(
+            is_the_send(&merge_confirmation_action(AppAction::None, confirmation())),
+            "a confirmed send goes out alone, under its own context"
+        );
     }
 
     #[test]
@@ -5246,9 +6513,61 @@ mod tests {
             "the confirmation dialog must close after confirmation"
         );
         let observed_action = observed_action.borrow();
-        assert!(
-            matches!(*observed_action, AppAction::BackendTask(_)),
-            "the confirm action must dispatch the prepared backend task, got {observed_action:?}"
+        let AppAction::BackendTaskWithContext { context, .. } = &*observed_action else {
+            panic!(
+                "the confirm action must dispatch the prepared backend task, got {observed_action:?}"
+            );
+        };
+        assert_eq!(
+            harness.state().pending_send.as_ref(),
+            Some(context),
+            "the screen waits on the send it dispatched, and on no other task"
+        );
+    }
+
+    /// The app hands every failure and message to the visible screen. While
+    /// this screen waits on a send, only that send's own failure gives the form
+    /// back: anything else would let the user send, and pay, a second time.
+    #[test]
+    fn only_the_failure_of_its_own_send_ends_the_wait() {
+        let (mut screen, _temp_dir) = send_screen();
+        let send = BackendTask::WalletTask(WalletTask::GenerateReceiveAddress {
+            seed_hash: [0x46; 32],
+        });
+        let own = BackendTaskContext::for_dispatch_on(&send, Network::Testnet);
+        let same_task_sent_again = BackendTaskContext::for_dispatch_on(&send, Network::Testnet);
+        let error = TaskError::NoIdentitiesFound;
+        screen.mark_sending(own.clone());
+
+        screen.display_backend_task_error(&same_task_sent_again, &error);
+        screen.display_backend_task_error(&BackendTaskContext::Unknown, &error);
+        for message_type in [
+            MessageType::Error,
+            MessageType::Warning,
+            MessageType::Success,
+            MessageType::Info,
+        ] {
+            screen.display_message("Another task reported this.", message_type);
+        }
+        assert_eq!(
+            screen.send_status,
+            SendStatus::WaitingForResult,
+            "nothing but its own send's outcome ends the wait"
+        );
+
+        screen.display_backend_task_error(&own, &error);
+        assert_eq!(screen.send_status, SendStatus::Error);
+
+        // With no send in flight a message is a side effect of this screen's
+        // own work again.
+        screen.display_message("The amount is too high.", MessageType::Error);
+        assert_eq!(screen.send_status, SendStatus::Error);
+        screen.send_status = SendStatus::NotStarted;
+        screen.display_backend_task_error(&own, &error);
+        assert_eq!(
+            screen.send_status,
+            SendStatus::NotStarted,
+            "a failure that was already taken is not taken twice"
         );
     }
 
@@ -5361,7 +6680,7 @@ mod tests {
 
         let observed_action = observed_action.borrow();
         assert!(
-            matches!(*observed_action, AppAction::BackendTask(_)),
+            matches!(*observed_action, AppAction::BackendTaskWithContext { .. }),
             "the confirm action must dispatch the prepared backend task, got {observed_action:?}"
         );
     }
@@ -5519,6 +6838,72 @@ mod tests {
 
         let on_top = FeePreview::on_top(u64::MAX, 5);
         assert_eq!(on_top.total_debit_credits, u64::MAX);
+    }
+
+    /// Home → Send fixes the sender. With no wallet on the device, the
+    /// recipient search still offers every other identity stored here.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn identity_bound_send_offers_the_other_local_identities_without_a_wallet() {
+        use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
+        use crate::model::qualified_identity::{DPNSNameInfo, IdentityStatus, IdentityType};
+        use dash_sdk::dpp::{identity::Identity, version::PlatformVersion};
+        let (ctx, _dir) = offline_ctx();
+        let (sender, _receiver) = tokio::sync::mpsc::channel(32);
+        ctx.ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+            sender,
+            ctx.egui_ctx().clone(),
+        ))
+        .await
+        .unwrap();
+        let imported = |byte: u8, name: &str| QualifiedIdentity {
+            identity: Identity::create_basic_identity(
+                dash_sdk::platform::Identifier::from([byte; 32]),
+                PlatformVersion::latest(),
+            )
+            .unwrap(),
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: None,
+            private_keys: KeyStorage::default(),
+            dpns_names: vec![DPNSNameInfo {
+                name: name.into(),
+                acquired_at: 0,
+            }],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: Network::Testnet,
+        };
+        let sender = imported(41, "sender.dash");
+        for identity in [&sender, &imported(42, "payee.dash")] {
+            ctx.insert_local_qualified_identity(identity, &None)
+                .unwrap();
+        }
+        assert!(ctx.wallet_context().wallets().is_empty());
+
+        let screen = WalletSendScreen::for_identity(&ctx, sender, IdentitySendMode::Send);
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, screen: &mut WalletSendScreen| screen.render_destination_input(ui),
+            screen,
+        );
+        harness.run();
+        for (query, offered) in [("payee", Some("payee.dash")), ("sender", None)] {
+            let input = harness.state_mut().address_input.take().unwrap();
+            harness.state_mut().address_input = Some(input.with_initial_value(query));
+            harness.run();
+            let rows = harness
+                .state()
+                .address_input
+                .as_ref()
+                .unwrap()
+                .rendered_rows();
+            let names: Vec<_> = rows.iter().map(|row| row.name.as_deref()).collect();
+            assert_eq!(names, Vec::from_iter(offered.map(Some)), "query {query}");
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

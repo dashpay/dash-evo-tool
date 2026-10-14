@@ -28,7 +28,7 @@ use std::sync::Arc;
 
 /// The hub tab bar's `Activity` tab label only renders in the Home view, never
 /// in the Picker or Onboarding surfaces — a reliable "we are on Home" marker.
-const HOME_ONLY_MARKER: &str = "Activity";
+const HOME_ONLY_MARKER: &str = "Profile";
 /// The Picker grid heading (verbatim, picker.rs / design-spec §B.14).
 const PICKER_HEADING: &str = "Pick an identity";
 
@@ -505,11 +505,7 @@ fn ui_polish_username_registration_breadcrumb_opens_all_identities() {
         seed_identity(&app_context, 2, "Username Beta");
         app_context.set_selected_identity(Some(alpha));
         harness.run_steps(5);
-        harness
-            .get_all_by_label("Pick a username")
-            .next()
-            .expect("username link")
-            .click();
+        harness.get_by_label("Add username").click();
         harness.run_steps(5);
         assert!(matches!(
             harness.state().screen_stack.last(),

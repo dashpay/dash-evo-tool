@@ -1067,8 +1067,7 @@ impl AppContext {
         // Get the identity
         let identity = qualified_identity.identity.clone();
 
-        // Get the signing key if specified
-        let signing_key = key_id.and_then(|id| identity.get_public_key_by_id(id));
+        let signing_key = transfer::transfer_signing_key(&qualified_identity, key_id)?;
 
         // Track balance before transfer for fee calculation
         let balance_before = identity.balance();
@@ -1080,7 +1079,7 @@ impl AppContext {
             .transfer_credits_to_addresses(
                 sdk,
                 outputs.clone(),
-                signing_key,
+                Some(&signing_key),
                 &qualified_identity,
                 None,
             )
@@ -1088,16 +1087,12 @@ impl AppContext {
 
         // Update destination address balances in any wallets that contain them
         // (using proof-verified data from the SDK response)
-        {
-            let wallets = self.wallet_context().wallets();
-            for (seed_hash, wallet_arc) in wallets.iter() {
-                if let Err(e) =
-                    self.update_wallet_platform_address_info_from_sdk(*seed_hash, &address_infos)
-                {
-                    tracing::warn!("Failed to update wallet platform address info: {}", e);
-                }
-                // Break early since all wallets share the same network addresses
-                let _ = wallet_arc; // silence unused warning
+        let wallet_seed_hashes: Vec<_> = self.wallet_context().wallets().keys().copied().collect();
+        for seed_hash in wallet_seed_hashes {
+            if let Err(e) =
+                self.update_wallet_platform_address_info_from_sdk(seed_hash, &address_infos)
+            {
+                tracing::warn!("Failed to update wallet platform address info: {}", e);
             }
         }
 

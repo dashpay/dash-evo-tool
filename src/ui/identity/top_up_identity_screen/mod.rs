@@ -120,10 +120,17 @@ fn store_top_ups_in_flight(ctx: &egui::Context, top_ups: Vec<TopUpInFlight>) {
 }
 
 /// Whether a top-up of `identity_id` is in flight.
-fn top_up_in_flight_for(ctx: &egui::Context, identity_id: &Identifier) -> bool {
+pub(crate) fn top_up_in_flight_for(ctx: &egui::Context, identity_id: &Identifier) -> bool {
     top_ups_in_flight(ctx)
         .iter()
         .any(|top_up| top_up.dispatch.identity_top_up_identity() == Some(*identity_id))
+}
+
+/// Whether the top-up sent as `dispatch` still waits for its result.
+pub(crate) fn top_up_awaits_result(ctx: &egui::Context, dispatch: &BackendTaskContext) -> bool {
+    top_ups_in_flight(ctx)
+        .iter()
+        .any(|top_up| top_up.dispatch == *dispatch)
 }
 
 /// Record the top-up sent as `dispatch`. It stays in flight until
@@ -136,6 +143,26 @@ fn track_top_up(ctx: &egui::Context, dispatch: BackendTaskContext, confirmation:
         in_background: false,
     });
     store_top_ups_in_flight(ctx, top_ups);
+}
+
+/// Record `dispatch` when another screen sends it and it tops up an identity.
+/// Until its own result arrives no screen may start another top-up of that
+/// identity: two prepared side by side are paid for twice and are recorded
+/// under one index.
+pub(crate) fn track_top_up_sent_elsewhere(app_context: &AppContext, dispatch: &BackendTaskContext) {
+    let Some(identity_id) = dispatch.identity_top_up_identity() else {
+        return;
+    };
+    let name = app_context
+        .get_identity_by_id(&identity_id)
+        .ok()
+        .flatten()
+        .and_then(|identity| app_context.identity_name(&identity));
+    track_top_up(
+        app_context.egui_ctx(),
+        dispatch.clone(),
+        top_up_done_message(name.as_deref(), &identity_id),
+    );
 }
 
 /// Raise the background-progress banner and keep its handle, the only witness
@@ -191,13 +218,15 @@ pub(crate) fn follow_top_ups_after_network_switch(ctx: &egui::Context) {
 }
 
 /// End the top-up sent as `dispatch` on its own result, and confirm a success
-/// the user did not watch: the screen that sent it may be gone. Returns
-/// whether `dispatch` is a top-up sent from Add Funds; another transfer to the
-/// same identity is not.
+/// the user did not watch: one continued in the background, or one whose
+/// screen is gone or covered, so that `watched` is false. Returns whether
+/// `dispatch` is a recorded top-up; another transfer to the same identity is
+/// not.
 pub(crate) fn finish_top_up(
     ctx: &egui::Context,
     dispatch: &BackendTaskContext,
     succeeded: bool,
+    watched: bool,
 ) -> bool {
     let mut top_ups = top_ups_in_flight(ctx);
     let Some(position) = top_ups
@@ -215,7 +244,7 @@ pub(crate) fn finish_top_up(
         });
     }
     store_top_ups_in_flight(ctx, top_ups);
-    if succeeded && ended.in_background {
+    if succeeded && (ended.in_background || !watched) {
         MessageBanner::set_global(ctx, ended.confirmation, MessageType::Success);
     }
     true
@@ -398,10 +427,7 @@ impl TopUpIdentityScreen {
         let Some(dispatch) = &self.top_up_context else {
             return;
         };
-        if top_ups_in_flight(self.app_context.egui_ctx())
-            .iter()
-            .any(|top_up| top_up.dispatch == *dispatch)
-        {
+        if top_up_awaits_result(self.app_context.egui_ctx(), dispatch) {
             return;
         }
         self.release_top_up();
@@ -846,14 +872,7 @@ impl TopUpIdentityScreen {
             FundingMethod::UseUnusedAssetLock => {
                 if let Some(out_point) = self.funding_asset_lock {
                     let identity_index = self.identity.wallet_index.unwrap_or(u32::MAX >> 1);
-                    let top_up_index = self
-                        .identity
-                        .top_ups
-                        .keys()
-                        .max()
-                        .cloned()
-                        .map(|i| i + 1)
-                        .unwrap_or_default();
+                    let top_up_index = self.identity.next_top_up_index();
                     let identity_input = IdentityTopUpInfo {
                         qualified_identity: self.identity.clone(),
                         wallet: Arc::clone(selected_wallet),
@@ -934,13 +953,7 @@ impl TopUpIdentityScreen {
                     identity_funding_method: TopUpIdentityFundingMethod::FundWithWallet(
                         amount,
                         self.identity.wallet_index.unwrap_or(u32::MAX >> 1),
-                        self.identity
-                            .top_ups
-                            .keys()
-                            .max()
-                            .cloned()
-                            .map(|i| i + 1)
-                            .unwrap_or_default(),
+                        self.identity.next_top_up_index(),
                     ),
                 };
 
@@ -2399,10 +2412,10 @@ mod tests {
         // Another transfer to the same identity is not this top-up.
         let other_transfer =
             BackendTaskContext::IdentityTopUp(context.identity_top_up_identity().unwrap());
-        assert!(!finish_top_up(&ctx, &other_transfer, false));
+        assert!(!finish_top_up(&ctx, &other_transfer, false, true));
         assert!(reopened.top_up_in_flight());
 
-        assert!(finish_top_up(&ctx, &context, false));
+        assert!(finish_top_up(&ctx, &context, false, true));
         assert!(!MessageBanner::has_global(&ctx));
         assert!(!reopened.top_up_in_flight());
     }
@@ -2436,13 +2449,13 @@ mod tests {
 
         // A top-up the user watched to the end is confirmed by its screen.
         let watched = tracked_top_up(&ctx, identity_id, 1);
-        assert!(finish_top_up(&ctx, &watched, true));
+        assert!(finish_top_up(&ctx, &watched, true, true));
         assert!(!MessageBanner::has_global(&ctx));
 
         let succeeded = tracked_top_up(&ctx, identity_id, 2);
         send_top_up_to_background(&ctx, &succeeded);
         assert!(MessageBanner::has_global(&ctx));
-        assert!(finish_top_up(&ctx, &succeeded, true));
+        assert!(finish_top_up(&ctx, &succeeded, true, true));
         assert!(
             MessageBanner::has_global(&ctx),
             "a successful background top-up must show its confirmation"
@@ -2458,13 +2471,13 @@ mod tests {
 
         let failed = tracked_top_up(&ctx, identity_id, 3);
         send_top_up_to_background(&ctx, &failed);
-        assert!(finish_top_up(&ctx, &failed, false));
+        assert!(finish_top_up(&ctx, &failed, false, true));
         assert!(
             !MessageBanner::has_global(&ctx),
             "a failed top-up ends its progress banner without confirming"
         );
         assert!(
-            !finish_top_up(&ctx, &failed, false),
+            !finish_top_up(&ctx, &failed, false, true),
             "a top-up ends only once"
         );
     }
@@ -2484,7 +2497,7 @@ mod tests {
             top_up_dispatch(identity_id, 2),
             top_up_dispatch(Identifier::from([2; 32]), 1),
         ] {
-            assert!(!finish_top_up(&ctx, &other, true));
+            assert!(!finish_top_up(&ctx, &other, true, true));
         }
 
         assert!(
@@ -2508,14 +2521,14 @@ mod tests {
         send_top_up_to_background(&ctx, &first);
         send_top_up_to_background(&ctx, &second);
 
-        assert!(finish_top_up(&ctx, &first, false));
-        assert!(finish_top_up(&ctx, &watched, false));
+        assert!(finish_top_up(&ctx, &first, false, true));
+        assert!(finish_top_up(&ctx, &watched, false, true));
         assert!(
             MessageBanner::has_global(&ctx),
             "the banner follows the top-up still running in the background"
         );
 
-        assert!(finish_top_up(&ctx, &second, false));
+        assert!(finish_top_up(&ctx, &second, false, true));
         assert!(!MessageBanner::has_global(&ctx));
     }
 
@@ -2584,7 +2597,7 @@ mod tests {
 
         // Dropped once more, and this time the top-up ends before the next frame.
         flood_banners(&ctx, 3);
-        assert!(finish_top_up(&ctx, &top_up, false));
+        assert!(finish_top_up(&ctx, &top_up, false, true));
         restore_top_up_background_banner(&ctx);
         assert_eq!(
             background_notices(&ctx),
@@ -2670,8 +2683,8 @@ mod tests {
         send_top_up_to_background(&ctx, &second);
 
         // The second ends while the confirmation of the first is still shown.
-        assert!(finish_top_up(&ctx, &first, true));
-        assert!(finish_top_up(&ctx, &second, true));
+        assert!(finish_top_up(&ctx, &first, true, true));
+        assert!(finish_top_up(&ctx, &second, true, true));
 
         let confirmations = global_banner_texts(&ctx);
         assert_eq!(
@@ -2701,7 +2714,7 @@ mod tests {
             "two background top-ups share one progress banner"
         );
 
-        assert!(finish_top_up(&ctx, &first, true));
+        assert!(finish_top_up(&ctx, &first, true, true));
         assert_eq!(tracked_dispatches(&ctx), vec![second.clone()]);
         assert_eq!(
             background_notices(&ctx),
@@ -2721,7 +2734,7 @@ mod tests {
 
         // Dropped again, and the last top-up ends before the next frame.
         flood_banners(&ctx, 2);
-        assert!(finish_top_up(&ctx, &second, true));
+        assert!(finish_top_up(&ctx, &second, true, true));
         assert!(tracked_dispatches(&ctx).is_empty());
         assert!(
             ctx.data(|data| {
@@ -2759,7 +2772,7 @@ mod tests {
         screen.continue_top_up_in_background();
         assert!(screen_shows(&mut screen, TOP_UP_FORM_PAUSED));
 
-        assert!(finish_top_up(&ctx, &context, true));
+        assert!(finish_top_up(&ctx, &context, true, true));
         assert!(
             !screen_shows(&mut screen, TOP_UP_FORM_PAUSED),
             "the form must come back once the background top-up ended"
@@ -2800,7 +2813,7 @@ mod tests {
         );
         assert!(screen_shows(&mut reopened, TOP_UP_FORM_PAUSED));
 
-        assert!(finish_top_up(&ctx, &context, true));
+        assert!(finish_top_up(&ctx, &context, true, true));
         assert!(!reopened.top_up_in_flight());
         assert!(
             MessageBanner::has_global(&ctx),

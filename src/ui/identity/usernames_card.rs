@@ -860,7 +860,12 @@ mod tests {
             .with_size(egui::vec2(1400.0, 1200.0))
             .build_ui_state(
                 move |ui, state: &mut (SettingsTab, Vec<AppAction>)| {
-                    let action = state.0.render(ui, &render_ctx, &mut Default::default());
+                    let action = state.0.render(
+                        ui,
+                        &render_ctx,
+                        render_ctx.resolve_selected_identity().as_ref(),
+                        &mut Default::default(),
+                    );
                     if !matches!(action, AppAction::None) {
                         state.1.push(action);
                     }

@@ -154,23 +154,6 @@ pub fn can_register_usernames(
     registration_key_status(identity, required) == RegistrationKeyStatus::Ready
 }
 
-/// Whether the private half behind a held key entry can be obtained on this
-/// device. A key kept as a reference into a wallet needs that wallet here. A
-/// locked wallet and a vault or password-protected key count as obtainable:
-/// the app asks for what they need when it signs.
-fn key_secret_is_obtainable(identity: &QualifiedIdentity, data: &PrivateKeyData) -> bool {
-    match data {
-        PrivateKeyData::AtWalletDerivationPath(path) => identity
-            .associated_wallets
-            .contains_key(&path.wallet_seed_hash),
-        PrivateKeyData::AlwaysClear(_) | PrivateKeyData::Clear(_) | PrivateKeyData::InVault => true,
-        // TODO(legacy-encrypted-key-gate): this version cannot open the legacy
-        // per-key envelope either, so such a key fails at signing; it needs its
-        // own status and guidance before it can be reported here.
-        PrivateKeyData::Encrypted(_) => true,
-    }
-}
-
 /// The wallets `identity`'s registration keys come from that its record does
 /// not list as on this device. Checked against a live wallet list, they tell a
 /// caller holding a snapshot of the record when it is worth reading again.
@@ -184,7 +167,7 @@ pub fn missing_registration_wallets(
         .filter_map(move |(key, data)| match data {
             PrivateKeyData::AtWalletDerivationPath(path)
                 if key_can_sign_documents(&key.identity_public_key, required)
-                    && !key_secret_is_obtainable(identity, data) =>
+                    && !identity.key_secret_is_obtainable(data) =>
             {
                 Some(&path.wallet_seed_hash)
             }
@@ -229,7 +212,10 @@ pub fn registration_key_status(
         if !key_can_sign_documents(&key.identity_public_key, required) {
             continue;
         }
-        if key_secret_is_obtainable(identity, data) {
+        // TODO(legacy-encrypted-key-gate): this version cannot open the legacy
+        // per-key envelope, so such a key fails at signing; it is still reported
+        // as ready because it needs its own status and guidance first.
+        if identity.key_secret_is_obtainable(data) || matches!(data, PrivateKeyData::Encrypted(_)) {
             return RegistrationKeyStatus::Ready;
         }
         held_without_its_wallet = true;

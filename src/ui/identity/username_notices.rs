@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
-use egui::{Frame, Id, Margin, RichText, Ui};
+use egui::{Id, Ui};
 
 use crate::app::AppAction;
 use crate::backend_task::BackendTask;
@@ -20,7 +20,7 @@ use crate::ui::identity::username_copy::{
     Tone, outcome_banner_line, pending_notice_line, phase_label, standing_line,
 };
 use crate::ui::identity::usernames_card::register_action_for;
-use crate::ui::theme::{ComponentStyles, DashColors};
+use crate::ui::theme::{ComponentStyles, Spacing};
 
 /// Outcome banners shown in this session, so a banner marked seen stays up until dismissed.
 const SESSION_BANNERS_ID: &str = "identity_username_outcome_banners";
@@ -85,7 +85,7 @@ pub fn render(
         } else {
             Tone::Neutral
         };
-        notice_frame(ui, dark_mode, |ui| {
+        notice_frame(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 status_line(ui, tone, &text, dark_mode);
                 if matches!(request.phase, RequestPhase::Lost | RequestPhase::NoWinner)
@@ -112,10 +112,13 @@ pub fn render(
     }
 
     for request in requests.iter().filter(|r| r.phase.is_pending()) {
-        notice_frame(ui, dark_mode, |ui| {
-            status_line(ui, Tone::Caution, phase_label(request.phase), dark_mode);
+        notice_frame(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.strong(format!("Username request: @{name}", name = request.label));
+                status_line(ui, Tone::Caution, phase_label(request.phase), dark_mode);
+            });
             let first = pending_notice_line(&request.label, request.phase, request.end);
-            ui.label(RichText::new(first).strong());
+            ui.label(first);
             if request.phase != RequestPhase::AwaitingOutcome {
                 ui.label(standing_line(
                     request.tally.standing(),
@@ -145,13 +148,9 @@ fn mark_seen_action(identity_id: Identifier, requests: Vec<UsernameRequest>) -> 
     ))
 }
 
-fn notice_frame(ui: &mut Ui, dark_mode: bool, add: impl FnOnce(&mut Ui)) {
-    Frame::new()
-        .fill(DashColors::surface(dark_mode))
-        .inner_margin(Margin::symmetric(12, 10))
-        .corner_radius(6.0)
-        .show(ui, add);
-    ui.add_space(8.0);
+fn notice_frame(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
+    super::home::card(ui, add);
+    ui.add_space(Spacing::MD);
 }
 
 #[cfg(test)]

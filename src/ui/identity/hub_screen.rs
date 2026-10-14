@@ -208,6 +208,7 @@ impl IdentityHubScreen {
                     .map(|(_, key)| key),
             ),
         );
+        self.home_state = HomeState::default();
         self.contacts_state.reset_for_identity_change();
         self.pending_contact_info_tasks.clear();
         self.pending_contact_info_confirmations.clear();
@@ -429,6 +430,7 @@ impl ScreenLike for IdentityHubScreen {
         // re-fires the Contacts load.
         self.load_error_banner.take_and_clear();
         self.contacts_state.reset();
+        self.home_state.refresh_payments();
         self.profile_cache.reset();
         self.selection.clear_searches();
         self.avatar_cache.invalidate();
@@ -516,6 +518,8 @@ impl ScreenLike for IdentityHubScreen {
         };
 
         let mut picked_identity: Option<String> = None;
+        // The tab whose content this frame rendered, if the hub shows one.
+        let mut rendered_tab: Option<IdentityHubTab> = None;
         action |= island_central_panel(ui, |ui| {
             // Claim the island's full width so its bordered panel reaches the
             // window edges; the content below stays centered.
@@ -532,9 +536,29 @@ impl ScreenLike for IdentityHubScreen {
                     Some(&mut picked_identity),
                 ),
                 HubView::Home => {
+                    // One roster read per frame serves the header and every tab.
+                    let selected = self.app_context.resolve_selected_identity();
                     // `ui.vertical_centered(...).inner` carries the tab's
                     // `AppAction` back out.
                     let inner = ui.vertical_centered(|ui| {
+                        let (header_action, header_outcome) = match &selected {
+                            Some(identity) => super::home::render_header(
+                                ui,
+                                &self.app_context,
+                                identity,
+                                &mut self.profile_cache,
+                                &mut self.avatar_cache,
+                                &mut self.pending_avatars,
+                            ),
+                            None => (AppAction::None, super::home::HomeOutcome::None),
+                        };
+                        if let Some(tab) =
+                            super::home::apply_outcome(&mut self.home_state, header_outcome)
+                        {
+                            self.selected_tab = tab;
+                            self.settings_tab.focus_section(header_outcome);
+                        }
+                        ui.add_space(16.0);
                         // Hub tab bar; selection state lives on the screen so
                         // refreshes and deep links can update it from outside.
                         let tab_response = IdentityHubTabBar::new(self.selected_tab).show(ui);
@@ -547,14 +571,20 @@ impl ScreenLike for IdentityHubScreen {
                             self.selected_tab = clicked;
                         }
                         ui.add_space(16.0);
-                        match self.selected_tab {
+                        rendered_tab = Some(self.selected_tab);
+                        let mut tab_action = match self.selected_tab {
                             IdentityHubTab::Home => {
-                                let (home_action, outcome) = super::home::render(
-                                    ui,
-                                    &self.app_context,
-                                    &self.home_state,
-                                    &mut self.profile_cache,
-                                );
+                                let (home_action, outcome) = match &selected {
+                                    Some(identity) => super::home::render(
+                                        ui,
+                                        &self.app_context,
+                                        identity,
+                                        &mut self.home_state,
+                                        &mut self.profile_cache,
+                                        &mut self.contacts_state,
+                                    ),
+                                    None => (AppAction::None, super::home::HomeOutcome::None),
+                                };
                                 if let Some(next_tab) =
                                     super::home::apply_outcome(&mut self.home_state, outcome)
                                 {
@@ -562,12 +592,14 @@ impl ScreenLike for IdentityHubScreen {
                                         self.contacts_state.reset();
                                     }
                                     self.selected_tab = next_tab;
+                                    self.settings_tab.focus_section(outcome);
                                 }
                                 home_action
                             }
                             IdentityHubTab::Contacts => super::contacts::render(
                                 ui,
                                 &self.app_context,
+                                selected.as_ref(),
                                 &mut self.contacts_state,
                                 &mut self.profile_cache,
                             ),
@@ -577,9 +609,12 @@ impl ScreenLike for IdentityHubScreen {
                             IdentityHubTab::Settings => self.settings_tab.render(
                                 ui,
                                 &self.app_context,
+                                selected.as_ref(),
                                 &mut self.profile_cache,
                             ),
-                        }
+                        };
+                        tab_action |= header_action;
+                        tab_action
                     });
                     inner.inner
                 }
@@ -634,6 +669,27 @@ impl ScreenLike for IdentityHubScreen {
             }
         }
 
+        // Every part of the frame above has had its say; this is where the
+        // action that leaves the frame is settled. A data load claims its one
+        // dispatch slot when it is asked for, so it is asked for only here and
+        // only when nothing produced an action: a click anywhere on the screen
+        // keeps its frame, and a claimed load is the action returned — nothing
+        // below replaces an action.
+        if matches!(action, AppAction::None) {
+            action = match rendered_tab {
+                Some(IdentityHubTab::Home) => super::home::load_action(
+                    &self.app_context,
+                    &mut self.home_state,
+                    &mut self.contacts_state,
+                ),
+                Some(IdentityHubTab::Contacts) => super::contacts::tab_load_action(
+                    &self.app_context,
+                    &mut self.contacts_state,
+                    &mut self.profile_cache,
+                ),
+                _ => AppAction::None,
+            };
+        }
         if matches!(action, AppAction::None) {
             action = if let Some(task) = self.pending_avatars.pop() {
                 AppAction::BackendTask(task)
@@ -666,6 +722,7 @@ impl ScreenLike for IdentityHubScreen {
         context: &BackendTaskContext,
         result: BackendTaskSuccessResult,
     ) {
+        self.home_state.record_payments(context, &result);
         if self
             .profile_cache
             .record_result(&self.app_context, context, &result)
@@ -1262,9 +1319,13 @@ mod tests {
                     .build_ui_state(
                         |ui, state: &mut (IdentityHubScreen, Option<BackendTask>)| {
                             let hub = &mut state.0;
-                            if let AppAction::BackendTaskWithContext { task, .. } = hub
-                                .settings_tab
-                                .render(ui, &hub.app_context, &mut hub.profile_cache)
+                            if let AppAction::BackendTaskWithContext { task, .. } =
+                                hub.settings_tab.render(
+                                    ui,
+                                    &hub.app_context,
+                                    hub.app_context.resolve_selected_identity().as_ref(),
+                                    &mut hub.profile_cache,
+                                )
                             {
                                 state.1 = Some(task);
                             }
@@ -1453,7 +1514,13 @@ mod tests {
             },
             IdentityHubScreen::new(&context),
         );
-        harness.run();
+        // Avatar fetching stays pending in this offline harness, so its spinner keeps repainting.
+        harness.run_steps(2);
+        assert!(
+            harness
+                .state()
+                .is_waiting_for_avatar("https://example.com/cached.png")
+        );
         let fields = harness
             .state_mut()
             .profile_cache
@@ -1468,7 +1535,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        harness.run();
+        harness.run_steps(2);
         assert_eq!(
             harness
                 .state_mut()
@@ -1497,7 +1564,7 @@ mod tests {
                 profile: None
             })
         ));
-        harness.run();
+        harness.run_steps(2);
         assert!(
             harness
                 .state_mut()

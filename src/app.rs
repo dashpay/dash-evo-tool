@@ -340,11 +340,15 @@ fn clear_profile_saving_banner_after_success(
     }
 }
 
-/// Whether `screen` is the Add Funds screen that sent the top-up `context`
-/// and still waits on it. No other screen may take that top-up's outcome for
-/// its own: Wallet Send, for one, completes on any top-up result.
+/// Whether `screen` is the screen that sent the top-up `context` and still
+/// waits on it. No other screen may take that top-up's outcome for its own:
+/// Wallet Send, for one, completes on any top-up result.
 fn screen_awaits_top_up(screen: &Screen, context: &BackendTaskContext) -> bool {
-    matches!(screen, Screen::TopUpIdentityScreen(screen) if screen.awaits_top_up(context))
+    match screen {
+        Screen::TopUpIdentityScreen(screen) => screen.awaits_top_up(context),
+        Screen::WalletSendScreen(screen) => screen.awaits_send(context),
+        _ => false,
+    }
 }
 
 /// How often local state re-derives the voting attention summary.
@@ -2795,6 +2799,12 @@ impl AppState {
             let needs_completion = match result {
                 BackendTaskSuccessResult::DashPayProfile(_)
                 | BackendTaskSuccessResult::DashPayProfileUpdated(_) => true,
+                // The hub asks for its payment history and contact lists once
+                // per arrival, so an answer that misses it is never asked for
+                // again. It drops answers that are not for what it shows.
+                BackendTaskSuccessResult::DashPayPaymentHistory(_)
+                | BackendTaskSuccessResult::DashPayContactsWithInfo { .. }
+                | BackendTaskSuccessResult::DashPayContactRequests { .. } => true,
                 BackendTaskSuccessResult::DashPayAvatar { url, .. } => {
                     hub.is_waiting_for_avatar(url)
                 }
@@ -3293,8 +3303,11 @@ impl App for AppState {
             // Keyed on the dispatch alone and ahead of every arm below, so that
             // none of them can leave an ended top-up in flight.
             let tracked_top_up = match &task_result {
-                TaskResult::Success { context, .. } => finish_top_up(ctx, context, true),
-                TaskResult::Error { context, .. } => finish_top_up(ctx, context, false),
+                TaskResult::Success { context, .. } => {
+                    let watched = screen_awaits_top_up(self.visible_screen_mut(), context);
+                    finish_top_up(ctx, context, true, watched)
+                }
+                TaskResult::Error { context, .. } => finish_top_up(ctx, context, false, true),
                 TaskResult::Refresh | TaskResult::DpnsContestsChanged | TaskResult::Repaint => {
                     false
                 }

@@ -346,9 +346,12 @@ fn mount_settings(app_context: Arc<AppContext>) -> Harness<'static, SettingsStat
         .with_size(egui::vec2(1400.0, 1200.0))
         .build_ui_state(
             move |ui, state: &mut SettingsState| {
-                let action = state
-                    .0
-                    .render(ui, &app_context, &mut ProfileCache::default());
+                let action = state.0.render(
+                    ui,
+                    &app_context,
+                    app_context.resolve_selected_identity().as_ref(),
+                    &mut ProfileCache::default(),
+                );
                 if !matches!(action, AppAction::None) {
                     state.1 = Some(action);
                 }
@@ -621,19 +624,55 @@ fn request_status_page_hides_the_voter_link_for_a_node_that_cannot_vote() {
 }
 
 /// Home tab state plus the last non-empty action it returned.
-type HomeHarnessState = (HomeState, ProfileCache, Option<AppAction>);
+type HomeHarnessState = (
+    HomeState,
+    ProfileCache,
+    Option<AppAction>,
+    dash_evo_tool::ui::state::AvatarCache,
+    dash_evo_tool::ui::state::contacts_view::ContactsState,
+);
 
 fn mount_home(app_context: Arc<AppContext>) -> Harness<'static, HomeHarnessState> {
     let mut harness = Harness::builder()
         .with_size(egui::vec2(1280.0, 1200.0))
         .build_ui_state(
             move |ui, state: &mut HomeHarnessState| {
-                let (action, _) = home::render(ui, &app_context, &state.0, &mut state.1);
+                let mut pending = Vec::new();
+                let Some(identity) = app_context.resolve_selected_identity() else {
+                    return;
+                };
+                let (header, _) = home::render_header(
+                    ui,
+                    &app_context,
+                    &identity,
+                    &mut state.1,
+                    &mut state.3,
+                    &mut pending,
+                );
+                let (mut action, _) = home::render(
+                    ui,
+                    &app_context,
+                    &identity,
+                    &mut state.0,
+                    &mut state.1,
+                    &mut state.4,
+                );
+                action |= header;
+                // As in the hub, a load goes out only on a frame nothing else took.
+                if matches!(action, AppAction::None) {
+                    action = home::load_action(&app_context, &mut state.0, &mut state.4);
+                }
                 if !matches!(action, AppAction::None) {
                     state.2 = Some(action);
                 }
             },
-            (HomeState::default(), ProfileCache::default(), None),
+            (
+                HomeState::default(),
+                ProfileCache::default(),
+                None,
+                Default::default(),
+                Default::default(),
+            ),
         );
     harness.run();
     harness
@@ -693,11 +732,8 @@ fn show_as_main_changes_the_hero_name() {
                 .is_some()
         );
         assert!(
-            harness
-                .query_all_by_label_contains("a-name")
-                .next()
-                .is_none(),
-            "the legacy automatic alias must not hide the chosen main name"
+            harness.query_by_label("@b-name, @a-name").is_some(),
+            "main username is first in the header"
         );
     });
 }

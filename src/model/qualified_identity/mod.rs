@@ -121,6 +121,13 @@ pub struct OwnerKeyWithdrawalNotAllowed;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NoUsableWithdrawalKey;
 
+/// No key could be resolved to sign an identity credit transfer: the explicitly
+/// requested key is unknown, disabled, or not one this app can sign with, or —
+/// when no key was requested — the identity holds no active, locally-signable
+/// `TRANSFER` key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NoUsableTransferKey;
+
 /// Which of an identity's key stores a private half is filed under.
 ///
 /// Deliberately has no conversion from [`Purpose`]: a key's purpose does not
@@ -1261,8 +1268,9 @@ impl QualifiedIdentity {
     ) -> Result<KeyID, NoUsableWithdrawalKey> {
         // Locally-held TRANSFER/OWNER keys that are also active in the current
         // (refreshed) identity snapshot. `available_withdrawal_keys` filters on
-        // the stored copy's disabled flag; the extra check catches a key that was
-        // disabled on-chain after this identity was loaded.
+        // the stored copy's disabled flag; the extra checks catch a key that was
+        // disabled on-chain after this identity was loaded, and one whose
+        // private half this device cannot obtain.
         let usable: Vec<&QualifiedIdentityPublicKey> = self
             .available_withdrawal_keys()
             .into_iter()
@@ -1270,7 +1278,7 @@ impl QualifiedIdentity {
                 matches!(
                     self.identity.get_public_key_by_id(qk.identity_public_key.id()),
                     Some(current) if !current.is_disabled()
-                )
+                ) && self.holds_obtainable_key(&qk.identity_public_key)
             })
             .collect();
 
@@ -1324,6 +1332,90 @@ impl QualifiedIdentity {
                 }
             }
         }
+    }
+
+    /// Index under which this identity's next top-up is recorded: one past the
+    /// highest index in the stored history, so a history with gaps never has an
+    /// entry replaced. If the highest possible index is already taken, the
+    /// lowest free one is used instead.
+    pub fn next_top_up_index(&self) -> u32 {
+        match self.top_ups.keys().next_back() {
+            None => 0,
+            Some(highest) => highest.checked_add(1).unwrap_or_else(|| {
+                (0..u32::MAX)
+                    .find(|index| !self.top_ups.contains_key(index))
+                    .unwrap_or(u32::MAX)
+            }),
+        }
+    }
+
+    /// Resolves the key to sign an identity credit transfer, returning its
+    /// [`KeyID`].
+    ///
+    /// `requested` is the caller's explicit key choice, or `None` to take the
+    /// usable key with the lowest id. A key is usable when `self.identity`
+    /// lists it as an active `TRANSFER` key and this device can obtain its
+    /// private half ([`holds_obtainable_key`](Self::holds_obtainable_key)).
+    ///
+    /// An explicit `requested` id that is unknown, disabled, or not locally
+    /// signable is rejected — never silently replaced with a different key.
+    /// Returns [`NoUsableTransferKey`] when nothing usable remains, so the
+    /// caller can say so instead of letting the SDK take the identity's first
+    /// `TRANSFER` key, which may be disabled or not held here.
+    pub fn resolve_transfer_signing_key(
+        &self,
+        requested: Option<KeyID>,
+    ) -> Result<KeyID, NoUsableTransferKey> {
+        let usable = |key: &&IdentityPublicKey| {
+            key.purpose() == Purpose::TRANSFER
+                && !key.is_disabled()
+                && self.holds_obtainable_key(key)
+        };
+        match requested {
+            Some(requested_id) => self
+                .identity
+                .get_public_key_by_id(requested_id)
+                .filter(usable),
+            None => self.identity.public_keys().values().find(usable),
+        }
+        .map(|key| key.id())
+        .ok_or(NoUsableTransferKey)
+    }
+
+    /// Whether the private half behind a held key entry can be obtained on this
+    /// device. A key kept as a reference into a wallet needs that wallet here. A
+    /// locked wallet and a vault or password-protected key count as obtainable:
+    /// the app asks for what they need when it signs. A key kept only in the
+    /// per-key encrypted format of early versions does not: this version stores
+    /// that format but cannot open it, with or without a password.
+    ///
+    /// Reads which wallets are on this device from `associated_wallets`, so the
+    /// record must be one read from the store, not a bare decoded blob.
+    pub(crate) fn key_secret_is_obtainable(
+        &self,
+        data: &encrypted_key_storage::PrivateKeyData,
+    ) -> bool {
+        use encrypted_key_storage::PrivateKeyData;
+        match data {
+            PrivateKeyData::AtWalletDerivationPath(path) => {
+                self.associated_wallets.contains_key(&path.wallet_seed_hash)
+            }
+            PrivateKeyData::AlwaysClear(_) | PrivateKeyData::Clear(_) | PrivateKeyData::InVault => {
+                true
+            }
+            PrivateKeyData::Encrypted(_) => false,
+        }
+    }
+
+    /// Whether this device holds `key` under a placement whose private half it
+    /// can obtain. Stricter than [`Signer::can_sign_with`], which also accepts a
+    /// key that only refers to a wallet this device does not hold.
+    fn holds_obtainable_key(&self, key: &IdentityPublicKey) -> bool {
+        self.private_keys.candidates(key).any(|placement| {
+            self.private_keys
+                .entry_at(&placement)
+                .is_some_and(|(_, data)| self.key_secret_is_obtainable(data))
+        })
     }
 
     pub fn available_transfer_keys(&self) -> Vec<&QualifiedIdentityPublicKey> {
@@ -2460,14 +2552,14 @@ mod masternode_key_presence_tests {
 }
 
 #[cfg(test)]
-mod withdrawal_key_tests {
+pub(crate) mod withdrawal_key_tests {
     use super::*;
     use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
     use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
     use dash_sdk::dpp::version::PlatformVersion;
     use dash_sdk::platform::Identifier;
 
-    fn key(id: KeyID, purpose: Purpose) -> IdentityPublicKey {
+    pub(crate) fn key(id: KeyID, purpose: Purpose) -> IdentityPublicKey {
         let mut k = IdentityPublicKey::random_key(id, Some(id as u64), PlatformVersion::latest());
         k.set_id(id);
         k.set_purpose(purpose);
@@ -2475,7 +2567,7 @@ mod withdrawal_key_tests {
         k
     }
 
-    fn build_identity(
+    pub(crate) fn build_identity(
         identity_type: IdentityType,
         on_chain: Vec<IdentityPublicKey>,
         with_private: Vec<IdentityPublicKey>,
@@ -2559,7 +2651,7 @@ mod withdrawal_key_tests {
         assert_eq!(selected.identity_public_key.purpose(), Purpose::TRANSFER);
     }
 
-    fn disabled_key(id: KeyID, purpose: Purpose) -> IdentityPublicKey {
+    pub(crate) fn disabled_key(id: KeyID, purpose: Purpose) -> IdentityPublicKey {
         let mut k = key(id, purpose);
         k.set_disabled_at(1);
         k
@@ -2746,6 +2838,239 @@ mod withdrawal_key_tests {
         assert_eq!(
             qi.resolve_withdrawal_signing_key(None),
             Err(NoUsableWithdrawalKey)
+        );
+    }
+
+    /// An earlier disabled `TRANSFER` key must not win over a later active
+    /// one: the network rejects a transfer signed with a disabled key.
+    #[test]
+    fn transfer_key_resolution_skips_a_disabled_earlier_key() {
+        let disabled = disabled_key(0, Purpose::TRANSFER);
+        let active = key(1, Purpose::TRANSFER);
+        let qi = build_identity(
+            IdentityType::User,
+            vec![disabled.clone(), active.clone()],
+            vec![disabled, active],
+        );
+        assert_eq!(qi.resolve_transfer_signing_key(None), Ok(1));
+    }
+
+    /// A partial import holds only a later key; the earlier on-chain key the
+    /// signer has no private half for must be passed over.
+    #[test]
+    fn transfer_key_resolution_uses_the_only_locally_held_key() {
+        let not_imported = key(3, Purpose::TRANSFER);
+        let imported = key(5, Purpose::TRANSFER);
+        let qi = build_identity(
+            IdentityType::User,
+            vec![not_imported, imported.clone()],
+            vec![imported],
+        );
+        assert_eq!(qi.resolve_transfer_signing_key(None), Ok(5));
+    }
+
+    /// A key held only as a reference into a wallet needs that wallet on this
+    /// device: without it nothing here can produce the private half, so a later
+    /// key whose material is here must sign instead.
+    #[test]
+    fn transfer_key_resolution_skips_a_key_whose_wallet_is_not_on_this_device() {
+        let from_missing_wallet = key(1, Purpose::TRANSFER);
+        let imported = key(2, Purpose::TRANSFER);
+        let mut qi = build_identity(
+            IdentityType::User,
+            vec![from_missing_wallet, imported.clone()],
+            vec![imported],
+        );
+        crate::context::test_support::hold_as_wallet_reference(&mut qi, 1, [0x5A; 32]);
+        assert_eq!(qi.resolve_transfer_signing_key(None), Ok(2));
+        assert_eq!(
+            qi.resolve_transfer_signing_key(Some(1)),
+            Err(NoUsableTransferKey),
+            "an explicit choice of the key without its wallet is refused, not replaced"
+        );
+    }
+
+    /// The wallet only has to be on this device. A locked one still counts: the
+    /// app asks for its password when it signs.
+    #[test]
+    fn transfer_key_resolution_uses_a_wallet_key_once_its_wallet_is_on_this_device() {
+        let mut wallet = crate::model::wallet::test_support::open_wallet();
+        let seed_hash = wallet.seed_hash();
+        let mut qi = build_identity(IdentityType::User, vec![key(1, Purpose::TRANSFER)], vec![]);
+        crate::context::test_support::hold_as_wallet_reference(&mut qi, 1, seed_hash);
+        assert_eq!(
+            qi.resolve_transfer_signing_key(None),
+            Err(NoUsableTransferKey)
+        );
+
+        wallet.wallet_seed.close();
+        assert!(!wallet.is_open(), "the fixture wallet must be locked");
+        qi.associated_wallets
+            .insert(seed_hash, Arc::new(RwLock::new(wallet)));
+        assert_eq!(qi.resolve_transfer_signing_key(None), Ok(1));
+    }
+
+    /// A key kept only in the per-key encrypted format of early versions cannot
+    /// be opened by this version, with or without a password, so it cannot sign.
+    #[test]
+    fn transfer_key_resolution_skips_a_key_held_only_in_the_legacy_encrypted_format() {
+        use crate::context::test_support::hold_as_legacy_encrypted;
+        let legacy = key(1, Purpose::TRANSFER);
+        let imported = key(2, Purpose::TRANSFER);
+        let mut qi = build_identity(
+            IdentityType::User,
+            vec![legacy.clone(), imported.clone()],
+            vec![imported],
+        );
+        hold_as_legacy_encrypted(&mut qi, 1);
+        assert_eq!(qi.resolve_transfer_signing_key(None), Ok(2));
+        assert_eq!(
+            qi.resolve_transfer_signing_key(Some(1)),
+            Err(NoUsableTransferKey),
+            "an explicit choice of the key that cannot be opened is refused, not replaced"
+        );
+
+        let mut only_legacy = build_identity(IdentityType::User, vec![legacy], vec![]);
+        hold_as_legacy_encrypted(&mut only_legacy, 1);
+        assert_eq!(
+            only_legacy.resolve_transfer_signing_key(None),
+            Err(NoUsableTransferKey)
+        );
+    }
+
+    /// The legacy format rules out one way of holding a key, not the key: a
+    /// password-protected key in the vault signs, and so does a key that is
+    /// also held in a way this version can read.
+    #[test]
+    fn transfer_key_resolution_keeps_a_vault_key_and_a_key_also_held_readably() {
+        use crate::context::test_support::hold_as_legacy_encrypted;
+        let transfer = key(1, Purpose::TRANSFER);
+
+        let mut in_vault = build_identity(IdentityType::User, vec![transfer.clone()], vec![]);
+        in_vault.private_keys.insert_at(
+            (PrivateKeyTarget::PrivateKeyOnMainIdentity, 1),
+            (transfer.clone().into(), PrivateKeyData::InVault),
+        );
+        assert_eq!(in_vault.resolve_transfer_signing_key(None), Ok(1));
+
+        let mut held_twice = build_identity(IdentityType::User, vec![transfer.clone()], vec![]);
+        hold_as_legacy_encrypted(&mut held_twice, 1);
+        held_twice.private_keys.insert_at(
+            (PrivateKeyTarget::PrivateKeyOnVoterIdentity, 1),
+            (transfer.into(), PrivateKeyData::Clear([0u8; 32])),
+        );
+        assert_eq!(held_twice.resolve_transfer_signing_key(None), Ok(1));
+    }
+
+    /// A withdrawal is signed under the same rule as a transfer: a key that
+    /// only refers to a wallet this device does not hold, or that is kept only
+    /// in the legacy encrypted format, is passed over for one that can sign.
+    #[test]
+    fn withdrawal_key_resolution_skips_keys_whose_private_half_cannot_be_obtained() {
+        use crate::context::test_support::{hold_as_legacy_encrypted, hold_as_wallet_reference};
+        let from_missing_wallet = key(1, Purpose::TRANSFER);
+        let legacy = key(2, Purpose::TRANSFER);
+        let imported = key(3, Purpose::TRANSFER);
+        let mut qi = build_identity(
+            IdentityType::User,
+            vec![
+                from_missing_wallet.clone(),
+                legacy.clone(),
+                imported.clone(),
+            ],
+            vec![imported],
+        );
+        hold_as_wallet_reference(&mut qi, 1, [0x5A; 32]);
+        hold_as_legacy_encrypted(&mut qi, 2);
+        assert_eq!(qi.resolve_withdrawal_signing_key(None), Ok(3));
+        for unusable in [1, 2] {
+            assert_eq!(
+                qi.resolve_withdrawal_signing_key(Some(unusable)),
+                Err(NoUsableWithdrawalKey),
+                "key {unusable} cannot sign and must not be accepted when asked for"
+            );
+        }
+
+        let mut none_usable = build_identity(
+            IdentityType::User,
+            vec![from_missing_wallet, legacy],
+            vec![],
+        );
+        hold_as_wallet_reference(&mut none_usable, 1, [0x5A; 32]);
+        hold_as_legacy_encrypted(&mut none_usable, 2);
+        assert_eq!(
+            none_usable.resolve_withdrawal_signing_key(None),
+            Err(NoUsableWithdrawalKey)
+        );
+    }
+
+    /// A key disabled on the network after its private half was stored here is
+    /// not usable, even though the stored copy still looks active.
+    #[test]
+    fn transfer_key_resolution_rejects_a_key_disabled_since_it_was_stored() {
+        let stored = key(1, Purpose::TRANSFER);
+        let qi = build_identity(
+            IdentityType::User,
+            vec![disabled_key(1, Purpose::TRANSFER)],
+            vec![stored],
+        );
+        assert_eq!(
+            qi.resolve_transfer_signing_key(None),
+            Err(NoUsableTransferKey)
+        );
+    }
+
+    /// Only a `TRANSFER` key may sign a transfer; an `OWNER` or
+    /// `AUTHENTICATION` key held here is never a fallback.
+    #[test]
+    fn transfer_key_resolution_never_falls_back_to_another_purpose() {
+        let owner = key(1, Purpose::OWNER);
+        let authentication = key(2, Purpose::AUTHENTICATION);
+        let qi = build_identity(
+            IdentityType::Masternode,
+            vec![owner.clone(), authentication.clone()],
+            vec![owner, authentication],
+        );
+        assert_eq!(
+            qi.resolve_transfer_signing_key(None),
+            Err(NoUsableTransferKey)
+        );
+    }
+
+    /// An explicit choice is honoured when usable and refused otherwise — it
+    /// is never silently replaced with a different key.
+    #[test]
+    fn transfer_key_resolution_honours_or_refuses_an_explicit_key() {
+        let disabled = disabled_key(0, Purpose::TRANSFER);
+        let first = key(1, Purpose::TRANSFER);
+        let second = key(2, Purpose::TRANSFER);
+        let not_imported = key(3, Purpose::TRANSFER);
+        let qi = build_identity(
+            IdentityType::User,
+            vec![
+                disabled.clone(),
+                first.clone(),
+                second.clone(),
+                not_imported,
+            ],
+            vec![disabled, first, second],
+        );
+        assert_eq!(qi.resolve_transfer_signing_key(Some(2)), Ok(2));
+        for unusable in [0, 3, 99] {
+            assert_eq!(
+                qi.resolve_transfer_signing_key(Some(unusable)),
+                Err(NoUsableTransferKey),
+                "key {unusable} cannot sign and must not be swapped for another"
+            );
+        }
+    }
+
+    #[test]
+    fn transfer_key_resolution_errors_when_no_key_is_held() {
+        let qi = build_identity(IdentityType::User, vec![key(1, Purpose::TRANSFER)], vec![]);
+        assert_eq!(
+            qi.resolve_transfer_signing_key(None),
+            Err(NoUsableTransferKey)
         );
     }
 
@@ -3088,5 +3413,39 @@ mod identity_display_name_tests {
             bincode::encode_to_vec(restored, bincode::config::standard()).unwrap(),
             bytes
         );
+    }
+}
+
+#[cfg(test)]
+mod top_up_index_tests {
+    use super::withdrawal_key_tests::build_identity;
+    use super::*;
+
+    fn next_index_after(history: &[u32]) -> u32 {
+        let mut identity = build_identity(IdentityType::User, vec![], vec![]);
+        identity.top_ups = history.iter().map(|index| (*index, 1_000)).collect();
+        identity.next_top_up_index()
+    }
+
+    #[test]
+    fn the_first_top_up_takes_index_zero() {
+        assert_eq!(next_index_after(&[]), 0);
+    }
+
+    #[test]
+    fn a_top_up_follows_the_highest_stored_index() {
+        assert_eq!(next_index_after(&[0, 1]), 2);
+    }
+
+    #[test]
+    fn a_history_with_a_gap_does_not_reuse_a_stored_index() {
+        assert_eq!(next_index_after(&[0, 2]), 3);
+        assert_eq!(next_index_after(&[5]), 6);
+    }
+
+    #[test]
+    fn a_history_holding_the_highest_index_falls_back_to_the_lowest_free_one() {
+        assert_eq!(next_index_after(&[u32::MAX]), 0);
+        assert_eq!(next_index_after(&[0, 1, u32::MAX]), 2);
     }
 }

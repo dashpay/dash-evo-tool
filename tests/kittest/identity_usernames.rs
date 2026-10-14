@@ -635,10 +635,25 @@ fn mount_home(app_context: Arc<AppContext>) -> Harness<'static, HomeHarnessState
         .build_ui_state(
             move |ui, state: &mut HomeHarnessState| {
                 let mut pending = Vec::new();
-                let (header, _) =
-                    home::render_header(ui, &app_context, &mut state.1, &mut state.3, &mut pending);
-                let (mut action, _) =
-                    home::render(ui, &app_context, &mut state.0, &mut state.1, &mut state.4);
+                let Some(identity) = app_context.resolve_selected_identity() else {
+                    return;
+                };
+                let (header, _) = home::render_header(
+                    ui,
+                    &app_context,
+                    &identity,
+                    &mut state.1,
+                    &mut state.3,
+                    &mut pending,
+                );
+                let (mut action, _) = home::render(
+                    ui,
+                    &app_context,
+                    &identity,
+                    &mut state.0,
+                    &mut state.1,
+                    &mut state.4,
+                );
                 action |= header;
                 // As in the hub, a load goes out only on a frame nothing else took.
                 if matches!(action, AppAction::None) {

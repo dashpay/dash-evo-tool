@@ -536,16 +536,22 @@ impl ScreenLike for IdentityHubScreen {
                     Some(&mut picked_identity),
                 ),
                 HubView::Home => {
+                    // One roster read per frame serves the header and Home.
+                    let selected = self.app_context.resolve_selected_identity();
                     // `ui.vertical_centered(...).inner` carries the tab's
                     // `AppAction` back out.
                     let inner = ui.vertical_centered(|ui| {
-                        let (header_action, header_outcome) = super::home::render_header(
-                            ui,
-                            &self.app_context,
-                            &mut self.profile_cache,
-                            &mut self.avatar_cache,
-                            &mut self.pending_avatars,
-                        );
+                        let (header_action, header_outcome) = match &selected {
+                            Some(identity) => super::home::render_header(
+                                ui,
+                                &self.app_context,
+                                identity,
+                                &mut self.profile_cache,
+                                &mut self.avatar_cache,
+                                &mut self.pending_avatars,
+                            ),
+                            None => (AppAction::None, super::home::HomeOutcome::None),
+                        };
                         if let Some(tab) =
                             super::home::apply_outcome(&mut self.home_state, header_outcome)
                         {
@@ -568,13 +574,17 @@ impl ScreenLike for IdentityHubScreen {
                         rendered_tab = Some(self.selected_tab);
                         let mut tab_action = match self.selected_tab {
                             IdentityHubTab::Home => {
-                                let (home_action, outcome) = super::home::render(
-                                    ui,
-                                    &self.app_context,
-                                    &mut self.home_state,
-                                    &mut self.profile_cache,
-                                    &mut self.contacts_state,
-                                );
+                                let (home_action, outcome) = match &selected {
+                                    Some(identity) => super::home::render(
+                                        ui,
+                                        &self.app_context,
+                                        identity,
+                                        &mut self.home_state,
+                                        &mut self.profile_cache,
+                                        &mut self.contacts_state,
+                                    ),
+                                    None => (AppAction::None, super::home::HomeOutcome::None),
+                                };
                                 if let Some(next_tab) =
                                     super::home::apply_outcome(&mut self.home_state, outcome)
                                 {

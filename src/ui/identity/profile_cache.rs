@@ -38,6 +38,8 @@ pub struct ProfileCache {
     in_flight: PendingRequest<Identifier>,
     /// Identities a tab asked for this frame that still need a load dispatched.
     wanted: Vec<QualifiedIdentity>,
+    /// Loaded identities due a reload; their profile is shown until it lands.
+    stale: HashSet<Identifier>,
 }
 
 impl ProfileCache {
@@ -63,7 +65,8 @@ impl ProfileCache {
         }
     }
 
-    /// Loaded profile state for `identity`, queuing a load on a miss.
+    /// Loaded profile state for `identity`, queuing a load on a miss or for a
+    /// kept profile due a reload.
     ///
     /// `Some(Some(_))` = profile present, `Some(None)` = loaded with none
     /// published, `None` = not loaded yet (a load is queued for dispatch).
@@ -72,10 +75,10 @@ impl ProfileCache {
         identity: &QualifiedIdentity,
     ) -> Option<&Option<ProfileFields>> {
         let id = identity.identity.id();
-        let known = self.loaded.contains_key(&id)
-            || self.requested.contains(&id)
-            || self.wanted.iter().any(|q| q.identity.id() == id);
-        if !known {
+        let stale = self.stale.remove(&id);
+        let queued = self.wanted.iter().any(|q| q.identity.id() == id);
+        let known = self.loaded.contains_key(&id) || self.requested.contains(&id) || queued;
+        if !known || (stale && !queued) {
             self.wanted.push(identity.clone());
         }
         self.loaded.get(&id)
@@ -146,6 +149,23 @@ impl ProfileCache {
             self.in_flight.clear();
         }
         self.wanted.retain(|q| q.identity.id() != id);
+        self.stale.remove(&id);
+    }
+
+    /// Keep every loaded profile on screen but reload each on its next read.
+    /// A profile whose load is still running is left to that load; one whose
+    /// load failed before anything was loaded is asked for again.
+    pub fn reload_kept(&mut self) {
+        let loading = self.in_flight.as_ref().map(|(id, _)| *id);
+        let loaded = &self.loaded;
+        self.requested
+            .retain(|id| loaded.contains_key(id) || Some(*id) == loading);
+        self.stale = self
+            .loaded
+            .keys()
+            .copied()
+            .filter(|id| Some(*id) != loading)
+            .collect();
     }
 
     /// Drop cached state and pending loads so a refresh re-resolves profiles.
@@ -154,6 +174,7 @@ impl ProfileCache {
         self.requested.clear();
         self.in_flight.clear();
         self.wanted.clear();
+        self.stale.clear();
     }
 }
 

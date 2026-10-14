@@ -91,11 +91,12 @@ impl<'a> Avatar<'a> {
             }
         };
 
-        // Already decoded and uploaded — the steady state.
+        // Already decoded and uploaded — the steady state. A shown image can
+        // still be due a renewal; it stays until the fresh one lands.
         if let Some(texture) = cache.ready_texture(url) {
             let clicked = self.render_image(ui, texture);
             return AvatarResponse {
-                fetch: None,
+                fetch: cache.ensure_requested(url),
                 clicked,
             };
         }
@@ -112,7 +113,7 @@ impl<'a> Avatar<'a> {
                 cache.set_ready(url, texture.clone());
                 let clicked = self.render_image(ui, &texture);
                 return AvatarResponse {
-                    fetch: None,
+                    fetch: cache.ensure_requested(url),
                     clicked,
                 };
             }

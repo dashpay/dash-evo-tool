@@ -52,6 +52,9 @@ pub struct ContactsState {
     outgoing: Vec<ContactRequestEntry>,
     /// Established contacts the user has not hidden.
     contacts: Vec<ContactData>,
+    /// Whether `contacts` holds a loaded list, not the empty one before the
+    /// first load lands.
+    contacts_known: bool,
     /// Established contacts flagged `display_hidden`, kept aside so the tab can
     /// offer a way back. Declining or cancelling a request hides that person,
     /// so without this list a contact could only be recovered from the legacy
@@ -89,6 +92,7 @@ impl ContactsState {
         self.incoming.clear();
         self.outgoing.clear();
         self.contacts.clear();
+        self.contacts_known = false;
         self.hidden.clear();
         self.show_hidden = false;
         self.search.clear();
@@ -185,6 +189,12 @@ impl ContactsState {
         let (hidden, visible) = contacts.into_iter().partition(|c| c.is_hidden);
         self.contacts = visible;
         self.hidden = hidden;
+        self.contacts_known = true;
+    }
+
+    /// Whether the established-contact list has been loaded for this identity.
+    pub fn contacts_known(&self) -> bool {
+        self.contacts_known
     }
 
     /// Number of established contacts, before search filtering. Drives the

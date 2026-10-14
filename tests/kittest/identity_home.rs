@@ -790,6 +790,107 @@ fn home_contacts_follow_an_identity_selected_outside_the_hub() {
     });
 }
 
+const SETUP_CHECKLIST: &str = "Finish setting up your identity";
+
+fn contact(byte: u8, name: &str) -> dash_evo_tool::backend_task::dashpay::ContactData {
+    dash_evo_tool::backend_task::dashpay::ContactData {
+        identity_id: Identifier::from([byte; 32]),
+        nickname: Some(name.into()),
+        note: None,
+        is_hidden: false,
+        account_reference: 0,
+        username: None,
+        display_name: None,
+        avatar_url: None,
+        bio: None,
+    }
+}
+
+fn record_profile(harness: &mut Harness<'static, HomeHarnessState>, id: Identifier) {
+    harness.state_mut().1.record_saved(
+        id,
+        ProfileFields {
+            display_name: "Ann".into(),
+            bio: String::new(),
+            avatar_url: String::new(),
+        },
+    );
+}
+
+/// Until the profile and the contacts are read, Home cannot tell what setup
+/// is left, so the checklist stays away instead of showing for a moment.
+#[test]
+fn home_shows_no_setup_checklist_while_its_inputs_load() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let id = seed_identity(&app_context, vec![], vec![]);
+
+        let mut harness = mount_home(app_context.clone());
+        harness.run();
+        assert!(
+            harness.query_by_label(SETUP_CHECKLIST).is_none(),
+            "nothing is read yet"
+        );
+
+        record_profile(&mut harness, id);
+        harness.run();
+        assert!(
+            harness.query_by_label(SETUP_CHECKLIST).is_none(),
+            "the contacts are not read yet"
+        );
+
+        let mut harness = mount_home(app_context);
+        harness.state_mut().4.record_contacts(vec![]);
+        harness.run();
+        assert!(
+            harness.query_by_label(SETUP_CHECKLIST).is_none(),
+            "the profile is not read yet"
+        );
+    });
+}
+
+/// Once everything is read and setup is unfinished, the checklist shows.
+#[test]
+fn home_shows_the_setup_checklist_once_its_inputs_are_known() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let id = seed_identity(&app_context, vec![], vec![]);
+        let mut harness = mount_home(app_context);
+        record_profile(&mut harness, id);
+        harness.state_mut().4.record_contacts(vec![]);
+        harness.run();
+        assert!(harness.query_by_label(SETUP_CHECKLIST).is_some());
+    });
+}
+
+/// Once everything is read and setup is finished, there is no checklist.
+#[test]
+fn home_shows_no_setup_checklist_when_setup_is_finished() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let id = super::identity_usernames::seed_username_identity(
+            &app_context,
+            0x62,
+            "Finished",
+            &["finished"],
+            1_000,
+            true,
+        );
+        let mut harness = mount_home(app_context);
+        record_profile(&mut harness, id);
+        harness
+            .state_mut()
+            .4
+            .record_contacts(vec![contact(0x63, "Bao")]);
+        harness.run();
+        assert!(
+            harness.query_by_label("Bao").is_some(),
+            "the contact is shown"
+        );
+        assert!(harness.query_by_label(SETUP_CHECKLIST).is_none());
+    });
+}
+
 #[test]
 fn home_contact_preview_shows_the_first_six_contacts() {
     use dash_evo_tool::backend_task::dashpay::ContactData;

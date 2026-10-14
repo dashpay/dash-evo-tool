@@ -5084,6 +5084,136 @@ async fn wallet_not_loaded_falls_back_to_truncated_seed_hash_when_unnamed() {
     backend.shutdown().await;
 }
 
+/// Put a password-protected wallet into the wallet registry without
+/// registering it with the backend. `locked` leaves it the way a cold boot
+/// hydrates it; otherwise it is open, as after its unlock.
+fn insert_unregistered_protected_wallet(
+    ctx: &AppContext,
+    seed_byte: u8,
+    alias: &str,
+    locked: bool,
+) -> WalletSeedHash {
+    let mut wallet = Wallet::new_from_seed(
+        [seed_byte; 64],
+        Network::Testnet,
+        Some(alias.to_string()),
+        Some(&Secret::new("a long enough password")),
+    )
+    .expect("build protected wallet");
+    if locked {
+        wallet.wallet_seed.close();
+    }
+    let seed_hash = wallet.seed_hash();
+    ctx.wallet_context()
+        .insert_test_wallet(seed_hash, Arc::new(RwLock::new(wallet)));
+    seed_hash
+}
+
+/// The message for a locked wallet must be true and name the wallet: it says
+/// the wallet is locked and how to fix that, never that it is still loading.
+fn assert_wallet_locked_named(err: &TaskError, expected_label: &str) {
+    match err {
+        TaskError::WalletLockedNotLoaded { wallet_label } => {
+            assert_eq!(wallet_label, expected_label, "wrong wallet named")
+        }
+        other => panic!("expected WalletLockedNotLoaded, got {other:?}"),
+    }
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "The wallet \"{expected_label}\" is locked. Unlock it with its password and try again."
+        ),
+    );
+}
+
+/// A password-protected wallet that is still locked is not "still loading":
+/// waiting never registers it, only unlocking does. Both construction sites
+/// (`resolve_wallet` async, `monitored_receive_addresses` sync) say so.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn locked_protected_wallet_is_reported_as_locked_not_as_loading() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+
+    let locked = insert_unregistered_protected_wallet(&ctx, 0x31, "holiday fund", true);
+
+    let err = backend
+        .ensure_identity_managed(&locked, &basic_test_identity(), 0)
+        .await
+        .expect_err("a locked wallet is not registered and must not resolve");
+    assert_wallet_locked_named(&err, "holiday fund");
+
+    let err = backend
+        .monitored_receive_addresses(&locked)
+        .expect_err("a locked wallet has no monitored addresses");
+    assert_wallet_locked_named(&err, "holiday fund");
+
+    backend.shutdown().await;
+}
+
+/// Once unlocked, a protected wallet that has not finished registering is
+/// loading: "unlock it" would point the user at a wallet that is already
+/// unlocked, while waiting is exactly what resolves it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unlocked_protected_wallet_still_registering_is_reported_as_loading() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+
+    let unlocked = insert_unregistered_protected_wallet(&ctx, 0x32, "rainy day", false);
+
+    let err = backend
+        .ensure_identity_managed(&unlocked, &basic_test_identity(), 0)
+        .await
+        .expect_err("an unregistered wallet must not resolve");
+    assert_wallet_not_loaded_named(&err, "rainy day");
+
+    let err = backend
+        .monitored_receive_addresses(&unlocked)
+        .expect_err("an unregistered wallet has no monitored addresses");
+    assert_wallet_not_loaded_named(&err, "rainy day");
+
+    backend.shutdown().await;
+}
+
+/// The error path runs under whatever the caller already holds, so it must
+/// never wait on the wallet's own lock. With that lock held for writing the
+/// call still returns, falling back to the "still loading" wording.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn naming_an_unregistered_wallet_never_waits_on_its_lock() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+
+    let locked = insert_unregistered_protected_wallet(&ctx, 0x33, "college fund", true);
+    let wallet = ctx
+        .wallet_context()
+        .hd_wallet(&locked)
+        .expect("wallet in the registry");
+
+    let held = wallet.write().expect("wallet lock");
+    let (tx, rx) = std::sync::mpsc::channel();
+    let probe = Arc::clone(&backend);
+    std::thread::spawn(move || {
+        let _ = tx.send(probe.monitored_receive_addresses(&locked));
+    });
+    let result = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the error must be built without waiting on the wallet lock");
+    drop(held);
+
+    let err = result.expect_err("an unregistered wallet has no monitored addresses");
+    assert_wallet_not_loaded_named(&err, "college fund");
+
+    backend.shutdown().await;
+}
+
 /// `ensure_identity_managed` registers a previously-unknown identity (→
 /// `true`), then a second call is a no-op (→ `false`). Runs with no secret
 /// session promoted, proving the reconcile is seed-free / locked-safe.

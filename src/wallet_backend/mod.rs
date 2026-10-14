@@ -2531,17 +2531,34 @@ impl WalletBackend {
         }
     }
 
-    /// [`TaskError::WalletNotLoaded`] naming the wallet the caller asked for,
-    /// so a user with several wallets open knows which one to wait for. Reads
-    /// the committed alias snapshot, which never takes the writer mutex.
+    /// The error for a wallet the backend has not registered, naming the
+    /// wallet the caller asked for so a user with several wallets open knows
+    /// which one it is. A password-protected wallet that is still locked gets
+    /// [`TaskError::WalletLockedNotLoaded`], because only unlocking registers
+    /// it; every other wallet gets [`TaskError::WalletNotLoaded`].
+    ///
+    /// Lock scope: the alias and the wallet handle are committed
+    /// [`WalletContext`](wallet_context::WalletContext) snapshots, which never
+    /// take the writer mutex and are released before the handle is touched.
+    /// The handle is only `try_read`: this runs under whatever the caller
+    /// already holds, so it must never wait on a wallet lock. A busy handle
+    /// reads as not locked and falls back to `WalletNotLoaded`.
     fn wallet_not_loaded(&self, seed_hash: &WalletSeedHash) -> TaskError {
-        let alias = self
-            .inner
-            .wallet_context
-            .hd_alias(seed_hash)
-            .unwrap_or_default();
-        TaskError::WalletNotLoaded {
-            wallet_label: wallet_label(&alias, seed_hash),
+        let wallets = &self.inner.wallet_context;
+        let label = wallet_label(&wallets.hd_alias(seed_hash).unwrap_or_default(), seed_hash);
+        let locked = wallets.hd_wallet(seed_hash).is_some_and(|wallet| {
+            wallet
+                .try_read()
+                .is_ok_and(|wallet| wallet.requires_password_unlock())
+        });
+        if locked {
+            TaskError::WalletLockedNotLoaded {
+                wallet_label: label,
+            }
+        } else {
+            TaskError::WalletNotLoaded {
+                wallet_label: label,
+            }
         }
     }
 

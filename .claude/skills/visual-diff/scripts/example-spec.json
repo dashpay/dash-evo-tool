@@ -1,0 +1,91 @@
+{
+ "05-load-identity-id": [
+  {
+   "kind": "removed",
+   "rect": [
+    182,
+    290,
+    545,
+    303
+   ],
+   "label": "Removed: Alias field",
+   "pill": [
+    640,
+    255
+   ],
+   "inset": {
+    "old": "05-load-identity-id",
+    "crop": [
+     170,
+     296,
+     600,
+     320
+    ],
+    "xy": [
+     640,
+     325
+    ]
+   }
+  },
+  {
+   "kind": "changed",
+   "rect": [
+    182,
+    311,
+    370,
+    366
+   ],
+   "label": "Moved up",
+   "pill": [
+    400,
+    325
+   ]
+  }
+ ],
+ "08b-masternodes-votes-to-decide": [
+  {
+   "kind": "screen",
+   "rect": [
+    162,
+    98,
+    1260,
+    382
+   ],
+   "label": "New screen: Votes hub",
+   "pill": [
+    600,
+    112
+   ]
+  }
+ ],
+ "23-settings-advanced": [
+  {
+   "kind": "new",
+   "rect": [
+    203,
+    240,
+    1219,
+    372
+   ],
+   "label": "New: Upgrade Backups",
+   "pill": [
+    700,
+    336
+   ]
+  },
+  {
+   "kind": "new",
+   "rect": [
+    203,
+    437,
+    1219,
+    522
+   ],
+   "label": "New: Restore from previous version",
+   "pill": [
+    430,
+    484
+   ]
+  }
+ ]
+}

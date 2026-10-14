@@ -511,7 +511,7 @@ pub struct DPNSScreen {
     scheduled_clear_dialog: Option<(bool, ConfirmationDialog)>,
     scheduled_vote_editor: Option<ScheduledVoteEditor>,
 
-    /// Sorting
+    /// Order of the History list, the only list that reads it.
     sort_column: SortColumn,
     sort_order: SortOrder,
     active_filter_term: String,
@@ -625,8 +625,9 @@ impl DPNSScreen {
             scheduled_groups: Arc::from([]),
             selected_votes: Vec::new(),
             app_context: app_context.clone(),
-            sort_column: SortColumn::ContestedName,
-            sort_order: SortOrder::Ascending,
+            // History opens with the contest that ended last on top.
+            sort_column: SortColumn::EndingTime,
+            sort_order: SortOrder::Descending,
             active_filter_term: String::new(),
             past_filter_term: String::new(),
             pending_backend_task: None,
@@ -760,12 +761,41 @@ impl DPNSScreen {
                 SortColumn::LastUpdated => a.last_updated.cmp(&b.last_updated),
                 SortColumn::AwardedTo => a.awarded_to.cmp(&b.awarded_to),
             };
-            if self.sort_order == SortOrder::Descending {
+            let order = if self.sort_order == SortOrder::Descending {
                 order.reverse()
             } else {
                 order
-            }
+            };
+            // Rows the column cannot tell apart follow their names, so they
+            // keep their places from frame to frame.
+            order.then_with(|| {
+                a.normalized_contested_name
+                    .cmp(&b.normalized_contested_name)
+            })
         });
+    }
+
+    /// The finished contests History lists, filtered and in the order in use.
+    fn past_contests(&self) -> Vec<ContestedName> {
+        let mut contests = self.contested_names.lock_recover().clone();
+        contests.retain(|c| c.awarded_to.is_some() || c.state == ContestState::Locked);
+        if !self.past_filter_term.is_empty() {
+            let filter = normalize_dpns_label(&self.past_filter_term);
+            contests.retain(|c| c.normalized_contested_name.to_lowercase().contains(&filter));
+        }
+        self.sort_contested_names(&mut contests);
+        contests
+    }
+
+    /// A History column heading, marked when the list is ordered by it.
+    fn sort_header_label(&self, column: SortColumn, title: &str) -> String {
+        if self.sort_column != column {
+            return title.to_owned();
+        }
+        match self.sort_order {
+            SortOrder::Ascending => format!("{title} ^"),
+            SortOrder::Descending => format!("{title} v"),
+        }
     }
 
     // ---------------------------
@@ -1601,18 +1631,7 @@ impl DPNSScreen {
                 .on_hover_text(NAME_FILTER_LOOKALIKES_HINT);
         });
 
-        let contested_names = {
-            let guard = self.contested_names.lock_recover();
-            let mut cn = guard.clone();
-            cn.retain(|c| c.awarded_to.is_some() || c.state == ContestState::Locked);
-            if !self.past_filter_term.is_empty() {
-                let filter = normalize_dpns_label(&self.past_filter_term);
-
-                cn.retain(|c| c.normalized_contested_name.to_lowercase().contains(&filter));
-            }
-            self.sort_contested_names(&mut cn);
-            cn
-        };
+        let contested_names = self.past_contests();
 
         // Allocate space for refreshing indicator
         // Space allocation for UI elements is handled by the layout system
@@ -1629,22 +1648,26 @@ impl DPNSScreen {
                 .column(Column::remainder()) // details
                 .header(30.0, |mut header| {
                     header.col(|ui| {
-                        if ui.button("Name").clicked() {
+                        let label = self.sort_header_label(SortColumn::ContestedName, "Name");
+                        if ui.button(label).clicked() {
                             self.toggle_sort(SortColumn::ContestedName);
                         }
                     });
                     header.col(|ui| {
-                        if ui.button("Ended Time").clicked() {
+                        let label = self.sort_header_label(SortColumn::EndingTime, "Ended Time");
+                        if ui.button(label).clicked() {
                             self.toggle_sort(SortColumn::EndingTime);
                         }
                     });
                     header.col(|ui| {
-                        if ui.button("Last Updated").clicked() {
+                        let label = self.sort_header_label(SortColumn::LastUpdated, "Last Updated");
+                        if ui.button(label).clicked() {
                             self.toggle_sort(SortColumn::LastUpdated);
                         }
                     });
                     header.col(|ui| {
-                        if ui.button("Outcome").clicked() {
+                        let label = self.sort_header_label(SortColumn::AwardedTo, "Outcome");
+                        if ui.button(label).clicked() {
                             self.toggle_sort(SortColumn::AwardedTo);
                         }
                     });
@@ -3104,6 +3127,118 @@ mod tests {
     use crate::utils::tasks::TaskManager;
     use chrono::TimeZone;
     use dash_sdk::dpp::dashcore::Network;
+
+    fn finished_contest(name: &str, end_time: Option<u64>) -> ContestedName {
+        ContestedName {
+            normalized_contested_name: name.to_owned(),
+            contestants: None,
+            locked_votes: None,
+            abstain_votes: None,
+            awarded_to: None,
+            end_time,
+            state: ContestState::Locked,
+            last_updated: Some(1),
+            my_votes: BTreeMap::new(),
+        }
+    }
+
+    fn history_names(screen: &DPNSScreen) -> Vec<String> {
+        screen
+            .past_contests()
+            .into_iter()
+            .map(|contest| contest.normalized_contested_name)
+            .collect()
+    }
+
+    /// History opens with the contest that ended last on top. Contests that
+    /// ended together follow their names, and one with no end time comes last.
+    #[test]
+    fn history_opens_with_the_contest_that_ended_last_on_top() {
+        let (ctx, _dir) = kv_ctx();
+        let screen = DPNSScreen::new(&ctx, VotesView::History);
+        *screen.contested_names.lock_recover() = vec![
+            finished_contest("alpha", Some(100)),
+            finished_contest("charlie", Some(300)),
+            finished_contest("delta", None),
+            finished_contest("bravo", Some(300)),
+            finished_contest("echo", Some(200)),
+        ];
+        assert_eq!(
+            history_names(&screen),
+            ["bravo", "charlie", "echo", "alpha", "delta"]
+        );
+    }
+
+    /// The headings say which column orders the list and in which direction,
+    /// from the first frame on.
+    #[test]
+    fn history_headings_show_the_order_in_use() {
+        let (ctx, _dir) = kv_ctx();
+        let mut screen = DPNSScreen::new(&ctx, VotesView::History);
+        let headings = |screen: &DPNSScreen| {
+            [
+                screen.sort_header_label(SortColumn::ContestedName, "Name"),
+                screen.sort_header_label(SortColumn::EndingTime, "Ended Time"),
+            ]
+        };
+        assert_eq!(headings(&screen), ["Name", "Ended Time v"]);
+
+        screen.toggle_sort(SortColumn::EndingTime);
+        assert_eq!(headings(&screen), ["Name", "Ended Time ^"]);
+
+        screen.toggle_sort(SortColumn::ContestedName);
+        assert_eq!(headings(&screen), ["Name ^", "Ended Time"]);
+    }
+
+    /// Choosing a column still reorders the list, and choosing it again turns
+    /// the order around.
+    #[test]
+    fn a_history_heading_still_reorders_the_list() {
+        let (ctx, _dir) = kv_ctx();
+        let mut screen = DPNSScreen::new(&ctx, VotesView::History);
+        *screen.contested_names.lock_recover() = vec![
+            finished_contest("bravo", Some(300)),
+            finished_contest("alpha", Some(100)),
+            finished_contest("charlie", Some(200)),
+        ];
+        screen.toggle_sort(SortColumn::ContestedName);
+        assert_eq!(history_names(&screen), ["alpha", "bravo", "charlie"]);
+        screen.toggle_sort(SortColumn::ContestedName);
+        assert_eq!(history_names(&screen), ["charlie", "bravo", "alpha"]);
+        screen.toggle_sort(SortColumn::EndingTime);
+        assert_eq!(history_names(&screen), ["alpha", "charlie", "bravo"]);
+    }
+
+    /// The table itself opens in that order: the contest that ended last is
+    /// the first row, and the heading that orders the list carries the mark.
+    #[test]
+    fn the_history_table_opens_newest_first_and_marks_its_heading() {
+        use egui_kittest::kittest::Queryable;
+        let (ctx, _dir) = kv_ctx();
+        ctx.seed_dpns_contest_for_test("alpha", Some(100), true);
+        ctx.seed_dpns_contest_for_test("bravo", Some(200), true);
+        let mut screen = DPNSScreen::new(&ctx, VotesView::History);
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1200.0, 900.0))
+            .build_ui(move |ui| {
+                screen.ui(ui);
+            });
+        harness.run();
+        assert!(harness.query_by_label("Ended Time v").is_some());
+        assert!(harness.query_by_label("Name").is_some());
+        let top = |name: &str| harness.get_by_label(name).rect().top();
+        assert!(
+            top("bravo") < top("alpha"),
+            "the contest that ended last is the first row"
+        );
+
+        harness.get_by_label("Name").click();
+        harness.run();
+        assert!(harness.query_by_label("Name ^").is_some());
+        assert!(harness.query_by_label("Ended Time").is_some());
+        let top = |name: &str| harness.get_by_label(name).rect().top();
+        assert!(top("alpha") < top("bravo"), "the chosen heading reorders");
+    }
 
     #[test]
     fn review_regression_failed_manual_contest_refresh_can_be_retried() {

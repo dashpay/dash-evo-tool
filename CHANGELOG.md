@@ -853,10 +853,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- On Masternodes ▸ Votes, the Cast and Clear buttons now stay under the list of
-  name contests instead of appearing only after a decision is picked. Until
-  there is something to cast they are greyed out, and hovering Cast says what
-  it is waiting for.
+- Masternodes → Votes → History now opens with the contest that ended most
+  recently at the top, instead of in name order. Contests that ended at the
+  same time follow their names. The column headings show which column orders
+  the list and in which direction; choosing a heading reorders the list as
+  before.
 
 - Every weekly release carries its own migration fixture. The weekly workflow
   captures it with the binary it just built and attaches it to the release

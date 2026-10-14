@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use dash_sdk::dpp::identity::TimestampMillis;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use egui::{ColorImage, RichText, TextureHandle, Ui};
+use egui::{RichText, Ui};
 
 use crate::app::AppAction;
 use crate::backend_task::identity::IdentityTask;
@@ -17,8 +17,7 @@ use crate::model::dpns_usernames::{
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::legacy_recovery_section::host_offer;
-use crate::ui::components::message_banner::MessageBanner;
-use crate::ui::identity::funding_common::generate_qr_code_image;
+use crate::ui::components::qr_code_image::QrCodeImage;
 use crate::ui::identity::register_dpns_name_screen::{RegisterDpnsNameSource, status_line};
 use crate::ui::identity::username_copy::{
     ENTER_KEY_TO_REGISTER, IMPORT_OR_RESTORE_WALLET_TO_REGISTER, IMPORT_WALLET_TO_REGISTER,
@@ -28,7 +27,7 @@ use crate::ui::identity::username_copy::{
 use crate::ui::masternodes::KeyVocabulary;
 use crate::ui::state::legacy_recovery::LegacyRecoveryState;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
-use crate::ui::{MessageType, RootScreenType, ScreenType};
+use crate::ui::{RootScreenType, ScreenType};
 
 /// One row of the card, in display order.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -214,7 +213,7 @@ pub(crate) fn key_hint_links(
 /// Stateful renderer for the Usernames card (holds the open QR code).
 #[derive(Default)]
 pub struct UsernamesCard {
-    qr: Option<(String, TextureHandle)>,
+    qr: Option<(String, QrCodeImage)>,
     /// The restore offer for the identity whose registration key is not on
     /// this device; dropped once that identity can register.
     recovery: Option<(dash_sdk::platform::Identifier, LegacyRecoveryState)>,
@@ -270,7 +269,7 @@ impl UsernamesCard {
                                 ui.close();
                             }
                             if ui.button("Show QR code").clicked() {
-                                self.open_qr(ui.ctx(), &name);
+                                self.open_qr(&name);
                                 ui.close();
                             }
                             if !is_main && ui.button("Show as main").clicked() {
@@ -435,25 +434,16 @@ impl UsernamesCard {
         action
     }
 
-    fn open_qr(&mut self, ctx: &egui::Context, name: &str) {
-        let image: ColorImage = match generate_qr_code_image(&format!("{name}.dash")) {
-            Ok(image) => image,
-            Err(error) => {
-                MessageBanner::set_global(
-                    ctx,
-                    "The QR code could not be created. Copy the username instead.",
-                    MessageType::Error,
-                )
-                .with_details(error);
-                return;
-            }
-        };
-        let texture = ctx.load_texture("username_qr", image, egui::TextureOptions::NEAREST);
-        self.qr = Some((name.to_owned(), texture));
+    fn open_qr(&mut self, name: &str) {
+        let widget = QrCodeImage::new()
+            .with_size(220.0)
+            .with_texture_options(egui::TextureOptions::NEAREST)
+            .with_fallback_text("The QR code could not be created. Copy the username instead.");
+        self.qr = Some((name.to_owned(), widget));
     }
 
     fn show_qr(&mut self, ui: &mut Ui) {
-        let Some((name, texture)) = &self.qr else {
+        let Some((name, widget)) = &mut self.qr else {
             return;
         };
         let mut open = true;
@@ -463,7 +453,7 @@ impl UsernamesCard {
             .resizable(false)
             .open(&mut open)
             .show(ui.ctx(), |ui| {
-                ui.image((texture.id(), egui::vec2(220.0, 220.0)));
+                widget.show(ui, &format!("{name}.dash"));
                 if ui.button("Close").clicked() {
                     close = true;
                 }

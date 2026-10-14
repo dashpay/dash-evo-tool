@@ -6,18 +6,17 @@ use crate::ui::components::alias_input::AliasInput;
 use crate::ui::components::entropy_grid::U256EntropyGrid;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::password_input::PasswordInput;
+use crate::ui::components::qr_code_image::QrCodeImage;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::helpers::{ModalOpeningGuard, clicked_outside_window_after_open};
 use crate::ui::identity::add_new_identity_screen::AddNewIdentityScreen;
-use crate::ui::identity::funding_common::generate_qr_code_image;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{RootScreenType, Screen, ScreenLike};
 use bip39::{Language, Mnemonic};
 use dash_sdk::dpp::dashcore::Address;
-use eframe::egui::{Context, TextureHandle, TextureOptions};
+use eframe::egui::Context;
 use eframe::emath::Align;
-use egui::load::SizedTexture;
 use egui::{ComboBox, Frame, Grid, Layout, Margin, RichText, Stroke, Ui, Vec2};
 use std::sync::Arc;
 use zxcvbn::zxcvbn;
@@ -67,7 +66,7 @@ pub struct AddNewWalletScreen {
     created_wallet_seed_hash: Option<[u8; 32]>,
     receive_address: Option<Address>,
     receive_address_string: Option<String>,
-    receive_qr_texture: Option<TextureHandle>,
+    receive_qr: Option<QrCodeImage>,
     show_receive_popup: bool,
     receive_popup_opening_guard: ModalOpeningGuard,
     funds_received: bool,
@@ -94,7 +93,7 @@ impl AddNewWalletScreen {
             created_wallet_seed_hash: None,
             receive_address: None,
             receive_address_string: None,
-            receive_qr_texture: None,
+            receive_qr: None,
             show_receive_popup: false,
             receive_popup_opening_guard: ModalOpeningGuard::default(),
             funds_received: false,
@@ -307,26 +306,6 @@ impl AddNewWalletScreen {
         ));
         painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
 
-        // Generate QR code if needed
-        let mut qr_error: Option<String> = None;
-        if let Some(address) = &self.receive_address_string
-            && self.receive_qr_texture.is_none()
-        {
-            match generate_qr_code_image(address) {
-                Ok(image) => {
-                    let texture = ctx.load_texture(
-                        format!("wallet_receive_{}", address),
-                        image,
-                        TextureOptions::LINEAR,
-                    );
-                    self.receive_qr_texture = Some(texture);
-                }
-                Err(e) => {
-                    qr_error = Some(format!("QR error: {:?}", e));
-                }
-            }
-        }
-
         let mut open = self.show_receive_popup;
         let window_response = egui::Window::new("Fund Wallet")
             .collapsible(false)
@@ -335,14 +314,16 @@ impl AddNewWalletScreen {
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .show(ctx, |ui| {
                 ui.vertical_centered(|ui| {
-                    if let Some(texture) = &self.receive_qr_texture {
-                        ui.image(SizedTexture::new(texture.id(), egui::vec2(220.0, 220.0)));
-                    } else if let Some(err) = &qr_error {
-                        ui.label(err);
-                    } else if self.receive_address_string.is_none() {
-                        ui.label("No receive address available");
+                    if let Some(address) = &self.receive_address_string {
+                        self.receive_qr
+                            .get_or_insert_with(|| {
+                                QrCodeImage::new().with_size(220.0).with_fallback_text(
+                                    "The QR code could not be created. Copy the address below instead.",
+                                )
+                            })
+                            .show(ui, address);
                     } else {
-                        ui.label("Generating QR code...");
+                        ui.label("No receive address available");
                     }
 
                     ui.add_space(8.0);

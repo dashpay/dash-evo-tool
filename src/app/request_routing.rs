@@ -4,9 +4,11 @@
 //! [`BackendTaskContext::Dispatched`] context. [`AppState`](super::AppState)
 //! records which screen sent each such dispatch in [`RequestOwners`] and hands
 //! its result or error to that screen wherever it is: a hidden root screen, or
-//! a screen covered on the stack. Anything else — an undispatched task, an
-//! owner that has since been closed, or a task sent before a network switch —
-//! goes to the visible screen.
+//! a screen covered on the stack. When that screen has been closed, no screen
+//! receives the result ([`ResultRoute::ClosedOwner`]): it is not the visible
+//! screen's to act on, so banners report it instead. An undispatched task, or
+//! a dispatch sent before a network switch, goes to the visible screen
+//! ([`ResultRoute::Visible`]).
 //!
 //! Known limitation: a network switch forgets every sender, so a result that
 //! arrives after it goes to the screen in view. A root screen that sent it

@@ -157,11 +157,11 @@ details, and the recovery action. Never parse strings.
 
 ### Votes screen
 - Cards: two-column layout with weighted tally (read-only), influence line,
-  node line, checkbox, and choice pills with key hints. Sorted by time left.
+  node line, and choice pills with key hints. Sorted by time left.
   Groups per VOTE-FR-071.
 - Node-set chip and popover (VOTE-FR-075). The preference persists per network
   in local KV (new key in the vote-state context or settings).
-- Keyboard handling scoped to list focus, plus the bulk bar (VOTE-FR-082).
+- Keyboard handling scoped to list focus (VOTE-FR-082).
 - Tray copy (VOTE-FR-086).
 - Needs-attention row (VOTE-FR-084).
 
@@ -231,7 +231,7 @@ The A–D workstreams from #901 are done. New:
   010–025, 067–069.
 - E5 Progress drawer, needs-attention row, voting-ended failure. Tests
   VOTE-TC-041, 056, 100–103.
-- E6 Keyboard and bulk bar. Tests VOTE-TC-098, 099.
+- E6 Keyboard; a decision is the selection. Tests VOTE-TC-098, 099.
 - E7 Node detail table and `Vote with this node`. Tests VOTE-TC-091, 094.
 
 Stream U runs in parallel (plan: `../2026-10-01-usernames-redesign/01-requirements.md`
@@ -244,7 +244,7 @@ signatures.
   summary, draft expansion with exclusions.
 - Backend (fake SDK): voting-ended failure, out-of-changes skip, per-node query
   count.
-- Kittest: segments and routing, chip, keyboard, bulk, confirm, drawer
+- Kittest: segments and routing, chip, keyboard, decision as selection, confirm, drawer
   non-blocking, node detail.
 - Testnet backend E2E (manual, `#[ignore]`): 2 nodes × 2 contests with a relative
   schedule in a 90-minute contest.

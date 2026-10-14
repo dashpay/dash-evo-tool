@@ -1459,13 +1459,22 @@ impl ScreenLike for TopUpIdentityScreen {
         if can_append_concurrent_backend_tasks(&action) {
             // Fetch tracked asset locks once per wallet (off the UI thread). The
             // funding-method gate and wallet selector check every wallet, so all
-            // are requested together as one concurrent batch.
+            // are requested together as one concurrent batch. A locked or
+            // still-registering wallet is unknown to the wallet backend, so its
+            // fetch could only fail; it stays un-requested and is fetched on
+            // the first frame after it registers.
+            let backend = self.app_context.wallet_backend().ok();
             let seed_hashes: Vec<_> = self
                 .app_context
                 .wallet_context()
                 .wallets()
                 .values()
                 .filter_map(|w| w.read().ok().map(|g| g.seed_hash()))
+                .filter(|seed_hash| {
+                    backend
+                        .as_ref()
+                        .is_some_and(|backend| backend.is_wallet_registered(seed_hash))
+                })
                 .collect();
             let mut pending_tasks = self.asset_lock_cache.ensure_requested_many(seed_hashes);
 
@@ -2025,6 +2034,117 @@ mod tests {
         assert!(
             harness.query_by_label("Retry").is_some(),
             "picking the wallet must lead to the retry"
+        );
+    }
+
+    /// The wallets whose funding-transaction read `screen` sends while it
+    /// renders, taken from the action `ui()` hands to the app.
+    fn funding_reads_sent(screen: &mut TopUpIdentityScreen) -> Vec<WalletSeedHash> {
+        use egui_kittest::Harness;
+        let mut sent = Vec::new();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1200.0, 900.0))
+            .build_ui(|ui| {
+                let tasks = match screen.ui(ui) {
+                    AppAction::BackendTask(task) => vec![task],
+                    AppAction::BackendTasks(tasks, _) => tasks,
+                    _ => Vec::new(),
+                };
+                sent.extend(tasks.into_iter().filter_map(|task| match task {
+                    BackendTask::WalletTask(WalletTask::ListTrackedAssetLocks { seed_hash }) => {
+                        Some(seed_hash)
+                    }
+                    _ => None,
+                }));
+            });
+        harness.run_steps(2);
+        drop(harness);
+        sent
+    }
+
+    /// Put a wallet into the wallet registry, as opening saved data does. The
+    /// wallet backend does not know it until it is registered there.
+    fn add_wallet_to_registry(app_context: &Arc<AppContext>, wallet: Wallet) -> WalletSeedHash {
+        let seed_hash = wallet.seed_hash();
+        app_context
+            .wallet_context()
+            .insert_test_wallet(seed_hash, Arc::new(RwLock::new(wallet)));
+        app_context.has_wallet.store(true, Ordering::Relaxed);
+        seed_hash
+    }
+
+    /// Opening the screen reads the funding transactions of every wallet, not
+    /// only the chosen one. A wallet the wallet backend does not know yet —
+    /// locked behind its password, or still registering — cannot answer, and
+    /// asking it anyway raised an error about a wallet the user never touched.
+    /// Such a wallet is left alone, and read by itself once it registers.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn funding_transactions_are_read_only_from_wallets_ready_to_answer() {
+        use crate::context::test_support::wired_test_app_context;
+        use crate::model::secret::Secret;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let app_context = wired_test_app_context(temp_dir.path()).await;
+        let backend = app_context.wallet_backend().expect("wallet backend");
+        let open_wallet = |seed: [u8; 64], alias: &str| {
+            Wallet::new_from_seed(seed, Network::Testnet, Some(alias.to_string()), None)
+                .expect("wallet")
+        };
+
+        let ready_seed = [0x71; 64];
+        let ready = add_wallet_to_registry(&app_context, open_wallet(ready_seed, "Everyday"));
+        backend
+            .register_wallet_from_seed(&ready, &ready_seed, None)
+            .await
+            .expect("register the ready wallet");
+
+        let registering_seed = [0x72; 64];
+        let registering =
+            add_wallet_to_registry(&app_context, open_wallet(registering_seed, "Savings"));
+
+        let mut locked_wallet = Wallet::new_from_seed(
+            [0x73; 64],
+            Network::Testnet,
+            Some("Vault".to_string()),
+            Some(&Secret::new("a long enough password")),
+        )
+        .expect("protected wallet");
+        locked_wallet.wallet_seed.close();
+        add_wallet_to_registry(&app_context, locked_wallet);
+
+        let mut screen = TopUpIdentityScreen::new(test_identity(Network::Testnet), &app_context);
+        assert_eq!(
+            funding_reads_sent(&mut screen),
+            vec![ready],
+            "only the wallet the backend knows is read; the locked and the \
+             still-registering wallet are not asked"
+        );
+
+        backend
+            .register_wallet_from_seed(&registering, &registering_seed, None)
+            .await
+            .expect("register the second wallet");
+        assert_eq!(
+            funding_reads_sent(&mut screen),
+            vec![registering],
+            "a wallet that finished registering is read without any retry by the user"
+        );
+
+        backend.shutdown().await;
+    }
+
+    /// Before the wallet backend is ready no wallet can answer, so nothing is
+    /// sent; the reads start by themselves once it is.
+    #[test]
+    fn no_funding_read_is_sent_before_the_wallet_backend_is_ready() {
+        let (mut screen, _seed_hashes, _temp_dir) = two_wallet_screen();
+        assert!(
+            screen.app_context.wallet_backend().is_err(),
+            "precondition: this context has no wallet backend"
+        );
+        assert_eq!(
+            funding_reads_sent(&mut screen),
+            Vec::<WalletSeedHash>::new()
         );
     }
 

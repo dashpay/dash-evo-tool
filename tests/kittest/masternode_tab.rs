@@ -1871,3 +1871,183 @@ fn contest_notifications_update_the_open_votes_view() {
         rt.block_on(context.wallet_backend().unwrap().shutdown());
     });
 }
+
+type App = egui_kittest::Harness<'static, dash_evo_tool::app::AppState>;
+
+/// Turn the mouse wheel towards the end of the list under the pointer.
+fn wheel_down(harness: &mut App) {
+    harness.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: egui::vec2(0.0, -300.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: egui::Modifiers::NONE,
+    });
+    harness.run_steps(6);
+}
+
+/// Scroll bars painted this frame right of the navigation panel. A bar has no
+/// accessibility node, so it is told by its shape: a filled strip no wider
+/// than a bar and taller than a row. One that is not shown is fully
+/// transparent.
+fn painted_scroll_bars(harness: &App) -> Vec<egui::Rect> {
+    fn collect(shape: &egui::Shape, bars: &mut Vec<egui::Rect>) {
+        match shape {
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| collect(shape, bars)),
+            egui::Shape::Rect(strip)
+                if strip.rect.width() <= 12.0
+                    && strip.rect.height() >= 40.0
+                    && strip.rect.left() > 150.0
+                    && strip.fill.a() > 0 =>
+            {
+                bars.push(strip.rect);
+            }
+            _ => {}
+        }
+    }
+    let mut bars = Vec::new();
+    for clipped in &harness.output().shapes {
+        collect(&clipped.shape, &mut bars);
+    }
+    bars
+}
+
+fn top_of(harness: &App, label: &str) -> f32 {
+    harness.get_by_label(label).rect().top()
+}
+
+/// Mount the Nodes list with `count` nodes named `node-00`, `node-01`, … in a
+/// window of `size`.
+fn mount_node_list(count: u8, size: egui::Vec2) -> App {
+    let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
+    let app_context = harness.state().current_app_context().clone();
+    for index in 0..count {
+        seed_node(
+            &app_context,
+            0x40 + index,
+            &format!("node-{index:02}"),
+            IdentityType::Masternode,
+        );
+    }
+    harness.set_size(size);
+    activate_masternodes_tab(&mut harness, &app_context);
+    harness
+}
+
+/// In a window wider than its cards the node list scrolls, and shows its
+/// scroll bar at the edge of the panel, wherever in the panel the pointer is —
+/// also in the space beside the cards.
+#[test]
+fn node_list_scrolls_and_shows_its_bar_from_the_space_beside_the_cards() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+        let mut harness = mount_node_list(12, egui::vec2(1280.0, 800.0));
+
+        let last_card_right = harness.get_by_label("Open node-11").rect().right();
+        let beside_cards = egui::pos2(last_card_right + 100.0, 500.0);
+        harness.hover_at(beside_cards);
+        harness.run_steps(4);
+        let bars = painted_scroll_bars(&harness);
+        assert!(
+            bars.iter().any(|bar| bar.left() > beside_cards.x),
+            "a scroll bar must show at the edge of the panel: {bars:?}"
+        );
+
+        let before = top_of(&harness, "Open node-00");
+        wheel_down(&mut harness);
+        assert!(
+            top_of(&harness, "Open node-00") < before,
+            "the list must scroll with the pointer beside the cards"
+        );
+    });
+}
+
+/// In the window size the app opens with, every node of a list longer than
+/// the window is reached by scrolling, and the scroll bar shows meanwhile.
+#[test]
+fn every_node_is_reached_by_scrolling_in_the_default_window() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+        let window = egui::vec2(800.0, 600.0);
+        let mut harness = mount_node_list(12, window);
+        assert!(
+            top_of(&harness, "Open node-11") > window.y,
+            "the last node starts below the window"
+        );
+
+        harness.hover_at(harness.get_by_label("Open node-00").rect().center());
+        harness.run_steps(4);
+        assert!(
+            !painted_scroll_bars(&harness).is_empty(),
+            "a list longer than the window shows a scroll bar"
+        );
+        for _ in 0..20 {
+            wheel_down(&mut harness);
+        }
+        assert!(
+            harness.get_by_label("Open node-11").rect().bottom() <= window.y,
+            "the last node must scroll into the window"
+        );
+    });
+}
+
+/// The `Vote with` list names every loaded node. With more nodes than the
+/// window is tall it scrolls, and the button below it stays in the window.
+#[test]
+fn vote_with_list_scrolls_when_it_outgrows_the_window() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+        let window = egui::vec2(800.0, 600.0);
+        let mut harness = mount_app(RootScreenType::RootScreenDPNSActiveContests);
+        let app_context = harness.state().current_app_context().clone();
+        seed_open_contest(&app_context, "alice");
+        for index in 0..40u8 {
+            seed_node_with_voter(&app_context, 0x20 + index, &format!("node-{index:02}"));
+        }
+        harness.set_size(window);
+        let Screen::MasternodesScreen(masternodes) = harness
+            .state_mut()
+            .main_screens
+            .get_mut(&RootScreenType::RootScreenMasternodes)
+            .expect("masternodes screen")
+        else {
+            panic!("the Masternodes root must contain the Masternodes screen");
+        };
+        masternodes.votes_mut().refresh();
+        harness.run_steps(5);
+
+        let chip = harness
+            .query_all_by_role(Role::Button)
+            .filter_map(|button| button.accesskit_node().label())
+            .find(|label| label.starts_with("Vote with:"))
+            .expect("the Vote with chip");
+        harness.get_by_label(&chip).click();
+        harness.run_steps(4);
+
+        let save = harness.get_by_label("Save as my default").rect();
+        assert!(
+            save.top() >= 0.0 && save.bottom() <= window.y,
+            "the button below the list must stay in the window: {save:?}"
+        );
+        let first = "node-00 · Masternode";
+        let last = "node-39 · Masternode";
+        assert!(
+            harness.get_by_label(last).rect().bottom() > save.top(),
+            "the last node starts out of view"
+        );
+
+        harness.hover_at(harness.get_by_label(first).rect().center());
+        harness.run_steps(3);
+        for _ in 0..20 {
+            wheel_down(&mut harness);
+        }
+        let save = harness.get_by_label("Save as my default").rect();
+        let last = harness.get_by_label(last).rect();
+        assert!(
+            last.top() >= 0.0 && last.bottom() <= save.top(),
+            "the last node must scroll into view above the button: {last:?}"
+        );
+    });
+}

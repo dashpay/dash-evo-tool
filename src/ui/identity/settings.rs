@@ -231,9 +231,10 @@ impl SettingsTab {
         &mut self,
         ui: &mut Ui,
         app_context: &Arc<AppContext>,
+        identity: Option<&QualifiedIdentity>,
         profiles: &mut super::profile_cache::ProfileCache,
     ) -> AppAction {
-        self.ensure_selected(app_context, profiles);
+        self.ensure_selected(identity, profiles);
 
         let Some(identity) = self.selected_identity.clone() else {
             return render_empty_state(ui);
@@ -691,13 +692,13 @@ impl SettingsTab {
     /// the stored state immediately.
     fn ensure_selected(
         &mut self,
-        app_context: &Arc<AppContext>,
+        incoming: Option<&QualifiedIdentity>,
         profiles: &mut super::profile_cache::ProfileCache,
     ) {
-        // Read the app-scoped active identity (selected → first → none), not
-        // `.first()`, so the Settings tab agrees with the breadcrumb/hub and
-        // does not flip-flop across frames (D4).
-        let incoming = app_context.resolve_selected_identity();
+        // `incoming` is the app-scoped active identity the hub resolved
+        // (selected → first → none), not `.first()`, so the Settings tab agrees
+        // with the breadcrumb/hub and does not flip-flop across frames (D4).
+        let incoming = incoming.cloned();
 
         let changed = self.reconcile_selected_identity(&incoming);
 

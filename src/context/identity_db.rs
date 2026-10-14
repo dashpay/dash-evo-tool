@@ -502,7 +502,19 @@ fn purge_identity_scope(kv: &DetKv, id: &[u8; 32]) -> std::result::Result<(), Ta
     Ok(())
 }
 
+#[cfg(feature = "testing")]
+thread_local! {
+    static ROSTER_LOADS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl AppContext {
+    /// Full roster reads ([`Self::load_local_qualified_identities`]) made on
+    /// this thread, for tests that bound how often a frame reads the roster.
+    #[cfg(feature = "testing")]
+    pub fn roster_loads_on_this_thread() -> usize {
+        ROSTER_LOADS.with(std::cell::Cell::get)
+    }
+
     /// Whether the previous version's preserved `data.db` holds any identity of
     /// this network.
     ///
@@ -1053,6 +1065,8 @@ impl AppContext {
     pub fn load_local_qualified_identities(
         &self,
     ) -> std::result::Result<Vec<QualifiedIdentity>, TaskError> {
+        #[cfg(feature = "testing")]
+        ROSTER_LOADS.with(|loads| loads.set(loads.get() + 1));
         let wallets = self.wallet_context().wallets();
         let mut identities = self.load_identities_filtered(&wallets, |_| true)?;
         for identity in &mut identities {

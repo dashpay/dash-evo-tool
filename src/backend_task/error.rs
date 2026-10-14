@@ -165,6 +165,17 @@ pub enum TaskError {
         wallet_label: String,
     },
 
+    /// A wallet operation was requested for a password-protected wallet that
+    /// is still locked. A locked wallet is not registered with the wallet
+    /// backend, and unlike [`Self::WalletNotLoaded`] waiting never changes
+    /// that: only unlocking it does.
+    #[error("The wallet \"{wallet_label}\" is locked. Unlock it with its password and try again.")]
+    WalletLockedNotLoaded {
+        /// Display alias for the affected wallet, with the same seed-hash
+        /// fallback as [`Self::WalletNotLoaded`].
+        wallet_label: String,
+    },
+
     /// An internal wallet-state inconsistency: the wallet backend's records
     /// disagree with each other in a way that should never happen (a wallet
     /// present in one place but missing from another, or an account that just

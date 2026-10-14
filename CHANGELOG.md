@@ -212,6 +212,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Long lists of masternodes can be scrolled everywhere. In Masternodes →
+  Votes, the "Vote with" list named every loaded node but did not scroll: with
+  more nodes than fit in the window, the rest of the list and the "Save as my
+  default" button could not be reached. It now scrolls and keeps the button
+  in view. In Masternodes → Nodes, the list scrolled only while the pointer
+  was over a card, and its scroll bar sat at the edge of the last card; it
+  now scrolls from anywhere in the panel, with the scroll bar at the panel's
+  edge.
+
+- Sending credits out of an identity now keeps back what the network needs.
+  Max, and the check made before sending, used to keep back about 0.000001
+  DASH for a transfer to another identity and 0.000065 DASH for a transfer to
+  a Platform address. The network accepts such a transfer only while the
+  identity holds about 0.000088 DASH or 0.000173 DASH above the amount, so a
+  Max transfer passed the check and was then refused. About 0.000096 DASH and
+  0.000192 DASH are now kept back. The network charges less than it wants
+  kept back, about 0.00003 DASH for a transfer to another identity, and the
+  rest stays in the identity.
+
 - Registering a username now shows a realistic cost. The review step used to
   show a registration fee of about 0.000002 DASH, while the network charges
   roughly 0.0008 DASH and wants about 0.0012 DASH on the identity before it
@@ -842,6 +861,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   says plainly that the rate shown is fixed rather than read from the network.
 
 ### Changed
+
+- Masternodes → Votes → History now opens with the contest that ended most
+  recently at the top, instead of in name order. Contests that ended at the
+  same time follow their names. The column headings show which column orders
+  the list and in which direction; choosing a heading reorders the list as
+  before.
+
+- Every weekly release carries its own migration fixture. The weekly workflow
+  captures it with the binary it just built and attaches it to the release
+  before publishing, instead of someone recording it in the fixture manifest
+  afterwards; a failed capture blocks that release. The new Migration Fixture
+  Capture workflow can also be run by hand for an older release. Fixture
+  coverage accepts a release that carries its fixture, and the migration tests
+  use the eight newest attached fixtures after verifying their build
+  attestation and checksum. Manifest fixtures stored as build artifacts work
+  as before.
+
+- The weekly release gate accepts a manual Tests run in place of the Monday
+  scheduled checks when it ran on the release branch for the exact commit
+  being released, was created after the scheduled run, and passed both fixture
+  coverage and the platform pin guard. A failed or cancelled manual run of that
+  commit blocks the release unless a scheduled run was created after it. Manual
+  Tests runs of a `v*-dev` branch now check fixture coverage. Push results are
+  never replaced by a manual run.
 
 - Registering a username, finding an identity or a DashPay contact by name, and
   searching DashPay users by name now go through the Dash SDK's own name

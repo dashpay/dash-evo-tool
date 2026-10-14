@@ -556,6 +556,34 @@ mod loads {
         });
     }
 
+    /// Roster reads the hub makes in one settled frame on `tab`.
+    fn roster_reads_per_frame(
+        hub: &mut HubHarness,
+        tab: dash_evo_tool::ui::identity::IdentityHubTab,
+    ) -> usize {
+        hub.state_mut().0.select_tab(tab);
+        hub.run_steps(4);
+        let before = AppContext::roster_loads_on_this_thread();
+        hub.step();
+        AppContext::roster_loads_on_this_thread() - before
+    }
+
+    /// Contacts and Profile read the identity roster no more often per frame
+    /// than Home: they use the identity the hub resolved for its header.
+    #[test]
+    fn contacts_and_profile_read_the_roster_as_often_as_home() {
+        use dash_evo_tool::ui::identity::IdentityHubTab;
+        with_isolated_data_dir(|| {
+            let (_runtime, app_context) = fresh_app_context();
+            seed_identity_that_can_move_funds(&app_context);
+            let mut hub = mount_hub(&app_context);
+            let home = roster_reads_per_frame(&mut hub, IdentityHubTab::Home);
+            for tab in [IdentityHubTab::Contacts, IdentityHubTab::Settings] {
+                assert_eq!(roster_reads_per_frame(&mut hub, tab), home, "{tab:?}");
+            }
+        });
+    }
+
     /// Puts the hub behind the Send screen Home opens, delivers `results`
     /// there, then cancels that screen: the hub comes back to `hub` the way
     /// Cancel leaves it, without a refresh.

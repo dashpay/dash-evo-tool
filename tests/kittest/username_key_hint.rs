@@ -124,7 +124,12 @@ fn identity_without_a_suitable_key_is_told_to_add_one() {
             .with_size(egui::vec2(1400.0, 1200.0))
             .build_ui_state(
                 move |ui, tab: &mut SettingsTab| {
-                    tab.render(ui, &app_context, &mut ProfileCache::default());
+                    tab.render(
+                        ui,
+                        &app_context,
+                        app_context.resolve_selected_identity().as_ref(),
+                        &mut ProfileCache::default(),
+                    );
                 },
                 SettingsTab::new(),
             );

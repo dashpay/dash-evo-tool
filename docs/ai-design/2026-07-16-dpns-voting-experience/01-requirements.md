@@ -228,8 +228,9 @@ Validation floor: 24 nodes on one voting key, 6 open contests, 2 ending today.
   Relative schedule display presets are stored in one network-scoped metadata record per vote operation, without changing the vote journal binary format. Changing the absolute scheduled time clears the preset; cancellation and identity removal retain metadata only with its journal owner under the same retention rules. Network-data clearing retains journal history and uncertain locks under existing rules, and display metadata follows those owners. Reads never create or delete metadata.
 - **VOTE-FR-082** **[New]** — Keyboard (only when focus is in the contest list):
   J/K or ↓/↑ move card focus · 1–9 vote for contender n · L lock · A abstain ·
-  0 clear · Space select · Enter open confirm. Selecting ≥ 2 cards shows a bulk
-  bar: `Lock name` · `Abstain` · `Clear`. A `Shortcuts` popover lists the keys.
+  0 clear · Enter open confirm. A `Shortcuts` popover lists the keys. A card is
+  picked by its staged decision; there is no separate selection, checkbox or
+  bulk bar. The tray's `Cast` and `Clear` act on every decided card.
 - **VOTE-FR-086** **[New]** — The tray reads `{d} decisions ready · {t}
   transactions, one per node and name` with `Clear` and `Cast`. Votes that are
   only checked again (VOTE-FR-074) are left out of `{t}` and shown beside it as

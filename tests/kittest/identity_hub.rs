@@ -358,6 +358,18 @@ mod loads {
         }
     }
 
+    const AVATAR_URL: &str = "https://example.com/alex.png";
+
+    fn avatar_fetch(action: &AppAction) -> Option<()> {
+        matches!(action, AppAction::BackendTask(BackendTask::DashPayTask(task))
+            if matches!(&**task, DashPayTask::FetchAvatar { url } if url == AVATAR_URL))
+        .then_some(())
+    }
+
+    fn images(hub: &HubHarness) -> usize {
+        hub.query_all_by_role(Role::Image).count()
+    }
+
     fn named_contact(name: &str) -> dash_evo_tool::backend_task::dashpay::ContactData {
         dash_evo_tool::backend_task::dashpay::ContactData {
             identity_id: Identifier::from([0xD8; 32]),
@@ -397,11 +409,28 @@ mod loads {
                 network: app_context.network(),
                 owner,
                 revision: app_context.identity_profile_revision(owner),
-                profile: Some(("Alex".into(), String::new(), String::new())),
+                profile: Some(("Alex".into(), String::new(), AVATAR_URL.into())),
             }),
         );
         deliver_contacts(&mut hub, owner, "Bao");
+        step_until(&mut hub, "the profile photo load", avatar_fetch);
+        let without_photo = images(&hub);
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(8, 8)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .expect("png");
+        let task = BackendTask::DashPayTask(Box::new(DashPayTask::FetchAvatar {
+            url: AVATAR_URL.into(),
+        }));
+        hub.state_mut().0.display_backend_task_result(
+            &BackendTaskContext::from(&task),
+            BackendTaskSuccessResult::DashPayAvatar {
+                url: AVATAR_URL.into(),
+                bytes: Some(png.into_inner()),
+            },
+        );
         hub.run();
+        assert!(images(&hub) > without_photo, "the profile photo is shown");
         assert!(hub.query_by_label("Bao").is_some(), "the contact is shown");
         assert!(
             hub.query_by_label(SETUP_CHECKLIST).is_some(),
@@ -410,16 +439,17 @@ mod loads {
         hub
     }
 
-    /// Whether the hub asks for the contact lists and the profile again,
-    /// rendering one frame at a time until both went out.
-    fn reloads_both(hub: &mut HubHarness) -> bool {
-        let (mut contacts, mut profile) = (false, false);
+    /// Whether the hub asks for the contact lists, the profile and its photo
+    /// again, rendering one frame at a time until all went out.
+    fn reloads_all(hub: &mut HubHarness) -> bool {
+        let (mut contacts, mut profile, mut photo) = (false, false, false);
         for _ in 0..16 {
             for action in hub.state_mut().1.drain(..) {
                 contacts |= contacts_load(&action).is_some();
                 profile |= profile_load(&action).is_some();
+                photo |= avatar_fetch(&action).is_some();
             }
-            if contacts && profile {
+            if contacts && profile && photo {
                 return true;
             }
             hub.step();
@@ -435,6 +465,7 @@ mod loads {
             let (_runtime, app_context) = fresh_app_context();
             let owner = seed_identity_that_can_move_funds(&app_context);
             let mut hub = hub_with_loaded_home(&app_context, owner);
+            let with_photo = images(&hub);
 
             hub.state_mut().0.refresh_on_arrival();
             hub.state_mut().1.clear();
@@ -443,13 +474,14 @@ mod loads {
                 hub.query_by_label("Bao").is_some(),
                 "the contacts must stay on screen"
             );
+            assert_eq!(images(&hub), with_photo, "the profile photo must stay");
             assert!(
                 hub.query_by_label(SETUP_CHECKLIST).is_some(),
                 "the profile and the contacts must stay known"
             );
             assert!(
-                reloads_both(&mut hub),
-                "the profile and the contacts must be reloaded"
+                reloads_all(&mut hub),
+                "the profile, its photo and the contacts must be reloaded"
             );
         });
     }

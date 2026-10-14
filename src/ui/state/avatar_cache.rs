@@ -44,6 +44,9 @@ enum FetchState {
 #[derive(Default)]
 pub struct AvatarCache {
     states: BTreeMap<String, FetchState>,
+    /// Images kept on screen while they are fetched again: `false` = the
+    /// fetch is due, `true` = it went out. See [`Self::reload_kept`].
+    renewing: BTreeMap<String, bool>,
 }
 
 impl AvatarCache {
@@ -51,15 +54,21 @@ impl AvatarCache {
         Self::default()
     }
 
-    /// Returns the backend task to dispatch when `url` is `NotRequested`, or
-    /// `None` once it is `Loading`, `Fetched`, `Ready`, or `Failed`. The caller
+    /// Returns the backend task to dispatch when `url` is `NotRequested` or a
+    /// kept image is due its renewal, else `None`. The caller
     /// dispatches the returned task as an
     /// [`AppAction::BackendTask`](crate::app::AppAction::BackendTask).
     pub fn ensure_requested(&mut self, url: &str) -> Option<BackendTask> {
-        if url.is_empty() || self.states.contains_key(url) {
+        if url.is_empty() {
             return None;
         }
-        self.states.insert(url.to_string(), FetchState::Loading);
+        match self.renewing.get_mut(url) {
+            Some(sent @ false) => *sent = true,
+            _ if self.states.contains_key(url) => return None,
+            _ => {
+                self.states.insert(url.to_string(), FetchState::Loading);
+            }
+        }
         Some(BackendTask::DashPayTask(Box::new(
             DashPayTask::FetchAvatar {
                 url: url.to_string(),
@@ -70,6 +79,12 @@ impl AvatarCache {
     /// Whether a dispatched URL is still awaiting its completion.
     pub fn is_loading(&self, url: &str) -> bool {
         matches!(self.states.get(url), Some(FetchState::Loading))
+    }
+
+    /// Whether a fetch for `url` went out and its result is still expected,
+    /// including the fetch renewing an image kept on screen.
+    pub fn awaits_result(&self, url: &str) -> bool {
+        self.is_loading(url) || self.renewing.get(url) == Some(&true)
     }
 
     /// Seed the cache with already-known bytes (e.g. a profile's locally-stored
@@ -86,9 +101,16 @@ impl AvatarCache {
 
     /// Record a completed fetch: `Some(bytes) → Fetched`, `None → Failed`. A
     /// URL already `Ready` keeps its uploaded texture (a duplicate result never
-    /// discards a live texture).
+    /// discards a live texture) unless the result renews it. A failed renewal
+    /// keeps the image it was renewing.
     pub fn store(&mut self, url: String, bytes: Option<Vec<u8>>) {
-        if matches!(self.states.get(&url), Some(FetchState::Ready(_))) {
+        let renewal = self.renewing.remove(&url).is_some();
+        let keep = match self.states.get(&url) {
+            Some(FetchState::Ready(_)) => !renewal || bytes.is_none(),
+            Some(FetchState::Fetched(_)) => renewal && bytes.is_none(),
+            _ => false,
+        };
+        if keep {
             return;
         }
         let state = match bytes {
@@ -138,6 +160,16 @@ impl AvatarCache {
     /// stable URL repaints because its texture is dropped here.
     pub fn invalidate(&mut self) {
         self.states.clear();
+        self.renewing.clear();
+    }
+
+    /// Keep every fetched image on screen but fetch it again on its next
+    /// render; the fresh image replaces it when it lands. Fetches that failed
+    /// or had not finished are re-armed as [`Self::invalidate`] does.
+    pub fn reload_kept(&mut self) {
+        self.states
+            .retain(|_, state| matches!(state, FetchState::Ready(_) | FetchState::Fetched(_)));
+        self.renewing = self.states.keys().map(|url| (url.clone(), false)).collect();
     }
 }
 
@@ -250,5 +282,50 @@ mod tests {
         cache.store(URL_A.to_string(), Some(vec![1]));
         cache.store(URL_A.to_string(), Some(vec![2, 2]));
         assert_eq!(cache.fetched_bytes(URL_A), Some(&[2, 2][..]));
+    }
+
+    /// A kept image stays while it is fetched again: a failed renewal keeps it,
+    /// a successful one replaces it. Failed fetches are re-armed.
+    #[test]
+    fn reload_kept_renews_shown_images_and_rearms_failed_ones() {
+        let mut cache = AvatarCache::new();
+        cache.seed(URL_A, vec![1]);
+        cache.ensure_requested(URL_B);
+        cache.store(URL_B.to_string(), None);
+
+        cache.reload_kept();
+        assert_eq!(
+            cache.fetched_bytes(URL_A),
+            Some(&[1][..]),
+            "the image stays"
+        );
+        assert!(!cache.awaits_result(URL_A));
+        assert!(
+            cache.ensure_requested(URL_A).is_some(),
+            "its renewal goes out"
+        );
+        assert!(cache.ensure_requested(URL_A).is_none(), "once");
+        assert!(cache.awaits_result(URL_A));
+        assert!(
+            cache.ensure_requested(URL_B).is_some(),
+            "a failed fetch is re-armed"
+        );
+
+        cache.store(URL_A.to_string(), None);
+        assert_eq!(
+            cache.fetched_bytes(URL_A),
+            Some(&[1][..]),
+            "a failed renewal keeps it"
+        );
+        assert!(!cache.awaits_result(URL_A));
+
+        cache.reload_kept();
+        cache.ensure_requested(URL_A);
+        cache.store(URL_A.to_string(), Some(vec![2]));
+        assert_eq!(
+            cache.fetched_bytes(URL_A),
+            Some(&[2][..]),
+            "a fresh image replaces it"
+        );
     }
 }

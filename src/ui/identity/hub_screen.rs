@@ -142,7 +142,7 @@ impl IdentityHubScreen {
 
     /// Whether an avatar result still belongs to an outstanding hub request.
     pub(crate) fn is_waiting_for_avatar(&self, url: &str) -> bool {
-        self.avatar_cache.is_loading(url)
+        self.avatar_cache.awaits_result(url)
     }
 
     /// Construct a new hub screen. Follows the project convention: constructors
@@ -254,13 +254,14 @@ impl IdentityHubScreen {
             self.contacts_state.invalidate();
             self.contacts_state.search_mut().clear();
             self.profile_cache.reload_kept();
+            self.avatar_cache.reload_kept();
         } else {
             self.contacts_state.reset();
             self.profile_cache.reset();
+            self.avatar_cache.invalidate();
         }
         self.home_state.refresh_payments();
         self.selection.clear_searches();
-        self.avatar_cache.invalidate();
         self.pending_avatars.clear();
     }
 
@@ -1455,6 +1456,21 @@ mod tests {
         assert!(
             hub.avatar_cache.fetched_bytes(url).is_none(),
             "obsolete completion stays discarded"
+        );
+
+        hub.avatar_cache.seed(url, vec![5]);
+        hub.refresh_on_arrival();
+        assert_eq!(hub.avatar_cache.fetched_bytes(url), Some(&[5][..]));
+        assert!(hub.avatar_cache.ensure_requested(url).is_some());
+        assert!(hub.is_waiting_for_avatar(url), "the renewal is awaited");
+        hub.display_task_result(BackendTaskSuccessResult::DashPayAvatar {
+            url: url.into(),
+            bytes: Some(vec![6]),
+        });
+        assert_eq!(
+            hub.avatar_cache.fetched_bytes(url),
+            Some(&[6][..]),
+            "the renewal replaces the kept image"
         );
     }
 

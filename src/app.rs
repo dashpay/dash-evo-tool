@@ -8,7 +8,7 @@ use reconcilers::{
     AccessibilityActivator, ConnectionBanner, GateEvent, MigrationReconciler, PendingConfirmation,
     SpvBlockReconciler, StoragePrepGate,
 };
-use request_routing::{RequestOwners, ScreenOwner, ScreenStack};
+use request_routing::{RequestOwners, ResultRoute, ScreenOwner, ScreenStack};
 
 #[cfg(not(feature = "testing"))]
 use crate::app_dir::data_file_path;
@@ -47,6 +47,7 @@ use crate::ui::tools::grovestark_screen::GroveSTARKScreen;
 use crate::ui::tools::platform_info_screen::PlatformInfoScreen;
 use crate::ui::tools::proof_visualizer_screen::ProofVisualizerScreen;
 use crate::ui::tools::transition_visualizer_screen::TransitionVisualizerScreen;
+use crate::ui::wallets::send_screen::closed_send_form_message;
 use crate::ui::wallets::wallets_screen::WalletsBalancesScreen;
 use crate::ui::welcome_screen::WelcomeScreen;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
@@ -100,9 +101,9 @@ const WALLET_BACKEND_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 const SHUTDOWN_DEADLINE_MARGIN: Duration = Duration::from_secs(5);
 
 /// Settle recovery operations on retained screens, including hosts hidden by navigation.
-pub(crate) fn deliver_legacy_recovery_result(
-    roots: &mut BTreeMap<RootScreenType, Screen>,
-    stack: &mut [Screen],
+pub(crate) fn deliver_legacy_recovery_result<'a>(
+    roots: &'a mut BTreeMap<RootScreenType, Screen>,
+    stack: impl IntoIterator<Item = &'a mut Screen>,
     task_result: &TaskResult,
 ) -> bool {
     let context = match task_result {
@@ -122,7 +123,7 @@ pub(crate) fn deliver_legacy_recovery_result(
     };
     let completed = matches!(task_result, TaskResult::Success { result, .. }
         if matches!(result.as_ref(), BackendTaskSuccessResult::LegacyRecoveryCompleted { .. }));
-    for screen in roots.values_mut().chain(stack.iter_mut()) {
+    for screen in roots.values_mut().chain(stack) {
         if !screen.accepts_legacy_recovery_result(context, completed) {
             continue;
         }
@@ -478,16 +479,15 @@ fn dpns_screen_is_hidden(
     selected != target || !screen_stack_is_empty
 }
 
-fn dpns_result_needs_hidden_route(
-    target: RootScreenType,
-    selected: RootScreenType,
-    screen_stack_is_empty: bool,
+/// Whether a result needs its own route to the voting panel: one the panel
+/// acts on, going to another screen than the voting root.
+fn dpns_result_needs_route(
+    voting_root_takes_result: bool,
     result: &BackendTaskSuccessResult,
 ) -> bool {
     // The voting panel says which results it acts on, so it receives each of
     // them even while its root screen is hidden.
-    DPNSScreen::handles_result(result)
-        && dpns_screen_is_hidden(target, selected, screen_stack_is_empty)
+    DPNSScreen::handles_result(result) && !voting_root_takes_result
 }
 
 /// The screen refresh owed for the cache notifications merged so far in a
@@ -1288,6 +1288,10 @@ pub struct AppState {
     /// Which screen sent each dispatched task still running, so its result can
     /// reach that screen wherever it is.
     request_owners: RequestOwners,
+    /// Kittests set this to keep dispatched tasks from running: each one is
+    /// recorded here instead, after the frame loop has done its bookkeeping.
+    #[cfg(feature = "testing")]
+    captured_dispatches: Option<Vec<(BackendTask, BackendTaskContext)>>,
     pub chosen_network: Network,
     pub connection_status: Arc<ConnectionStatus>,
     pub network_contexts: BTreeMap<Network, Arc<AppContext>>,
@@ -1896,6 +1900,8 @@ impl AppState {
             selected_main_screen,
             screen_stack: ScreenStack::default(),
             request_owners: RequestOwners::default(),
+            #[cfg(feature = "testing")]
+            captured_dispatches: None,
             chosen_network,
             connection_status,
             network_contexts,
@@ -2318,6 +2324,11 @@ impl AppState {
     }
 
     fn handle_backend_task_with_context(&mut self, task: BackendTask, context: BackendTaskContext) {
+        #[cfg(feature = "testing")]
+        if let Some(captured) = &mut self.captured_dispatches {
+            captured.push((task, context));
+            return;
+        }
         let request_id = crate::backend_task::dashpay_request_id(&task);
         let sender = self.task_result_sender.clone();
         let watcher_sender = sender.clone();
@@ -2772,19 +2783,28 @@ impl AppState {
         }
     }
 
-    /// The screen a task result is for: the screen that dispatched it while it
-    /// is open, otherwise the screen in view.
-    fn result_screen_mut(&mut self, owner: Option<ScreenOwner>) -> &mut Screen {
-        match owner.filter(|owner| self.has_screen(*owner)) {
-            Some(ScreenOwner::Root(root)) => self
-                .main_screens
-                .get_mut(&root)
-                .expect("invariant: has_screen found this root"),
-            Some(ScreenOwner::Stacked(id)) => self
-                .screen_stack
-                .by_id_mut(id)
-                .expect("invariant: has_screen found this pushed screen"),
-            None => self.visible_screen_mut(),
+    /// The screen a task result is for under `route`, or `None` when no
+    /// screen takes it.
+    fn result_screen_mut(&mut self, route: ResultRoute) -> Option<&mut Screen> {
+        match route {
+            ResultRoute::Owner(owner) if self.has_screen(owner) => match owner {
+                ScreenOwner::Root(root) => self.main_screens.get_mut(&root),
+                ScreenOwner::Stacked(id) => self.screen_stack.by_id_mut(id),
+            },
+            ResultRoute::Owner(_) | ResultRoute::ClosedOwner => None,
+            ResultRoute::Visible => Some(self.visible_screen_mut()),
+        }
+    }
+
+    /// Hand a successful result to the screen `route` names, if any.
+    fn deliver_result(
+        &mut self,
+        route: ResultRoute,
+        context: &BackendTaskContext,
+        result: BackendTaskSuccessResult,
+    ) {
+        if let Some(screen) = self.result_screen_mut(route) {
+            screen.display_backend_task_result(context, result);
         }
     }
 
@@ -2793,29 +2813,31 @@ impl AppState {
     /// own task would otherwise wait for good.
     fn tell_owner_its_task_failed(
         &mut self,
-        owner: Option<ScreenOwner>,
+        route: ResultRoute,
         context: &BackendTaskContext,
         error: &TaskError,
     ) {
-        if owner.is_some_and(|owner| self.has_screen(owner)) {
-            self.result_screen_mut(owner)
-                .display_backend_task_error(context, error);
+        if let ResultRoute::Owner(_) = route
+            && let Some(screen) = self.result_screen_mut(route)
+        {
+            screen.display_backend_task_error(context, error);
         }
     }
 
-    /// The open screen that dispatched the task behind `task_result`, taken off
-    /// the record: each dispatch reports once. `None` for undispatched tasks
-    /// and for a screen closed since.
-    fn take_result_owner(&mut self, task_result: &TaskResult) -> Option<ScreenOwner> {
+    /// Where the result behind `task_result` goes. The sender of a dispatch is
+    /// taken off the record: each dispatch reports once.
+    fn take_result_route(&mut self, task_result: &TaskResult) -> ResultRoute {
         let context = match task_result {
             TaskResult::Success { context, .. } | TaskResult::Error { context, .. } => context,
             TaskResult::Refresh | TaskResult::DpnsContestsChanged | TaskResult::Repaint => {
-                return None;
+                return ResultRoute::Visible;
             }
         };
-        self.request_owners
-            .take(context)
-            .filter(|owner| self.has_screen(*owner))
+        match self.request_owners.take(context) {
+            Some(owner) if self.has_screen(owner) => ResultRoute::Owner(owner),
+            Some(_) => ResultRoute::ClosedOwner,
+            None => ResultRoute::Visible,
+        }
     }
 
     /// Test seam: record the screen in view as the sender of `context`, as the
@@ -2826,6 +2848,22 @@ impl AppState {
     pub fn test_record_visible_dispatch(&mut self, context: &BackendTaskContext) {
         let owner = self.visible_owner();
         self.request_owners.record(context, owner);
+    }
+
+    /// Test seam: from now on, record each task dispatched with a context
+    /// instead of running it. The frame loop still does everything else a
+    /// dispatch involves, such as recording the screen that sent it.
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    pub fn test_capture_dispatches(&mut self) {
+        self.captured_dispatches.get_or_insert_with(Vec::new);
+    }
+
+    /// Test seam: the tasks captured since [`Self::test_capture_dispatches`].
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    pub fn test_captured_dispatches(&self) -> &[(BackendTask, BackendTaskContext)] {
+        self.captured_dispatches.as_deref().unwrap_or_default()
     }
 
     /// Test seam: how many dispatched tasks still have a recorded sender.
@@ -2949,11 +2987,11 @@ impl AppState {
         }
     }
 
-    /// Whether the voting root is not the screen a result goes to — the
-    /// screen that dispatched it, or else the screen in view — so the result
-    /// needs its own route to the voting panel.
-    fn voting_panel_misses_result(&self, owner: Option<ScreenOwner>) -> bool {
-        !root_takes_result(
+    /// Whether the voting root is the screen a result goes to: the screen that
+    /// dispatched it, or else the screen in view. Otherwise the result needs
+    /// its own route to the voting panel.
+    fn voting_panel_takes_result(&self, owner: Option<ScreenOwner>) -> bool {
+        root_takes_result(
             VOTING_ROOT_SCREEN,
             owner,
             !dpns_screen_is_hidden(
@@ -2972,16 +3010,9 @@ impl AppState {
         context: &BackendTaskContext,
         result: &BackendTaskSuccessResult,
     ) {
-        let needs_route = match owner {
-            Some(_) => DPNSScreen::handles_result(result) && self.voting_panel_misses_result(owner),
-            None => dpns_result_needs_hidden_route(
-                VOTING_ROOT_SCREEN,
-                self.selected_main_screen,
-                self.screen_stack.is_empty(),
-                result,
-            ),
-        };
-        if needs_route && let Some(masternodes) = self.masternodes_screen_mut() {
+        if dpns_result_needs_route(self.voting_panel_takes_result(owner), result)
+            && let Some(masternodes) = self.masternodes_screen_mut()
+        {
             let votes = masternodes.votes_mut();
             votes.display_backend_task_result(context, result.clone());
         }
@@ -2996,7 +3027,7 @@ impl AppState {
         if !context.is_dpns_vote_task() {
             return;
         }
-        if self.voting_panel_misses_result(owner)
+        if !self.voting_panel_takes_result(owner)
             && let Some(masternodes) = self.masternodes_screen_mut()
         {
             let votes = masternodes.votes_mut();
@@ -3408,7 +3439,8 @@ impl App for AppState {
             // The open screen that dispatched this task, if any. Its result is
             // delivered there, in view or not; everything else goes to the
             // screen in view.
-            let owner = self.take_result_owner(&task_result);
+            let route = self.take_result_route(&task_result);
+            let owner = route.owner();
             let owner_in_view = owner.is_some_and(|owner| owner == self.visible_owner());
 
             // Keyed on the dispatch alone and ahead of every arm below, so that
@@ -3426,7 +3458,7 @@ impl App for AppState {
 
             let recovery_delivered = deliver_legacy_recovery_result(
                 &mut self.main_screens,
-                &mut self.screen_stack,
+                self.screen_stack.iter_mut(),
                 &task_result,
             );
             if recovery_delivered && matches!(task_result, TaskResult::Success { .. }) {
@@ -3534,16 +3566,14 @@ impl App for AppState {
                             // types through task results instead of string messages.
                             // See https://github.com/dashpay/dash-evo-tool/issues/660 .
                             MessageBanner::set_global(ctx, msg, MessageType::Success);
-                            self.result_screen_mut(owner)
-                                .display_backend_task_result(&context, unboxed_message);
+                            self.deliver_result(route, &context, unboxed_message);
                         }
                         BackendTaskSuccessResult::AssetLockBroadcast { ref txid } => {
                             let msg = format!(
                                 "Asset lock transaction broadcast successfully. Transaction ID: {txid}"
                             );
                             MessageBanner::set_global(ctx, &msg, MessageType::Success);
-                            self.result_screen_mut(owner)
-                                .display_backend_task_result(&context, unboxed_message);
+                            self.deliver_result(route, &context, unboxed_message);
                         }
                         BackendTaskSuccessResult::DashPayAddressesRegistered {
                             addresses,
@@ -3560,8 +3590,7 @@ impl App for AppState {
                                 )
                             };
                             MessageBanner::set_global(ctx, &msg, MessageType::Success);
-                            self.result_screen_mut(owner)
-                                .display_backend_task_result(&context, unboxed_message);
+                            self.deliver_result(route, &context, unboxed_message);
                         }
                         BackendTaskSuccessResult::IdentitiesLoaded { count } => {
                             let msg = if count == 1 {
@@ -3570,8 +3599,7 @@ impl App for AppState {
                                 format!("Successfully loaded {count} identities from your wallet.")
                             };
                             MessageBanner::set_global(ctx, &msg, MessageType::Success);
-                            self.result_screen_mut(owner)
-                                .display_backend_task_result(&context, unboxed_message);
+                            self.deliver_result(route, &context, unboxed_message);
                         }
                         BackendTaskSuccessResult::Progress { .. } => {
                             // Progress updates only go to the screen — no global banner.
@@ -3579,8 +3607,7 @@ impl App for AppState {
                             // TODO: Progress is sent mid-task without the dispatch
                             // context, so it reaches the screen in view rather than
                             // the one that started the task.
-                            self.result_screen_mut(owner)
-                                .display_backend_task_result(&context, unboxed_message);
+                            self.deliver_result(route, &context, unboxed_message);
                         }
                         BackendTaskSuccessResult::UpdatedThemePreference(new_theme) => {
                             let detection_failed = self.theme.apply_new_preference(ctx, new_theme);
@@ -3651,7 +3678,8 @@ impl App for AppState {
                                     "Could not find the originating network for DPNS vote feedback"
                                 ),
                             }
-                            self.result_screen_mut(owner).display_backend_task_result(
+                            self.deliver_result(
+                                route,
                                 &context,
                                 BackendTaskSuccessResult::DpnsVoteOperationUpdated {
                                     network,
@@ -3672,7 +3700,8 @@ impl App for AppState {
                             ) {
                                 self.scheduled_vote_recovery_last_attempt.remove(&network);
                             }
-                            self.result_screen_mut(owner).display_backend_task_result(
+                            self.deliver_result(
+                                route,
                                 &context,
                                 BackendTaskSuccessResult::ScheduledVoteSweepCompleted {
                                     network,
@@ -3683,7 +3712,8 @@ impl App for AppState {
                         BackendTaskSuccessResult::ScheduledVotesCleared(outcomes) => {
                             let (message, message_type) = scheduled_vote_clear_feedback(&outcomes);
                             MessageBanner::set_global(ctx, message, message_type);
-                            self.result_screen_mut(owner).display_backend_task_result(
+                            self.deliver_result(
+                                route,
                                 &context,
                                 BackendTaskSuccessResult::ScheduledVotesCleared(outcomes),
                             );
@@ -3715,41 +3745,49 @@ impl App for AppState {
                                 "Token balances are already refreshing. Wait a moment before refreshing again.",
                                 MessageType::Info,
                             );
-                            self.result_screen_mut(owner)
-                                .display_backend_task_result(&context, unboxed_message);
+                            self.deliver_result(route, &context, unboxed_message);
                         }
                         _ => {
                             // For all other success results, let the screen decide how to display
                             // the outcome without showing a generic global success banner.
-                            if tracked_top_up && !owner_in_view {
-                                // Not this screen's top-up, but the balances it shows changed.
+                            let closed_owner = route == ResultRoute::ClosedOwner;
+                            if closed_owner || (tracked_top_up && !owner_in_view) {
+                                // Not this screen's task, but what it shows may have changed.
                                 self.visible_screen_mut().refresh();
                             }
-                            // A top-up whose screen is closed is answered by the
+                            if closed_owner
+                                && !tracked_top_up
+                                && let Some(message) = closed_send_form_message(&unboxed_message)
+                            {
+                                // The form that sent it is gone: the banner tells
+                                // the user how the send ended. A top-up has its own.
+                                MessageBanner::set_global(ctx, message, MessageType::Success);
+                            }
+                            // A top-up nobody open sent is answered by the
                             // banner alone; the screen in view did not send it.
                             if owner.is_some() || !tracked_top_up {
-                                self.result_screen_mut(owner)
-                                    .display_backend_task_result(&context, unboxed_message);
+                                self.deliver_result(route, &context, unboxed_message);
                             }
                         }
                     }
                 }
                 TaskResult::Error {
-                    context,
                     error: err @ TaskError::CoreWalletAutoDetected { .. },
+                    ..
                 } => {
                     let msg = err.to_string();
                     MessageBanner::set_global(ctx, &msg, MessageType::Success);
                     self.visible_screen_mut()
                         .display_message(&msg, MessageType::Success);
                     self.visible_screen_mut().refresh();
-                    self.tell_owner_its_task_failed(owner, &context, &err);
                 }
                 TaskResult::Error {
                     context,
                     error: err @ TaskError::NetworkContextCreationFailed { .. },
                 } => {
-                    self.tell_owner_its_task_failed(owner, &context, &err);
+                    if !recovery_delivered {
+                        self.tell_owner_its_task_failed(route, &context, &err);
+                    }
                     self.network_switch_pending = None;
                     self.network_switch_banner.take_and_clear();
                     let current_context = self.current_app_context().clone();
@@ -3772,7 +3810,9 @@ impl App for AppState {
                     // The migration task already published `MigrationState::Failed`.
                     // Its reconciler supplies the typed details and applicable
                     // recovery path, so suppress the duplicate generic banner.
-                    self.tell_owner_its_task_failed(owner, &context, &err);
+                    if !recovery_delivered {
+                        self.tell_owner_its_task_failed(route, &context, &err);
+                    }
                 }
                 TaskResult::Error {
                     context: BackendTaskContext::DpnsBackgroundRefresh { network },
@@ -3820,14 +3860,18 @@ impl App for AppState {
                     self.route_identity_error_to_hidden_hub(owner, &err);
                     self.route_dpns_vote_error_to_hidden_screens(owner, &context, &err);
                     let chooser_owned = network_chooser_owns_task(&context);
-                    // A top-up whose screen is closed did not come from the
-                    // screen in view: the banner alone reports it.
+                    // A top-up nobody open sent, or any task whose screen is
+                    // closed, did not come from the screen in view: the banner
+                    // alone reports it.
                     let foreign_top_up = tracked_top_up && owner.is_none();
-                    let screen_owned = !chooser_owned && !recovery_delivered && !foreign_top_up;
+                    let screen_owned = !chooser_owned
+                        && !recovery_delivered
+                        && !foreign_top_up
+                        && route != ResultRoute::ClosedOwner;
                     let suppress_stale_error = screen_owned
-                        && self
-                            .result_screen_mut(owner)
-                            .should_suppress_backend_task_error(&context, &err);
+                        && self.result_screen_mut(route).is_some_and(|screen| {
+                            screen.should_suppress_backend_task_error(&context, &err)
+                        });
                     if chooser_owned {
                         if let Some(screen) = self
                             .main_screens
@@ -3835,14 +3879,16 @@ impl App for AppState {
                         {
                             screen.display_backend_task_error(&context, &err);
                         }
-                    } else if screen_owned {
-                        self.result_screen_mut(owner)
-                            .display_backend_task_error(&context, &err);
+                    } else if screen_owned && let Some(screen) = self.result_screen_mut(route) {
+                        screen.display_backend_task_error(&context, &err);
                     }
                     // Let the screen handle specific error types first.
                     // If handled, skip the generic error banner.
                     let handled = suppress_stale_error
-                        || (screen_owned && self.result_screen_mut(owner).display_task_error(&err));
+                        || (screen_owned
+                            && self
+                                .result_screen_mut(route)
+                                .is_some_and(|screen| screen.display_task_error(&err)));
                     // A screen out of view cannot show how it handled the
                     // error, so the banner still tells the user.
                     let owner_hidden = owner.is_some() && !owner_in_view;
@@ -3881,9 +3927,11 @@ impl App for AppState {
                             }
                             _ => {}
                         }
-                        if screen_owned && !handled {
-                            self.result_screen_mut(owner)
-                                .display_message(&msg, MessageType::Error);
+                        if screen_owned
+                            && !handled
+                            && let Some(screen) = self.result_screen_mut(route)
+                        {
+                            screen.display_message(&msg, MessageType::Error);
                         }
                     }
                 }
@@ -5112,6 +5160,23 @@ mod contact_request_routing_tests {
 #[cfg(test)]
 mod dpns_result_routing_tests {
     use super::*;
+
+    /// The route a result nobody open dispatched takes to the voting panel.
+    fn dpns_result_needs_hidden_route(
+        target: RootScreenType,
+        selected: RootScreenType,
+        screen_stack_is_empty: bool,
+        result: &BackendTaskSuccessResult,
+    ) -> bool {
+        dpns_result_needs_route(
+            root_takes_result(
+                target,
+                None,
+                !dpns_screen_is_hidden(target, selected, screen_stack_is_empty),
+            ),
+            result,
+        )
+    }
     use crate::model::dpns_voting::{
         DpnsScheduledVoteClearDisposition, DpnsScheduledVoteClearOutcome, DpnsScheduledVoteKey,
         DpnsVoteOperationId,

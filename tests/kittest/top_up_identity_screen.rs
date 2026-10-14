@@ -906,8 +906,8 @@ fn top_up_ends_on_a_failure_handled_outside_the_general_error_path() {
             &mut harness,
             TaskResult::Error {
                 context: dispatch,
-                error: TaskError::CoreWalletAutoDetected {
-                    wallet_name: "fixture".to_string(),
+                error: TaskError::NetworkContextCreationFailed {
+                    network: Network::Regtest,
                 },
             },
         );

@@ -4737,6 +4737,120 @@ impl WalletSendScreen {
         )
     }
 
+    /// What the form says when `result` completes a send, or `None` for any
+    /// other result.
+    fn completion_message(
+        result: &crate::backend_task::BackendTaskSuccessResult,
+    ) -> Option<String> {
+        match result {
+            crate::backend_task::BackendTaskSuccessResult::WalletPayment {
+                txid: _,
+                recipients,
+                total_amount,
+            } => {
+                let message = if recipients.len() == 1 {
+                    let (address, amount) = &recipients[0];
+                    format!("Sent {} to {}", format_duffs_as_dash(*amount), address,)
+                } else {
+                    format!(
+                        "Sent {} to {} recipients",
+                        format_duffs_as_dash(*total_amount),
+                        recipients.len(),
+                    )
+                };
+                Some(message)
+            }
+            crate::backend_task::BackendTaskSuccessResult::TransferredCredits(fee_result) => {
+                let fee_info = Self::format_fee_info(fee_result);
+                Some(format!("Credits transferred successfully!{}", fee_info))
+            }
+            crate::backend_task::BackendTaskSuccessResult::PlatformAddressFunded { .. } => {
+                Some("Platform address funded successfully!".to_string())
+            }
+            crate::backend_task::BackendTaskSuccessResult::PlatformAddressWithdrawal { .. } => {
+                Some("Withdrawal initiated successfully!\n\nNote: It may take a few minutes for funds to appear on the Core chain.".to_string())
+            }
+            crate::backend_task::BackendTaskSuccessResult::PlatformCreditsTransferred {
+                ..
+            } => {
+                Some("Platform credits transferred successfully!".to_string())
+            }
+            crate::backend_task::BackendTaskSuccessResult::ShieldedTransferComplete {
+                amount,
+                ..
+            } => {
+                Some(format!(
+                    "Shielded transfer of {} complete!\n\n\
+                     Your remaining balance will update after the next block is confirmed. \
+                     The recipient's balance will also update after the next block and a wallet sync.",
+                    format_credits_as_dash(*amount)
+                ))
+            }
+            crate::backend_task::BackendTaskSuccessResult::ShieldedCreditsUnshielded {
+                amount,
+                ..
+            } => {
+                Some(format!(
+                    "Unshielded {} to platform address!\n\n\
+                     Your remaining balance will update after the next block is confirmed.",
+                    format_credits_as_dash(*amount)
+                ))
+            }
+            // Core->Identity or Platform->Identity top-up result
+            crate::backend_task::BackendTaskSuccessResult::ToppedUpIdentity(
+                _identity,
+                fee_result,
+            ) => {
+                let fee_info = Self::format_fee_info(fee_result);
+                Some(format!("Identity topped up successfully!{}", fee_info))
+            }
+            // Identity->Core withdrawal result
+            crate::backend_task::BackendTaskSuccessResult::WithdrewFromIdentity(fee_result) => {
+                let fee_info = Self::format_fee_info(fee_result);
+                Some(format!(
+                    "Identity withdrawal initiated. Funds will appear on the Core chain after confirmation.{}",
+                    fee_info
+                ))
+            }
+            // Core->Shielded or Platform->Shielded shield result
+            crate::backend_task::BackendTaskSuccessResult::ShieldedCreditsShielded {
+                amount,
+                ..
+            } => {
+                Some(format!(
+                    "{} shielded successfully!\n\n\
+                     Balance will update after the next block.",
+                    format_credits_as_dash(*amount)
+                ))
+            }
+            // Core->Shielded via asset lock result
+            crate::backend_task::BackendTaskSuccessResult::ShieldedFromAssetLock {
+                amount, ..
+            } => {
+                Some(match amount {
+                    Some(amount) => format!(
+                        "{} shielded from asset lock successfully!\n\n\
+                         Balance will update after the next block.",
+                        format_credits_as_dash(*amount)
+                    ),
+                    None => SHIELDED_FROM_CORE_WITHOUT_AMOUNT.to_string(),
+                })
+            }
+            // Shielded->Core withdrawal result
+            crate::backend_task::BackendTaskSuccessResult::ShieldedWithdrawalComplete {
+                amount,
+                ..
+            } => {
+                Some(format!(
+                    "Withdrawal of {} from shielded pool initiated.\n\n\
+                     Funds will appear after confirmation.",
+                    format_credits_as_dash(*amount)
+                ))
+            }
+            _ => None,
+        }
+    }
+
     /// Take what `result` says about the form's inputs: a new asset-lock
     /// ceiling, or a change to the addresses the form offers. Returns whether
     /// that is all the result is.
@@ -4768,6 +4882,15 @@ impl WalletSendScreen {
         }
         false
     }
+}
+
+/// What to tell the user about a send whose form was closed before it
+/// finished: the text the form would have shown, or `None` for a result that
+/// does not complete a send.
+pub(crate) fn closed_send_form_message(
+    result: &crate::backend_task::BackendTaskSuccessResult,
+) -> Option<String> {
+    WalletSendScreen::completion_message(result)
 }
 
 /// A send keeps running when its form is closed, and nothing is left to end
@@ -4938,119 +5061,8 @@ impl ScreenLike for WalletSendScreen {
             return;
         }
         self.send_banner.take_and_clear();
-        match backend_task_success_result {
-            crate::backend_task::BackendTaskSuccessResult::WalletPayment {
-                txid: _,
-                recipients,
-                total_amount,
-            } => {
-                let msg = if recipients.len() == 1 {
-                    let (address, amount) = &recipients[0];
-                    format!("Sent {} to {}", format_duffs_as_dash(*amount), address,)
-                } else {
-                    format!(
-                        "Sent {} to {} recipients",
-                        format_duffs_as_dash(total_amount),
-                        recipients.len(),
-                    )
-                };
-                self.send_status = SendStatus::Complete(msg);
-            }
-            crate::backend_task::BackendTaskSuccessResult::TransferredCredits(fee_result) => {
-                let fee_info = Self::format_fee_info(&fee_result);
-                self.send_status =
-                    SendStatus::Complete(format!("Credits transferred successfully!{}", fee_info));
-            }
-            crate::backend_task::BackendTaskSuccessResult::PlatformAddressFunded { .. } => {
-                self.send_status =
-                    SendStatus::Complete("Platform address funded successfully!".to_string());
-            }
-            crate::backend_task::BackendTaskSuccessResult::PlatformAddressWithdrawal { .. } => {
-                self.send_status =
-                    SendStatus::Complete("Withdrawal initiated successfully!\n\nNote: It may take a few minutes for funds to appear on the Core chain.".to_string());
-            }
-            crate::backend_task::BackendTaskSuccessResult::PlatformCreditsTransferred {
-                ..
-            } => {
-                self.send_status =
-                    SendStatus::Complete("Platform credits transferred successfully!".to_string());
-            }
-            crate::backend_task::BackendTaskSuccessResult::ShieldedTransferComplete {
-                amount,
-                ..
-            } => {
-                self.send_status = SendStatus::Complete(format!(
-                    "Shielded transfer of {} complete!\n\n\
-                     Your remaining balance will update after the next block is confirmed. \
-                     The recipient's balance will also update after the next block and a wallet sync.",
-                    format_credits_as_dash(amount)
-                ));
-            }
-            crate::backend_task::BackendTaskSuccessResult::ShieldedCreditsUnshielded {
-                amount,
-                ..
-            } => {
-                self.send_status = SendStatus::Complete(format!(
-                    "Unshielded {} to platform address!\n\n\
-                     Your remaining balance will update after the next block is confirmed.",
-                    format_credits_as_dash(amount)
-                ));
-            }
-            // Core->Identity or Platform->Identity top-up result
-            crate::backend_task::BackendTaskSuccessResult::ToppedUpIdentity(
-                _identity,
-                fee_result,
-            ) => {
-                let fee_info = Self::format_fee_info(&fee_result);
-                self.send_status =
-                    SendStatus::Complete(format!("Identity topped up successfully!{}", fee_info));
-            }
-            // Identity->Core withdrawal result
-            crate::backend_task::BackendTaskSuccessResult::WithdrewFromIdentity(fee_result) => {
-                let fee_info = Self::format_fee_info(&fee_result);
-                self.send_status = SendStatus::Complete(format!(
-                    "Identity withdrawal initiated. Funds will appear on the Core chain after confirmation.{}",
-                    fee_info
-                ));
-            }
-            // Core->Shielded or Platform->Shielded shield result
-            crate::backend_task::BackendTaskSuccessResult::ShieldedCreditsShielded {
-                amount,
-                ..
-            } => {
-                self.send_status = SendStatus::Complete(format!(
-                    "{} shielded successfully!\n\n\
-                     Balance will update after the next block.",
-                    format_credits_as_dash(amount)
-                ));
-            }
-            // Core->Shielded via asset lock result
-            crate::backend_task::BackendTaskSuccessResult::ShieldedFromAssetLock {
-                amount, ..
-            } => {
-                self.send_status = SendStatus::Complete(match amount {
-                    Some(amount) => format!(
-                        "{} shielded from asset lock successfully!\n\n\
-                         Balance will update after the next block.",
-                        format_credits_as_dash(amount)
-                    ),
-                    None => SHIELDED_FROM_CORE_WITHOUT_AMOUNT.to_string(),
-                });
-            }
-            // Shielded->Core withdrawal result
-            crate::backend_task::BackendTaskSuccessResult::ShieldedWithdrawalComplete {
-                amount,
-                ..
-            } => {
-                self.send_status = SendStatus::Complete(format!(
-                    "Withdrawal of {} from shielded pool initiated.\n\n\
-                     Funds will appear after confirmation.",
-                    format_credits_as_dash(amount)
-                ));
-            }
-            _ => {
-                // Ignore other results
-            }
+        if let Some(message) = Self::completion_message(&backend_task_success_result) {
+            self.send_status = SendStatus::Complete(message);
         }
     }
 
@@ -6548,8 +6560,8 @@ mod tests {
         );
     }
 
-    /// The app hands every failure and message to the visible screen. While
-    /// this screen waits on a send, only that send's own failure gives the form
+    /// Undispatched tasks' failures and messages reach whichever screen is in
+    /// view (see `app/request_routing.rs`). While this screen waits on a send, only that send's own failure gives the form
     /// back: anything else would let the user send, and pay, a second time.
     #[test]
     fn only_the_failure_of_its_own_send_ends_the_wait() {

@@ -8,13 +8,18 @@
 //! owner that has since been closed, or a task sent before a network switch —
 //! goes to the visible screen.
 //!
+//! Known limitation: a network switch forgets every sender, so a result that
+//! arrives after it goes to the screen in view. A root screen that sent it
+//! therefore still receives it when it is the one in view, and accepts it if
+//! its own pending request was not reset by the switch.
+//!
 //! Stacked screens have no identity of their own (`ScreenType` equality
 //! ignores its payload), so [`ScreenStack`] gives each pushed screen an id
 //! that is never reused. Root screens are identified by their
 //! [`RootScreenType`]: there is one per type and it lives for the process.
 
 use std::collections::HashMap;
-use std::ops::{Deref, DerefMut};
+use std::ops::Deref;
 
 use crate::backend_task::BackendTaskContext;
 use crate::ui::{RootScreenType, Screen};
@@ -31,12 +36,34 @@ pub enum ScreenOwner {
     Stacked(StackedScreenId),
 }
 
+/// Where a task result goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResultRoute {
+    /// To the open screen that dispatched the task, in view or not.
+    Owner(ScreenOwner),
+    /// The screen that dispatched the task has been closed. The result is
+    /// not another screen's to act on, so no screen takes it; banners report
+    /// it instead.
+    ClosedOwner,
+    /// No open or closed sender is on record — an undispatched task, or one
+    /// sent before a network switch — so the screen in view takes it.
+    Visible,
+}
+
+impl ResultRoute {
+    /// The open screen that dispatched the task.
+    pub fn owner(self) -> Option<ScreenOwner> {
+        match self {
+            Self::Owner(owner) => Some(owner),
+            Self::ClosedOwner | Self::Visible => None,
+        }
+    }
+}
+
 /// The pushed screens, topmost last, each with its [`StackedScreenId`].
 ///
-/// Reads and in-place edits go through the slice it dereferences to; the
-/// length changes only through its own methods, which keep every screen paired
-/// with its id. Reordering the slice would break that pairing; nothing
-/// reorders the stack.
+/// Reads go through the slice it dereferences to. Changes go through its own
+/// methods only, which keep every screen paired with its id.
 #[derive(Debug)]
 pub struct ScreenStack<S = Screen> {
     screens: Vec<S>,
@@ -87,6 +114,16 @@ impl<S> ScreenStack<S> {
         self.ids.last().copied()
     }
 
+    /// The topmost screen.
+    pub fn last_mut(&mut self) -> Option<&mut S> {
+        self.screens.last_mut()
+    }
+
+    /// Every screen, bottom first, for changes in place.
+    pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, S> {
+        self.screens.iter_mut()
+    }
+
     /// Whether the screen with `id` is still on the stack.
     pub fn contains_id(&self, id: StackedScreenId) -> bool {
         self.ids.contains(&id)
@@ -104,12 +141,6 @@ impl<S> Deref for ScreenStack<S> {
 
     fn deref(&self) -> &[S] {
         &self.screens
-    }
-}
-
-impl<S> DerefMut for ScreenStack<S> {
-    fn deref_mut(&mut self) -> &mut [S] {
-        &mut self.screens
     }
 }
 

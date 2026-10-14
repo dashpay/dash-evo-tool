@@ -467,6 +467,13 @@ impl BackendTaskContext {
         }
     }
 
+    /// Test seam: a dispatch context as a screen creates one.
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    pub fn for_dispatch_for_test(task: &BackendTask) -> Self {
+        Self::for_dispatch(task)
+    }
+
     pub(crate) fn is_dpns_vote_task(&self) -> bool {
         matches!(
             self.operation(),

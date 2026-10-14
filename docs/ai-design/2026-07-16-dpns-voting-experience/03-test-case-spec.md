@@ -103,7 +103,7 @@ K = kittest, B = backend test with fake SDK seam.
 | VOTE-TC-096 | Out of changes skipped | Journal 5 votes | Confirm | Node under Skipped with `no changes left (4 of 4 changes used)`; not submitted | FR-078, FR-025 | B |
 | VOTE-TC-097 | Not in list excluded | Node absent from masternode list | Node set | Row disabled with reason; not submitted | FR-079 | K |
 | VOTE-TC-098 | Keyboard flow | 2 cards | J, 2, J, L, Enter | Choices set, confirm opens; shortcuts ignored while filter field focused | FR-082, NFR-010 | K |
-| VOTE-TC-099 | Bulk bar | 3 cards selected | Click Abstain | All three drafts = Abstain | FR-082 | K |
+| VOTE-TC-099 | Decision is the selection | 2 cards | Render; press Space on each; decide both | No checkbox; Space stages nothing; no bar besides the tray, whose Clear is the only one | FR-082 | K |
 | VOTE-TC-100 | Drawer non-blocking | Batch sending | Interact with another card, navigate | Other controls enabled; drawer persists; no full-window overlay | FR-035, FR-083 | K |
 | VOTE-TC-101 | Drawer statuses | Mixed outcomes | Inspect | Each row has typed status and the single valid action; unconfirmed never offers resubmit | FR-083, FR-044 | K |
 | VOTE-TC-102 | Needs-attention row | One Unconfirmed + one missed | Open Votes | Row summarises both; `Show progress` opens the drawer, `Open Scheduled` opens Scheduled | FR-084 | K |

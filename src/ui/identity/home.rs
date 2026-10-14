@@ -207,11 +207,13 @@ pub fn render(
     contacts.reconcile_owner(&identity);
     let mut action = AppAction::None;
     let mut outcome = HomeOutcome::None;
-    let has_profile = profiles
-        .get_or_request(&identity)
-        .and_then(Option::as_ref)
-        .and_then(|p| p.display_name_opt())
-        .is_some();
+    // `None` until the profile is read.
+    let has_profile = profiles.get_or_request(&identity).map(|profile| {
+        profile
+            .as_ref()
+            .and_then(|p| p.display_name_opt())
+            .is_some()
+    });
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
@@ -310,7 +312,7 @@ fn render_main_column(
     app_context: &Arc<AppContext>,
     identity: &QualifiedIdentity,
     state: &mut HomeState,
-    has_profile: bool,
+    has_profile: Option<bool>,
     contacts: &ContactsState,
 ) -> (AppAction, HomeOutcome) {
     let mut action = AppAction::None;
@@ -355,11 +357,19 @@ fn render_setup(
     app_context: &Arc<AppContext>,
     identity: &QualifiedIdentity,
     state: &HomeState,
-    has_profile: bool,
+    has_profile: Option<bool>,
     contacts: &ContactsState,
     action: &mut AppAction,
 ) -> HomeOutcome {
     if state.dismissed_checklist {
+        return HomeOutcome::None;
+    }
+    // An input still loading is not an unfinished step: show nothing until
+    // both are read, so the checklist never flashes up and vanishes.
+    let Some(has_profile) = has_profile else {
+        return HomeOutcome::None;
+    };
+    if !contacts.contacts_known() {
         return HomeOutcome::None;
     }
     let mut checklist = OnboardingChecklist::new();

@@ -486,6 +486,34 @@ mod loads {
         });
     }
 
+    /// A first profile load that fails is not retried on every frame, but
+    /// coming back to the hub asks again.
+    #[test]
+    fn returning_retries_a_profile_whose_first_load_failed() {
+        use dash_evo_tool::backend_task::error::TaskError;
+        with_isolated_data_dir(|| {
+            let (_runtime, app_context) = fresh_app_context();
+            seed_identity_that_can_move_funds(&app_context);
+            let mut hub = mount_hub(&app_context);
+            let request = step_until(&mut hub, "the profile load", profile_load);
+            hub.state_mut()
+                .0
+                .display_backend_task_error(&request, &TaskError::DocumentNotFound);
+            hub.state_mut().1.clear();
+            hub.run_steps(8);
+            assert!(
+                !hub.state()
+                    .1
+                    .iter()
+                    .any(|action| profile_load(action).is_some()),
+                "a failed load must not be retried on every frame"
+            );
+
+            hub.state_mut().0.refresh_on_arrival();
+            step_until(&mut hub, "the profile load after coming back", profile_load);
+        });
+    }
+
     /// Coming back after another identity was selected shows nothing of the
     /// previous one.
     #[test]

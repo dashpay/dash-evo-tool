@@ -169,9 +169,13 @@ impl ProfileCache {
     }
 
     /// Keep every loaded profile on screen but reload each on its next read.
-    /// A profile whose load is still running is left to that load.
+    /// A profile whose load is still running is left to that load; one whose
+    /// load failed before anything was loaded is asked for again.
     pub fn reload_kept(&mut self) {
         let loading = self.in_flight.as_ref().map(|(id, _)| *id);
+        let loaded = &self.loaded;
+        self.requested
+            .retain(|id| loaded.contains_key(id) || Some(*id) == loading);
         self.stale = self
             .loaded
             .keys()

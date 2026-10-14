@@ -885,7 +885,7 @@ As a masternode operator, I want to schedule votes so that they are cast before 
 As a masternode operator, I want to choose which nodes vote and decide many contests quickly so that I do not repeat work per node or per contest.
 
 - A node-set selector (All my nodes, Evonodes only, Masternodes only, Custom) shows node count and total weight, is saved per network, and lists nodes that can't vote with the reason.
-- Keyboard: J/K move between cards, 1–9 vote for a requester, L lock, A abstain, 0 clear, Enter cast. Shortcuts act only in the contest list.
+- Keyboard: J/K move between cards, 1–9 vote for a requester, L lock, A abstain, 0 clear, Enter opens the cast confirmation. Shortcuts act only in the contest list.
 - A name is picked by giving it a decision; there is no separate selection. The decided names are what Cast submits and what Clear clears.
 - Adjust nodes in the confirm step shows every node × contest target (current → new choice, timing, changes left) and allows per-node timing or Don't use this node.
 - A vote for a requester shows their name and a shortened identity ID, or the ID alone when the name is unavailable, so similar names remain distinguishable.

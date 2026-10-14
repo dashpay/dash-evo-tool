@@ -346,6 +346,216 @@ mod loads {
         });
     }
 
+    const SETUP_CHECKLIST: &str = "Finish setting up your identity";
+
+    fn profile_load(action: &AppAction) -> Option<BackendTaskContext> {
+        match action {
+            AppAction::BackendTaskWithContext {
+                task: BackendTask::DashPayTask(task),
+                context,
+            } if matches!(**task, DashPayTask::LoadProfile { .. }) => Some(context.clone()),
+            _ => None,
+        }
+    }
+
+    const AVATAR_URL: &str = "https://example.com/alex.png";
+
+    fn avatar_fetch(action: &AppAction) -> Option<()> {
+        matches!(action, AppAction::BackendTask(BackendTask::DashPayTask(task))
+            if matches!(&**task, DashPayTask::FetchAvatar { url } if url == AVATAR_URL))
+        .then_some(())
+    }
+
+    fn images(hub: &HubHarness) -> usize {
+        hub.query_all_by_role(Role::Image).count()
+    }
+
+    fn named_contact(name: &str) -> dash_evo_tool::backend_task::dashpay::ContactData {
+        dash_evo_tool::backend_task::dashpay::ContactData {
+            identity_id: Identifier::from([0xD8; 32]),
+            nickname: Some(name.into()),
+            note: None,
+            is_hidden: false,
+            account_reference: 0,
+            username: None,
+            display_name: None,
+            avatar_url: None,
+            bio: None,
+        }
+    }
+
+    fn deliver_contacts(hub: &mut HubHarness, owner: Identifier, name: &str) {
+        let app_context = hub.state().0.app_context.clone();
+        let task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadContacts {
+            identity: app_context.resolve_selected_identity().expect("identity"),
+        }));
+        hub.state_mut().0.display_backend_task_result(
+            &BackendTaskContext::from(&task),
+            BackendTaskSuccessResult::DashPayContactsWithInfo {
+                identity: owner,
+                contacts: vec![named_contact(name)],
+            },
+        );
+    }
+
+    /// Mount the hub for `owner` and answer its profile and contact loads.
+    fn hub_with_loaded_home(app_context: &Arc<AppContext>, owner: Identifier) -> HubHarness {
+        use dash_evo_tool::model::dashpay::ProfileSnapshot;
+        let mut hub = mount_hub(app_context);
+        let request = step_until(&mut hub, "the profile load", profile_load);
+        hub.state_mut().0.display_backend_task_result(
+            &request,
+            BackendTaskSuccessResult::DashPayProfile(ProfileSnapshot {
+                network: app_context.network(),
+                owner,
+                revision: app_context.identity_profile_revision(owner),
+                profile: Some(("Alex".into(), String::new(), AVATAR_URL.into())),
+            }),
+        );
+        deliver_contacts(&mut hub, owner, "Bao");
+        step_until(&mut hub, "the profile photo load", avatar_fetch);
+        let without_photo = images(&hub);
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(8, 8)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .expect("png");
+        let task = BackendTask::DashPayTask(Box::new(DashPayTask::FetchAvatar {
+            url: AVATAR_URL.into(),
+        }));
+        hub.state_mut().0.display_backend_task_result(
+            &BackendTaskContext::from(&task),
+            BackendTaskSuccessResult::DashPayAvatar {
+                url: AVATAR_URL.into(),
+                bytes: Some(png.into_inner()),
+            },
+        );
+        hub.run();
+        assert!(images(&hub) > without_photo, "the profile photo is shown");
+        assert!(hub.query_by_label("Bao").is_some(), "the contact is shown");
+        assert!(
+            hub.query_by_label(SETUP_CHECKLIST).is_some(),
+            "profile and contacts are known"
+        );
+        hub
+    }
+
+    /// Whether the hub asks for the contact lists, the profile and its photo
+    /// again, rendering one frame at a time until all went out.
+    fn reloads_all(hub: &mut HubHarness) -> bool {
+        let (mut contacts, mut profile, mut photo) = (false, false, false);
+        for _ in 0..16 {
+            for action in hub.state_mut().1.drain(..) {
+                contacts |= contacts_load(&action).is_some();
+                profile |= profile_load(&action).is_some();
+                photo |= avatar_fetch(&action).is_some();
+            }
+            if contacts && profile && photo {
+                return true;
+            }
+            hub.step();
+        }
+        false
+    }
+
+    /// Coming back to the hub for the same identity shows what it already had
+    /// from the first frame on, and reloads it behind.
+    #[test]
+    fn returning_to_the_same_identity_keeps_its_home_and_reloads_it() {
+        with_isolated_data_dir(|| {
+            let (_runtime, app_context) = fresh_app_context();
+            let owner = seed_identity_that_can_move_funds(&app_context);
+            let mut hub = hub_with_loaded_home(&app_context, owner);
+            let with_photo = images(&hub);
+
+            hub.state_mut().0.refresh_on_arrival();
+            hub.state_mut().1.clear();
+            hub.step();
+            assert!(
+                hub.query_by_label("Bao").is_some(),
+                "the contacts must stay on screen"
+            );
+            assert_eq!(images(&hub), with_photo, "the profile photo must stay");
+            assert!(
+                hub.query_by_label(SETUP_CHECKLIST).is_some(),
+                "the profile and the contacts must stay known"
+            );
+            assert!(
+                reloads_all(&mut hub),
+                "the profile, its photo and the contacts must be reloaded"
+            );
+        });
+    }
+
+    /// A first profile load that fails is not retried on every frame, but
+    /// coming back to the hub asks again.
+    #[test]
+    fn returning_retries_a_profile_whose_first_load_failed() {
+        use dash_evo_tool::backend_task::error::TaskError;
+        with_isolated_data_dir(|| {
+            let (_runtime, app_context) = fresh_app_context();
+            seed_identity_that_can_move_funds(&app_context);
+            let mut hub = mount_hub(&app_context);
+            let request = step_until(&mut hub, "the profile load", profile_load);
+            hub.state_mut()
+                .0
+                .display_backend_task_error(&request, &TaskError::DocumentNotFound);
+            hub.state_mut().1.clear();
+            hub.run_steps(8);
+            assert!(
+                !hub.state()
+                    .1
+                    .iter()
+                    .any(|action| profile_load(action).is_some()),
+                "a failed load must not be retried on every frame"
+            );
+
+            hub.state_mut().0.refresh_on_arrival();
+            step_until(&mut hub, "the profile load after coming back", profile_load);
+        });
+    }
+
+    /// Coming back after another identity was selected shows nothing of the
+    /// previous one.
+    #[test]
+    fn returning_to_another_identity_drops_the_previous_home() {
+        use crate::identity_home::seed_identity_with_id;
+        with_isolated_data_dir(|| {
+            let (_runtime, app_context) = fresh_app_context();
+            let other = seed_identity_with_id(&app_context, 0xB6, vec![], vec![]);
+            let owner = seed_identity_that_can_move_funds(&app_context);
+            let mut hub = hub_with_loaded_home(&app_context, owner);
+
+            app_context.set_selected_identity(Some(other));
+            hub.state_mut().0.refresh_on_arrival();
+            hub.step();
+            assert!(hub.query_by_label("Bao").is_none());
+            assert!(
+                hub.query_by_label(SETUP_CHECKLIST).is_none(),
+                "nothing is known yet about the identity now shown"
+            );
+        });
+    }
+
+    /// The reload after coming back replaces what was kept.
+    #[test]
+    fn the_reload_after_returning_replaces_the_kept_contacts() {
+        with_isolated_data_dir(|| {
+            let (_runtime, app_context) = fresh_app_context();
+            let owner = seed_identity_that_can_move_funds(&app_context);
+            let mut hub = hub_with_loaded_home(&app_context, owner);
+
+            hub.state_mut().0.refresh_on_arrival();
+            hub.step();
+            deliver_contacts(&mut hub, owner, "Cy");
+            hub.run();
+            assert!(
+                hub.query_by_label("Cy").is_some(),
+                "the fresh list is shown"
+            );
+            assert!(hub.query_by_label("Bao").is_none(), "the kept list is gone");
+        });
+    }
+
     /// Roster reads the hub makes in one settled frame on `tab`.
     fn roster_reads_per_frame(
         hub: &mut HubHarness,

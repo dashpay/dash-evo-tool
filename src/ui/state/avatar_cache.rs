@@ -328,4 +328,50 @@ mod tests {
             "a fresh image replaces it"
         );
     }
+
+    /// The usual return to Home renews an image already uploaded as a texture:
+    /// a failed renewal keeps that texture, a successful one is drawn as a new
+    /// texture from the fresh bytes.
+    #[test]
+    fn renewal_of_an_uploaded_texture_keeps_it_on_failure_and_replaces_it() {
+        use crate::ui::components::avatar::Avatar;
+        let png = |shade: u8| {
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            image::RgbImage::from_pixel(4, 4, image::Rgb([shade; 3]))
+                .write_to(&mut bytes, image::ImageFormat::Png)
+                .expect("png");
+            bytes.into_inner()
+        };
+        let mut cache = AvatarCache::new();
+        cache.seed(URL_A, png(10));
+        let mut harness = egui_kittest::Harness::builder().build_ui_state(
+            |ui, cache: &mut AvatarCache| {
+                Avatar::new(Some(URL_A), 32.0).show(ui, cache);
+            },
+            cache,
+        );
+        harness.run();
+        let texture = |cache: &AvatarCache| cache.ready_texture(URL_A).map(TextureHandle::id);
+        let first = texture(harness.state()).expect("the image is uploaded");
+
+        harness.state_mut().reload_kept();
+        harness.run();
+        assert!(harness.state().awaits_result(URL_A), "the renewal went out");
+        harness.state_mut().store(URL_A.to_string(), None);
+        harness.run();
+        assert_eq!(
+            texture(harness.state()),
+            Some(first),
+            "a failed renewal keeps it"
+        );
+
+        harness.state_mut().reload_kept();
+        harness.run();
+        harness.state_mut().store(URL_A.to_string(), Some(png(200)));
+        assert_eq!(texture(harness.state()), None, "the old texture is dropped");
+        assert_eq!(harness.state().fetched_bytes(URL_A), Some(&png(200)[..]));
+        harness.run();
+        let second = texture(harness.state()).expect("the fresh image is uploaded");
+        assert_ne!(second, first, "the fresh image is a new texture");
+    }
 }

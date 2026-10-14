@@ -409,9 +409,15 @@ fn render_populated(
 
     action |= header_row(ui, app_context, dark_mode);
 
-    action |= received_section(ui, app_context, identity, state, dark_mode);
-    action |= active_section(ui, app_context, identity, state, dark_mode);
-    action |= sent_section(ui, app_context, identity, state, dark_mode);
+    // The sections scroll below the header, so a long contact list stays
+    // reachable in a short window.
+    eframe::egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            action |= received_section(ui, app_context, identity, state, dark_mode);
+            action |= active_section(ui, app_context, identity, state, dark_mode);
+            action |= sent_section(ui, app_context, identity, state, dark_mode);
+        });
     action
 }
 
@@ -493,11 +499,21 @@ fn active_section(
         } else {
             for contact in matches {
                 ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new(contact_label(contact))
-                            .strong()
-                            .color(DashColors::text_primary(dark_mode)),
-                    );
+                    let label = contact_label(contact);
+                    ui.vertical(|ui| {
+                        ui.label(
+                            RichText::new(&label)
+                                .strong()
+                                .color(DashColors::text_primary(dark_mode)),
+                        );
+                        if let Some(handle) = contact_handle(contact, &label) {
+                            ui.label(
+                                RichText::new(handle)
+                                    .small()
+                                    .color(DashColors::text_secondary(dark_mode)),
+                            );
+                        }
+                    });
                     ui.with_layout(
                         eframe::egui::Layout::right_to_left(eframe::egui::Align::Center),
                         |ui| {
@@ -538,14 +554,18 @@ fn active_section(
             }
         }
 
-        ui.add_space(8.0);
-        let add = ui
-            .add(ComponentStyles::primary_button(ADD_BY_USERNAME_LABEL))
-            .clickable_tooltip(
-                "Find someone by their Dash username or identity ID and add them as a contact.",
-            );
-        if add.clicked() {
-            action = resolve_contacts_button(ContactsButton::ActiveAddByUsername, app_context);
+        // The header already offers Add by username; the section repeats it
+        // only as the empty state's call to action (design-spec §B.4).
+        if !has_contacts {
+            ui.add_space(8.0);
+            let add = ui
+                .add(ComponentStyles::primary_button(ADD_BY_USERNAME_LABEL))
+                .clickable_tooltip(
+                    "Find someone by their Dash username or identity ID and add them as a contact.",
+                );
+            if add.clicked() {
+                action = resolve_contacts_button(ContactsButton::ActiveAddByUsername, app_context);
+            }
         }
 
         action |= hidden_section(ui, identity, state, dark_mode);
@@ -749,6 +769,8 @@ fn section_card(ui: &mut Ui, dark_mode: bool, heading: &str, body: impl FnOnce(&
         .corner_radius(CornerRadius::same(Shape::RADIUS_MD))
         .inner_margin(Margin::symmetric(16, 12));
     frame.show(ui, |ui| {
+        // Every section spans the content width, so the cards line up.
+        ui.set_width(ui.available_width());
         ui.label(
             RichText::new(heading)
                 .strong()
@@ -768,6 +790,17 @@ fn has_social_profile(
     identity: &QualifiedIdentity,
 ) -> bool {
     matches!(profiles.get_or_request(identity), Some(Some(_)))
+}
+
+/// A contact's `@username`, shown under its label unless the label already
+/// is that username.
+fn contact_handle(contact: &ContactData, label: &str) -> Option<String> {
+    let username = contact.username.as_deref()?.trim();
+    if username.is_empty() {
+        return None;
+    }
+    let handle = format!("@{}", username.trim_start_matches('@'));
+    (handle != label && username != label).then_some(handle)
 }
 
 fn contact_profile_screen_type(identity: QualifiedIdentity, contact_id: Identifier) -> ScreenType {
@@ -915,6 +948,24 @@ mod tests {
             avatar_url: None,
             bio: None,
         }
+    }
+
+    /// A contact row adds the `@username` under its label, unless the label
+    /// already is the username or there is none.
+    #[test]
+    fn contact_rows_show_the_username_once() {
+        let mut contact = contact_named("Bao");
+        assert_eq!(contact_handle(&contact, "Bao"), None);
+
+        contact.username = Some("bao".into());
+        assert_eq!(contact_handle(&contact, "Bao"), Some("@bao".into()));
+
+        contact.nickname = None;
+        let label = contact_label(&contact);
+        assert_eq!(contact_handle(&contact, &label), None, "label {label}");
+
+        contact.username = Some("  ".into());
+        assert_eq!(contact_handle(&contact, "Bao"), None);
     }
 
     fn request_from(

@@ -238,3 +238,37 @@ fn profile_keeps_the_form_and_the_usernames_card_side_by_side() {
         });
     }
 }
+
+#[test]
+fn contacts_sections_start_at_the_content_edge_with_one_add_button() {
+    for width in WIDTHS {
+        with_isolated_data_dir(|| {
+            let (_runtime, app_context) = fresh_app_context();
+            let hub = hub_on(&app_context, width, IdentityHubTab::Contacts);
+            let left = content_left(&hub);
+
+            let heading = hub
+                .get_by_label(dash_evo_tool::ui::identity::contacts::RECEIVED_HEADING)
+                .rect();
+            assert!(
+                heading.left() - left <= 24.0,
+                "at {width} px, section headings start at the content edge ({left}), \
+                 not at {}",
+                heading.left()
+            );
+
+            let add_buttons = hub
+                .query_all_by_label(dash_evo_tool::ui::identity::contacts::ADD_BY_USERNAME_LABEL)
+                .count();
+            assert_eq!(
+                add_buttons, 1,
+                "at {width} px, Add by username is offered once when there are contacts"
+            );
+
+            let view_profile = hub
+                .get_by_label(dash_evo_tool::ui::identity::contacts::VIEW_PROFILE_LABEL)
+                .rect();
+            assert_within_content(&hub, "a contact's View Profile button", view_profile, width);
+        });
+    }
+}

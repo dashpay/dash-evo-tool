@@ -45,6 +45,7 @@ const DONE_BANNER: &str = "The funds were added to";
 const FORM: &str = "Follow these steps to add funds to your identity:";
 const FORM_PAUSED: &str = "You can add more funds when this transfer finishes.";
 const WALLET_SEND_WAITING: &str = "Sending...";
+const WALLET_SEND_PROGRESS: &str = "Sending transaction";
 const WALLET_SEND_COMPLETE: &str = "Identity topped up successfully!";
 const TOP_UP_ALREADY_RUNNING: &str = "Funds are already being added to this identity. Wait for that transfer to finish, then try again.";
 
@@ -235,7 +236,7 @@ fn waiting_wallet_send(
         .expect("wallet fixture");
     let mut wallet_send = WalletSendScreen::new(&app_context, Arc::new(RwLock::new(wallet)));
     let dispatch = wallet_send
-        .dispatch_send_for_test(top_up_of(recipient))
+        .confirm_send_for_test(top_up_of(recipient))
         .expect("a confirmed send records its dispatch");
     (wallet_send, dispatch)
 }
@@ -480,10 +481,15 @@ fn top_up_form(harness: &mut App) -> &mut WalletSendScreen {
 /// the dispatch. The task itself is not run: no funds may move in a test.
 fn confirm_top_up(harness: &mut App, identity: &QualifiedIdentity) -> BackendTaskContext {
     let dispatch = top_up_form(harness)
-        .dispatch_send_for_test(top_up_of(identity))
+        .confirm_send_for_test(top_up_of(identity))
         .expect("a confirmed send records its dispatch");
     harness.run_steps(3);
     assert_eq!(count(harness, WALLET_SEND_WAITING), 1);
+    assert_eq!(
+        count(harness, WALLET_SEND_PROGRESS),
+        1,
+        "a confirmed send shows its progress banner"
+    );
     dispatch
 }
 
@@ -606,8 +612,10 @@ fn the_top_up_form_is_told_how_its_own_top_up_ended() {
     });
 }
 
-/// The breadcrumb back to Identities. It sits above the navigation entry of
-/// the same name and stays enabled while the form waits.
+/// Leave a form that waits on its top-up by the breadcrumb back to Identities.
+/// It sits above the navigation entry of the same name and stays enabled while
+/// the form waits. The form's own progress banner has nothing left to end it,
+/// so it goes with the form and the top-up is followed in the background.
 fn leave_by_breadcrumb(harness: &mut App) {
     harness
         .query_all_by_role_and_label(Role::Button, "Identities")
@@ -618,6 +626,16 @@ fn leave_by_breadcrumb(harness: &mut App) {
     assert!(
         harness.state().screen_stack.is_empty(),
         "the breadcrumb closes the waiting form"
+    );
+    assert_eq!(
+        count(harness, WALLET_SEND_PROGRESS),
+        0,
+        "the closed form's progress banner does not stay behind"
+    );
+    assert_eq!(
+        count(harness, BACKGROUND_BANNER),
+        1,
+        "the top-up that keeps running is followed in the background"
     );
 }
 
@@ -639,6 +657,34 @@ fn a_top_up_that_succeeds_after_its_form_was_left_is_confirmed() {
             1,
             "the top-up the user walked away from is confirmed"
         );
+        assert_eq!(count(&harness, BACKGROUND_BANNER), 0);
+        assert_eq!(count(&harness, WALLET_SEND_PROGRESS), 0);
+    });
+}
+
+/// A top-up that fails after its form was closed leaves no progress behind
+/// either: only the failure is reported.
+#[test]
+fn a_top_up_that_fails_after_its_form_was_left_leaves_no_progress_banner() {
+    in_app(|| {
+        let mut harness = mount_app(RootScreenType::RootScreenWalletsBalances);
+        let identity = stored_identity_with_wallet(&harness);
+        open_top_up_form(&mut harness, &identity);
+        let dispatch = confirm_top_up(&mut harness, &identity);
+        leave_by_breadcrumb(&mut harness);
+
+        let error = TaskError::NoIdentitiesFound;
+        let message = error.to_string();
+        deliver(
+            &mut harness,
+            TaskResult::Error {
+                context: dispatch,
+                error,
+            },
+        );
+        assert_eq!(count(&harness, &message), 1, "the failure is reported");
+        assert_eq!(count(&harness, BACKGROUND_BANNER), 0);
+        assert_eq!(count(&harness, WALLET_SEND_PROGRESS), 0);
     });
 }
 
@@ -664,6 +710,7 @@ fn a_top_up_form_covered_while_its_top_up_ends_stops_waiting() {
             0,
             "the top-up it waited on has ended"
         );
+        assert_eq!(count(&harness, WALLET_SEND_PROGRESS), 0);
         assert!(
             prepare_top_up(&mut harness, &identity).is_ok(),
             "the form is usable again"

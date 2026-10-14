@@ -12,6 +12,7 @@ use crate::ui::ScreenType;
 use crate::ui::components::avatar::Avatar;
 use crate::ui::identity::tabs::IdentityHubTab;
 pub use crate::ui::state::identity_home::HomeState;
+use crate::ui::state::identity_home::ReceiveQr;
 use crate::ui::state::{AvatarCache, contacts_view::ContactsState};
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Shape, Spacing};
 use crate::ui::wallets::send_screen::IdentitySendMode;
@@ -454,17 +455,22 @@ fn render_receive(
                 ui.ctx().copy_text(share.clone());
             }
         }
+        // The value can change while the dialog is open: a username arrives.
+        state.receive_qr.take_if(|qr| qr.value != share);
         if state.receive_qr.is_none()
             && let Ok(image) = super::funding_common::generate_qr_code_image(&share)
         {
-            state.receive_qr = Some(ui.ctx().load_texture(
-                "identity_receive_qr",
-                image,
-                egui::TextureOptions::NEAREST,
-            ));
+            state.receive_qr = Some(ReceiveQr {
+                value: share.clone(),
+                texture: ui.ctx().load_texture(
+                    "identity_receive_qr",
+                    image,
+                    egui::TextureOptions::NEAREST,
+                ),
+            });
         }
-        if let Some(texture) = &state.receive_qr {
-            ui.image((texture.id(), egui::vec2(200.0, 200.0)));
+        if let Some(qr) = &state.receive_qr {
+            ui.image((qr.texture.id(), egui::vec2(200.0, 200.0)));
         }
         if ui.button("Done").clicked() {
             state.receive_open = false;

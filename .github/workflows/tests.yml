@@ -48,7 +48,7 @@ jobs:
   pin-ancestry:
     name: Platform pin guard
     if: github.event.pull_request.draft != true
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.DASH_LIGHT_RUNNER || 'dash-x64-light' }}
     permissions:
       contents: read
     steps:

@@ -236,7 +236,9 @@ impl SettingsTab {
     ) -> AppAction {
         self.ensure_selected(identity, profiles);
 
-        let Some(identity) = self.selected_identity.clone() else {
+        // Render from the borrowed identity; `selected_identity` keeps the one
+        // owned snapshot `ensure_selected` took, for attributing results.
+        let Some(identity) = identity else {
             return render_empty_state(ui);
         };
 
@@ -262,7 +264,7 @@ impl SettingsTab {
                             egui::Layout::top_down(egui::Align::Min),
                             |ui| {
                                 ui.set_width(left_width);
-                                action |= self.render_social_profile(ui, app_context, &identity);
+                                action |= self.render_social_profile(ui, app_context, identity);
                             },
                         );
                         ui.allocate_ui_with_layout(
@@ -270,13 +272,13 @@ impl SettingsTab {
                             egui::Layout::top_down(egui::Align::Min),
                             |ui| {
                                 ui.set_width(right_width);
-                                action |= self.render_usernames(ui, app_context, &identity);
+                                action |= self.render_usernames(ui, app_context, identity);
                             },
                         );
                     });
                 } else {
-                    action |= self.render_social_profile(ui, app_context, &identity);
-                    action |= self.render_usernames(ui, app_context, &identity);
+                    action |= self.render_social_profile(ui, app_context, identity);
+                    action |= self.render_usernames(ui, app_context, identity);
                 }
 
                 ui.add_space(16.0);
@@ -299,7 +301,7 @@ impl SettingsTab {
                                 .color(DashColors::text_secondary(dark_mode)),
                         );
                         ui.add_space(8.0);
-                        action |= self.render_advanced(ui, app_context, &identity);
+                        action |= self.render_advanced(ui, app_context, identity);
                     });
                 // Track open state so test helpers can read it if needed.
                 self.advanced_open = resp.fully_open();
@@ -773,11 +775,11 @@ impl SettingsTab {
         if self.pending_save.is_some() {
             return;
         }
-        let Some(identity) = self.selected_identity.clone() else {
+        let Some(identity) = self.selected_identity.as_ref() else {
             self.profile_loaded = true;
             return;
         };
-        let fields = match profiles.get_or_request(&identity) {
+        let fields = match profiles.get_or_request(identity) {
             Some(loaded) => loaded.clone(),
             // Not loaded yet — a load is queued; retry on the next frame.
             None => return,

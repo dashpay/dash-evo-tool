@@ -236,3 +236,50 @@ fn a_narrow_window_stacks_the_details_under_the_contact() {
         }
     });
 }
+
+/// The pane is laid out the same in both layouts: the two-column split must not
+/// leak its column gap into the spacing inside the columns.
+#[test]
+fn the_detail_pane_keeps_its_spacing_in_both_layouts() {
+    let name_offset = |width: f32| {
+        with_isolated_data_dir(|| {
+            let (_runtime, app_context) = fresh_app_context();
+            let (hub, _) = hub_with_bao_selected(&app_context, width, None);
+            let heading = hub.get_by_label(DETAIL_HEADING).rect();
+            let name = hub
+                .query_all_by_label("Bao Nguyen")
+                .map(|node| node.rect())
+                .find(|rect| rect.top() > heading.bottom() && rect.left() > heading.left())
+                .expect("the pane shows the contact's name");
+            name.left() - heading.left()
+        })
+    };
+    let (wide, narrow) = (name_offset(WIDE), name_offset(NARROW));
+    assert!(
+        (wide - narrow).abs() <= EPSILON,
+        "the name sits {wide} pt into the pane on a wide window but {narrow} pt on a narrow one"
+    );
+}
+
+/// A contact's @username lines up with its name, which starts after the
+/// selectable row's padding.
+#[test]
+fn a_contacts_username_lines_up_with_its_name() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let (hub, _) = hub_with_bao_selected(&app_context, WIDE, None);
+        let row = hub.get_by_role_and_label(Role::Button, "Bao Nguyen").rect();
+        let handle = hub
+            .query_all_by_label("@bao")
+            .map(|node| node.rect())
+            .find(|rect| rect.left() < row.right())
+            .expect("the row shows the username");
+        let padding = hub.ctx.global_style().spacing.button_padding.x;
+        assert!(
+            (handle.left() - (row.left() + padding)).abs() <= EPSILON,
+            "the username starts at {} but the name text at {}",
+            handle.left(),
+            row.left() + padding
+        );
+    });
+}

@@ -500,6 +500,8 @@ fn render_populated(
         let content_width = ui.available_width() - Spacing::LG;
         let list_width = content_width * LIST_SHARE;
         let detail_width = content_width - list_width;
+        // The column gap applies between the columns only, not inside them.
+        let item_spacing = ui.spacing().item_spacing;
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = Spacing::LG;
             let height = ui.available_height();
@@ -507,6 +509,7 @@ fn render_populated(
                 eframe::egui::vec2(list_width, height),
                 eframe::egui::Layout::top_down(eframe::egui::Align::Min),
                 |ui| {
+                    ui.spacing_mut().item_spacing = item_spacing;
                     ui.set_width(list_width);
                     eframe::egui::ScrollArea::vertical()
                         .id_salt("identity_hub_contacts_list")
@@ -522,6 +525,7 @@ fn render_populated(
                 eframe::egui::vec2(detail_width, height),
                 eframe::egui::Layout::top_down(eframe::egui::Align::Min),
                 |ui| {
+                    ui.spacing_mut().item_spacing = item_spacing;
                     ui.set_width(detail_width);
                     eframe::egui::ScrollArea::vertical()
                         .id_salt("identity_hub_contact_detail")
@@ -836,11 +840,17 @@ fn active_section(
                                 clicked_contact = Some(contact.identity_id);
                             }
                             if let Some(handle) = contact_handle(contact, &label) {
-                                ui.label(
-                                    RichText::new(handle)
-                                        .small()
-                                        .color(DashColors::text_secondary(dark_mode)),
-                                );
+                                // Line the handle up with the name, which the
+                                // row button insets by its padding.
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 0.0;
+                                    ui.add_space(ui.spacing().button_padding.x);
+                                    ui.label(
+                                        RichText::new(handle)
+                                            .small()
+                                            .color(DashColors::text_secondary(dark_mode)),
+                                    );
+                                });
                             }
                         });
                     },

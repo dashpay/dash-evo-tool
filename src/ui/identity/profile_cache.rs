@@ -39,6 +39,9 @@ pub struct ProfileCache {
     wanted: Vec<QualifiedIdentity>,
     /// Loaded identities due a reload; their profile is shown until it lands.
     stale: HashSet<Identifier>,
+    /// Identities whose load failed only because the network was still
+    /// syncing; [`Self::retry_after_sync`] asks for them again.
+    awaiting_sync: HashSet<Identifier>,
 }
 
 impl ProfileCache {
@@ -138,12 +141,33 @@ impl ProfileCache {
 
     /// Release a failed load so other identities can load; retry it on refresh.
     pub fn record_error(&mut self, context: &BackendTaskContext) {
-        if self
-            .in_flight
-            .as_ref()
-            .is_some_and(|(_, expected)| expected == context)
-        {
-            self.in_flight = None;
+        self.release_failed(context);
+    }
+
+    /// Release a load that failed only because the network was still syncing;
+    /// [`Self::retry_after_sync`] asks for it again once the network is ready.
+    pub fn record_error_while_syncing(&mut self, context: &BackendTaskContext) {
+        if let Some(id) = self.release_failed(context) {
+            self.awaiting_sync.insert(id);
+        }
+    }
+
+    /// Clear the in-flight load if `context` is its dispatch, returning its owner.
+    fn release_failed(&mut self, context: &BackendTaskContext) -> Option<Identifier> {
+        let (id, expected) = self.in_flight.as_ref()?;
+        if expected != context {
+            return None;
+        }
+        let id = *id;
+        self.in_flight = None;
+        Some(id)
+    }
+
+    /// Ask again for every profile whose load failed while the network was
+    /// still syncing. Call once the network is ready; cheap when none failed.
+    pub fn retry_after_sync(&mut self) {
+        for id in self.awaiting_sync.drain() {
+            self.requested.remove(&id);
         }
     }
 
@@ -166,6 +190,7 @@ impl ProfileCache {
         }
         self.wanted.retain(|q| q.identity.id() != id);
         self.stale.remove(&id);
+        self.awaiting_sync.remove(&id);
     }
 
     /// Keep every loaded profile on screen but reload each on its next read.
@@ -176,6 +201,9 @@ impl ProfileCache {
         let loaded = &self.loaded;
         self.requested
             .retain(|id| loaded.contains_key(id) || Some(*id) == loading);
+        // A failed load is no longer `requested`, so its next read asks again
+        // without waiting for the network to sync.
+        self.awaiting_sync.clear();
         self.stale = self
             .loaded
             .keys()
@@ -191,12 +219,56 @@ impl ProfileCache {
         self.in_flight = None;
         self.wanted.clear();
         self.stale.clear();
+        self.awaiting_sync.clear();
     }
 }
 
 #[cfg(test)]
 mod race_tests {
     use super::*;
+
+    /// Only a load that failed because the network was still syncing is asked
+    /// for again once it is ready; other failures wait for a refresh.
+    #[test]
+    fn only_a_load_failed_while_syncing_is_retried_after_sync() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = crate::context::test_support::test_app_context(dir.path());
+        let identity = crate::context::test_support::user_identity_with_signing_key(
+            Identifier::from([72; 32]),
+            app.network,
+            false,
+        );
+        for network_syncing in [true, false] {
+            let mut cache = ProfileCache::default();
+            assert!(cache.get_or_request(&identity).is_none());
+            let AppAction::BackendTaskWithContext { context, .. } = cache.dispatch_pending() else {
+                panic!("profile load")
+            };
+            let record = |cache: &mut ProfileCache, context: &BackendTaskContext| {
+                if network_syncing {
+                    cache.record_error_while_syncing(context);
+                } else {
+                    cache.record_error(context);
+                }
+            };
+            record(&mut cache, &BackendTaskContext::Other);
+            assert!(
+                matches!(cache.dispatch_pending(), AppAction::None),
+                "another dispatch's failure leaves this load in flight"
+            );
+            record(&mut cache, &context);
+            cache.retry_after_sync();
+            cache.get_or_request(&identity);
+            assert_eq!(
+                matches!(
+                    cache.dispatch_pending(),
+                    AppAction::BackendTaskWithContext { .. }
+                ),
+                network_syncing,
+                "network_syncing = {network_syncing}"
+            );
+        }
+    }
 
     #[test]
     fn completed_save_rejects_queued_present_and_absent_profile_loads() {

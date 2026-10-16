@@ -52,6 +52,16 @@ fn mount_hub(app_context: &Arc<AppContext>, width: f32) -> HubHarness {
 
 /// Seeds and selects a user identity that owns two usernames.
 fn seed_identity_with_usernames(app_context: &Arc<AppContext>) -> Identifier {
+    seed_identity_named(app_context, &["alex", "alexander"])
+}
+
+/// The longest username Dash Platform accepts, in a wide letter.
+fn longest_username() -> String {
+    "w".repeat(63)
+}
+
+/// Seeds and selects a user identity that owns `names`.
+fn seed_identity_named(app_context: &Arc<AppContext>, names: &[&str]) -> Identifier {
     let auth = key(1, Purpose::AUTHENTICATION);
     let identity = Identity::new_with_id_and_keys(
         Identifier::from([0xA7; 32]),
@@ -68,16 +78,13 @@ fn seed_identity_with_usernames(app_context: &Arc<AppContext>) -> Identifier {
         identity_type: IdentityType::User,
         alias: None,
         private_keys: KeyStorage::default(),
-        dpns_names: vec![
-            DPNSNameInfo {
-                name: "alex".into(),
+        dpns_names: names
+            .iter()
+            .map(|name| DPNSNameInfo {
+                name: (*name).into(),
                 acquired_at: 1_700_000_000_000,
-            },
-            DPNSNameInfo {
-                name: "alexander".into(),
-                acquired_at: 1_700_000_000_000,
-            },
-        ],
+            })
+            .collect(),
         associated_wallets: BTreeMap::new(),
         secret_access: None,
         wallet_index: None,
@@ -123,6 +130,25 @@ fn deliver_profile(hub: &mut HubHarness, owner: Identifier) {
 }
 
 fn deliver_contact(hub: &mut HubHarness, owner: Identifier) {
+    deliver_contact_named(hub, owner, "Bao", None);
+}
+
+fn deliver_contact_named(
+    hub: &mut HubHarness,
+    owner: Identifier,
+    nickname: &str,
+    username: Option<String>,
+) {
+    deliver_contact_with(hub, owner, nickname, username, false);
+}
+
+fn deliver_contact_with(
+    hub: &mut HubHarness,
+    owner: Identifier,
+    nickname: &str,
+    username: Option<String>,
+    is_hidden: bool,
+) {
     let app_context = hub.state().0.app_context.clone();
     let task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadContacts {
         identity: app_context.resolve_selected_identity().expect("identity"),
@@ -133,11 +159,11 @@ fn deliver_contact(hub: &mut HubHarness, owner: Identifier) {
             identity: owner,
             contacts: vec![ContactData {
                 identity_id: Identifier::from([0xD8; 32]),
-                nickname: Some("Bao".into()),
+                nickname: Some(nickname.into()),
                 note: None,
-                is_hidden: false,
+                is_hidden,
                 account_reference: 0,
-                username: None,
+                username,
                 display_name: None,
                 avatar_url: None,
                 bio: None,
@@ -149,11 +175,23 @@ fn deliver_contact(hub: &mut HubHarness, owner: Identifier) {
 /// The hub on `tab` for an identity with a published profile and one contact.
 fn hub_on(app_context: &Arc<AppContext>, width: f32, tab: IdentityHubTab) -> HubHarness {
     let owner = seed_identity_with_usernames(app_context);
+    hub_for(app_context, owner, width, tab, |hub, owner| {
+        deliver_contact(hub, owner)
+    })
+}
+
+fn hub_for(
+    app_context: &Arc<AppContext>,
+    owner: Identifier,
+    width: f32,
+    tab: IdentityHubTab,
+    contacts: impl FnOnce(&mut HubHarness, Identifier),
+) -> HubHarness {
     let mut hub = mount_hub(app_context, width);
     deliver_profile(&mut hub, owner);
     hub.state_mut().0.select_tab(tab);
     hub.run_steps(4);
-    deliver_contact(&mut hub, owner);
+    contacts(&mut hub, owner);
     hub.run_steps(4);
     hub
 }
@@ -294,6 +332,121 @@ fn header_stays_within_the_content_width_on_every_tab() {
                 move_to_wallet,
                 2000.0,
             );
+        });
+    }
+}
+
+/// The longest username Platform accepts never pushes a username's menu, the
+/// card or the Profile tab past the content column: the name is shortened to
+/// the room its badge and menu leave.
+#[test]
+fn the_longest_username_stays_within_the_usernames_card() {
+    for width in WIDTHS {
+        with_isolated_data_dir(|| {
+            let (_runtime, app_context) = fresh_app_context();
+            let long = longest_username();
+            let owner = seed_identity_named(&app_context, &[&long, "alex"]);
+            let hub = hub_for(
+                &app_context,
+                owner,
+                width,
+                IdentityHubTab::Settings,
+                |_, _| {},
+            );
+            let tab_bottom = hub.get_by_label("Home").rect().bottom();
+
+            let another = hub
+                .get_by_role_and_label(Role::Button, "Get another username")
+                .rect();
+            assert_within_content(&hub, "the usernames card", another, width);
+
+            // The shortened name, its Main badge and its menu sit side by side.
+            let name = hub
+                .query_all_by_label_contains("@www")
+                .map(|node| node.rect())
+                .find(|rect| rect.top() > tab_bottom)
+                .expect("the long username is listed");
+            let badge = hub.get_by_label("Main").rect();
+            let menu = hub
+                .query_all_by_label("•••")
+                .map(|node| node.rect())
+                .filter(|rect| rect.top() > tab_bottom)
+                .min_by(|a, b| a.top().total_cmp(&b.top()))
+                .expect("the long username has a menu");
+            assert!(
+                name.right() <= badge.left() + EPSILON && badge.right() <= menu.left() + EPSILON,
+                "at {width} px, name {name:?}, badge {badge:?} and menu {menu:?} must not overlap"
+            );
+            for menu in hub
+                .query_all_by_label("•••")
+                .map(|node| node.rect())
+                .filter(|rect| rect.top() > tab_bottom)
+            {
+                assert!(
+                    menu.right() <= another.right() + EPSILON,
+                    "at {width} px, a username's menu ({menu:?}) must stay inside the card \
+                     ({another:?})"
+                );
+            }
+        });
+    }
+}
+
+/// A long nickname and the longest username never push a contact's actions
+/// past the content column.
+#[test]
+fn long_contact_names_stay_within_the_content_width() {
+    for width in WIDTHS {
+        with_isolated_data_dir(|| {
+            let (_runtime, app_context) = fresh_app_context();
+            let owner = seed_identity_with_usernames(&app_context);
+            let nickname = "W".repeat(120);
+            let hub = hub_for(
+                &app_context,
+                owner,
+                width,
+                IdentityHubTab::Contacts,
+                |hub, owner| deliver_contact_named(hub, owner, &nickname, Some(longest_username())),
+            );
+            let view_profile = hub
+                .get_by_label(dash_evo_tool::ui::identity::contacts::VIEW_PROFILE_LABEL)
+                .rect();
+            assert_within_content(&hub, "a contact's View Profile button", view_profile, width);
+            assert!(
+                view_profile.left() >= content_left(&hub),
+                "at {width} px, View Profile stays on screen ({view_profile:?})"
+            );
+        });
+    }
+}
+
+/// A hidden contact with a long nickname keeps its Unhide button inside the
+/// content column.
+#[test]
+fn long_hidden_contact_names_stay_within_the_content_width() {
+    for width in WIDTHS {
+        with_isolated_data_dir(|| {
+            let (_runtime, app_context) = fresh_app_context();
+            let owner = seed_identity_with_usernames(&app_context);
+            let nickname = "W".repeat(120);
+            let mut hub = hub_for(
+                &app_context,
+                owner,
+                width,
+                IdentityHubTab::Contacts,
+                |hub, owner| {
+                    deliver_contact_with(hub, owner, &nickname, Some(longest_username()), true)
+                },
+            );
+            hub.get_by_role(Role::CheckBox).click();
+            hub.run_steps(4);
+            let unhide = hub
+                .get_by_role_and_label(
+                    Role::Button,
+                    dash_evo_tool::ui::identity::contacts::UNHIDE_LABEL,
+                )
+                .rect();
+            assert_within_content(&hub, "a hidden contact's Unhide button", unhide, width);
         });
     }
 }

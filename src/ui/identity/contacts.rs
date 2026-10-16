@@ -607,22 +607,25 @@ fn hidden_section(
     // `state` once the read borrow the row loop holds has ended.
     let mut clicked: Option<ContactData> = None;
     for contact in state.hidden_contacts() {
-        ui.horizontal(|ui| {
-            ui.label(
-                RichText::new(contact_label(contact)).color(DashColors::text_secondary(dark_mode)),
-            );
-            ui.with_layout(
-                eframe::egui::Layout::right_to_left(eframe::egui::Align::Center),
-                |ui| {
-                    let unhide = ui
-                        .add(ComponentStyles::secondary_button(UNHIDE_LABEL, dark_mode))
-                        .clickable_tooltip(UNHIDE_TOOLTIP);
-                    if unhide.clicked() {
-                        clicked = Some(contact.clone());
-                    }
-                },
-            );
-        });
+        // Unhide is laid out first so a long name is shortened to the room it
+        // leaves instead of pushing the button past the content column.
+        eframe::egui::Sides::new().shrink_left().truncate().show(
+            ui,
+            |ui| {
+                ui.label(
+                    RichText::new(contact_label(contact))
+                        .color(DashColors::text_secondary(dark_mode)),
+                );
+            },
+            |ui| {
+                let unhide = ui
+                    .add(ComponentStyles::secondary_button(UNHIDE_LABEL, dark_mode))
+                    .clickable_tooltip(UNHIDE_TOOLTIP);
+                if unhide.clicked() {
+                    clicked = Some(contact.clone());
+                }
+            },
+        );
         ui.add_space(4.0);
     }
 

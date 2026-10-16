@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use dash_sdk::dpp::identity::TimestampMillis;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use egui::{Align, Layout, RichText, Ui};
+use egui::{Align, Layout, RichText, Sides, Ui};
 
 use crate::app::AppAction;
 use crate::backend_task::identity::IdentityTask;
@@ -17,6 +17,7 @@ use crate::model::dpns_usernames::{
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::legacy_recovery_section::host_offer;
+use crate::ui::components::pill;
 use crate::ui::components::qr_code_image::QrCodeImage;
 use crate::ui::identity::register_dpns_name_screen::{RegisterDpnsNameSource, status_line};
 use crate::ui::identity::username_copy::{
@@ -45,6 +46,16 @@ pub enum UsernameRow {
     Pending(UsernameRequest),
     /// A request that ended without the name, kept for 30 days.
     Outcome(UsernameRequest),
+}
+
+/// A username in bold, shortened with "…" to the room left on its line less
+/// `reserve` (points kept for what follows it). Hovering shows the full name.
+fn name_label(ui: &mut Ui, text: &str, reserve: f32) {
+    let width = (ui.available_width() - reserve).max(0.0);
+    ui.scope(|ui| {
+        ui.set_max_width(width);
+        ui.add(egui::Label::new(RichText::new(text).strong()).truncate());
+    });
 }
 
 fn same_name(a: &str, b: &str) -> bool {
@@ -271,19 +282,24 @@ impl UsernamesCard {
                     show_main_badge,
                     acquired_at,
                 } => {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(format!("@{name}")).strong());
-                        if is_main && show_main_badge {
-                            crate::ui::components::pill::accent_pill(
-                                ui,
-                                "Main",
-                                DashColors::DASH_BLUE,
-                                None,
-                            );
-                        }
-                        // The row's actions sit at the card's right edge, as in
-                        // the A08 wireframe, not right after the name.
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let badge = is_main && show_main_badge;
+                    // The row's actions sit at the card's right edge, as in
+                    // the A08 wireframe; they are laid out first so a long name
+                    // is shortened to the room they and the badge leave.
+                    Sides::new().shrink_left().truncate().show(
+                        ui,
+                        |ui| {
+                            let badge_room = if badge {
+                                pill::accent_pill_width(ui, "Main") + ui.spacing().item_spacing.x
+                            } else {
+                                0.0
+                            };
+                            name_label(ui, &format!("@{name}"), badge_room);
+                            if badge {
+                                pill::accent_pill(ui, "Main", DashColors::DASH_BLUE, None);
+                            }
+                        },
+                        |ui| {
                             ui.menu_button("•••", |ui| {
                                 if ui.button("Copy username").clicked() {
                                     ui.ctx().copy_text(format!("@{name}"));
@@ -305,8 +321,8 @@ impl UsernamesCard {
                             })
                             .response
                             .clickable_tooltip(format!("More actions for @{name}"));
-                        });
-                    });
+                        },
+                    );
                     if acquired_at > 0 {
                         ui.label(
                             RichText::new(registered_on_line(acquired_at))
@@ -316,13 +332,16 @@ impl UsernamesCard {
                     }
                 }
                 UsernameRow::Pending(request) => {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(format!("@{}", request.label)).strong());
-                        status_line(ui, Tone::Caution, phase_label(request.phase), dark_mode);
-                        if ui.button("View status").clicked() {
-                            action = request_status_action(app_context, identity, &request);
-                        }
-                    });
+                    Sides::new().shrink_left().truncate().show(
+                        ui,
+                        |ui| name_label(ui, &format!("@{}", request.label), 0.0),
+                        |ui| {
+                            if ui.button("View status").clicked() {
+                                action = request_status_action(app_context, identity, &request);
+                            }
+                            status_line(ui, Tone::Caution, phase_label(request.phase), dark_mode);
+                        },
+                    );
                     if let Some(detail) =
                         pending_request_detail(request.phase, request.join_end, request.end)
                     {
@@ -334,10 +353,11 @@ impl UsernamesCard {
                     }
                 }
                 UsernameRow::Outcome(request) => {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(format!("@{}", request.label)).strong());
-                        status_line(ui, Tone::Negative, phase_label(request.phase), dark_mode);
-                    });
+                    Sides::new().shrink_left().truncate().show(
+                        ui,
+                        |ui| name_label(ui, &format!("@{}", request.label), 0.0),
+                        |ui| status_line(ui, Tone::Negative, phase_label(request.phase), dark_mode),
+                    );
                     ui.label(
                         RichText::new(finished_request_detail(request.phase, request.decided_at))
                             .small()

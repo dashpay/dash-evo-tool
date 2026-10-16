@@ -10,8 +10,28 @@ use crate::model::contested_name::approximate_time_until;
 use crate::model::dpns_usernames::UsernameRequest;
 use crate::ui::theme::{DashColors, ResponseExt, Shape};
 use eframe::egui::{
-    Color32, CornerRadius, Frame, Margin, Response, RichText, Sense, Stroke, StrokeKind, Ui,
+    Color32, CornerRadius, FontSelection, Frame, Margin, Response, RichText, Sense, Stroke,
+    StrokeKind, TextWrapMode, Ui, WidgetText,
 };
+
+/// Horizontal padding between a pill's edge and its label, in points.
+const PILL_MARGIN_X: i8 = 10;
+
+fn pill_text(label: &str, accent: Color32) -> RichText {
+    RichText::new(label).color(accent).size(12.0).strong()
+}
+
+/// Width [`accent_pill`] takes for `label`, so a row can keep room for it
+/// before laying out text that has to shrink.
+pub fn accent_pill_width(ui: &Ui, label: &str) -> f32 {
+    let galley = WidgetText::from(pill_text(label, Color32::WHITE)).into_galley(
+        ui,
+        Some(TextWrapMode::Extend),
+        f32::INFINITY,
+        FontSelection::Default,
+    );
+    galley.size().x + 2.0 * f32::from(PILL_MARGIN_X)
+}
 
 /// Paint an inline pill: `label` in `accent`, on a 12%-accent fill with a 1px
 /// accent ring. `tooltip`, when present, is attached on hover. Returns the
@@ -21,12 +41,12 @@ pub fn accent_pill(ui: &mut Ui, label: &str, accent: Color32, tooltip: Option<&s
         Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), (0.12 * 255.0) as u8);
     let stroke_color = Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 180);
 
-    let text = RichText::new(label).color(accent).size(12.0).strong();
+    let text = pill_text(label, accent);
     let inner = Frame::new()
         .fill(fill)
         .stroke(Stroke::NONE)
         .corner_radius(CornerRadius::same(Shape::RADIUS_FULL))
-        .inner_margin(Margin::symmetric(10, 3))
+        .inner_margin(Margin::symmetric(PILL_MARGIN_X, 3))
         .show(ui, |ui| {
             ui.add(eframe::egui::Label::new(text).sense(Sense::hover()))
         });

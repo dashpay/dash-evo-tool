@@ -164,10 +164,12 @@ impl ProfileCache {
     }
 
     /// Ask again for every profile whose load failed while the network was
-    /// still syncing. Call once the network is ready; cheap when none failed.
+    /// still syncing, keeping any cached profile on screen until it reloads.
+    /// Call once the network is ready; cheap when none failed.
     pub fn retry_after_sync(&mut self) {
         for id in self.awaiting_sync.drain() {
             self.requested.remove(&id);
+            self.stale.insert(id);
         }
     }
 
@@ -268,6 +270,45 @@ mod race_tests {
                 "network_syncing = {network_syncing}"
             );
         }
+    }
+
+    #[test]
+    fn kept_profile_whose_refresh_failed_while_syncing_is_retried_after_sync() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = crate::context::test_support::test_app_context(dir.path());
+        let identity = crate::context::test_support::user_identity_with_signing_key(
+            Identifier::from([73; 32]),
+            app.network,
+            false,
+        );
+        let id = identity.identity.id();
+        let mut cache = ProfileCache::default();
+        cache.get_or_request(&identity);
+        let kept = ProfileFields {
+            display_name: "Kept".into(),
+            ..Default::default()
+        };
+        cache.loaded.insert(id, Some(kept));
+        let AppAction::BackendTaskWithContext { context, .. } = cache.dispatch_pending() else {
+            panic!("profile refresh")
+        };
+        cache.record_error_while_syncing(&context);
+        cache.retry_after_sync();
+        assert_eq!(
+            cache
+                .get_or_request(&identity)
+                .and_then(|profile| profile.as_ref())
+                .map(|profile| profile.display_name.as_str()),
+            Some("Kept"),
+            "the kept profile stays on screen while it reloads"
+        );
+        assert!(
+            matches!(
+                cache.dispatch_pending(),
+                AppAction::BackendTaskWithContext { .. }
+            ),
+            "the kept profile is refreshed once the network is ready"
+        );
     }
 
     #[test]

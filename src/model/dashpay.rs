@@ -22,6 +22,33 @@ pub fn validate_account_label(label: &str) -> Result<(), TextLengthError> {
     validate_char_count(label, 0, MAX_ACCOUNT_LABEL_CHARS)
 }
 
+/// Most bytes a contact's private note can hold. Its encrypted `contactInfo`
+/// payload stores the note's length in a single byte.
+pub const MAX_CONTACT_NOTE_BYTES: usize = u8::MAX as usize;
+
+/// A private contact note is longer than its encrypted payload can store.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("This note is too long. Shorten it to save it.")]
+pub struct ContactNoteTooLong {
+    /// Size of the note in UTF-8 bytes.
+    pub bytes: usize,
+    /// Largest size the payload accepts.
+    pub max: usize,
+}
+
+/// Validate a contact's private note. The limit counts UTF-8 bytes, not
+/// characters, because that is what the payload stores.
+pub fn validate_contact_note(note: &str) -> Result<(), ContactNoteTooLong> {
+    let bytes = note.len();
+    if bytes > MAX_CONTACT_NOTE_BYTES {
+        return Err(ContactNoteTooLong {
+            bytes,
+            max: MAX_CONTACT_NOTE_BYTES,
+        });
+    }
+    Ok(())
+}
+
 /// The recipient (`toUserId`) of a DashPay `contactRequest` document.
 ///
 /// Returns `None` when the field is absent or does not hold a readable
@@ -122,6 +149,16 @@ impl ContactInfoUpdate {
             display_hidden,
             accepted_accounts: AcceptedAccounts::Preserve,
             unreadable: UnreadableContactInfoPolicy::Abort,
+        }
+    }
+
+    /// Replace the private note, preserving the nickname and accepted accounts.
+    /// `display_hidden` must carry the contact's current hidden state, since the
+    /// whole document is rewritten.
+    pub fn note(note: Option<String>, display_hidden: bool) -> Self {
+        Self {
+            note: ContactInfoField::Replace(note),
+            ..Self::visibility(display_hidden)
         }
     }
 
@@ -452,6 +489,45 @@ mod tests {
             transferred_at_core_block_height: None,
             contract_version: None,
         })
+    }
+
+    #[test]
+    fn a_contact_note_fits_up_to_the_payload_limit_in_bytes() {
+        assert_eq!(MAX_CONTACT_NOTE_BYTES, 255);
+        assert_eq!(validate_contact_note(""), Ok(()));
+        assert_eq!(validate_contact_note(&"a".repeat(255)), Ok(()));
+        assert_eq!(
+            validate_contact_note(&"a".repeat(256)),
+            Err(ContactNoteTooLong {
+                bytes: 256,
+                max: 255
+            })
+        );
+        // 128 two-byte letters are 128 characters but 256 bytes.
+        assert_eq!(
+            validate_contact_note(&"é".repeat(128)),
+            Err(ContactNoteTooLong {
+                bytes: 256,
+                max: 255
+            })
+        );
+    }
+
+    #[test]
+    fn a_note_update_replaces_only_the_note() {
+        let update = ContactInfoUpdate::note(Some("Met at the meetup".into()), true);
+        assert_eq!(
+            update.note,
+            ContactInfoField::Replace(Some("Met at the meetup".into()))
+        );
+        assert_eq!(update.nickname, ContactInfoField::Preserve);
+        assert_eq!(update.accepted_accounts, AcceptedAccounts::Preserve);
+        assert!(update.display_hidden, "the contact's hidden state is kept");
+        assert_eq!(update.unreadable, UnreadableContactInfoPolicy::Abort);
+
+        let cleared = ContactInfoUpdate::note(None, false);
+        assert_eq!(cleared.note, ContactInfoField::Replace(None));
+        assert!(!cleared.display_hidden);
     }
 
     #[test]

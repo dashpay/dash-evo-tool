@@ -54,7 +54,7 @@ fn identity_hub_screen_type_creates_hub_screen() {
     let _ = screen_type;
 }
 
-mod loads {
+pub(crate) mod loads {
     //! The hub's own data loads: each is dispatched once per arrival, so one
     //! that is lost on the way out or on the way back never comes again.
 
@@ -594,6 +594,24 @@ mod loads {
         results: Vec<(BackendTaskContext, BackendTaskSuccessResult)>,
     ) {
         use dash_evo_tool::app::TaskResult;
+        let results = results
+            .into_iter()
+            .map(|(context, result)| TaskResult::Success {
+                context,
+                result: Box::new(result),
+            })
+            .collect();
+        receive_task_results_behind_the_send_screen(runtime, app, hub, results);
+    }
+
+    /// Moves the hub into `app`, delivers `results` while the Send screen
+    /// covers it, then cancels Send and hands the hub back.
+    pub(crate) fn receive_task_results_behind_the_send_screen(
+        runtime: &tokio::runtime::Runtime,
+        app: &mut Harness<'static, dash_evo_tool::app::AppState>,
+        hub: &mut Harness<'static, (IdentityHubScreen, Vec<AppAction>)>,
+        results: Vec<dash_evo_tool::app::TaskResult>,
+    ) {
         use dash_evo_tool::ui::wallets::send_screen::IdentitySendMode;
         use dash_evo_tool::ui::{RootScreenType, Screen, ScreenType};
 
@@ -612,12 +630,9 @@ mod loads {
                 .create_screen(&app_context),
         );
 
-        for (context, result) in results {
+        for result in results {
             runtime
-                .block_on(app.state().task_result_sender.send(TaskResult::Success {
-                    context,
-                    result: Box::new(result),
-                }))
+                .block_on(app.state().task_result_sender.send(result))
                 .expect("deliver the result");
         }
         // One frame drains the result queue before it renders.

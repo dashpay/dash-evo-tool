@@ -32,9 +32,9 @@ use std::sync::Arc;
 const WIDTHS: [f32; 2] = [1280.0, 2000.0];
 
 /// Slack for rounding and stroke widths when comparing edges.
-const EPSILON: f32 = 2.0;
+pub(crate) const EPSILON: f32 = 2.0;
 
-type HubHarness = Harness<'static, (IdentityHubScreen, Vec<AppAction>)>;
+pub(crate) type HubHarness = Harness<'static, (IdentityHubScreen, Vec<AppAction>)>;
 
 fn mount_hub(app_context: &Arc<AppContext>, width: f32) -> HubHarness {
     Harness::builder()
@@ -51,7 +51,7 @@ fn mount_hub(app_context: &Arc<AppContext>, width: f32) -> HubHarness {
 }
 
 /// Seeds and selects a user identity that owns two usernames.
-fn seed_identity_with_usernames(app_context: &Arc<AppContext>) -> Identifier {
+pub(crate) fn seed_identity_with_usernames(app_context: &Arc<AppContext>) -> Identifier {
     seed_identity_named(app_context, &["alex", "alexander"])
 }
 
@@ -180,7 +180,7 @@ fn hub_on(app_context: &Arc<AppContext>, width: f32, tab: IdentityHubTab) -> Hub
     })
 }
 
-fn hub_for(
+pub(crate) fn hub_for(
     app_context: &Arc<AppContext>,
     owner: Identifier,
     width: f32,
@@ -197,11 +197,11 @@ fn hub_for(
 }
 
 /// The tab bar's left edge, where every tab's content starts.
-fn content_left(hub: &HubHarness) -> f32 {
+pub(crate) fn content_left(hub: &HubHarness) -> f32 {
     hub.get_by_label("Home").rect().left()
 }
 
-fn assert_within_content(hub: &HubHarness, what: &str, rect: egui::Rect, width: f32) {
+pub(crate) fn assert_within_content(hub: &HubHarness, what: &str, rect: egui::Rect, width: f32) {
     let limit = content_left(hub) + HUB_CONTENT_MAX_WIDTH + EPSILON;
     assert!(
         rect.right() <= limit,
@@ -303,10 +303,8 @@ fn contacts_sections_start_at_the_content_edge_with_one_add_button() {
                 "at {width} px, Add by username is offered once when there are contacts"
             );
 
-            let view_profile = hub
-                .get_by_label(dash_evo_tool::ui::identity::contacts::VIEW_PROFILE_LABEL)
-                .rect();
-            assert_within_content(&hub, "a contact's View Profile button", view_profile, width);
+            let contact = hub.get_by_role_and_label(Role::Button, "Bao").rect();
+            assert_within_content(&hub, "a contact's row", contact, width);
         });
     }
 }
@@ -392,10 +390,10 @@ fn the_longest_username_stays_within_the_usernames_card() {
     }
 }
 
-/// A long nickname and the longest username never push a contact's actions
-/// past the content column.
+/// A long nickname and the longest username are shortened to the contact
+/// list's column instead of running under the detail pane beside it.
 #[test]
-fn long_contact_names_stay_within_the_content_width() {
+fn long_contact_names_stay_within_the_contact_list() {
     for width in WIDTHS {
         with_isolated_data_dir(|| {
             let (_runtime, app_context) = fresh_app_context();
@@ -408,38 +406,26 @@ fn long_contact_names_stay_within_the_content_width() {
                 IdentityHubTab::Contacts,
                 |hub, owner| deliver_contact_named(hub, owner, &nickname, Some(longest_username())),
             );
-            let view_profile = hub
-                .get_by_label(dash_evo_tool::ui::identity::contacts::VIEW_PROFILE_LABEL)
+            let pane = hub
+                .get_by_label(dash_evo_tool::ui::identity::contacts::DETAIL_HEADING)
                 .rect();
-            assert_within_content(&hub, "a contact's View Profile button", view_profile, width);
-            assert!(
-                view_profile.left() >= content_left(&hub),
-                "at {width} px, View Profile stays on screen ({view_profile:?})"
-            );
+            assert_within_content(&hub, "the contact detail pane", pane, width);
 
-            // The name and the handle are shortened to the room the actions
-            // leave, so neither runs under a button.
-            let actions: Vec<egui::Rect> = hub
-                .query_all_by_role(Role::Button)
-                .map(|node| node.rect())
-                .filter(|rect| {
-                    rect.top() >= view_profile.top() - 30.0
-                        && rect.bottom() <= view_profile.bottom() + 30.0
-                })
-                .collect();
             for text in ["WWWW", "@www"] {
                 let text_rect = hub
                     .query_all_by_label_contains(text)
                     .map(|node| node.rect())
-                    .find(|rect| rect.top() >= view_profile.top() - 30.0)
+                    .find(|rect| rect.top() > hub.get_by_label("Home").rect().bottom())
                     .unwrap_or_else(|| panic!("the contact row shows {text}"));
-                for action in &actions {
-                    assert!(
-                        !text_rect.intersects(*action),
-                        "at {width} px, {text}… ({text_rect:?}) runs under an action \
-                         ({action:?})"
-                    );
-                }
+                assert!(
+                    text_rect.left() >= content_left(&hub),
+                    "at {width} px, {text}… stays on screen ({text_rect:?})"
+                );
+                assert!(
+                    text_rect.right() <= pane.left(),
+                    "at {width} px, {text}… ({text_rect:?}) runs under the detail pane \
+                     ({pane:?})"
+                );
             }
         });
     }

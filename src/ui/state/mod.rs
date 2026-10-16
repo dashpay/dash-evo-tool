@@ -8,6 +8,7 @@
 pub mod account_summary;
 pub mod asset_lock_balance;
 pub mod avatar_cache;
+pub mod contact_detail_view;
 pub mod contacts_view;
 pub mod derived_key_chooser;
 pub mod dpns_contests;

@@ -2805,6 +2805,9 @@ impl AppState {
                 BackendTaskSuccessResult::DashPayPaymentHistory(_)
                 | BackendTaskSuccessResult::DashPayContactsWithInfo { .. }
                 | BackendTaskSuccessResult::DashPayContactRequests { .. } => true,
+                // A contact details write the hub dispatched holds a guard and
+                // a pending task there until its outcome arrives.
+                BackendTaskSuccessResult::DashPayContactInfoUpdated { .. } => true,
                 BackendTaskSuccessResult::DashPayAvatar { url, .. } => {
                     hub.is_waiting_for_avatar(url)
                 }
@@ -2832,6 +2835,7 @@ impl AppState {
         {
             hub.display_backend_task_error(context, error);
             hub.handle_contact_request_error(error);
+            hub.handle_contact_info_error(error);
         }
     }
 

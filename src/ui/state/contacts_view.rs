@@ -6,7 +6,7 @@
 //! and paints it. Placement follows the DET module policy: non-widget UI state
 //! belongs in `ui/state/`.
 
-use super::contact_detail_view::ContactDetailState;
+use super::contact_detail_view::{ContactDetailState, PendingWrite};
 use crate::backend_task::dashpay::ContactData;
 use crate::model::dashpay::contact_request_recipient;
 use crate::model::identity_name::display_label as profile_display_label;
@@ -327,14 +327,20 @@ impl ContactsState {
         &mut self.detail
     }
 
-    /// Settle a confirmed note save. Returns whether one was running. The
-    /// listed contact shows the stored note right away when the lists belong to
-    /// `owner`, without waiting for the reload.
-    pub fn finish_note_save(&mut self, owner: &Identifier, contact_id: &Identifier) -> bool {
-        let Some(note) = self.detail.finish_save(owner, contact_id) else {
+    /// Settle a confirmed contact details write. Returns whether one was
+    /// running. After a note save the listed contact shows the stored note
+    /// right away when the lists belong to `owner`, without waiting for the
+    /// reload.
+    pub fn finish_contact_info_write(
+        &mut self,
+        owner: &Identifier,
+        contact_id: &Identifier,
+    ) -> bool {
+        let Some(write) = self.detail.finish_write(owner, contact_id) else {
             return false;
         };
-        if self.owner_id() == Some(*owner)
+        if let PendingWrite::Note(note) = write
+            && self.owner_id() == Some(*owner)
             && let Some(contact) = self
                 .contacts
                 .iter_mut()
@@ -347,9 +353,9 @@ impl ContactsState {
         true
     }
 
-    /// Release a note save that failed or was abandoned.
-    pub fn release_note_save(&mut self, owner: &Identifier, contact_id: &Identifier) {
-        self.detail.release_save(owner, contact_id);
+    /// Release a contact details write that failed or was abandoned.
+    pub fn release_contact_info_write(&mut self, owner: &Identifier, contact_id: &Identifier) {
+        self.detail.release_write(owner, contact_id);
     }
 }
 
@@ -526,7 +532,7 @@ mod tests {
         *state.detail_mut().note_mut(&id(7)).expect("draft") = "Met at the meetup".into();
         assert!(state.detail_mut().begin_save(id(1), id(7)).is_some());
 
-        assert!(state.finish_note_save(&id(1), &id(7)));
+        assert!(state.finish_contact_info_write(&id(1), &id(7)));
 
         assert_eq!(
             state.selected_contact().and_then(|c| c.note.as_deref()),
@@ -534,7 +540,7 @@ mod tests {
         );
         assert!(!state.detail().is_dirty(&id(7)));
         assert!(
-            !state.finish_note_save(&id(1), &id(7)),
+            !state.finish_contact_info_write(&id(1), &id(7)),
             "a save settles only once"
         );
     }
@@ -547,7 +553,7 @@ mod tests {
         *state.detail_mut().note_mut(&id(7)).expect("draft") = "Theirs".into();
         assert!(state.detail_mut().begin_save(id(2), id(7)).is_some());
 
-        assert!(state.finish_note_save(&id(2), &id(7)));
+        assert!(state.finish_contact_info_write(&id(2), &id(7)));
 
         assert_eq!(
             state.selected_contact().and_then(|c| c.note.as_deref()),

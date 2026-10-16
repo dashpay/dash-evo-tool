@@ -1,15 +1,26 @@
 //! Detail-pane state for the Identities hub's Contacts tab: which contact is
-//! selected, the private note being edited for it, and the note saves still
-//! running. Renders nothing — [`crate::ui::identity::contacts`] paints it.
+//! selected, the private note being edited for it, and the contact details
+//! writes still running. Renders nothing — [`crate::ui::identity::contacts`]
+//! paints it.
 
 use crate::backend_task::dashpay::ContactData;
 use dash_sdk::platform::Identifier;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-/// Age after which a note save that never reported back stops blocking the
-/// Save button, pruned on the next view reset.
-const NOTE_SAVE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+/// Age after which a contact details write that never reported back stops
+/// blocking the next one, pruned on the next view reset.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+
+/// A contact details write still running. Each rewrites the contact's whole
+/// `contactInfo` document, so a contact has at most one at a time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PendingWrite {
+    /// A private-note save, with the note that was sent.
+    Note(Option<String>),
+    /// An unhide.
+    Visibility,
+}
 
 /// The note being edited for one contact, and the stored note it started from.
 #[derive(Debug, Clone)]
@@ -24,10 +35,10 @@ struct NoteDraft {
 pub struct ContactDetailState {
     selected: Option<Identifier>,
     draft: Option<NoteDraft>,
-    /// Note saves still running, keyed by owner identity and contact, with the
-    /// note that was sent. Each save is a paid write, so the Save button stays
-    /// disabled until its result lands.
-    saving: HashMap<(Identifier, Identifier), (Option<String>, Instant)>,
+    /// Contact details writes still running, keyed by owner identity and
+    /// contact. Each is paid for, so the next write to that contact waits until
+    /// its result lands.
+    writes: HashMap<(Identifier, Identifier), (PendingWrite, Instant)>,
 }
 
 /// The note as it is stored: surrounding whitespace dropped, and an empty note
@@ -74,8 +85,8 @@ impl ContactDetailState {
         self.selected = None;
         self.draft = None;
         let now = Instant::now();
-        self.saving
-            .retain(|_, (_, started)| now.saturating_duration_since(*started) < NOTE_SAVE_TIMEOUT);
+        self.writes
+            .retain(|_, (_, started)| now.saturating_duration_since(*started) < WRITE_TIMEOUT);
     }
 
     /// Follow a fresh copy of the selected contact. The draft restarts from the
@@ -124,8 +135,8 @@ impl ContactDetailState {
         self.draft_for(contact_id).is_some_and(NoteDraft::is_dirty)
     }
 
-    /// Claim the save slot for `owner`'s note on `contact_id`. Returns the note
-    /// to send, or `None` when there is no draft for that contact or a save for
+    /// Claim the write slot for `owner`'s note on `contact_id`. Returns the note
+    /// to send, or `None` when there is no draft for that contact or a write to
     /// it is already running.
     pub fn begin_save(
         &mut self,
@@ -133,34 +144,51 @@ impl ContactDetailState {
         contact_id: Identifier,
     ) -> Option<Option<String>> {
         let draft = self.draft_for(&contact_id)?;
-        let key = (owner, contact_id);
-        if self.saving.contains_key(&key) {
-            return None;
-        }
         let note = normalized_note(&draft.text);
-        self.saving.insert(key, (note.clone(), Instant::now()));
-        Some(note)
+        self.begin_write(owner, contact_id, PendingWrite::Note(note.clone()))
+            .then_some(note)
     }
 
-    /// Whether a note save for `owner` and `contact_id` is running.
-    pub fn is_saving(&self, owner: &Identifier, contact_id: &Identifier) -> bool {
-        self.saving.contains_key(&(*owner, *contact_id))
+    /// Claim the write slot for unhiding `contact_id`. `false` when a write to
+    /// that contact is already running.
+    #[must_use]
+    pub fn begin_visibility_write(&mut self, owner: Identifier, contact_id: Identifier) -> bool {
+        self.begin_write(owner, contact_id, PendingWrite::Visibility)
     }
 
-    /// Release a confirmed save and return the note it stored.
-    pub fn finish_save(
+    fn begin_write(
+        &mut self,
+        owner: Identifier,
+        contact_id: Identifier,
+        write: PendingWrite,
+    ) -> bool {
+        let key = (owner, contact_id);
+        if self.writes.contains_key(&key) {
+            return false;
+        }
+        self.writes.insert(key, (write, Instant::now()));
+        true
+    }
+
+    /// Whether a contact details write for `owner` and `contact_id` is running.
+    pub fn is_writing(&self, owner: &Identifier, contact_id: &Identifier) -> bool {
+        self.writes.contains_key(&(*owner, *contact_id))
+    }
+
+    /// Release a confirmed write and return what it was.
+    pub fn finish_write(
         &mut self,
         owner: &Identifier,
         contact_id: &Identifier,
-    ) -> Option<Option<String>> {
-        self.saving
+    ) -> Option<PendingWrite> {
+        self.writes
             .remove(&(*owner, *contact_id))
-            .map(|(note, _)| note)
+            .map(|(write, _)| write)
     }
 
-    /// Release a save that failed or was abandoned; the draft is kept.
-    pub fn release_save(&mut self, owner: &Identifier, contact_id: &Identifier) {
-        self.saving.remove(&(*owner, *contact_id));
+    /// Release a write that failed or was abandoned; the draft is kept.
+    pub fn release_write(&mut self, owner: &Identifier, contact_id: &Identifier) {
+        self.writes.remove(&(*owner, *contact_id));
     }
 }
 
@@ -277,16 +305,19 @@ mod tests {
         *state.note_mut(&id(5)).expect("draft") = "Bao".into();
 
         assert_eq!(state.begin_save(id(1), id(5)), Some(Some("Bao".into())));
-        assert!(state.is_saving(&id(1), &id(5)));
+        assert!(state.is_writing(&id(1), &id(5)));
         assert_eq!(
             state.begin_save(id(1), id(5)),
             None,
             "a second click must not pay for a second write"
         );
-        assert!(!state.is_saving(&id(2), &id(5)), "guards are per owner");
+        assert!(!state.is_writing(&id(2), &id(5)), "guards are per owner");
 
-        assert_eq!(state.finish_save(&id(1), &id(5)), Some(Some("Bao".into())));
-        assert!(!state.is_saving(&id(1), &id(5)));
+        assert_eq!(
+            state.finish_write(&id(1), &id(5)),
+            Some(PendingWrite::Note(Some("Bao".into())))
+        );
+        assert!(!state.is_writing(&id(1), &id(5)));
         state.sync(&contact(5, Some("Bao")));
         assert!(
             !state.is_dirty(&id(5)),
@@ -301,9 +332,9 @@ mod tests {
         *state.note_mut(&id(5)).expect("draft") = "Bao".into();
         assert!(state.begin_save(id(1), id(5)).is_some());
 
-        state.release_save(&id(1), &id(5));
+        state.release_write(&id(1), &id(5));
 
-        assert!(!state.is_saving(&id(1), &id(5)));
+        assert!(!state.is_writing(&id(1), &id(5)));
         assert!(state.is_dirty(&id(5)), "the unsaved edit stays");
         assert!(state.begin_save(id(1), id(5)).is_some());
     }
@@ -328,9 +359,12 @@ mod tests {
         assert_eq!(state.selected(), None);
         assert_eq!(state.note_mut(&id(5)), None);
         assert!(
-            state.is_saving(&id(1), &id(5)),
+            state.is_writing(&id(1), &id(5)),
             "a paid write still running keeps its guard"
         );
-        assert_eq!(state.finish_save(&id(1), &id(5)), Some(Some("Bao".into())));
+        assert_eq!(
+            state.finish_write(&id(1), &id(5)),
+            Some(PendingWrite::Note(Some("Bao".into())))
+        );
     }
 }

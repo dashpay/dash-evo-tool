@@ -283,3 +283,152 @@ fn a_contacts_username_lines_up_with_its_name() {
         );
     });
 }
+
+// -------------------------------------------------------------------
+// A save's outcome reaches the hub even while another screen covers it.
+// -------------------------------------------------------------------
+
+/// Bao selected with a typed note and Save note clicked, with the hub mounted
+/// on `app`'s context so it can be moved behind another screen.
+fn hub_saving_a_note(
+    app: &egui_kittest::Harness<'static, dash_evo_tool::app::AppState>,
+) -> (HubHarness, Identifier, BackendTaskContext) {
+    let app_context = app.state().current_app_context().clone();
+    let (mut hub, owner) = hub_with_bao_selected(&app_context, WIDE, None);
+    note_editor(&hub).focus();
+    hub.run();
+    note_editor(&hub).type_text("Met at the meetup");
+    hub.run();
+    hub.get_by_role_and_label(Role::Button, SAVE_NOTE_LABEL)
+        .click();
+    hub.run_steps(2);
+    let context = hub
+        .state()
+        .1
+        .iter()
+        .find_map(|action| match action {
+            AppAction::BackendTask(task @ BackendTask::DashPayTask(inner))
+                if matches!(**inner, DashPayTask::UpdateContactInfo { .. }) =>
+            {
+                Some(BackendTaskContext::from(task))
+            }
+            _ => None,
+        })
+        .expect("Save note dispatched the write");
+    assert!(hub.query_by_label(SAVING_NOTE_LABEL).is_some());
+    hub.state_mut().1.clear();
+    (hub, owner, context)
+}
+
+fn contact_info_failure(
+    owner: Identifier,
+    source: dash_evo_tool::backend_task::error::TaskError,
+) -> dash_evo_tool::backend_task::error::TaskError {
+    dash_evo_tool::backend_task::error::TaskError::DashPayContactInfoActionFailed {
+        identity_id: owner,
+        contact_id: Identifier::from(CONTACT),
+        source: Box::new(source),
+    }
+}
+
+#[test]
+fn a_note_saved_behind_another_screen_is_settled_on_return() {
+    with_isolated_data_dir(|| {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let _guard = runtime.enter();
+        let mut app =
+            crate::support::mount_app(dash_evo_tool::ui::RootScreenType::RootScreenWalletsBalances);
+        let (mut hub, owner, context) = hub_saving_a_note(&app);
+
+        crate::identity_hub::loads::receive_task_results_behind_the_send_screen(
+            &runtime,
+            &mut app,
+            &mut hub,
+            vec![dash_evo_tool::app::TaskResult::Success {
+                context,
+                result: Box::new(BackendTaskSuccessResult::DashPayContactInfoUpdated {
+                    identity: owner,
+                    contact_id: Identifier::from(CONTACT),
+                }),
+            }],
+        );
+        hub.run_steps(2);
+
+        assert!(
+            hub.query_by_label(SAVING_NOTE_LABEL).is_none(),
+            "a save that finished behind another screen must not stay Saving…"
+        );
+        hub.get_by_role_and_label(Role::Button, SAVE_NOTE_LABEL)
+            .click();
+        hub.run_steps(2);
+        assert!(saved_notes(&hub).is_empty(), "the saved note is not dirty");
+    });
+}
+
+#[test]
+fn a_note_save_that_failed_behind_another_screen_can_be_retried() {
+    with_isolated_data_dir(|| {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let _guard = runtime.enter();
+        let mut app =
+            crate::support::mount_app(dash_evo_tool::ui::RootScreenType::RootScreenWalletsBalances);
+        let (mut hub, owner, context) = hub_saving_a_note(&app);
+
+        crate::identity_hub::loads::receive_task_results_behind_the_send_screen(
+            &runtime,
+            &mut app,
+            &mut hub,
+            vec![dash_evo_tool::app::TaskResult::Error {
+                context,
+                error: contact_info_failure(
+                    owner,
+                    dash_evo_tool::backend_task::error::TaskError::WalletLocked,
+                ),
+            }],
+        );
+        hub.run_steps(2);
+
+        hub.get_by_role_and_label(Role::Button, SAVE_NOTE_LABEL)
+            .click();
+        hub.run_steps(2);
+        assert_eq!(
+            saved_notes(&hub).len(),
+            1,
+            "a failed save releases its guard, so the kept note can be saved again"
+        );
+    });
+}
+
+#[test]
+fn unreadable_details_found_behind_another_screen_still_ask_first() {
+    use dash_evo_tool::backend_task::error::{ContactInfoReadError, TaskError};
+    with_isolated_data_dir(|| {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let _guard = runtime.enter();
+        let mut app =
+            crate::support::mount_app(dash_evo_tool::ui::RootScreenType::RootScreenWalletsBalances);
+        let (mut hub, owner, context) = hub_saving_a_note(&app);
+
+        crate::identity_hub::loads::receive_task_results_behind_the_send_screen(
+            &runtime,
+            &mut app,
+            &mut hub,
+            vec![dash_evo_tool::app::TaskResult::Error {
+                context,
+                error: contact_info_failure(
+                    owner,
+                    TaskError::DashPayContactInfoRead {
+                        source: ContactInfoReadError::DeserializeFailed,
+                    },
+                ),
+            }],
+        );
+        hub.run_steps(2);
+
+        assert!(
+            hub.query_by_label("Save note and replace saved details?")
+                .is_some(),
+            "the overwrite question must be asked once the hub is back in view"
+        );
+    });
+}

@@ -394,6 +394,27 @@ impl IdentityHubScreen {
         true
     }
 
+    /// Settle a failed direct contact details write: ask before overwriting
+    /// unreadable details, otherwise drop the pending write and release its
+    /// guard. Returns whether the hub took over telling the user.
+    pub(crate) fn handle_contact_info_error(&mut self, error: &TaskError) -> bool {
+        if !matches!(error, TaskError::DashPayContactInfoActionFailed { .. }) {
+            return false;
+        }
+        if let Some(key) = contact_info_read_error_key(error)
+            && self.pending_contact_info_tasks.contains_key(&key)
+        {
+            self.contacts_state.invalidate();
+            self.queue_contact_info_confirmation(key);
+            return true;
+        }
+        if let Some(key) = contact_info_error_key(error) {
+            self.pending_contact_info_tasks.remove(&key);
+        }
+        release_contact_info_write_for_error(&mut self.contacts_state, error);
+        false
+    }
+
     /// Show all User identities, clearing the selected wallet filter.
     pub(crate) fn open_picker(&mut self) {
         self.app_context.set_selected_hd_wallet(None);
@@ -823,7 +844,8 @@ impl ScreenLike for IdentityHubScreen {
                     identity_id: *identity,
                     contact_id: *contact_id,
                 };
-                self.contacts_state.finish_note_save(identity, contact_id);
+                self.contacts_state
+                    .finish_contact_info_write(identity, contact_id);
                 if let Some(task) = self.pending_contact_info_tasks.remove(&key) {
                     self.contacts_state.invalidate();
                     MessageBanner::set_global(
@@ -897,19 +919,10 @@ impl ScreenLike for IdentityHubScreen {
                 Some(key) if self.pending_contact_info_tasks.contains_key(&key)
             );
         }
-        if let Some(key) = contact_info_read_error_key(error)
-            && self.pending_contact_info_tasks.contains_key(&key)
-        {
-            self.contacts_state.invalidate();
-            self.queue_contact_info_confirmation(key);
+        if self.handle_contact_info_error(error) {
             return true;
         }
-
-        if let Some(key) = contact_info_error_key(error) {
-            self.pending_contact_info_tasks.remove(&key);
-        }
         release_request_guard_for_error(&mut self.contacts_state, error);
-        release_note_save_for_error(&mut self.contacts_state, error);
 
         // Let AppState render the default error banner — the hub has no
         // other special-case error handling of its own yet.
@@ -929,15 +942,18 @@ fn release_request_guard_for_error(state: &mut super::contacts::ContactsState, e
     }
 }
 
-/// Release the note-save guard a failed direct contactInfo write names.
-fn release_note_save_for_error(state: &mut super::contacts::ContactsState, error: &TaskError) {
+/// Release the write guard a failed direct contactInfo write names.
+fn release_contact_info_write_for_error(
+    state: &mut super::contacts::ContactsState,
+    error: &TaskError,
+) {
     if let TaskError::DashPayContactInfoActionFailed {
         identity_id,
         contact_id,
         ..
     } = error
     {
-        state.release_note_save(identity_id, contact_id);
+        state.release_contact_info_write(identity_id, contact_id);
     }
 }
 
@@ -953,7 +969,7 @@ fn release_guards_for_abandoned_confirmations<'a>(
             ContactInfoTaskKey::Direct {
                 identity_id,
                 contact_id,
-            } => state.release_note_save(identity_id, contact_id),
+            } => state.release_contact_info_write(identity_id, contact_id),
         }
     }
 }
@@ -2196,7 +2212,7 @@ mod tests {
             }],
         );
 
-        assert!(!state.detail().is_saving(&id(3), &id(4)));
+        assert!(!state.detail().is_writing(&id(3), &id(4)));
         assert!(state.is_in_flight(&id(2)), "unrelated request guards stay");
     }
 
@@ -2218,10 +2234,10 @@ mod tests {
         *state.detail_mut().note_mut(&id(4)).expect("draft") = "Bao".into();
         assert!(state.detail_mut().begin_save(id(3), id(4)).is_some());
 
-        release_note_save_for_error(&mut state, &TaskError::WalletLocked);
-        assert!(state.detail().is_saving(&id(3), &id(4)));
+        release_contact_info_write_for_error(&mut state, &TaskError::WalletLocked);
+        assert!(state.detail().is_writing(&id(3), &id(4)));
 
-        release_note_save_for_error(
+        release_contact_info_write_for_error(
             &mut state,
             &TaskError::DashPayContactInfoActionFailed {
                 identity_id: id(3),
@@ -2229,7 +2245,7 @@ mod tests {
                 source: Box::new(TaskError::WalletLocked),
             },
         );
-        assert!(!state.detail().is_saving(&id(3), &id(4)));
+        assert!(!state.detail().is_writing(&id(3), &id(4)));
     }
 
     #[test]

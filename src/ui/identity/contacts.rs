@@ -62,7 +62,7 @@ pub const SAVING_NOTE_LABEL: &str = "Saving…";
 pub const NOTE_UNCHANGED_TOOLTIP: &str = "There are no changes to save.";
 pub const NOTE_SAVE_TOOLTIP: &str = "Save this note on Dash Platform. Saving costs a small fee.";
 pub const NOTE_SAVED: &str = "Your note is saved.";
-const NOTE_SAVING_TOOLTIP: &str = "Your note is being saved.";
+const NOTE_SAVING_TOOLTIP: &str = "This contact's details are being saved.";
 pub const RECEIVED_HEADING: &str = "Received requests";
 pub const ACTIVE_HEADING_PREFIX: &str = "Active contacts";
 pub const SENT_HEADING: &str = "Sent requests";
@@ -331,6 +331,28 @@ fn dispatch_note_save(state: &mut ContactsState, identity: &QualifiedIdentity) -
         identity.clone(),
         &contact,
         note,
+    ))))
+}
+
+/// Dispatch the unhide of `contact`. Unhiding rewrites the contact's whole
+/// `contactInfo`, so it waits for any other write to that contact to finish.
+fn dispatch_unhide(
+    state: &mut ContactsState,
+    identity: &QualifiedIdentity,
+    contact: &ContactData,
+) -> AppAction {
+    if !state
+        .detail_mut()
+        .begin_visibility_write(identity.identity.id(), contact.identity_id)
+    {
+        return AppAction::None;
+    }
+    // Move the row now; the authoritative reload lands when the broadcast
+    // confirms.
+    state.unhide_contact(&contact.identity_id);
+    AppAction::BackendTask(BackendTask::DashPayTask(Box::new(unhide_task(
+        identity.clone(),
+        contact,
     ))))
 }
 
@@ -675,7 +697,7 @@ fn note_editor(
     let contact_id = contact.identity_id;
     let saving = state
         .detail()
-        .is_saving(&identity.identity.id(), &contact_id);
+        .is_writing(&identity.identity.id(), &contact_id);
     let detail = state.detail_mut();
     let Some(note) = detail.note_mut(&contact_id) else {
         return false;
@@ -924,7 +946,10 @@ fn hidden_section(
     // The clicked contact is cloned out of the list so the unhide can mutate
     // `state` once the read borrow the row loop holds has ended.
     let mut clicked: Option<ContactData> = None;
+    let owner = identity.identity.id();
     for contact in state.hidden_contacts() {
+        // A write to this contact is still running; the unhide waits for it.
+        let busy = state.detail().is_writing(&owner, &contact.identity_id);
         // Unhide is laid out first so a long name is shortened to the room it
         // leaves instead of pushing the button past the content column.
         eframe::egui::Sides::new().shrink_left().truncate().show(
@@ -937,7 +962,10 @@ fn hidden_section(
             },
             |ui| {
                 let unhide = ui
-                    .add(ComponentStyles::secondary_button(UNHIDE_LABEL, dark_mode))
+                    .add_enabled(
+                        !busy,
+                        ComponentStyles::secondary_button(UNHIDE_LABEL, dark_mode),
+                    )
                     .clickable_tooltip(UNHIDE_TOOLTIP);
                 if unhide.clicked() {
                     clicked = Some(contact.clone());
@@ -948,13 +976,7 @@ fn hidden_section(
     }
 
     if let Some(contact) = clicked {
-        // Move the row now; the authoritative reload lands when the broadcast
-        // confirms.
-        state.unhide_contact(&contact.identity_id);
-        action = AppAction::BackendTask(BackendTask::DashPayTask(Box::new(unhide_task(
-            identity.clone(),
-            &contact,
-        ))));
+        action = dispatch_unhide(state, identity, &contact);
     }
 
     action
@@ -1426,7 +1448,7 @@ mod tests {
             update.note,
             crate::model::dashpay::ContactInfoField::Replace(Some("Met at the meetup".into()))
         );
-        assert!(state.detail().is_saving(&id(1), &id(5)));
+        assert!(state.detail().is_writing(&id(1), &id(5)));
         assert_eq!(
             dispatch_note_save(&mut state, &identity),
             AppAction::None,
@@ -1455,12 +1477,74 @@ mod tests {
 
         *state.detail_mut().note_mut(&id(5)).expect("draft") = "a".repeat(256);
         assert_eq!(dispatch_note_save(&mut state, &identity), AppAction::None);
-        assert!(!state.detail().is_saving(&id(1), &id(5)));
+        assert!(!state.detail().is_writing(&id(1), &id(5)));
 
         let mut unselected = ContactsState::default();
         unselected.reconcile_owner(&identity);
         assert_eq!(
             dispatch_note_save(&mut unselected, &identity),
+            AppAction::None
+        );
+    }
+
+    fn hidden_bao() -> ContactData {
+        ContactData {
+            is_hidden: true,
+            ..contact_with_note(None)
+        }
+    }
+
+    /// An unhide and a note save both rewrite the same contactInfo document,
+    /// so they run one at a time: the second would otherwise race the first
+    /// and the hub could not tell which write a result settles.
+    #[test]
+    fn a_note_save_waits_for_a_running_unhide_of_that_contact() {
+        let identity = qualified_identity(id(1));
+        let mut state = ContactsState::default();
+        state.reconcile_owner(&identity);
+        state.record_contacts(vec![hidden_bao()]);
+
+        let (_, contact_id, update) =
+            saved_note(dispatch_unhide(&mut state, &identity, &hidden_bao()));
+        assert_eq!(contact_id, id(5));
+        assert!(!update.display_hidden);
+        assert_eq!(
+            dispatch_unhide(&mut state, &identity, &hidden_bao()),
+            AppAction::None,
+            "a second unhide must not pay for a second write"
+        );
+
+        state.select_contact(&id(5));
+        *state.detail_mut().note_mut(&id(5)).expect("draft") = "Bao".into();
+        assert_eq!(
+            dispatch_note_save(&mut state, &identity),
+            AppAction::None,
+            "the note save must wait for the unhide"
+        );
+
+        assert!(state.finish_contact_info_write(&id(1), &id(5)));
+        assert_eq!(
+            state.selected_contact().and_then(|c| c.note.as_deref()),
+            None,
+            "an unhide stores no note"
+        );
+        assert_ne!(dispatch_note_save(&mut state, &identity), AppAction::None);
+    }
+
+    #[test]
+    fn an_unhide_waits_for_a_running_note_save_of_that_contact() {
+        let identity = qualified_identity(id(1));
+        let mut state = state_with_selected_contact(&identity, None);
+        *state.detail_mut().note_mut(&id(5)).expect("draft") = "Bao".into();
+        assert_ne!(dispatch_note_save(&mut state, &identity), AppAction::None);
+
+        assert_eq!(
+            dispatch_unhide(&mut state, &identity, &hidden_bao()),
+            AppAction::None
+        );
+        state.release_contact_info_write(&id(1), &id(5));
+        assert_ne!(
+            dispatch_unhide(&mut state, &identity, &hidden_bao()),
             AppAction::None
         );
     }

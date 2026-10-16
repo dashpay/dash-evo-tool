@@ -556,7 +556,9 @@ impl ScreenLike for IdentityHubScreen {
                     // windows do not stretch them (wireframes A05/A06/A08).
                     // `.inner` carries the tab's `AppAction` back out.
                     let inner = ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                        ui.set_max_width(super::HUB_CONTENT_MAX_WIDTH);
+                        // `set_max_width` replaces the width rather than
+                        // capping it, so cap at what the window has too.
+                        ui.set_max_width(ui.available_width().min(super::HUB_CONTENT_MAX_WIDTH));
                         let (header_action, header_outcome) = match &selected {
                             Some(identity) => super::home::render_header(
                                 ui,

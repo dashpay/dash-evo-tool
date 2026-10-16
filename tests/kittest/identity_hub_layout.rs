@@ -450,3 +450,43 @@ fn long_hidden_contact_names_stay_within_the_content_width() {
         });
     }
 }
+
+/// A window too narrow for the content width: the hub fits the window instead
+/// of growing past it, and the Profile tab stacks its usernames card under the
+/// form once the tab has less than 760 pt.
+#[test]
+fn a_narrow_window_keeps_the_hub_on_screen_and_stacks_the_profile() {
+    const NARROW: f32 = 900.0;
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let hub = hub_on(&app_context, NARROW, IdentityHubTab::Settings);
+        assert!(
+            NARROW - content_left(&hub) < 760.0,
+            "the tab must have less than 760 pt for this case"
+        );
+
+        for (what, label) in [
+            ("the header's Move to wallet", "Move to wallet"),
+            ("Get another username", "Get another username"),
+        ] {
+            let rect = hub.get_by_role_and_label(Role::Button, label).rect();
+            assert!(
+                rect.right() <= NARROW + EPSILON,
+                "at {NARROW} px, {what} ends at {} past the window",
+                rect.right()
+            );
+        }
+
+        let usernames = hub.get_by_label("Usernames").rect();
+        let form_bottom = hub
+            .query_all_by_role(Role::TextInput)
+            .chain(hub.query_all_by_role(Role::MultilineTextInput))
+            .map(|field| field.rect().bottom())
+            .fold(f32::MIN, f32::max);
+        assert!(
+            usernames.top() > form_bottom,
+            "at {NARROW} px, the usernames card ({usernames:?}) stacks under the form \
+             (ends at {form_bottom})"
+        );
+    });
+}

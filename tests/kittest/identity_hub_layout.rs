@@ -416,6 +416,31 @@ fn long_contact_names_stay_within_the_content_width() {
                 view_profile.left() >= content_left(&hub),
                 "at {width} px, View Profile stays on screen ({view_profile:?})"
             );
+
+            // The name and the handle are shortened to the room the actions
+            // leave, so neither runs under a button.
+            let actions: Vec<egui::Rect> = hub
+                .query_all_by_role(Role::Button)
+                .map(|node| node.rect())
+                .filter(|rect| {
+                    rect.top() >= view_profile.top() - 30.0
+                        && rect.bottom() <= view_profile.bottom() + 30.0
+                })
+                .collect();
+            for text in ["WWWW", "@www"] {
+                let text_rect = hub
+                    .query_all_by_label_contains(text)
+                    .map(|node| node.rect())
+                    .find(|rect| rect.top() >= view_profile.top() - 30.0)
+                    .unwrap_or_else(|| panic!("the contact row shows {text}"));
+                for action in &actions {
+                    assert!(
+                        !text_rect.intersects(*action),
+                        "at {width} px, {text}… ({text_rect:?}) runs under an action \
+                         ({action:?})"
+                    );
+                }
+            }
         });
     }
 }
@@ -447,6 +472,16 @@ fn long_hidden_contact_names_stay_within_the_content_width() {
                 )
                 .rect();
             assert_within_content(&hub, "a hidden contact's Unhide button", unhide, width);
+            let name = hub
+                .query_all_by_label_contains("WWWW")
+                .map(|node| node.rect())
+                .find(|rect| rect.top() >= unhide.top() - 30.0)
+                .expect("the hidden contact is listed");
+            assert!(
+                !name.intersects(unhide),
+                "at {width} px, the hidden contact's name ({name:?}) runs under Unhide \
+                 ({unhide:?})"
+            );
         });
     }
 }

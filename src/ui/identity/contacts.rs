@@ -498,58 +498,58 @@ fn active_section(
             ui.label(RichText::new(NO_SEARCH_MATCH).color(DashColors::text_secondary(dark_mode)));
         } else {
             for contact in matches {
-                ui.horizontal(|ui| {
-                    let label = contact_label(contact);
-                    ui.vertical(|ui| {
-                        ui.label(
-                            RichText::new(&label)
-                                .strong()
-                                .color(DashColors::text_primary(dark_mode)),
-                        );
-                        if let Some(handle) = contact_handle(contact, &label) {
+                let label = contact_label(contact);
+                // The actions are laid out first so a long name or handle is
+                // shortened to the room they leave instead of running under
+                // them; hovering shows the full text.
+                eframe::egui::Sides::new().shrink_left().truncate().show(
+                    ui,
+                    |ui| {
+                        ui.vertical(|ui| {
                             ui.label(
-                                RichText::new(handle)
-                                    .small()
-                                    .color(DashColors::text_secondary(dark_mode)),
+                                RichText::new(&label)
+                                    .strong()
+                                    .color(DashColors::text_primary(dark_mode)),
                             );
-                        }
-                    });
-                    ui.with_layout(
-                        eframe::egui::Layout::right_to_left(eframe::egui::Align::Center),
-                        |ui| {
-                            if pay_available {
-                                let pay = ui
-                                    .add(ComponentStyles::secondary_button(PAY_LABEL, dark_mode))
-                                    .clickable_tooltip("Send Dash to this contact.");
-                                if pay.clicked() {
-                                    action = AppAction::AddScreen(
-                                        ScreenType::DashPaySendPayment(
-                                            identity.clone(),
-                                            contact.identity_id,
-                                        )
-                                        .create_screen(app_context),
-                                    );
-                                }
+                            if let Some(handle) = contact_handle(contact, &label) {
+                                ui.label(
+                                    RichText::new(handle)
+                                        .small()
+                                        .color(DashColors::text_secondary(dark_mode)),
+                                );
                             }
-
-                            let view_profile = ui
-                                .add(ComponentStyles::secondary_button(
-                                    VIEW_PROFILE_LABEL,
-                                    dark_mode,
-                                ))
-                                .clickable_tooltip("View this contact's public profile.");
-                            if view_profile.clicked() {
+                        });
+                    },
+                    |ui| {
+                        if pay_available {
+                            let pay = ui
+                                .add(ComponentStyles::secondary_button(PAY_LABEL, dark_mode))
+                                .clickable_tooltip("Send Dash to this contact.");
+                            if pay.clicked() {
                                 action = AppAction::AddScreen(
-                                    contact_profile_screen_type(
+                                    ScreenType::DashPaySendPayment(
                                         identity.clone(),
                                         contact.identity_id,
                                     )
                                     .create_screen(app_context),
                                 );
                             }
-                        },
-                    );
-                });
+                        }
+
+                        let view_profile = ui
+                            .add(ComponentStyles::secondary_button(
+                                VIEW_PROFILE_LABEL,
+                                dark_mode,
+                            ))
+                            .clickable_tooltip("View this contact's public profile.");
+                        if view_profile.clicked() {
+                            action = AppAction::AddScreen(
+                                contact_profile_screen_type(identity.clone(), contact.identity_id)
+                                    .create_screen(app_context),
+                            );
+                        }
+                    },
+                );
                 ui.add_space(4.0);
             }
         }

@@ -707,6 +707,29 @@ impl PlatformFeeEstimator {
         self.estimate_document_replace_with_size(200)
     }
 
+    /// Estimate the fee for writing a contact's encrypted DashPay `contactInfo`
+    /// document holding a nickname and a private note of the given UTF-8 sizes.
+    /// Creating and replacing the document cost the same here.
+    pub fn estimate_contact_info_write(&self, nickname_bytes: usize, note_bytes: usize) -> u64 {
+        // Document fields: encToUserId (32), the two key indexes (8), and the
+        // id, owner and revision every document carries (72).
+        const FIXED_DOCUMENT_BYTES: usize = 112;
+        // privateData plaintext: version (4), nickname and note length
+        // prefixes (2), hidden flag (1), one accepted account (5).
+        const FIXED_PAYLOAD_BYTES: usize = 12;
+        const AES_BLOCK: usize = 16;
+        let plaintext = FIXED_PAYLOAD_BYTES
+            .saturating_add(nickname_bytes)
+            .saturating_add(note_bytes);
+        // A random IV, then the plaintext PKCS#7-padded to whole blocks.
+        let private_data = AES_BLOCK.saturating_add(
+            (plaintext / AES_BLOCK)
+                .saturating_add(1)
+                .saturating_mul(AES_BLOCK),
+        );
+        self.estimate_document_create_with_size(FIXED_DOCUMENT_BYTES.saturating_add(private_data))
+    }
+
     /// Estimate fee for document transfer.
     /// Transfer updates ownership, minimal storage change.
     pub fn estimate_document_transfer(&self) -> u64 {
@@ -1336,6 +1359,29 @@ pub fn shield_from_balance_fee_headroom(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn contact_info_write_fee_covers_a_document_and_grows_with_the_note() {
+        let estimator = PlatformFeeEstimator::new();
+        let empty = estimator.estimate_contact_info_write(0, 0);
+        assert!(
+            empty >= estimator.estimate_document_create_with_size(0),
+            "a contactInfo write is at least a document write"
+        );
+        let full = estimator.estimate_contact_info_write(0, 255);
+        assert!(full > empty, "a longer note stores more bytes");
+        assert!(
+            estimator.estimate_contact_info_write(10, 255) >= full,
+            "the nickname is stored too"
+        );
+        assert_eq!(
+            PlatformFeeEstimator::with_fee_multiplier(2000).estimate_contact_info_write(0, 255),
+            estimator
+                .estimate_contact_info_write(0, 255)
+                .saturating_mul(2),
+            "the network's fee multiplier applies"
+        );
+    }
 
     #[test]
     fn contest_fee_follows_protocol_version() {

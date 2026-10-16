@@ -3,7 +3,8 @@ use crate::backend_task::dashpay::errors::DashPayError;
 use crate::backend_task::error::{ContactInfoReadError, TaskError};
 use crate::context::AppContext;
 use crate::model::dashpay::{
-    AcceptedAccounts, ContactInfoField, ContactInfoUpdate, UnreadableContactInfoPolicy,
+    AcceptedAccounts, ContactInfoField, ContactInfoUpdate, MAX_CONTACT_NOTE_BYTES,
+    UnreadableContactInfoPolicy,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use aes_gcm::aes::Aes256;
@@ -76,9 +77,11 @@ impl ContactInfoPrivateData {
         if let Some(note) = &self.note {
             let note_bytes = note.as_bytes();
             let note_len = note_bytes.len();
-            if note_len > u8::MAX as usize {
+            if note_len > MAX_CONTACT_NOTE_BYTES {
                 return Err(DashPayError::ContactInfoValidationFailed {
-                    errors: vec![format!("Note too long ({note_len} bytes, max 255)")],
+                    errors: vec![format!(
+                        "Note too long ({note_len} bytes, max {MAX_CONTACT_NOTE_BYTES})"
+                    )],
                 });
             }
             bytes.push(note_len as u8);

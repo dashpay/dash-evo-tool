@@ -139,6 +139,8 @@ fn contacts_tab_follows_an_identity_selected_outside_the_hub() {
                         render_context.resolve_selected_identity().as_ref(),
                         &mut state.0,
                         &mut state.1,
+                        &mut Default::default(),
+                        &mut Vec::new(),
                     );
                 },
                 (ContactsState::default(), profiles),

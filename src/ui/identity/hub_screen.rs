@@ -14,7 +14,7 @@ use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
-use crate::model::dashpay::UnreadableContactInfoPolicy;
+use crate::model::dashpay::{ContactInfoField, UnreadableContactInfoPolicy};
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
@@ -200,7 +200,7 @@ impl IdentityHubScreen {
     }
 
     fn reset_contacts_for_identity_change(&mut self) {
-        release_request_guards_for_abandoned_confirmations(
+        release_guards_for_abandoned_confirmations(
             &mut self.contacts_state,
             self.pending_contact_info_confirmations.iter().chain(
                 self.contact_info_overwrite_dialog
@@ -620,6 +620,8 @@ impl ScreenLike for IdentityHubScreen {
                                 selected.as_ref(),
                                 &mut self.contacts_state,
                                 &mut self.profile_cache,
+                                &mut self.avatar_cache,
+                                &mut self.pending_avatars,
                             ),
                             IdentityHubTab::Activity => {
                                 super::activity::render(ui, &self.app_context)
@@ -676,9 +678,7 @@ impl ScreenLike for IdentityHubScreen {
                     self.contact_info_overwrite_dialog = None;
                 }
                 Some(ConfirmationStatus::Canceled) => {
-                    if let ContactInfoTaskKey::Request(request_id) = key {
-                        self.contacts_state.release_request(&request_id);
-                    }
+                    release_guards_for_abandoned_confirmations(&mut self.contacts_state, [&key]);
                     self.pending_contact_info_tasks.remove(&key);
                     self.contacts_state.invalidate();
                     self.contact_info_overwrite_dialog = None;
@@ -812,9 +812,9 @@ impl ScreenLike for IdentityHubScreen {
                     self.contacts_state.record_contacts(contacts.clone());
                 }
             }
-            // A confirmed contactInfo write — on this tab that is an unhide.
-            // Re-arm the load so the restored contact comes back from the
-            // authoritative list, not just the optimistic local move.
+            // A confirmed contactInfo write — an unhide or a private-note
+            // save. Re-arm the load so the authoritative list replaces the
+            // optimistic local edit.
             BackendTaskSuccessResult::DashPayContactInfoUpdated {
                 identity,
                 contact_id,
@@ -823,11 +823,12 @@ impl ScreenLike for IdentityHubScreen {
                     identity_id: *identity,
                     contact_id: *contact_id,
                 };
-                if self.pending_contact_info_tasks.remove(&key).is_some() {
+                self.contacts_state.finish_note_save(identity, contact_id);
+                if let Some(task) = self.pending_contact_info_tasks.remove(&key) {
                     self.contacts_state.invalidate();
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),
-                        "This contact is back in your list.",
+                        contact_info_saved_message(&task),
                         MessageType::Success,
                     );
                 }
@@ -908,6 +909,7 @@ impl ScreenLike for IdentityHubScreen {
             self.pending_contact_info_tasks.remove(&key);
         }
         release_request_guard_for_error(&mut self.contacts_state, error);
+        release_note_save_for_error(&mut self.contacts_state, error);
 
         // Let AppState render the default error banner — the hub has no
         // other special-case error handling of its own yet.
@@ -927,14 +929,51 @@ fn release_request_guard_for_error(state: &mut super::contacts::ContactsState, e
     }
 }
 
-fn release_request_guards_for_abandoned_confirmations<'a>(
+/// Release the note-save guard a failed direct contactInfo write names.
+fn release_note_save_for_error(state: &mut super::contacts::ContactsState, error: &TaskError) {
+    if let TaskError::DashPayContactInfoActionFailed {
+        identity_id,
+        contact_id,
+        ..
+    } = error
+    {
+        state.release_note_save(identity_id, contact_id);
+    }
+}
+
+/// Release the request and note-save guards of confirmations that will never
+/// be answered: no task is left running for them.
+fn release_guards_for_abandoned_confirmations<'a>(
     state: &mut super::contacts::ContactsState,
     keys: impl IntoIterator<Item = &'a ContactInfoTaskKey>,
 ) {
     for key in keys {
-        if let ContactInfoTaskKey::Request(request_id) = key {
-            state.release_request(request_id);
+        match key {
+            ContactInfoTaskKey::Request(request_id) => state.release_request(request_id),
+            ContactInfoTaskKey::Direct {
+                identity_id,
+                contact_id,
+            } => state.release_note_save(identity_id, contact_id),
         }
+    }
+}
+
+/// Whether a captured contactInfo write is a private-note save rather than an
+/// unhide.
+fn is_note_save(task: &DashPayTask) -> bool {
+    matches!(
+        task,
+        DashPayTask::UpdateContactInfo { update, .. }
+            if matches!(update.note, ContactInfoField::Replace(_))
+    )
+}
+
+/// Success banner for a confirmed direct contactInfo write.
+fn contact_info_saved_message(task: &DashPayTask) -> &'static str {
+    if is_note_save(task) {
+        super::contacts::NOTE_SAVED
+    } else {
+        "This contact is back in your list."
     }
 }
 
@@ -960,6 +999,15 @@ fn contact_info_confirmation_copy(task: &DashPayTask) -> (&'static str, String) 
     use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 
     match task {
+        DashPayTask::UpdateContactInfo { contact_id, .. } if is_note_save(task) => {
+            let contact = shorten_id(&contact_id.to_string(Encoding::Base58));
+            (
+                "Save note and replace saved details?",
+                format!(
+                    "The saved details for contact {contact} cannot be read. Saving this note will clear the contact's saved nickname and accepted-account settings. You cannot undo this change."
+                ),
+            )
+        }
         DashPayTask::UpdateContactInfo { contact_id, .. } => {
             let contact = shorten_id(&contact_id.to_string(Encoding::Base58));
             (
@@ -2057,13 +2105,131 @@ mod tests {
             },
         ];
 
-        release_request_guards_for_abandoned_confirmations(&mut state, &keys);
+        release_guards_for_abandoned_confirmations(&mut state, &keys);
 
         assert!(state.is_in_flight(&id(1)));
         assert!(
             !state.is_in_flight(&id(2)),
             "a discarded confirmation has no running task left to protect"
         );
+    }
+
+    fn contact_info_task(update: crate::model::dashpay::ContactInfoUpdate) -> DashPayTask {
+        DashPayTask::UpdateContactInfo {
+            identity: hub_identity(id(1)),
+            contact_id: id(5),
+            update,
+        }
+    }
+
+    fn hub_identity(identifier: Identifier) -> QualifiedIdentity {
+        QualifiedIdentity {
+            identity: Identity::create_basic_identity(identifier, PlatformVersion::latest())
+                .expect("basic identity"),
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: None,
+            private_keys: KeyStorage::default(),
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: Network::Testnet,
+        }
+    }
+
+    #[test]
+    fn a_saved_note_and_an_unhide_confirm_differently() {
+        use crate::model::dashpay::ContactInfoUpdate;
+
+        let note = contact_info_task(ContactInfoUpdate::note(Some("Bao".into()), false));
+        let unhide = contact_info_task(ContactInfoUpdate::visibility(false));
+        assert!(is_note_save(&note));
+        assert!(!is_note_save(&unhide));
+        assert_eq!(
+            contact_info_saved_message(&note),
+            crate::ui::identity::contacts::NOTE_SAVED
+        );
+        assert_eq!(
+            contact_info_saved_message(&unhide),
+            "This contact is back in your list."
+        );
+
+        let (title, message) = contact_info_confirmation_copy(&note);
+        assert_eq!(title, "Save note and replace saved details?");
+        assert!(
+            message.contains("nickname") && !message.contains("Unhiding"),
+            "the overwrite warning names what a note save clears: {message}"
+        );
+        let (title, _) = contact_info_confirmation_copy(&unhide);
+        assert_eq!(title, "Unhide contact and replace saved details?");
+    }
+
+    #[test]
+    fn abandoning_a_note_save_confirmation_releases_its_guard() {
+        let mut state = ContactsState::default();
+        assert!(state.begin_request(id(2)));
+        state.record_contacts(vec![crate::backend_task::dashpay::ContactData {
+            identity_id: id(4),
+            nickname: None,
+            note: None,
+            is_hidden: false,
+            account_reference: 0,
+            username: None,
+            display_name: None,
+            avatar_url: None,
+            bio: None,
+        }]);
+        state.select_contact(&id(4));
+        *state.detail_mut().note_mut(&id(4)).expect("draft") = "Bao".into();
+        assert!(state.detail_mut().begin_save(id(3), id(4)).is_some());
+
+        release_guards_for_abandoned_confirmations(
+            &mut state,
+            &[ContactInfoTaskKey::Direct {
+                identity_id: id(3),
+                contact_id: id(4),
+            }],
+        );
+
+        assert!(!state.detail().is_saving(&id(3), &id(4)));
+        assert!(state.is_in_flight(&id(2)), "unrelated request guards stay");
+    }
+
+    #[test]
+    fn a_failed_note_save_releases_only_its_own_guard() {
+        let mut state = ContactsState::default();
+        state.record_contacts(vec![crate::backend_task::dashpay::ContactData {
+            identity_id: id(4),
+            nickname: None,
+            note: None,
+            is_hidden: false,
+            account_reference: 0,
+            username: None,
+            display_name: None,
+            avatar_url: None,
+            bio: None,
+        }]);
+        state.select_contact(&id(4));
+        *state.detail_mut().note_mut(&id(4)).expect("draft") = "Bao".into();
+        assert!(state.detail_mut().begin_save(id(3), id(4)).is_some());
+
+        release_note_save_for_error(&mut state, &TaskError::WalletLocked);
+        assert!(state.detail().is_saving(&id(3), &id(4)));
+
+        release_note_save_for_error(
+            &mut state,
+            &TaskError::DashPayContactInfoActionFailed {
+                identity_id: id(3),
+                contact_id: id(4),
+                source: Box::new(TaskError::WalletLocked),
+            },
+        );
+        assert!(!state.detail().is_saving(&id(3), &id(4)));
     }
 
     #[test]

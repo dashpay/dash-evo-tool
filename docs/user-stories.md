@@ -1042,6 +1042,8 @@ As a user, I want to see my contacts and their profiles so that I can manage my 
 
 - Lists all accepted contacts.
 - View individual contact details and profile.
+- In the Identity Hub Contacts tab, selecting a contact shows its picture, name, username, and
+  bio beside the list, or under it on a narrow window.
 
 ### DPY-006: Send payment to contact [Implemented]
 **Persona:** Alex, Priya
@@ -1076,6 +1078,8 @@ As a user, I want to edit contact details (nickname, note, hidden status) so tha
   Contacts tab, and can be unhidden from there — including contacts hidden as a side effect of
   declining or cancelling a request. If another client saved details this app cannot read, the app
   warns that continuing will replace those details and asks for confirmation before unhiding.
+- The Identity Hub contact details edit the private note, which is saved encrypted on Dash
+  Platform; the estimated fee is shown before saving, and the saved note loads with the contact.
 - Changes persist locally.
 
 ### DPY-010: Remove a contact [Gap]

@@ -964,7 +964,7 @@ fn sub_heading(ui: &mut Ui, text: &str, dark_mode: bool) {
     );
 }
 
-fn counter(ui: &mut Ui, count: usize, max: usize, dark_mode: bool) {
+pub(super) fn counter(ui: &mut Ui, count: usize, max: usize, dark_mode: bool) {
     let color = if count > max {
         DashColors::ERROR
     } else {

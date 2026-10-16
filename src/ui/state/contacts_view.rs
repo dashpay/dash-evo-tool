@@ -6,6 +6,7 @@
 //! and paints it. Placement follows the DET module policy: non-widget UI state
 //! belongs in `ui/state/`.
 
+use super::contact_detail_view::ContactDetailState;
 use crate::backend_task::dashpay::ContactData;
 use crate::model::dashpay::contact_request_recipient;
 use crate::model::identity_name::display_label as profile_display_label;
@@ -73,6 +74,8 @@ pub struct ContactsState {
     in_flight: HashMap<Identifier, Instant>,
     /// The identity the lists belong to, once a renderer has bound them.
     owner: Option<(Network, Identifier)>,
+    /// The selected contact and its private-note editor.
+    detail: ContactDetailState,
 }
 
 impl ContactsState {
@@ -96,6 +99,7 @@ impl ContactsState {
         self.hidden.clear();
         self.show_hidden = false;
         self.search.clear();
+        self.detail.reset();
         let now = Instant::now();
         self.in_flight.retain(|_, started| {
             now.saturating_duration_since(*started) < REQUEST_IN_FLIGHT_TIMEOUT
@@ -184,12 +188,18 @@ impl ContactsState {
     /// Store the established-contact list from `DashPayTask::LoadContacts`,
     /// split into the visible contacts and the hidden ones. Hidden contacts stay
     /// out of the active list — that is what "hidden" promises — but remain
-    /// reachable through [`ContactsState::hidden_contacts`].
+    /// reachable through [`ContactsState::hidden_contacts`]. The selected
+    /// contact's note draft follows the reloaded note.
     pub fn record_contacts(&mut self, contacts: Vec<ContactData>) {
         let (hidden, visible) = contacts.into_iter().partition(|c| c.is_hidden);
         self.contacts = visible;
         self.hidden = hidden;
         self.contacts_known = true;
+        if let Some(selected) = self.detail.selected()
+            && let Some(contact) = self.contacts.iter().find(|c| c.identity_id == selected)
+        {
+            self.detail.sync(contact);
+        }
     }
 
     /// Whether the established-contact list has been loaded for this identity.
@@ -286,6 +296,60 @@ impl ContactsState {
     /// Release one request's guard after its matching task reports a failure.
     pub fn release_request(&mut self, request_id: &Identifier) {
         self.in_flight.remove(request_id);
+    }
+
+    /// The identity the lists belong to, once bound.
+    pub fn owner_id(&self) -> Option<Identifier> {
+        self.owner.map(|(_, id)| id)
+    }
+
+    /// Select an active contact for the detail pane. A no-op for a contact
+    /// that is not listed.
+    pub fn select_contact(&mut self, contact_id: &Identifier) {
+        if let Some(contact) = self.contacts.iter().find(|c| c.identity_id == *contact_id) {
+            self.detail.select(contact);
+        }
+    }
+
+    /// The selected contact, while it is still among the active contacts.
+    pub fn selected_contact(&self) -> Option<&ContactData> {
+        let selected = self.detail.selected()?;
+        self.contacts.iter().find(|c| c.identity_id == selected)
+    }
+
+    /// The detail pane's state.
+    pub fn detail(&self) -> &ContactDetailState {
+        &self.detail
+    }
+
+    /// Mutable detail-pane state, for the note editor.
+    pub fn detail_mut(&mut self) -> &mut ContactDetailState {
+        &mut self.detail
+    }
+
+    /// Settle a confirmed note save. Returns whether one was running. The
+    /// listed contact shows the stored note right away when the lists belong to
+    /// `owner`, without waiting for the reload.
+    pub fn finish_note_save(&mut self, owner: &Identifier, contact_id: &Identifier) -> bool {
+        let Some(note) = self.detail.finish_save(owner, contact_id) else {
+            return false;
+        };
+        if self.owner_id() == Some(*owner)
+            && let Some(contact) = self
+                .contacts
+                .iter_mut()
+                .chain(self.hidden.iter_mut())
+                .find(|c| c.identity_id == *contact_id)
+        {
+            contact.note = note;
+            self.detail.sync(contact);
+        }
+        true
+    }
+
+    /// Release a note save that failed or was abandoned.
+    pub fn release_note_save(&mut self, owner: &Identifier, contact_id: &Identifier) {
+        self.detail.release_save(owner, contact_id);
     }
 }
 
@@ -401,6 +465,94 @@ mod tests {
 
         state.reset();
         assert!(state.claim_load(), "reset must re-arm the load");
+    }
+
+    fn owned_state(owner: u8) -> ContactsState {
+        let identity = dash_sdk::dpp::identity::Identity::create_basic_identity(
+            id(owner),
+            dash_sdk::dpp::version::PlatformVersion::latest(),
+        )
+        .expect("basic identity");
+        ContactsState {
+            owner: Some((Network::Testnet, identity.id())),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_selected_contact_follows_the_active_list() {
+        let mut state = ContactsState::default();
+        state.record_contacts(vec![ContactData {
+            note: Some("Met at the meetup".into()),
+            ..contact(Some("Bao"), None, None)
+        }]);
+        assert!(state.selected_contact().is_none());
+
+        state.select_contact(&id(9));
+        assert!(
+            state.selected_contact().is_none(),
+            "an unlisted contact is not selected"
+        );
+
+        state.select_contact(&id(7));
+        assert_eq!(
+            state.selected_contact().and_then(|c| c.nickname.as_deref()),
+            Some("Bao")
+        );
+        assert!(!state.detail().is_dirty(&id(7)));
+
+        state.record_contacts(vec![ContactData {
+            is_hidden: true,
+            ..contact(Some("Bao"), None, None)
+        }]);
+        assert!(
+            state.selected_contact().is_none(),
+            "a contact that left the active list is no longer shown"
+        );
+
+        state.reset();
+        state.record_contacts(vec![contact(Some("Bao"), None, None)]);
+        assert!(
+            state.selected_contact().is_none(),
+            "a tab entry starts unselected"
+        );
+    }
+
+    #[test]
+    fn a_confirmed_note_save_shows_the_stored_note_right_away() {
+        let mut state = owned_state(1);
+        state.record_contacts(vec![contact(Some("Bao"), None, None)]);
+        state.select_contact(&id(7));
+        *state.detail_mut().note_mut(&id(7)).expect("draft") = "Met at the meetup".into();
+        assert!(state.detail_mut().begin_save(id(1), id(7)).is_some());
+
+        assert!(state.finish_note_save(&id(1), &id(7)));
+
+        assert_eq!(
+            state.selected_contact().and_then(|c| c.note.as_deref()),
+            Some("Met at the meetup")
+        );
+        assert!(!state.detail().is_dirty(&id(7)));
+        assert!(
+            !state.finish_note_save(&id(1), &id(7)),
+            "a save settles only once"
+        );
+    }
+
+    #[test]
+    fn a_note_saved_for_another_identity_leaves_these_lists_alone() {
+        let mut state = owned_state(1);
+        state.record_contacts(vec![contact(Some("Bao"), None, None)]);
+        state.select_contact(&id(7));
+        *state.detail_mut().note_mut(&id(7)).expect("draft") = "Theirs".into();
+        assert!(state.detail_mut().begin_save(id(2), id(7)).is_some());
+
+        assert!(state.finish_note_save(&id(2), &id(7)));
+
+        assert_eq!(
+            state.selected_contact().and_then(|c| c.note.as_deref()),
+            None
+        );
     }
 
     #[test]

@@ -535,7 +535,7 @@ impl ScreenLike for IdentityHubScreen {
         let mut rendered_tab: Option<IdentityHubTab> = None;
         action |= island_central_panel(ui, |ui| {
             // Claim the island's full width so its bordered panel reaches the
-            // window edges; the content below stays centered.
+            // window edges; each view lays out its own content inside it.
             ui.set_min_width(ui.available_width());
             match view {
                 HubView::Onboarding => super::onboarding::render(ui, &self.app_context),
@@ -551,9 +551,12 @@ impl ScreenLike for IdentityHubScreen {
                 HubView::Home => {
                     // One roster read per frame serves the header and every tab.
                     let selected = self.app_context.resolve_selected_identity();
-                    // `ui.vertical_centered(...).inner` carries the tab's
-                    // `AppAction` back out.
-                    let inner = ui.vertical_centered(|ui| {
+                    // The header, the tab bar and the tab content share one
+                    // left-aligned column that stops at one width, so wide
+                    // windows do not stretch them (wireframes A05/A06/A08).
+                    // `.inner` carries the tab's `AppAction` back out.
+                    let inner = ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                        ui.set_max_width(super::HUB_CONTENT_MAX_WIDTH);
                         let (header_action, header_outcome) = match &selected {
                             Some(identity) => super::home::render_header(
                                 ui,
@@ -585,58 +588,47 @@ impl ScreenLike for IdentityHubScreen {
                         }
                         ui.add_space(16.0);
                         rendered_tab = Some(self.selected_tab);
-                        // Tab content starts at the tab bar's left edge and
-                        // stops at one shared width, so wide windows do not
-                        // stretch forms and rows (wireframes A05/A06/A08).
-                        let content =
-                            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                                ui.set_max_width(super::HUB_CONTENT_MAX_WIDTH);
-                                match self.selected_tab {
-                                    IdentityHubTab::Home => {
-                                        let (home_action, outcome) = match &selected {
-                                            Some(identity) => super::home::render(
-                                                ui,
-                                                &self.app_context,
-                                                identity,
-                                                &mut self.home_state,
-                                                &mut self.profile_cache,
-                                                &mut self.contacts_state,
-                                            ),
-                                            None => {
-                                                (AppAction::None, super::home::HomeOutcome::None)
-                                            }
-                                        };
-                                        if let Some(next_tab) = super::home::apply_outcome(
-                                            &mut self.home_state,
-                                            outcome,
-                                        ) {
-                                            if next_tab != self.selected_tab {
-                                                self.contacts_state.reset();
-                                            }
-                                            self.selected_tab = next_tab;
-                                            self.settings_tab.focus_section(outcome);
-                                        }
-                                        home_action
-                                    }
-                                    IdentityHubTab::Contacts => super::contacts::render(
+                        let mut tab_action = match self.selected_tab {
+                            IdentityHubTab::Home => {
+                                let (home_action, outcome) = match &selected {
+                                    Some(identity) => super::home::render(
                                         ui,
                                         &self.app_context,
-                                        selected.as_ref(),
+                                        identity,
+                                        &mut self.home_state,
+                                        &mut self.profile_cache,
                                         &mut self.contacts_state,
-                                        &mut self.profile_cache,
                                     ),
-                                    IdentityHubTab::Activity => {
-                                        super::activity::render(ui, &self.app_context)
+                                    None => (AppAction::None, super::home::HomeOutcome::None),
+                                };
+                                if let Some(next_tab) =
+                                    super::home::apply_outcome(&mut self.home_state, outcome)
+                                {
+                                    if next_tab != self.selected_tab {
+                                        self.contacts_state.reset();
                                     }
-                                    IdentityHubTab::Settings => self.settings_tab.render(
-                                        ui,
-                                        &self.app_context,
-                                        selected.as_ref(),
-                                        &mut self.profile_cache,
-                                    ),
+                                    self.selected_tab = next_tab;
+                                    self.settings_tab.focus_section(outcome);
                                 }
-                            });
-                        let mut tab_action = content.inner;
+                                home_action
+                            }
+                            IdentityHubTab::Contacts => super::contacts::render(
+                                ui,
+                                &self.app_context,
+                                selected.as_ref(),
+                                &mut self.contacts_state,
+                                &mut self.profile_cache,
+                            ),
+                            IdentityHubTab::Activity => {
+                                super::activity::render(ui, &self.app_context)
+                            }
+                            IdentityHubTab::Settings => self.settings_tab.render(
+                                ui,
+                                &self.app_context,
+                                selected.as_ref(),
+                                &mut self.profile_cache,
+                            ),
+                        };
                         tab_action |= header_action;
                         tab_action
                     });

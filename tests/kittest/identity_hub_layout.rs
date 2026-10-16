@@ -272,3 +272,28 @@ fn contacts_sections_start_at_the_content_edge_with_one_add_button() {
         });
     }
 }
+
+/// The identity header (avatar, name, balance and its actions) shares the tab
+/// content's column on every tab, instead of spanning a wide window.
+#[test]
+fn header_stays_within_the_content_width_on_every_tab() {
+    for tab in [
+        IdentityHubTab::Home,
+        IdentityHubTab::Contacts,
+        IdentityHubTab::Settings,
+    ] {
+        with_isolated_data_dir(|| {
+            let (_runtime, app_context) = fresh_app_context();
+            let hub = hub_on(&app_context, 2000.0, tab);
+            let move_to_wallet = hub
+                .get_by_role_and_label(Role::Button, "Move to wallet")
+                .rect();
+            assert_within_content(
+                &hub,
+                &format!("the header's Move to wallet on {tab:?}"),
+                move_to_wallet,
+                2000.0,
+            );
+        });
+    }
+}

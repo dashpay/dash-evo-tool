@@ -714,13 +714,8 @@ impl PlatformFeeEstimator {
         // Document fields: encToUserId (32), the two key indexes (8), and the
         // id, owner and revision every document carries (72).
         const FIXED_DOCUMENT_BYTES: usize = 112;
-        // privateData plaintext: version (4), nickname and note length
-        // prefixes (2), hidden flag (1), one accepted account (5).
-        const FIXED_PAYLOAD_BYTES: usize = 12;
         const AES_BLOCK: usize = 16;
-        let plaintext = FIXED_PAYLOAD_BYTES
-            .saturating_add(nickname_bytes)
-            .saturating_add(note_bytes);
+        let plaintext = Self::contact_info_plaintext_bytes(nickname_bytes, note_bytes);
         // A random IV, then the plaintext PKCS#7-padded to whole blocks.
         let private_data = AES_BLOCK.saturating_add(
             (plaintext / AES_BLOCK)
@@ -728,6 +723,22 @@ impl PlatformFeeEstimator {
                 .saturating_mul(AES_BLOCK),
         );
         self.estimate_document_create_with_size(FIXED_DOCUMENT_BYTES.saturating_add(private_data))
+    }
+
+    /// Size of a contact's DIP-15 `contactInfo` private data before
+    /// encryption, with one accepted account.
+    pub fn contact_info_plaintext_bytes(nickname_bytes: usize, note_bytes: usize) -> usize {
+        // Version (4), hidden flag (1), one accepted account with its count (5).
+        const FIXED_PAYLOAD_BYTES: usize = 10;
+        // Short payloads are zero-padded so the encrypted field meets the
+        // contract's 48-byte minimum.
+        const MIN_PLAINTEXT_BYTES: usize = 17;
+        // A CompactSize length prefix: one byte below 253, three up to 65535.
+        let prefixed = |len: usize| len.saturating_add(if len < 0xFD { 1 } else { 3 });
+        FIXED_PAYLOAD_BYTES
+            .saturating_add(prefixed(nickname_bytes))
+            .saturating_add(prefixed(note_bytes))
+            .max(MIN_PLAINTEXT_BYTES)
     }
 
     /// Estimate fee for document transfer.

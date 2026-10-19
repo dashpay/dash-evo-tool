@@ -627,7 +627,13 @@ impl ScreenLike for IdentityHubScreen {
                                 if let Some(next_tab) =
                                     super::home::apply_outcome(&mut self.home_state, outcome)
                                 {
-                                    if next_tab != self.selected_tab {
+                                    if let super::home::HomeOutcome::GoToContact(contact_id) =
+                                        outcome
+                                    {
+                                        self.contacts_state.search_mut().clear();
+                                        self.contacts_state.select_contact(&contact_id);
+                                        self.contacts_state.invalidate();
+                                    } else if next_tab != self.selected_tab {
                                         self.contacts_state.reset();
                                     }
                                     self.selected_tab = next_tab;

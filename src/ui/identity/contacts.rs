@@ -664,8 +664,7 @@ fn detail_pane(
 
         if FeatureGate::DashPayOperations.is_available(app_context) {
             ui.add_space(8.0);
-            let pay = ui
-                .add(ComponentStyles::secondary_button(PAY_LABEL, dark_mode))
+            let pay = ComponentStyles::add_secondary_button(ui, PAY_LABEL, dark_mode)
                 .clickable_tooltip("Send Dash to this contact.");
             if pay.clicked() {
                 action = pay_action(app_context, identity, contact.identity_id);
@@ -1146,10 +1145,6 @@ fn contact_handle(contact: &ContactData, label: &str) -> Option<String> {
     (handle != label && username != label).then_some(handle)
 }
 
-fn contact_profile_screen_type(identity: QualifiedIdentity, contact_id: Identifier) -> ScreenType {
-    ScreenType::DashPayContactProfileViewer(identity, contact_id)
-}
-
 /// Compact Home preview; request actions share the Contacts tab's paid-action guards.
 pub(super) fn render_preview(
     ui: &mut Ui,
@@ -1183,10 +1178,7 @@ pub(super) fn render_preview(
         }
         for contact in state.matching_contacts().take(6) {
             if ui.button(contact_label(contact)).clicked() {
-                action = AppAction::AddScreen(
-                    contact_profile_screen_type(identity.clone(), contact.identity_id)
-                        .create_screen(app_context),
-                );
+                *outcome = super::home::HomeOutcome::GoToContact(contact.identity_id);
             }
         }
         if state.contacts_len() == 0 && state.incoming().is_empty() {
@@ -1641,17 +1633,6 @@ mod tests {
             contacts_button_kind(ContactsButton::GateSetUpProfile),
             ContactsButtonKind::SwitchHubTab(super::super::IdentityHubTab::Settings),
         );
-    }
-
-    #[test]
-    fn contact_profile_action_targets_the_working_viewer_and_selected_contact() {
-        let identity = qualified_identity(id(1));
-
-        assert!(matches!(
-            contact_profile_screen_type(identity, id(2)),
-            ScreenType::DashPayContactProfileViewer(owner, contact_id)
-                if owner.identity.id() == id(1) && contact_id == id(2)
-        ));
     }
 
     // ---------------------------------------------------------------

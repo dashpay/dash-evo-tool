@@ -1737,6 +1737,7 @@ As Alex, when I have one identity, opening Identities shows me my balance, usern
 - Move to wallet uses the same form, restricted to receiving addresses of loaded wallets. Arbitrary destinations remain available through Send.
 - Receive shares the username or identity ID and its QR code; it does not create or send a payment.
 - Setup and actual recent contact payments appear beside a contacts/request preview, stacking on narrow windows. Empty payment history and the unfinished Activity tab are hidden. Pending username requests and their outcomes remain visible.
+- Selecting a contact in Home's preview opens Contacts with that person's profile and private note selected in Contact details. The selection stays visible while the list refreshes.
 - Technical identity details and keys are available from Profile → Advanced or the summary's menu.
 
 ### IDH-003: Multi-identity switching [Implemented]

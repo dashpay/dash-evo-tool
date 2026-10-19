@@ -76,6 +76,81 @@ fn note_editor(hub: &HubHarness) -> egui_kittest::Node<'_> {
     hub.get_by_role(Role::MultilineTextInput)
 }
 
+#[test]
+fn home_contact_opens_contacts_with_selected_details() {
+    for width in [WIDE, NARROW] {
+        with_isolated_data_dir(|| {
+            let (_runtime, app_context) = fresh_app_context();
+            let owner = seed_identity_with_usernames(&app_context);
+            let mut hub = hub_for(
+                &app_context,
+                owner,
+                width,
+                IdentityHubTab::Home,
+                |hub, owner| deliver(hub, owner, bao(Some("Met at the meetup"))),
+            );
+            hub.state_mut().1.clear();
+            hub.get_by_role_and_label(Role::Button, "Bao Nguyen")
+                .click();
+            hub.run_steps(4);
+
+            assert_eq!(hub.state().0.selected_tab(), IdentityHubTab::Contacts);
+            assert!(hub.query_by_label(DETAIL_HEADING).is_some());
+            assert!(hub.query_by_label("Coffee and code.").is_some());
+            assert_eq!(
+                note_editor(&hub).value().as_deref(),
+                Some("Met at the meetup")
+            );
+            assert!(
+                hub.state()
+                    .1
+                    .iter()
+                    .all(|action| !matches!(action, AppAction::AddScreen(_)))
+            );
+
+            deliver(&mut hub, owner, bao(Some("Updated note")));
+            hub.run_steps(4);
+            assert_eq!(note_editor(&hub).value().as_deref(), Some("Updated note"));
+        });
+    }
+}
+
+#[test]
+fn contact_details_pay_label_is_centered() {
+    fn pay_text(shape: &egui::Shape, button: egui::Rect) -> Option<egui::Rect> {
+        match shape {
+            egui::Shape::Text(text) if text.galley.text() == "Pay" => {
+                let rect = text.visual_bounding_rect();
+                button.contains(rect.center()).then_some(rect)
+            }
+            egui::Shape::Vec(shapes) => shapes.iter().find_map(|shape| pay_text(shape, button)),
+            _ => None,
+        }
+    }
+
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        app_context.set_user_role(dash_evo_tool::model::user_role::UserRole::Power);
+        let (hub, _) = hub_with_bao_selected(&app_context, WIDE, None);
+        let heading = hub.get_by_label(DETAIL_HEADING).rect();
+        let button = hub
+            .query_all_by_role_and_label(Role::Button, "Pay")
+            .map(|node| node.rect())
+            .find(|rect| rect.left() >= heading.left() - EPSILON && rect.top() > heading.bottom())
+            .expect("Pay in the contact detail pane");
+        let text = hub
+            .output()
+            .shapes
+            .iter()
+            .find_map(|shape| pay_text(&shape.shape, button))
+            .expect("painted Pay label");
+        assert!(
+            (text.center().x - button.center().x).abs() <= 1.5,
+            "Pay must be centered: text {text:?}, button {button:?}"
+        );
+    });
+}
+
 /// The note writes the Save note click dispatched.
 fn saved_notes(hub: &HubHarness) -> Vec<(Identifier, ContactInfoField<Option<String>>)> {
     hub.state()

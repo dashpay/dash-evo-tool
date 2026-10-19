@@ -22,17 +22,17 @@ pub fn validate_account_label(label: &str) -> Result<(), TextLengthError> {
     validate_char_count(label, 0, MAX_ACCOUNT_LABEL_CHARS)
 }
 
-/// Most bytes a contact's private note can hold. Its encrypted `contactInfo`
-/// payload stores the note's length in a single byte.
+/// Application limit for a contact's private note, in UTF-8 bytes.
+/// The encrypted `contactInfo` payload encodes its length with CompactSize.
 pub const MAX_CONTACT_NOTE_BYTES: usize = u8::MAX as usize;
 
-/// A private contact note is longer than its encrypted payload can store.
+/// A private contact note exceeds the application's size limit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("This note is too long. Shorten it to save it.")]
 pub struct ContactNoteTooLong {
     /// Size of the note in UTF-8 bytes.
     pub bytes: usize,
-    /// Largest size the payload accepts.
+    /// Largest note size the application accepts.
     pub max: usize,
 }
 

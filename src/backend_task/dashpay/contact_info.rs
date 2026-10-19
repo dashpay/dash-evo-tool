@@ -3,8 +3,8 @@ use crate::backend_task::dashpay::errors::DashPayError;
 use crate::backend_task::error::{ContactInfoReadError, TaskError};
 use crate::context::AppContext;
 use crate::model::dashpay::{
-    AcceptedAccounts, ContactInfoField, ContactInfoUpdate, MAX_CONTACT_NOTE_BYTES,
-    UnreadableContactInfoPolicy,
+    AcceptedAccounts, ContactInfoField, ContactInfoUpdate, UnreadableContactInfoPolicy,
+    validate_contact_note,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use aes_gcm::aes::Aes256;
@@ -54,29 +54,23 @@ impl ContactInfoPrivateData {
 
     /// Encode for encryption with platform-wallet's DIP-15 codec, so every
     /// client that uses it reads what this one writes.
-    pub fn serialize(&self) -> Result<Vec<u8>, DashPayError> {
+    pub fn serialize(&self) -> Result<Vec<u8>, TaskError> {
         let alias_len = self.alias_name.as_deref().map_or(0, str::len);
         if alias_len > u8::MAX as usize {
             return Err(DashPayError::ContactInfoValidationFailed {
                 errors: vec![format!("Nickname too long ({alias_len} bytes, max 255)")],
-            });
+            }
+            .into());
         }
-        let note_len = self.note.as_deref().map_or(0, str::len);
-        if note_len > MAX_CONTACT_NOTE_BYTES {
-            return Err(DashPayError::ContactInfoValidationFailed {
-                errors: vec![format!(
-                    "Note too long ({note_len} bytes, max {MAX_CONTACT_NOTE_BYTES})"
-                )],
-            });
-        }
+        validate_contact_note(self.note.as_deref().unwrap_or_default())?;
         encode_private_data_bounded(&UpstreamPrivateData {
             alias_name: self.alias_name.clone(),
             note: self.note.clone(),
             display_hidden: self.display_hidden,
             accepted_accounts: self.accepted_accounts.clone(),
         })
-        .map_err(|e| DashPayError::ContactInfoValidationFailed {
-            errors: vec![e.to_string()],
+        .map_err(|source| TaskError::DashPayContactInfoEncoding {
+            source: Box::new(source),
         })
     }
 
@@ -554,8 +548,8 @@ pub(super) async fn contact_info_is_hidden(
 /// identity has none yet and replacing it otherwise.
 ///
 /// The document is written whole, so `update` explicitly chooses which fields
-/// are preserved and which fields are replaced. Nicknames, notes, and account
-/// lists are each limited to 255 bytes/items by the v0 encoding.
+/// are preserved and which fields are replaced. Nicknames and notes are limited
+/// to 255 UTF-8 bytes; the encoded payload must also fit the contract size limit.
 ///
 /// # Errors
 ///

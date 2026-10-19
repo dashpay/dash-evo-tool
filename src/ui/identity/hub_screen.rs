@@ -551,14 +551,9 @@ impl ScreenLike for IdentityHubScreen {
                 HubView::Home => {
                     // One roster read per frame serves the header and every tab.
                     let selected = self.app_context.resolve_selected_identity();
-                    // The header, the tab bar and the tab content share one
-                    // left-aligned column that stops at one width, so wide
-                    // windows do not stretch them (wireframes A05/A06/A08).
-                    // `.inner` carries the tab's `AppAction` back out.
+                    // Share the island's available width across the header and
+                    // tabs; each tab handles its own responsive columns.
                     let inner = ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                        // `set_max_width` replaces the width rather than
-                        // capping it, so cap at what the window has too.
-                        ui.set_max_width(ui.available_width().min(super::HUB_CONTENT_MAX_WIDTH));
                         let (header_action, header_outcome) = match &selected {
                             Some(identity) => super::home::render_header(
                                 ui,

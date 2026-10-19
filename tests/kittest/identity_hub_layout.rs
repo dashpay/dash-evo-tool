@@ -1,8 +1,8 @@
 //! Identity hub layout on ordinary and wide windows.
 //!
 //! The hub tabs follow the 2026-09-22 identities wireframes (A05 Home, A06
-//! Contacts, A08 Profile): content starts at the tab bar's left edge and never
-//! grows past one shared content width, however wide the window is.
+//! Contacts, A08 Profile): content starts at the tab bar's left edge and grows
+//! with the available window width, while narrow layouts stay on screen.
 
 use crate::identity_home::key;
 use crate::support::{fresh_app_context, with_isolated_data_dir};
@@ -16,7 +16,7 @@ use dash_evo_tool::model::qualified_identity::{
     DPNSNameInfo, IdentityStatus, IdentityType, QualifiedIdentity,
 };
 use dash_evo_tool::ui::ScreenLike;
-use dash_evo_tool::ui::identity::{HUB_CONTENT_MAX_WIDTH, IdentityHubScreen, IdentityHubTab};
+use dash_evo_tool::ui::identity::{IdentityHubScreen, IdentityHubTab};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{Identity, Purpose};
@@ -202,7 +202,8 @@ fn content_left(hub: &HubHarness) -> f32 {
 }
 
 fn assert_within_content(hub: &HubHarness, what: &str, rect: egui::Rect, width: f32) {
-    let limit = content_left(hub) + HUB_CONTENT_MAX_WIDTH + EPSILON;
+    assert!(rect.left() >= content_left(hub) - EPSILON);
+    let limit = width + EPSILON;
     assert!(
         rect.right() <= limit,
         "at {width} px, {what} ends at {} but the content ends at {limit}",
@@ -249,8 +250,8 @@ fn profile_keeps_the_form_and_the_usernames_card_side_by_side() {
                 .get_by_role_and_label(Role::Button, "Get another username")
                 .rect();
             assert!(
-                another.width() <= 420.0,
-                "at {width} px, Get another username must stay card-sized, is {}",
+                another.width() < (width - content_left(&hub)) / 2.0,
+                "at {width} px, Get another username must fit the right column, is {}",
                 another.width()
             );
             assert_within_content(&hub, "the usernames card", another, width);
@@ -311,28 +312,42 @@ fn contacts_sections_start_at_the_content_edge_with_one_add_button() {
     }
 }
 
-/// The identity header (avatar, name, balance and its actions) shares the tab
-/// content's column on every tab, instead of spanning a wide window.
+/// Both the header and tab content expand when the user widens the window.
 #[test]
-fn header_stays_within_the_content_width_on_every_tab() {
-    for tab in [
-        IdentityHubTab::Home,
-        IdentityHubTab::Contacts,
-        IdentityHubTab::Settings,
+fn header_and_tabs_expand_with_the_window() {
+    for (tab, content_label) in [
+        (IdentityHubTab::Home, "Add contact"),
+        (
+            IdentityHubTab::Contacts,
+            dash_evo_tool::ui::identity::contacts::VIEW_PROFILE_LABEL,
+        ),
+        (IdentityHubTab::Settings, "Get another username"),
     ] {
-        with_isolated_data_dir(|| {
-            let (_runtime, app_context) = fresh_app_context();
-            let hub = hub_on(&app_context, 2000.0, tab);
-            let move_to_wallet = hub
-                .get_by_role_and_label(Role::Button, "Move to wallet")
-                .rect();
-            assert_within_content(
-                &hub,
-                &format!("the header's Move to wallet on {tab:?}"),
-                move_to_wallet,
-                2000.0,
-            );
-        });
+        let mut edges = Vec::new();
+        for width in WIDTHS {
+            with_isolated_data_dir(|| {
+                let (_runtime, app_context) = fresh_app_context();
+                let hub = hub_on(&app_context, width, tab);
+                let header = hub
+                    .get_by_role_and_label(Role::Button, "Move to wallet")
+                    .rect();
+                let content = hub
+                    .get_by_role_and_label(Role::Button, content_label)
+                    .rect();
+                assert_within_content(&hub, "Move to wallet", header, width);
+                assert_within_content(&hub, content_label, content, width);
+                edges.push((header.right(), content.right()));
+            });
+        }
+        let growth = WIDTHS[1] - WIDTHS[0];
+        assert!(
+            edges[1].0 - edges[0].0 > growth * 0.9,
+            "{tab:?}'s header must use the added window width: {edges:?}"
+        );
+        assert!(
+            edges[1].1 - edges[0].1 > growth * 0.5,
+            "{tab:?}'s content must expand with the window: {edges:?}"
+        );
     }
 }
 

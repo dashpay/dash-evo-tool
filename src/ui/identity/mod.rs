@@ -65,12 +65,6 @@ pub mod withdraw_screen;
 pub use hub_screen::IdentityHubScreen;
 pub use tabs::IdentityHubTab;
 
-/// Widest the content of an identity hub tab grows, in points. Matches the
-/// content area of the identities wireframes (A05 Home, A06 Contacts, A08
-/// Profile); wider windows leave the space to the right empty instead of
-/// stretching forms, columns and rows.
-pub const HUB_CONTENT_MAX_WIDTH: f32 = 1040.0;
-
 /// Confirmation shown once an identity is removed from this device.
 pub const IDENTITY_REMOVED: &str = "The identity was removed from this device.";
 

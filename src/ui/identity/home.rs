@@ -92,47 +92,59 @@ pub fn render_header(
                     ui.add(
                         egui::Label::new(RichText::new(&heading).size(20.0).strong()).truncate(),
                     );
-                    ui.horizontal_wrapped(|ui| {
-                        if names.is_empty()
-                            && let Some(request) = requests.iter().find(|r| r.phase.is_pending())
-                        {
-                            if ui.link(format!("@{}", request.label)).clicked() {
+                    let username_action_size = egui::vec2(24.0, 24.0);
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(ui.available_width(), username_action_size.y),
+                        egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
+                        |ui| {
+                            ui.spacing_mut().button_padding = egui::vec2(Spacing::XS, Spacing::XXS);
+                            if names.is_empty()
+                                && let Some(request) =
+                                    requests.iter().find(|r| r.phase.is_pending())
+                            {
+                                if ui.link(format!("@{}", request.label)).clicked() {
+                                    outcome = HomeOutcome::GoToUsernames;
+                                }
+                                ui.label(super::username_copy::phase_label(request.phase));
+                            } else if names.is_empty() {
+                                ui.label(
+                                    RichText::new("No username yet")
+                                        .color(DashColors::text_secondary(dark)),
+                                );
+                            } else {
+                                ui.label(
+                                    names.iter().take(3).cloned().collect::<Vec<_>>().join(", "),
+                                );
+                            }
+                            if names.len() > 3
+                                && ui
+                                    .add(
+                                        ComponentStyles::secondary_button("…", dark)
+                                            .min_size(username_action_size),
+                                    )
+                                    .clickable_tooltip("View all usernames.")
+                                    .clicked()
+                            {
                                 outcome = HomeOutcome::GoToUsernames;
                             }
-                            ui.label(super::username_copy::phase_label(request.phase));
-                        } else if names.is_empty() {
-                            ui.label(
-                                RichText::new("No username yet")
-                                    .color(DashColors::text_secondary(dark)),
-                            );
-                        } else {
-                            ui.label(names.iter().take(3).cloned().collect::<Vec<_>>().join(", "));
-                        }
-                        if names.len() > 3
-                            && ui
-                                .button("…")
-                                .on_hover_text("View all usernames.")
-                                .clicked()
-                        {
-                            outcome = HomeOutcome::GoToUsernames;
-                        }
-                        let add = ui
-                            .add(
-                                ComponentStyles::secondary_button("+", dark)
-                                    .min_size(egui::vec2(28.0, 28.0)),
-                            )
-                            .on_hover_text("Get another username.");
-                        add.widget_info(|| {
-                            egui::WidgetInfo::labeled(
-                                egui::WidgetType::Button,
-                                true,
-                                "Add username",
-                            )
-                        });
-                        if add.clicked() {
-                            action = register_action_for(app_context, identity.identity.id());
-                        }
-                    });
+                            let add = ui
+                                .add(
+                                    ComponentStyles::secondary_button("+", dark)
+                                        .min_size(username_action_size),
+                                )
+                                .clickable_tooltip("Get another username.");
+                            add.widget_info(|| {
+                                egui::WidgetInfo::labeled(
+                                    egui::WidgetType::Button,
+                                    true,
+                                    "Add username",
+                                )
+                            });
+                            if add.clicked() {
+                                action = register_action_for(app_context, identity.identity.id());
+                            }
+                        },
+                    );
                 },
             );
             if wide {

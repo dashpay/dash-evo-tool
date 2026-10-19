@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use dash_sdk::dpp::identity::TimestampMillis;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use egui::{RichText, Ui};
+use egui::{Align, Layout, RichText, Sides, Ui};
 
 use crate::app::AppAction;
 use crate::backend_task::identity::IdentityTask;
@@ -17,6 +17,7 @@ use crate::model::dpns_usernames::{
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::legacy_recovery_section::host_offer;
+use crate::ui::components::pill;
 use crate::ui::components::qr_code_image::QrCodeImage;
 use crate::ui::identity::register_dpns_name_screen::{RegisterDpnsNameSource, status_line};
 use crate::ui::identity::username_copy::{
@@ -26,7 +27,7 @@ use crate::ui::identity::username_copy::{
 };
 use crate::ui::masternodes::KeyVocabulary;
 use crate::ui::state::legacy_recovery::LegacyRecoveryState;
-use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Spacing};
 use crate::ui::{RootScreenType, ScreenType};
 
 /// One row of the card, in display order.
@@ -45,6 +46,16 @@ pub enum UsernameRow {
     Pending(UsernameRequest),
     /// A request that ended without the name, kept for 30 days.
     Outcome(UsernameRequest),
+}
+
+/// A username in bold, shortened with "…" to the room left on its line less
+/// `reserve` (points kept for what follows it). Hovering shows the full name.
+fn name_label(ui: &mut Ui, text: &str, reserve: f32) {
+    let width = (ui.available_width() - reserve).max(0.0);
+    ui.scope(|ui| {
+        ui.set_max_width(width);
+        ui.add(egui::Label::new(RichText::new(text).strong()).truncate());
+    });
 }
 
 fn same_name(a: &str, b: &str) -> bool {
@@ -219,6 +230,24 @@ pub struct UsernamesCard {
     recovery: Option<(dash_sdk::platform::Identifier, LegacyRecoveryState)>,
 }
 
+/// Which register button the card offers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GetUsername {
+    /// The identity has no username yet.
+    First,
+    /// The identity already has at least one username.
+    Another,
+}
+
+impl GetUsername {
+    fn label(self) -> &'static str {
+        match self {
+            Self::First => "Get a username",
+            Self::Another => "Get another username",
+        }
+    }
+}
+
 impl UsernamesCard {
     /// Render the card for `identity`; returns any navigation the user asked for.
     pub fn show(
@@ -240,7 +269,7 @@ impl UsernamesCard {
                 "This identity has no username yet. A username lets people pay you as @name instead of a long address.",
             );
             ui.add_space(6.0);
-            action |= self.get_username_button(ui, app_context, identity, hint, "Get a username");
+            action |= self.get_username_button(ui, app_context, identity, hint, GetUsername::First);
             return action;
         }
 
@@ -253,38 +282,47 @@ impl UsernamesCard {
                     show_main_badge,
                     acquired_at,
                 } => {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(format!("@{name}")).strong());
-                        if is_main && show_main_badge {
-                            crate::ui::components::pill::accent_pill(
-                                ui,
-                                "Main",
-                                DashColors::DASH_BLUE,
-                                None,
-                            );
-                        }
-                        ui.menu_button("•••", |ui| {
-                            if ui.button("Copy username").clicked() {
-                                ui.ctx().copy_text(format!("@{name}"));
-                                ui.close();
+                    let badge = is_main && show_main_badge;
+                    // The row's actions sit at the card's right edge, as in
+                    // the A08 wireframe; they are laid out first so a long name
+                    // is shortened to the room they and the badge leave.
+                    Sides::new().shrink_left().truncate().show(
+                        ui,
+                        |ui| {
+                            let badge_room = if badge {
+                                pill::accent_pill_width(ui, "Main") + ui.spacing().item_spacing.x
+                            } else {
+                                0.0
+                            };
+                            name_label(ui, &format!("@{name}"), badge_room);
+                            if badge {
+                                pill::accent_pill(ui, "Main", DashColors::DASH_BLUE, None);
                             }
-                            if ui.button("Show QR code").clicked() {
-                                self.open_qr(&name);
-                                ui.close();
-                            }
-                            if !is_main && ui.button("Show as main").clicked() {
-                                action = AppAction::BackendTask(BackendTask::IdentityTask(
-                                    IdentityTask::SetMainUsername {
-                                        identity_id,
-                                        name: name.clone(),
-                                    },
-                                ));
-                                ui.close();
-                            }
-                        })
-                        .response
-                        .clickable_tooltip(format!("More actions for @{name}"));
-                    });
+                        },
+                        |ui| {
+                            ui.menu_button("•••", |ui| {
+                                if ui.button("Copy username").clicked() {
+                                    ui.ctx().copy_text(format!("@{name}"));
+                                    ui.close();
+                                }
+                                if ui.button("Show QR code").clicked() {
+                                    self.open_qr(&name);
+                                    ui.close();
+                                }
+                                if !is_main && ui.button("Show as main").clicked() {
+                                    action = AppAction::BackendTask(BackendTask::IdentityTask(
+                                        IdentityTask::SetMainUsername {
+                                            identity_id,
+                                            name: name.clone(),
+                                        },
+                                    ));
+                                    ui.close();
+                                }
+                            })
+                            .response
+                            .clickable_tooltip(format!("More actions for @{name}"));
+                        },
+                    );
                     if acquired_at > 0 {
                         ui.label(
                             RichText::new(registered_on_line(acquired_at))
@@ -294,13 +332,16 @@ impl UsernamesCard {
                     }
                 }
                 UsernameRow::Pending(request) => {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(format!("@{}", request.label)).strong());
-                        status_line(ui, Tone::Caution, phase_label(request.phase), dark_mode);
-                        if ui.button("View status").clicked() {
-                            action = request_status_action(app_context, identity, &request);
-                        }
-                    });
+                    Sides::new().shrink_left().truncate().show(
+                        ui,
+                        |ui| name_label(ui, &format!("@{}", request.label), 0.0),
+                        |ui| {
+                            if ui.button("View status").clicked() {
+                                action = request_status_action(app_context, identity, &request);
+                            }
+                            status_line(ui, Tone::Caution, phase_label(request.phase), dark_mode);
+                        },
+                    );
                     if let Some(detail) =
                         pending_request_detail(request.phase, request.join_end, request.end)
                     {
@@ -312,10 +353,11 @@ impl UsernamesCard {
                     }
                 }
                 UsernameRow::Outcome(request) => {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(format!("@{}", request.label)).strong());
-                        status_line(ui, Tone::Negative, phase_label(request.phase), dark_mode);
-                    });
+                    Sides::new().shrink_left().truncate().show(
+                        ui,
+                        |ui| name_label(ui, &format!("@{}", request.label), 0.0),
+                        |ui| status_line(ui, Tone::Negative, phase_label(request.phase), dark_mode),
+                    );
                     ui.label(
                         RichText::new(finished_request_detail(request.phase, request.decided_at))
                             .small()
@@ -340,8 +382,10 @@ impl UsernamesCard {
             }
         }
 
-        ui.add_space(10.0);
-        action |= self.get_username_button(ui, app_context, identity, hint, "Get another username");
+        ui.add_space(Spacing::SM);
+        ui.separator();
+        ui.add_space(Spacing::SM);
+        action |= self.get_username_button(ui, app_context, identity, hint, GetUsername::Another);
         ui.label(
             RichText::new("Each username is a separate payment from this identity's balance.")
                 .small()
@@ -408,10 +452,27 @@ impl UsernamesCard {
         app_context: &Arc<AppContext>,
         identity: &QualifiedIdentity,
         hint: Option<KeyHint>,
-        label: &str,
+        kind: GetUsername,
     ) -> AppAction {
         let mut action = AppAction::None;
-        let button = ComponentStyles::add_primary_button_enabled(ui, hint.is_none(), label);
+        let dark_mode = ui.style().visuals.dark_mode;
+        // The first username is the card's call to action; another one is a
+        // secondary, card-wide button below the list (A08).
+        let button = match kind {
+            GetUsername::First => {
+                ComponentStyles::add_primary_button_enabled(ui, hint.is_none(), kind.label())
+            }
+            GetUsername::Another => {
+                ui.with_layout(Layout::top_down_justified(Align::Min), |ui| {
+                    if hint.is_none() {
+                        ComponentStyles::add_secondary_button(ui, kind.label(), dark_mode)
+                    } else {
+                        ComponentStyles::add_primary_button_enabled(ui, false, kind.label())
+                    }
+                })
+                .inner
+            }
+        };
         let Some(hint) = hint else {
             if button.clicked() {
                 action = register_action(app_context, identity);

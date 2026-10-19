@@ -540,7 +540,7 @@ impl ScreenLike for IdentityHubScreen {
         let mut rendered_tab: Option<IdentityHubTab> = None;
         action |= island_central_panel(ui, |ui| {
             // Claim the island's full width so its bordered panel reaches the
-            // window edges; the content below stays centered.
+            // window edges; each view lays out its own content inside it.
             ui.set_min_width(ui.available_width());
             match view {
                 HubView::Onboarding => super::onboarding::render(ui, &self.app_context),
@@ -556,9 +556,9 @@ impl ScreenLike for IdentityHubScreen {
                 HubView::Home => {
                     // One roster read per frame serves the header and every tab.
                     let selected = self.app_context.resolve_selected_identity();
-                    // `ui.vertical_centered(...).inner` carries the tab's
-                    // `AppAction` back out.
-                    let inner = ui.vertical_centered(|ui| {
+                    // Share the island's available width across the header and
+                    // tabs; each tab handles its own responsive columns.
+                    let inner = ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
                         let (header_action, header_outcome) = match &selected {
                             Some(identity) => super::home::render_header(
                                 ui,

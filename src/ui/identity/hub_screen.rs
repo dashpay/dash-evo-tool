@@ -534,6 +534,11 @@ impl ScreenLike for IdentityHubScreen {
         for identity in &frame_identities {
             self.profile_cache.seed_cached(&self.app_context, identity);
         }
+        // A profile load sent before the masternode list synced (right after
+        // start-up) failed; ask for it again now that the network is ready.
+        if self.app_context.connection_status().masternodes_ready() {
+            self.profile_cache.retry_after_sync();
+        }
         let view = if self.selection.picker_override()
             || self.app_context.selected_wallet_hash().is_some() && frame_identities.is_empty()
         {
@@ -572,14 +577,9 @@ impl ScreenLike for IdentityHubScreen {
                 HubView::Home => {
                     // One roster read per frame serves the header and every tab.
                     let selected = self.app_context.resolve_selected_identity();
-                    // The header, the tab bar and the tab content share one
-                    // left-aligned column that stops at one width, so wide
-                    // windows do not stretch them (wireframes A05/A06/A08).
-                    // `.inner` carries the tab's `AppAction` back out.
+                    // Share the island's available width across the header and
+                    // tabs; each tab handles its own responsive columns.
                     let inner = ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                        // `set_max_width` replaces the width rather than
-                        // capping it, so cap at what the window has too.
-                        ui.set_max_width(ui.available_width().min(super::HUB_CONTENT_MAX_WIDTH));
                         let (header_action, header_outcome) = match &selected {
                             Some(identity) => super::home::render_header(
                                 ui,
@@ -899,8 +899,12 @@ impl ScreenLike for IdentityHubScreen {
         }
     }
 
-    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
-        self.profile_cache.record_error(context);
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
+        if matches!(error, TaskError::MasternodeListNotReady { .. }) {
+            self.profile_cache.record_error_while_syncing(context);
+        } else {
+            self.profile_cache.record_error(context);
+        }
         self.settings_tab.clear_pending_save(context);
         if let Some(offer) = self.settings_tab.usernames_card_mut().recovery_mut() {
             offer.absorb_error(context);
@@ -1328,6 +1332,65 @@ mod tests {
             .insert_local_qualified_identity(&qualified_identity, &None)
             .expect("seed identity");
         identity_id
+    }
+
+    /// Right after the app starts, the network's masternode list is not synced
+    /// yet, so the first profile load fails. The hub must ask for the profile
+    /// again once the list is ready, instead of leaving the identity without
+    /// its profile until the user loads it again by hand.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn profile_load_failed_while_syncing_is_retried_once_the_network_is_ready() {
+        let (_dir, context) = wired_test_context().await;
+        let owner = seed_user_identity(&context, 0x5A);
+        context.set_selected_identity(Some(owner));
+        context.connection_status().set_masternodes_ready(false);
+
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 1000.0))
+            .build_ui_state(
+                |ui, state: &mut (IdentityHubScreen, Vec<BackendTaskContext>)| {
+                    if let AppAction::BackendTaskWithContext {
+                        task: BackendTask::DashPayTask(task),
+                        context,
+                    } = state.0.ui(ui)
+                        && matches!(*task, DashPayTask::LoadProfile { .. })
+                    {
+                        state.1.push(context);
+                    }
+                },
+                (IdentityHubScreen::new(&context), Vec::new()),
+            );
+        harness.run_steps(4);
+        let first_load = {
+            let loads = &harness.state().1;
+            assert_eq!(loads.len(), 1, "the hub asks for the profile once");
+            loads[0].clone()
+        };
+
+        harness.state_mut().0.display_backend_task_error(
+            &first_load,
+            &TaskError::MasternodeListNotReady {
+                source_error: Box::new(dash_sdk::Error::Generic(
+                    "masternode list not yet synced".into(),
+                )),
+            },
+        );
+        harness.run_steps(4);
+        assert_eq!(
+            harness.state().1.len(),
+            1,
+            "no new load while the masternode list is still syncing"
+        );
+
+        context.connection_status().set_masternodes_ready(true);
+        harness.run_steps(4);
+        assert_eq!(
+            harness.state().1.len(),
+            2,
+            "the profile is asked for again once the masternode list is ready"
+        );
+        harness.run_steps(4);
+        assert_eq!(harness.state().1.len(), 2, "and only once");
     }
 
     /// On an updated install the hub sends the Usernames card's check of the

@@ -371,9 +371,22 @@ impl ContactsState {
         true
     }
 
-    /// Release a contact details write that failed or was abandoned.
+    /// Release a failed or abandoned write, rolling back an optimistic unhide.
     pub fn release_contact_info_write(&mut self, owner: &Identifier, contact_id: &Identifier) {
-        self.detail.release_write(owner, contact_id);
+        if self.detail.finish_write(owner, contact_id) == Some(PendingWrite::Visibility)
+            && self.owner_id() == Some(*owner)
+        {
+            if let Some(pos) = self
+                .contacts
+                .iter()
+                .position(|c| c.identity_id == *contact_id)
+            {
+                let mut contact = self.contacts.remove(pos);
+                contact.is_hidden = true;
+                self.hidden.push(contact);
+            }
+            self.invalidate();
+        }
     }
 }
 
@@ -725,6 +738,28 @@ mod tests {
             !unhidden.is_hidden,
             "the moved contact must no longer be flagged hidden"
         );
+    }
+
+    #[test]
+    fn contact_info_failed_unhide_restores_only_the_owning_contacts() {
+        let mut state = owned_state(1);
+        state.record_contacts(vec![hidden_contact("Ghost", id(8))]);
+        assert!(state.detail_mut().begin_visibility_write(id(1), id(8)));
+        state.unhide_contact(&id(8));
+        state.select_contact(&id(8));
+        state.release_contact_info_write(&id(2), &id(8));
+        assert_eq!(
+            state.contacts_len(),
+            1,
+            "another owner's failure cannot move this row"
+        );
+        state.release_contact_info_write(&id(1), &id(8));
+        assert_eq!(state.contacts_len(), 0);
+        assert_eq!(state.hidden_contacts().len(), 1);
+        assert!(state.hidden_contacts()[0].is_hidden);
+        assert!(state.selected_contact().is_none());
+        assert!(!state.detail().is_writing(&id(1), &id(8)));
+        assert!(state.detail_mut().begin_visibility_write(id(1), id(8)));
     }
 
     #[test]

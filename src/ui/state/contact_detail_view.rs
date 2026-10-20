@@ -6,11 +6,6 @@
 use crate::backend_task::dashpay::ContactData;
 use dash_sdk::platform::Identifier;
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
-
-/// Age after which a contact details write that never reported back stops
-/// blocking the next one, pruned on the next view reset.
-const WRITE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 /// A contact details write still running. Each rewrites the contact's whole
 /// `contactInfo` document, so a contact has at most one at a time.
@@ -38,7 +33,7 @@ pub struct ContactDetailState {
     /// Contact details writes still running, keyed by owner identity and
     /// contact. Each is paid for, so the next write to that contact waits until
     /// its result lands.
-    writes: HashMap<(Identifier, Identifier), (PendingWrite, Instant)>,
+    writes: HashMap<(Identifier, Identifier), PendingWrite>,
 }
 
 /// The note as it is stored: surrounding whitespace dropped, and an empty note
@@ -79,14 +74,10 @@ impl ContactDetailState {
         self.selected
     }
 
-    /// Drop the selection and the draft, keeping the guards of saves still
-    /// running and pruning those that never reported back.
+    /// Drop the selection and draft, retaining write guards until their tasks finish.
     pub fn reset(&mut self) {
         self.selected = None;
         self.draft = None;
-        let now = Instant::now();
-        self.writes
-            .retain(|_, (_, started)| now.saturating_duration_since(*started) < WRITE_TIMEOUT);
     }
 
     /// Follow a fresh copy of the selected contact. The draft restarts from the
@@ -166,7 +157,7 @@ impl ContactDetailState {
         if self.writes.contains_key(&key) {
             return false;
         }
-        self.writes.insert(key, (write, Instant::now()));
+        self.writes.insert(key, write);
         true
     }
 
@@ -181,9 +172,7 @@ impl ContactDetailState {
         owner: &Identifier,
         contact_id: &Identifier,
     ) -> Option<PendingWrite> {
-        self.writes
-            .remove(&(*owner, *contact_id))
-            .map(|(write, _)| write)
+        self.writes.remove(&(*owner, *contact_id))
     }
 
     /// Release a write that failed or was abandoned; the draft is kept.
@@ -345,6 +334,28 @@ mod tests {
         assert_eq!(state.begin_save(id(1), id(5)), None);
         state.select(&contact(6, None));
         assert_eq!(state.begin_save(id(1), id(5)), None);
+    }
+
+    #[test]
+    fn contact_info_running_write_survives_resets_until_its_own_result() {
+        let mut state = ContactDetailState::default();
+        state.select(&contact(5, None));
+        *state.note_mut(&id(5)).expect("draft") = "First note".into();
+        assert!(state.begin_save(id(1), id(5)).is_some());
+
+        state.reset();
+        state.select(&contact(5, None));
+        *state.note_mut(&id(5)).expect("draft") = "Second note".into();
+        assert_eq!(state.begin_save(id(1), id(5)), None);
+        assert!(!state.begin_visibility_write(id(1), id(5)));
+        assert_eq!(
+            state.finish_write(&id(1), &id(5)),
+            Some(PendingWrite::Note(Some("First note".into())))
+        );
+        assert_eq!(
+            state.begin_save(id(1), id(5)),
+            Some(Some("Second note".into()))
+        );
     }
 
     #[test]

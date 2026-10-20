@@ -78,7 +78,7 @@ impl ContactInfoPrivateData {
     ///
     /// Returns `None` for a truncated or non-canonical v0 payload, invalid
     /// UTF-8, or an unsupported version. The only accepted trailing bytes are
-    /// padding up to [`Self::MIN_PLAINTEXT_SIZE`] that starts with a zero.
+    /// zero padding up to [`Self::MIN_PLAINTEXT_SIZE`].
     /// Stricter than platform-wallet's reader: a write must never drop fields
     /// it cannot read.
     pub fn deserialize(bytes: &[u8]) -> Option<Self> {
@@ -139,7 +139,8 @@ impl ContactInfoPrivateData {
             .collect::<Option<Vec<u32>>>()?;
 
         if pos < bytes.len()
-            && (bytes.len() > Self::MIN_PLAINTEXT_SIZE || bytes.get(pos) != Some(&0))
+            && (bytes.len() > Self::MIN_PLAINTEXT_SIZE
+                || bytes[pos..].iter().any(|byte| *byte != 0))
         {
             return None;
         }
@@ -567,10 +568,33 @@ pub async fn create_or_update_contact_info(
     contact_user_id: Identifier,
     update: ContactInfoUpdate,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
+    let write_guard = app_context
+        .contact_info_writes
+        .acquire(identity.identity.id())
+        .await;
+    create_or_update_contact_info_locked(
+        app_context,
+        sdk,
+        identity,
+        contact_user_id,
+        update,
+        &write_guard,
+    )
+    .await
+}
+
+/// Write while the caller holds the owner's lock across its reads and decisions.
+/// Request actions acquire their request lock before this owner lock.
+pub(super) async fn create_or_update_contact_info_locked(
+    app_context: &Arc<AppContext>,
+    sdk: &Sdk,
+    identity: QualifiedIdentity,
+    contact_user_id: Identifier,
+    update: ContactInfoUpdate,
+    _write_guard: &tokio::sync::OwnedMutexGuard<()>,
+) -> Result<BackendTaskSuccessResult, TaskError> {
     let dashpay_contract = app_context.dashpay_contract.clone();
     let identity_id = identity.identity.id();
-    // Every direct, legacy, decline and cancel writer enters through this seam.
-    let _write = app_context.contact_info_writes.acquire(identity_id).await;
     let lookup = lookup_contact_info(app_context, sdk, &identity, contact_user_id).await?;
     let (found_existing_doc, derivation_index, enc_user_id_key, private_data_key) =
         match lookup.existing {
@@ -1275,6 +1299,24 @@ mod tests {
         bytes.push(42);
 
         assert!(ContactInfoPrivateData::deserialize(&bytes).is_none());
+    }
+
+    #[test]
+    fn contact_info_padding_rejects_nonzero_bytes_after_the_sentinel() {
+        let canonical = ContactInfoPrivateData::new()
+            .serialize()
+            .expect("serialize");
+        for length in [16, ContactInfoPrivateData::MIN_PLAINTEXT_SIZE] {
+            assert!(ContactInfoPrivateData::deserialize(&canonical[..length]).is_some());
+            for offset in 9..length {
+                let mut malformed = canonical[..length].to_vec();
+                malformed[offset] = 42;
+                assert!(
+                    ContactInfoPrivateData::deserialize(&malformed).is_none(),
+                    "nonzero padding at {offset} in {length} bytes must require confirmation"
+                );
+            }
+        }
     }
 
     #[test]

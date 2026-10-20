@@ -542,3 +542,83 @@ fn unreadable_details_found_behind_another_screen_still_ask_first() {
         );
     });
 }
+
+#[test]
+fn failed_unhide_behind_another_screen_restores_the_hidden_row() {
+    use dash_evo_tool::backend_task::error::TaskError;
+    use dash_evo_tool::ui::identity::contacts::{SHOW_HIDDEN_LABEL, UNHIDE_LABEL};
+    for bare_error in [false, true] {
+        with_isolated_data_dir(|| {
+            let runtime = tokio::runtime::Runtime::new().expect("runtime");
+            let _guard = runtime.enter();
+            let mut app = crate::support::mount_app(
+                dash_evo_tool::ui::RootScreenType::RootScreenWalletsBalances,
+            );
+            let app_context = app.state().current_app_context().clone();
+            let owner = seed_identity_with_usernames(&app_context);
+            let mut hub = hub_for(
+                &app_context,
+                owner,
+                WIDE,
+                IdentityHubTab::Contacts,
+                |hub, owner| {
+                    let mut contact = bao(None);
+                    contact.is_hidden = true;
+                    deliver(hub, owner, contact);
+                },
+            );
+            hub.get_by_label(&format!("{SHOW_HIDDEN_LABEL} · 1"))
+                .click();
+            hub.run_steps(2);
+            hub.get_by_role_and_label(Role::Button, UNHIDE_LABEL)
+                .click();
+            hub.run_steps(2);
+            let context = hub
+                .state()
+                .1
+                .iter()
+                .find_map(|action| match action {
+                    AppAction::BackendTask(task @ BackendTask::DashPayTask(inner))
+                        if matches!(**inner, DashPayTask::UpdateContactInfo { .. }) =>
+                    {
+                        Some(BackendTaskContext::from(task))
+                    }
+                    _ => None,
+                })
+                .expect("Unhide dispatched a write");
+            assert!(
+                hub.query_by_role_and_label(Role::Button, "Bao Nguyen")
+                    .is_some()
+            );
+            crate::identity_hub::loads::receive_task_results_behind_the_send_screen(
+                &runtime,
+                &mut app,
+                &mut hub,
+                vec![dash_evo_tool::app::TaskResult::Error {
+                    context,
+                    error: if bare_error {
+                        TaskError::WalletLocked
+                    } else {
+                        contact_info_failure(owner, TaskError::WalletLocked)
+                    },
+                }],
+            );
+            hub.run_steps(2);
+            assert!(
+                hub.query_by_role_and_label(Role::Button, "Bao Nguyen")
+                    .is_none(),
+                "a failed unhide must not leave an active contact"
+            );
+            hub.state_mut().1.clear();
+            hub.get_by_role_and_label(Role::Button, UNHIDE_LABEL)
+                .click();
+            hub.run_steps(2);
+            assert!(
+                hub.state().1.iter().any(|action| matches!(action,
+                AppAction::BackendTask(BackendTask::DashPayTask(task))
+                    if matches!(**task, DashPayTask::UpdateContactInfo { .. }))),
+                "the restored hidden row permits a retry"
+            );
+        });
+    }
+}

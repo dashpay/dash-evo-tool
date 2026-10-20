@@ -1079,8 +1079,10 @@ As a user, I want to edit contact details (nickname, note, hidden status) so tha
   declining or cancelling a request. If another client saved details this app cannot read, the app
   warns that continuing will replace those details and asks for confirmation before unhiding.
 - The Identity Hub contact details edit the private note, which is saved encrypted on Dash
-  Platform; the estimated fee is shown before saving, and the saved note loads with the contact.
-- Changes persist locally.
+  Platform; a conservative fee estimate is shown before saving, and the saved note loads with
+  the contact from the network. Hub notes are not copied to the local memo: offline views and
+  legacy DashPay screens can continue to show an older local note.
+- Edits made through the legacy contact-details screen persist in its local memo.
 
 ### DPY-010: Remove a contact [Gap]
 **Persona:** Alex, Priya

@@ -349,6 +349,11 @@ pub enum BackendTaskContext {
     TokenBalanceRefresh,
     /// A DashPay social-profile update for one identity.
     DashPayProfileUpdate(Identifier),
+    /// A direct contact-details write, including failures before its handler runs.
+    DashPayContactInfoUpdate {
+        identity_id: Identifier,
+        contact_id: Identifier,
+    },
     /// A top-up of one identity's balance.
     IdentityTopUp(Identifier),
     /// A perpetual-reward estimate for one identity-token pair.
@@ -513,6 +518,17 @@ impl BackendTaskContext {
         matches!(self.operation(), Self::FetchDocumentsPage(_))
     }
 
+    /// Identify the direct contact write through dispatch wrappers.
+    pub(crate) fn dashpay_contact_info_target(&self) -> Option<(Identifier, Identifier)> {
+        match self.operation() {
+            Self::DashPayContactInfoUpdate {
+                identity_id,
+                contact_id,
+            } => Some((*identity_id, *contact_id)),
+            _ => None,
+        }
+    }
+
     pub(crate) fn dashpay_profile_update_identity(&self) -> Option<Identifier> {
         match self.operation() {
             Self::DashPayProfileUpdate(identity_id) => Some(*identity_id),
@@ -638,6 +654,14 @@ impl From<&BackendTask> for BackendTaskContext {
                 DashPayTask::UpdateProfile { identity, .. } => {
                     Self::DashPayProfileUpdate(identity.identity.id())
                 }
+                DashPayTask::UpdateContactInfo {
+                    identity,
+                    contact_id,
+                    ..
+                } => Self::DashPayContactInfoUpdate {
+                    identity_id: identity.identity.id(),
+                    contact_id: *contact_id,
+                },
                 _ => Self::Other,
             },
             BackendTask::IdentityTask(IdentityTask::CheckLegacyRecovery { identity_id }) => {
@@ -1330,7 +1354,14 @@ impl AppContext {
             // other init error is a transient deferral the cold-boot bridge
             // retries.
             if is_terminal_storage_open_error(&e) {
-                return Err(e);
+                return Err(match dashpay_contact_info_target(&task) {
+                    Some((identity_id, contact_id)) => TaskError::DashPayContactInfoActionFailed {
+                        identity_id,
+                        contact_id,
+                        source: Box::new(e),
+                    },
+                    None => e,
+                });
             }
             tracing::warn!(error = %e, "Wallet backend initialization deferred");
         }
@@ -2520,7 +2551,7 @@ mod tests {
                 BackendTask::DashPayTask(Box::new(DashPayTask::UpdateContactInfo {
                     identity: owner,
                     contact_id,
-                    update: crate::model::dashpay::ContactInfoUpdate::note(None, false),
+                    update: crate::model::dashpay::ContactInfoUpdate::note(None),
                 })),
                 SenderAsync::new(tx, ctx.egui_ctx().clone()),
             )

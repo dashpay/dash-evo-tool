@@ -321,7 +321,9 @@ pub fn validate_contact_info_field_sizes(
     }
 
     // Validate privateData (48-2048 bytes)
-    if private_data.len() < 48 || private_data.len() > 2048 {
+    if private_data.len() < 48
+        || private_data.len() > crate::model::dashpay::MAX_CONTACT_INFO_ENCRYPTED_BYTES
+    {
         validation.add_error(format!(
             "privateData must be 48-2048 bytes, got {}",
             private_data.len()

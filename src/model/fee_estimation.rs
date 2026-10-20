@@ -707,38 +707,14 @@ impl PlatformFeeEstimator {
         self.estimate_document_replace_with_size(200)
     }
 
-    /// Estimate the fee for writing a contact's encrypted DashPay `contactInfo`
-    /// document holding a nickname and a private note of the given UTF-8 sizes.
-    /// Creating and replacing the document cost the same here.
-    pub fn estimate_contact_info_write(&self, nickname_bytes: usize, note_bytes: usize) -> u64 {
-        // Document fields: encToUserId (32), the two key indexes (8), and the
-        // id, owner and revision every document carries (72).
+    /// Conservative fee estimate for a contact-info write, including all preserved
+    /// accounts. The UI does not have their count, so use the contract payload limit.
+    pub fn estimate_contact_info_write(&self) -> u64 {
+        // encToUserId (32), key indexes (8), document ID, owner and revision (72).
         const FIXED_DOCUMENT_BYTES: usize = 112;
-        const AES_BLOCK: usize = 16;
-        let plaintext = Self::contact_info_plaintext_bytes(nickname_bytes, note_bytes);
-        // A random IV, then the plaintext PKCS#7-padded to whole blocks.
-        let private_data = AES_BLOCK.saturating_add(
-            (plaintext / AES_BLOCK)
-                .saturating_add(1)
-                .saturating_mul(AES_BLOCK),
-        );
-        self.estimate_document_create_with_size(FIXED_DOCUMENT_BYTES.saturating_add(private_data))
-    }
-
-    /// Size of a contact's DIP-15 `contactInfo` private data before
-    /// encryption, with one accepted account.
-    pub fn contact_info_plaintext_bytes(nickname_bytes: usize, note_bytes: usize) -> usize {
-        // Version (4), hidden flag (1), one accepted account with its count (5).
-        const FIXED_PAYLOAD_BYTES: usize = 10;
-        // Short payloads are zero-padded so the encrypted field meets the
-        // contract's 48-byte minimum.
-        const MIN_PLAINTEXT_BYTES: usize = 17;
-        // A CompactSize length prefix: one byte below 253, three up to 65535.
-        let prefixed = |len: usize| len.saturating_add(if len < 0xFD { 1 } else { 3 });
-        FIXED_PAYLOAD_BYTES
-            .saturating_add(prefixed(nickname_bytes))
-            .saturating_add(prefixed(note_bytes))
-            .max(MIN_PLAINTEXT_BYTES)
+        self.estimate_document_create_with_size(
+            FIXED_DOCUMENT_BYTES + crate::model::dashpay::MAX_CONTACT_INFO_ENCRYPTED_BYTES,
+        )
     }
 
     /// Estimate fee for document transfer.
@@ -1372,25 +1348,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn contact_info_write_fee_covers_a_document_and_grows_with_the_note() {
+    fn contact_info_write_fee_covers_the_contract_limit_and_fee_multiplier() {
         let estimator = PlatformFeeEstimator::new();
-        let empty = estimator.estimate_contact_info_write(0, 0);
-        assert!(
-            empty >= estimator.estimate_document_create_with_size(0),
-            "a contactInfo write is at least a document write"
-        );
-        let full = estimator.estimate_contact_info_write(0, 255);
-        assert!(full > empty, "a longer note stores more bytes");
-        assert!(
-            estimator.estimate_contact_info_write(10, 255) >= full,
-            "the nickname is stored too"
+        assert_eq!(
+            estimator.estimate_contact_info_write(),
+            estimator.estimate_document_create_with_size(112 + 2048),
         );
         assert_eq!(
-            PlatformFeeEstimator::with_fee_multiplier(2000).estimate_contact_info_write(0, 255),
-            estimator
-                .estimate_contact_info_write(0, 255)
-                .saturating_mul(2),
-            "the network's fee multiplier applies"
+            PlatformFeeEstimator::with_fee_multiplier(2000).estimate_contact_info_write(),
+            estimator.estimate_contact_info_write().saturating_mul(2),
         );
     }
 

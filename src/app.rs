@@ -802,6 +802,46 @@ mod backend_task_join_tests {
     }
 
     #[tokio::test]
+    async fn contact_info_join_failures_keep_the_dispatched_owner_and_contact() {
+        use crate::backend_task::dashpay::DashPayTask;
+        use crate::context::test_support::bare_user_identity;
+        use crate::model::dashpay::ContactInfoUpdate;
+        let owner = Identifier::from([0x42; 32]);
+        let contact = Identifier::from([0x43; 32]);
+        let task = BackendTask::DashPayTask(Box::new(DashPayTask::UpdateContactInfo {
+            identity: bare_user_identity(owner, Network::Testnet),
+            contact_id: contact,
+            update: ContactInfoUpdate::note(Some("Saved".into())),
+        }));
+        for cancel in [false, true] {
+            let context = BackendTaskContext::for_dispatch_on(&task, Network::Testnet);
+            let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+            let handle = tokio::spawn(async move {
+                if cancel {
+                    std::future::pending::<()>().await;
+                }
+                panic!("contact-info task panic");
+            });
+            if cancel {
+                handle.abort();
+            }
+            forward_backend_task_join_error(
+                handle.await,
+                SenderAsync::new(tx, egui::Context::default()),
+                None,
+                context.clone(),
+            )
+            .await;
+            let result = rx.recv().await.expect("forwarded error");
+            assert!(matches!(result, TaskResult::Error {
+                context: received,
+                error: TaskError::DashPayContactInfoActionFailed { identity_id, contact_id, source },
+            } if received == context && identity_id == owner && contact_id == contact
+                && matches!(*source, TaskError::BackendTaskFailed { .. })));
+        }
+    }
+
+    #[tokio::test]
     async fn panicking_paid_contact_action_keeps_its_request_correlation() {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let sender = SenderAsync::new(tx, egui::Context::default());
@@ -1201,12 +1241,17 @@ async fn forward_backend_task_join_error(
         let stopped = TaskError::BackendTaskFailed {
             source: source.into(),
         };
-        let error = match request_id {
-            Some(request_id) => TaskError::DashPayContactRequestActionFailed {
+        let error = match (context.dashpay_contact_info_target(), request_id) {
+            (Some((identity_id, contact_id)), _) => TaskError::DashPayContactInfoActionFailed {
+                identity_id,
+                contact_id,
+                source: Box::new(stopped),
+            },
+            (None, Some(request_id)) => TaskError::DashPayContactRequestActionFailed {
                 request_id,
                 source: Box::new(stopped),
             },
-            None => stopped,
+            (None, None) => stopped,
         };
         if let Err(error) = sender.send(TaskResult::Error { context, error }).await {
             tracing::error!(%error, "Failed to report a stopped backend task");

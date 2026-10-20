@@ -1275,6 +1275,7 @@ pub async fn cancel_contact_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::dashpay::ContactInfoField;
     use dash_sdk::dpp::document::DocumentV0;
 
     fn id(byte: u8) -> Identifier {
@@ -1574,7 +1575,10 @@ mod tests {
                 .lock()
                 .expect("not poisoned")
                 .iter()
-                .map(|update| update.display_hidden)
+                .map(|update| match update.display_hidden {
+                    ContactInfoField::Replace(hidden) => hidden,
+                    ContactInfoField::Preserve => panic!("expected an explicit visibility change"),
+                })
                 .collect()
         }
 
@@ -1631,7 +1635,9 @@ mod tests {
                 .lock()
                 .expect("not poisoned")
                 .push(update.clone());
-            *self.contact_hidden.lock().expect("not poisoned") = update.display_hidden;
+            if let ContactInfoField::Replace(hidden) = update.display_hidden {
+                *self.contact_hidden.lock().expect("not poisoned") = hidden;
+            }
             Ok(())
         }
 
@@ -1652,7 +1658,7 @@ mod tests {
         assert_eq!(update.nickname, ContactInfoField::Preserve);
         assert_eq!(update.note, ContactInfoField::Preserve);
         assert_eq!(update.accepted_accounts, AcceptedAccounts::Preserve);
-        assert_eq!(update.display_hidden, hidden);
+        assert_eq!(update.display_hidden, ContactInfoField::Replace(hidden));
     }
 
     #[tokio::test]
@@ -1810,7 +1816,7 @@ mod tests {
         }
 
         async fn update_contact_info(&self, update: ContactInfoUpdate) -> Result<(), TaskError> {
-            assert!(update.display_hidden);
+            assert_eq!(update.display_hidden, ContactInfoField::Replace(true));
             *self.hidden.lock().expect("not poisoned") = true;
             *self.hidden_writes.lock().expect("not poisoned") += 1;
             Ok(())

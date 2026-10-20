@@ -25,6 +25,8 @@ pub fn validate_account_label(label: &str) -> Result<(), TextLengthError> {
 /// Application limit for a contact's private note, in UTF-8 bytes.
 /// The encrypted `contactInfo` payload encodes its length with CompactSize.
 pub const MAX_CONTACT_NOTE_BYTES: usize = u8::MAX as usize;
+/// DashPay contract limit for the encrypted contact-info payload, including its IV.
+pub const MAX_CONTACT_INFO_ENCRYPTED_BYTES: usize = 2048;
 
 /// A private contact note exceeds the application's size limit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -132,8 +134,8 @@ pub struct ContactInfoUpdate {
     pub nickname: ContactInfoField<Option<String>>,
     /// Note update intent.
     pub note: ContactInfoField<Option<String>>,
-    /// New hidden state.
-    pub display_hidden: bool,
+    /// Visibility update intent.
+    pub display_hidden: ContactInfoField<bool>,
     /// Accepted-account update intent.
     pub accepted_accounts: AcceptedAccounts,
     /// Policy for a present payload that cannot be read.
@@ -146,19 +148,18 @@ impl ContactInfoUpdate {
         Self {
             nickname: ContactInfoField::Preserve,
             note: ContactInfoField::Preserve,
-            display_hidden,
+            display_hidden: ContactInfoField::Replace(display_hidden),
             accepted_accounts: AcceptedAccounts::Preserve,
             unreadable: UnreadableContactInfoPolicy::Abort,
         }
     }
 
-    /// Replace the private note, preserving the nickname and accepted accounts.
-    /// `display_hidden` must carry the contact's current hidden state, since the
-    /// whole document is rewritten.
-    pub fn note(note: Option<String>, display_hidden: bool) -> Self {
+    /// Replace only the private note, preserving the latest stored contact details.
+    pub fn note(note: Option<String>) -> Self {
         Self {
             note: ContactInfoField::Replace(note),
-            ..Self::visibility(display_hidden)
+            display_hidden: ContactInfoField::Preserve,
+            ..Self::visibility(false)
         }
     }
 
@@ -172,7 +173,7 @@ impl ContactInfoUpdate {
         Self {
             nickname: ContactInfoField::Replace(nickname),
             note: ContactInfoField::Replace(note),
-            display_hidden,
+            display_hidden: ContactInfoField::Replace(display_hidden),
             accepted_accounts: AcceptedAccounts::Replace(accepted_accounts),
             unreadable: UnreadableContactInfoPolicy::Abort,
         }
@@ -515,19 +516,19 @@ mod tests {
 
     #[test]
     fn a_note_update_replaces_only_the_note() {
-        let update = ContactInfoUpdate::note(Some("Met at the meetup".into()), true);
+        let update = ContactInfoUpdate::note(Some("Met at the meetup".into()));
         assert_eq!(
             update.note,
             ContactInfoField::Replace(Some("Met at the meetup".into()))
         );
         assert_eq!(update.nickname, ContactInfoField::Preserve);
         assert_eq!(update.accepted_accounts, AcceptedAccounts::Preserve);
-        assert!(update.display_hidden, "the contact's hidden state is kept");
+        assert_eq!(update.display_hidden, ContactInfoField::Preserve);
         assert_eq!(update.unreadable, UnreadableContactInfoPolicy::Abort);
 
-        let cleared = ContactInfoUpdate::note(None, false);
+        let cleared = ContactInfoUpdate::note(None);
         assert_eq!(cleared.note, ContactInfoField::Replace(None));
-        assert!(!cleared.display_hidden);
+        assert_eq!(cleared.display_hidden, ContactInfoField::Preserve);
     }
 
     #[test]

@@ -906,6 +906,18 @@ impl ScreenLike for IdentityHubScreen {
     }
 
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
+        // Wrapped errors retain the unreadable-details confirmation flow.
+        if !matches!(error, TaskError::DashPayContactInfoActionFailed { .. })
+            && let Some((identity_id, contact_id)) = context.dashpay_contact_info_target()
+        {
+            self.pending_contact_info_tasks
+                .remove(&ContactInfoTaskKey::Direct {
+                    identity_id,
+                    contact_id,
+                });
+            self.contacts_state
+                .release_contact_info_write(&identity_id, &contact_id);
+        }
         if matches!(error, TaskError::MasternodeListNotReady { .. }) {
             self.profile_cache.record_error_while_syncing(context);
         } else {
@@ -2231,7 +2243,7 @@ mod tests {
     fn a_saved_note_and_an_unhide_confirm_differently() {
         use crate::model::dashpay::ContactInfoUpdate;
 
-        let note = contact_info_task(ContactInfoUpdate::note(Some("Bao".into()), false));
+        let note = contact_info_task(ContactInfoUpdate::note(Some("Bao".into())));
         let unhide = contact_info_task(ContactInfoUpdate::visibility(false));
         assert!(is_note_save(&note));
         assert!(!is_note_save(&unhide));

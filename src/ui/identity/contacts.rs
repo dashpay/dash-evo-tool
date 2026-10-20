@@ -301,13 +301,13 @@ pub fn save_note_task(
     DashPayTask::UpdateContactInfo {
         identity,
         contact_id: contact.identity_id,
-        update: ContactInfoUpdate::note(note, contact.is_hidden),
+        update: ContactInfoUpdate::note(note),
     }
 }
 
 /// The fee line shown beside Save note.
 pub fn note_fee_text(fee: &str) -> String {
-    format!("Saving this note costs about {fee}.")
+    format!("Estimated fee for saving this note: up to {fee}.")
 }
 
 /// Dispatch the save of the selected contact's note draft, if it has a valid
@@ -732,9 +732,7 @@ fn note_editor(
     }
 
     ui.add_space(8.0);
-    let fee = app_context
-        .fee_estimator()
-        .estimate_contact_info_write(contact.nickname.as_deref().map_or(0, str::len), note_bytes);
+    let fee = app_context.fee_estimator().estimate_contact_info_write();
     ui.label(
         RichText::new(note_fee_text(&format_credits_as_dash(fee)))
             .small()
@@ -1200,6 +1198,7 @@ pub(super) fn render_preview(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::dashpay::ContactInfoField;
     use crate::model::qualified_identity::{IdentityStatus, IdentityType};
     use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::identity::Identity;
@@ -1425,7 +1424,7 @@ mod tests {
             BackendTask::DashPayTask(Box::new(task)),
         ));
         assert_eq!((owner, contact_id), (id(1), id(5)));
-        assert_eq!(update, ContactInfoUpdate::note(Some("Bao".into()), true));
+        assert_eq!(update, ContactInfoUpdate::note(Some("Bao".into())));
     }
 
     #[test]
@@ -1499,7 +1498,7 @@ mod tests {
         let (_, contact_id, update) =
             saved_note(dispatch_unhide(&mut state, &identity, &hidden_bao()));
         assert_eq!(contact_id, id(5));
-        assert!(!update.display_hidden);
+        assert_eq!(update.display_hidden, ContactInfoField::Replace(false));
         assert_eq!(
             dispatch_unhide(&mut state, &identity, &hidden_bao()),
             AppAction::None,
@@ -1545,7 +1544,7 @@ mod tests {
     fn the_fee_line_is_one_sentence_with_the_amount() {
         assert_eq!(
             note_fee_text("0.0001 DASH"),
-            "Saving this note costs about 0.0001 DASH."
+            "Estimated fee for saving this note: up to 0.0001 DASH."
         );
     }
 
@@ -1710,7 +1709,7 @@ mod tests {
                 assert_eq!(identity.identity.id(), id(1));
                 assert_eq!(contact_id, id(5), "the clicked contact must be unhidden");
                 assert!(
-                    !update.display_hidden,
+                    update.display_hidden == ContactInfoField::Replace(false),
                     "unhiding must broadcast contactInfo with the hidden flag cleared"
                 );
             }

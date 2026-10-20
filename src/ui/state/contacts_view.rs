@@ -56,6 +56,8 @@ pub struct ContactsState {
     /// Whether `contacts` holds a loaded list, not the empty one before the
     /// first load lands.
     contacts_known: bool,
+    /// Confirmed notes override lagging reads until the network returns them.
+    confirmed_notes: HashMap<(Identifier, Identifier), Option<String>>,
     /// Established contacts flagged `display_hidden`, kept aside so the tab can
     /// offer a way back. Declining or cancelling a request hides that person,
     /// so without this list a contact could only be recovered from the legacy
@@ -190,7 +192,19 @@ impl ContactsState {
     /// out of the active list — that is what "hidden" promises — but remain
     /// reachable through [`ContactsState::hidden_contacts`]. The selected
     /// contact's note draft follows the reloaded note.
-    pub fn record_contacts(&mut self, contacts: Vec<ContactData>) {
+    pub fn record_contacts(&mut self, mut contacts: Vec<ContactData>) {
+        if let Some(owner) = self.owner_id() {
+            for contact in &mut contacts {
+                let key = (owner, contact.identity_id);
+                if let Some(confirmed) = self.confirmed_notes.get(&key) {
+                    if &contact.note == confirmed {
+                        self.confirmed_notes.remove(&key);
+                    } else {
+                        contact.note.clone_from(confirmed);
+                    }
+                }
+            }
+        }
         let (hidden, visible) = contacts.into_iter().partition(|c| c.is_hidden);
         self.contacts = visible;
         self.hidden = hidden;
@@ -339,6 +353,10 @@ impl ContactsState {
         let Some(write) = self.detail.finish_write(owner, contact_id) else {
             return false;
         };
+        if let PendingWrite::Note(note) = &write {
+            self.confirmed_notes
+                .insert((*owner, *contact_id), note.clone());
+        }
         if let PendingWrite::Note(note) = write
             && self.owner_id() == Some(*owner)
             && let Some(contact) = self
@@ -543,6 +561,39 @@ mod tests {
             !state.finish_contact_info_write(&id(1), &id(7)),
             "a save settles only once"
         );
+    }
+
+    #[test]
+    fn confirmed_note_survives_stale_reload_and_tab_reset_until_observed() {
+        for note in [Some("Confirmed"), None] {
+            let mut state = owned_state(1);
+            let stale = ContactData {
+                note: Some("Old note".into()),
+                ..contact(Some("Bao"), None, None)
+            };
+            state.record_contacts(vec![stale.clone()]);
+            state.select_contact(&id(7));
+            *state.detail_mut().note_mut(&id(7)).unwrap() = note.unwrap_or_default().into();
+            assert!(state.detail_mut().begin_save(id(1), id(7)).is_some());
+            assert!(state.finish_contact_info_write(&id(1), &id(7)));
+            state.reset();
+            state.record_contacts(vec![stale.clone()]);
+            state.select_contact(&id(7));
+            assert_eq!(state.selected_contact().unwrap().note.as_deref(), note);
+            assert!(!state.detail().is_dirty(&id(7)));
+            state.record_contacts(vec![ContactData {
+                note: note.map(str::to_string),
+                ..stale.clone()
+            }]);
+            state.record_contacts(vec![ContactData {
+                note: Some("Later remote edit".into()),
+                ..stale
+            }]);
+            assert_eq!(
+                state.selected_contact().unwrap().note.as_deref(),
+                Some("Later remote edit")
+            );
+        }
     }
 
     #[test]

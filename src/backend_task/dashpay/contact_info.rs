@@ -160,7 +160,8 @@ fn apply_contact_info_update(
     existing: Option<&Document>,
     private_data_key: &[u8; 32],
 ) -> Result<ContactInfoPrivateData, TaskError> {
-    let preserves_existing = matches!(update.nickname, ContactInfoField::Preserve)
+    let preserves_existing = matches!(update.display_hidden, ContactInfoField::Preserve)
+        || matches!(update.nickname, ContactInfoField::Preserve)
         || matches!(update.note, ContactInfoField::Preserve)
         || matches!(update.accepted_accounts, AcceptedAccounts::Preserve);
 
@@ -176,7 +177,9 @@ fn apply_contact_info_update(
     if let ContactInfoField::Replace(note) = update.note {
         data.note = note;
     }
-    data.display_hidden = update.display_hidden;
+    if let ContactInfoField::Replace(hidden) = update.display_hidden {
+        data.display_hidden = hidden;
+    }
     if let AcceptedAccounts::Replace(accounts) = update.accepted_accounts {
         data.accepted_accounts = accounts;
     }
@@ -566,6 +569,8 @@ pub async fn create_or_update_contact_info(
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     let dashpay_contract = app_context.dashpay_contract.clone();
     let identity_id = identity.identity.id();
+    // Every direct, legacy, decline and cancel writer enters through this seam.
+    let _write = app_context.contact_info_writes.acquire(identity_id).await;
     let lookup = lookup_contact_info(app_context, sdk, &identity, contact_user_id).await?;
     let (found_existing_doc, derivation_index, enc_user_id_key, private_data_key) =
         match lookup.existing {
@@ -1045,24 +1050,29 @@ mod tests {
         }
     }
 
-    /// The fee shown before a save is sized from the bytes the write sends.
     #[test]
-    fn the_fee_is_sized_from_the_encoded_contact_details() {
+    fn contact_info_fee_estimate_covers_preserved_accounts() {
         use crate::model::fee_estimation::PlatformFeeEstimator;
-        use platform_wallet::wallet::identity::crypto as upstream;
+        let estimator = PlatformFeeEstimator::new();
         for len in [0, 252, 253, 255] {
-            let text = (len > 0).then(|| "x".repeat(len));
-            let encoded = upstream::encode_private_data(&upstream::ContactInfoPrivateData {
-                alias_name: text.clone(),
-                note: text,
-                display_hidden: false,
-                accepted_accounts: vec![0],
-            });
-            assert_eq!(
-                PlatformFeeEstimator::contact_info_plaintext_bytes(len, len),
-                encoded.len(),
-                "{len}-byte nickname and note"
-            );
+            for accounts in [0, 1, 16, 252, 253, 400, 500] {
+                let text = (len > 0).then(|| "x".repeat(len));
+                let data = ContactInfoPrivateData {
+                    alias_name: text.clone(),
+                    note: text,
+                    accepted_accounts: (0..accounts).collect(),
+                    ..Default::default()
+                };
+                let Ok(encoded) = data.serialize() else {
+                    continue;
+                };
+                let encrypted = encrypt_private_data(&encoded, &KEY).unwrap();
+                assert!(
+                    estimator.estimate_contact_info_write()
+                        >= estimator.estimate_document_create_with_size(112 + encrypted.len()),
+                    "{len}-byte fields and {accounts} accounts"
+                );
+            }
         }
     }
 
@@ -1275,6 +1285,24 @@ mod tests {
         bytes[8] = 1;
 
         assert!(ContactInfoPrivateData::deserialize(&bytes).is_none());
+    }
+
+    #[test]
+    fn contact_info_note_preserves_a_concurrent_visibility_change() {
+        let existing = stored_contact_info(vec![0, 4, 9], &KEY);
+        let data = apply_contact_info_update(
+            ContactInfoUpdate::note(Some("New note".into())),
+            Some(&existing),
+            &KEY,
+        )
+        .unwrap();
+        assert!(
+            data.display_hidden,
+            "note edits must keep the latest stored visibility"
+        );
+        assert_eq!(data.note.as_deref(), Some("New note"));
+        assert_eq!(data.alias_name.as_deref(), Some("Bao"));
+        assert_eq!(data.accepted_accounts, vec![0, 4, 9]);
     }
 
     #[test]

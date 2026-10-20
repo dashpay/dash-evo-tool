@@ -227,7 +227,7 @@ fn save_note_shows_the_fee_first_and_sends_the_note_once() {
         let (mut hub, owner) = hub_with_bao_selected(&app_context, WIDE, None);
 
         assert!(
-            hub.query_by_label_contains("Saving this note costs about")
+            hub.query_by_label_contains("Estimated fee for saving this note: up to")
                 .is_some(),
             "the fee is shown before the user saves"
         );
@@ -471,6 +471,41 @@ fn a_note_save_that_failed_behind_another_screen_can_be_retried() {
             1,
             "a failed save releases its guard, so the kept note can be saved again"
         );
+    });
+}
+
+#[test]
+fn bare_contact_info_failure_behind_another_screen_releases_only_its_save() {
+    use dash_evo_tool::backend_task::error::TaskError;
+    with_isolated_data_dir(|| {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let _guard = runtime.enter();
+        let mut app =
+            crate::support::mount_app(dash_evo_tool::ui::RootScreenType::RootScreenWalletsBalances);
+        let (mut hub, _, context) = hub_saving_a_note(&app);
+        hub.state_mut()
+            .0
+            .display_backend_task_error(&BackendTaskContext::Other, &TaskError::WalletLocked);
+        hub.run_steps(2);
+        assert!(
+            hub.query_by_label(SAVING_NOTE_LABEL).is_some(),
+            "unrelated errors keep the guard"
+        );
+        crate::identity_hub::loads::receive_task_results_behind_the_send_screen(
+            &runtime,
+            &mut app,
+            &mut hub,
+            vec![dash_evo_tool::app::TaskResult::Error {
+                context,
+                error: TaskError::WalletLocked,
+            }],
+        );
+        hub.run_steps(2);
+        assert!(hub.query_by_label(SAVING_NOTE_LABEL).is_none());
+        hub.get_by_role_and_label(Role::Button, SAVE_NOTE_LABEL)
+            .click();
+        hub.run_steps(2);
+        assert_eq!(saved_notes(&hub).len(), 1);
     });
 }
 

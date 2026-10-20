@@ -7,7 +7,7 @@
 //! belongs in `ui/state/`.
 
 use crate::backend_task::dashpay::ContactData;
-use crate::model::dashpay::contact_request_recipient;
+use crate::model::dashpay::{ContactsLoadKind, contact_request_recipient};
 use crate::model::identity_name::display_label as profile_display_label;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::dashcore::Network;
@@ -15,7 +15,7 @@ use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Document, Identifier};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::time::{Duration, Instant};
 
 /// Threshold for surfacing an unusually long-running request and pruning its
@@ -43,9 +43,12 @@ pub struct ContactRequestEntry {
 /// View resets retain live paid-action guards and prune stale ones.
 #[derive(Debug, Default, Clone)]
 pub struct ContactsState {
-    /// `true` once the populated shell has dispatched its loads for this tab
-    /// entry. Guards every subsequent frame from re-dispatching.
+    /// Prevents repeated frame dispatch until a refresh or retry is due.
     load_requested: bool,
+    load_failed: bool,
+    retry_at: Option<Instant>,
+    retry_reads: BTreeSet<ContactsLoadKind>,
+    retries_sent: u8,
     /// Incoming requests awaiting this identity's response.
     incoming: Vec<ContactRequestEntry>,
     /// Requests this identity has sent and that are still pending.
@@ -83,12 +86,15 @@ impl ContactsState {
             return false;
         }
         self.load_requested = true;
+        self.retry_at = None;
         true
     }
 
     /// Clear cached view data while retaining guards for backend work still running.
     pub fn reset(&mut self) {
         self.load_requested = false;
+        self.load_failed = false;
+        self.retry_at = None;
         self.incoming.clear();
         self.outgoing.clear();
         self.contacts.clear();
@@ -96,6 +102,8 @@ impl ContactsState {
         self.hidden.clear();
         self.show_hidden = false;
         self.search.clear();
+        self.retry_reads.clear();
+        self.retries_sent = 0;
         let now = Instant::now();
         self.in_flight.retain(|_, started| {
             now.saturating_duration_since(*started) < REQUEST_IN_FLIGHT_TIMEOUT
@@ -105,6 +113,58 @@ impl ContactsState {
     /// Whether the lists have not been asked for since the load was last armed.
     pub fn load_is_due(&self) -> bool {
         !self.load_requested
+    }
+
+    /// Whether a load outcome belongs to the identity whose lists are shown.
+    pub(crate) fn owns_load(&self, owner: (Network, Identifier)) -> bool {
+        self.owner == Some(owner)
+    }
+
+    /// Keep displayed contacts and paid-action guards after a failed read.
+    pub(crate) fn record_load_error(&mut self, kind: ContactsLoadKind, retry_at: Option<Instant>) {
+        if kind == ContactsLoadKind::Contacts {
+            self.load_failed = true;
+        }
+        if self.retries_sent < 3
+            && let Some(retry_at) = retry_at
+        {
+            self.retry_reads.insert(kind);
+            self.retry_at = Some(
+                self.retry_at
+                    .map_or(retry_at, |pending| pending.min(retry_at)),
+            );
+        }
+    }
+
+    /// Whether a read failed without replacing the displayed contact list.
+    pub fn load_failed(&self) -> bool {
+        self.load_failed
+    }
+
+    /// Claim the initial reads or only the failed reads due for a retry.
+    pub(crate) fn claim_reads(&mut self) -> Option<BTreeSet<ContactsLoadKind>> {
+        if !self.claim_load() {
+            return None;
+        }
+        let reads = if self.retry_reads.is_empty() {
+            BTreeSet::from([ContactsLoadKind::Contacts, ContactsLoadKind::Requests])
+        } else {
+            self.retries_sent += 1;
+            std::mem::take(&mut self.retry_reads)
+        };
+        if reads.contains(&ContactsLoadKind::Contacts) {
+            self.load_failed = false;
+        }
+        Some(reads)
+    }
+
+    /// Re-arm a failed read once its retry delay and network readiness allow it.
+    /// The hub calls this only while its network is ready.
+    pub(crate) fn retry_load_if_due(&mut self, now: Instant) {
+        if self.retry_at.is_some_and(|retry_at| now >= retry_at) {
+            self.retry_at = None;
+            self.load_requested = false;
+        }
     }
 
     /// Reset identity-scoped view data while retaining live paid-action guards.
@@ -131,6 +191,10 @@ impl ContactsState {
     /// user keeps seeing (and searching) the contacts they already had.
     pub fn invalidate(&mut self) {
         self.load_requested = false;
+        self.retry_at = None;
+        self.load_failed = false;
+        self.retry_reads.clear();
+        self.retries_sent = 0;
     }
 
     /// Pending requests received by this identity.
@@ -190,6 +254,7 @@ impl ContactsState {
         self.contacts = visible;
         self.hidden = hidden;
         self.contacts_known = true;
+        self.load_failed = false;
     }
 
     /// Whether the established-contact list has been loaded for this identity.
@@ -836,6 +901,72 @@ mod tests {
                     username,
                     &c.identity_id.to_string(Encoding::Base58)
                 ),
+            );
+        }
+    }
+    #[test]
+    fn contact_read_retries_are_capped_and_do_not_repeat_a_successful_sibling() {
+        for kind in [ContactsLoadKind::Contacts, ContactsLoadKind::Requests] {
+            let sibling = if kind == ContactsLoadKind::Contacts {
+                ContactsLoadKind::Requests
+            } else {
+                ContactsLoadKind::Contacts
+            };
+            let mut state = ContactsState::default();
+            assert_eq!(state.claim_reads().unwrap().len(), 2);
+            let now = Instant::now();
+            for _ in 0..3 {
+                state.record_load_error(kind, Some(now));
+                // Neither a permanent sibling error nor a successful list
+                // response may cancel recovery of the other read.
+                state.record_load_error(sibling, None);
+                state.record_contacts(vec![]);
+                state.retry_load_if_due(now);
+                assert_eq!(state.claim_reads(), Some(BTreeSet::from([kind])));
+                assert!(state.claim_reads().is_none());
+            }
+            state.record_load_error(kind, Some(now));
+            state.retry_load_if_due(now + Duration::from_secs(60));
+            assert!(
+                state.claim_reads().is_none(),
+                "stop after three automatic retries"
+            );
+            assert_eq!(state.load_failed(), kind == ContactsLoadKind::Contacts);
+
+            state.invalidate();
+            assert_eq!(state.claim_reads().unwrap().len(), 2);
+            state.record_load_error(kind, Some(now));
+            state.retry_load_if_due(now);
+            assert_eq!(state.claim_reads(), Some(BTreeSet::from([kind])));
+        }
+    }
+
+    #[test]
+    fn request_retry_does_not_hide_a_permanent_contacts_load_failure() {
+        for contacts_fail_first in [false, true] {
+            let mut state = ContactsState::default();
+            state.claim_reads().unwrap();
+            let now = Instant::now();
+            if contacts_fail_first {
+                state.record_load_error(ContactsLoadKind::Contacts, None);
+            }
+            state.record_load_error(ContactsLoadKind::Requests, Some(now));
+            if !contacts_fail_first {
+                state.record_load_error(ContactsLoadKind::Contacts, None);
+            }
+            state.retry_load_if_due(now);
+            assert_eq!(
+                state.claim_reads(),
+                Some(BTreeSet::from([ContactsLoadKind::Requests]))
+            );
+            state.record_requests(vec![], vec![]);
+            assert!(
+                state.load_failed(),
+                "Contacts still failed, rather than loading"
+            );
+            assert!(
+                !state.contacts_known(),
+                "no contact-list answer has arrived"
             );
         }
     }

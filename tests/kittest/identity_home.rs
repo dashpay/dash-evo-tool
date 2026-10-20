@@ -163,6 +163,30 @@ fn mount_home(app_context: Arc<AppContext>) -> Harness<'static, HomeHarnessState
     harness
 }
 
+#[test]
+fn home_contacts_are_not_reported_empty_before_the_load_answers() {
+    with_isolated_data_dir(|| {
+        let (_runtime, context) = fresh_app_context();
+        seed_identity(&context, vec![], vec![]);
+        let mut harness = mount_home(context);
+        harness.run();
+        assert!(
+            harness
+                .query_by_label("No contacts yet. Add someone by their username.")
+                .is_none(),
+            "an unanswered contact load is not an empty contact list"
+        );
+        harness.state_mut().4.record_contacts(vec![]);
+        harness.run();
+        assert!(
+            harness
+                .query_by_label("No contacts yet. Add someone by their username.")
+                .is_some(),
+            "an authoritative empty answer may show the empty state"
+        );
+    });
+}
+
 /// The `(AppAction, HomeOutcome)` produced by the most recent render — the
 /// frame's result of processing whichever button was clicked before
 /// `harness.run()`.
@@ -794,10 +818,12 @@ fn home_contacts_follow_an_identity_selected_outside_the_hub() {
             harness.query_by_label("Bao").is_none(),
             "one identity's contacts must never be shown under another"
         );
+        assert!(harness.query_by_label("Loading contacts…").is_some());
         assert!(
             harness
                 .query_by_label("No contacts yet. Add someone by their username.")
-                .is_some()
+                .is_none(),
+            "the new identity's list has not answered yet"
         );
 
         // The second identity's list arrives and holds the very request the

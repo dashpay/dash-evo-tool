@@ -517,6 +517,8 @@ impl ScreenLike for IdentityHubScreen {
         // start-up) failed; ask for it again now that the network is ready.
         if self.app_context.connection_status().masternodes_ready() {
             self.profile_cache.retry_after_sync();
+            self.contacts_state
+                .retry_load_if_due(std::time::Instant::now());
         }
         let view = if self.selection.picker_override()
             || self.app_context.selected_wallet_hash().is_some() && frame_identities.is_empty()
@@ -740,6 +742,11 @@ impl ScreenLike for IdentityHubScreen {
         context: &BackendTaskContext,
         result: BackendTaskSuccessResult,
     ) {
+        if let Some((network, identity_id, _)) = context.contacts_load()
+            && !self.contacts_state.owns_load((network, identity_id))
+        {
+            return;
+        }
         self.home_state.record_payments(context, &result);
         if self
             .profile_cache
@@ -877,6 +884,23 @@ impl ScreenLike for IdentityHubScreen {
     }
 
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
+        if let Some((network, identity_id, kind)) = context.contacts_load()
+            && self.contacts_state.owns_load((network, identity_id))
+        {
+            let syncing = matches!(error, TaskError::MasternodeListNotReady { .. });
+            let delay = if syncing && !self.app_context.connection_status().masternodes_ready() {
+                Some(std::time::Duration::ZERO)
+            } else if syncing || error.contains_dapi_reachability_failure() {
+                Some(std::time::Duration::from_secs(5))
+            } else {
+                None
+            };
+            self.contacts_state
+                .record_load_error(kind, delay.map(|delay| std::time::Instant::now() + delay));
+            if let Some(delay) = delay {
+                self.app_context.egui_ctx().request_repaint_after(delay);
+            }
+        }
         if matches!(error, TaskError::MasternodeListNotReady { .. }) {
             self.profile_cache.record_error_while_syncing(context);
         } else {
@@ -1327,6 +1351,122 @@ mod tests {
         );
         harness.run_steps(4);
         assert_eq!(harness.state().1.len(), 2, "and only once");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn home_contacts_retry_after_startup_sync_without_tab_navigation() {
+        let (_dir, context) = wired_test_context().await;
+        let owner = seed_user_identity(&context, 0x5B);
+        context.set_selected_identity(Some(owner));
+        context.connection_status().set_masternodes_ready(false);
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 1000.0))
+            .build_ui_state(
+                |ui, state: &mut (IdentityHubScreen, Vec<BackendTaskContext>)| {
+                    if let AppAction::BackendTasks(tasks, _) = state.0.ui(ui) {
+                        for task in tasks {
+                            if matches!(&task, BackendTask::DashPayTask(task)
+                                if matches!(**task, DashPayTask::LoadContacts { .. }))
+                            {
+                                state.1.push(BackendTaskContext::from(&task));
+                            }
+                        }
+                    }
+                },
+                (IdentityHubScreen::new(&context), Vec::new()),
+            );
+        harness.run_steps(4);
+        assert_eq!(harness.state().1.len(), 1);
+        let first = harness.state().1[0].clone();
+        harness.state_mut().0.display_backend_task_error(
+            &first,
+            &TaskError::MasternodeListNotReady {
+                source_error: Box::new(dash_sdk::Error::Generic("syncing".into())),
+            },
+        );
+        harness.run_steps(4);
+        assert_eq!(harness.state().1.len(), 1, "wait for network readiness");
+        context.connection_status().set_masternodes_ready(true);
+        harness.run_steps(4);
+        assert_eq!(
+            harness.state().1.len(),
+            2,
+            "Home must fetch existing contacts after startup recovers"
+        );
+        harness.run_steps(4);
+        assert_eq!(harness.state().1.len(), 2, "retry only once");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn home_contacts_retry_only_matching_transient_reads_and_keep_paid_guards() {
+        let (_dir, context) = wired_test_context().await;
+        context.connection_status().set_masternodes_ready(true);
+        let owner = seed_user_identity(&context, 0x5C);
+        let identity = context.get_identity_by_id(&owner).unwrap().unwrap();
+        let request_id = id(0x5D);
+        for requests in [false, true] {
+            let task = BackendTask::DashPayTask(Box::new(if requests {
+                DashPayTask::LoadContactRequests {
+                    identity: identity.clone(),
+                }
+            } else {
+                DashPayTask::LoadContacts {
+                    identity: identity.clone(),
+                }
+            }));
+            let own = BackendTaskContext::for_dispatch(&task);
+            for (dispatch, transient, retries) in [
+                (own.clone(), true, true),
+                (own.clone(), false, false),
+                (BackendTaskContext::Other, true, false),
+                (
+                    BackendTaskContext::DashPayContactsLoad {
+                        network: Network::Mainnet,
+                        identity_id: owner,
+                        kind: crate::model::dashpay::ContactsLoadKind::Contacts,
+                    },
+                    true,
+                    false,
+                ),
+                (
+                    BackendTaskContext::DashPayContactsLoad {
+                        network: Network::Testnet,
+                        identity_id: id(0x6F),
+                        kind: crate::model::dashpay::ContactsLoadKind::Contacts,
+                    },
+                    true,
+                    false,
+                ),
+            ] {
+                let mut hub = IdentityHubScreen::new(&context);
+                hub.contacts_state.reconcile_owner(&identity);
+                assert!(hub.contacts_state.claim_load());
+                assert!(hub.contacts_state.begin_request(request_id));
+                let before = std::time::Instant::now();
+                let error = if transient && requests {
+                    TaskError::MasternodeListNotReady {
+                        source_error: Box::new(dash_sdk::Error::Generic("syncing".into())),
+                    }
+                } else if transient {
+                    TaskError::DapiUnavailable {
+                        source_error: Box::new(dash_sdk::Error::Generic("unavailable".into())),
+                    }
+                } else {
+                    TaskError::NoIdentitiesFound
+                };
+                hub.display_backend_task_error(&dispatch, &error);
+                hub.contacts_state.retry_load_if_due(before);
+                assert!(
+                    !hub.contacts_state.load_is_due(),
+                    "do not spin on endpoint failures"
+                );
+                hub.contacts_state
+                    .retry_load_if_due(before + std::time::Duration::from_secs(6));
+                assert_eq!(hub.contacts_state.load_is_due(), retries);
+                assert!(hub.contacts_state.is_in_flight(&request_id));
+                assert!(!hub.contacts_state.begin_request(request_id));
+            }
+        }
     }
 
     /// On an updated install the hub sends the Usernames card's check of the

@@ -332,6 +332,12 @@ pub enum BackendTaskContext {
     TokenBalanceRefresh,
     /// A DashPay social-profile update for one identity.
     DashPayProfileUpdate(Identifier),
+    /// A read of an identity's contacts or contact requests.
+    DashPayContactsLoad {
+        network: Network,
+        identity_id: Identifier,
+        kind: crate::model::dashpay::ContactsLoadKind,
+    },
     /// A top-up of one identity's balance.
     IdentityTopUp(Identifier),
     /// A perpetual-reward estimate for one identity-token pair.
@@ -484,6 +490,19 @@ impl BackendTaskContext {
         }
     }
 
+    pub(crate) fn contacts_load(
+        &self,
+    ) -> Option<(Network, Identifier, crate::model::dashpay::ContactsLoadKind)> {
+        match self.operation() {
+            Self::DashPayContactsLoad {
+                network,
+                identity_id,
+                kind,
+            } => Some((*network, *identity_id, *kind)),
+            _ => None,
+        }
+    }
+
     pub(crate) fn is_dpns_contest_refresh(&self) -> bool {
         matches!(self.operation(), Self::DpnsContestRefresh)
     }
@@ -618,6 +637,16 @@ impl From<&BackendTask> for BackendTaskContext {
                 _ => Self::Other,
             },
             BackendTask::DashPayTask(task) => match task.as_ref() {
+                DashPayTask::LoadContacts { identity } => Self::DashPayContactsLoad {
+                    network: identity.network,
+                    identity_id: identity.identity.id(),
+                    kind: crate::model::dashpay::ContactsLoadKind::Contacts,
+                },
+                DashPayTask::LoadContactRequests { identity } => Self::DashPayContactsLoad {
+                    network: identity.network,
+                    identity_id: identity.identity.id(),
+                    kind: crate::model::dashpay::ContactsLoadKind::Requests,
+                },
                 DashPayTask::UpdateProfile { identity, .. } => {
                     Self::DashPayProfileUpdate(identity.identity.id())
                 }

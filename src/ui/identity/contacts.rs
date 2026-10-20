@@ -208,18 +208,27 @@ fn dispatch_request_shared(
 /// so the first load would be dropped on the floor and the active section would
 /// never fill.
 pub(super) fn load_action(identity: &QualifiedIdentity, state: &mut ContactsState) -> AppAction {
-    if !state.claim_load() {
+    let Some(reads) = state.claim_reads() else {
         return AppAction::None;
-    }
+    };
     AppAction::BackendTasks(
-        vec![
-            BackendTask::DashPayTask(Box::new(DashPayTask::LoadContacts {
-                identity: identity.clone(),
-            })),
-            BackendTask::DashPayTask(Box::new(DashPayTask::LoadContactRequests {
-                identity: identity.clone(),
-            })),
-        ],
+        reads
+            .into_iter()
+            .map(|kind| {
+                BackendTask::DashPayTask(Box::new(match kind {
+                    crate::model::dashpay::ContactsLoadKind::Contacts => {
+                        DashPayTask::LoadContacts {
+                            identity: identity.clone(),
+                        }
+                    }
+                    crate::model::dashpay::ContactsLoadKind::Requests => {
+                        DashPayTask::LoadContactRequests {
+                            identity: identity.clone(),
+                        }
+                    }
+                }))
+            })
+            .collect(),
         BackendTasksExecutionMode::Concurrent,
     )
 }
@@ -849,7 +858,13 @@ pub(super) fn render_preview(
                 );
             }
         }
-        if state.contacts_len() == 0 && state.incoming().is_empty() {
+        if !state.contacts_known() {
+            ui.label(if state.load_failed() {
+                "Contacts could not be loaded. Open Contacts to try again."
+            } else {
+                "Loading contacts…"
+            });
+        } else if state.contacts_len() == 0 && state.incoming().is_empty() {
             ui.label("No contacts yet. Add someone by their username.");
         }
         if ui.button("See all contacts").clicked() {

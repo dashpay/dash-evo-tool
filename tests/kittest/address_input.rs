@@ -30,18 +30,17 @@ use std::sync::{Arc, RwLock};
 /// and exactly one BIP-44 receive address, distinct per `seed`. The snapshot
 /// paths — not the wallet's own bookkeeping — are what the component offers.
 fn wallet(seed: u8, alias: &str) -> WalletWithSnapshot {
-    use dash_sdk::dpp::dashcore::secp256k1::{Secp256k1, SecretKey};
     use dash_sdk::dpp::dashcore::{Address, PublicKey};
     use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
 
     let wallet = Wallet::new_from_seed([seed; 64], Network::Testnet, Some(alias.to_string()), None)
         .expect("wallet from seed");
 
-    let secp = Secp256k1::new();
     let mut sk_bytes = [1u8; 32];
     sk_bytes[31] = seed.max(1);
-    let sk = SecretKey::from_slice(&sk_bytes).expect("valid secret key");
-    let address = Address::p2pkh(&PublicKey::new(sk.public_key(&secp)), Network::Testnet);
+    let sk = dash_sdk::dpp::dashcore::crypto::ecdsa::EcdsaSecretKey::from_bytes(&sk_bytes)
+        .expect("valid secret key");
+    let address = Address::p2pkh(&PublicKey::new(sk.public_key()), Network::Testnet);
 
     // m/44'/1'/0'/0/0 — a BIP-44 external receive path.
     let path = DerivationPath::from(

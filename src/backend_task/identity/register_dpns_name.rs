@@ -98,6 +98,7 @@ async fn broadcast_name_registration<F, Fut>(
     identity: &QualifiedIdentity,
     signing_key: IdentityPublicKey,
     label: &str,
+    approved_contest_fee: u64,
     register: F,
 ) -> Result<Document, BroadcastFailure>
 where
@@ -108,6 +109,7 @@ where
     let preorder_confirmed = Arc::new(AtomicBool::new(false));
     let confirmed = Arc::clone(&preorder_confirmed);
     let input = SdkRegistrationInput {
+        contest_fund: Some(approved_contest_fee),
         label: label.to_owned(),
         identity: identity.identity.clone(),
         identity_public_key: signing_key,
@@ -214,6 +216,7 @@ impl AppContext {
             &qualified_identity,
             public_key.clone(),
             &input.name_input,
+            input.approved_contest_fee,
             register,
         )
         .await
@@ -760,7 +763,7 @@ mod tests {
         let confirmed_preorder = domain_document(identity.identity.id(), "alice-123");
 
         let failure =
-            broadcast_name_registration(&identity, key, "alice-123", |input| async move {
+            broadcast_name_registration(&identity, key, "alice-123", 0, |input| async move {
                 // As the SDK does: report the confirmed first document if asked to.
                 if let Some(report_confirmed) = input.preorder_callback {
                     report_confirmed(&confirmed_preorder);
@@ -776,6 +779,33 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn registration_never_auto_quotes_above_the_approved_contest_fund() {
+        for approved in [0, 50_000_000_000] {
+            let identity = bare_identity(4);
+            let key = dash_sdk::platform::IdentityPublicKey::random_key(
+                1,
+                Some(4),
+                PlatformVersion::latest(),
+            );
+            let _ = broadcast_name_registration(
+                &identity,
+                key,
+                "alice",
+                approved,
+                |input| async move {
+                    assert_eq!(
+                        input.contest_fund,
+                        Some(approved),
+                        "The SDK must receive the exact approved cap, including zero."
+                    );
+                    Err(unproven_broadcast_failure())
+                },
+            )
+            .await;
+        }
+    }
+
     /// With no node to confirm the first document, the broadcast stops there.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn broadcast_that_cannot_confirm_the_first_document_reports_that_stage() {
@@ -789,7 +819,7 @@ mod tests {
             PlatformVersion::latest(),
         );
 
-        let failure = broadcast_name_registration(&identity, key, "alice-123", |input| {
+        let failure = broadcast_name_registration(&identity, key, "alice-123", 0, |input| {
             sdk.register_dpns_name(input)
         })
         .await
@@ -907,6 +937,8 @@ mod tests {
     /// A registered-name document as the network returns it for `label`.
     fn domain_document(owner: Identifier, label: &str) -> Document {
         Document::V0(DocumentV0 {
+            moderated_at: None,
+            moderated_by: None,
             id: Identifier::from([0x5D; 32]),
             owner_id: owner,
             creator_id: None,

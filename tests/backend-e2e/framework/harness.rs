@@ -847,9 +847,9 @@ fn is_slot_held(error: &TaskError) -> bool {
     use platform_wallet_storage::WalletStorageError;
     use platform_wallet_storage::secrets::SecretStoreError;
     match error {
-        TaskError::WalletStorage {
-            source: WalletStorageError::AlreadyOpen { .. },
-        } => true,
+        TaskError::WalletStorage { source } => {
+            matches!(source.as_ref(), WalletStorageError::AlreadyOpen { .. })
+        }
         TaskError::SecretStore { source } => matches!(**source, SecretStoreError::AlreadyLocked),
         _ => false,
     }
@@ -1090,7 +1090,8 @@ mod workdir_tests {
         assert!(is_slot_held(&TaskError::WalletStorage {
             source: WalletStorageError::AlreadyOpen {
                 path: PathBuf::from("/w/det-app.sqlite"),
-            },
+            }
+            .into(),
         }));
         assert!(is_slot_held(&TaskError::SecretStore {
             source: Box::new(SecretStoreError::AlreadyLocked),
@@ -1100,7 +1101,8 @@ mod workdir_tests {
             source: WalletStorageError::InsecureParentDir {
                 ancestor: PathBuf::from("/data/tmp"),
                 reason: InsecureAncestor::WritableWithoutSticky { mode: 0o775 },
-            },
+            }
+            .into(),
         }));
         assert!(!is_slot_held(&TaskError::SecretStore {
             source: Box::new(SecretStoreError::Corruption),
@@ -1186,9 +1188,12 @@ mod workdir_tests {
         assert_eq!(dir, &base, "the scan stops at the first slot");
         assert_eq!(*store, WorkdirStore::AppKv);
         match source.as_ref() {
-            TaskError::WalletDataFolderInsecure {
-                source: WalletStorageError::InsecureParentDir { ancestor, .. },
-            } => assert_eq!(ancestor, &shared, "the refused ancestor is named"),
+            TaskError::WalletDataFolderInsecure { source } => {
+                let WalletStorageError::InsecureParentDir { ancestor, .. } = source.as_ref() else {
+                    panic!("expected insecure ancestor, got: {source:?}");
+                };
+                assert_eq!(ancestor, &shared, "the refused ancestor is named");
+            }
             other => panic!("expected WalletDataFolderInsecure, got: {other:?}"),
         }
         assert!(

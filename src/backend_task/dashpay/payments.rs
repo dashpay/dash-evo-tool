@@ -185,12 +185,11 @@ pub async fn derive_contact_payment_address(
 
     // Create extended public key from components
     // This is simplified - in production you'd properly reconstruct with all fields
-    use dash_sdk::dpp::dashcore::secp256k1::{PublicKey, Secp256k1};
+    use dash_sdk::dpp::dashcore::crypto::ecdsa::EcdsaPublicKey as PublicKey;
     use dash_sdk::dpp::key_wallet::bip32::{ChainCode, ChildNumber, ExtendedPubKey, Fingerprint};
 
-    let _secp = Secp256k1::new();
     let pubkey =
-        PublicKey::from_slice(&public_key).map_err(|e| format!("Invalid public key: {}", e))?;
+        PublicKey::from_bytes(&public_key).map_err(|e| format!("Invalid public key: {}", e))?;
 
     // Note: This is a simplified reconstruction - proper implementation would preserve all fields
     let xpub = ExtendedPubKey {

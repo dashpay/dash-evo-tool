@@ -699,13 +699,12 @@ mod tests {
 
     /// Derive a real, checksum-valid testnet P2PKH address from a fixed key.
     fn sample_core_address() -> String {
-        use dash_sdk::dashcore_rpc::dashcore::secp256k1::{Secp256k1, SecretKey};
+        use dash_sdk::dashcore_rpc::dashcore::crypto::ecdsa::EcdsaSecretKey as SecretKey;
         use dash_sdk::dashcore_rpc::dashcore::{Address, Network, PrivateKey, PublicKey};
 
-        let secp = Secp256k1::new();
-        let sk = SecretKey::from_slice(&[7u8; 32]).expect("valid secret key");
+        let sk = SecretKey::from_bytes(&[7u8; 32]).expect("valid secret key");
         let privkey = PrivateKey::new(sk, Network::Testnet);
-        let pubkey = PublicKey::from_private_key(&secp, &privkey);
+        let pubkey = PublicKey::from_private_key(&privkey);
         Address::p2pkh(&pubkey, Network::Testnet).to_string()
     }
 
@@ -855,11 +854,11 @@ mod tests {
     }
 
     fn testnet_core_address() -> String {
-        use dash_sdk::dashcore_rpc::dashcore::secp256k1::{Secp256k1, SecretKey};
+        use dash_sdk::dashcore_rpc::dashcore::crypto::ecdsa::EcdsaSecretKey as SecretKey;
         use dash_sdk::dashcore_rpc::dashcore::{Address, Network, PrivateKey, PublicKey};
-        let secp = Secp256k1::new();
-        let sk = SecretKey::from_slice(&[9u8; 32]).expect("valid secret key");
-        let pk = PublicKey::from_private_key(&secp, &PrivateKey::new(sk, Network::Testnet));
+
+        let sk = SecretKey::from_bytes(&[9u8; 32]).expect("valid secret key");
+        let pk = PublicKey::from_private_key(&PrivateKey::new(sk, Network::Testnet));
         Address::p2pkh(&pk, Network::Testnet).to_string()
     }
 
@@ -933,11 +932,11 @@ mod tests {
 
     #[test]
     fn transfer_mode_cross_network_address_rejected() {
-        use dash_sdk::dashcore_rpc::dashcore::secp256k1::{Secp256k1, SecretKey};
+        use dash_sdk::dashcore_rpc::dashcore::crypto::ecdsa::EcdsaSecretKey as SecretKey;
         use dash_sdk::dashcore_rpc::dashcore::{Address, Network, PrivateKey, PublicKey};
-        let secp = Secp256k1::new();
-        let sk = SecretKey::from_slice(&[3u8; 32]).expect("valid secret key");
-        let pk = PublicKey::from_private_key(&secp, &PrivateKey::new(sk, Network::Mainnet));
+
+        let sk = SecretKey::from_bytes(&[3u8; 32]).expect("valid secret key");
+        let pk = PublicKey::from_private_key(&PrivateKey::new(sk, Network::Mainnet));
         let mainnet_addr = Address::p2pkh(&pk, Network::Mainnet).to_string();
 
         let qi = masternode_fixture(false, true);

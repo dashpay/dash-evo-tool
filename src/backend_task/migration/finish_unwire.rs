@@ -3955,7 +3955,7 @@ mod tests {
         use crate::wallet_backend::single_key::{
             SingleKeyView, label_for_address, single_key_namespace_id,
         };
-        use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
+
         use dash_sdk::dpp::dashcore::{Address, Network, PrivateKey, PublicKey};
 
         let dir = tempfile::tempdir().expect("tempdir");
@@ -3970,7 +3970,7 @@ mod tests {
         let priv_key = PrivateKey::from_byte_array(&raw, Network::Testnet).expect("priv");
         let pub_key = PublicKey {
             compressed: priv_key.compressed,
-            inner: priv_key.inner.public_key(&Secp256k1::new()),
+            inner: priv_key.inner.public_key(),
         };
         let address = Address::p2pkh(&pub_key, Network::Testnet).to_string();
         let key_hash = crate::model::wallet::single_key::ClosedSingleKey::compute_key_hash(&raw);

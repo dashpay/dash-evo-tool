@@ -91,6 +91,7 @@ impl AppContext {
     /// The lookup for a registered name with this normalized label.
     pub(super) fn dpns_domain_query(&self, normalized: &str) -> DocumentQuery {
         DocumentQuery {
+            integer_range_clauses: vec![],
             sub_queries: Vec::new(),
             select: SelectProjection::documents(),
             data_contract: self.dpns_contract.clone(),
@@ -440,6 +441,7 @@ mod tests {
 
     async fn sdk_with_owned_name(ctx: &AppContext, id: Identifier) -> Sdk {
         let query = DocumentQuery {
+            integer_range_clauses: vec![],
             sub_queries: vec![],
             select: SelectProjection::documents(),
             data_contract: ctx.dpns_contract.clone(),
@@ -458,6 +460,8 @@ mod tests {
             start: None,
         };
         let document = Document::V0(dash_sdk::dpp::document::DocumentV0 {
+            moderated_at: None,
+            moderated_by: None,
             id: Identifier::from([88; 32]),
             owner_id: id,
             creator_id: None,

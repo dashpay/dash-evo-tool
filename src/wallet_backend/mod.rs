@@ -1769,7 +1769,9 @@ impl WalletBackend {
             .delete_wallet_skip_backup(*wallet_id)
         {
             Ok(_) | Err(WalletStorageError::WalletNotFound { .. }) => Ok(()),
-            Err(source) => Err(TaskError::WalletStorage { source }),
+            Err(source) => Err(TaskError::WalletStorage {
+                source: source.into(),
+            }),
         }
     }
 
@@ -2339,7 +2341,7 @@ impl WalletBackend {
         &self,
         address: &str,
         msg: &[u8; 32],
-    ) -> Result<dash_sdk::dpp::dashcore::secp256k1::ecdsa::Signature, TaskError> {
+    ) -> Result<dash_sdk::dpp::dashcore::crypto::ecdsa::EcdsaSignature, TaskError> {
         let scope = SecretScope::SingleKey {
             address: address.to_string(),
         };
@@ -3548,6 +3550,10 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::MessageSigningMessageInvalid { .. }
         | P::MessageSigningKeyUnavailable { .. }
         | P::MessageSigningFailed { .. }
+        | P::PersisterFlush(_)
+        | P::AssetLockTooManyInputs { .. }
+        | P::QuorumNotVerified { .. }
+        | P::SpvProcessRestartRequired(_)
         | P::ShutdownIncomplete(_)) => TaskError::WalletBackend {
             source: Arc::new(other),
         },
@@ -3867,7 +3873,6 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         | P::ContestedNameNotTradable { .. }
         | P::DocumentNotForSale { .. }
         | P::DocumentPriceChanged { .. }
-        | P::InvitationNetworkMismatch { .. }
         | P::InvalidParameter(_)
         // Message signing is a wallet-local operation with no Platform
         // submission at all.
@@ -3879,7 +3884,12 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         // know", so it is not `NotManaged` (which asserts the identity is
         // absent and must be reloaded); upstream's contract is to retry.
         | P::IdentityDiscoveryIncomplete { .. }
+        | P::PersisterFlush(_)
         | P::IdentityBalanceUnavailable(_)
+        | P::InvitationNetworkMismatch { .. }
+        | P::AssetLockTooManyInputs { .. }
+        | P::QuorumNotVerified { .. }
+        | P::SpvProcessRestartRequired(_)
         // Background sync failed to quiesce — a shutdown fault, unrelated to
         // whether this op reached Platform.
         | P::ShutdownIncomplete(_) => IdentityOpErrorKind::Other,

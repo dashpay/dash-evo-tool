@@ -24,5 +24,5 @@ pub enum DerivationError {
 
     /// A secp256k1 operation on derived key material failed.
     #[error("The wallet key material could not be processed. The wallet data may be invalid.")]
-    Secp256k1(#[from] dash_sdk::dpp::dashcore::secp256k1::Error),
+    Secp256k1(#[from] dash_sdk::dpp::dashcore::crypto::ecdsa::EcdsaError),
 }

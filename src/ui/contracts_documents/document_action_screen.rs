@@ -805,9 +805,13 @@ impl DocumentActionScreen {
                                     .background_color(DashColors::input_background(dark_mode)),
                             );
                         }
+                        DocumentPropertyType::TypedArray(_) => {
+                            ui.label(
+                                "This field cannot be edited here. Use another document editor.",
+                            );
+                        }
                         DocumentPropertyType::Object(_)
                         | DocumentPropertyType::Array(_)
-                        | DocumentPropertyType::TypedArray(_)
                         | DocumentPropertyType::VariableTypeArray(_) => {
                             let dark_mode = ui.style().visuals.dark_mode;
                             ui.add(
@@ -1257,6 +1261,10 @@ impl DocumentActionScreen {
             .as_ref()
             .ok_or("No identity selected")?;
 
+        if !Self::supports_field_editor(doc_type) {
+            return Err("This document contains fields that cannot be edited here. Use another document editor.".to_string());
+        }
+
         for (prop, schema) in doc_type.properties() {
             let entry = self.field_inputs.get(prop).map(|s| s.trim());
             if schema.required && entry.unwrap_or("").is_empty() {
@@ -1374,15 +1382,18 @@ impl DocumentActionScreen {
                         .map_err(|_| format!("{} (Date) expects unix-ms integer", name))?;
                     Value::U64(ts)
                 }
+                DocumentPropertyType::TypedArray(_) => {
+                    return Err(format!(
+                        "Field {name} cannot be edited here. Use another document editor."
+                    ));
+                }
                 DocumentPropertyType::Object(_) => {
                     return Err(format!(
                         "Object field {} must be supplied via JSON textarea",
                         name
                     ));
                 }
-                DocumentPropertyType::Array(_)
-                | DocumentPropertyType::TypedArray(_)
-                | DocumentPropertyType::VariableTypeArray(_) => {
+                DocumentPropertyType::Array(_) | DocumentPropertyType::VariableTypeArray(_) => {
                     return Err(format!(
                         "Array field {} must be supplied via JSON textarea",
                         name
@@ -1415,6 +1426,8 @@ impl DocumentActionScreen {
             properties,
             owner_id,
             creator_id: None,
+            moderated_at: None,
+            moderated_by: None,
             revision,
             created_at: None,
             updated_at: None,
@@ -1437,6 +1450,10 @@ impl DocumentActionScreen {
             .selected_document_type
             .as_ref()
             .ok_or("No document-type selected")?;
+
+        if !Self::supports_field_editor(doc_type) {
+            return Err("This document contains fields that cannot be edited here. Use another document editor.".to_string());
+        }
 
         for (prop, schema) in doc_type.properties() {
             let entry = self.field_inputs.get(prop).map(|s| s.trim());
@@ -1555,15 +1572,18 @@ impl DocumentActionScreen {
                         .map_err(|_| format!("{} (Date) expects unix-ms integer", name))?;
                     Value::U64(ts)
                 }
+                DocumentPropertyType::TypedArray(_) => {
+                    return Err(format!(
+                        "Field {name} cannot be edited here. Use another document editor."
+                    ));
+                }
                 DocumentPropertyType::Object(_) => {
                     return Err(format!(
                         "Object field {} must be supplied via JSON textarea",
                         name
                     ));
                 }
-                DocumentPropertyType::Array(_)
-                | DocumentPropertyType::TypedArray(_)
-                | DocumentPropertyType::VariableTypeArray(_) => {
+                DocumentPropertyType::Array(_) | DocumentPropertyType::VariableTypeArray(_) => {
                     return Err(format!(
                         "Array field {} must be supplied via JSON textarea",
                         name
@@ -1588,6 +1608,8 @@ impl DocumentActionScreen {
             properties,
             owner_id: original_doc.owner_id(),
             creator_id: original_doc.creator_id(),
+            moderated_at: original_doc.moderated_at(),
+            moderated_by: original_doc.moderated_by(),
             revision: new_revision,
             created_at: None,
             updated_at: None,
@@ -1604,7 +1626,26 @@ impl DocumentActionScreen {
         Ok((updated_doc.into(), entropy))
     }
 
+    fn supports_field_editor(
+        doc_type: &dash_sdk::dpp::data_contract::document_type::DocumentType,
+    ) -> bool {
+        !doc_type
+            .properties()
+            .values()
+            .any(|schema| matches!(schema.property_type, DocumentPropertyType::TypedArray(_)))
+    }
+
     fn can_broadcast(&self) -> bool {
+        if matches!(
+            self.action_type,
+            DocumentActionType::Create | DocumentActionType::Replace
+        ) && self
+            .selected_document_type
+            .as_ref()
+            .is_some_and(|doc_type| !Self::supports_field_editor(doc_type))
+        {
+            return false;
+        }
         match self.action_type {
             DocumentActionType::Create => !self.field_inputs.is_empty(),
             DocumentActionType::Delete => !self.document_id_input.is_empty(),
@@ -1899,5 +1940,74 @@ impl DocumentActionScreen {
                 action
             })
             .inner
+    }
+}
+
+#[cfg(test)]
+mod sdk_adapter_tests {
+    use super::*;
+    fn editor_document_type(array: bool) -> DocumentType {
+        use dash_sdk::dpp::data_contract::config::DataContractConfig;
+        use dash_sdk::dpp::platform_value::platform_value;
+        use dash_sdk::dpp::version::PlatformVersion;
+
+        let version = PlatformVersion::get(14).expect("protocol 14");
+        let config = DataContractConfig::default_for_version(version).unwrap();
+        let property = if array {
+            platform_value!({"type": "array", "items": {"type": "string", "maxLength": 20_u32}, "maxItems": 4_u32, "position": 0_u32})
+        } else {
+            platform_value!({"type": "string", "maxLength": 20_u32, "position": 0_u32})
+        };
+        DocumentType::try_from_schema(
+            Identifier::new([1; 32]), 1, config.version(), "entry",
+            platform_value!({"type": "object", "properties": {"value": property}, "additionalProperties": false}),
+            None, &BTreeMap::new(), &config, false, &mut Vec::new(), version,
+        ).unwrap()
+    }
+
+    #[test]
+    fn replacing_an_optional_typed_array_does_not_drop_its_contents() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let mut screen = DocumentActionScreen::new(context, None, DocumentActionType::Replace);
+        screen.selected_document_type = Some(editor_document_type(true));
+        screen.original_doc = Some(
+            DocumentV0 {
+                properties: BTreeMap::from([(
+                    "value".to_string(),
+                    Value::Array(vec![Value::Text("keep".into())]),
+                )]),
+                ..Default::default()
+            }
+            .into(),
+        );
+        screen.broadcast_status = BroadcastStatus::Fetched;
+        assert!(!screen.can_broadcast());
+        assert!(screen.try_build_document_from_original().is_err());
+        assert!(matches!(screen.create_replace_task(), BackendTask::None));
+    }
+
+    #[test]
+    fn replacing_document_fields_preserves_moderation_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let mut screen = DocumentActionScreen::new(context, None, DocumentActionType::Replace);
+        screen.selected_document_type = Some(editor_document_type(false));
+        screen.original_doc = Some(
+            DocumentV0 {
+                moderated_at: Some(1234),
+                moderated_by: Some(Identifier::new([7; 32])),
+                ..Default::default()
+            }
+            .into(),
+        );
+        screen.field_inputs.insert("value".into(), "changed".into());
+        let (document, _) = screen.try_build_document_from_original().unwrap();
+        assert_eq!(document.moderated_at(), Some(1234));
+        assert_eq!(document.moderated_by(), Some(Identifier::new([7; 32])));
+        assert_eq!(
+            document.properties().get("value"),
+            Some(&Value::Text("changed".into()))
+        );
     }
 }

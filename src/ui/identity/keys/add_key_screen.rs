@@ -1382,13 +1382,13 @@ mod derived_key_tests {
                 contract_bounds: None,
                 read_only: false,
                 disabled_at: None,
-                data: dash_sdk::dpp::dashcore::secp256k1::PublicKey::from_slice(&[
+                data: dash_sdk::dpp::dashcore::crypto::ecdsa::EcdsaPublicKey::from_bytes(&[
                     0x02, 0x79, 0xBE, 0x66, 0x7E, 0xF9, 0xDC, 0xBB, 0xAC, 0x55, 0xA0, 0x62, 0x95,
                     0xCE, 0x87, 0x0B, 0x07, 0x02, 0x9B, 0xFC, 0xDB, 0x2D, 0xCE, 0x28, 0xD9, 0x59,
                     0xF2, 0x81, 0x5B, 0x16, 0xF8, 0x17, 0x98,
                 ])
                 .unwrap()
-                .serialize()
+                .to_compressed()
                 .to_vec()
                 .into(),
             }
@@ -1674,7 +1674,7 @@ mod derived_key_tests {
     /// follow the fresh record.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn derived_key_id_change_refreshes_and_reselects_the_matching_slot() {
-        use dash_sdk::dpp::dashcore::secp256k1::{PublicKey, Secp256k1, SecretKey};
+        use dash_sdk::dpp::dashcore::crypto::ecdsa::EcdsaSecretKey as SecretKey;
         use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
         use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
 
@@ -1707,13 +1707,8 @@ mod derived_key_tests {
         let mut refreshed = identity.clone();
         let mut foreign = identity.identity.public_keys()[&0].clone();
         foreign.set_id(1);
-        let secret = SecretKey::from_slice(&[9; 32]).unwrap();
-        foreign.set_data(
-            PublicKey::from_secret_key(&Secp256k1::new(), &secret)
-                .serialize()
-                .to_vec()
-                .into(),
-        );
+        let secret = SecretKey::from_bytes(&[9; 32]).unwrap();
+        foreign.set_data(secret.public_key().to_compressed().to_vec().into());
         refreshed.identity.add_public_key(foreign);
         staged
             .ctx

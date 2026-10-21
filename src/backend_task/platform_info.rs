@@ -744,6 +744,7 @@ impl AppContext {
                 let withdrawal_contract = withdrawals_contract()?;
 
                 let queued_document_query = DocumentQuery {
+                    integer_range_clauses: vec![],
                     sub_queries: Vec::new(),
                     select: SelectProjection::documents(),
                     data_contract: Arc::new(withdrawal_contract),
@@ -791,6 +792,7 @@ impl AppContext {
                 let withdrawal_contract = withdrawals_contract()?;
 
                 let completed_document_query = DocumentQuery {
+                    integer_range_clauses: vec![],
                     sub_queries: Vec::new(),
                     select: SelectProjection::documents(),
                     data_contract: Arc::new(withdrawal_contract),
@@ -910,6 +912,7 @@ impl AppContext {
                 ];
 
                 let query = DocumentQuery {
+                    integer_range_clauses: vec![],
                     sub_queries: Vec::new(),
                     select: SelectProjection::documents(),
                     data_contract: Arc::new(withdrawal_contract),

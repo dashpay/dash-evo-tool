@@ -132,7 +132,7 @@ fn find_wallet_path(
 mod tests {
     use super::*;
     use dash_sdk::dpp::dashcore::hashes::Hash;
-    use dash_sdk::dpp::dashcore::secp256k1::{Secp256k1, SecretKey};
+    use dash_sdk::dpp::dashcore::secp256k1::SecretKey;
     use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
     use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
     use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, KeyDerivationType};
@@ -145,9 +145,9 @@ mod tests {
     fn pubkey(n: u8) -> PublicKey {
         let mut sk_bytes = [3u8; 32];
         sk_bytes[31] = n.max(1);
-        let secp = Secp256k1::new();
-        let sk = SecretKey::from_slice(&sk_bytes).expect("valid secret key");
-        PublicKey::new(sk.public_key(&secp))
+
+        let sk = SecretKey::from_secret_bytes(sk_bytes).expect("valid secret key");
+        PublicKey::new(sk.public_key())
     }
 
     /// An identity public key of `key_type` carrying `data`. `id`/`purpose`/

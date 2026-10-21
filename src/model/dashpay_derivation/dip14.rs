@@ -6,7 +6,7 @@ use dash_sdk::dpp::dashcore::hashes::sha512;
 /// This module implements Extended Key Derivation using 256-bit Unsigned Integers
 /// as specified in DIP-0014 for DashPay contact relationships.
 use dash_sdk::dpp::dashcore::hashes::{Hash, HashEngine};
-use dash_sdk::dpp::dashcore::secp256k1::{PublicKey, Secp256k1, SecretKey};
+use dash_sdk::dpp::dashcore::secp256k1::{PublicKey, SecretKey};
 use dash_sdk::dpp::key_wallet::bip32::{ChainCode, ExtendedPrivKey, ExtendedPubKey, Fingerprint};
 use dash_sdk::platform::Identifier;
 
@@ -22,8 +22,6 @@ pub fn ckd_priv_256(
     index: &[u8; 32], // 256-bit index
     hardened: bool,
 ) -> Result<ExtendedPrivKey, DerivationError> {
-    let secp = Secp256k1::new();
-
     // Check if this is a compatibility mode derivation (index < 2^32)
     let is_compatibility_mode = is_index_less_than_2_32(index);
 
@@ -33,7 +31,7 @@ pub fn ckd_priv_256(
     if hardened {
         // Hardened derivation: 0x00 || ser_256(k_par) || ser(i)
         hmac_engine.input(&[0x00]);
-        hmac_engine.input(&parent_key.private_key.secret_bytes());
+        hmac_engine.input(&parent_key.private_key.to_secret_bytes());
 
         if is_compatibility_mode {
             // Use ser_32(i) for compatibility
@@ -44,7 +42,7 @@ pub fn ckd_priv_256(
         }
     } else {
         // Non-hardened derivation: ser_P(point(k_par)) || ser(i)
-        let parent_pubkey = parent_key.private_key.public_key(&secp);
+        let parent_pubkey = parent_key.private_key.public_key();
         hmac_engine.input(&parent_pubkey.serialize());
 
         if is_compatibility_mode {
@@ -63,7 +61,10 @@ pub fn ckd_priv_256(
     let (i_l, i_r) = hmac_bytes.split_at(32);
 
     // Parse I_L as a private key and add to parent key
-    let i_l_key = SecretKey::from_slice(i_l)?;
+    let i_l_key = SecretKey::from_secret_bytes(
+        i_l.try_into()
+            .map_err(|_| dash_sdk::dpp::dashcore::secp256k1::Error::InvalidSecretKey)?,
+    )?;
 
     // k_i = parse_256(I_L) + k_par (mod n)
     let child_key = parent_key.private_key.add_tweak(&i_l_key.into())?;
@@ -74,7 +75,7 @@ pub fn ckd_priv_256(
     let child_chain_code = ChainCode::from(chain_code_bytes);
 
     // Calculate child fingerprint
-    let parent_pubkey = parent_key.private_key.public_key(&secp);
+    let parent_pubkey = parent_key.private_key.public_key();
     let parent_fingerprint = calculate_fingerprint(&parent_pubkey);
 
     // Create the child extended private key
@@ -113,8 +114,8 @@ pub fn derive_dashpay_incoming_xpub_dip14(
     let base_path = DerivationPath::from_str(&format!("m/9'/{coin_type}'/15'/{account}'"))?;
 
     // Derive to the account level using standard BIP32
-    let secp = Secp256k1::new();
-    let account_xprv = master_xprv.derive_priv(&secp, &base_path)?;
+
+    let account_xprv = master_xprv.derive_priv(&base_path)?;
 
     // Now use DIP-14 256-bit derivation for the identity levels
     // Derive: account_key/(sender_id)
@@ -126,7 +127,7 @@ pub fn derive_dashpay_incoming_xpub_dip14(
     let contact_xprv = ckd_priv_256(&sender_level, &recipient_index, false)?;
 
     // Convert to extended public key
-    Ok(ExtendedPubKey::from_priv(&secp, &contact_xprv))
+    Ok(ExtendedPubKey::from_priv(&contact_xprv))
 }
 
 /// Convert an Identifier to a 256-bit index for DIP-14 derivation

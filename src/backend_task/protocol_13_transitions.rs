@@ -168,6 +168,8 @@ fn note_contract(platform_version: &PlatformVersion) -> dash_sdk::platform::Data
 
 fn note(owner_id: Identifier) -> Document {
     Document::V0(DocumentV0 {
+        moderated_at: None,
+        moderated_by: None,
         id: Identifier::from([9; 32]),
         owner_id,
         creator_id: None,

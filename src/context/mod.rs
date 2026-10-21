@@ -1143,6 +1143,7 @@ impl AppContext {
         // and purpose checks when signing a state transition.
         if self.user_role().at_least(UserRole::Developer) {
             Some(StateTransitionCreationOptions {
+                contest_fund: None,
                 signing_options: StateTransitionSigningOptions {
                     allow_signing_with_any_security_level: true,
                     allow_signing_with_any_purpose: true,

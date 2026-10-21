@@ -130,6 +130,7 @@ impl AppContext {
         document_id: Identifier,
     ) -> Result<Document, TaskError> {
         let document_query = DocumentQuery {
+            integer_range_clauses: vec![],
             sub_queries: Vec::new(),
             select: SelectProjection::documents(),
             data_contract,
@@ -237,6 +238,12 @@ impl AppContext {
                 identity_key,
                 action_fee_agreement,
             } => {
+                let contest_fund = crate::model::fee_estimation::document_create_contest_fund_cap(
+                    document_type.as_ref(),
+                    &document,
+                    sdk.version(),
+                )
+                .map_err(|error| dash_sdk::Error::Protocol(*error))?;
                 let mut builder = DocumentCreateTransitionBuilder::new(
                     data_contract,
                     document_type.name().to_string(),
@@ -248,7 +255,12 @@ impl AppContext {
                     builder = builder.with_token_payment_info(token_payment);
                 }
 
-                let maybe_options = self.state_transition_options();
+                let mut maybe_options = self.state_transition_options();
+                if let Some(cap) = contest_fund {
+                    maybe_options
+                        .get_or_insert_with(Default::default)
+                        .contest_fund = Some(cap);
+                }
                 if let Some(options) = maybe_options {
                     builder = builder.with_state_transition_creation_options(options);
                 }

@@ -19,7 +19,7 @@ use crate::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::Credits;
 use dash_sdk::dpp::dashcore::hashes::Hash;
-use dash_sdk::dpp::dashcore::secp256k1::{Message, Secp256k1, SecretKey};
+use dash_sdk::dpp::dashcore::secp256k1::{Message, SecretKey};
 use dash_sdk::dpp::dashcore::sign_message::{MessageSignature, signed_msg_hash};
 use dash_sdk::dpp::dashcore::{OutPoint, PrivateKey};
 use dash_sdk::dpp::identity::core_script::CoreScript;
@@ -40,10 +40,12 @@ pub(crate) fn dash_signed_message(
     secret_key: &SecretKey,
     compressed: bool,
 ) -> String {
-    let secp = Secp256k1::new();
     let message_hash = signed_msg_hash(message);
     let digest = Message::from_digest(*message_hash.as_byte_array());
-    let recoverable = secp.sign_ecdsa_recoverable(&digest, secret_key);
+    let recoverable =
+        dash_sdk::dpp::dashcore::secp256k1::ecdsa::RecoverableSignature::sign_ecdsa_recoverable(
+            digest, secret_key,
+        );
     MessageSignature::new(recoverable, compressed).to_base64()
 }
 
@@ -183,7 +185,7 @@ impl AppContext {
                     .ok_or(TaskError::IdentityKeyMissing)?;
                 // Present-but-malformed key bytes are distinct from a
                 // genuinely absent key and from a signing/derivation failure.
-                let secret_key = SecretKey::from_byte_array(key).map_err(|detail| {
+                let secret_key = SecretKey::from_secret_bytes(*key).map_err(|detail| {
                     tracing::warn!(error = %detail, "Identity-key secret construction failed");
                     TaskError::IdentityKeyMalformed
                 })?;
@@ -506,9 +508,8 @@ mod tests {
     /// hardcoded recovery header would fail ~50% of the time here. Both the
     /// wallet-key and identity-key signers call this one helper.
     fn assert_recovers(compressed: bool) {
-        let secp = Secp256k1::new();
-        let secret_key = SecretKey::from_byte_array(&[0x42u8; 32]).expect("valid secret");
-        let expected_pubkey = PublicKey::from_secret_key(&secp, &secret_key);
+        let secret_key = SecretKey::from_secret_bytes([0x42u8; 32]).expect("valid secret");
+        let expected_pubkey = PublicKey::from_secret_key(&secret_key);
         let message = "Bilby was here";
 
         let base64 = dash_signed_message(message, &secret_key, compressed);
@@ -516,7 +517,7 @@ mod tests {
         assert_eq!(parsed.compressed, compressed);
 
         let recovered = parsed
-            .recover_pubkey(&secp, signed_msg_hash(message))
+            .recover_pubkey(signed_msg_hash(message))
             .expect("recovers a public key");
         assert_eq!(recovered.inner, expected_pubkey);
         assert_eq!(recovered.compressed, compressed);
@@ -603,7 +604,7 @@ mod tests {
 
         let bytes = fixture
             .ctx
-            .with_identity_secret_key(identity_id, MAIN, 7, |key| Ok(key.secret_bytes()))
+            .with_identity_secret_key(identity_id, MAIN, 7, |key| Ok(key.to_secret_bytes()))
             .await
             .expect("a key that matches its record must resolve");
 
@@ -746,7 +747,7 @@ mod tests {
 
         let bytes = fixture
             .ctx
-            .with_identity_secret_key(identity_id, MAIN, 7, |key| Ok(key.secret_bytes()))
+            .with_identity_secret_key(identity_id, MAIN, 7, |key| Ok(key.to_secret_bytes()))
             .await
             .expect("the sibling placement's live bytes must be served");
 

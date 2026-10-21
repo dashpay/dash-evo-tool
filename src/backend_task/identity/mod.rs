@@ -1398,10 +1398,7 @@ mod tests {
     /// rejected or the wallet could not sign for its own identity.
     #[test]
     fn identity_key_entry_public_matches_private_derivation() {
-        use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
-
         let seed = [0x42u8; 64];
-        let secp = Secp256k1::new();
 
         for network in [Network::Testnet, Network::Mainnet] {
             let wallet = Wallet::new_from_seed(seed, network, None, None).expect("build wallet");
@@ -1440,7 +1437,7 @@ mod tests {
 
                     assert_eq!(
                         entry.public_key.inner.serialize(),
-                        private_key.public_key(&secp).inner.serialize(),
+                        private_key.public_key().inner.serialize(),
                         "public/private key drift at ({network:?}, id={identity_index}, key={key_index})"
                     );
 
@@ -1527,10 +1524,11 @@ mod tests {
             .expect("resolve master")
             .expect("master present");
         // The resolved private key's public key must match the spec's public key.
-        let secp = dash_sdk::dpp::dashcore::secp256k1::Secp256k1::new();
-        let resolved_pub = dash_sdk::dpp::dashcore::secp256k1::SecretKey::from_slice(&stored.1[..])
-            .expect("secret")
-            .public_key(&secp);
+
+        let resolved_pub =
+            dash_sdk::dpp::dashcore::secp256k1::SecretKey::from_secret_bytes(*stored.1)
+                .expect("secret")
+                .public_key();
         assert_eq!(
             master.public_key.inner.serialize(),
             resolved_pub.serialize(),

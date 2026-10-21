@@ -2896,6 +2896,9 @@ pub enum TaskError {
     // ──────────────────────────────────────────────────────────────────────────
     // Token query errors
     // ──────────────────────────────────────────────────────────────────────────
+    #[error("Shielded token settings cannot be changed here yet. Use a supported token setting instead.")]
+    TokenShieldedConfigurationUnsupported,
+
     /// Querying token data from the platform failed.
     #[error("Could not retrieve token information from the platform. Please retry.")]
     TokenQueryError { detail: String },

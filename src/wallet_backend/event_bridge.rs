@@ -286,6 +286,17 @@ impl EventHandler for EventBridge {
                 *wallet_id
             }
             WalletEvent::SyncHeightAdvanced { wallet_id, .. } => *wallet_id,
+            WalletEvent::ChainTruncated {
+                wallet_id,
+                txids,
+                unconfirmed_txids,
+                ..
+            } => {
+                self.snapshots.remove_transactions(wallet_id, txids);
+                self.snapshots
+                    .unconfirm_instant_locked(wallet_id, unconfirmed_txids);
+                *wallet_id
+            }
             WalletEvent::TransactionsSwept {
                 wallet_id, txids, ..
             } => {

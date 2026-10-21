@@ -10,7 +10,7 @@
 
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit};
-use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
+
 use dash_sdk::dpp::dashcore::{Address, Network, OutPoint, PrivateKey, PublicKey, TxOut};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -233,12 +233,10 @@ impl SingleKeyWallet {
         password: Option<&str>,
         alias: Option<String>,
     ) -> Result<Self, String> {
-        let secp = Secp256k1::new();
-
         // Create PrivateKey and derive public key and address
         let private_key =
             PrivateKey::from_byte_array(&private_key_bytes, network).map_err(|e| e.to_string())?;
-        let public_key = private_key.public_key(&secp);
+        let public_key = private_key.public_key();
         let address = Address::p2pkh(&public_key, network);
 
         let key_hash = ClosedSingleKey::compute_key_hash(&private_key_bytes);
@@ -518,8 +516,8 @@ mod tests {
         // Through a SingleKeyWallet that holds the closed key.
         let priv_key =
             PrivateKey::from_byte_array(&secret, Network::Testnet).expect("valid key bytes");
-        let secp = Secp256k1::new();
-        let public_key = priv_key.public_key(&secp);
+
+        let public_key = priv_key.public_key();
         let address = Address::p2pkh(&public_key, Network::Testnet);
         let wallet = SingleKeyWallet {
             private_key_data: data,

@@ -21,7 +21,6 @@ use crate::model::wallet::{Wallet, WalletSeedHash};
 use bincode::{Decode, Encode};
 use dash_sdk::dashcore_rpc::dashcore::{PubkeyHash, signer};
 use dash_sdk::dpp::async_trait::async_trait;
-use dash_sdk::dpp::bls_signatures::{Bls12381G2Impl, SignatureSchemes};
 use dash_sdk::dpp::dashcore::address::Payload;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{Address, Network, ScriptHash};
@@ -38,7 +37,7 @@ use dash_sdk::dpp::key_wallet::bip32::ChildNumber;
 use dash_sdk::dpp::platform_value::BinaryData;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::state_transition::errors::InvalidIdentityPublicKeyTypeError;
-use dash_sdk::dpp::{ProtocolError, bls_signatures, ed25519_dalek};
+use dash_sdk::dpp::{ProtocolError, bls, ed25519_dalek};
 use dash_sdk::platform::IdentityPublicKey;
 use std::collections::BTreeMap;
 use std::fmt::{Display, Formatter};
@@ -448,13 +447,12 @@ impl Signer<IdentityPublicKey> for QualifiedIdentity {
                 if identity_public_key.key_type() == KeyType::ECDSA_HASH160 {
                     use dash_sdk::dpp::dashcore::PublicKey;
                     use dash_sdk::dpp::dashcore::hashes::{Hash, ripemd160, sha256};
-                    use dash_sdk::dpp::dashcore::secp256k1::{Secp256k1, SecretKey};
+                    use dash_sdk::dpp::dashcore::secp256k1::SecretKey;
 
                     let platform_key_data = identity_public_key.data().as_slice();
 
-                    if let Ok(secret_key) = SecretKey::from_slice(&private_key[..]) {
-                        let secp = Secp256k1::new();
-                        let derived_pubkey = PublicKey::new(secret_key.public_key(&secp));
+                    if let Ok(secret_key) = SecretKey::from_secret_bytes(*private_key) {
+                        let derived_pubkey = PublicKey::new(secret_key.public_key());
                         let pubkey_bytes = derived_pubkey.to_bytes();
                         let sha256_hash = sha256::Hash::hash(&pubkey_bytes);
                         let hash160 = ripemd160::Hash::hash(sha256_hash.as_byte_array());
@@ -485,17 +483,10 @@ impl Signer<IdentityPublicKey> for QualifiedIdentity {
                 Ok(signature.to_vec().into())
             }
             KeyType::BLS12_381 => {
-                let pk = bls_signatures::SecretKey::<Bls12381G2Impl>::from_be_bytes(&private_key)
-                    .into_option()
-                    .ok_or(ProtocolError::Generic(
-                        "bls private key from bytes isn't correct".to_string(),
-                    ))?;
-                Ok(pk
-                    .sign(SignatureSchemes::Basic, data)?
-                    .as_raw_value()
-                    .to_compressed()
-                    .to_vec()
-                    .into())
+                let pk = bls::SecretKey::from_be_bytes(&private_key).ok_or(
+                    ProtocolError::Generic("bls private key from bytes isn't correct".to_string()),
+                )?;
+                Ok(pk.sign(data)?.to_bytes().to_vec().into())
             }
             KeyType::EDDSA_25519_HASH160 => {
                 let pk = ed25519_dalek::SigningKey::from(&*private_key);
@@ -993,7 +984,7 @@ impl QualifiedIdentity {
     ) -> Result<Option<BinaryData>, ProtocolError> {
         use dash_sdk::dpp::dashcore::PublicKey;
         use dash_sdk::dpp::dashcore::hashes::{Hash, ripemd160, sha256};
-        use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
+
         use dash_sdk::dpp::key_wallet::bip32::{DerivationPath as DP, KeyDerivationType};
 
         let (Some(secret_access), Some(seed_hash)) =
@@ -1015,7 +1006,7 @@ impl QualifiedIdentity {
                     let Some(seed) = plaintext.expose_hd_seed() else {
                         return Ok(None);
                     };
-                    let secp = Secp256k1::new();
+
                     for identity_index in 0..10u32 {
                         let correct_path = DP::identity_authentication_path(
                             network,
@@ -1028,8 +1019,7 @@ impl QualifiedIdentity {
                         else {
                             continue;
                         };
-                        let correct_pubkey =
-                            PublicKey::new(extended_key.private_key.public_key(&secp));
+                        let correct_pubkey = PublicKey::new(extended_key.private_key.public_key());
                         let correct_hash = ripemd160::Hash::hash(
                             sha256::Hash::hash(&correct_pubkey.to_bytes()).as_byte_array(),
                         );
@@ -1041,7 +1031,7 @@ impl QualifiedIdentity {
                                 "Using corrected derivation path for signing (found via scan)"
                             );
                             let signature =
-                                signer::sign(&data, &extended_key.private_key.secret_bytes())
+                                signer::sign(&data, &extended_key.private_key.to_secret_bytes())
                                     .map_err(|_| TaskError::EncryptionError {
                                         detail:
                                             "Failed to sign with the recovered derivation path."
@@ -2060,6 +2050,34 @@ mod key_resolution_tests {
             status: IdentityStatus::Active,
             network: Network::Testnet,
         }
+    }
+
+    #[tokio::test]
+    async fn bls_signing_preserves_the_previous_sdk_basic_signature_bytes() {
+        // Generated with the previous pin's blsful Basic signer using this synthetic key.
+        let secret = [0x11; 32];
+        let public = bls::SecretKey::from_be_bytes(&secret).unwrap().public_key();
+        let key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
+            id: 3,
+            purpose: Purpose::AUTHENTICATION,
+            security_level: SecurityLevel::HIGH,
+            contract_bounds: None,
+            key_type: KeyType::BLS12_381,
+            read_only: false,
+            data: BinaryData::new(public.to_bytes().to_vec()),
+            disabled_at: None,
+        });
+        let identity = masternode_with(&key, &[(MAIN, PrivateKeyData::Clear(secret))]);
+        let signature = identity
+            .sign(&key, b"DET BLS adapter parity")
+            .await
+            .unwrap();
+        assert_eq!(
+            hex::encode(signature.as_slice()),
+            "94765bd6758b7cd55024a38dc591f3090e9535d97a94ae7674239c559b4733e64dcae72c3d50d96788dfb0475e921bd608410c7a556ab0fab22f9ceb15139c54f8cf8a34e3900f7ab58c6497d3e9b7f6e04445237da30cf635550276eb981c45"
+        );
+        let invalid = masternode_with(&key, &[(MAIN, PrivateKeyData::Clear([0; 32]))]);
+        assert!(invalid.sign(&key, b"DET BLS adapter parity").await.is_err());
     }
 
     /// T0 — a `Purpose::VOTING` key on the main identity must be signable

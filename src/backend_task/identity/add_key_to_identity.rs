@@ -678,7 +678,7 @@ mod tests {
     async fn derived_key_persists_as_path_and_signs_after_reload() {
         use crate::context::test_staging::stage_identity_with_vaulted_keys;
         use crate::model::derived_identity_key::test_support::fixture;
-        use dash_sdk::dpp::dashcore::secp256k1::{Message, Secp256k1, SecretKey};
+        use dash_sdk::dpp::dashcore::secp256k1::{Message, SecretKey};
 
         let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
         let (mut identity, cache, seed_hash, seed) = fixture();
@@ -740,13 +740,13 @@ mod tests {
             .get_resolve_with_seed(&placement, &wallets, &seed, Network::Testnet)
             .unwrap()
             .unwrap();
-        let secp = Secp256k1::new();
-        let secret = SecretKey::from_slice(bytes.as_ref()).unwrap();
+
+        let secret = SecretKey::from_secret_bytes(*bytes).unwrap();
         let message = Message::from_digest([1; 32]);
-        let signature = secp.sign_ecdsa(&message, &secret);
-        secp.verify_ecdsa(
-            &message,
+        let signature = dash_sdk::dpp::dashcore::secp256k1::ecdsa::sign(message, &secret);
+        dash_sdk::dpp::dashcore::secp256k1::ecdsa::verify(
             &signature,
+            message,
             &cache.get(Network::Testnet, 0, 3).unwrap().inner,
         )
         .unwrap();
@@ -870,14 +870,14 @@ mod tests {
     /// The stage's identity as published after another device added a key
     /// (not from this wallet) at key id 1.
     fn network_record_with_foreign_key(stage: &DerivedStage) -> Identity {
-        use dash_sdk::dpp::dashcore::secp256k1::{PublicKey, Secp256k1, SecretKey};
+        use dash_sdk::dpp::dashcore::secp256k1::{PublicKey, SecretKey};
         let mut record = stage.identity.identity.clone();
         let mut foreign = record.public_keys()[&0].clone();
         foreign.set_id(1);
         foreign.set_security_level(dash_sdk::dpp::identity::SecurityLevel::HIGH);
-        let secret = SecretKey::from_slice(&[9; 32]).unwrap();
+        let secret = SecretKey::from_secret_bytes([9; 32]).unwrap();
         foreign.set_data(
-            PublicKey::from_secret_key(&Secp256k1::new(), &secret)
+            PublicKey::from_secret_key(&secret)
                 .serialize()
                 .to_vec()
                 .into(),

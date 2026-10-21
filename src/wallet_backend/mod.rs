@@ -3457,6 +3457,12 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::MessageSigningMessageInvalid { .. }
         | P::MessageSigningKeyUnavailable { .. }
         | P::MessageSigningFailed { .. }
+        | P::PersisterFlush(_)
+        | P::IdentityBalanceUnavailable(_)
+        | P::InvitationNetworkMismatch { .. }
+        | P::AssetLockTooManyInputs { .. }
+        | P::QuorumNotVerified { .. }
+        | P::SpvProcessRestartRequired(_)
         | P::ShutdownIncomplete(_)) => TaskError::WalletBackend {
             source: Arc::new(other),
         },
@@ -3787,6 +3793,12 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         // know", so it is not `NotManaged` (which asserts the identity is
         // absent and must be reloaded); upstream's contract is to retry.
         | P::IdentityDiscoveryIncomplete { .. }
+        | P::PersisterFlush(_)
+        | P::IdentityBalanceUnavailable(_)
+        | P::InvitationNetworkMismatch { .. }
+        | P::AssetLockTooManyInputs { .. }
+        | P::QuorumNotVerified { .. }
+        | P::SpvProcessRestartRequired(_)
         // Background sync failed to quiesce — a shutdown fault, unrelated to
         // whether this op reached Platform.
         | P::ShutdownIncomplete(_) => IdentityOpErrorKind::Other,

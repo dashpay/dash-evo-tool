@@ -1819,7 +1819,7 @@ mod derived_key_tests {
     /// follow the fresh record.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn derived_key_id_change_refreshes_and_reselects_the_matching_slot() {
-        use dash_sdk::dpp::dashcore::secp256k1::{PublicKey, Secp256k1, SecretKey};
+        use dash_sdk::dpp::dashcore::secp256k1::{PublicKey, SecretKey};
         use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
         use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
 
@@ -1852,9 +1852,9 @@ mod derived_key_tests {
         let mut refreshed = identity.clone();
         let mut foreign = identity.identity.public_keys()[&0].clone();
         foreign.set_id(1);
-        let secret = SecretKey::from_slice(&[9; 32]).unwrap();
+        let secret = SecretKey::from_secret_bytes([9; 32]).unwrap();
         foreign.set_data(
-            PublicKey::from_secret_key(&Secp256k1::new(), &secret)
+            PublicKey::from_secret_key(&secret)
                 .serialize()
                 .to_vec()
                 .into(),

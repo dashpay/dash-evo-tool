@@ -562,6 +562,8 @@ mod tests {
     fn profile_removal_is_rejected_instead_of_silently_retaining_fields() {
         for field in ["displayName", "publicMessage", "avatarUrl"] {
             let existing = Document::V0(dash_sdk::dpp::document::DocumentV0 {
+                moderated_at: None,
+                moderated_by: None,
                 properties: [(field.to_string(), Value::Text("existing value".into()))].into(),
                 ..Default::default()
             });
@@ -581,6 +583,8 @@ mod tests {
     #[test]
     fn profile_replacement_is_allowed_with_unchanged_optional_fields() {
         let existing = Document::V0(dash_sdk::dpp::document::DocumentV0 {
+            moderated_at: None,
+            moderated_by: None,
             properties: [("displayName".to_string(), Value::Text("Alice".into()))].into(),
             ..Default::default()
         });

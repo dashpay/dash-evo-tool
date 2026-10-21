@@ -44,7 +44,7 @@ use crate::wallet_backend::secret_seam::SecretScheme;
 use dash_sdk::dashcore_rpc::dashcore::PrivateKey as RPCPrivateKey;
 use dash_sdk::dpp::dashcore::address::Payload;
 use dash_sdk::dpp::dashcore::hashes::Hash;
-use dash_sdk::dpp::dashcore::secp256k1::{Message, Secp256k1, SecretKey};
+use dash_sdk::dpp::dashcore::secp256k1::{Message, SecretKey};
 use dash_sdk::dpp::dashcore::sign_message::{MessageSignature, signed_msg_hash};
 use dash_sdk::dpp::dashcore::{Address, PrivateKey, PubkeyHash, ScriptHash};
 use dash_sdk::dpp::fee::Credits;
@@ -629,7 +629,7 @@ impl ScreenLike for KeyInfoScreen {
                                 .num_columns(2)
                                 .spacing([10.0, 10.0])
                                 .show(ui, |ui| {
-                                    if let Ok(secret_key) = SecretKey::from_slice(clear) {
+                                    if let Ok(secret_key) = SecretKey::from_secret_bytes(*(clear)) {
                                         let private_key =
                                             PrivateKey::new(secret_key, self.app_context.network);
                                         ui.label(
@@ -1446,7 +1446,7 @@ impl KeyInfoScreen {
                 return;
             }
             Err(_) => match PrivateKey::from_wif(self.private_key_input.text()) {
-                Ok(key) => key.inner.secret_bytes(),
+                Ok(key) => key.inner.to_secret_bytes(),
                 Err(_) => {
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),
@@ -1631,12 +1631,15 @@ impl KeyInfoScreen {
     /// are compressed by convention, so a verifier can recover the signer's
     /// public key and address from the signature alone.
     fn sign_ecdsa_local(private_key_bytes: &[u8; 32], message: &str) -> String {
-        let secp = Secp256k1::new();
         let message_hash = signed_msg_hash(message);
         let digest = Message::from_digest(*message_hash.as_byte_array());
-        let secret_key = SecretKey::from_byte_array(private_key_bytes)
+        let secret_key = SecretKey::from_secret_bytes(*private_key_bytes)
             .expect("clear private key is a valid 32-byte secret");
-        let recoverable = secp.sign_ecdsa_recoverable(&digest, &secret_key);
+        let recoverable =
+            dash_sdk::dpp::dashcore::secp256k1::ecdsa::RecoverableSignature::sign_ecdsa_recoverable(
+                digest,
+                &secret_key,
+            );
         MessageSignature::new(recoverable, true).to_base64()
     }
 
@@ -1662,7 +1665,7 @@ impl KeyInfoScreen {
                         .strong()
                         .color(ui.visuals().text_color()),
                 );
-                let private_key_hex = Secret::new(hex::encode(private_key.inner.secret_bytes()));
+                let private_key_hex = Secret::new(hex::encode(private_key.inner.to_secret_bytes()));
                 ui.label(
                     RichText::new(private_key_hex.expose_secret()).color(ui.visuals().text_color()),
                 );
@@ -2668,10 +2671,10 @@ mod tests {
     /// passes and the placement check is what decides the outcome.
     fn keypair(id: KeyID, purpose: Purpose) -> (IdentityPublicKey, [u8; 32]) {
         let secret_bytes = [0x2A; 32];
-        let secp = Secp256k1::new();
-        let secret = SecretKey::from_byte_array(&secret_bytes).expect("a valid secret key");
+
+        let secret = SecretKey::from_secret_bytes(secret_bytes).expect("a valid secret key");
         let data = PrivateKey::new(secret, Network::Testnet)
-            .public_key(&secp)
+            .public_key()
             .to_bytes();
         (
             IdentityPublicKey::V0(IdentityPublicKeyV0 {

@@ -587,13 +587,12 @@ mod tests {
 
     #[test]
     fn detect_core_address() {
-        use dash_sdk::dashcore_rpc::dashcore::secp256k1::{Secp256k1, SecretKey};
+        use dash_sdk::dashcore_rpc::dashcore::secp256k1::SecretKey;
         use dash_sdk::dashcore_rpc::dashcore::{PrivateKey, PublicKey};
 
-        let secp = Secp256k1::new();
-        let sk = SecretKey::from_slice(&[1u8; 32]).unwrap();
+        let sk = SecretKey::from_secret_bytes([1u8; 32]).unwrap();
         let privkey = PrivateKey::new(sk, Network::Testnet);
-        let pubkey = PublicKey::from_private_key(&secp, &privkey);
+        let pubkey = PublicKey::from_private_key(&privkey);
         let addr = Address::p2pkh(&pubkey, Network::Testnet);
         assert_eq!(
             AddressKind::detect(&addr.to_string()),

@@ -169,7 +169,7 @@ impl ContextProvider for SpvProvider {
                 core_chain_locked_height,
             ))
         })
-        .map_err(|e| ContextProviderError::Generic(e.to_string()))
+        .map_err(quorum_lookup_error)
     }
 
     fn get_platform_activation_height(
@@ -183,5 +183,50 @@ impl ContextProvider for SpvProvider {
             Network::Testnet => 1_090_319,
             Network::Devnet | Network::Regtest => 1,
         })
+    }
+}
+
+fn quorum_lookup_error(error: crate::backend_task::error::TaskError) -> ContextProviderError {
+    match error {
+        crate::backend_task::error::TaskError::WalletBackend { source } => {
+            source.quorum_lookup_context_error()
+        }
+        other => ContextProviderError::Generic(other.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod quorum_error_tests {
+    use super::*;
+    use crate::backend_task::error::TaskError;
+    use dash_sdk::dpp::dashcore::sml::llmq_entry_verification::{
+        LLMQEntryVerificationSkipStatus, LLMQEntryVerificationStatus,
+    };
+
+    #[test]
+    fn unverified_local_quorum_does_not_blame_the_dapi_endpoint() {
+        let error = TaskError::WalletBackend {
+            source: Arc::new(
+                platform_wallet::error::PlatformWalletError::QuorumNotVerified {
+                    quorum_type: 6,
+                    quorum_hash: [0xab; 32],
+                    status: LLMQEntryVerificationStatus::Skipped(
+                        LLMQEntryVerificationSkipStatus::NotMarkedForVerification,
+                    ),
+                },
+            ),
+        };
+        assert!(matches!(
+            quorum_lookup_error(error),
+            ContextProviderError::QuorumSourceUnavailable(_)
+        ));
+    }
+
+    #[test]
+    fn unrelated_quorum_lookup_errors_are_not_reclassified_as_readiness() {
+        assert!(matches!(
+            quorum_lookup_error(TaskError::NoIdentitiesFound),
+            ContextProviderError::Generic(_)
+        ));
     }
 }

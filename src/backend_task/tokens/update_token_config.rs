@@ -27,6 +27,7 @@ impl AppContext {
         group_info: Option<GroupStateTransitionInfoStatus>,
         sdk: &Sdk,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
+        validate_supported_change(&change_item)?;
         tracing::trace!(
             ?group_info,
             ?identity_token_info,
@@ -124,5 +125,40 @@ impl AppContext {
             change_item.to_string(),
             fee_result,
         ))
+    }
+}
+
+fn validate_supported_change(item: &TokenConfigurationChangeItem) -> Result<(), TaskError> {
+    if crate::model::token::token_change_item_is_supported(item) {
+        Ok(())
+    } else {
+        Err(TaskError::TokenShieldedConfigurationUnsupported)
+    }
+}
+
+#[cfg(test)]
+mod sdk_adapter_tests {
+    use super::*;
+    use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
+
+    #[test]
+    fn backend_rejects_shielded_configuration_before_submission() {
+        for item in [
+            TokenConfigurationChangeItem::MinimumPoolNotesForOutgoing(17),
+            TokenConfigurationChangeItem::MinimumPoolNotesForOutgoingControlGroup(
+                AuthorizedActionTakers::NoOne,
+            ),
+            TokenConfigurationChangeItem::MinimumPoolNotesForOutgoingAdminGroup(
+                AuthorizedActionTakers::NoOne,
+            ),
+        ] {
+            assert!(matches!(
+                validate_supported_change(&item),
+                Err(TaskError::TokenShieldedConfigurationUnsupported)
+            ));
+        }
+        assert!(
+            validate_supported_change(&TokenConfigurationChangeItem::MaxSupply(Some(17))).is_ok()
+        );
     }
 }

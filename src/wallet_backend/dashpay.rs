@@ -166,40 +166,25 @@ pub(crate) fn derive_contact_info_encryption_keys(
     let root_path =
         DerivationPath::from_str(&format!("m/9'/{coin_type}'/15'/0'")).map_err(derive_err)?;
 
-    let secp = dash_sdk::dpp::dashcore::secp256k1::Secp256k1::new();
-    let root = master_xprv
-        .derive_priv(&secp, &root_path)
-        .map_err(derive_err)?;
+    let root = master_xprv.derive_priv(&root_path).map_err(derive_err)?;
 
     // Key1 (encToUserId): root/(2^16)'/index'
     let key1 = root
-        .derive_priv(
-            &secp,
-            &[ChildNumber::from_hardened_idx(65536).map_err(derive_err)?],
-        )
+        .derive_priv(&[ChildNumber::from_hardened_idx(65536).map_err(derive_err)?])
         .map_err(derive_err)?
-        .derive_priv(
-            &secp,
-            &[ChildNumber::from_hardened_idx(derivation_index).map_err(derive_err)?],
-        )
+        .derive_priv(&[ChildNumber::from_hardened_idx(derivation_index).map_err(derive_err)?])
         .map_err(derive_err)?;
 
     // Key2 (privateData): root/(2^16 + 1)'/index'
     let key2 = root
-        .derive_priv(
-            &secp,
-            &[ChildNumber::from_hardened_idx(65537).map_err(derive_err)?],
-        )
+        .derive_priv(&[ChildNumber::from_hardened_idx(65537).map_err(derive_err)?])
         .map_err(derive_err)?
-        .derive_priv(
-            &secp,
-            &[ChildNumber::from_hardened_idx(derivation_index).map_err(derive_err)?],
-        )
+        .derive_priv(&[ChildNumber::from_hardened_idx(derivation_index).map_err(derive_err)?])
         .map_err(derive_err)?;
 
     Ok((
-        Zeroizing::new(key1.private_key.secret_bytes()),
-        Zeroizing::new(key2.private_key.secret_bytes()),
+        Zeroizing::new(key1.private_key.to_secret_bytes()),
+        Zeroizing::new(key2.private_key.to_secret_bytes()),
     ))
 }
 

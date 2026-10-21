@@ -94,6 +94,19 @@ pub fn distribution_rules_with_once_per_identity(
     }
 }
 
+/// Whether this application supports editing the requested token setting.
+pub(crate) fn token_change_item_is_supported(
+    item: &dash_sdk::dpp::data_contract::associated_token::token_configuration_item::TokenConfigurationChangeItem,
+) -> bool {
+    use dash_sdk::dpp::data_contract::associated_token::token_configuration_item::TokenConfigurationChangeItem;
+    !matches!(
+        item,
+        TokenConfigurationChangeItem::MinimumPoolNotesForOutgoing(_)
+            | TokenConfigurationChangeItem::MinimumPoolNotesForOutgoingControlGroup(_)
+            | TokenConfigurationChangeItem::MinimumPoolNotesForOutgoingAdminGroup(_)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

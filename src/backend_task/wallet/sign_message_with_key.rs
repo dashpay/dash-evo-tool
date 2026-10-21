@@ -40,7 +40,7 @@ impl AppContext {
                 &derivation_path,
                 TaskError::WalletMessageSigningFailed,
                 |private_key| {
-                    let secret_key = SecretKey::from_byte_array(&private_key.inner.secret_bytes())
+                    let secret_key = SecretKey::from_secret_bytes(private_key.inner.to_secret_bytes())
                         .map_err(|detail| {
                             tracing::warn!(error = %detail, "Sign-message secret key construction failed");
                             TaskError::WalletMessageSigningFailed

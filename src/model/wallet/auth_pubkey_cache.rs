@@ -156,15 +156,12 @@ impl std::fmt::Debug for AuthPubkeyCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dash_sdk::dpp::dashcore::secp256k1::{
-        PublicKey as Secp256k1PublicKey, Secp256k1, SecretKey,
-    };
+    use dash_sdk::dpp::dashcore::secp256k1::{PublicKey as Secp256k1PublicKey, SecretKey};
 
     /// Deterministic test public key from a one-byte seed.
     fn pubkey(seed: u8) -> PublicKey {
-        let secp = Secp256k1::new();
-        let sk = SecretKey::from_slice(&[seed.max(1); 32]).expect("valid secret key");
-        let inner = Secp256k1PublicKey::from_secret_key(&secp, &sk);
+        let sk = SecretKey::from_secret_bytes([seed.max(1); 32]).expect("valid secret key");
+        let inner = Secp256k1PublicKey::from_secret_key(&sk);
         PublicKey::new(inner)
     }
 

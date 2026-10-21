@@ -532,7 +532,7 @@ pub fn legacy_wallet_registrations(
                     "SELECT EXISTS (SELECT 1 FROM account_registrations \
                      WHERE account_type = 'standard_bip44' AND account_index = 0 \
                      AND instr(account_xpub_bytes, CAST(?1 AS BLOB)) > 0)",
-                    [base58::encode_check(&account_xpub)],
+                    [base58::Base58CkString::encode_unbounded(&account_xpub).to_string()],
                     |row| row.get::<_, bool>(0),
                 )
                 .map_err(|e| {
@@ -1062,7 +1062,7 @@ mod tests {
         )
         .expect("test vector hex");
         assert_eq!(
-            base58::encode_check(&serialized),
+            base58::Base58CkString::encode_unbounded(&serialized).to_string(),
             "xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8"
         );
     }
@@ -1100,7 +1100,7 @@ mod tests {
                  account_xpub_bytes BLOB NOT NULL);",
             )
             .expect("create registrations");
-        let text = base58::encode_check(&plain_xpub);
+        let text = base58::Base58CkString::encode_unbounded(&plain_xpub).to_string();
         let mut stored = (text.len() as u32).to_be_bytes().to_vec();
         stored.extend_from_slice(text.as_bytes());
         store

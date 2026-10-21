@@ -732,6 +732,7 @@ impl AppContext {
             }
             PlatformInfoTaskRequestType::CurrentWithdrawalsInQueue => {
                 let queued_document_query = DocumentQuery {
+                    integer_range_clauses: vec![],
                     sub_queries: Vec::new(),
                     select: SelectProjection::documents(),
                     data_contract: self.withdraws_contract(),
@@ -778,6 +779,7 @@ impl AppContext {
             }
             PlatformInfoTaskRequestType::RecentlyCompletedWithdrawals => {
                 let completed_document_query = DocumentQuery {
+                    integer_range_clauses: vec![],
                     sub_queries: Vec::new(),
                     select: SelectProjection::documents(),
                     data_contract: self.withdraws_contract(),
@@ -907,6 +909,7 @@ impl AppContext {
                 ];
 
                 let query = DocumentQuery {
+                    integer_range_clauses: vec![],
                     sub_queries: Vec::new(),
                     select: SelectProjection::documents(),
                     data_contract: self.withdraws_contract(),
@@ -997,6 +1000,8 @@ mod tests {
         let mut properties = std::collections::BTreeMap::new();
         properties.insert(STATUS.to_string(), Value::U8(status as u8));
         Document::V0(DocumentV0 {
+            moderated_at: None,
+            moderated_by: None,
             properties,
             ..Default::default()
         })

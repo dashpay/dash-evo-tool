@@ -21,6 +21,7 @@ use crate::model::dpns_voting::{
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::utils::time::now_ms;
 use crate::wallet_backend::{DetScope, KvAdapterError};
+#[cfg(test)]
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::data_contract::document_type::DocumentTypeRef;
 use dash_sdk::dpp::document::DocumentV0Getters;

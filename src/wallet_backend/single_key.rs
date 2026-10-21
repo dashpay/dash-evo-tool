@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 #[cfg(test)]
 use dash_sdk::dpp::dashcore::secp256k1::Message;
-use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
+
 #[cfg(test)]
 use dash_sdk::dpp::dashcore::secp256k1::ecdsa::Signature;
 use dash_sdk::dpp::dashcore::{Address, Network, PrivateKey, PublicKey};
@@ -256,10 +256,10 @@ impl<'a> SingleKeyView<'a> {
         if !priv_key.compressed {
             return Err(TaskError::UncompressedWifUnsupported);
         }
-        let secp = Secp256k1::new();
+
         let pub_key = PublicKey {
             compressed: priv_key.compressed,
-            inner: priv_key.inner.public_key(&secp),
+            inner: priv_key.inner.public_key(),
         };
         let address = Address::p2pkh(&pub_key, self.network);
         let address_str = address.to_string();
@@ -714,8 +714,8 @@ impl<'a> SingleKeyView<'a> {
                 return Ok(None);
             }
         };
-        let secp = Secp256k1::new();
-        let public_key = priv_key.public_key(&secp);
+
+        let public_key = priv_key.public_key();
         let address = Address::p2pkh(&public_key, meta.network);
 
         let key_hash = ClosedSingleKey::compute_key_hash(&key_bytes);
@@ -1031,10 +1031,12 @@ impl<'a> SingleKeyView<'a> {
 /// [`DetSigner`](crate::wallet_backend::det_signer::DetSigner).
 #[cfg(test)]
 fn sign_message_with_raw_key(bytes: &[u8; 32], msg: &[u8; 32]) -> Result<Signature, TaskError> {
-    let sk = dash_sdk::dpp::dashcore::secp256k1::SecretKey::from_byte_array(bytes)
+    let sk = dash_sdk::dpp::dashcore::secp256k1::SecretKey::from_secret_bytes(*bytes)
         .map_err(|_| TaskError::ImportedKeyNotFound)?;
     let message = Message::from_digest(*msg);
-    Ok(Secp256k1::new().sign_ecdsa(&message, &sk))
+    Ok(dash_sdk::dpp::dashcore::secp256k1::ecdsa::sign(
+        message, &sk,
+    ))
 }
 
 #[cfg(test)]
@@ -1137,7 +1139,7 @@ mod tests {
 
     fn known_wif() -> &'static str {
         // Testnet WIF with deterministic, all-zero-except-last-byte key
-        // bytes. Generated locally with `PrivateKey::new(SecretKey::from_byte_array(&[0;31].chain(&[1])).unwrap(), Testnet).to_wif()`
+        // bytes. Generated locally with `PrivateKey::new(SecretKey::from_secret_bytes([0;31].chain(&[1])).unwrap(), Testnet).to_wif()`
         // and pinned here to keep tests offline + reproducible.
         "cMahea7zqjxrtgAbB7LSGbcQUr1uX1ojuat9jZodMN8rFTv2sfUK"
     }
@@ -1251,8 +1253,6 @@ mod tests {
     /// lookup path.
     #[test]
     fn tc_sk_008_sign_uses_secret_store_path_not_bip32() {
-        use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
-
         let dir = tempfile::tempdir().expect("tempdir");
         let (store, index, network) = fresh_view(dir.path(), Network::Testnet);
         let view = SingleKeyView {
@@ -1274,9 +1274,9 @@ mod tests {
         // the signer hit the imported-key path (not some other key the
         // backend might fall back to) without referencing BIP-32 at all.
         let priv_key = PrivateKey::from_wif(known_wif()).expect("wif");
-        let secp = Secp256k1::new();
-        let pk = priv_key.inner.public_key(&secp);
-        secp.verify_ecdsa(&Message::from_digest(msg), &sig, &pk)
+
+        let pk = priv_key.inner.public_key();
+        dash_sdk::dpp::dashcore::secp256k1::ecdsa::verify(&sig, Message::from_digest(msg), &pk)
             .expect("signature verifies against WIF-derived pubkey");
 
         // Forgetting the key removes both the index entry and the
@@ -1928,9 +1928,9 @@ mod tests {
             .expect("chokepoint signs after the right passphrase");
 
         let priv_key = PrivateKey::from_wif(known_wif()).unwrap();
-        let secp = Secp256k1::new();
-        let pk = priv_key.inner.public_key(&secp);
-        secp.verify_ecdsa(&Message::from_digest(msg), &sig, &pk)
+
+        let pk = priv_key.inner.public_key();
+        dash_sdk::dpp::dashcore::secp256k1::ecdsa::verify(&sig, Message::from_digest(msg), &pk)
             .expect("chokepoint signature verifies");
         assert_eq!(prompt.ask_count(), 2, "one wrong + one right passphrase");
     }
@@ -2107,7 +2107,7 @@ mod tests {
 
     /// A deterministic throwaway testnet WIF distinct per `byte`.
     fn wif_for_byte(byte: u8) -> String {
-        let secret = dash_sdk::dpp::dashcore::secp256k1::SecretKey::from_byte_array(&[byte; 32])
+        let secret = dash_sdk::dpp::dashcore::secp256k1::SecretKey::from_secret_bytes([byte; 32])
             .expect("valid scalar");
         PrivateKey::new(secret, Network::Testnet).to_wif()
     }
@@ -2553,7 +2553,7 @@ mod tests {
         let priv_key = PrivateKey::from_wif(known_wif()).unwrap();
         let pub_key = PublicKey {
             compressed: priv_key.compressed,
-            inner: priv_key.inner.public_key(&Secp256k1::new()),
+            inner: priv_key.inner.public_key(),
         };
         let address = Address::p2pkh(&pub_key, network).to_string();
         let label = label_for_address(&address);
@@ -2997,7 +2997,7 @@ mod tests {
             .map(|key| {
                 let public = PublicKey {
                     compressed: true,
-                    inner: key.inner.public_key(&Secp256k1::new()),
+                    inner: key.inner.public_key(),
                 };
                 Address::p2pkh(&public, Network::Testnet).to_string()
             })
@@ -3032,7 +3032,7 @@ mod tests {
             .map(|key| {
                 let public = PublicKey {
                     compressed: true,
-                    inner: key.inner.public_key(&Secp256k1::new()),
+                    inner: key.inner.public_key(),
                 };
                 Address::p2pkh(&public, Network::Testnet).to_string()
             })

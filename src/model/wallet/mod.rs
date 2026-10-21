@@ -22,7 +22,6 @@ use dash_sdk::dpp::prelude::AddressNonce;
 use dash_sdk::platform::address_sync::{AddressFunds, AddressIndex, AddressProvider};
 use platform_wallet_storage::secrets::{MAX_PASSPHRASE_LEN, MIN_PASSPHRASE_LEN};
 
-use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
 use dash_sdk::dpp::dashcore::{
     Address, BlockHash, Network, PrivateKey, PublicKey, Transaction, Txid,
 };
@@ -486,14 +485,13 @@ impl Wallet {
             }
         })?;
         let bip44_path = Self::bip44_account0_path(network);
-        let secp = Secp256k1::new();
-        let account_priv = master_priv.derive_priv(&secp, &bip44_path).map_err(|e| {
+
+        let account_priv = master_priv.derive_priv(&bip44_path).map_err(|e| {
             WalletCreationError::KeyDerivation {
                 source: Box::new(e),
             }
         })?;
-        let master_bip44_ecdsa_extended_public_key =
-            ExtendedPubKey::from_priv(&secp, &account_priv);
+        let master_bip44_ecdsa_extended_public_key = ExtendedPubKey::from_priv(&account_priv);
 
         // Cache the DIP-17 platform-payment account xpub up front (like the
         // BIP44 one above) so platform addresses stay reverse-derivable —
@@ -511,7 +509,7 @@ impl Wallet {
 
         // Derive the first receive address (m/44'/coin'/0'/0/0)
         let (known_addresses, watched_addresses) =
-            Self::derive_first_address(&master_bip44_ecdsa_extended_public_key, network, &secp)
+            Self::derive_first_address(&master_bip44_ecdsa_extended_public_key, network)
                 .map_err(|e| WalletCreationError::KeyDerivation { source: e.into() })?;
 
         Ok(Wallet {
@@ -551,7 +549,6 @@ impl Wallet {
     fn derive_first_address(
         master_pub: &ExtendedPubKey,
         network: Network,
-        secp: &Secp256k1<dash_sdk::dpp::dashcore::secp256k1::All>,
     ) -> Result<
         (
             BTreeMap<Address, DerivationPath>,
@@ -570,7 +567,7 @@ impl Wallet {
             .as_slice(),
         );
 
-        let pk = master_pub.derive_pub(secp, &address_path)?;
+        let pk = master_pub.derive_pub(&address_path)?;
         let address = Address::p2pkh(&pk.to_pub(), network);
         let bip44 = match network {
             Network::Mainnet => &DASH_BIP44_ACCOUNT_0_PATH_MAINNET,
@@ -1046,7 +1043,7 @@ impl Wallet {
                     derivation_path
                         .derive_priv_ecdsa_for_master_seed(seed, network)?
                         .private_key
-                        .secret_bytes(),
+                        .to_secret_bytes(),
                 );
                 return Ok(Some(secret));
             }
@@ -1271,8 +1268,7 @@ impl Wallet {
         path_reference: DerivationPathReference,
         app_context: &AppContext,
     ) -> Result<(), WalletError> {
-        let secp = Secp256k1::new();
-        let address = Address::p2pkh(&private_key.public_key(&secp), app_context.network);
+        let address = Address::p2pkh(&private_key.public_key(), app_context.network);
         self.register_address(
             address,
             derivation_path,
@@ -1350,7 +1346,7 @@ impl Wallet {
         app_context: &AppContext,
     ) -> Result<(), WalletError> {
         let coin_type = coin_type_for_network(network);
-        let secp = Secp256k1::new();
+
         for (change_flag, max) in [
             (false, BOOTSTRAP_BIP44_EXTERNAL_COUNT),
             (true, BOOTSTRAP_BIP44_CHANGE_COUNT),
@@ -1364,7 +1360,7 @@ impl Wallet {
                 ];
                 let derived = self
                     .master_bip44_ecdsa_extended_public_key
-                    .derive_pub(&secp, &child_path)?;
+                    .derive_pub(&child_path)?;
                 let dash_public_key = PublicKey::from_slice(&derived.public_key.serialize())
                     .map_err(|e| WalletError::PublicKeyParse(Box::new(e)))?;
                 let derivation_path = DerivationPath::from(vec![
@@ -1640,8 +1636,8 @@ impl Wallet {
             let private_key = extended_private_key.to_priv();
 
             // Create a P2PKH address for platform payment
-            let secp = Secp256k1::new();
-            let public_key = private_key.public_key(&secp);
+
+            let public_key = private_key.public_key();
             let platform_address = Address::p2pkh(&public_key, network);
 
             let canonical = Wallet::canonical_address(&platform_address, network);
@@ -1699,7 +1695,6 @@ impl Wallet {
         seed: &[u8; 64],
         network: Network,
     ) -> Result<Address, WalletError> {
-        let secp = Secp256k1::new();
         let account = 0u32;
         let key_class = 0u32;
 
@@ -1716,7 +1711,7 @@ impl Wallet {
         let extended_private_key =
             derivation_path.derive_priv_ecdsa_for_master_seed(seed, network)?;
         let private_key = extended_private_key.to_priv();
-        let public_key = private_key.public_key(&secp);
+        let public_key = private_key.public_key();
 
         // Create a P2PKH address for platform payment
         let platform_address = Address::p2pkh(&public_key, network);
@@ -1733,7 +1728,6 @@ impl Wallet {
         change: bool,
         address_index: u32,
     ) -> Result<Address, WalletError> {
-        let secp = Secp256k1::new();
         let path_extension = [
             ChildNumber::Normal {
                 index: change as u32,
@@ -1744,7 +1738,7 @@ impl Wallet {
         ];
         let public_key = self
             .master_bip44_ecdsa_extended_public_key
-            .derive_pub(&secp, &path_extension)?
+            .derive_pub(&path_extension)?
             .to_pub();
         Ok(Address::p2pkh(&public_key, network))
     }
@@ -1920,9 +1914,8 @@ impl Wallet {
             .max(DEFAULT_GAP_LIMIT)
             .saturating_add(PLATFORM_RECONCILE_SCAN_MARGIN);
 
-        let secp = Secp256k1::new();
         for index in 0..=ceiling {
-            let child = match account_xpub.derive_pub(&secp, &[ChildNumber::Normal { index }]) {
+            let child = match account_xpub.derive_pub(&[ChildNumber::Normal { index }]) {
                 Ok(child) => child,
                 Err(e) => {
                     tracing::warn!(
@@ -2024,10 +2017,10 @@ pub(crate) fn derive_platform_payment_account_xpub(
         ChildNumber::Hardened { index: account },
         ChildNumber::Hardened { index: key_class },
     ]);
-    let secp = Secp256k1::new();
+
     let master = ExtendedPrivKey::new_master(network, seed)?;
-    let account_priv = master.derive_priv(&secp, &account_path)?;
-    Ok(ExtendedPubKey::from_priv(&secp, &account_priv))
+    let account_priv = master.derive_priv(&account_path)?;
+    Ok(ExtendedPubKey::from_priv(&account_priv))
 }
 
 /// Provider for wallet Platform addresses that implements AddressProvider for SDK address sync.
@@ -2217,10 +2210,9 @@ impl WalletAddressProvider {
         &self,
         index: AddressIndex,
     ) -> Result<(PlatformAddress, Address), WalletError> {
-        let secp = Secp256k1::new();
         let child = self
             .account_xpub
-            .derive_pub(&secp, &[ChildNumber::Normal { index }])?;
+            .derive_pub(&[ChildNumber::Normal { index }])?;
         let public_key = child.to_pub();
 
         // Create P2PKH address
@@ -2346,7 +2338,6 @@ pub(crate) mod test_support {
     pub(crate) fn open_wallet() -> Wallet {
         let seed = TEST_SEED;
         let network = Network::Testnet;
-        let secp = Secp256k1::new();
 
         // Derive master private key from seed
         let master_private_key =
@@ -2359,10 +2350,10 @@ pub(crate) mod test_support {
             ChildNumber::Hardened { index: 0 },
         ]);
         let bip44_account_private = master_private_key
-            .derive_priv(&secp, &bip44_account_path)
+            .derive_priv(&bip44_account_path)
             .expect("bip44 derivation");
         let master_bip44_ecdsa_extended_public_key =
-            ExtendedPubKey::from_priv(&secp, &bip44_account_private);
+            ExtendedPubKey::from_priv(&bip44_account_private);
 
         let seed_hash = ClosedKeyItem::compute_seed_hash(&seed);
 
@@ -2410,11 +2401,11 @@ mod tests {
     /// Helper: create a test address on Testnet
     fn test_address(index: u8) -> Address {
         use dash_sdk::dpp::dashcore::secp256k1::SecretKey;
-        let secp = Secp256k1::new();
+
         let mut sk_bytes = [0u8; 32];
         sk_bytes[0] = if index == 0 { 1 } else { index };
-        let sk = SecretKey::from_slice(&sk_bytes).expect("valid secret key");
-        let inner = dash_sdk::dpp::dashcore::secp256k1::PublicKey::from_secret_key(&secp, &sk);
+        let sk = SecretKey::from_secret_bytes(sk_bytes).expect("valid secret key");
+        let inner = dash_sdk::dpp::dashcore::secp256k1::PublicKey::from_secret_key(&sk);
         let pubkey = PublicKey::from_slice(&inner.serialize()).expect("valid pubkey");
         Address::p2pkh(&pubkey, Network::Testnet)
     }
@@ -3122,8 +3113,8 @@ mod tests {
             .derive_priv_ecdsa_for_master_seed(&seed, network)
             .expect("reference derive")
             .to_priv();
-        let secp = Secp256k1::new();
-        let address = Address::p2pkh(&reference.public_key(&secp), network);
+
+        let address = Address::p2pkh(&reference.public_key(), network);
 
         let mut wallet = wallet;
         wallet.known_addresses.insert(address.clone(), path);
@@ -3150,8 +3141,8 @@ mod tests {
             let reference_xprv = reference_path
                 .derive_priv_ecdsa_for_master_seed(&seed, network)
                 .expect("reference derive");
-            let secp = Secp256k1::new();
-            let reference = Address::p2pkh(&reference_xprv.to_priv().public_key(&secp), network);
+
+            let reference = Address::p2pkh(&reference_xprv.to_priv().public_key(), network);
 
             let param = param_wallet
                 .generate_platform_receive_address_with_seed(&seed, network)
@@ -3179,7 +3170,7 @@ mod tests {
             .derive_priv_ecdsa_for_master_seed(&seed, network)
             .expect("reference derive")
             .private_key
-            .secret_bytes();
+            .to_secret_bytes();
         let param = Wallet::derive_private_key_in_arc_rw_lock_slice_with_seed(
             &slice, seed_hash, &seed, &path, network,
         )
@@ -3550,7 +3541,6 @@ mod tests {
             let wallet = Wallet::new_from_seed(seed, network, None, None).expect("wallet");
             let provider = WalletAddressProvider::new(&wallet, network, &seed).expect("provider");
 
-            let secp = Secp256k1::new();
             for index in 0u32..DEFAULT_GAP_LIMIT {
                 // Legacy seed-based derivation (what the old provider and the
                 // platform signer used).
@@ -3559,7 +3549,7 @@ mod tests {
                     .derive_priv_ecdsa_for_master_seed(&seed, network)
                     .expect("legacy derive")
                     .to_priv();
-                let legacy_address = Address::p2pkh(&legacy_priv.public_key(&secp), network);
+                let legacy_address = Address::p2pkh(&legacy_priv.public_key(), network);
 
                 // Provider's xpub-based derivation.
                 let (_platform, provider_address) = provider
@@ -3795,11 +3785,11 @@ mod tests {
     /// for. Independent of the reconciliation path under test.
     fn platform_address_at(index: u32, network: Network) -> Address {
         let path = DerivationPath::platform_payment_path(network, 0, 0, index);
-        let secp = Secp256k1::new();
+
         let xprv = path
             .derive_priv_ecdsa_for_master_seed(&TEST_SEED, network)
             .expect("derive platform key");
-        Address::p2pkh(&xprv.to_priv().public_key(&secp), network)
+        Address::p2pkh(&xprv.to_priv().public_key(), network)
     }
 
     /// `new_from_seed` caches the platform-payment account xpub eagerly, and the
@@ -4022,11 +4012,11 @@ mod tests {
 
         let foreign_seed = [0x11u8; 64];
         let path = DerivationPath::platform_payment_path(network, 0, 0, 0);
-        let secp = Secp256k1::new();
+
         let xprv = path
             .derive_priv_ecdsa_for_master_seed(&foreign_seed, network)
             .expect("derive foreign key");
-        let foreign = Address::p2pkh(&xprv.to_priv().public_key(&secp), network);
+        let foreign = Address::p2pkh(&xprv.to_priv().public_key(), network);
 
         assert!(!wallet.reconcile_platform_address(&foreign, network));
         assert!(!wallet.known_addresses.contains_key(&foreign));

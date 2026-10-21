@@ -29,7 +29,6 @@
 
 use std::sync::Arc;
 
-use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
 use dash_sdk::dpp::dashcore::{Address, Network, PrivateKey, PublicKey};
 use rusqlite::{Connection, OpenFlags};
 use zeroize::Zeroizing;
@@ -333,10 +332,10 @@ pub(super) fn derive_p2pkh_address(wif: &str, network: Network) -> Result<String
     let priv_key = PrivateKey::from_wif(wif).map_err(|source| TaskError::InvalidWif {
         source: Box::new(source),
     })?;
-    let secp = Secp256k1::new();
+
     let pub_key = PublicKey {
         compressed: priv_key.compressed,
-        inner: priv_key.inner.public_key(&secp),
+        inner: priv_key.inner.public_key(),
     };
     Ok(Address::p2pkh(&pub_key, network).to_string())
 }
@@ -389,10 +388,10 @@ mod tests {
             nonce,
         } = ClosedSingleKey::encrypt_private_key(raw_key, password).expect("encrypt");
         let priv_key = PrivateKey::from_byte_array(raw_key, network).expect("priv");
-        let secp = Secp256k1::new();
+
         let pub_key = PublicKey {
             compressed: priv_key.compressed,
-            inner: priv_key.inner.public_key(&secp),
+            inner: priv_key.inner.public_key(),
         };
         let address = Address::p2pkh(&pub_key, network).to_string();
         let key_hash = ClosedSingleKey::compute_key_hash(raw_key);

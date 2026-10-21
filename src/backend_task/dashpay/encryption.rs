@@ -1,7 +1,7 @@
 use aes_gcm::aes::Aes256;
 use bip39::rand::{self, RngCore};
 use cbc;
-use dash_sdk::dpp::dashcore::secp256k1::{PublicKey, Secp256k1, SecretKey};
+use dash_sdk::dpp::dashcore::secp256k1::{PublicKey, SecretKey};
 use dash_sdk::dpp::identity::IdentityPublicKey;
 use dash_sdk::dpp::identity::KeyType;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
@@ -18,11 +18,13 @@ pub fn generate_ecdh_shared_key(
     private_key: &[u8],
     public_key: &IdentityPublicKey,
 ) -> Result<Zeroizing<[u8; 32]>, String> {
-    let _secp = Secp256k1::new();
-
     // Parse the private key
-    let secret_key =
-        SecretKey::from_slice(private_key).map_err(|e| format!("Invalid private key: {}", e))?;
+    let secret_key = SecretKey::from_secret_bytes(
+        private_key
+            .try_into()
+            .map_err(|_| "Invalid private key length".to_string())?,
+    )
+    .map_err(|e| format!("Invalid private key: {}", e))?;
 
     // Get the public key data - only works for full secp256k1 keys
     match public_key.key_type() {
@@ -295,7 +297,7 @@ pub fn decrypt_account_label(
 mod tests {
     use super::*;
     use bip39::rand::{self, RngCore};
-    use dash_sdk::dpp::dashcore::secp256k1::{PublicKey, Secp256k1, SecretKey};
+    use dash_sdk::dpp::dashcore::secp256k1::{PublicKey, SecretKey};
 
     fn generate_test_shared_key() -> [u8; 32] {
         let mut shared_key = [0u8; 32];
@@ -304,14 +306,13 @@ mod tests {
     }
 
     fn generate_test_key_pair() -> (SecretKey, PublicKey) {
-        let secp = Secp256k1::new();
-        let secret_key = SecretKey::from_slice(&[
+        let secret_key = SecretKey::from_secret_bytes([
             0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E,
             0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C,
             0x1D, 0x1E, 0x1F, 0x20,
         ])
         .unwrap();
-        let public_key = PublicKey::from_secret_key(&secp, &secret_key);
+        let public_key = PublicKey::from_secret_key(&secret_key);
         (secret_key, public_key)
     }
 
@@ -380,8 +381,6 @@ mod tests {
     /// wipes the sha2 digest) cannot silently alter the derived material.
     #[test]
     fn ecdh_shared_key_matches_pinned_vector() {
-        let secp = Secp256k1::new();
-
         // Our private key: 0x01..=0x20 (same fixed vector the suite uses).
         let private_key = [
             0x01u8, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E,
@@ -391,13 +390,13 @@ mod tests {
 
         // Counterpart key derived from a different fixed secret so the ECDH
         // point is non-degenerate.
-        let counterpart_secret = SecretKey::from_slice(&[
+        let counterpart_secret = SecretKey::from_secret_bytes([
             0xA1u8, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE,
             0xAF, 0xB0, 0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7, 0xB8, 0xB9, 0xBA, 0xBB, 0xBC,
             0xBD, 0xBE, 0xBF, 0xC0,
         ])
         .unwrap();
-        let counterpart_pub = PublicKey::from_secret_key(&secp, &counterpart_secret);
+        let counterpart_pub = PublicKey::from_secret_key(&counterpart_secret);
         let counterpart_ipk = ecdsa_identity_public_key(&counterpart_pub);
 
         let shared_key = generate_ecdh_shared_key(&private_key, &counterpart_ipk)

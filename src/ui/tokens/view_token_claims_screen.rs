@@ -59,6 +59,7 @@ impl ViewTokenClaimsScreen {
         Self {
             identity_token_basic_info: identity_token_basic_info.clone(),
             new_claims_query: DocumentQuery {
+                integer_range_clauses: vec![],
                 sub_queries: Vec::new(),
                 select: SelectProjection::documents(),
                 data_contract: app_context.token_history_contract(),

@@ -6,6 +6,7 @@ use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::token::token_change_item_is_supported;
 use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
@@ -1110,15 +1111,6 @@ fn token_change_item_label(item: &TokenConfigurationChangeItem) -> &'static str 
             "Minimum Pool Notes Admin Group"
         }
     }
-}
-
-fn token_change_item_is_supported(item: &TokenConfigurationChangeItem) -> bool {
-    !matches!(
-        item,
-        TokenConfigurationChangeItem::MinimumPoolNotesForOutgoing(_)
-            | TokenConfigurationChangeItem::MinimumPoolNotesForOutgoingControlGroup(_)
-            | TokenConfigurationChangeItem::MinimumPoolNotesForOutgoingAdminGroup(_)
-    )
 }
 
 #[cfg(test)]

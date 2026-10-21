@@ -1,12 +1,16 @@
 //! Guards the protocol version 13 tables DET builds, validates and verifies
 //! with on mainnet and testnet against drift across platform pin bumps.
 //!
-//! Protocol 13 is live, so upstream must never change its table. The snapshot
+//! Protocol 13 is live, so table changes require compatibility review. The snapshot
 //! covers what the client side reads: serialization and validation (`dpp`),
 //! proof verification (`drive.methods.verify`), fees, system contract versions
 //! and system limits. On a mismatch, diff the fixture, confirm the change is
 //! additive (new fields at 0/None) or otherwise safe for a protocol 13 network,
 //! then regenerate with `DET_BLESS_PLATFORM_VERSION_SNAPSHOT=1`.
+//!
+//! Platform #5294 enforces GroveDB proof envelope V1 outside these tables, even
+//! for protocol 13. The snapshot does not establish wire compatibility: #5361
+//! removes legacy discovery response field2, still served by sampled mainnet nodes.
 
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::version::PlatformVersion;

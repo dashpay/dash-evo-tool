@@ -858,6 +858,18 @@ pub enum MessageType {
 }
 
 pub trait ScreenLike {
+    /// Re-read affected cached data without resetting input or pending requests.
+    fn cached_data_changed(&mut self, _update: crate::backend_task::CacheUpdate) {}
+
+    /// Observe another screen's completion when persistent domain state needs it.
+    fn observe_backend_result(
+        &mut self,
+        _context: &BackendTaskContext,
+        _result: &BackendTaskSuccessResult,
+    ) {
+    }
+    /// Observe another screen's failure without treating it as this screen's request.
+    fn observe_backend_error(&mut self, _context: &BackendTaskContext, _error: &TaskError) {}
     fn refresh(&mut self) {}
     fn refresh_on_arrival(&mut self) {
         self.refresh()
@@ -1197,6 +1209,19 @@ macro_rules! delegate_to_screen {
 }
 
 impl ScreenLike for Screen {
+    fn observe_backend_result(
+        &mut self,
+        context: &BackendTaskContext,
+        result: &BackendTaskSuccessResult,
+    ) {
+        delegate_to_screen!(self, screen => screen.observe_backend_result(context, result))
+    }
+    fn observe_backend_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
+        delegate_to_screen!(self, screen => screen.observe_backend_error(context, error))
+    }
+    fn cached_data_changed(&mut self, update: crate::backend_task::CacheUpdate) {
+        delegate_to_screen!(self, screen => screen.cached_data_changed(update))
+    }
     fn refresh(&mut self) {
         delegate_to_screen!(self, screen => screen.refresh())
     }

@@ -2645,6 +2645,34 @@ impl TokensScreen {
 // ScreenLike implementation
 // ─────────────────────────────────────────────────────────────────
 impl ScreenLike for TokensScreen {
+    fn cached_data_changed(&mut self, update: crate::backend_task::CacheUpdate) {
+        use crate::backend_task::CacheDomain;
+        if update.network != self.app_context.network
+            || !matches!(
+                update.domain,
+                CacheDomain::Tokens | CacheDomain::Identities | CacheDomain::All
+            )
+        {
+            return;
+        }
+        self.all_known_tokens = self
+            .app_context
+            .get_all_known_tokens_with_data_contract()
+            .unwrap_or_default();
+        self.identities = self
+            .app_context
+            .load_local_qualified_identities()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|identity| (identity.identity.id(), identity))
+            .collect();
+        self.my_tokens = my_tokens(
+            &self.app_context,
+            &self.identities,
+            &self.all_known_tokens,
+            &self.token_pricing_data,
+        );
+    }
     fn refresh(&mut self) {
         self.all_known_tokens = self
             .app_context
@@ -3223,6 +3251,52 @@ mod tests {
         assert_eq!(screen.token_creator_status, TokenCreatorStatus::Complete);
         assert!(screen.operation_banner.is_none());
         assert!(handle.elapsed().is_none());
+    }
+
+    #[test]
+    fn token_cache_updates_reload_only_the_matching_network_and_keep_form_state() {
+        use crate::backend_task::{CacheDomain, CacheUpdate};
+        let tmp = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = TokensScreen::new(&context, TokensSubscreen::TokenCreator);
+        let marker = Identifier::from([0x32; 32]);
+        screen.token_pricing_data.insert(marker, None);
+        screen.selected_token = Some(marker);
+        // A removed local identity cache entry must disappear only for this network.
+        let identity = QualifiedIdentity {
+            identity: Identity::create_basic_identity(marker, context.platform_version()).unwrap(),
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: crate::model::qualified_identity::IdentityType::User,
+            alias: None,
+            private_keys: KeyStorage::default(),
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: context.network,
+        };
+        screen.identities.insert(marker, identity);
+        let foreign = if context.network == dash_sdk::dpp::dashcore::Network::Mainnet {
+            dash_sdk::dpp::dashcore::Network::Testnet
+        } else {
+            dash_sdk::dpp::dashcore::Network::Mainnet
+        };
+        screen.cached_data_changed(CacheUpdate {
+            network: foreign,
+            domain: CacheDomain::Tokens,
+        });
+        assert!(screen.identities.contains_key(&marker));
+        screen.cached_data_changed(CacheUpdate {
+            network: context.network,
+            domain: CacheDomain::Tokens,
+        });
+        assert!(!screen.identities.contains_key(&marker));
+        assert_eq!(screen.selected_token, Some(marker));
+        assert!(screen.token_pricing_data.contains_key(&marker));
     }
 
     impl ChangeControlRulesUI {

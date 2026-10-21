@@ -1,6 +1,5 @@
-use crate::app::AppAction;
-use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::TaskResult;
 use crate::backend_task::core::CoreItem;
 use crate::model::spv_status::{SpvStatus, SpvStatusSnapshot};
 use dash_sdk::dash_spv::sync::{ProgressPercentage, SyncProgress as SpvSyncProgress, SyncState};
@@ -509,7 +508,7 @@ impl ConnectionStatus {
         }
     }
 
-    pub fn trigger_refresh(&self, app_context: &crate::context::AppContext) -> AppAction {
+    pub fn trigger_refresh(&self, app_context: &crate::context::AppContext) {
         // throttle updates based on connection state (1s disconnected, 4s connected)
         let mut last_update = match self.last_update.lock() {
             Ok(guard) => guard,
@@ -526,13 +525,12 @@ impl ConnectionStatus {
             REFRESH_DISCONNECTED
         };
         if now.duration_since(*last_update) < timeout {
-            return AppAction::None;
+            return;
         }
         *last_update = now;
 
         self.refresh_dapi(app_context);
         // SPV status is push-based; no RPC chain lock polling.
-        AppAction::None
     }
 
     fn refresh_dapi(&self, app_context: &crate::context::AppContext) {

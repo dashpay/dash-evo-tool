@@ -172,7 +172,7 @@ impl AppContext {
     /// the indicator flip, which is what this method owns.
     pub async fn ensure_wallet_backend_and_start_spv(
         self: &Arc<Self>,
-        sender: crate::utils::egui_mpsc::SenderAsync<crate::app::TaskResult>,
+        sender: crate::utils::egui_mpsc::SenderAsync<crate::backend_task::TaskResult>,
     ) -> Result<(), TaskError> {
         self.start_spv_while(sender, || true).await.map(|_| ())
     }
@@ -185,7 +185,7 @@ impl AppContext {
     /// overruled and stood down.
     pub async fn start_spv_while(
         self: &Arc<Self>,
-        sender: crate::utils::egui_mpsc::SenderAsync<crate::app::TaskResult>,
+        sender: crate::utils::egui_mpsc::SenderAsync<crate::backend_task::TaskResult>,
         still_wanted: impl Fn() -> bool + Send + Sync,
     ) -> Result<bool, TaskError> {
         if let Err(e) = self.prepare_storage(sender).await {

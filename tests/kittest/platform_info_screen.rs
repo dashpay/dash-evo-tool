@@ -1,7 +1,7 @@
 //! Tools ▸ Platform info: a fetch and its result outlive refresh notifications.
 //!
 //! `AppState::update` calls `refresh()` on the visible screen for every
-//! `TaskResult::Refresh`, and background work sends those several times a
+//! Scoped cache notifications can arrive during a Platform Info request.
 //! second for minutes. The test drives that real path: the button click, the
 //! notifications and the result all go through `AppState`.
 
@@ -20,7 +20,12 @@ fn deliver_refresh(harness: &mut Harness<'static, AppState>) {
     harness
         .state()
         .task_result_sender
-        .try_send(TaskResult::Refresh)
+        .try_send(TaskResult::CacheUpdated(
+            dash_evo_tool::backend_task::CacheUpdate {
+                network: harness.state().current_app_context().network(),
+                domain: dash_evo_tool::backend_task::CacheDomain::Identities,
+            },
+        ))
         .expect("queue the refresh notification");
     harness.run_steps(2);
 }

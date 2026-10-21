@@ -129,6 +129,7 @@ impl AppContext {
         let drain =
             crate::backend_task::migration::finish_unwire::run_gated(self, &gate, wallet_password)
                 .await;
+        let identity_keys = self.migrate_local_identity_keys_to_vault();
 
         // Run the sweep on the drain's failure path too: a deterministic drain
         // failure would otherwise postpone the only recovery path for orphaned
@@ -141,6 +142,7 @@ impl AppContext {
         self.run_pending_vault_cleanup_sweep(&gate);
 
         drain?;
+        identity_keys?;
         // The combined failure publishes its own banner but returns Ok to keep wallets usable.
         if !matches!(
             status.state().as_ref(),

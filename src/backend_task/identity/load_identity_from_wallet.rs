@@ -2,25 +2,23 @@ use super::{BackendTaskSuccessResult, IdentityIndex};
 use crate::app::TaskResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::model::derived_identity_key::recovery_scan_bound;
 use crate::model::qualified_identity::encrypted_key_storage::{
     PrivateKeyData, WalletDerivationPath,
 };
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::qualified_identity::{
-    DPNSNameInfo, IdentityStatus, IdentityType, PrivateKeyTarget, QualifiedIdentity,
+    IdentityStatus, IdentityType, PrivateKeyTarget, QualifiedIdentity,
 };
 use crate::model::wallet::WalletArcRef;
 use dash_sdk::Sdk;
-use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::identity::KeyType;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, KeyDerivationType};
-use dash_sdk::dpp::platform_value::Value;
-use dash_sdk::drive::query::{SelectProjection, WhereClause, WhereOperator};
 use dash_sdk::platform::types::identity::NonUniquePublicKeyHashQuery;
-use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identity};
+use dash_sdk::platform::{Fetch, Identity};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -99,55 +97,7 @@ impl AppContext {
 
         let identity_id = identity.id();
 
-        let dpns_names_document_query = DocumentQuery {
-            sub_queries: Vec::new(),
-            select: SelectProjection::documents(),
-            data_contract: self.dpns_contract(),
-            document_type_name: "domain".to_string(),
-            where_clauses: vec![WhereClause {
-                field: "records.identity".to_string(),
-                operator: WhereOperator::Equal,
-                value: Value::Identifier(identity_id.into()),
-            }],
-            time_range_clauses: Vec::new(),
-            group_by: Vec::new(),
-            having: Vec::new(),
-            order_by_clauses: vec![],
-            limit: 100,
-            offset: None,
-            start: None,
-        };
-
-        let maybe_owned_dpns_names = Document::fetch_many(sdk, dpns_names_document_query)
-            .await
-            .map(|document_map| {
-                document_map
-                    .values()
-                    .filter_map(|maybe_doc| {
-                        maybe_doc.as_ref().and_then(|doc| {
-                            let name = doc
-                                .get("label")
-                                .map(|label| label.to_str().unwrap_or_default());
-                            let acquired_at = doc
-                                .created_at()
-                                .into_iter()
-                                .chain(doc.transferred_at())
-                                .max();
-
-                            match (name, acquired_at) {
-                                (Some(name), Some(acquired_at)) => Some(DPNSNameInfo {
-                                    name: name.to_string(),
-                                    acquired_at,
-                                }),
-                                _ => None,
-                            }
-                        })
-                    })
-                    .collect::<Vec<DPNSNameInfo>>()
-            })
-            .map_err(|e| TaskError::DpnsFetchError {
-                source: Box::new(e),
-            })?;
+        let maybe_owned_dpns_names = self.fetch_owned_dpns_names(sdk, identity_id).await?;
 
         let highest_identity_key_id = identity
             .public_keys()
@@ -156,9 +106,7 @@ impl AppContext {
             .max()
             .unwrap_or(matching_identity_key_id);
 
-        let mut top_bound = highest_identity_key_id.saturating_add(1);
-        top_bound = top_bound.max(queried_wallet_key_index.saturating_add(1));
-        top_bound = top_bound.saturating_add(5);
+        let top_bound = wallet_key_scan_bound(highest_identity_key_id, queried_wallet_key_index);
 
         let wallet_seed_hash = wallet_arc_ref.wallet.read()?.seed_hash();
         let (public_key_result_map, public_key_hash_result_map) = self
@@ -250,17 +198,15 @@ impl AppContext {
         qualified_identity.status = IdentityStatus::Active;
         qualified_identity.network = self.network;
 
-        // Carry the user-assigned alias from any existing record so a re-load
-        // refreshes keys/DPNS without wiping DET-only metadata.
-        if let Some(existing) = self.get_identity_by_id(&identity_id)? {
-            qualified_identity.alias = existing.alias;
-            self.update_local_qualified_identity(&qualified_identity)?;
-        } else {
-            self.insert_local_qualified_identity(
-                &qualified_identity,
-                &Some((wallet_seed_hash, identity_index)),
-            )?;
-        }
+        // Insert, or refresh an existing record under its record lock while
+        // keeping the user's alias and every key this wallet-only rebuild did
+        // not recreate (manual and password-protected keys). The user asked
+        // for this identity, so an earlier unload is lifted.
+        self.store_discovered_identity(
+            &mut qualified_identity,
+            &Some((wallet_seed_hash, identity_index)),
+            crate::model::identity_discovery::DiscoveryIntent::UserRequested,
+        )?;
 
         {
             let mut wallet = wallet_arc_ref.wallet.write()?;
@@ -303,4 +249,14 @@ impl AppContext {
             count: summary.found,
         })
     }
+}
+
+/// Exclusive key-index bound of the load-from-wallet scan: the shared
+/// seed-recovery window past whichever is higher, the identity's highest key id
+/// or the wallet key index the user queried.
+pub(super) fn wallet_key_scan_bound(
+    highest_identity_key_id: u32,
+    queried_wallet_key_index: u32,
+) -> u32 {
+    recovery_scan_bound(highest_identity_key_id.max(queried_wallet_key_index))
 }

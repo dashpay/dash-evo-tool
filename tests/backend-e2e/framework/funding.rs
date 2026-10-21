@@ -27,7 +27,7 @@ pub async fn derive_platform_receive_address(
 ) -> PlatformAddress {
     if !skip_known {
         let existing = {
-            let wallets = app_context.wallets().read().expect("wallets lock");
+            let wallets = app_context.wallet_context().wallets();
             let wallet = wallets.get(&seed_hash).expect("framework wallet missing");
             let guard = wallet.read().expect("wallet read lock");
             guard

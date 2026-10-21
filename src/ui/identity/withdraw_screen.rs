@@ -19,7 +19,7 @@ use crate::ui::components::wallet_unlock_popup::{
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ResultBannerExt};
 use crate::ui::components::{Component, ComponentResponse};
 use crate::ui::helpers::{TransactionType, add_key_chooser};
-use crate::ui::theme::{DashColors, ResponseExt};
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::{Address, Network};
 use dash_sdk::dpp::fee::Credits;
@@ -389,7 +389,7 @@ impl ScreenLike for WithdrawalScreen {
             ui,
             &self.app_context,
             vec![
-                ("Identities", AppAction::GoToMainScreen),
+                ("Identities", AppAction::OpenIdentityPicker),
                 ("Withdraw", AppAction::None),
             ],
             vec![],
@@ -545,11 +545,8 @@ impl ScreenLike for WithdrawalScreen {
 
                 // Show identity info
                 let identity_id_string = self.identity.identity.id().to_string(Encoding::Base58);
-                let identity_label = if let Some(alias) = &self.identity.alias {
-                    format!("From: {alias} ({identity_id_string})")
-                } else {
-                    format!("From: {identity_id_string}")
-                };
+                let name = self.app_context.identity_display_label(&self.identity);
+                let identity_label = format!("From: {name} ({identity_id_string})");
                 ui.label(identity_label);
 
                 // Display available balance
@@ -610,13 +607,6 @@ impl ScreenLike for WithdrawalScreen {
                 ui.add_space(10.0);
 
                 // Withdraw button
-
-                let button = egui::Button::new(RichText::new("Withdraw").color(Color32::WHITE))
-                    .fill(DashColors::DASH_BLUE)
-                    .frame(true)
-                    .corner_radius(3.0)
-                    .min_size(egui::vec2(60.0, 30.0));
-
                 let has_valid_amount = self.withdrawal_amount.is_some();
                 let has_address_error = self.withdrawal_address_error.is_some();
                 let has_enough_balance = self.max_amount > estimated_fee;
@@ -635,8 +625,7 @@ impl ScreenLike for WithdrawalScreen {
                     String::new()
                 };
 
-                if ui
-                    .add_enabled(ready, button)
+                if ComponentStyles::add_primary_button_enabled(ui, ready, "Withdraw")
                     .disabled_tooltip(&hover_text)
                     .clicked()
                     && self.confirmation_dialog.is_none()

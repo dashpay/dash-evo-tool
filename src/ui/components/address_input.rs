@@ -303,6 +303,7 @@ pub type WalletWithSnapshot = (
     Arc<RwLock<Wallet>>,
     std::collections::BTreeMap<Address, u64>,
     std::collections::BTreeMap<Address, DerivationPath>,
+    Option<String>,
 );
 
 /// Unified address input with autocomplete, type detection, and validation.
@@ -320,6 +321,7 @@ pub type WalletWithSnapshot = (
 ///             wallet,
 ///             app_context.snapshot_address_balances(&seed_hash),
 ///             app_context.snapshot_address_paths(&seed_hash),
+///             app_context.wallet_context().hd_alias(&seed_hash),
 ///         )])
 ///         .with_label("Destination address")
 ///         .with_hint_text("Enter address or username")
@@ -409,15 +411,19 @@ impl AddressInput {
     /// Skips gracefully if a wallet lock is poisoned. Each Core/Platform entry
     /// carries its wallet's name for the wallet pill and `wallet:` search tag.
     pub fn with_wallets(mut self, wallets: &[WalletWithSnapshot]) -> Self {
-        for (wallet, balances, paths) in wallets {
-            self.extract_wallet_entries(wallet, balances, paths);
+        for (wallet, balances, paths, alias) in wallets {
+            self.extract_wallet_entries(wallet, balances, paths, alias.clone());
         }
         self
     }
 
     /// Provide identity references for Identity-type autocomplete.
-    pub fn with_identities(mut self, identities: &[QualifiedIdentity]) -> Self {
-        self.extract_identity_entries(identities);
+    pub fn with_identities(
+        mut self,
+        app_context: &crate::context::AppContext,
+        identities: &[QualifiedIdentity],
+    ) -> Self {
+        self.extract_identity_entries(app_context, identities);
         self
     }
 
@@ -510,16 +516,20 @@ impl AddressInput {
         self.all_entries.retain(|e| {
             e.address_kind != AddressKind::Core && e.address_kind != AddressKind::Platform
         });
-        for (wallet, balances, paths) in wallets {
-            self.extract_wallet_entries(wallet, balances, paths);
+        for (wallet, balances, paths, alias) in wallets {
+            self.extract_wallet_entries(wallet, balances, paths, alias.clone());
         }
     }
 
     /// Update identity data after initialization.
-    pub fn set_identities(&mut self, identities: &[QualifiedIdentity]) {
+    pub fn set_identities(
+        &mut self,
+        app_context: &crate::context::AppContext,
+        identities: &[QualifiedIdentity],
+    ) {
         self.all_entries
             .retain(|e| e.address_kind != AddressKind::Identity);
-        self.extract_identity_entries(identities);
+        self.extract_identity_entries(app_context, identities);
     }
 
     /// Update shielded balance data after initialization.
@@ -544,13 +554,14 @@ impl AddressInput {
         wallet: &Arc<RwLock<Wallet>>,
         address_balances: &std::collections::BTreeMap<Address, u64>,
         address_paths: &std::collections::BTreeMap<Address, DerivationPath>,
+        alias: Option<String>,
     ) {
         let guard = match wallet.read().ok() {
             Some(g) => g,
             None => return,
         };
 
-        let wallet_name = Some(guard.alias.as_deref().unwrap_or("Wallet").to_string());
+        let wallet_name = Some(alias.unwrap_or_else(|| "Wallet".to_string()));
 
         for (address, derivation_path) in address_paths {
             if derivation_path.is_bip44(self.network) {
@@ -597,12 +608,16 @@ impl AddressInput {
         }
     }
 
-    fn extract_identity_entries(&mut self, identities: &[QualifiedIdentity]) {
+    fn extract_identity_entries(
+        &mut self,
+        app_context: &crate::context::AppContext,
+        identities: &[QualifiedIdentity],
+    ) {
         for qi in identities {
             let id = qi.identity.id();
             let id_str = id.to_string(Encoding::Base58);
-            let dpns_name = qi.dpns_names.first().map(|n| n.name.clone());
-            let name_label = dpns_name.clone().or_else(|| qi.alias.clone());
+            let dpns_name = app_context.main_username(qi);
+            let name_label = Some(app_context.identity_display_label(qi));
             self.all_entries.push(AddressEntry {
                 address_string: id_str,
                 address_kind: AddressKind::Identity,
@@ -2202,6 +2217,7 @@ mod tests {
             Arc::new(RwLock::new(wallet)),
             BTreeMap::new(),
             paths,
+            alias.map(str::to_owned),
         )])
     }
 
@@ -2240,7 +2256,9 @@ mod tests {
             status: IdentityStatus::PendingCreation,
             network: Network::Testnet,
         };
-        AddressInput::new(Network::Testnet).with_identities(&[qi])
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        AddressInput::new(Network::Testnet).with_identities(&context, &[qi])
     }
 
     #[test]
@@ -2295,6 +2313,7 @@ mod tests {
             Arc::new(RwLock::new(wallet)),
             BTreeMap::new(),
             paths,
+            Some("W".to_string()),
         )]);
         let change = input
             .all_entries
@@ -2317,7 +2336,7 @@ mod tests {
 
         let input = AddressInput::new(Network::Testnet)
             .with_exclude_change(true)
-            .with_wallets(&[(Arc::new(RwLock::new(wallet)), BTreeMap::new(), paths)]);
+            .with_wallets(&[(Arc::new(RwLock::new(wallet)), BTreeMap::new(), paths, None)]);
         assert!(
             input
                 .all_entries
@@ -2347,6 +2366,7 @@ mod tests {
             Arc::new(RwLock::new(wallet)),
             BTreeMap::new(),
             paths,
+            Some("W".to_string()),
         )]);
 
         let core = input
@@ -2384,6 +2404,7 @@ mod tests {
             Arc::new(RwLock::new(wallet)),
             BTreeMap::new(),
             paths,
+            Some("W".to_string()),
         )]);
 
         let platform = input
@@ -2429,6 +2450,7 @@ mod tests {
             Arc::new(RwLock::new(wallet)),
             BTreeMap::new(),
             BTreeMap::new(),
+            None,
         )]);
 
         assert!(
@@ -2454,14 +2476,19 @@ mod tests {
     }
 
     #[test]
-    fn identity_entry_uses_alias_when_no_dpns() {
+    fn identity_entry_ignores_legacy_alias_without_username() {
         let input = identity_input(Some("bob-alias"), None);
         let entry = input
             .all_entries
             .iter()
             .find(|e| e.address_kind == AddressKind::Identity)
             .expect("identity entry present");
-        assert_eq!(entry.name_label.as_deref(), Some("bob-alias"));
+        assert_eq!(
+            entry.name_label,
+            Some(crate::model::identity_name::shorten_id(
+                &entry.address_string
+            ))
+        );
         assert_eq!(entry.wallet_name, None);
     }
 
@@ -2477,14 +2504,19 @@ mod tests {
     }
 
     #[test]
-    fn identity_entry_has_no_name_when_neither() {
+    fn identity_entry_uses_short_id_without_profile_or_username() {
         let input = identity_input(None, None);
         let entry = input
             .all_entries
             .iter()
             .find(|e| e.address_kind == AddressKind::Identity)
             .expect("identity entry present");
-        assert_eq!(entry.name_label, None);
+        assert_eq!(
+            entry.name_label,
+            Some(crate::model::identity_name::shorten_id(
+                &entry.address_string
+            ))
+        );
     }
 
     // --- Dynamic hint legend ---
@@ -2525,7 +2557,12 @@ mod tests {
                 )
                 .expect("wallet from seed");
                 let paths = BTreeMap::from([(address.clone(), bip44_receive_path(0))]);
-                (Arc::new(RwLock::new(wallet)), BTreeMap::new(), paths)
+                (
+                    Arc::new(RwLock::new(wallet)),
+                    BTreeMap::new(),
+                    paths,
+                    Some(format!("w{i}")),
+                )
             })
             .collect();
         let input = AddressInput::new(Network::Testnet).with_wallets(&wallets);

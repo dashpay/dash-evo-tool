@@ -18,7 +18,7 @@
 //! This component follows `docs/COMPONENT_DESIGN_PATTERN.md`: private fields +
 //! builder methods + a response struct implementing [`ComponentResponse`].
 
-use crate::model::contested_name::PendingUsername;
+use crate::model::dpns_usernames::UsernameRequest;
 use crate::model::qualified_identity::IdentityType;
 use crate::ui::components::component_trait::ComponentResponse;
 use crate::ui::components::pill;
@@ -185,8 +185,8 @@ pub struct IdentityHeroCard {
     avatar_decode_ok: bool,
     /// A DPNS username the identity has requested but not yet been awarded.
     /// When set and no owned `dpns_handle` exists, the hero shows the requested
-    /// name with a "Pending" pill instead of the `No username yet` prompt.
-    pending_username: Option<PendingUsername>,
+    /// name with a phase pill instead of the `No username yet` prompt.
+    pending_username: Option<UsernameRequest>,
 }
 
 impl IdentityHeroCard {
@@ -210,8 +210,8 @@ impl IdentityHeroCard {
     /// Set the DashPay display name. Passing a non-empty string flips the
     /// hero into its social-profile-set variant.
     pub fn with_display_name(mut self, name: impl Into<String>) -> Self {
-        let name = name.into();
-        if !name.trim().is_empty() {
+        let name = crate::model::identity_name::clean_display_text(&name.into());
+        if !name.is_empty() {
             self.display_name = Some(name);
         }
         self
@@ -219,8 +219,8 @@ impl IdentityHeroCard {
 
     /// Set the primary DPNS handle (without the leading `@`).
     pub fn with_dpns_handle(mut self, handle: impl Into<String>) -> Self {
-        let handle = handle.into();
-        if !handle.trim().is_empty() {
+        let handle = crate::model::identity_name::clean_display_text(&handle.into());
+        if !handle.is_empty() {
             self.dpns_handle = Some(handle);
         }
         self
@@ -229,8 +229,8 @@ impl IdentityHeroCard {
     /// Attach a pending DPNS username request (requested but not yet awarded).
     /// Shown only when the identity has no owned `dpns_handle` — an owned name
     /// always wins.
-    pub fn with_pending_username(mut self, pending: PendingUsername) -> Self {
-        if !pending.name.trim().is_empty() {
+    pub fn with_pending_username(mut self, pending: UsernameRequest) -> Self {
+        if !pending.label.trim().is_empty() {
             self.pending_username = Some(pending);
         }
         self
@@ -274,7 +274,7 @@ impl IdentityHeroCard {
         }
         // Probe decode: just validate, discard the image data. The full decode
         // for GPU upload happens lazily in try_paint_avatar_image.
-        self.avatar_decode_ok = image::load_from_memory(&bytes).is_ok();
+        self.avatar_decode_ok = crate::model::avatar::decode_avatar(&bytes).is_ok();
         self.avatar_bytes = Some(bytes);
         self
     }
@@ -356,7 +356,7 @@ impl IdentityHeroCard {
                         }
                         (None, Some(pending)) => {
                             // Requested but not yet awarded — show the requested
-                            // name with a `Pending` pill so it is not mistaken
+                            // name with a phase pill so it is not mistaken
                             // for "no username requested".
                             self.paint_pending_username_line(ui, dark_mode, pending);
                         }
@@ -447,7 +447,7 @@ impl IdentityHeroCard {
     /// can skip the initials fallback.
     ///
     /// The decoded texture is cached in the egui context keyed by an FNV-1a
-    /// hash of the bytes, so the `image::load_from_memory` decode only runs
+    /// hash of the bytes, so the `crate::model::avatar::decode_avatar` decode only runs
     /// once per unique avatar regardless of how many frames the hero renders.
     ///
     /// # Resource note
@@ -468,7 +468,7 @@ impl IdentityHeroCard {
             Some(h) => h,
             None => {
                 // Decode the raw bytes.
-                let Ok(img) = image::load_from_memory(bytes) else {
+                let Ok(img) = crate::model::avatar::decode_avatar(bytes) else {
                     return false;
                 };
                 let rgba = img.into_rgba8();
@@ -537,11 +537,11 @@ impl IdentityHeroCard {
     }
 
     /// Paint the pending-username line: the requested `@name` (muted, italic to
-    /// signal it is not yet final) followed by a shared `Pending` pill whose
+    /// signal it is not yet final) followed by a shared phase pill whose
     /// tooltip carries the estimated ready time.
-    fn paint_pending_username_line(&self, ui: &mut Ui, dark_mode: bool, pending: &PendingUsername) {
+    fn paint_pending_username_line(&self, ui: &mut Ui, dark_mode: bool, pending: &UsernameRequest) {
         let name =
-            crate::model::contested_name::sanitize_pending_username_for_display(&pending.name);
+            crate::model::contested_name::sanitize_pending_username_for_display(&pending.label);
         ui.horizontal(|ui| {
             ui.label(
                 RichText::new(format!("@{name}"))
@@ -556,7 +556,7 @@ impl IdentityHeroCard {
 }
 
 /// FNV-1a hash of a byte slice. Used to derive a stable texture cache key for
-/// avatar images so the `image::load_from_memory` decode only runs once per
+/// avatar images so the `crate::model::avatar::decode_avatar` decode only runs once per
 /// unique byte content.
 fn fnv1a_hash(data: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325; // FNV offset basis
@@ -570,6 +570,20 @@ fn fnv1a_hash(data: &[u8]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hero_card_text_filters_controls() {
+        let hero = IdentityHeroCard::new(HeroIdentityKind::User, "0")
+            .with_display_name("Al\u{202e}i\nce")
+            .with_dpns_handle("al\u{200f}ice.dash");
+        assert_eq!(hero.display_name.as_deref(), Some("Alice"));
+        assert_eq!(hero.dpns_handle.as_deref(), Some("alice.dash"));
+        let blank = IdentityHeroCard::new(HeroIdentityKind::User, "0")
+            .with_display_name("\u{2066}\n ")
+            .with_dpns_handle("\u{202e}");
+        assert!(!blank.has_social_profile());
+        assert!(blank.no_dpns());
+    }
 
     // UT-HERO-01 — Identity hero, social profile set.
     //
@@ -724,11 +738,19 @@ mod tests {
 
     // ─── Pending DPNS username tests ─────────────────────────
 
-    fn pending(name: &str) -> PendingUsername {
-        PendingUsername {
-            name: name.to_string(),
-            decided_at: None,
-        }
+    fn pending(name: &str) -> UsernameRequest {
+        let mut request = UsernameRequest::submitted(
+            "x",
+            0,
+            crate::model::dpns::ContestDurations {
+                total: std::time::Duration::ZERO,
+                join: std::time::Duration::ZERO,
+            },
+            None,
+        );
+        request.label = name.to_string();
+        request.end = None;
+        request
     }
 
     #[test]
@@ -738,7 +760,7 @@ mod tests {
         assert!(hero.pending_username.is_none());
     }
 
-    /// The pending variant renders the requested name with a `Pending` pill and
+    /// The pending variant renders the requested name with a phase pill and
     /// suppresses the misleading `No username yet` prompt.
     #[test]
     fn hero_pending_variant_shows_pill_not_pick_username_prompt() {
@@ -756,9 +778,11 @@ mod tests {
 
         assert!(
             harness
-                .query_by_label(pill::PENDING_USERNAME_PILL_LABEL)
+                .query_by_label(crate::ui::identity::username_copy::phase_label(
+                    crate::model::dpns_usernames::RequestPhase::Joinable
+                ))
                 .is_some(),
-            "pending hero must render the 'Pending' pill"
+            "pending hero must render the phase pill"
         );
         assert!(
             harness.query_by_label("No username yet").is_none(),
@@ -766,7 +790,7 @@ mod tests {
         );
     }
 
-    /// An owned DPNS name always wins: no `Pending` pill even if a pending
+    /// An owned DPNS name always wins: no phase pill even if a pending
     /// request is also attached.
     #[test]
     fn hero_owned_handle_wins_over_pending() {
@@ -788,7 +812,9 @@ mod tests {
         );
         assert!(
             harness
-                .query_by_label(pill::PENDING_USERNAME_PILL_LABEL)
+                .query_by_label(crate::ui::identity::username_copy::phase_label(
+                    crate::model::dpns_usernames::RequestPhase::Joinable
+                ))
                 .is_none(),
             "owned name must suppress the pending pill"
         );

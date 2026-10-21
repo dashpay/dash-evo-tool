@@ -104,6 +104,8 @@ impl<'a> SecretSeam<'a> {
         label: &str,
         secret: &SecretBytes,
     ) -> Result<(), TaskError> {
+        #[cfg(test)]
+        write_fault_test_support::before_write(SecretScheme::Unprotected)?;
         self.secret_store.set(scope, label, secret).map_err(map_err)
     }
 
@@ -118,6 +120,8 @@ impl<'a> SecretSeam<'a> {
         secret: &SecretBytes,
         password: &SecretString,
     ) -> Result<(), TaskError> {
+        #[cfg(test)]
+        write_fault_test_support::before_write(SecretScheme::Protected)?;
         self.secret_store
             .set_secret(scope, label, secret, Some(password))
             .map_err(map_err)
@@ -183,6 +187,55 @@ impl<'a> SecretSeam<'a> {
 
 fn map_err(source: SecretStoreError) -> TaskError {
     crate::backend_task::error::vault_error(source, |source| TaskError::SecretSeam { source })
+}
+
+#[cfg(test)]
+pub(crate) mod write_fault_test_support {
+    use super::*;
+    use std::cell::RefCell;
+
+    thread_local! {
+        static WRITES: RefCell<Option<(usize, Vec<SecretScheme>)>> = const { RefCell::new(None) };
+    }
+
+    /// Observe synchronous seam writes on this thread and fail the selected write.
+    pub(crate) struct WriteFault;
+
+    impl WriteFault {
+        pub(crate) fn arm(fail_at: usize) -> Self {
+            WRITES.with_borrow_mut(|slot| {
+                assert!(slot.is_none(), "nested write fault");
+                *slot = Some((fail_at, Vec::new()));
+            });
+            Self
+        }
+
+        pub(crate) fn schemes(&self) -> Vec<SecretScheme> {
+            WRITES.with_borrow(|slot| slot.as_ref().unwrap().1.clone())
+        }
+    }
+
+    impl Drop for WriteFault {
+        fn drop(&mut self) {
+            WRITES.with_borrow_mut(|slot| *slot = None);
+        }
+    }
+
+    pub(super) fn before_write(scheme: SecretScheme) -> Result<(), TaskError> {
+        WRITES.with_borrow_mut(|slot| {
+            if let Some((fail_at, writes)) = slot {
+                writes.push(scheme);
+                if writes.len() == *fail_at {
+                    return Err(TaskError::SecretSeam {
+                        source: Box::new(
+                            std::io::Error::other("injected vault write failure").into(),
+                        ),
+                    });
+                }
+            }
+            Ok(())
+        })
+    }
 }
 
 #[cfg(test)]

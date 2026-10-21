@@ -18,13 +18,12 @@ use zeroize::Zeroizing;
 
 use crate::backend_task::error::TaskError;
 use crate::model::single_key::validate_wif;
+use crate::model::wallet::alias::MAX_WALLET_ALIAS_CHARS;
 use crate::model::wallet::passphrase::validate_single_key_passphrase;
+use crate::ui::components::Component;
+use crate::ui::components::alias_input::AliasInput;
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::theme::{DashColors, network_label};
-
-/// Maximum alias length accepted by the dialog. Matches the legacy
-/// single-key alias limit so list rows stay readable.
-const ALIAS_MAX_CHARS: usize = 64;
 
 /// Outcome of a single frame of [`ImportSingleKeyDialog::show`].
 ///
@@ -33,7 +32,7 @@ const ALIAS_MAX_CHARS: usize = 64;
 #[derive(Default, Clone)]
 pub struct ImportSingleKeyResponse {
     /// `Some` only on the frame the user clicks **Add to wallets** with a
-    /// valid WIF. Carries the WIF and the user-supplied alias (trimmed)
+    /// valid WIF. Carries the WIF and the user-supplied alias (as typed)
     /// so the parent can call
     /// [`crate::wallet_backend::SingleKeyView::import_wif`] without
     /// re-reading the input.
@@ -55,7 +54,9 @@ pub struct ImportSingleKeyRequest {
     /// WIF-encoded private key. Wrapped in [`Zeroizing`]; derefs to `&str`
     /// for callers that need the raw text.
     pub wif: Zeroizing<String>,
-    pub alias: Option<String>,
+    /// Nickname as typed. The backend cleans it, replaces a blank one with
+    /// the smallest unused "Key N", and rejects a name another key uses.
+    pub alias: String,
     /// Address preview shown to the user — handed back so the parent can
     /// echo it in a success message without re-deriving.
     pub address_preview: String,
@@ -106,7 +107,7 @@ pub struct ImportSingleKeyDialog {
     pub open: bool,
     network: Network,
     wif_input: PasswordInput,
-    alias_input: String,
+    alias_input: AliasInput,
     /// `Some` once the WIF parses cleanly — drives the preview rendering
     /// and the Add button enablement.
     derived_address: Option<String>,
@@ -134,7 +135,9 @@ impl ImportSingleKeyDialog {
             wif_input: PasswordInput::new()
                 .with_hint_text("Paste your private key (WIF)")
                 .with_monospace(),
-            alias_input: String::new(),
+            alias_input: AliasInput::new()
+                .with_label("Nickname (optional)")
+                .with_hint_text("Imported key"),
             derived_address: None,
             error_message: None,
             passphrase_enabled: false,
@@ -243,12 +246,7 @@ impl ImportSingleKeyDialog {
             ui.add_space(8.0);
         }
 
-        ui.label("Nickname (optional)");
-        ui.add(
-            egui::TextEdit::singleline(&mut self.alias_input)
-                .hint_text("Imported key")
-                .char_limit(ALIAS_MAX_CHARS),
-        );
+        self.alias_input.show(ui);
         ui.add_space(12.0);
 
         // Option C — passphrase opt-in.
@@ -269,7 +267,7 @@ impl ImportSingleKeyDialog {
             ui.add(
                 egui::TextEdit::singleline(&mut self.hint_input)
                     .hint_text("Shown next to the unlock prompt")
-                    .char_limit(ALIAS_MAX_CHARS),
+                    .char_limit(MAX_WALLET_ALIAS_CHARS),
             );
             if let Some(err) = &self.passphrase_error {
                 ui.colored_label(DashColors::VALIDATION_WARNING, err);
@@ -304,10 +302,9 @@ impl ImportSingleKeyDialog {
                 } else {
                     (None, None)
                 };
-                let alias = self.alias_input.trim().to_string();
                 response.confirmed = Some(ImportSingleKeyRequest {
                     wif: Zeroizing::new(self.wif_input.text().to_string()),
-                    alias: (!alias.is_empty()).then_some(alias),
+                    alias: self.alias_input.text().to_owned(),
                     address_preview: addr,
                     passphrase,
                     passphrase_hint: hint,
@@ -371,7 +368,7 @@ mod tests {
         let passphrase = "correct-horse-battery-staple";
         let request = ImportSingleKeyRequest {
             wif: Zeroizing::new(wif.to_string()),
-            alias: Some("primary".into()),
+            alias: "primary".into(),
             address_preview: "yPreviewAddr".into(),
             passphrase: Some(Zeroizing::new(passphrase.to_string())),
             passphrase_hint: Some("the usual".into()),
@@ -493,13 +490,13 @@ mod tests {
     fn reset_clears_every_field() {
         let mut dialog = ImportSingleKeyDialog::new(Network::Testnet);
         dialog.wif_input.set_text(known_testnet_wif().to_string());
-        dialog.alias_input = "primary".to_string();
+        dialog.alias_input.set_text("primary");
         dialog.recompute_preview();
         assert!(dialog.derived_address.is_some());
 
         dialog.reset();
         assert_eq!(dialog.wif_input.text(), "");
-        assert!(dialog.alias_input.is_empty());
+        assert!(dialog.alias_input.text().is_empty());
         assert!(dialog.derived_address.is_none());
         assert!(dialog.error_message.is_none());
     }

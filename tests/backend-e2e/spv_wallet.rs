@@ -42,7 +42,7 @@ async fn test_spv_sync_and_create_wallet() {
 
     // Verify in-memory
     {
-        let wallets = app_context.wallets().read().expect("wallets lock");
+        let wallets = app_context.wallet_context().wallets();
         assert!(
             wallets.contains_key(&seed_hash),
             "Wallet should be registered"

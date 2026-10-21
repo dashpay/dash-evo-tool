@@ -1,11 +1,13 @@
 use crate::app::AppAction;
 use crate::backend_task::core::CoreTask;
 use crate::backend_task::dapi_discovery::persist_dapi_addresses;
-use crate::backend_task::error::TaskError;
+use crate::backend_task::error::{BACKUP_RETENTION_SAVED_CLEANUP_INCOMPLETE, TaskError};
+use crate::backend_task::migration::MigrationTask;
 use crate::backend_task::system_task::SystemTask;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::context::connection_status::OverallConnectionState;
+use crate::model::backup_retention::{BackupRetention, validate_retention_days};
 use crate::model::spv_status::{SpvStatus, SpvStatusSnapshot};
 use crate::model::user_role::UserRole;
 use crate::ui::components::MessageBanner;
@@ -15,7 +17,7 @@ use crate::ui::components::styled::{
     ConfirmationDialog, ConfirmationStatus, StyledCard, StyledCheckbox, island_central_panel,
 };
 use crate::ui::components::top_panel::{add_top_panel_with_global_nav, subdued_everyday_spec};
-use crate::ui::theme::{DashColors, ResponseExt, Shape, ThemeMode};
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Shape, ThemeMode};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dash_spv::sync::{ProgressPercentage, SyncProgress as SpvSyncProgress, SyncState};
 use dash_sdk::dpp::dashcore::Network;
@@ -78,8 +80,10 @@ pub struct NetworkChooserScreen {
     spv_clear_message: Option<SpvClearMessage>,
     db_clear_dialog: Option<ConfirmationDialog>,
     db_clear_in_progress: bool,
+    legacy_restore_in_progress: bool,
     wipe_platform_data_dialog: Option<ConfirmationDialog>,
     auto_start_spv: bool,
+    backup_retention: BackupRetentionForm,
     discovery_in_progress: bool,
     fetch_confirmation_dialog: Option<ConfirmationDialog>,
     /// Set when DAPI discovery completes and an SDK reinit is needed.
@@ -100,6 +104,14 @@ impl NetworkChooserScreen {
         let settings = current_context.get_app_settings();
         let theme_preference = settings.theme_mode;
         let auto_start_spv = settings.auto_start_spv;
+        let backup_retention = BackupRetentionForm::new(
+            current_context
+                .backup_retention()
+                .inspect_err(|error| {
+                    tracing::warn!(?error, "Backup retention setting unreadable");
+                })
+                .ok(),
+        );
 
         Self {
             network_contexts: contexts.clone(),
@@ -118,8 +130,10 @@ impl NetworkChooserScreen {
             spv_clear_message: None,
             db_clear_dialog: None,
             db_clear_in_progress: false,
+            legacy_restore_in_progress: false,
             wipe_platform_data_dialog: None,
             auto_start_spv,
+            backup_retention,
             discovery_in_progress: false,
             fetch_confirmation_dialog: None,
             pending_reinit_after_discovery: false,
@@ -267,15 +281,14 @@ impl NetworkChooserScreen {
             ui.horizontal(|ui| {
                 if overall_state != OverallConnectionState::Disconnected {
                     let is_stopping = spv_status == SpvStatus::Stopping;
-                    let disconnect_button = egui::Button::new(
-                        egui::RichText::new("Disconnect").color(DashColors::WHITE),
-                    )
-                    .fill(DashColors::ERROR)
-                    .stroke(egui::Stroke::NONE)
-                    .corner_radius(Shape::RADIUS_MD)
-                    .min_size(egui::vec2(120.0, 36.0));
 
-                    if ui.add_enabled(!is_stopping, disconnect_button).clicked() {
+                    if ui
+                        .add_enabled_ui(!is_stopping, |ui| {
+                            ComponentStyles::add_danger_button(ui, "Disconnect")
+                        })
+                        .inner
+                        .clicked()
+                    {
                         // The update loop owns the async teardown (upstream
                         // shutdown is async), so dispatch it as an action rather
                         // than blocking the frame loop. The indicator flips to
@@ -317,24 +330,12 @@ impl NetworkChooserScreen {
                     }
                 } else {
                     // Chain sync is SPV-only.
-                    let show_connect_button = true;
-
-                    if show_connect_button {
-                        let connect_button = egui::Button::new(
-                            egui::RichText::new("Connect").color(DashColors::WHITE),
-                        )
-                        .fill(DashColors::DASH_BLUE)
-                        .stroke(egui::Stroke::NONE)
-                        .corner_radius(Shape::RADIUS_MD)
-                        .min_size(egui::vec2(120.0, 36.0));
-
-                        if ui.add(connect_button).clicked() {
-                            // The update loop owns the `TaskResult` sender the
-                            // backend-wiring step needs, so it lazily wires the
-                            // backend then starts chain sync. A click during the
-                            // brief not-yet-wired boot window no longer fast-fails.
-                            app_action = AppAction::StartSpv;
-                        }
+                    if ComponentStyles::add_primary_button(ui, "Connect").clicked() {
+                        // The update loop owns the `TaskResult` sender the
+                        // backend-wiring step needs, so it lazily wires the
+                        // backend then starts chain sync. A click during the
+                        // brief not-yet-wired boot window no longer fast-fails.
+                        app_action = AppAction::StartSpv;
                     }
                 }
             });
@@ -708,12 +709,41 @@ impl NetworkChooserScreen {
                 ui.separator();
                 ui.add_space(12.0);
 
+                self.backup_retention.show(ui, dark_mode);
+
+                ui.add_space(12.0);
+                ui.separator();
+                ui.add_space(12.0);
+
                 ui.label(
                     egui::RichText::new("Database Maintenance")
                         .strong()
                         .color(DashColors::text_primary(dark_mode)),
                 );
                 ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new("If you updated from an earlier version of Dash Evo Tool, you can bring back wallets, imported keys and identity keys that are missing on this device. Nothing that is already here is changed. Wallets and keys you removed in this version may reappear if the earlier version still has them.")
+                        .color(DashColors::text_secondary(dark_mode)),
+                );
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let restore_enabled =
+                        !self.legacy_restore_in_progress && !self.db_clear_in_progress;
+                    if ui
+                        .add_enabled(restore_enabled, egui::Button::new("Restore from Previous Version"))
+                        .clicked()
+                    {
+                        self.legacy_restore_in_progress = true;
+                        app_action |= AppAction::BackendTask(BackendTask::MigrationTask(
+                            MigrationTask::RestoreFromPreviousVersion,
+                        ));
+                    }
+                    if self.legacy_restore_in_progress {
+                        ui.spinner();
+                    }
+                });
+                ui.add_space(12.0);
+
                 ui.label(
                     egui::RichText::new("Remove all local data for the current network (wallets, contacts, identities, tokens, etc.).")
                         .color(DashColors::text_secondary(dark_mode)),
@@ -730,7 +760,10 @@ impl NetworkChooserScreen {
                 .min_size(egui::vec2(0.0, 36.0));
 
                 if ui
-                    .add_enabled(!self.db_clear_in_progress, clear_button)
+                    .add_enabled(
+                        !self.db_clear_in_progress && !self.legacy_restore_in_progress,
+                        clear_button,
+                    )
                     .clicked()
                 {
                     let message = format!(
@@ -1375,6 +1408,266 @@ impl NetworkChooserScreen {
     }
 }
 
+/// Shown when the retention setting cannot be read; the backend then deletes nothing.
+const BACKUP_RETENTION_UNREADABLE: &str = "Your backup retention setting could not be read, so no old upgrade backups are deleted. Choose a backup retention setting and save it.";
+
+/// Result banner after saving a retention policy.
+fn backup_retention_saved_banner(
+    deleted: usize,
+    cleanup_incomplete: bool,
+) -> (String, MessageType) {
+    if cleanup_incomplete {
+        return (
+            BACKUP_RETENTION_SAVED_CLEANUP_INCOMPLETE.to_owned(),
+            MessageType::Warning,
+        );
+    }
+    let message = match deleted {
+        0 => "Your backup retention setting was saved.".to_owned(),
+        1 => "One old upgrade backup was deleted.".to_owned(),
+        count => format!("{count} old upgrade backups were deleted."),
+    };
+    (message, MessageType::Success)
+}
+
+/// Confirmation text for switching to a stricter retention of `days` days.
+fn stricter_retention_confirmation(days: u16) -> String {
+    if days == 1 {
+        "Upgrade backups older than one day will be deleted now, and from then on automatically. Deleted backups cannot be restored. Continue?".to_owned()
+    } else {
+        format!(
+            "Upgrade backups older than {days} days will be deleted now, and from then on automatically. Deleted backups cannot be restored. Continue?"
+        )
+    }
+}
+
+/// Settings-screen state for the upgrade-backup retention policy.
+///
+/// Edits are saved only once finished, and only after the backend confirms is the
+/// new policy treated as saved. A policy that deletes backups sooner than the saved
+/// one needs explicit confirmation, since saving it deletes backups right away.
+struct BackupRetentionForm {
+    /// Whether old backups are deleted automatically.
+    enabled: bool,
+    /// Retention period being edited, in days.
+    days: u32,
+    /// The persisted policy, or `None` when it could not be read.
+    saved: Option<BackupRetention>,
+    /// Inputs of the last settled state; only edits away from it are saved.
+    baseline: (bool, u32),
+    /// A save ready to send, emitted by [`Self::take_task`] on a frame whose screen
+    /// action is otherwise empty, so no other action can overwrite it.
+    outbox: Option<BackupRetention>,
+    /// A save sent to the backend and not yet answered.
+    pending: Option<BackupRetention>,
+    /// A stricter policy awaiting the user's confirmation.
+    confirmation: Option<(BackupRetention, ConfirmationDialog)>,
+}
+
+impl BackupRetentionForm {
+    fn new(saved: Option<BackupRetention>) -> Self {
+        // An unreadable setting deletes nothing, which the unchecked box reflects.
+        let inputs = Self::inputs(saved.unwrap_or(BackupRetention::KeepForever));
+        Self {
+            enabled: inputs.0,
+            days: inputs.1,
+            saved,
+            baseline: inputs,
+            outbox: None,
+            pending: None,
+            confirmation: None,
+        }
+    }
+
+    fn inputs(policy: BackupRetention) -> (bool, u32) {
+        match policy {
+            BackupRetention::DeleteAfterDays(days) => (true, u32::from(days)),
+            BackupRetention::KeepForever => (false, u32::from(BackupRetention::DEFAULT_DAYS)),
+        }
+    }
+
+    /// The policy the form currently describes, or `None` while the period is invalid.
+    fn desired(&self) -> Option<BackupRetention> {
+        if !self.enabled {
+            return Some(BackupRetention::KeepForever);
+        }
+        validate_retention_days(self.days)
+            .ok()
+            .map(BackupRetention::DeleteAfterDays)
+    }
+
+    fn busy(&self) -> bool {
+        self.outbox.is_some() || self.pending.is_some() || self.confirmation.is_some()
+    }
+
+    /// Whether the user is turning automatic deletion on. That waits for an explicit
+    /// apply, so the period can be chosen before any backup is deleted.
+    fn enabling(&self) -> bool {
+        self.enabled && !self.baseline.0
+    }
+
+    /// Handle a finished edit: queue it, ask to confirm a stricter policy, or do nothing.
+    /// `apply` is an explicit user request to save: it is required to turn deletion
+    /// on, and saves even an unchanged form to repair an unreadable setting.
+    fn settle(&mut self, apply: bool) {
+        let inputs = (self.enabled, self.days);
+        if self.busy() || (!apply && (inputs == self.baseline || self.enabling())) {
+            return;
+        }
+        let Some(desired) = self.desired() else {
+            return;
+        };
+        if self.saved == Some(desired) {
+            self.baseline = inputs;
+            return;
+        }
+        let stricter = match self.saved {
+            Some(saved) => desired.is_stricter_than(saved),
+            None => desired.max_age().is_some(),
+        };
+        match desired {
+            BackupRetention::DeleteAfterDays(days) if stricter => {
+                let dialog = ConfirmationDialog::new(
+                    "Delete old upgrade backups?",
+                    stricter_retention_confirmation(days),
+                )
+                .confirm_text(Some("Delete Old Backups"))
+                .cancel_text(Some("Keep Backups"))
+                .danger_mode(true);
+                self.confirmation = Some((desired, dialog));
+            }
+            _ => self.outbox = Some(desired),
+        }
+    }
+
+    /// The queued save task, if any; the save counts as in flight from here on.
+    fn take_task(&mut self) -> AppAction {
+        let Some(policy) = self.outbox.take() else {
+            return AppAction::None;
+        };
+        self.pending = Some(policy);
+        AppAction::BackendTask(BackendTask::SystemTask(SystemTask::UpdateBackupRetention(
+            policy,
+        )))
+    }
+
+    /// Return the inputs to the last settled state.
+    fn revert(&mut self) {
+        (self.enabled, self.days) = self.baseline;
+    }
+
+    /// Resolve a user's answer to the confirmation dialog.
+    fn resolve_confirmation(&mut self, status: ConfirmationStatus) {
+        let Some((policy, _)) = self.confirmation.take() else {
+            return;
+        };
+        match status {
+            ConfirmationStatus::Confirmed => self.outbox = Some(policy),
+            ConfirmationStatus::Canceled => self.revert(),
+        }
+    }
+
+    /// The backend persisted `retention`.
+    fn save_succeeded(&mut self, retention: BackupRetention) {
+        self.pending = None;
+        self.saved = Some(retention);
+        if self.desired() != Some(retention) {
+            (self.enabled, self.days) = Self::inputs(retention);
+        }
+        self.baseline = (self.enabled, self.days);
+    }
+
+    /// The backend could not persist the policy; the saved one still applies.
+    fn save_failed(&mut self) {
+        self.pending = None;
+        self.revert();
+    }
+
+    /// Re-sync with the persisted policy when the screen is shown again.
+    ///
+    /// A save whose answer never arrived no longer blocks the form: its result, if it
+    /// still comes, is applied as usual. A queued save or an open confirmation is kept.
+    fn reload(&mut self, saved: Option<BackupRetention>) {
+        self.pending = None;
+        if !self.busy() {
+            *self = Self::new(saved);
+        }
+    }
+
+    /// Render the section. The save task it may queue is emitted by [`Self::take_task`].
+    fn show(&mut self, ui: &mut Ui, dark_mode: bool) {
+        ui.label(
+            egui::RichText::new("Upgrade Backups")
+                .strong()
+                .color(DashColors::text_primary(dark_mode)),
+        );
+        ui.add_space(6.0);
+        ui.label(
+            egui::RichText::new(
+                "Before a storage upgrade, the app saves a backup copy of your wallet data on this device. Old backups can be deleted automatically.",
+            )
+            .color(DashColors::text_secondary(dark_mode)),
+        );
+        ui.add_space(8.0);
+        if self.saved.is_none() {
+            ui.colored_label(DashColors::WARNING, BACKUP_RETENTION_UNREADABLE);
+            ui.add_space(6.0);
+        }
+
+        let mut editing = false;
+        let mut apply = false;
+        ui.add_enabled_ui(!self.busy(), |ui| {
+            StyledCheckbox::new(
+                &mut self.enabled,
+                "Delete old upgrade backups automatically",
+            )
+            .show(ui);
+            if self.enabled {
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label("Keep upgrade backups for this many days:");
+                    // Not clamped: an out-of-range entry stays visible with the error
+                    // below and is never saved, instead of silently becoming the limit.
+                    let response = ui.add(egui::DragValue::new(&mut self.days).speed(1));
+                    // Save only a finished edit, not every intermediate drag or keystroke.
+                    editing = response.dragged() || response.has_focus();
+                });
+                if let Err(error) = validate_retention_days(self.days) {
+                    ui.colored_label(DashColors::ERROR, error.to_string());
+                }
+            } else {
+                ui.label(
+                    egui::RichText::new("Upgrade backups are kept until you delete them.")
+                        .color(DashColors::text_secondary(dark_mode)),
+                );
+            }
+            if self.enabling() {
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Choose how many days to keep upgrade backups, then turn on automatic deletion.",
+                    )
+                    .color(DashColors::text_secondary(dark_mode)),
+                );
+                ui.add_space(6.0);
+                apply = ui.button("Turn On Automatic Deletion").clicked();
+            } else if self.saved.is_none() {
+                ui.add_space(6.0);
+                apply = ui.button("Save Setting").clicked();
+            }
+        });
+
+        if !editing {
+            self.settle(apply);
+        }
+        if let Some((_, dialog)) = self.confirmation.as_mut()
+            && let Some(status) = dialog.show(ui).inner.dialog_response
+        {
+            self.resolve_confirmation(status);
+        }
+    }
+}
+
 fn wipe_platform_data_available(role: UserRole, network: Network) -> bool {
     role.at_least(UserRole::Developer) && network == Network::Devnet
 }
@@ -1400,6 +1693,8 @@ impl ScreenLike for NetworkChooserScreen {
         // changed on another surface (e.g. the onboarding row) since this cached
         // root screen was constructed.
         self.selected_role = self.current_app_context().user_role();
+        self.backup_retention
+            .reload(self.current_app_context().backup_retention().ok());
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
@@ -1427,6 +1722,12 @@ impl ScreenLike for NetworkChooserScreen {
         if self.pending_reinit_after_discovery {
             self.pending_reinit_after_discovery = false;
             action |= AppAction::BackendTask(BackendTask::ReinitCoreClientAndSdk);
+        }
+
+        // Only on an otherwise idle frame, so no other action can overwrite the save;
+        // a busy frame leaves it queued for the next one.
+        if action == AppAction::None {
+            action = self.backup_retention.take_task();
         }
 
         // Recheck both network status every 3 seconds
@@ -1460,7 +1761,26 @@ impl ScreenLike for NetworkChooserScreen {
         // refresh ("Updated to N node addresses.").
 
         // Handle DapiNodesDiscovered (from "Refresh DAPI endpoints" button)
-        if let BackendTaskSuccessResult::NetworkDatabaseCleared { .. } =
+        if let BackendTaskSuccessResult::PreviousVersionRestored(_) = &backend_task_success_result {
+            self.legacy_restore_in_progress = false;
+        } else if let BackendTaskSuccessResult::UpdatedBackupRetention {
+            retention,
+            deleted,
+            cleanup_failure,
+        } = backend_task_success_result
+        {
+            self.backup_retention.save_succeeded(retention);
+            let (message, message_type) =
+                backup_retention_saved_banner(deleted, cleanup_failure.is_some());
+            let banner = MessageBanner::set_global(
+                self.current_app_context().egui_ctx(),
+                message,
+                message_type,
+            );
+            if let Some(failure) = cleanup_failure {
+                banner.with_details(failure);
+            }
+        } else if let BackendTaskSuccessResult::NetworkDatabaseCleared { .. } =
             &backend_task_success_result
         {
             self.db_clear_in_progress = false;
@@ -1501,8 +1821,15 @@ impl ScreenLike for NetworkChooserScreen {
     }
 
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
-        if matches!(context, BackendTaskContext::ClearNetworkDatabase) {
-            self.db_clear_in_progress = false;
+        match context {
+            BackendTaskContext::ClearNetworkDatabase => self.db_clear_in_progress = false,
+            BackendTaskContext::RestoreFromPreviousVersion => {
+                self.legacy_restore_in_progress = false;
+            }
+            _ => {}
+        }
+        if matches!(context, BackendTaskContext::UpdateBackupRetention) {
+            self.backup_retention.save_failed();
         }
     }
 
@@ -1524,6 +1851,229 @@ mod tests {
         assert_eq!(chooser_network_label(Network::Testnet), "Testnet");
         assert_eq!(chooser_network_label(Network::Devnet), "Devnet");
         assert_eq!(chooser_network_label(Network::Regtest), "Local");
+    }
+
+    fn saved_retention(action: AppAction) -> Option<BackupRetention> {
+        match action {
+            AppAction::BackendTask(BackendTask::SystemTask(SystemTask::UpdateBackupRetention(
+                retention,
+            ))) => Some(retention),
+            _ => None,
+        }
+    }
+
+    /// Settle a finished edit and return the save task it emits, if any.
+    fn step(form: &mut BackupRetentionForm, apply: bool) -> Option<BackupRetention> {
+        form.settle(apply);
+        saved_retention(form.take_task())
+    }
+
+    fn answer(
+        form: &mut BackupRetentionForm,
+        status: ConfirmationStatus,
+    ) -> Option<BackupRetention> {
+        form.resolve_confirmation(status);
+        saved_retention(form.take_task())
+    }
+
+    #[test]
+    fn out_of_range_retention_days_are_never_saved() {
+        let mut form = BackupRetentionForm::new(Some(BackupRetention::default()));
+        for days in [0, 3651, 4000] {
+            form.days = days;
+            assert_eq!(step(&mut form, false), None, "{days} must not be saved");
+            assert_eq!(step(&mut form, true), None, "{days} must not be saved");
+            assert_eq!(form.days, days, "the entry stays visible, not clamped");
+        }
+    }
+
+    #[test]
+    fn lost_backup_retention_result_does_not_wedge_the_form() {
+        let mut form = BackupRetentionForm::new(Some(BackupRetention::default()));
+        form.days = 200;
+        assert!(step(&mut form, false).is_some());
+        assert!(form.busy());
+
+        form.reload(Some(BackupRetention::default()));
+        assert!(!form.busy(), "arriving again unblocks the form");
+        assert_eq!((form.enabled, form.days), (true, 90));
+
+        // A late answer is still applied.
+        form.save_succeeded(BackupRetention::DeleteAfterDays(200));
+        assert_eq!(form.saved, Some(BackupRetention::DeleteAfterDays(200)));
+        assert_eq!(form.days, 200);
+
+        // A setting that became readable is picked up.
+        let mut form = BackupRetentionForm::new(None);
+        form.reload(Some(BackupRetention::KeepForever));
+        assert_eq!(form.saved, Some(BackupRetention::KeepForever));
+        assert!(!form.enabled);
+    }
+
+    /// Looser policies save without confirmation. The saved policy changes only when
+    /// the backend confirms it; a failed save restores the previous inputs.
+    #[test]
+    fn backup_retention_form_saves_looser_policies_without_confirmation() {
+        let mut form = BackupRetentionForm::new(Some(BackupRetention::default()));
+        assert!(form.enabled);
+        assert_eq!(form.days, 90);
+        assert_eq!(step(&mut form, false), None, "unchanged");
+
+        form.days = 120;
+        assert_eq!(
+            step(&mut form, false),
+            Some(BackupRetention::DeleteAfterDays(120))
+        );
+        assert!(form.confirmation.is_none());
+        assert_eq!(step(&mut form, false), None, "a save is in flight");
+        assert_eq!(form.saved, Some(BackupRetention::default()));
+        form.save_failed();
+        assert_eq!((form.enabled, form.days), (true, 90));
+        assert_eq!(step(&mut form, false), None, "no resend loop");
+
+        form.days = 120;
+        assert_eq!(
+            step(&mut form, false),
+            Some(BackupRetention::DeleteAfterDays(120)),
+            "the user can retry"
+        );
+        form.save_succeeded(BackupRetention::DeleteAfterDays(120));
+
+        form.enabled = false;
+        assert_eq!(step(&mut form, false), Some(BackupRetention::KeepForever));
+        form.save_succeeded(BackupRetention::KeepForever);
+        assert_eq!(step(&mut form, false), None, "settled");
+
+        form.enabled = true;
+        form.days = 0;
+        assert_eq!(step(&mut form, true), None, "invalid period");
+    }
+
+    /// Shortening the period deletes backups at once, so it needs confirmation;
+    /// cancelling restores the saved inputs.
+    #[test]
+    fn stricter_backup_retention_requires_confirmation() {
+        let mut form = BackupRetentionForm::new(Some(BackupRetention::default()));
+        form.days = 1;
+        assert_eq!(step(&mut form, false), None);
+        assert!(form.confirmation.is_some());
+        assert_eq!(step(&mut form, false), None, "awaiting the user");
+
+        assert_eq!(answer(&mut form, ConfirmationStatus::Canceled), None);
+        assert!(form.confirmation.is_none());
+        assert_eq!((form.enabled, form.days), (true, 90));
+
+        form.days = 30;
+        assert_eq!(step(&mut form, false), None);
+        assert_eq!(
+            answer(&mut form, ConfirmationStatus::Confirmed),
+            Some(BackupRetention::DeleteAfterDays(30))
+        );
+    }
+
+    /// Turning deletion on waits for an explicit apply, so the user can choose the
+    /// period first; the confirmation then names the period actually chosen.
+    #[test]
+    fn enabling_backup_retention_waits_for_the_chosen_period() {
+        let mut form = BackupRetentionForm::new(Some(BackupRetention::KeepForever));
+        assert!(!form.enabled);
+        assert_eq!(form.days, u32::from(BackupRetention::DEFAULT_DAYS));
+
+        form.enabled = true;
+        assert_eq!(step(&mut form, false), None);
+        assert!(
+            form.confirmation.is_none(),
+            "ticking the box alone neither saves nor asks to delete"
+        );
+        form.days = 365;
+        assert_eq!(
+            step(&mut form, false),
+            None,
+            "editing the period still waits"
+        );
+
+        assert_eq!(step(&mut form, true), None);
+        assert!(form.confirmation.is_some(), "enabling deletion is stricter");
+        assert_eq!(
+            answer(&mut form, ConfirmationStatus::Confirmed),
+            Some(BackupRetention::DeleteAfterDays(365))
+        );
+        form.save_succeeded(BackupRetention::DeleteAfterDays(365));
+        assert!(!form.enabling());
+        assert_eq!((form.enabled, form.days), (true, 365));
+
+        // Unticking before applying simply returns to keeping backups forever.
+        let mut form = BackupRetentionForm::new(Some(BackupRetention::KeepForever));
+        form.enabled = true;
+        form.days = 10;
+        form.settle(false);
+        form.enabled = false;
+        assert_eq!(step(&mut form, false), None);
+        assert!(form.confirmation.is_none());
+    }
+
+    /// The save task leaves the form only when the screen can emit it, so a busy
+    /// frame never drops it and the form never waits on a task that was not sent.
+    #[test]
+    fn queued_backup_retention_save_survives_a_busy_frame() {
+        let mut form = BackupRetentionForm::new(Some(BackupRetention::default()));
+        form.days = 200;
+        form.settle(false);
+        assert!(form.pending.is_none(), "not in flight until emitted");
+        assert!(form.busy(), "further edits wait for the queued save");
+        // A frame whose action is already taken does not call take_task; the
+        // save stays queued and the next idle frame emits it.
+        assert_eq!(
+            saved_retention(form.take_task()),
+            Some(BackupRetention::DeleteAfterDays(200))
+        );
+        assert_eq!(form.pending, Some(BackupRetention::DeleteAfterDays(200)));
+        assert_eq!(saved_retention(form.take_task()), None, "emitted once");
+    }
+
+    /// An unreadable setting shows as unchecked (nothing is deleted) and can be
+    /// repaired by saving explicitly.
+    #[test]
+    fn unreadable_backup_retention_can_be_repaired() {
+        let mut form = BackupRetentionForm::new(None);
+        assert!(!form.enabled);
+        assert_eq!(step(&mut form, false), None, "never saved unasked");
+        assert_eq!(step(&mut form, true), Some(BackupRetention::KeepForever));
+
+        let mut form = BackupRetentionForm::new(None);
+        form.enabled = true;
+        assert_eq!(step(&mut form, false), None);
+        assert_eq!(step(&mut form, true), None);
+        assert!(
+            form.confirmation.is_some(),
+            "enabling deletion from an unknown policy needs confirmation"
+        );
+    }
+
+    #[test]
+    fn backup_retention_banner_reports_deleted_count() {
+        assert_eq!(
+            backup_retention_saved_banner(0, false),
+            (
+                "Your backup retention setting was saved.".to_owned(),
+                MessageType::Success
+            )
+        );
+        assert_eq!(
+            backup_retention_saved_banner(1, false).0,
+            "One old upgrade backup was deleted."
+        );
+        assert_eq!(
+            backup_retention_saved_banner(3, false).0,
+            "3 old upgrade backups were deleted."
+        );
+        assert_eq!(
+            backup_retention_saved_banner(3, true),
+            (
+                BACKUP_RETENTION_SAVED_CLEANUP_INCOMPLETE.to_owned(),
+                MessageType::Warning
+            )
+        );
     }
 
     #[test]

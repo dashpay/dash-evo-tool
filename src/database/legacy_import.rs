@@ -24,14 +24,9 @@ use crate::backend_task::contested_names::ScheduledDPNSVote;
 use crate::database::{Database, column_exists, table_exists};
 use crate::model::qualified_identity::{IdentityStatus, QualifiedIdentity};
 use crate::model::settings::{
-    AppSettings, RootScreenType, network_from_legacy_str, theme_mode_from_str,
+    AppSettings, RootScreenType, legacy_network_names, network_from_legacy_str, theme_mode_from_str,
 };
 use crate::model::user_role::UserRole;
-
-/// Legacy spelling of mainnet in `data.db`. Migration 29 rewrites it to
-/// `mainnet`, but a DB that never reached v29 still carries the old value,
-/// so every network filter accepts both spellings.
-const LEGACY_MAINNET_ALIAS: &str = "dash";
 
 /// Outcome of one legacy scheduled-vote read.
 ///
@@ -243,10 +238,7 @@ pub(crate) fn read_scheduled_votes(
     let mut stmt;
     let rows = if has_network {
         stmt = conn.prepare(&format!("{base} WHERE network IN (?1, ?2)"))?;
-        stmt.query(rusqlite::params![
-            network.to_string(),
-            mainnet_alias_for(network)
-        ])?
+        stmt.query(legacy_network_names(network))?
     } else if network == Network::Mainnet {
         stmt = conn.prepare(base)?;
         stmt.query([])?
@@ -330,10 +322,7 @@ pub(crate) fn read_identities(
     }
 
     let mut stmt = conn.prepare(LOCAL_IDENTITY_SELECT)?;
-    let mut rows = stmt.query(rusqlite::params![
-        network.to_string(),
-        mainnet_alias_for(network)
-    ])?;
+    let mut rows = stmt.query(legacy_network_names(network))?;
 
     let mut out = LegacyIdentities::default();
     while let Some(row) = rows.next()? {
@@ -362,11 +351,8 @@ pub(crate) fn read_identity_row(
     }
 
     let mut stmt = conn.prepare(&format!("{LOCAL_IDENTITY_SELECT} AND id = ?3"))?;
-    let mut rows = stmt.query(rusqlite::params![
-        network.to_string(),
-        mainnet_alias_for(network),
-        id.as_slice()
-    ])?;
+    let [current, pre_v29] = legacy_network_names(network);
+    let mut rows = stmt.query(rusqlite::params![current, pre_v29, id.as_slice()])?;
 
     let Some(row) = rows.next()? else {
         return Ok(LegacyIdentityLookup::Absent);
@@ -394,7 +380,7 @@ pub(crate) fn local_identities_exist(
 
     conn.query_row(
         &format!("SELECT EXISTS({LOCAL_IDENTITY_SELECT})"),
-        rusqlite::params![network.to_string(), mainnet_alias_for(network)],
+        legacy_network_names(network),
         |row| row.get::<_, i64>(0).map(|found| found != 0),
     )
 }
@@ -600,10 +586,7 @@ pub(crate) fn read_top_ups(conn: &Connection, network: Network) -> rusqlite::Res
          WHERE i.network IN (?1, ?2) \
          ORDER BY t.identity_id, t.top_up_index",
     )?;
-    let mut rows = stmt.query(rusqlite::params![
-        network.to_string(),
-        mainnet_alias_for(network)
-    ])?;
+    let mut rows = stmt.query(legacy_network_names(network))?;
 
     let mut out = LegacyTopUps::default();
     let mut grouped: BTreeMap<[u8; 32], BTreeMap<u32, u64>> = BTreeMap::new();
@@ -653,16 +636,6 @@ fn parse_vote_choice(raw: &str) -> Option<ResourceVoteChoice> {
                 .ok()
                 .map(ResourceVoteChoice::TowardsIdentity)
         }
-    }
-}
-
-/// The network spelling a pre-v29 `data.db` used. Only mainnet was ever
-/// renamed, so every other network maps to itself and the two-value `IN`
-/// filter stays a single code path.
-fn mainnet_alias_for(network: Network) -> String {
-    match network {
-        Network::Mainnet => LEGACY_MAINNET_ALIAS.to_string(),
-        other => other.to_string(),
     }
 }
 
@@ -1324,7 +1297,7 @@ mod tests {
         LegacyIdentityFixture::new(
             legacy_mainnet_id,
             Some(identity_blob(legacy_mainnet_id)),
-            LEGACY_MAINNET_ALIAS,
+            "dash",
         )
         .insert(&conn)
         .expect("insert identity");
@@ -1671,13 +1644,9 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         create_identity_table(&conn);
         let legacy_mainnet = [0xBB; 32];
-        LegacyIdentityFixture::new(
-            legacy_mainnet,
-            Some(identity_blob(legacy_mainnet)),
-            LEGACY_MAINNET_ALIAS,
-        )
-        .insert(&conn)
-        .expect("insert identity");
+        LegacyIdentityFixture::new(legacy_mainnet, Some(identity_blob(legacy_mainnet)), "dash")
+            .insert(&conn)
+            .expect("insert identity");
 
         assert!(matches!(
             read_identity_row(&conn, Network::Mainnet, &legacy_mainnet).unwrap(),

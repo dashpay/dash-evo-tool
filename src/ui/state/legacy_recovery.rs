@@ -11,6 +11,7 @@
 //! recomputed from the two stores on every check, so once nothing is left
 //! stranded the plan comes back empty and the section disappears.
 
+use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::platform::Identifier;
 
 use crate::backend_task::identity::IdentityTask;
@@ -20,6 +21,7 @@ use crate::model::legacy_recovery::{RecoveryItem, RecoveryPlan};
 use crate::ui::MessageType;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::legacy_recovery_section::completion_message;
+use crate::ui::state::PendingRequest;
 
 /// Where one identity's recovery offer currently stands.
 enum FetchState {
@@ -34,6 +36,8 @@ enum FetchState {
     Checking,
     /// Detection answered. An empty plan means nothing is offered.
     Offered(RecoveryPlan),
+    /// A failed restore retains its offer across navigation for a retry.
+    Retry(RecoveryPlan),
     /// A restore of this plan is in flight.
     Restoring(RecoveryPlan),
     /// Detection failed. The typed error already reached the user through the
@@ -44,6 +48,8 @@ enum FetchState {
 /// The recovery offer for one identity, as a screen sees it.
 pub struct LegacyRecoveryState {
     identity_id: Identifier,
+    network: Network,
+    pending_context: PendingRequest,
     state: FetchState,
 }
 
@@ -60,22 +66,27 @@ impl LegacyRecoveryState {
             true => FetchState::NotRequested,
             false => FetchState::Unavailable,
         };
-        Self { identity_id, state }
+        Self {
+            identity_id,
+            state,
+            network: app_context.network,
+            pending_context: PendingRequest::default(),
+        }
     }
 
     /// The detection task to dispatch, or `None` when one already went out, has
     /// answered, or there is nothing to detect. Marks the check in flight, so a
-    /// caller that dispatches the returned task fires it exactly once.
-    pub fn ensure_checked(&mut self) -> Option<BackendTask> {
+    /// caller dispatches the returned task together with its operation context.
+    pub fn ensure_checked(&mut self) -> Option<(BackendTask, BackendTaskContext)> {
         if !matches!(self.state, FetchState::NotRequested) {
             return None;
         }
         self.state = FetchState::Checking;
-        Some(BackendTask::IdentityTask(
+        Some(self.dispatched(BackendTask::IdentityTask(
             IdentityTask::CheckLegacyRecovery {
                 identity_id: self.identity_id,
             },
-        ))
+        )))
     }
 
     /// The plan to render, or `None` while detection is outstanding, failed, or
@@ -83,7 +94,9 @@ impl LegacyRecoveryState {
     /// nothing is worth showing.
     pub fn plan(&self) -> Option<&RecoveryPlan> {
         match &self.state {
-            FetchState::Offered(plan) | FetchState::Restoring(plan) => Some(plan),
+            FetchState::Offered(plan) | FetchState::Retry(plan) | FetchState::Restoring(plan) => {
+                Some(plan)
+            }
             _ => None,
         }
     }
@@ -102,26 +115,56 @@ impl LegacyRecoveryState {
     }
 
     /// The restore task for `approved`, marking it in flight. Returns `None`
-    /// unless there is a plan on offer and no restore already running.
-    pub fn restore(&mut self, approved: Vec<RecoveryItem>) -> Option<BackendTask> {
-        let FetchState::Offered(plan) = &self.state else {
+    /// unless there is a plan on offer and no restore already running. Dispatch
+    /// the returned task with its context to preserve ownership across navigation.
+    pub fn restore(
+        &mut self,
+        approved: Vec<RecoveryItem>,
+    ) -> Option<(BackendTask, BackendTaskContext)> {
+        let (FetchState::Offered(plan) | FetchState::Retry(plan)) = &self.state else {
             return None;
         };
         self.state = FetchState::Restoring(plan.clone());
-        Some(BackendTask::IdentityTask(
+        Some(self.dispatched(BackendTask::IdentityTask(
             IdentityTask::RecoverLegacyIdentityData {
                 identity_id: self.identity_id,
                 approved,
             },
-        ))
+        )))
+    }
+
+    fn dispatched(&mut self, task: BackendTask) -> (BackendTask, BackendTaskContext) {
+        let context = BackendTaskContext::LegacyRecoveryOnNetwork {
+            network: self.network,
+            operation: Box::new(BackendTaskContext::for_dispatch(&task)),
+        };
+        self.pending_context.track(context.clone());
+        (task, context)
+    }
+
+    /// Accept only this operation's result while busy; settled offers observe external restores.
+    pub fn accepts_result(&self, context: &BackendTaskContext, completed: bool) -> bool {
+        if context.legacy_recovery_identity() != Some(self.identity_id)
+            || context.legacy_recovery_network() != Some(self.network)
+        {
+            return false;
+        }
+        if self.pending_context.is_pending() {
+            self.pending_context.owns(context)
+        } else {
+            completed
+        }
     }
 
     /// Record the plan detection returned for `identity_id`. Ignores a result
     /// for any other identity, since a screen may show one identity while
     /// another's check is still in flight.
     pub fn offered(&mut self, identity_id: Identifier, plan: RecoveryPlan) {
-        if identity_id == self.identity_id {
+        if identity_id == self.identity_id
+            && !matches!(self.state, FetchState::Restoring(_) | FetchState::Retry(_))
+        {
             self.state = FetchState::Offered(plan);
+            self.pending_context.clear();
         }
     }
 
@@ -129,8 +172,8 @@ impl LegacyRecoveryState {
     /// whether that restore was this offer's.
     ///
     /// The attribution rule for a completion, and the twin of [`Self::offered`]:
-    /// a restore answers on a channel that reaches whichever screen is visible
-    /// when the answer arrives, not the screen that dispatched it. A completion
+    /// a restore answers on a channel that reaches every retained recovery host.
+    /// A completion
     /// for another identity must leave this offer's state — and any banner or
     /// reload a caller hangs off it — untouched.
     pub fn completed_for(&mut self, identity_id: Identifier) -> bool {
@@ -141,14 +184,16 @@ impl LegacyRecoveryState {
         true
     }
 
-    /// Re-arm detection, so the offer recomputes from the store and disappears
-    /// once nothing is left stranded. Called whenever a screen is arrived at
-    /// again, since another screen's restore may have landed meanwhile;
-    /// [`Self::completed_for`] is the attributed form for a restore result.
-    ///
-    /// An install with no previous-version data stays unarmed: there is nothing
-    /// to detect there, ever.
+    /// Refresh a settled offer on arrival, preserving running operations and retries.
+    pub fn refresh_on_arrival(&mut self) {
+        if matches!(self.state, FetchState::Offered(_) | FetchState::Failed) {
+            self.completed();
+        }
+    }
+
+    /// Re-arm detection after a restore completes, except on fresh installs.
     pub fn completed(&mut self) {
+        self.pending_context.clear();
         if !matches!(self.state, FetchState::Unavailable) {
             self.state = FetchState::NotRequested;
         }
@@ -158,7 +203,7 @@ impl LegacyRecoveryState {
     /// reporting whether the failure was in fact this offer's.
     ///
     /// The attribution rule for a failure, and the twin of [`Self::offered`]:
-    /// errors reach whichever screen is visible when they arrive, so an
+    /// errors reach retained recovery hosts, so an
     /// unrelated task's failure must leave this offer alone. Ending a restore
     /// it never started would re-enable the Restore button while the original
     /// task still holds the identity, and pressing it again would only report
@@ -173,8 +218,9 @@ impl LegacyRecoveryState {
         if identity_id != self.identity_id {
             return false;
         }
+        self.pending_context.clear();
         self.state = match std::mem::replace(&mut self.state, FetchState::Failed) {
-            FetchState::Restoring(plan) => FetchState::Offered(plan),
+            FetchState::Restoring(plan) => FetchState::Retry(plan),
             FetchState::Checking => FetchState::Failed,
             other => other,
         };
@@ -193,8 +239,8 @@ impl LegacyRecoveryState {
     /// own restore wrote that record.
     ///
     /// A result of any other kind, or a completion for another identity, is
-    /// ignored and reported as not this offer's: results reach whichever screen
-    /// is visible when they arrive, and a banner claiming these keys came back
+    /// ignored and reported as not this offer's: results reach retained hosts,
+    /// and a banner claiming these keys came back
     /// when they did not is worse than silence.
     pub fn absorb_result(
         &mut self,
@@ -235,6 +281,9 @@ impl LegacyRecoveryState {
     /// restore on any error that merely landed while it was visible would
     /// re-enable Restore while the original task still held the identity.
     pub fn absorb_error(&mut self, context: &BackendTaskContext) -> bool {
+        if !self.pending_context.owns(context) {
+            return false;
+        }
         context
             .legacy_recovery_identity()
             .is_some_and(|identity_id| self.failed_for(identity_id))
@@ -243,11 +292,19 @@ impl LegacyRecoveryState {
 
 #[cfg(test)]
 impl LegacyRecoveryState {
+    pub(crate) fn pending_context_for_test(&self) -> BackendTaskContext {
+        self.pending_context
+            .context()
+            .cloned()
+            .expect("pending recovery operation")
+    }
     /// A state as it stands on an install that does have a previous-version
     /// database, without needing an `AppContext` to probe for one.
     fn armed(identity_id: Identifier) -> Self {
         Self {
             identity_id,
+            network: Network::Testnet,
+            pending_context: PendingRequest::default(),
             state: FetchState::NotRequested,
         }
     }
@@ -256,6 +313,8 @@ impl LegacyRecoveryState {
     fn unavailable(identity_id: Identifier) -> Self {
         Self {
             identity_id,
+            network: Network::Testnet,
+            pending_context: PendingRequest::default(),
             state: FetchState::Unavailable,
         }
     }
@@ -287,9 +346,9 @@ mod tests {
         }
     }
 
-    fn is_check(task: &BackendTask) -> bool {
+    fn is_check(task: &(BackendTask, BackendTaskContext)) -> bool {
         matches!(
-            task,
+            task.0,
             BackendTask::IdentityTask(IdentityTask::CheckLegacyRecovery { .. })
         )
     }
@@ -302,6 +361,7 @@ mod tests {
 
         let first = state.ensure_checked().expect("the first frame dispatches");
         assert!(is_check(&first));
+        state.refresh_on_arrival();
         assert!(
             state.ensure_checked().is_none(),
             "a check already in flight must not be dispatched again",
@@ -423,7 +483,7 @@ mod tests {
         state.offered(identity(0x05), plan());
         let task = state.restore(vec![]).expect("an offer can be restored");
         assert!(matches!(
-            task,
+            task.0,
             BackendTask::IdentityTask(IdentityTask::RecoverLegacyIdentityData { .. })
         ));
         assert!(state.is_restoring());
@@ -464,10 +524,12 @@ mod tests {
         restoring.restore(vec![]).expect("restore");
 
         assert!(restoring.failed_for(identity(0x07)));
+        restoring.offered(identity(0x07), RecoveryPlan::default());
+        restoring.refresh_on_arrival();
 
         assert!(!restoring.is_restoring());
         assert!(
-            restoring.plan().is_some(),
+            restoring.has_offer(),
             "the offer survives so the restore can be retried",
         );
 
@@ -493,6 +555,9 @@ mod tests {
         state.ensure_checked().expect("dispatch");
         state.offered(identity(0x09), plan());
         state.restore(vec![]).expect("restore");
+
+        assert!(!state.absorb_error(&BackendTaskContext::LegacyRecoveryCheck(identity(0x09))));
+        state.offered(identity(0x09), plan());
 
         assert!(
             !state.failed_for(identity(0x0A)),

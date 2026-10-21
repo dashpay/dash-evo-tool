@@ -423,7 +423,8 @@ mod tests {
         use dash_sdk::dpp::dashcore::PrivateKey;
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(open_secret_store(&dir.path().join("v.pwsvault")).expect("vault"));
-        let index = std::sync::RwLock::new(std::collections::BTreeMap::new());
+        let index = crate::wallet_backend::wallet_context::WalletContext::default();
+
         let view = crate::wallet_backend::single_key::SingleKeyView::from_views(
             &store,
             &index,
@@ -437,7 +438,7 @@ mod tests {
         let imported = view
             .import_wif_with_passphrase(
                 &wif,
-                None,
+                crate::model::wallet::alias::AliasSource::Preserved(None),
                 crate::wallet_backend::single_key::ImportPassphrase {
                     passphrase: Some(zeroize::Zeroizing::new(SENTINEL_PASSPHRASE.to_string())),
                     hint: None,

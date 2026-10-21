@@ -74,6 +74,7 @@ pub struct IdentitySelector<'a> {
     /// When set, seed the (empty) buffer from the app-scoped selected identity.
     /// Opt-in — owner/operate-as pickers only; never recipient/target pickers.
     app_default: Option<&'a Arc<AppContext>>,
+    profile_context: Option<&'a AppContext>,
     /// When set, write the chosen identity back to the app-scoped selection on
     /// a user change. Opt-in — owner/operate-as pickers only.
     sync_target: Option<Arc<AppContext>>,
@@ -102,8 +103,25 @@ impl<'a> IdentitySelector<'a> {
             label: None,
             other_option: true, // Default to showing "Other" option
             app_default: None,
+            profile_context: None,
             sync_target: None,
         }
+    }
+
+    /// Read profile display names from this network's cached context.
+    pub fn with_context(mut self, app_context: &'a AppContext) -> Self {
+        self.profile_context = Some(app_context);
+        self
+    }
+
+    fn identity_label(&self, identity: &QualifiedIdentity) -> String {
+        self.profile_context
+            .or(self.app_default.map(Arc::as_ref))
+            .or(self.sync_target.as_deref())
+            .map_or_else(
+                || identity.display_string(),
+                |ctx| ctx.identity_display_label(identity),
+            )
     }
 
     /// Seed the initial selection from the app-scoped identity when the buffer
@@ -257,7 +275,7 @@ impl<'a> Widget for IdentitySelector<'a> {
             let has_matching_identity = current_identity.is_some();
 
             let current_identity_combo_label = current_identity
-                .map(|q| q.display_string())
+                .map(|q| self.identity_label(q))
                 .unwrap_or_else(|| {
                     if self.other_option {
                         "Other".to_string()
@@ -283,7 +301,7 @@ impl<'a> Widget for IdentitySelector<'a> {
                         let checked = current_identity.is_some_and(|x| qualified_identity.eq(&x));
 
                         if ui
-                            .selectable_label(checked, qualified_identity.display_string())
+                            .selectable_label(checked, self.identity_label(qualified_identity))
                             .clicked()
                         {
                             combo_changed = true;
@@ -500,6 +518,7 @@ mod tests {
             let first = make_qi(0xAA);
             let second = make_qi(0xBB);
             let ids = vec![first.clone(), second.clone()];
+            ctx.save_identity_profile_name(second.identity.id(), Some("Second profile"));
 
             // Global starts pointing at first.
             ctx.set_selected_identity(Some(first.identity.id()));
@@ -509,6 +528,8 @@ mod tests {
             let mut buf = second.identity.id().to_string(Encoding::Base58);
             let sel = IdentitySelector::new("write_back_test", &mut buf, &ids)
                 .syncing_global(ctx.clone());
+
+            assert_eq!(sel.identity_label(&second), "Second profile");
 
             // Fire the write-back directly (bypasses egui rendering).
             sel.sync_to_global();
@@ -542,10 +563,12 @@ mod tests {
 
             // Candidate list contains ONLY other_qi — global_qi is absent.
             let candidate_list = vec![other_qi.clone()];
+            ctx.save_identity_profile_name(other_qi.identity.id(), Some("Other profile"));
             let mut buf = String::new(); // empty → with_app_default may attempt a seed
             let sel = IdentitySelector::new("inert_test", &mut buf, &candidate_list)
                 .with_app_default(&ctx);
 
+            assert_eq!(sel.identity_label(&other_qi), "Other profile");
             assert_eq!(
                 sel.app_default_seed(),
                 None,

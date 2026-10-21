@@ -1,5 +1,4 @@
 use super::AppContext;
-use crate::backend_task::contested_names::ScheduledDPNSVote;
 use crate::backend_task::error::TaskError;
 use crate::model::identity_discovery::DiscoveryIntent;
 use crate::model::qualified_identity::{
@@ -9,15 +8,22 @@ use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::ui::MessageType;
 use crate::ui::components::MessageBanner;
 use crate::wallet_backend::{DetKv, DetScope, KvAdapterError};
+use dash_sdk::dpp::balances::credits::Credits;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::KeyID;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+#[cfg(test)]
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::platform::Identifier;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
+
+mod import_keys;
+mod migration;
+#[cfg(test)]
+use migration::{KeystoreMigration, migrate_keystore_to_vault};
 
 /// Identity blob slot, scoped to [`DetScope::Identity`]. One entry per
 /// identity; the identity id is carried by the scope, so the key is a
@@ -37,19 +43,6 @@ const IDENTITY_ORDER_KEY: &str = "det:identity_order:v1";
 /// [`IDENTITY_ORDER_KEY`], which is a user-ordering view that may lag the
 /// full set.
 const IDENTITY_INDEX_KEY: &str = "det:identity_index:v1";
-
-/// Scheduled-vote slot key, scoped to [`DetScope::Identity`] of the
-/// voter. The full key is `det:scheduled_vote:<contested_name>` — the
-/// voter id is carried by the scope.
-const SCHEDULED_VOTE_KEY_PREFIX: &str = "det:scheduled_vote:";
-
-/// Global enumeration index: the complete set of voter ids that have at
-/// least one scheduled vote. Scheduled votes are scoped to
-/// [`DetScope::Identity`] of the voter, which has no cross-voter listing,
-/// so this Global slot drives the network-wide enumeration and clear
-/// paths. Maintained on insert and pruned when a voter's last scheduled
-/// vote is removed.
-const SCHEDULED_VOTE_VOTERS_KEY: &str = "det:scheduled_vote_voters:v1";
 
 /// Top-up history slot, scoped to [`DetScope::Identity`]. One entry per
 /// identity; the identity id is carried by the scope.
@@ -71,7 +64,8 @@ const VAULT_CLEANUP_PENDING_PREFIX: &str = "det:vault_cleanup_pending:v1:";
 /// this record needs to start existing.
 const IDENTITY_UNLOADED_PREFIX: &str = "det:identity_unloaded:v1:";
 
-/// Whether every owner-scoped DashPay and token-list sidecar was removed.
+/// Whether all secondary local data of a removed identity was cleared: its
+/// DashPay and token-list sidecars, username records and pending votes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum IdentitySidecarCleanup {
     Complete,
@@ -188,18 +182,9 @@ impl From<StoredPrivateKeyTarget> for PrivateKeyTarget {
     }
 }
 
-fn scheduled_vote_key(contested_name: &str) -> String {
-    format!("{SCHEDULED_VOTE_KEY_PREFIX}{contested_name}")
-}
-
 /// Map a k/v adapter failure to the identity-blob storage error.
 fn identity_err(source: KvAdapterError) -> TaskError {
     TaskError::IdentityStorage { source }
-}
-
-/// Map a k/v adapter failure to the scheduled-vote storage error.
-fn scheduled_vote_err(source: KvAdapterError) -> TaskError {
-    TaskError::ScheduledVoteStorage { source }
 }
 
 /// Map a k/v adapter failure to the top-up-history storage error.
@@ -227,15 +212,6 @@ fn save_top_ups_in(
         .unwrap_or_default();
     merged.extend(top_ups.iter().map(|(index, amount)| (*index, *amount)));
     kv.put(scope, TOP_UPS_KEY, &merged).map_err(top_up_err)
-}
-
-/// Validate a raw voter id and return it as the `[u8; 32]` the
-/// [`DetScope::Identity`] scope borrows. Surfaces a typed error rather
-/// than panicking on a wrong-length slice.
-fn voter_buffer(identity_id: &[u8]) -> std::result::Result<[u8; 32], TaskError> {
-    Identifier::from_bytes(identity_id)
-        .map(|id| id.to_buffer())
-        .map_err(|source| TaskError::InvalidVoterIdentifier { source })
 }
 
 /// Decode a stored bincode'd [`QualifiedIdentity`] blob, attaching the
@@ -316,62 +292,6 @@ impl std::fmt::Debug for StoredQualifiedIdentity {
     }
 }
 
-/// Persisted shape of a scheduled DPNS vote. Mirrors
-/// [`ScheduledDPNSVote`] but with a serde-friendly representation of
-/// the SDK's [`ResourceVoteChoice`] (which only derives bincode under
-/// this feature set).
-#[derive(Debug, Serialize, Deserialize)]
-struct StoredScheduledVote {
-    voter_id: [u8; 32],
-    contested_name: String,
-    choice: StoredVoteChoice,
-    unix_timestamp: u64,
-    executed_successfully: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-enum StoredVoteChoice {
-    TowardsIdentity([u8; 32]),
-    Abstain,
-    Lock,
-}
-
-impl From<&ScheduledDPNSVote> for StoredScheduledVote {
-    fn from(v: &ScheduledDPNSVote) -> Self {
-        Self {
-            voter_id: v.voter_id.to_buffer(),
-            contested_name: v.contested_name.clone(),
-            choice: match v.choice {
-                ResourceVoteChoice::TowardsIdentity(id) => {
-                    StoredVoteChoice::TowardsIdentity(id.to_buffer())
-                }
-                ResourceVoteChoice::Abstain => StoredVoteChoice::Abstain,
-                ResourceVoteChoice::Lock => StoredVoteChoice::Lock,
-            },
-            unix_timestamp: v.unix_timestamp,
-            executed_successfully: v.executed_successfully,
-        }
-    }
-}
-
-impl From<StoredScheduledVote> for ScheduledDPNSVote {
-    fn from(v: StoredScheduledVote) -> Self {
-        ScheduledDPNSVote {
-            voter_id: Identifier::from(v.voter_id),
-            contested_name: v.contested_name,
-            choice: match v.choice {
-                StoredVoteChoice::TowardsIdentity(id) => {
-                    ResourceVoteChoice::TowardsIdentity(Identifier::from(id))
-                }
-                StoredVoteChoice::Abstain => ResourceVoteChoice::Abstain,
-                StoredVoteChoice::Lock => ResourceVoteChoice::Lock,
-            },
-            unix_timestamp: v.unix_timestamp,
-            executed_successfully: v.executed_successfully,
-        }
-    }
-}
-
 /// Serializes every read-modify-write of [`IDENTITY_INDEX_KEY`].
 ///
 /// The roster is a single blob rewritten wholesale, so two identities being
@@ -431,6 +351,31 @@ fn load_identity_index(kv: &DetKv) -> std::result::Result<Vec<[u8; 32]>, TaskErr
         .unwrap_or_default())
 }
 
+/// Stored credit balance of every wallet-owned identity, summed per wallet.
+fn sum_identity_credits_by_wallet(
+    kv: &DetKv,
+    network: Network,
+) -> std::result::Result<BTreeMap<WalletSeedHash, Credits>, TaskError> {
+    let mut totals: BTreeMap<WalletSeedHash, Credits> = BTreeMap::new();
+    for id in load_identity_index(kv)? {
+        let Some(stored) = kv
+            .get::<StoredQualifiedIdentity>(DetScope::Identity(&id), IDENTITY_KEY)
+            .map_err(identity_err)?
+        else {
+            continue;
+        };
+        let (Some(wallet_hash), Some(_)) = (stored.wallet_hash, stored.wallet_index) else {
+            continue;
+        };
+        let credits = decode_stored_identity(&stored.qi_bytes, network)?
+            .identity
+            .balance();
+        let total = totals.entry(wallet_hash).or_default();
+        *total = total.saturating_add(credits);
+    }
+    Ok(totals)
+}
+
 /// Whether `identity_id` is on the Global enumeration index.
 ///
 /// Read under [`lock_identity_index`] so the answer is never a half-written
@@ -482,28 +427,6 @@ fn clear_vault_cleanup_manifest(kv: &DetKv, id: &[u8; 32]) {
     }
 }
 
-/// Delete every Identity-scoped child of `id` (blob, top-up history, all
-/// scheduled votes) and prune the scheduled-vote voter index. Does not
-/// touch the Global identity index — callers decide whether to drop the
-/// index entry (single delete) or rewrite it wholesale (devnet sweep).
-/// Outcome of [`migrate_keystore_to_vault`], so callers/tests can assert what
-/// happened without re-inspecting the blob.
-#[derive(Debug, PartialEq, Eq)]
-enum KeystoreMigration {
-    /// No plaintext keys to migrate — `qi` was untouched.
-    Nothing,
-    /// The vault write failed; `qi` was restored to its resident plaintext and
-    /// the blob was NOT persisted (next load retries — no key loss).
-    VaultWriteFailed,
-    /// `n` keys moved to the vault and `qi` rewritten to `InVault` placeholders.
-    Migrated(usize),
-    /// The identity is password-protected, so a resident plaintext key
-    /// was NOT migrated to a keyless vault entry. `qi` keeps its resident key (it
-    /// still signs this session) and nothing is persisted; the add-key path seals
-    /// new keys Tier-2 explicitly.
-    ProtectedSkipped,
-}
-
 /// Find an existing password-protected (Tier-2) key of this identity, as a
 /// [`SecretScope`](crate::wallet_backend::secret_prompt::SecretScope) suitable
 /// for verifying the identity's password when sealing a newly-added key.
@@ -513,105 +436,27 @@ fn find_protected_identity_key_scope(
     secret_store: &Arc<platform_wallet_storage::secrets::SecretStore>,
     id: &[u8; 32],
     qi: &QualifiedIdentity,
-) -> Option<crate::wallet_backend::secret_prompt::SecretScope> {
+    retained_keys: impl IntoIterator<Item = (PrivateKeyTarget, KeyID)>,
+) -> Result<Option<crate::wallet_backend::secret_prompt::SecretScope>, TaskError> {
     use crate::wallet_backend::secret_prompt::SecretScope;
     use crate::wallet_backend::secret_seam::SecretScheme;
     let view = crate::wallet_backend::IdentityKeyView::new(secret_store, *id);
-    qi.private_keys
-        .keys_set()
-        .into_iter()
-        .find_map(|(target, key_id)| match view.scheme(&target, key_id) {
-            Ok(SecretScheme::Protected) => Some(SecretScope::IdentityKey {
+    for (target, key_id) in qi.private_keys.keys_set().into_iter().chain(retained_keys) {
+        if view.scheme(&target, key_id)? == SecretScheme::Protected {
+            return Ok(Some(SecretScope::IdentityKey {
                 identity_id: *id,
                 target,
                 key_id,
-            }),
-            _ => None,
-        })
-}
-
-/// EAGER identity-key migration core (vault-first, crash-safe). Moves any
-/// plaintext `Clear`/`AlwaysClear` keys in `qi` into the vault as raw bytes,
-/// then asks `persist` to rewrite the blob with `InVault` placeholders.
-///
-/// Ordering is the funds-safety contract: vault `store_all` happens FIRST. On a
-/// vault-write failure `qi` is restored to its pre-migration resident plaintext
-/// (so this session can still sign) and `persist` is NOT called — the legacy
-/// blob stays for the next retry, and no key is lost on a mid-write fault. A
-/// `persist` failure after a successful vault write is recoverable: the legacy
-/// blob plus the now-redundant raw vault entries are re-detected next load and
-/// the migration re-runs idempotently.
-///
-/// Factored out of [`AppContext`] so it is unit-testable with a bare
-/// `SecretStore` and a controllable `persist` closure.
-fn migrate_keystore_to_vault(
-    secret_store: &Arc<platform_wallet_storage::secrets::SecretStore>,
-    id: &[u8; 32],
-    qi: &mut QualifiedIdentity,
-    persist: impl FnOnce(&QualifiedIdentity) -> std::result::Result<(), TaskError>,
-) -> KeystoreMigration {
-    // Probe before cloning: the steady-state (already all-`InVault`) case must
-    // not pay for a full `KeyStorage` clone — that clone exists only to restore
-    // the resident plaintext on a vault-write failure.
-    if !qi.private_keys.has_plaintext_for_vault() {
-        return KeystoreMigration::Nothing;
+            }));
+        }
     }
-    // Fail-closed: never migrate a protected identity's resident
-    // plaintext to a KEYLESS vault entry — that would silently strip protection
-    // off a new key. Leave it resident (it still signs this session) and persist
-    // nothing; the add-key path seals new keys Tier-2 under the identity password.
-    if find_protected_identity_key_scope(secret_store, id, qi).is_some() {
-        tracing::warn!(
-            target = "context::identity_db",
-            identity = %hex::encode(id),
-            "Skipped keyless migration of a resident key on a password-protected identity",
-        );
-        return KeystoreMigration::ProtectedSkipped;
-    }
-    let mut before = qi.private_keys.clone();
-    let taken = qi.private_keys.take_plaintext_for_vault();
-    let view = crate::wallet_backend::IdentityKeyView::new(secret_store, *id);
-    if let Err(e) = view.store_all(&taken) {
-        qi.private_keys = before;
-        tracing::warn!(
-            target = "context::identity_db",
-            identity = %hex::encode(id),
-            error = ?e,
-            "Identity-key vault migration deferred (vault write failed)",
-        );
-        return KeystoreMigration::VaultWriteFailed;
-    }
-    let migrated = taken.len();
-    // The migrated plaintext now lives only in the vault; drop the `taken` copy
-    // (it zeroizes on drop) so its key bytes do not linger across the DB write.
-    drop(taken);
-    // The vault write succeeded — the rollback clone is no longer
-    // needed. Zeroize its plaintext bytes (Clear/AlwaysClear) before it drops
-    // so no identity private key lingers in freed heap.
-    let _ = before.take_plaintext_for_vault();
-    if let Err(e) = persist(qi) {
-        tracing::warn!(
-            target = "context::identity_db",
-            identity = %hex::encode(id),
-            error = ?e,
-            "Identity-key blob rewrite deferred after vault migration",
-        );
-    } else {
-        tracing::info!(
-            target = "context::identity_db",
-            identity = %hex::encode(id),
-            migrated,
-            "Migrated identity keys to the secret vault",
-        );
-    }
-    KeystoreMigration::Migrated(migrated)
+    Ok(None)
 }
 
 /// Encode `qi` for at-rest storage with every resident plaintext private key
 /// moved into the secret vault FIRST, leaving `InVault` placeholders in the
-/// returned blob. This is the write-path twin of [`migrate_keystore_to_vault`]
-/// (the load-path migration): a freshly inserted or updated identity never
-/// writes `Clear` / `AlwaysClear` key bytes to `det-app.sqlite`.
+/// returned blob. A freshly inserted or updated identity never writes
+/// `Clear` / `AlwaysClear` key bytes to `det-app.sqlite`.
 ///
 /// Funds-safe ordering: the vault `store_all` happens BEFORE the bytes are
 /// produced. On a vault-write failure the error propagates and the caller
@@ -623,6 +468,7 @@ fn encode_identity_blob_vault_first(
     secret_store: &Arc<platform_wallet_storage::secrets::SecretStore>,
     id: &[u8; 32],
     qi: &QualifiedIdentity,
+    retained_keys: impl IntoIterator<Item = (PrivateKeyTarget, KeyID)>,
 ) -> std::result::Result<Vec<u8>, TaskError> {
     // No resident plaintext ⇒ nothing to vault and nothing to rewrite; encode
     // the borrow directly without a clone (the steady-state, already-`InVault`
@@ -640,7 +486,7 @@ fn encode_identity_blob_vault_first(
     // this same guard on a plain re-save — e.g. an alias edit — so the re-save
     // fails closed until "Finish protecting" reseals the remaining keys under
     // the identity password. This is intended secure behavior, not a regression.
-    if find_protected_identity_key_scope(secret_store, id, qi).is_some() {
+    if find_protected_identity_key_scope(secret_store, id, qi, retained_keys)?.is_some() {
         return Err(TaskError::IdentityKeyProtectionDowngrade);
     }
     let mut qi = qi.clone();
@@ -653,80 +499,22 @@ fn purge_identity_scope(kv: &DetKv, id: &[u8; 32]) -> std::result::Result<(), Ta
     let scope = DetScope::Identity(id);
     kv.delete(scope, IDENTITY_KEY).map_err(identity_err)?;
     kv.delete(scope, TOP_UPS_KEY).map_err(top_up_err)?;
-    delete_scheduled_votes_for_voter(kv, id)
+    Ok(())
 }
 
-/// Read the Global scheduled-vote voter index. Returns an empty vector
-/// when no voter has ever queued a scheduled vote.
-fn load_scheduled_vote_voters(kv: &DetKv) -> std::result::Result<Vec<[u8; 32]>, TaskError> {
-    Ok(kv
-        .get::<Vec<[u8; 32]>>(DetScope::Global, SCHEDULED_VOTE_VOTERS_KEY)
-        .map_err(scheduled_vote_err)?
-        .unwrap_or_default())
-}
-
-/// Add `voter` to the Global scheduled-vote voter index if absent.
-fn index_add_vote_voter(kv: &DetKv, voter: &[u8; 32]) -> std::result::Result<(), TaskError> {
-    let mut voters = load_scheduled_vote_voters(kv)?;
-    if voters.contains(voter) {
-        return Ok(());
-    }
-    voters.push(*voter);
-    kv.put(DetScope::Global, SCHEDULED_VOTE_VOTERS_KEY, &voters)
-        .map_err(scheduled_vote_err)
-}
-
-/// List the scheduled-vote entry keys queued under `voter`'s Identity scope.
-fn scheduled_vote_keys(
-    kv: &DetKv,
-    voter: &[u8; 32],
-) -> std::result::Result<Vec<String>, TaskError> {
-    kv.list(DetScope::Identity(voter), Some(SCHEDULED_VOTE_KEY_PREFIX))
-        .map_err(scheduled_vote_err)
-}
-
-/// Drop `voter` from the Global scheduled-vote voter index. No-op when the
-/// voter is not present, so repeated calls stay idempotent.
-fn remove_vote_voter_from_index(
-    kv: &DetKv,
-    voter: &[u8; 32],
-) -> std::result::Result<(), TaskError> {
-    let mut voters = load_scheduled_vote_voters(kv)?;
-    let before = voters.len();
-    voters.retain(|v| v != voter);
-    if voters.len() == before {
-        return Ok(());
-    }
-    kv.put(DetScope::Global, SCHEDULED_VOTE_VOTERS_KEY, &voters)
-        .map_err(scheduled_vote_err)
-}
-
-/// Prune `voter` from the Global scheduled-vote voter index when it no
-/// longer has any scheduled votes left in its Identity scope. Keeps the
-/// index from accumulating dangling voter entries.
-fn prune_vote_voter_if_empty(kv: &DetKv, voter: &[u8; 32]) -> std::result::Result<(), TaskError> {
-    if scheduled_vote_keys(kv, voter)?.is_empty() {
-        remove_vote_voter_from_index(kv, voter)
-    } else {
-        Ok(())
-    }
-}
-
-/// Delete every scheduled vote queued under `voter`'s Identity scope and
-/// drop the voter from the index. Used by the identity-removal cleanup
-/// path.
-fn delete_scheduled_votes_for_voter(
-    kv: &DetKv,
-    voter: &[u8; 32],
-) -> std::result::Result<(), TaskError> {
-    let scope = DetScope::Identity(voter);
-    for key in scheduled_vote_keys(kv, voter)? {
-        kv.delete(scope, &key).map_err(scheduled_vote_err)?;
-    }
-    remove_vote_voter_from_index(kv, voter)
+#[cfg(feature = "testing")]
+thread_local! {
+    static ROSTER_LOADS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 impl AppContext {
+    /// Full roster reads ([`Self::load_local_qualified_identities`]) made on
+    /// this thread, for tests that bound how often a frame reads the roster.
+    #[cfg(feature = "testing")]
+    pub fn roster_loads_on_this_thread() -> usize {
+        ROSTER_LOADS.with(std::cell::Cell::get)
+    }
+
     /// Whether the previous version's preserved `data.db` holds any identity of
     /// this network.
     ///
@@ -832,14 +620,38 @@ impl AppContext {
         let _guard = lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.insert_local_qualified_identity_under_lock(
+            qualified_identity,
+            wallet_and_identity_id_info,
+        )
+    }
+
+    /// Deliberate import, including retirement of an unload marker. The caller
+    /// must hold this identity's record lock across authorization and this write.
+    pub(crate) fn insert_local_qualified_identity_under_lock(
+        &self,
+        qualified_identity: &QualifiedIdentity,
+        wallet_and_identity_id_info: &Option<(WalletSeedHash, u32)>,
+    ) -> std::result::Result<(), TaskError> {
         // Deliberate: asking for an identity is the one act that means the user
         // changed their mind about unloading it, so this is the only place the
         // unload marker is retired. Under the same guard as the write, so a
         // discovery pass cannot observe a retired marker and a missing record.
-        self.clear_identity_unloaded(
-            &self.det_kv()?,
-            &qualified_identity.identity.id().to_buffer(),
-        )?;
+        let kv = self.det_kv()?;
+        let id = qualified_identity.identity.id();
+        if !identity_is_listed(&kv, &id.to_buffer())?
+            && self.is_identity_unloaded(&kv, &id.to_buffer())?
+        {
+            let _vote_guard = self
+                .dpns_vote_operation_guard
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            super::dpns_vote_operations::cancel_removed_identity_votes(&kv, self.network, id)?;
+            // Votes still waiting to be stored were reviewed before the removal
+            // too, and no marker will say so once it is retired below.
+            self.begin_dpns_voter_lifecycle(id);
+        }
+        self.clear_identity_unloaded(&kv, &id.to_buffer())?;
         self.insert_local_qualified_identity_locked(qualified_identity, wallet_and_identity_id_info)
     }
 
@@ -951,8 +763,12 @@ impl AppContext {
         // Vault-first: move any plaintext keys into the vault before encoding, so
         // the at-rest blob carries only `InVault` placeholders. A vault-write
         // failure aborts the insert (nothing is persisted).
-        let qi_bytes =
-            encode_identity_blob_vault_first(&self.secret_store, &id, qualified_identity)?;
+        let qi_bytes = encode_identity_blob_vault_first(
+            &self.secret_store,
+            &id,
+            qualified_identity,
+            self.retained_identity_import_keys(&qualified_identity.identity.id())?,
+        )?;
         let (wallet_hash, wallet_index) = match wallet_link {
             Some((seed, idx)) => (Some(seed), Some(idx)),
             None => (None, None),
@@ -994,8 +810,12 @@ impl AppContext {
     ) -> std::result::Result<(), TaskError> {
         let kv = self.det_kv()?;
         let id = qualified_identity.identity.id().to_buffer();
-        let qi_bytes =
-            encode_identity_blob_vault_first(&self.secret_store, &id, qualified_identity)?;
+        let qi_bytes = encode_identity_blob_vault_first(
+            &self.secret_store,
+            &id,
+            qualified_identity,
+            self.retained_identity_import_keys(&qualified_identity.identity.id())?,
+        )?;
         let stored = StoredQualifiedIdentity {
             qi_bytes,
             status: qualified_identity.status.as_u8(),
@@ -1163,8 +983,12 @@ impl AppContext {
             .unwrap_or((None, None));
         // Vault-first: move any plaintext keys into the vault before encoding, so
         // an update never lands `Clear` / `AlwaysClear` key bytes on disk.
-        let qi_bytes =
-            encode_identity_blob_vault_first(&self.secret_store, &id, qualified_identity)?;
+        let qi_bytes = encode_identity_blob_vault_first(
+            &self.secret_store,
+            &id,
+            qualified_identity,
+            self.retained_identity_import_keys(&qualified_identity.identity.id())?,
+        )?;
         let stored = StoredQualifiedIdentity {
             qi_bytes,
             status: qualified_identity.status.as_u8(),
@@ -1206,7 +1030,12 @@ impl AppContext {
         qi.alias = new_alias.map(str::to_string);
         // Re-encode vault-first so an alias edit on a not-yet-migrated blob does
         // not rewrite resident plaintext keys back to disk.
-        stored.qi_bytes = encode_identity_blob_vault_first(&self.secret_store, &id, &qi)?;
+        stored.qi_bytes = encode_identity_blob_vault_first(
+            &self.secret_store,
+            &id,
+            &qi,
+            self.retained_identity_import_keys(&qi.identity.id())?,
+        )?;
         kv.put(scope, IDENTITY_KEY, &stored).map_err(identity_err)
     }
 
@@ -1236,7 +1065,9 @@ impl AppContext {
     pub fn load_local_qualified_identities(
         &self,
     ) -> std::result::Result<Vec<QualifiedIdentity>, TaskError> {
-        let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
+        #[cfg(feature = "testing")]
+        ROSTER_LOADS.with(|loads| loads.set(loads.get() + 1));
+        let wallets = self.wallet_context().wallets();
         let mut identities = self.load_identities_filtered(&wallets, |_| true)?;
         for identity in &mut identities {
             self.hydrate_top_ups(identity);
@@ -1253,7 +1084,7 @@ impl AppContext {
         &self,
         seed_hash: &WalletSeedHash,
     ) -> std::result::Result<Vec<QualifiedIdentity>, TaskError> {
-        let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
+        let wallets = self.wallet_context().wallets();
         let target = Some(*seed_hash);
         self.load_identities_filtered(&wallets, |s| {
             s.wallet_index.is_some() && s.wallet_hash == target
@@ -1294,6 +1125,23 @@ impl AppContext {
             }
         }
         Ok(out)
+    }
+
+    /// The summed credit balance of each wallet's identities, as last stored.
+    /// A wallet with no identities is absent.
+    ///
+    /// Reads and decodes every wallet-owned identity record, so call it when a
+    /// screen opens or refreshes, never once per frame. One unreadable record
+    /// fails the whole read: its owner may be unknown, so a partial answer
+    /// would understate some wallet's total without saying which.
+    pub fn identity_credits_by_wallet(
+        &self,
+    ) -> std::result::Result<BTreeMap<WalletSeedHash, Credits>, TaskError> {
+        self.det_kv()
+            .and_then(|kv| sum_identity_credits_by_wallet(&kv, self.network))
+            .map_err(|error| TaskError::IdentityBalancesUnavailable {
+                source: Box::new(error),
+            })
     }
 
     /// The masternode/evonode identities for the active network — the
@@ -1338,6 +1186,7 @@ impl AppContext {
     /// (status, wallet index, network, wallets, secret access). `None` when no
     /// identity with `id` is stored. Backs the load-path existence check
     /// (duplicate-ProTxHash rejection) and the in-place voter-key merge.
+    /// Does not migrate keys or modify storage.
     pub fn get_local_qualified_identity(
         &self,
         id: &Identifier,
@@ -1350,16 +1199,8 @@ impl AppContext {
         else {
             return Ok(None);
         };
-        let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
-        let mut qi = decode_stored_identity(&stored.qi_bytes, self.network)?;
-        qi.status = IdentityStatus::from_u8(stored.status);
-        qi.wallet_index = stored.wallet_index;
-        qi.network = self.network;
-        qi.associated_wallets = wallets.clone();
-        qi.secret_access = self.wallet_backend().ok().map(|b| b.secret_access());
-        qi.top_ups = BTreeMap::new();
-        self.migrate_identity_keys_to_vault(&kv, &id_buf, &mut qi);
-        Ok(Some(qi))
+        let wallets = self.wallet_context().wallets();
+        self.hydrate_stored_identity(&stored, &wallets).map(Some)
     }
 
     /// The encoded identity blob stored under `id`, exactly as it sits at
@@ -1494,7 +1335,7 @@ impl AppContext {
             if !keep(&stored) {
                 continue;
             }
-            out.push(self.hydrate_stored_identity(&kv, &id, &stored, wallets)?);
+            out.push(self.hydrate_stored_identity(&stored, wallets)?);
         }
         // Seed the JIT chokepoint's identity prompt-copy index (alias + hint)
         // so the sign-time prompt for an opted-in (Tier-2) identity shows the
@@ -1506,15 +1347,10 @@ impl AppContext {
         Ok(out)
     }
 
-    /// Decode a stored blob and rehydrate the runtime-only fields the encoder
-    /// skips — status, wallet index, network, wallet map, secret access — then
-    /// run the crash-safe vault migration. Shared by the bulk-load and
-    /// single-get paths so both reconstruct an identity identically. Top-up
-    /// history is left empty; callers hydrate it separately when needed.
+    /// Decode and hydrate runtime fields without writing keys or metadata.
+    /// Top-up history is loaded separately when needed.
     fn hydrate_stored_identity(
         &self,
-        kv: &DetKv,
-        id: &[u8; 32],
         stored: &StoredQualifiedIdentity,
         wallets: &BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>,
     ) -> std::result::Result<QualifiedIdentity, TaskError> {
@@ -1525,7 +1361,7 @@ impl AppContext {
         qi.associated_wallets = wallets.clone();
         qi.secret_access = self.wallet_backend().ok().map(|b| b.secret_access());
         qi.top_ups = BTreeMap::new();
-        self.migrate_identity_keys_to_vault(kv, id, &mut qi);
+        self.order_main_username_first(&mut qi);
         Ok(qi)
     }
 
@@ -1565,20 +1401,9 @@ impl AppContext {
         &self,
         identity_id: &Identifier,
     ) -> std::result::Result<Option<QualifiedIdentity>, TaskError> {
-        let kv = self.det_kv()?;
-        let id = identity_id.to_buffer();
-        let Some(stored) = kv
-            .get::<StoredQualifiedIdentity>(DetScope::Identity(&id), IDENTITY_KEY)
-            .map_err(identity_err)?
-        else {
+        let Some(mut qi) = self.get_local_qualified_identity(identity_id)? else {
             return Ok(None);
         };
-        let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
-        // Shared with the bulk-load path: rehydrates the skipped fields and runs
-        // the crash-safe vault migration so single-get consumers (the identity
-        // key password tasks and others) see vault-backed schemes rather than
-        // re-persisting resident plaintext.
-        let mut qi = self.hydrate_stored_identity(&kv, &id, &stored, &wallets)?;
         self.hydrate_top_ups(&mut qi);
         Ok(Some(qi))
     }
@@ -1594,11 +1419,12 @@ impl AppContext {
     {
         let backend = self.wallet_backend()?;
         let id = qi.identity.id().to_buffer();
-        Ok(find_protected_identity_key_scope(
+        find_protected_identity_key_scope(
             backend.secret_store(),
             &id,
             qi,
-        ))
+            self.retained_identity_import_keys(&qi.identity.id())?,
+        )
     }
 
     /// Fetches every locally-stored identity whose `identity_type` is
@@ -1606,7 +1432,7 @@ impl AppContext {
     pub fn load_local_voting_identities(
         &self,
     ) -> std::result::Result<Vec<QualifiedIdentity>, TaskError> {
-        let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
+        let wallets = self.wallet_context().wallets();
         self.load_identities_filtered(&wallets, |s| {
             !matches!(
                 IdentityType::from_tag(&s.identity_type),
@@ -1621,7 +1447,7 @@ impl AppContext {
     pub fn load_local_user_identities(
         &self,
     ) -> std::result::Result<Vec<QualifiedIdentity>, TaskError> {
-        let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
+        let wallets = self.wallet_context().wallets();
         self.load_identities_filtered(&wallets, |s| {
             matches!(
                 IdentityType::from_tag(&s.identity_type),
@@ -1724,9 +1550,28 @@ impl AppContext {
         // storage says the identity is absent. The reverse order would leave a
         // delisted identity with no marker, which is the defect itself.
         self.mark_identity_unloaded(&kv, &id)?;
+        // Identity-record guard is outermost. Hold the journal guard until the
+        // roster and mirrors are gone, so neither claiming nor broadcasting
+        // can race cancellation and a re-import cannot revive an old schedule.
+        let _vote_guard = self
+            .dpns_vote_operation_guard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // A journal that cannot be read must not keep keys on the device. No
+        // vote runs from an unreadable journal, and a re-import cancels before
+        // it relists, so the cancellation is deferred: the retained manifest
+        // makes startup recovery retry it.
+        let vote_cancellation = super::dpns_vote_operations::cancel_removed_identity_votes(
+            &kv,
+            self.network,
+            *identifier,
+        );
         index_remove_identity(&kv, &id)?;
+        self.invalidate_identity_load(*identifier);
         purge_identity_scope(&kv, &id)?;
-        let sidecar_cleanup = self.finish_identity_removal_cleanup(&kv, &id, vault_keys)?;
+        self.save_identity_profile_name(*identifier, None);
+        let sidecar_cleanup =
+            self.finish_identity_removal_cleanup(&kv, &id, vault_keys, vote_cancellation)?;
         // Mirror removal into the upstream unowned scope; wallet-owned identities are unaffected.
         if let Ok(backend) = self.wallet_backend()
             && let Err(error) = backend.remove_unowned_identity(identifier)
@@ -1745,17 +1590,35 @@ impl AppContext {
         kv: &DetKv,
         id: &[u8; 32],
         vault_keys: impl IntoIterator<Item = (PrivateKeyTarget, KeyID)>,
+        vote_cancellation: std::result::Result<(), TaskError>,
     ) -> std::result::Result<IdentitySidecarCleanup, TaskError> {
+        let identifier = Identifier::from(*id);
+        let username_cleanup = self.forget_identity_usernames(kv, &identifier);
+        // Both callers hold the record lock through inventory retirement.
+        // Failed re-imports can add keys after the removal manifest was saved.
+        let mut vault_keys: std::collections::BTreeSet<_> = vault_keys.into_iter().collect();
+        vault_keys.extend(self.retained_identity_import_keys(&identifier)?);
         crate::wallet_backend::IdentityKeyView::new(&self.secret_store, *id)
             .delete_all(vault_keys)?;
-        let identifier = Identifier::from(*id);
+        self.forget_identity_import_keys(&identifier)?;
         // INTENTIONAL(late-owner-sidecar-writes): in-flight writers are not drained; coordinating
         // every backend task requires a wider owner-lifecycle protocol than this cleanup adds.
         let dashpay_cleanup = self
             .wallet_backend()
             .and_then(|backend| backend.dashpay_clear_owner_overlays(&identifier));
         let token_cleanup = super::contract_token_db::forget_identity_token_state(kv, &identifier);
-        let sidecar_cleanup = sidecar_cleanup_outcome(dashpay_cleanup, token_cleanup, &identifier);
+        let mut sidecar_cleanup =
+            sidecar_cleanup_outcome(dashpay_cleanup, token_cleanup, &identifier);
+        if let Err(error) = username_cleanup {
+            tracing::warn!(identity_id = %identifier, ?error,
+                "Removed identity's username records could not be cleared; cleanup will retry");
+            sidecar_cleanup = IdentitySidecarCleanup::Incomplete;
+        }
+        if let Err(error) = vote_cancellation {
+            tracing::warn!(identity_id = %identifier, ?error,
+                "Removed identity's pending votes could not be cancelled; cleanup will retry");
+            sidecar_cleanup = IdentitySidecarCleanup::Incomplete;
+        }
         if !sidecar_cleanup.is_incomplete() {
             clear_vault_cleanup_manifest(kv, id);
         }
@@ -1903,6 +1766,17 @@ impl AppContext {
                         continue;
                     }
                 };
+            let _vote_guard = self
+                .dpns_vote_operation_guard
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // As in the removal itself: an unreadable journal defers only the
+            // vote cancellation, never the key deletion below.
+            let vote_cancellation = super::dpns_vote_operations::cancel_removed_identity_votes(
+                &kv,
+                self.network,
+                Identifier::from(id),
+            );
             if let Err(error) = purge_identity_scope(&kv, &id) {
                 tracing::warn!(
                     identity = %Identifier::from(id),
@@ -1914,7 +1788,7 @@ impl AppContext {
             let vault_keys = placements
                 .into_iter()
                 .map(|(target, key_id)| (target.into(), key_id));
-            match self.finish_identity_removal_cleanup(&kv, &id, vault_keys) {
+            match self.finish_identity_removal_cleanup(&kv, &id, vault_keys, vote_cancellation) {
                 Ok(IdentitySidecarCleanup::Complete) => resumed += 1,
                 Ok(IdentitySidecarCleanup::Incomplete) => {}
                 Err(error) => tracing::warn!(
@@ -1949,64 +1823,6 @@ impl AppContext {
         index_remove_identity(&kv, &identifier.to_buffer())
     }
 
-    /// EAGER identity-key migration (dialog-free): move any plaintext
-    /// `Clear`/`AlwaysClear` identity keys into the vault as raw bytes and
-    /// rewrite the blob with `InVault` placeholders so the keys are never
-    /// resident.
-    ///
-    /// Crash-safe ordering: vault `store_all` FIRST, then blob rewrite. If the
-    /// vault write fails the blob is left untouched (the in-memory `qi` is
-    /// restored to its resident plaintext for this session) and the next load
-    /// retries — keys are never lost. Idempotent: a blob already all-`InVault`
-    /// has nothing to take and is skipped. Best-effort: a blob-rewrite failure
-    /// is logged; the next load re-detects the plaintext and retries.
-    fn migrate_identity_keys_to_vault(
-        &self,
-        kv: &DetKv,
-        id: &[u8; 32],
-        qi: &mut QualifiedIdentity,
-    ) {
-        let _ = migrate_keystore_to_vault(&self.secret_store, id, qi, |migrated| {
-            self.persist_identity_blob(kv, id, migrated)
-        });
-    }
-
-    /// Re-persist `qi`'s blob in place, preserving the stored wallet
-    /// association and status. Used by the eager identity-key migration.
-    ///
-    /// The one whole-record write that does NOT take
-    /// [`Self::identity_record_lock`]: it runs inside the *read* path
-    /// ([`Self::hydrate_stored_identity`]), which a caller already holding that
-    /// guard calls, so taking it here would self-deadlock. The write is
-    /// idempotent — it rewrites the blob this call just read, replacing
-    /// plaintext keys with vault placeholders — so a concurrent whole-record
-    /// writer loses only the placeholder rewrite, and the next read redoes it.
-    // TODO(#889 follow-up): fold this rewrite into the guarded write path (e.g.
-    // by having the read return the migration for the caller to persist) so
-    // every blob write is serialized, not merely every deliberate one.
-    fn persist_identity_blob(
-        &self,
-        kv: &DetKv,
-        id: &[u8; 32],
-        qi: &QualifiedIdentity,
-    ) -> std::result::Result<(), TaskError> {
-        let scope = DetScope::Identity(id);
-        let existing: Option<StoredQualifiedIdentity> =
-            kv.get(scope, IDENTITY_KEY).map_err(identity_err)?;
-        let (wallet_hash, wallet_index, status) = existing
-            .as_ref()
-            .map(|s| (s.wallet_hash, s.wallet_index, s.status))
-            .unwrap_or((None, None, qi.status.as_u8()));
-        let stored = StoredQualifiedIdentity {
-            qi_bytes: qi.to_bytes(),
-            status,
-            identity_type: qi.identity_type.as_tag().to_string(),
-            wallet_hash,
-            wallet_index,
-        };
-        kv.put(scope, IDENTITY_KEY, &stored).map_err(identity_err)
-    }
-
     /// The vault placements holding `id`'s identity-key secrets, as recorded in
     /// its stored blob. Empty when the identity is not stored.
     ///
@@ -2030,19 +1846,15 @@ impl AppContext {
             .keys_set())
     }
 
-    /// The full vault-key delete set for `id`: freshly-derived placements
-    /// from the still-live blob (empty once it is gone), unioned with any
-    /// manifest left behind by an earlier failed delete. The union — never a
-    /// choice of one source over the other — means a placement discovered
-    /// by either source is never dropped, whether this is a first attempt
-    /// (manifest empty, blob live) or a retry after the blob was already
-    /// purged (blob empty, manifest live).
+    /// Union the live blob, retained import placements and interrupted-removal
+    /// manifest so every key remains discoverable after the blob is gone.
     fn pending_vault_key_placements(
         &self,
         kv: &DetKv,
         id: &[u8; 32],
     ) -> std::result::Result<std::collections::BTreeSet<(PrivateKeyTarget, KeyID)>, TaskError> {
         let mut keys = self.identity_vault_key_placements(kv, id)?;
+        keys.extend(self.retained_identity_import_keys(&Identifier::from(*id))?);
         let manifest: Vec<(StoredPrivateKeyTarget, KeyID)> = kv
             .get(DetScope::Global, &vault_cleanup_pending_key(id))
             .map_err(identity_err)?
@@ -2095,7 +1907,7 @@ impl AppContext {
 
     /// Whether `id` was deliberately unloaded and not deliberately re-loaded
     /// since.
-    fn is_identity_unloaded(
+    pub(super) fn is_identity_unloaded(
         &self,
         kv: &DetKv,
         id: &[u8; 32],
@@ -2135,9 +1947,9 @@ impl AppContext {
     /// it back afterwards, because its decision is re-taken here rather than
     /// carried in from the caller.
     ///
-    /// The alias carry-over lives here for the same reason. Reading it in the
-    /// caller and writing it here spans an unguarded gap, so a concurrent alias
-    /// edit would be written away.
+    /// The alias and key carry-over live here for the same reason. Reading
+    /// them in the caller and writing here spans an unguarded gap, so a
+    /// concurrent alias edit or key save would be written away.
     pub(crate) fn store_discovered_identity(
         &self,
         qualified_identity: &mut QualifiedIdentity,
@@ -2158,7 +1970,8 @@ impl AppContext {
 
         let kv = self.det_kv()?;
         let id = identity_id.to_buffer();
-        if self.is_identity_unloaded(&kv, &id)? {
+        let was_unloaded = self.is_identity_unloaded(&kv, &id)?;
+        if was_unloaded {
             if !intent.may_restore_unloaded() {
                 tracing::debug!(
                     identity_id = %identity_id,
@@ -2178,11 +1991,30 @@ impl AppContext {
             .map_err(identity_err)?;
         match existing {
             // A record on file: refresh it, keeping the user's own alias, which
-            // a freshly built identity never carries.
+            // a freshly built identity never carries, and every key the
+            // wallet-only rebuild did not recreate (SEC-102). A delisted
+            // record that was unloaded is a removal that stopped part-way — its
+            // vault keys may already be gone — so it is replaced, not merged.
+            // Delisted without the marker, no removal ran: its keys are live.
             Some(stored) => {
-                qualified_identity.alias =
-                    decode_stored_identity(&stored.qi_bytes, self.network)?.alias;
-                self.write_local_qualified_identity_locked(qualified_identity)?;
+                let stored = decode_stored_identity(&stored.qi_bytes, self.network)?;
+                qualified_identity.alias = stored.alias;
+                if !was_unloaded || identity_is_listed(&kv, &id)? {
+                    qualified_identity
+                        .private_keys
+                        .retain_local_keys_from(stored.private_keys);
+                }
+                // The merge carries the stored record's keys; on a partially
+                // protected record that includes resident plaintext the guard
+                // refuses to save keyless. The user asked for no change, so
+                // say what blocks the refresh rather than the change wording.
+                self.write_local_qualified_identity_locked(qualified_identity)
+                    .map_err(|error| match error {
+                        TaskError::IdentityKeyProtectionDowngrade => {
+                            TaskError::IdentityRefreshBlockedByPartialProtection { identity_id }
+                        }
+                        other => other,
+                    })?;
             }
             None => self.insert_local_qualified_identity_locked(qualified_identity, wallet)?,
         }
@@ -2211,8 +2043,10 @@ impl AppContext {
         kv: &DetKv,
         id: &[u8; 32],
     ) -> std::result::Result<(), TaskError> {
-        let placements = self.identity_vault_key_placements(kv, id)?;
-        crate::wallet_backend::IdentityKeyView::new(&self.secret_store, *id).delete_all(placements)
+        let placements = self.pending_vault_key_placements(kv, id)?;
+        crate::wallet_backend::IdentityKeyView::new(&self.secret_store, *id)
+            .delete_all(placements)?;
+        self.forget_identity_import_keys(&Identifier::from(*id))
     }
 
     /// Delete the vault secrets filed at `placements` for `identity_id`, leaving
@@ -2309,129 +2143,11 @@ impl AppContext {
         Ok(kept)
     }
 
-    /// Persist a batch of scheduled votes in the per-network wallet k/v
-    /// store. Each vote is scoped to [`DetScope::Identity`] of its voter;
-    /// existing entries with the same `(voter, contested_name)` are
-    /// overwritten — matching the pre-C5 `INSERT OR REPLACE` semantics.
-    /// Voters are tracked in a Global index so the network-wide read /
-    /// clear paths can find them.
-    pub fn insert_scheduled_votes(
-        &self,
-        scheduled_votes: &[ScheduledDPNSVote],
-    ) -> std::result::Result<(), TaskError> {
-        let kv = self.det_kv()?;
-        for vote in scheduled_votes {
-            let voter = vote.voter_id.to_buffer();
-            let stored = StoredScheduledVote::from(vote);
-            kv.put(
-                DetScope::Identity(&voter),
-                &scheduled_vote_key(&vote.contested_name),
-                &stored,
-            )
-            .map_err(scheduled_vote_err)?;
-            index_add_vote_voter(&kv, &voter)?;
-        }
-        Ok(())
-    }
-
-    /// Fetch every scheduled vote queued for this network from the
-    /// wallet k/v store, across all voters in the Global voter index.
-    pub fn get_scheduled_votes(&self) -> std::result::Result<Vec<ScheduledDPNSVote>, TaskError> {
-        let kv = self.det_kv()?;
-        let voters = load_scheduled_vote_voters(&kv)?;
-        let mut out = Vec::new();
-        for voter in voters {
-            let scope = DetScope::Identity(&voter);
-            for key in scheduled_vote_keys(&kv, &voter)? {
-                match kv.get::<StoredScheduledVote>(scope, &key) {
-                    Ok(Some(stored)) => out.push(stored.into()),
-                    Ok(None) => {}
-                    Err(e) => {
-                        tracing::warn!(
-                            key = %key,
-                            error = ?e,
-                            "Skipping unreadable scheduled vote entry"
-                        );
-                    }
-                }
-            }
-        }
-        Ok(out)
-    }
-
-    /// Drop every scheduled vote queued for this network.
-    pub fn clear_all_scheduled_votes(&self) -> std::result::Result<(), TaskError> {
-        let kv = self.det_kv()?;
-        let voters = load_scheduled_vote_voters(&kv)?;
-        for voter in &voters {
-            let scope = DetScope::Identity(voter);
-            for key in scheduled_vote_keys(&kv, voter)? {
-                kv.delete(scope, &key).map_err(scheduled_vote_err)?;
-            }
-        }
-        kv.delete(DetScope::Global, SCHEDULED_VOTE_VOTERS_KEY)
-            .map_err(scheduled_vote_err)
-    }
-
-    /// Drop every scheduled vote that has already been cast successfully.
-    pub fn clear_executed_scheduled_votes(&self) -> std::result::Result<(), TaskError> {
-        let kv = self.det_kv()?;
-        let voters = load_scheduled_vote_voters(&kv)?;
-        for voter in &voters {
-            let scope = DetScope::Identity(voter);
-            for key in scheduled_vote_keys(&kv, voter)? {
-                match kv.get::<StoredScheduledVote>(scope, &key) {
-                    Ok(Some(stored)) if stored.executed_successfully => {
-                        kv.delete(scope, &key).map_err(scheduled_vote_err)?;
-                    }
-                    _ => {}
-                }
-            }
-            prune_vote_voter_if_empty(&kv, voter)?;
-        }
-        Ok(())
-    }
-
-    /// Drop a single scheduled vote keyed by `(voter_id, contested_name)`.
-    pub fn delete_scheduled_vote(
-        &self,
-        identity_id: &[u8],
-        contested_name: &str,
-    ) -> std::result::Result<(), TaskError> {
-        let voter = voter_buffer(identity_id)?;
-        let kv = self.det_kv()?;
-        kv.delete(
-            DetScope::Identity(&voter),
-            &scheduled_vote_key(contested_name),
-        )
-        .map_err(scheduled_vote_err)?;
-        prune_vote_voter_if_empty(&kv, &voter)
-    }
-
-    /// Mark a single scheduled vote as executed so future cast loops skip it.
-    pub fn mark_vote_executed(
-        &self,
-        identity_id: &[u8],
-        contested_name: String,
-    ) -> std::result::Result<(), TaskError> {
-        let voter = voter_buffer(identity_id)?;
-        let key = scheduled_vote_key(&contested_name);
-        let scope = DetScope::Identity(&voter);
-        let kv = self.det_kv()?;
-        let Some(mut stored): Option<StoredScheduledVote> =
-            kv.get(scope, &key).map_err(scheduled_vote_err)?
-        else {
-            return Ok(());
-        };
-        stored.executed_successfully = true;
-        kv.put(scope, &key, &stored).map_err(scheduled_vote_err)
-    }
-
     /// Fetches the local identities from the k/v store and maps them to their DPNS names.
     pub fn local_dpns_names(
         &self,
     ) -> std::result::Result<Vec<(Identifier, DPNSNameInfo)>, TaskError> {
-        let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
+        let wallets = self.wallet_context().wallets();
         let qualified_identities = self.load_identities_filtered(&wallets, |_| true)?;
 
         // Map each identity's DPNS names to (Identifier, DPNSNameInfo) tuples
@@ -2585,7 +2301,7 @@ pub(crate) mod test_staging {
         }
     }
 
-    /// A stored identity whose plaintext keys the read path has already moved
+    /// A stored identity whose legacy keys have been explicitly migrated
     /// into the vault — the state a real delete runs against. Holds the temp dir
     /// and the event receiver so neither is dropped while the test runs.
     pub(crate) struct StagedIdentity {
@@ -2600,7 +2316,7 @@ pub(crate) mod test_staging {
     }
 
     /// The two vault placements [`qi_with_plaintext_and_derived_at`] leaves
-    /// behind once the read path has migrated its plaintext keys.
+    /// behind once startup has migrated its plaintext keys.
     const STAGED_PLACEMENTS: [(PrivateKeyTarget, dash_sdk::dpp::identity::KeyID); 2] = [
         (PrivateKeyTarget::PrivateKeyOnMainIdentity, 1),
         (PrivateKeyTarget::PrivateKeyOnMainIdentity, 2),
@@ -2656,9 +2372,7 @@ pub(crate) mod test_staging {
         (ctx, store, dir, events)
     }
 
-    /// Write `qi`'s blob, list it on the roster, and read it back once so the
-    /// load path moves its plaintext keys into the vault. Asserts both keys
-    /// landed there, since every fixture below is only meaningful if they did.
+    /// Stage a legacy blob and explicitly migrate its keys before testing removal.
     fn stage_identity_record(
         ctx: &Arc<AppContext>,
         store: &Arc<platform_wallet_storage::secrets::SecretStore>,
@@ -2680,9 +2394,8 @@ pub(crate) mod test_staging {
         )
         .expect("stage the identity blob");
         index_add_identity(&kv, &id_buf).expect("index the identity");
-        ctx.get_local_qualified_identity(&id)
-            .expect("hydrate the staged identity")
-            .expect("identity present");
+        ctx.migrate_local_identity_keys_to_vault()
+            .expect("migrate staged keys explicitly");
 
         let view = IdentityKeyView::new(store, id_buf);
         for (target, key_id) in STAGED_PLACEMENTS {
@@ -2731,21 +2444,11 @@ pub(crate) mod test_staging {
         }
     }
 
-    /// Break the Global scheduled-vote voter index, so the next
-    /// `delete_local_qualified_identity` fails at the last step of
-    /// `purge_identity_scope` — strictly *after* `index_remove_identity` has
-    /// already delisted the identity. The reachable shape of a removal that
-    /// failed past its point of no return: the identity is gone from every
-    /// screen, and only its vault cleanup is outstanding.
+    /// Fail the top-up deletion after the identity has been delisted and its blob deleted.
     pub(crate) fn fail_removals_after_delisting(ctx: &Arc<AppContext>) {
-        ctx.det_kv()
-            .expect("identity kv")
-            .put(
-                DetScope::Global,
-                SCHEDULED_VOTE_VOTERS_KEY,
-                &"not a voter index".to_string(),
-            )
-            .expect("corrupt the scheduled-vote voter index");
+        let store = ctx.det_kv().unwrap().failing_store();
+        store.fail_next_deletes_containing(TOP_UPS_KEY, 1);
+        ctx.set_det_kv_override_for_test(DetKv::from_store(store));
     }
 
     /// Break `identity_id`'s vault-cleanup manifest slot, so its next
@@ -2801,6 +2504,9 @@ mod tests {
     use super::test_staging::*;
     use super::*;
     use crate::context::lock_probe::{LockProbe, LockSite};
+    use crate::model::dpns_voting::{
+        DpnsVoteOperation, DpnsVoteTarget, DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming,
+    };
     use crate::wallet_backend::kv_test_support::{FailingKv, InMemoryKv, RendezvousKv};
     use DetKv;
     use std::sync::Arc;
@@ -2896,6 +2602,28 @@ mod tests {
         [b; 32]
     }
 
+    fn scheduled_operation(
+        voter_id: Identifier,
+        poll: u8,
+        contested_name: &str,
+        status: DpnsVoteTargetStatus,
+    ) -> DpnsVoteOperation {
+        let mut operation = AppContext::new_dpns_vote_operation(vec![DpnsVoteTarget {
+            key: DpnsVoteTargetKey {
+                network: Network::Testnet,
+                voter_id,
+                vote_poll_id: Identifier::from([poll; 32]),
+            },
+            voter_alias: None,
+            contested_name: contested_name.to_owned(),
+            requested_choice: ResourceVoteChoice::Lock,
+            current_choice: None,
+            timing: VoteTiming::Scheduled(42),
+        }]);
+        operation.targets[0].status = status;
+        operation
+    }
+
     /// Minimal stored-identity blob carrying a synthetic `qi_bytes`
     /// payload and the chosen type label. Avoids constructing a full
     /// `QualifiedIdentity` (which needs an SDK identity) for storage-layer
@@ -2914,6 +2642,131 @@ mod tests {
         kv.put(DetScope::Identity(id), IDENTITY_KEY, &stored(identity_type))
             .unwrap();
         index_add_identity(kv, id).unwrap();
+    }
+
+    /// Store a real identity blob holding `credits`, owned by `wallet` or by
+    /// no wallet.
+    fn put_identity_with_credits(kv: &DetKv, id: u8, wallet: Option<[u8; 32]>, credits: u64) {
+        use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+        let mut qi = crate::context::test_support::bare_user_identity(
+            Identifier::from([id; 32]),
+            Network::Testnet,
+        );
+        qi.identity.set_balance(credits);
+        let stored = StoredQualifiedIdentity {
+            qi_bytes: qi.to_bytes(),
+            status: 0,
+            identity_type: "User".to_string(),
+            wallet_hash: wallet,
+            wallet_index: wallet.map(|_| u32::from(id)),
+        };
+        kv.put(DetScope::Identity(&[id; 32]), IDENTITY_KEY, &stored)
+            .unwrap();
+        index_add_identity(kv, &[id; 32]).unwrap();
+    }
+
+    #[test]
+    fn identity_credits_are_summed_per_owning_wallet() {
+        let kv = empty_kv();
+        let (wallet_a, wallet_b) = ([0xA1; 32], [0xB2; 32]);
+        put_identity_with_credits(&kv, 1, Some(wallet_a), 1_500);
+        put_identity_with_credits(&kv, 2, Some(wallet_a), 2_500);
+        put_identity_with_credits(&kv, 3, Some(wallet_b), 700);
+        put_identity_with_credits(&kv, 4, None, 999);
+
+        let totals = sum_identity_credits_by_wallet(&kv, Network::Testnet).unwrap();
+
+        assert_eq!(
+            totals,
+            BTreeMap::from([(wallet_a, 4_000), (wallet_b, 700)]),
+            "a wallet-less identity belongs to no wallet's total"
+        );
+    }
+
+    #[test]
+    fn identity_credits_of_an_unreadable_record_fail_the_read() {
+        let kv = empty_kv();
+        kv.put(
+            DetScope::Identity(&id(7)),
+            IDENTITY_KEY,
+            &StoredQualifiedIdentity {
+                wallet_hash: Some([0xA1; 32]),
+                wallet_index: Some(0),
+                ..stored("User")
+            },
+        )
+        .unwrap();
+        index_add_identity(&kv, &id(7)).unwrap();
+
+        assert!(sum_identity_credits_by_wallet(&kv, Network::Testnet).is_err());
+    }
+
+    fn app_context_over(kv: DetKv) -> (Arc<AppContext>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        ctx.set_det_kv_override_for_test(kv);
+        (ctx, dir)
+    }
+
+    #[test]
+    fn identity_credits_by_wallet_returns_each_wallets_sum() {
+        let kv = empty_kv();
+        put_identity_with_credits(&kv, 1, Some([0xA1; 32]), 1_500);
+        put_identity_with_credits(&kv, 2, Some([0xA1; 32]), 500);
+        let (ctx, _dir) = app_context_over(kv);
+
+        assert_eq!(
+            ctx.identity_credits_by_wallet().expect("readable store"),
+            BTreeMap::from([([0xA1; 32], 2_000)])
+        );
+    }
+
+    /// One unreadable record fails the whole read. A record that cannot be
+    /// read may belong to any wallet, so a partial answer would understate
+    /// some wallet's total without saying which.
+    #[test]
+    fn identity_credits_by_wallet_reports_an_unreadable_record_instead_of_a_partial_sum() {
+        let kv = empty_kv();
+        put_identity_with_credits(&kv, 1, Some([0xB2; 32]), 700);
+        kv.put(
+            DetScope::Identity(&id(7)),
+            IDENTITY_KEY,
+            &StoredQualifiedIdentity {
+                wallet_hash: Some([0xA1; 32]),
+                wallet_index: Some(0),
+                ..stored("User")
+            },
+        )
+        .unwrap();
+        index_add_identity(&kv, &id(7)).unwrap();
+        let (ctx, _dir) = app_context_over(kv);
+
+        let error = ctx
+            .identity_credits_by_wallet()
+            .expect_err("an unreadable record must not read as no identities");
+
+        assert!(matches!(
+            &error,
+            TaskError::IdentityBalancesUnavailable { source }
+                if matches!(**source, TaskError::IdentityEncoding { .. })
+        ));
+    }
+
+    #[test]
+    fn identity_credits_by_wallet_reports_a_storage_failure() {
+        let store = Arc::new(FailingKv::default());
+        store.fail_all_reads(true);
+        let (ctx, _dir) = app_context_over(DetKv::from_store(store));
+
+        let error = ctx
+            .identity_credits_by_wallet()
+            .expect_err("a failed read must not read as no identities");
+
+        assert!(matches!(
+            &error,
+            TaskError::IdentityBalancesUnavailable { source }
+                if matches!(**source, TaskError::IdentityStorage { .. })
+        ));
     }
 
     // ---------------------------------------------------------------
@@ -3212,167 +3065,20 @@ mod tests {
     // ---------------------------------------------------------------
 
     #[test]
-    fn purge_identity_scope_drains_blob_top_ups_and_votes() {
+    fn purge_identity_scope_drains_blob_and_top_ups() {
         let kv = empty_kv();
         let a = id(1);
         put_identity(&kv, &a, "Masternode");
         kv.put(
             DetScope::Identity(&a),
             TOP_UPS_KEY,
-            &std::collections::BTreeMap::from([(0u32, 5u64)]),
+            &BTreeMap::from([(0u32, 5u64)]),
         )
         .unwrap();
-        kv.put(
-            DetScope::Identity(&a),
-            &scheduled_vote_key("alice"),
-            &StoredScheduledVote {
-                voter_id: a,
-                contested_name: "alice".to_string(),
-                choice: StoredVoteChoice::Lock,
-                unix_timestamp: 0,
-                executed_successfully: false,
-            },
-        )
-        .unwrap();
-        index_add_vote_voter(&kv, &a).unwrap();
-
         purge_identity_scope(&kv, &a).unwrap();
-
-        assert!(
-            kv.get::<StoredQualifiedIdentity>(DetScope::Identity(&a), IDENTITY_KEY)
-                .unwrap()
-                .is_none()
-        );
-        assert!(
-            kv.get::<std::collections::BTreeMap<u32, u64>>(DetScope::Identity(&a), TOP_UPS_KEY)
-                .unwrap()
-                .is_none()
-        );
-        assert!(
-            kv.list(DetScope::Identity(&a), Some(SCHEDULED_VOTE_KEY_PREFIX))
-                .unwrap()
-                .is_empty()
-        );
-        // The voter index is pruned by the cascade-free cleanup path.
-        assert!(load_scheduled_vote_voters(&kv).unwrap().is_empty());
+        assert!(!kv.contains(DetScope::Identity(&a), IDENTITY_KEY).unwrap());
+        assert!(!kv.contains(DetScope::Identity(&a), TOP_UPS_KEY).unwrap());
     }
-
-    // ---------------------------------------------------------------
-    // Scheduled votes: per-voter Identity scope + Global voter index.
-    // ---------------------------------------------------------------
-
-    #[test]
-    fn scheduled_vote_round_trips_in_voter_scope() {
-        let kv = empty_kv();
-        let voter = id(1);
-        let key = scheduled_vote_key("dash");
-        kv.put(
-            DetScope::Identity(&voter),
-            &key,
-            &StoredScheduledVote {
-                voter_id: voter,
-                contested_name: "dash".to_string(),
-                choice: StoredVoteChoice::Abstain,
-                unix_timestamp: 42,
-                executed_successfully: false,
-            },
-        )
-        .unwrap();
-        index_add_vote_voter(&kv, &voter).unwrap();
-
-        let got: StoredScheduledVote = kv.get(DetScope::Identity(&voter), &key).unwrap().unwrap();
-        assert_eq!(got.contested_name, "dash");
-        assert_eq!(got.unix_timestamp, 42);
-        // Voter index tracks the single voter.
-        assert_eq!(load_scheduled_vote_voters(&kv).unwrap(), vec![voter]);
-    }
-
-    #[test]
-    fn scheduled_votes_for_two_voters_share_a_contested_name_without_aliasing() {
-        let kv = empty_kv();
-        let v1 = id(1);
-        let v2 = id(2);
-        let key = scheduled_vote_key("contested");
-        for (v, ts) in [(v1, 10u64), (v2, 20u64)] {
-            kv.put(
-                DetScope::Identity(&v),
-                &key,
-                &StoredScheduledVote {
-                    voter_id: v,
-                    contested_name: "contested".to_string(),
-                    choice: StoredVoteChoice::Lock,
-                    unix_timestamp: ts,
-                    executed_successfully: false,
-                },
-            )
-            .unwrap();
-            index_add_vote_voter(&kv, &v).unwrap();
-        }
-        let got1: StoredScheduledVote = kv.get(DetScope::Identity(&v1), &key).unwrap().unwrap();
-        let got2: StoredScheduledVote = kv.get(DetScope::Identity(&v2), &key).unwrap().unwrap();
-        assert_eq!(got1.unix_timestamp, 10);
-        assert_eq!(got2.unix_timestamp, 20);
-        let mut voters = load_scheduled_vote_voters(&kv).unwrap();
-        voters.sort_unstable();
-        assert_eq!(voters, vec![v1, v2]);
-    }
-
-    #[test]
-    fn delete_scheduled_votes_for_voter_drains_scope_and_prunes_index() {
-        let kv = empty_kv();
-        let voter = id(1);
-        for name in ["a", "b"] {
-            kv.put(
-                DetScope::Identity(&voter),
-                &scheduled_vote_key(name),
-                &StoredScheduledVote {
-                    voter_id: voter,
-                    contested_name: name.to_string(),
-                    choice: StoredVoteChoice::Lock,
-                    unix_timestamp: 0,
-                    executed_successfully: false,
-                },
-            )
-            .unwrap();
-        }
-        index_add_vote_voter(&kv, &voter).unwrap();
-
-        delete_scheduled_votes_for_voter(&kv, &voter).unwrap();
-        assert!(
-            kv.list(DetScope::Identity(&voter), Some(SCHEDULED_VOTE_KEY_PREFIX))
-                .unwrap()
-                .is_empty()
-        );
-        assert!(load_scheduled_vote_voters(&kv).unwrap().is_empty());
-    }
-
-    #[test]
-    fn prune_vote_voter_keeps_voter_with_remaining_votes() {
-        let kv = empty_kv();
-        let voter = id(1);
-        kv.put(
-            DetScope::Identity(&voter),
-            &scheduled_vote_key("still-here"),
-            &StoredScheduledVote {
-                voter_id: voter,
-                contested_name: "still-here".to_string(),
-                choice: StoredVoteChoice::Lock,
-                unix_timestamp: 0,
-                executed_successfully: false,
-            },
-        )
-        .unwrap();
-        index_add_vote_voter(&kv, &voter).unwrap();
-
-        prune_vote_voter_if_empty(&kv, &voter).unwrap();
-        assert_eq!(load_scheduled_vote_voters(&kv).unwrap(), vec![voter]);
-    }
-
-    // ---------------------------------------------------------------
-    // dashpay private / address_index Identity-scope contracts are
-    // covered in `src/wallet_backend/dashpay.rs`; here we assert the
-    // identity domain's own scope isolation against a foreign scope.
-    // ---------------------------------------------------------------
 
     #[test]
     fn identity_blob_is_isolated_from_a_different_identity_scope() {
@@ -3392,25 +3098,6 @@ mod tests {
     // F43: a wrong-length voter id surfaces a typed variant carrying the
     // upstream error as a `#[source]`, not a stringified detail.
     // ---------------------------------------------------------------
-
-    #[test]
-    fn voter_buffer_accepts_a_32_byte_id() {
-        let bytes = [7u8; 32];
-        assert_eq!(voter_buffer(&bytes).unwrap(), bytes);
-    }
-
-    #[test]
-    fn voter_buffer_rejects_short_id_with_typed_source() {
-        let err = voter_buffer(&[0u8; 5]).expect_err("a 5-byte voter id must be rejected");
-        assert!(
-            matches!(err, TaskError::InvalidVoterIdentifier { .. }),
-            "expected InvalidVoterIdentifier, got {err:?}"
-        );
-        assert!(
-            std::error::Error::source(&err).is_some(),
-            "the typed upstream error must be preserved as the source"
-        );
-    }
 
     // ---------------------------------------------------------------
     // F63: the index is written before the blob, so a reader tolerates a
@@ -3459,7 +3146,7 @@ mod tests {
         Arc::new(crate::wallet_backend::single_key::open_secret_store(&path).expect("open vault"))
     }
 
-    /// Load-path migration — `migrate_keystore_to_vault` content-detects Clear/AlwaysClear,
+    /// Startup migration — `migrate_keystore_to_vault` content-detects Clear/AlwaysClear,
     /// stores them in the vault FIRST, then rewrites the blob to InVault.
     /// Asserts: vault-first (the raw bytes are present), the wallet-derived key
     /// is untouched, zero plaintext remains, and the persist closure ran AFTER
@@ -3475,7 +3162,7 @@ mod tests {
 
         let view = IdentityKeyView::new(&store, id);
         let mut persisted = false;
-        let outcome = migrate_keystore_to_vault(&store, &id, &mut qi, |migrated| {
+        let outcome = migrate_keystore_to_vault(&store, &id, &mut qi, [], |migrated| {
             // Vault-FIRST: by the time persist runs, the raw keys are stored.
             assert!(
                 view.get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 1)
@@ -3495,7 +3182,7 @@ mod tests {
             Ok(())
         });
 
-        assert_eq!(outcome, KeystoreMigration::Migrated(2));
+        assert_eq!(outcome.unwrap(), KeystoreMigration::Migrated(2));
         assert!(persisted, "persist closure ran");
         // Both plaintext keys are in the vault and equal the originals.
         assert_eq!(
@@ -3534,18 +3221,151 @@ mod tests {
 
         // Idempotent: a second run finds nothing to migrate.
         assert_eq!(
-            migrate_keystore_to_vault(&store, &id, &mut qi, |_| Ok(())),
+            migrate_keystore_to_vault(&store, &id, &mut qi, [], |_| Ok(())).unwrap(),
             KeystoreMigration::Nothing
         );
     }
 
-    /// Regression: the single-get `get_identity_by_id` path
-    /// must run the SAME vault migration the bulk `load_identities_filtered`
-    /// path runs, so a legacy blob with resident `Clear`/`AlwaysClear` keys is
-    /// migrated to the vault on read instead of returning (and re-persisting)
-    /// resident plaintext. Before the fix this path called only `hydrate_top_ups`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn get_identity_by_id_migrates_legacy_resident_keys_to_vault() {
+    async fn identity_migration_write_failures_keep_preparation_retryable() {
+        use crate::wallet_backend::secret_seam::write_fault_test_support::WriteFault;
+        use std::sync::atomic::Ordering;
+
+        for fail_vault in [true, false] {
+            let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+            let ctx = &staged.ctx;
+            let qi = qi_with_plaintext_and_derived([0xAA; 32], [0xBB; 32]);
+            let kv = ctx.det_kv().unwrap();
+            let id = staged.id.to_buffer();
+            let mut stored: StoredQualifiedIdentity = kv
+                .get(DetScope::Identity(&id), IDENTITY_KEY)
+                .unwrap()
+                .unwrap();
+            stored.qi_bytes = qi.to_bytes();
+            kv.put(DetScope::Identity(&id), IDENTITY_KEY, &stored)
+                .unwrap();
+            let conn =
+                rusqlite::Connection::open(ctx.data_dir().join("det-testnet.sqlite")).unwrap();
+            let fault = if fail_vault {
+                Some(WriteFault::arm(1))
+            } else {
+                conn.execute_batch("CREATE TRIGGER fail_migration BEFORE INSERT ON meta_identity WHEN NEW.key = 'det:identity:v1' BEGIN SELECT RAISE(FAIL, 'injected migration write failure'); END;").unwrap();
+                None
+            };
+            let (tx, _rx) = tokio::sync::mpsc::channel(32);
+            let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, ctx.egui_ctx().clone());
+            assert!(
+                ctx.prepare_storage(sender.clone()).await.is_err(),
+                "failed migration must fail preparation (vault={fail_vault})"
+            );
+            assert!(!ctx.storage_prepared.load(Ordering::Acquire));
+            assert_eq!(
+                ctx.stored_identity_blob(&staged.id).unwrap().unwrap(),
+                stored.qi_bytes
+            );
+            drop(fault);
+            if !fail_vault {
+                conn.execute_batch("DROP TRIGGER fail_migration").unwrap();
+            }
+            ctx.prepare_storage(sender)
+                .await
+                .expect("retry migration after storage recovers");
+            assert!(ctx.storage_prepared.load(Ordering::Acquire));
+            assert!(
+                !ctx.get_local_qualified_identity(&staged.id)
+                    .unwrap()
+                    .unwrap()
+                    .private_keys
+                    .has_plaintext_for_vault()
+            );
+            ctx.wallet_backend().unwrap().shutdown().await;
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn identity_migration_skips_corrupt_blob_and_migrates_healthy_record() {
+        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let ctx = &staged.ctx;
+        let kv = ctx.det_kv().unwrap();
+        let id = staged.id.to_buffer();
+        let mut stored: StoredQualifiedIdentity = kv
+            .get(DetScope::Identity(&id), IDENTITY_KEY)
+            .unwrap()
+            .unwrap();
+        stored.qi_bytes = qi_with_plaintext_and_derived([0xAA; 32], [0xBB; 32]).to_bytes();
+        kv.put(DetScope::Identity(&id), IDENTITY_KEY, &stored)
+            .unwrap();
+        let corrupt_id = [0xFE; 32];
+        stored.qi_bytes = vec![0xFF];
+        kv.put(DetScope::Identity(&corrupt_id), IDENTITY_KEY, &stored)
+            .unwrap();
+        kv.put(DetScope::Global, IDENTITY_INDEX_KEY, &vec![corrupt_id, id])
+            .unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::channel(32);
+        ctx.prepare_storage(crate::utils::egui_mpsc::SenderAsync::new(
+            tx,
+            ctx.egui_ctx().clone(),
+        ))
+        .await
+        .expect("one corrupt blob must not block healthy records");
+        assert!(
+            !ctx.get_local_qualified_identity(&staged.id)
+                .unwrap()
+                .unwrap()
+                .private_keys
+                .has_plaintext_for_vault()
+        );
+        assert_eq!(
+            ctx.stored_identity_blob(&Identifier::from(corrupt_id))
+                .unwrap()
+                .unwrap(),
+            vec![0xFF]
+        );
+        ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn identity_migration_skips_corrupt_wrapper_and_migrates_healthy_record() {
+        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let ctx = &staged.ctx;
+        let kv = ctx.det_kv().unwrap();
+        let id = staged.id.to_buffer();
+        let mut stored: StoredQualifiedIdentity = kv
+            .get(DetScope::Identity(&id), IDENTITY_KEY)
+            .unwrap()
+            .unwrap();
+        stored.qi_bytes = qi_with_plaintext_and_derived([0xAA; 32], [0xBB; 32]).to_bytes();
+        kv.put(DetScope::Identity(&id), IDENTITY_KEY, &stored)
+            .unwrap();
+        let corrupt_id = [0xFE; 32];
+        kv.put(DetScope::Identity(&corrupt_id), IDENTITY_KEY, &1u8)
+            .unwrap();
+        kv.put(DetScope::Global, IDENTITY_INDEX_KEY, &vec![corrupt_id, id])
+            .unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::channel(32);
+        ctx.prepare_storage(crate::utils::egui_mpsc::SenderAsync::new(
+            tx,
+            ctx.egui_ctx().clone(),
+        ))
+        .await
+        .expect("one corrupt wrapper must not block healthy records");
+        assert!(
+            !ctx.get_local_qualified_identity(&staged.id)
+                .unwrap()
+                .unwrap()
+                .private_keys
+                .has_plaintext_for_vault()
+        );
+        assert_eq!(
+            kv.get::<u8>(DetScope::Identity(&corrupt_id), IDENTITY_KEY)
+                .unwrap(),
+            Some(1)
+        );
+        ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn identity_reads_are_pure_and_storage_preparation_migrates_legacy_keys() {
         use crate::app::TaskResult;
         use crate::app_dir::ensure_env_file;
         use crate::context::connection_status::ConnectionStatus;
@@ -3554,7 +3374,7 @@ mod tests {
         use crate::utils::tasks::TaskManager;
 
         // Offline wired AppContext (no network I/O) so `secret_store` is a real,
-        // writable vault and `get_identity_by_id` can migrate into it.
+        // writable vault for the explicit startup migration.
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let data_dir = temp_dir.path().to_path_buf();
         ensure_env_file(&data_dir);
@@ -3575,7 +3395,7 @@ mod tests {
         .expect("offline testnet AppContext::new");
         let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
         let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
-        ctx.ensure_wallet_backend(sender)
+        ctx.ensure_wallet_backend(sender.clone())
             .await
             .expect("wire wallet backend offline");
 
@@ -3608,10 +3428,33 @@ mod tests {
             view.get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 1)
                 .unwrap()
                 .is_none(),
-            "vault must be empty before the read-path migration"
+            "vault must be empty before storage preparation"
         );
 
-        // The single-get read MUST migrate the resident plaintext.
+        let before = ctx.stored_identity_blob(&identity_id).unwrap();
+        let fault =
+            crate::wallet_backend::secret_seam::write_fault_test_support::WriteFault::arm(0);
+        for loaded in [
+            ctx.get_local_qualified_identity(&identity_id)
+                .unwrap()
+                .unwrap(),
+            ctx.get_identity_by_id(&identity_id).unwrap().unwrap(),
+            ctx.load_local_qualified_identities().unwrap().remove(0),
+        ] {
+            assert!(loaded.private_keys.has_plaintext_for_vault());
+        }
+        assert_eq!(ctx.stored_identity_blob(&identity_id).unwrap(), before);
+        assert!(fault.schemes().is_empty(), "reads must not write secrets");
+        drop(fault);
+        assert!(
+            view.get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 1)
+                .unwrap()
+                .is_none()
+        );
+
+        ctx.prepare_storage(sender)
+            .await
+            .expect("explicit startup migration");
         let loaded = ctx
             .get_identity_by_id(&identity_id)
             .expect("load identity")
@@ -3722,7 +3565,7 @@ mod tests {
             )
             .expect("seal existing key");
 
-        let err = encode_identity_blob_vault_first(&store, &id, &qi)
+        let err = encode_identity_blob_vault_first(&store, &id, &qi, [])
             .expect_err("must refuse to keyless-store a new key on a protected identity");
         assert!(
             matches!(err, TaskError::IdentityKeyProtectionDowngrade),
@@ -3738,7 +3581,7 @@ mod tests {
         );
     }
 
-    /// The load-path migration likewise skips a protected identity's
+    /// The startup migration likewise skips a protected identity's
     /// resident plaintext rather than writing it keyless — fail closed, persist
     /// nothing, leave it resident for the session.
     #[test]
@@ -3759,11 +3602,11 @@ mod tests {
             .expect("seal existing key");
 
         let mut persisted = false;
-        let outcome = migrate_keystore_to_vault(&store, &id, &mut qi, |_| {
+        let outcome = migrate_keystore_to_vault(&store, &id, &mut qi, [], |_| {
             persisted = true;
             Ok(())
         });
-        assert_eq!(outcome, KeystoreMigration::ProtectedSkipped);
+        assert_eq!(outcome.unwrap(), KeystoreMigration::ProtectedSkipped);
         assert!(!persisted, "a protected-skip must persist nothing");
         // No keyless key written for the resident plaintext key.
         assert_eq!(
@@ -3779,7 +3622,7 @@ mod tests {
         );
     }
 
-    /// Write-path twin of the load-path migration: the insert/update encoder
+    /// The runtime insert/update encoder
     /// (`encode_identity_blob_vault_first`) moves plaintext keys into the vault
     /// FIRST and returns an `InVault`-only blob, so a freshly inserted or
     /// updated identity never lands `Clear` / `AlwaysClear` key bytes in
@@ -3796,7 +3639,7 @@ mod tests {
         let medium = [0xB2; 32];
         let qi = qi_with_plaintext_and_derived(high, medium);
 
-        let blob = encode_identity_blob_vault_first(&store, &id, &qi).expect("encode");
+        let blob = encode_identity_blob_vault_first(&store, &id, &qi, []).expect("encode");
 
         // The persisted blob carries neither plaintext key in any rendered form.
         let rendered = format!("{blob:?}");
@@ -3844,7 +3687,7 @@ mod tests {
 
     /// Write-fault no-loss ordering. With the vault made unwritable so
     /// `store_all` fails, the migration restores the resident plaintext, does
-    /// NOT call persist, and reports `VaultWriteFailed` — keys are never lost on
+    /// NOT call persist, and returns the typed storage error — keys are never lost on
     /// a mid-write fault (the write half CRASH-01's read half does not cover).
     #[cfg(unix)]
     #[test]
@@ -3865,7 +3708,7 @@ mod tests {
             .expect("chmod ro");
 
         let mut persisted = false;
-        let outcome = migrate_keystore_to_vault(&store, &id, &mut qi, |_| {
+        let outcome = migrate_keystore_to_vault(&store, &id, &mut qi, [], |_| {
             persisted = true;
             Ok(())
         });
@@ -3873,7 +3716,7 @@ mod tests {
         // Restore perms so tempdir cleanup works.
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).ok();
 
-        assert_eq!(outcome, KeystoreMigration::VaultWriteFailed);
+        assert!(outcome.is_err(), "vault failure must propagate");
         assert!(
             !persisted,
             "persist must NOT run when the vault write failed"
@@ -4044,6 +3887,136 @@ mod tests {
     /// removal that actually delists the identity has even run for the case
     /// this distinction exists to catch (a failure strictly after delisting).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn identity_removal_cancels_executable_journal_targets_and_preserves_uncertainty() {
+        let staged = stage_identity_with_vaulted_keys([0x77; 32], [0x88; 32]).await;
+        let imported = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .unwrap()
+            .unwrap();
+        let mut operations = Vec::new();
+        for (index, status) in [
+            DpnsVoteTargetStatus::Scheduled,
+            DpnsVoteTargetStatus::Queued,
+            DpnsVoteTargetStatus::Submitting,
+            DpnsVoteTargetStatus::Confirming,
+            DpnsVoteTargetStatus::Unconfirmed,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut operation = scheduled_operation(staged.id, index as u8 + 1, "removed", status);
+            if index == 0 {
+                let mut sibling = operation.targets[0].clone();
+                sibling.target.key.voter_id = Identifier::from([99; 32]);
+                operation.targets.push(sibling);
+            }
+            staged
+                .ctx
+                .insert_dpns_vote_operation(&mut operation, None)
+                .unwrap();
+            operations.push(operation);
+        }
+        staged
+            .ctx
+            .delete_local_qualified_identity(&staged.id)
+            .unwrap();
+        for (index, operation) in operations.iter().enumerate() {
+            let saved = staged
+                .ctx
+                .dpns_vote_operation(operation.id)
+                .unwrap()
+                .unwrap();
+            let expected = if index < 3 {
+                DpnsVoteTargetStatus::Cancelled
+            } else {
+                operation.targets[0].status
+            };
+            assert_eq!(saved.targets[0].status, expected);
+            if index == 0 {
+                assert_eq!(saved.targets[1].status, DpnsVoteTargetStatus::Scheduled);
+            }
+        }
+        let cancelled = &operations[2];
+        let key = &cancelled.targets[0].target.key;
+        assert!(
+            !staged
+                .ctx
+                .mark_dpns_vote_broadcast(cancelled.id, key)
+                .unwrap()
+        );
+        staged
+            .ctx
+            .update_dpns_vote_target(cancelled.id, key, DpnsVoteTargetStatus::Scheduled, None)
+            .unwrap();
+        assert_eq!(
+            staged
+                .ctx
+                .dpns_vote_operation(cancelled.id)
+                .unwrap()
+                .unwrap()
+                .targets[0]
+                .status,
+            DpnsVoteTargetStatus::Cancelled
+        );
+        staged
+            .ctx
+            .insert_local_qualified_identity(&imported, &None)
+            .unwrap();
+        staged
+            .ctx
+            .recover_interrupted_dpns_vote_operations()
+            .unwrap();
+        assert!(
+            !staged
+                .ctx
+                .queue_scheduled_dpns_vote_target(cancelled.id, key)
+                .unwrap()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn identity_removal_cleanup_cancels_votes_left_by_an_interrupted_removal() {
+        let staged = stage_identity_with_vaulted_keys([0x77; 32], [0x88; 32]).await;
+        let kv = staged.ctx.det_kv().unwrap();
+        let id = staged.id.to_buffer();
+        // The vote is scheduled while the identity is still loaded, so the
+        // interrupted removal below leaves it for the cleanup to cancel.
+        let mut scheduled =
+            scheduled_operation(staged.id, 9, "interrupted", DpnsVoteTargetStatus::Scheduled);
+        staged
+            .ctx
+            .insert_dpns_vote_operation(&mut scheduled, None)
+            .unwrap();
+        let placements = staged.ctx.pending_vault_key_placements(&kv, &id).unwrap();
+        staged
+            .ctx
+            .persist_vault_cleanup_manifest(&kv, &id, &placements)
+            .unwrap();
+        staged.ctx.mark_identity_unloaded(&kv, &id).unwrap();
+        index_remove_identity(&kv, &id).unwrap();
+
+        staged.ctx.resume_pending_vault_cleanups();
+
+        assert_eq!(
+            staged
+                .ctx
+                .dpns_vote_operation(scheduled.id)
+                .unwrap()
+                .unwrap()
+                .targets[0]
+                .status,
+            DpnsVoteTargetStatus::Cancelled
+        );
+        assert!(
+            !staged
+                .ctx
+                .queue_scheduled_dpns_vote_target(scheduled.id, &scheduled.targets[0].target.key)
+                .unwrap()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn is_identity_listed_tracks_the_index_not_the_blob() {
         let staged = stage_identity_with_vaulted_keys([0x77; 32], [0x88; 32]).await;
         let kv = staged.ctx.det_kv().expect("identity kv");
@@ -4118,7 +4091,7 @@ mod tests {
     }
 
     /// `purge_identity_scope` is not atomic: it can fail on its own last step
-    /// (pruning the scheduled-vote voter index) after its first step has
+    /// (deleting top-up history) after its first step has
     /// already deleted `IDENTITY_KEY` — the blob `identity_vault_key_placements`
     /// needs to re-derive a delete set. Without a durable manifest, a retry
     /// after such a failure would read an empty placement set from the (now
@@ -4134,21 +4107,12 @@ mod tests {
         let staged = stage_identity_with_vaulted_keys(HIGH, LOW).await;
         let kv = staged.ctx.det_kv().expect("identity kv");
 
-        // Break the Global scheduled-vote voter index so `purge_identity_scope`
-        // fails at its LAST step (`delete_scheduled_votes_for_voter` ->
-        // `remove_vote_voter_from_index`) — strictly after `IDENTITY_KEY` (the
-        // blob) and `TOP_UPS_KEY` are already gone.
-        kv.put(
-            DetScope::Global,
-            SCHEDULED_VOTE_VOTERS_KEY,
-            &"not a voter index".to_string(),
-        )
-        .expect("corrupt the scheduled-vote voter index");
+        fail_removals_after_delisting(&staged.ctx);
 
         let error = staged
             .ctx
             .delete_local_qualified_identity(&staged.id)
-            .expect_err("a corrupt voter index must fail the delete");
+            .expect_err("a top-up delete failure must fail the delete");
         assert!(
             !matches!(error, TaskError::WalletStorageNotReady),
             "the delete must reach purge_identity_scope, not stop at the migration guard: {error:?}"
@@ -4163,13 +4127,10 @@ mod tests {
              before its own later step failed"
         );
 
-        // Repair the index so the retry can actually complete.
-        kv.delete(DetScope::Global, SCHEDULED_VOTE_VOTERS_KEY)
-            .expect("repair the voter index");
         staged
             .ctx
             .delete_local_qualified_identity(&staged.id)
-            .expect("the retry must complete now that the index is repaired");
+            .expect("the retry must complete after the one-shot failure");
 
         let view = IdentityKeyView::new(&staged.store, staged.id.to_buffer());
         for key_id in [1, 2] {
@@ -4230,20 +4191,6 @@ mod tests {
             &std::collections::BTreeMap::from([(0u32, 5u64)]),
         )
         .expect("stage a top-up entry purge_identity_scope never reached");
-        kv.put(
-            DetScope::Identity(&id_buf),
-            &scheduled_vote_key("alice"),
-            &StoredScheduledVote {
-                voter_id: id_buf,
-                contested_name: "alice".to_string(),
-                choice: StoredVoteChoice::Lock,
-                unix_timestamp: 0,
-                executed_successfully: false,
-            },
-        )
-        .expect("stage a scheduled vote purge_identity_scope never reached");
-        index_add_vote_voter(&kv, &id_buf).expect("add to the voter index");
-
         staged.ctx.resume_pending_vault_cleanups();
 
         let view = IdentityKeyView::new(&staged.store, id_buf);
@@ -4269,18 +4216,6 @@ mod tests {
             .expect("read top-ups")
             .is_none(),
             "the sweep must drain the top-up history left behind by the interrupted purge"
-        );
-        assert!(
-            kv.list(DetScope::Identity(&id_buf), Some(SCHEDULED_VOTE_KEY_PREFIX))
-                .expect("list scheduled votes")
-                .is_empty(),
-            "the sweep must drain any scheduled votes left behind by the interrupted purge"
-        );
-        assert!(
-            load_scheduled_vote_voters(&kv)
-                .expect("read the voter index")
-                .is_empty(),
-            "the sweep must prune this voter from the Global scheduled-vote index"
         );
         assert!(
             kv.get::<Vec<(StoredPrivateKeyTarget, KeyID)>>(
@@ -4634,7 +4569,7 @@ mod tests {
         )
         .expect("stage the manifest the delete is meant to clear");
 
-        failing.fail_deletes(true);
+        failing.fail_all_deletes(true);
         view.delete_all([(MAIN, 1)]).expect("delete keys");
         clear_vault_cleanup_manifest(&kv, &id_buf);
 
@@ -4642,7 +4577,7 @@ mod tests {
             view.get(&MAIN, 1).unwrap().is_none(),
             "the vault delete must have landed before the manifest clear was even attempted"
         );
-        failing.fail_deletes(false);
+        failing.fail_all_deletes(false);
         assert!(
             kv.get::<Vec<(StoredPrivateKeyTarget, KeyID)>>(DetScope::Global, &manifest_key)
                 .expect("read the manifest slot")
@@ -4952,6 +4887,181 @@ mod tests {
         );
     }
 
+    /// SEC-002 end to end: a stale plaintext key filed at the id the
+    /// on-chain key uses is never destroyed. The first refresh keeps it and
+    /// the save moves its bytes into the vault; the next refresh hands the
+    /// slot to the on-chain key while the vault still holds the stale secret.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stale_plaintext_key_survives_refreshes_and_yields_its_slot() {
+        use crate::model::qualified_identity::encrypted_key_storage::WalletDerivationPath;
+        use dash_sdk::dpp::identity::KeyID;
+        use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
+
+        const KEY_ID: KeyID = 9;
+        const STALE_SECRET: [u8; 32] = [0x77; 32];
+        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let id = staged.id.to_buffer();
+        let placement = (PrivateKeyTarget::PrivateKeyOnMainIdentity, KEY_ID);
+        let pv = PlatformVersion::latest();
+        let stale = IdentityPublicKey::random_key(KEY_ID, Some(91), pv);
+        let on_chain = IdentityPublicKey::random_key(KEY_ID, Some(92), pv);
+
+        // A legacy blob still carrying the stale key as resident plaintext.
+        let kv = staged.ctx.det_kv().expect("identity kv");
+        let mut record = kv
+            .get::<StoredQualifiedIdentity>(DetScope::Identity(&id), IDENTITY_KEY)
+            .expect("read the stored record")
+            .expect("record present");
+        let mut legacy = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read the staged identity")
+            .expect("identity present");
+        legacy.private_keys.insert_at(
+            placement.clone(),
+            (
+                QualifiedIdentityPublicKey::from(stale.clone()),
+                PrivateKeyData::Clear(STALE_SECRET),
+            ),
+        );
+        record.qi_bytes = legacy.to_bytes();
+        kv.put(DetScope::Identity(&id), IDENTITY_KEY, &record)
+            .expect("write the legacy blob");
+
+        let rebuild = || {
+            let mut rebuilt = legacy.clone();
+            let mut keys = KeyStorage::default();
+            keys.insert_at(
+                placement.clone(),
+                (
+                    QualifiedIdentityPublicKey::from(on_chain.clone()),
+                    PrivateKeyData::AtWalletDerivationPath(WalletDerivationPath {
+                        wallet_seed_hash: [0x02; 32],
+                        derivation_path: DerivationPath::from(vec![]),
+                    }),
+                ),
+            );
+            rebuilt.private_keys = keys;
+            rebuilt
+        };
+        let vault = IdentityKeyView::new(&staged.store, id);
+
+        staged
+            .ctx
+            .store_discovered_identity(&mut rebuild(), &None, DiscoveryIntent::Automatic)
+            .expect("first refresh");
+        let after_first = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read back")
+            .expect("identity present");
+        assert!(
+            matches!(
+                after_first.private_keys.entry_at(&placement),
+                Some((key, PrivateKeyData::InVault)) if key.identity_public_key == stale
+            ),
+            "the first refresh keeps the stale key and saves it to the vault"
+        );
+
+        staged
+            .ctx
+            .store_discovered_identity(&mut rebuild(), &None, DiscoveryIntent::Automatic)
+            .expect("second refresh");
+        let after_second = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read back")
+            .expect("identity present");
+        assert!(
+            after_second
+                .private_keys
+                .candidates(&on_chain)
+                .next()
+                .is_some(),
+            "the second refresh hands the slot to the on-chain key"
+        );
+        assert_eq!(
+            vault
+                .get(&placement.0, KEY_ID)
+                .expect("read the vault")
+                .map(|secret| *secret),
+            Some(STALE_SECRET),
+            "the stale secret is still recoverable from the vault"
+        );
+    }
+
+    /// A discovery merge that would leave a password-protected identity with
+    /// resident plaintext fails closed: the keyless vault write is refused
+    /// with the refresh-worded `IdentityRefreshBlockedByPartialProtection`
+    /// (SEC-003), the stored record is left
+    /// byte-for-byte untouched, and the plaintext key lands nowhere.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_discovery_merge_with_plaintext_on_a_protected_identity_is_refused() {
+        use crate::wallet_backend::secret_seam::SecretScheme;
+        use platform_wallet_storage::secrets::SecretString;
+
+        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let id = staged.id.to_buffer();
+        // Seal one stored key Tier-2, so the identity is password-protected.
+        IdentityKeyView::new(&staged.store, id)
+            .store_protected(
+                &PrivateKeyTarget::PrivateKeyOnMainIdentity,
+                1,
+                &[0xAA; 32],
+                &SecretString::new("identity-password-xx"),
+            )
+            .expect("seal a stored key Tier-2");
+        let kv = staged.ctx.det_kv().expect("identity kv");
+        let read_blob = || {
+            kv.get::<StoredQualifiedIdentity>(DetScope::Identity(&id), IDENTITY_KEY)
+                .expect("read the stored record")
+                .expect("record present")
+                .qi_bytes
+        };
+        let before = read_blob();
+
+        // The rebuild carries a resident plaintext key the merge keeps.
+        let mut rediscovered = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read the staged identity")
+            .expect("identity present");
+        let plaintext = IdentityPublicKey::random_key(9, Some(9), PlatformVersion::latest());
+        rediscovered.private_keys.insert_at(
+            (PrivateKeyTarget::PrivateKeyOnMainIdentity, plaintext.id()),
+            (
+                QualifiedIdentityPublicKey::from(plaintext.clone()),
+                PrivateKeyData::Clear([0x99; 32]),
+            ),
+        );
+
+        let err = staged
+            .ctx
+            .store_discovered_identity(&mut rediscovered, &None, DiscoveryIntent::Automatic)
+            .expect_err("a mixed-protection merge must fail closed");
+
+        assert!(
+            matches!(
+                err,
+                TaskError::IdentityRefreshBlockedByPartialProtection { identity_id }
+                    if identity_id == staged.id
+            ),
+            "expected IdentityRefreshBlockedByPartialProtection, got {err:?}"
+        );
+        assert_eq!(
+            read_blob(),
+            before,
+            "the refused merge must leave the stored record untouched"
+        );
+        assert_eq!(
+            IdentityKeyView::new(&staged.store, id)
+                .scheme(&PrivateKeyTarget::PrivateKeyOnMainIdentity, plaintext.id())
+                .expect("read the vault scheme"),
+            SecretScheme::Absent,
+            "the plaintext key must not land in the vault keyless",
+        );
+    }
+
     /// The chokepoint guard, reached through the ordinary update path rather
     /// than through discovery: every fund-moving task (top-up, transfer,
     /// withdrawal, add-key, DPNS registration) holds a `QualifiedIdentity` it
@@ -5029,6 +5139,44 @@ mod tests {
                 .expect("read the roster")
                 .contains(&staged.id),
             "with no unload marker, an update must still restore the record",
+        );
+    }
+
+    /// Off the roster but never unloaded — an insert that stopped between its
+    /// blob write and its roster add — is not a removal: its vault keys are
+    /// live, so a refresh must merge them, not replace them.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_refresh_keeps_the_keys_of_an_unlisted_identity_never_unloaded() {
+        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let stored = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read the staged identity")
+            .expect("identity present");
+        let stored_keys = stored.private_keys.keys_set();
+        assert!(!stored_keys.is_empty(), "fixture: the identity holds keys");
+
+        let kv = staged.ctx.det_kv().expect("identity kv");
+        index_remove_identity(&kv, &staged.id.to_buffer()).expect("delist the identity");
+
+        let mut rebuilt = stored.clone();
+        rebuilt.private_keys = KeyStorage::default();
+        assert!(
+            staged
+                .ctx
+                .store_discovered_identity(&mut rebuilt, &None, DiscoveryIntent::Automatic)
+                .expect("store"),
+        );
+
+        let after = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read back")
+            .expect("identity present");
+        assert_eq!(
+            after.private_keys.keys_set(),
+            stored_keys,
+            "every stored key survives the refresh, so no vault secret is orphaned"
         );
     }
 
@@ -5301,8 +5449,6 @@ mod tests {
         fail_removals_after_delisting(&staged.ctx);
         assert!(staged.ctx.delete_local_qualified_identity(&owner).is_err());
         assert!(!staged.ctx.is_identity_listed(&owner).unwrap());
-        kv.delete(DetScope::Global, SCHEDULED_VOTE_VOTERS_KEY)
-            .unwrap();
 
         staged.ctx.resume_pending_vault_cleanups();
 
@@ -5333,6 +5479,135 @@ mod tests {
                 .is_empty()
         );
         backend.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn username_cleanup_failure_is_hidden_and_retried_without_skipping_vault_cleanup() {
+        use crate::model::dpns_usernames::{RequestPhase, UsernameRequest};
+        let staged = stage_identity_with_vaulted_keys([0x33; 32], [0x44; 32]).await;
+        let kv = staged.ctx.det_kv().unwrap();
+        let failing = kv.failing_store();
+        staged
+            .ctx
+            .set_det_kv_override_for_test(DetKv::from_store(failing.clone()));
+        let mut request = UsernameRequest::submitted(
+            "Alice",
+            100,
+            crate::model::dpns::contest_durations(
+                staged.ctx.network,
+                staged.ctx.platform_version(),
+            ),
+            None,
+        );
+        request.phase = RequestPhase::Won;
+        staged
+            .ctx
+            .store_username_requests(&staged.id, vec![request])
+            .unwrap();
+        failing.fail_next_deletes_containing("det:username_requests:", 2);
+        let cleanup = staged
+            .ctx
+            .delete_local_qualified_identity_with_outcome(&staged.id)
+            .unwrap();
+        assert!(cleanup.is_incomplete());
+        assert!(!staged.ctx.is_identity_listed(&staged.id).unwrap());
+        let view = IdentityKeyView::new(&staged.store, staged.id.to_buffer());
+        for key in [1, 2] {
+            assert!(
+                view.get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, key)
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        assert!(staged.ctx.username_requests_for(&staged.id).is_empty());
+        assert!(!staged.ctx.username_requests_need_refresh());
+        staged.ctx.refresh_pending_dpns_usernames().unwrap();
+        assert!(staged.ctx.username_requests_for(&staged.id).is_empty());
+        assert!(!staged.ctx.username_requests_need_refresh());
+        staged.ctx.resume_pending_vault_cleanups();
+        assert!(
+            !kv.list(DetScope::Global, Some(VAULT_CLEANUP_PENDING_PREFIX))
+                .unwrap()
+                .is_empty()
+        );
+        staged.ctx.resume_pending_vault_cleanups();
+        assert!(
+            kv.list(DetScope::Global, Some("det:username_requests:"))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            kv.list(DetScope::Global, Some(VAULT_CLEANUP_PENDING_PREFIX))
+                .unwrap()
+                .is_empty()
+        );
+        staged.ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
+    /// An unreadable voting journal must not keep an identity's keys on the
+    /// device. Removal still delists the identity and deletes its keys; the
+    /// retained manifest makes startup recovery cancel its votes once the
+    /// journal can be read again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn identity_removal_deletes_keys_when_the_vote_journal_is_unreadable() {
+        let staged = stage_identity_with_vaulted_keys([0x33; 32], [0x44; 32]).await;
+        let kv = staged.ctx.det_kv().unwrap();
+        let failing = kv.failing_store();
+        staged
+            .ctx
+            .set_det_kv_override_for_test(DetKv::from_store(failing.clone()));
+        let mut scheduled =
+            scheduled_operation(staged.id, 7, "unreadable", DpnsVoteTargetStatus::Scheduled);
+        staged
+            .ctx
+            .insert_dpns_vote_operation(&mut scheduled, None)
+            .unwrap();
+
+        failing.fail_next_gets_containing("det:dpns_vote_operation:v2:", 1);
+        let cleanup = staged
+            .ctx
+            .delete_local_qualified_identity_with_outcome(&staged.id)
+            .expect("an unreadable vote journal must not block identity removal");
+
+        assert!(
+            cleanup.is_incomplete(),
+            "the vote cancellation is still owed"
+        );
+        assert!(!staged.ctx.is_identity_listed(&staged.id).unwrap());
+        let view = IdentityKeyView::new(&staged.store, staged.id.to_buffer());
+        for key in [1, 2] {
+            assert!(
+                view.get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, key)
+                    .unwrap()
+                    .is_none(),
+                "key {key} must be deleted even though the journal could not be read"
+            );
+        }
+        assert!(
+            !kv.list(DetScope::Global, Some(VAULT_CLEANUP_PENDING_PREFIX))
+                .unwrap()
+                .is_empty(),
+            "the manifest is kept so recovery retries the cancellation"
+        );
+
+        // The journal reads again at the next start.
+        staged.ctx.resume_pending_vault_cleanups();
+        assert_eq!(
+            staged
+                .ctx
+                .dpns_vote_operation(scheduled.id)
+                .unwrap()
+                .unwrap()
+                .targets[0]
+                .status,
+            DpnsVoteTargetStatus::Cancelled
+        );
+        assert!(
+            kv.list(DetScope::Global, Some(VAULT_CLEANUP_PENDING_PREFIX))
+                .unwrap()
+                .is_empty()
+        );
+        staged.ctx.wallet_backend().unwrap().shutdown().await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

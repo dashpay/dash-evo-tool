@@ -65,6 +65,10 @@ mod snapshot;
 mod token_balance;
 mod versioned_bincode;
 #[cfg(any(test, feature = "bench"))]
+pub mod wallet_context;
+#[cfg(not(any(test, feature = "bench")))]
+pub(crate) mod wallet_context;
+#[cfg(any(test, feature = "bench"))]
 pub mod wallet_meta;
 #[cfg(not(any(test, feature = "bench")))]
 pub(crate) mod wallet_meta;
@@ -195,7 +199,7 @@ use dash_sdk::dash_spv::types::ValidationMode;
 use dash_sdk::dpp::dashcore::Network;
 use platform_wallet::error::PlatformWalletError;
 use platform_wallet::manager::PlatformWalletManager;
-use platform_wallet_storage::secrets::SecretStore;
+use platform_wallet_storage::secrets::{SecretStore, SecretStoreError};
 use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig};
 
 use crate::app::TaskResult;
@@ -391,6 +395,10 @@ struct Inner {
     clear_shielded_test_failure: std::sync::atomic::AtomicBool,
     #[cfg(test)]
     forget_wallet_local_state_test_failure: std::sync::atomic::AtomicBool,
+    /// Runs once at the end of [`WalletBackend::forget_all_wallets_local`],
+    /// standing in for a writer that lands while the wallets are still loaded.
+    #[cfg(test)]
+    after_forget_all_test_hook: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
     /// Injected persister faults for the identity-funding account
     /// registration write. Inert until a test arms it.
     #[cfg(test)]
@@ -454,6 +462,12 @@ struct Inner {
     /// dispatch is user-initiated and rare relative to lock acquisition
     /// cost.
     dashpay_address_index_lock: std::sync::Mutex<()>,
+    /// Serialises read-modify-writes of this network's identity-auth
+    /// public-key cache blobs (see [`AuthPubkeyCacheView::update`]). This
+    /// backend's views are the only writers of its network's entries, so a
+    /// per-backend lock covers every writer. Held only for a synchronous
+    /// KV read/write — never across an `.await`.
+    auth_pubkey_cache_lock: std::sync::Mutex<()>,
     /// Encrypted secret vault. Holds imported single-key WIFs
     /// (`single_key_priv.*` labels, see [`single_key`]) and HD-wallet
     /// BIP-39 seeds (`seed.raw.v1`, with `envelope.v1` only during migration,
@@ -468,14 +482,7 @@ struct Inner {
     /// `AppContext::app_kv` so settings and wallet meta both write into
     /// the same persister.
     app_kv: Arc<DetKv>,
-    /// In-memory index of imported single-key entries, keyed by their
-    /// P2PKH address. Drives `SingleKeyView::list` without enumerating
-    /// the (non-enumerable) secret store. Seeded on cold boot from the
-    /// k/v sidecar by `hydrate_context_wallets` (T-W-01b) and kept in
-    /// sync by `SingleKeyView::import_wif` / `forget`.
-    single_key_index: std::sync::RwLock<
-        std::collections::BTreeMap<String, crate::model::single_key::ImportedKey>,
-    >,
+    wallet_context: Arc<crate::wallet_backend::wallet_context::WalletContext>,
     /// The just-in-time secret chokepoint. Constructed over the same
     /// [`Self::secret_store`] with the host-chosen [`SecretPrompt`]; seeded
     /// with prompt-copy metadata at hydration. Every signing / derivation
@@ -508,6 +515,9 @@ pub struct WalletBackend {
 /// partial wipe instead of a false success.
 pub(crate) struct ClearAllOutcome {
     pub(crate) upstream_ids: Vec<WalletId>,
+    /// Every HD wallet the sweep reached; their auth-pubkey caches need a
+    /// final [`WalletBackend::forget_auth_pubkey_caches`] once they are unloaded.
+    pub(crate) hd_seed_hashes: Vec<WalletSeedHash>,
     pub(crate) failures: Vec<TaskError>,
 }
 
@@ -519,6 +529,28 @@ impl std::fmt::Debug for WalletBackend {
     }
 }
 
+/// File name of the cross-network app database in the data directory.
+pub(crate) const APP_DATABASE_FILE: &str = "det-app.sqlite";
+
+/// The cross-network app k/v database: `<data_dir>/det-app.sqlite`.
+pub(crate) fn app_database_path(data_dir: &Path) -> std::path::PathBuf {
+    data_dir.join(APP_DATABASE_FILE)
+}
+
+/// Every network, via an exhaustive match: a new [`Network`] variant fails to
+/// compile here until each caller (e.g. the deletion deny-list) is reviewed.
+pub(crate) fn all_networks() -> [Network; 4] {
+    let _exhaustive = |network: Network| match network {
+        Network::Mainnet | Network::Testnet | Network::Devnet | Network::Regtest => (),
+    };
+    [
+        Network::Mainnet,
+        Network::Testnet,
+        Network::Devnet,
+        Network::Regtest,
+    ]
+}
+
 /// The durable per-network wallet database: `<data_dir>/det-<network>.sqlite`.
 ///
 /// A sibling of `det-app.sqlite`, deliberately outside `<data_dir>/spv/<network>/`
@@ -527,6 +559,20 @@ impl std::fmt::Debug for WalletBackend {
 /// created and locked down at boot, so no directory work happens here.
 pub(crate) fn wallet_database_path(data_dir: &Path, network: Network) -> std::path::PathBuf {
     data_dir.join(format!("det-{}.sqlite", network_prefix(network)))
+}
+
+/// Parent of every network's [`spv_storage_dir`], `<data_dir>/spv/`.
+pub(crate) fn spv_root_dir(data_dir: &Path) -> std::path::PathBuf {
+    data_dir.join("spv")
+}
+
+/// The per-network chain-sync (SPV) cache directory, `<data_dir>/spv/<network>/`.
+///
+/// The single definition shared by the backend (which creates it), the network
+/// clear (which empties it) and the deletion chokepoint (which confines that clear
+/// to it).
+pub(crate) fn spv_storage_dir(data_dir: &Path, network: Network) -> std::path::PathBuf {
+    spv_root_dir(data_dir).join(network_prefix(network))
 }
 
 /// The upstream shielded coordinator's store,
@@ -612,7 +658,13 @@ impl WalletBackend {
         // host-chosen prompt (egui host in the GUI, `NullSecretPrompt`
         // headless). Wave C migrates consumers onto it; constructed now so
         // the prompt round-trips and the seam is live.
-        let secret_access = SecretAccess::new(Arc::clone(&secret_store), prompt, network);
+        let wallet_context = ctx.wallet_context().clone();
+        let secret_access = SecretAccess::with_wallet_context(
+            Arc::clone(&secret_store),
+            prompt,
+            network,
+            Arc::clone(&wallet_context),
+        );
 
         let backend = Self {
             inner: Arc::new(Inner {
@@ -631,6 +683,8 @@ impl WalletBackend {
                 clear_shielded_test_failure: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(test)]
                 forget_wallet_local_state_test_failure: std::sync::atomic::AtomicBool::new(false),
+                #[cfg(test)]
+                after_forget_all_test_hook: std::sync::Mutex::new(None),
                 #[cfg(test)]
                 persist_faults: persist_fault_test_support::PersistFaults::default(),
                 #[cfg(test)]
@@ -654,8 +708,9 @@ impl WalletBackend {
                 spv_storage_dir,
                 wallet_database_path,
                 dashpay_address_index_lock: std::sync::Mutex::new(()),
+                auth_pubkey_cache_lock: std::sync::Mutex::new(()),
                 secret_store,
-                single_key_index: std::sync::RwLock::new(std::collections::BTreeMap::new()),
+                wallet_context,
                 app_kv,
                 secret_access,
                 start_latch: StartLatch::default(),
@@ -664,11 +719,11 @@ impl WalletBackend {
             }),
         };
 
-        // T-W-01 cold-boot: rebuild `ctx.wallets` from the wallet-meta +
+        // T-W-01 cold-boot: rebuild the wallet context's HD registry from the wallet-meta +
         // seed-envelope sidecars before the loader runs. The legacy
         // `db.get_wallets` row → `Wallet` mapping moved here once the
         // sidecars became the authoritative source. `register_persisted_wallets`
-        // expects `ctx.wallets` to be populated so it can re-provision
+        // expects the wallet context's HD registry to be populated so it can re-provision
         // identity funding accounts (a5538dc8) for every persisted
         // identity, so hydration must precede registration.
         backend.hydrate_context_wallets(ctx)?;
@@ -678,13 +733,14 @@ impl WalletBackend {
         Ok(backend)
     }
 
-    /// Refill `ctx.wallets` and `ctx.single_key_wallets` from the
-    /// sidecars for the active network. Idempotent: a re-run overwrites
-    /// with the same reconstructed wallets keyed by `seed_hash` /
-    /// `key_hash`. Entries already present in the maps (e.g. created
-    /// during the current process before the backend was wired) are
-    /// preserved — sidecar entries only fill gaps so freshly-created
-    /// wallets are never clobbered.
+    /// Refill the wallet context's HD and imported-key registries from the
+    /// sidecars for the active network, in one [`WalletContext::hydrate`]
+    /// call ordered with metadata writers. Idempotent: persisted metadata is
+    /// republished, while wallet handles already registered (e.g. created
+    /// during the current process before the backend was wired) are kept —
+    /// sidecar wallets only fill gaps, so live handles are never replaced.
+    ///
+    /// [`WalletContext::hydrate`]: wallet_context::WalletContext::hydrate
     ///
     /// Called once during [`Self::new`] (cold boot) and again by the
     /// `finish_unwire` migration after it populates the sidecars on first boot
@@ -692,43 +748,23 @@ impl WalletBackend {
     /// post-migration re-run migrated wallets stay invisible until the second
     /// restart.
     pub(crate) fn hydrate_context_wallets(&self, ctx: &Arc<AppContext>) -> Result<(), TaskError> {
-        let view = self.single_key();
-        view.rehydrate_index()?;
-        let single_key_wallets = view.hydrate_wallets();
-        let reconstructed = self.hydrate_wallets_for_network(ctx.network)?;
-
-        // Seed the JIT chokepoint's prompt-copy metadata so a passphrase
-        // prompt can show the wallet alias / password hint and the key
-        // nickname / hint. Absent metadata degrades to a generic label, so
-        // this is best-effort and runs even when no wallets reconstruct.
-        self.seed_secret_access_meta(&reconstructed);
-
-        if reconstructed.is_empty() && single_key_wallets.is_empty() {
-            return Ok(());
-        }
-        {
-            let mut wallets = ctx.wallets.write()?;
-            for (seed_hash, wallet) in reconstructed {
-                wallets
-                    .entry(seed_hash)
-                    .or_insert_with(|| Arc::new(std::sync::RwLock::new(wallet)));
-            }
-            if !wallets.is_empty() {
-                ctx.has_wallet
-                    .store(true, std::sync::atomic::Ordering::Relaxed);
-            }
-        }
-        if !single_key_wallets.is_empty() {
-            let mut sk = ctx.single_key_wallets.write()?;
-            for (key_hash, wallet) in single_key_wallets {
-                sk.entry(key_hash)
-                    .or_insert_with(|| Arc::new(std::sync::RwLock::new(wallet)));
-            }
-            if !sk.is_empty() {
-                ctx.has_wallet
-                    .store(true, std::sync::atomic::Ordering::Relaxed);
-            }
-        }
+        self.inner.wallet_context.hydrate(|| {
+            let view = self.single_key();
+            Ok(crate::wallet_backend::wallet_context::WalletHydration {
+                single: view.list_persisted(),
+                single_wallets: view.hydrate_wallets_from_storage(),
+                wallets: hydration::hydrate_hd_wallets_from_views(
+                    &self.wallet_seeds(),
+                    &WalletMetaView::new(&self.inner.app_kv),
+                    ctx.network,
+                )?,
+                hd: self.load_wallet_metadata()?,
+            })
+        })?;
+        ctx.has_wallet.store(
+            ctx.wallet_context().has_any_wallet(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
         Ok(())
     }
 
@@ -1136,6 +1172,29 @@ impl WalletBackend {
         }
     }
 
+    /// Make the registered wallet track `lock`, as if found on the chain.
+    #[cfg(test)]
+    pub(crate) async fn track_asset_lock_for_test(
+        &self,
+        seed_hash: &WalletSeedHash,
+        lock: platform_wallet::wallet::asset_lock::tracked::TrackedAssetLock,
+    ) {
+        let wallet = self.resolve_wallet(seed_hash).await.expect("wallet");
+        tokio::task::spawn_blocking(move || {
+            wallet.asset_locks().recover_asset_lock_blocking(
+                lock.transaction,
+                lock.amount,
+                lock.account_index,
+                lock.funding_type,
+                lock.identity_index,
+                lock.out_point,
+                lock.proof,
+            )
+        })
+        .await
+        .expect("track the funding transaction");
+    }
+
     #[cfg(test)]
     pub(crate) fn registration_attempt_count(&self) -> usize {
         self.inner
@@ -1186,6 +1245,15 @@ impl WalletBackend {
         self.inner
             .clear_shielded_test_failure
             .store(fail, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_after_forget_all_test_hook(&self, hook: impl FnOnce() + Send + 'static) {
+        *self
+            .inner
+            .after_forget_all_test_hook
+            .lock()
+            .expect("test hook lock") = Some(Box::new(hook));
     }
 
     #[cfg(test)]
@@ -1565,6 +1633,21 @@ impl WalletBackend {
             first_error.get_or_insert(e);
         }
 
+        // DET auth-pubkey cache. The wallet-scope cascade removes it only with
+        // the upstream wallet row; deleting it here, under the cache's write
+        // lock, also stops a warm still in flight from writing it back.
+        if let Err(e) = self
+            .auth_pubkey_cache()
+            .delete(self.inner.network, seed_hash)
+        {
+            tracing::warn!(
+                wallet = %hex::encode(seed_hash),
+                error = ?e,
+                "Failed to delete auth-pubkey cache"
+            );
+            first_error.get_or_insert(e);
+        }
+
         // Plaintext Orchard state (notes + nullifier cursor) now lives in the
         // upstream coordinator store; `remove_upstream_wallet` detaches it.
 
@@ -1697,8 +1780,10 @@ impl WalletBackend {
         // HD wallets: enumerate from the persisted wallet-meta sidecar so a
         // never-loaded wallet is still wiped.
         let mut upstream_ids = Vec::new();
+        let mut hd_seed_hashes = Vec::new();
         let mut failures: Vec<TaskError> = Vec::new();
         for (seed_hash, _meta) in self.wallet_meta().list(network) {
+            hd_seed_hashes.push(seed_hash);
             let wallet_id = self.registered_wallet_id(&seed_hash);
             if let Some(id) = wallet_id {
                 upstream_ids.push(id);
@@ -1728,10 +1813,48 @@ impl WalletBackend {
         // (single-key forget does not clear the session cache).
         self.forget_all_secrets();
 
+        #[cfg(test)]
+        if let Some(hook) = self
+            .inner
+            .after_forget_all_test_hook
+            .lock()
+            .expect("test hook lock")
+            .take()
+        {
+            hook();
+        }
+
         ClearAllOutcome {
             upstream_ids,
+            hd_seed_hashes,
             failures,
         }
+    }
+
+    /// Delete the auth-pubkey cache of every wallet in `seed_hashes`, returning
+    /// each failure. Call only once the wallets left the loaded
+    /// [`WalletContext`](wallet_context::WalletContext): from then on a warm
+    /// still in flight cannot write an entry back, so this deletion is final.
+    pub(crate) fn forget_auth_pubkey_caches(
+        &self,
+        seed_hashes: &[WalletSeedHash],
+    ) -> Vec<TaskError> {
+        let cache = self.auth_pubkey_cache();
+        seed_hashes
+            .iter()
+            .filter_map(|seed_hash| {
+                cache
+                    .delete(self.inner.network, seed_hash)
+                    .inspect_err(|error| {
+                        tracing::warn!(
+                            wallet = %hex::encode(seed_hash),
+                            ?error,
+                            "Failed to delete auth-pubkey cache after unloading wallets"
+                        );
+                    })
+                    .err()
+            })
+            .collect()
     }
 
     /// Start chain sync and the periodic upstream coordinators.
@@ -1757,6 +1880,22 @@ impl WalletBackend {
     /// either now (if masternodes already synced) or when the `EventBridge`
     /// reports the masternode list reached `Synced`.
     pub async fn start(&self) -> Result<(), TaskError> {
+        self.start_while(|| true).await.map(|_| ())
+    }
+
+    /// [`Self::start`] for a start that a later disconnect can overrule.
+    ///
+    /// `still_wanted` is read under the lock [`Self::stop_in_place`] holds, so
+    /// a start that sees `true` is always stopped by a stop requested after
+    /// it. It is read again when a stop got there first: an overruled start
+    /// stands down, where an unconditional one retries on the re-armed latch.
+    ///
+    /// Returns whether chain sync is started; `Ok(false)` means this call
+    /// stood down without starting it.
+    pub async fn start_while(
+        &self,
+        still_wanted: impl Fn() -> bool + Send + Sync,
+    ) -> Result<bool, TaskError> {
         loop {
             let flight = self.inner.start_latch.flight();
             let outcome = flight
@@ -1765,6 +1904,12 @@ impl WalletBackend {
                     let Some(_lifecycle) = self.inner.start_latch.claim(&flight).await else {
                         return Err(StartFlightError::Superseded);
                     };
+                    if !still_wanted() {
+                        // A caller that joined this flight may still be wanted:
+                        // leave it a fresh one to decide on.
+                        self.inner.start_latch.reset_if_current(&flight);
+                        return Err(StartFlightError::Superseded);
+                    }
                     flight.begun.store(true, Ordering::SeqCst);
                     match self.start_once().await {
                         Ok(()) => Ok(()),
@@ -1777,12 +1922,13 @@ impl WalletBackend {
                 .await;
 
             match outcome {
-                Ok(()) => return Ok(()),
+                Ok(()) => return Ok(true),
                 Err(StartFlightError::Failed(source)) => {
                     return Err(TaskError::WalletBackend {
                         source: Arc::clone(source),
                     });
                 }
+                Err(StartFlightError::Superseded) if !still_wanted() => return Ok(false),
                 Err(StartFlightError::Superseded) => {}
             }
         }
@@ -1989,6 +2135,13 @@ impl WalletBackend {
         self.inner.coordinator_gate.reset();
     }
 
+    /// Hold starts and stops pending, so tests can join multiple callers to
+    /// one flight or pin a stop on its way.
+    #[cfg(any(test, feature = "testing"))]
+    pub async fn lock_start_lifecycle_for_test(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.inner.start_latch.lifecycle.lock().await
+    }
+
     /// Number of wallets currently registered with the backend.
     #[cfg(test)]
     pub async fn wallet_count(&self) -> usize {
@@ -2103,30 +2256,45 @@ impl WalletBackend {
         self.inner.secret_access.forget_all();
     }
 
-    /// Seed the JIT chokepoint's prompt-copy metadata from the reconstructed
-    /// HD wallets and the rehydrated single-key index. Best-effort: missing
-    /// metadata degrades to a generic prompt label, never an error.
-    fn seed_secret_access_meta(
+    /// Read persisted HD metadata rows for hydration, preserving password
+    /// fields from legacy envelopes that V1 metadata omits. Runs inside the
+    /// hydration callback, so it uses the raw metadata view (the backend-bound
+    /// one would re-enter the wallet context's writer).
+    fn load_wallet_metadata(
         &self,
-        reconstructed: &[(WalletSeedHash, crate::model::wallet::Wallet)],
-    ) {
-        let wallet_meta: std::collections::BTreeMap<WalletSeedHash, PromptMeta> = reconstructed
-            .iter()
-            .map(|(seed_hash, wallet)| {
-                (
-                    *seed_hash,
-                    PromptMeta {
-                        alias: wallet.alias.clone(),
-                        password_hint: wallet.password_hint().clone(),
-                    },
-                )
-            })
-            .collect();
-        self.inner.secret_access.set_wallet_meta(wallet_meta);
-
-        if let Ok(index) = self.inner.single_key_index.read() {
-            self.inner.secret_access.set_single_key_index(index.clone());
+    ) -> Result<Vec<(WalletSeedHash, crate::model::wallet::meta::WalletMeta)>, TaskError> {
+        // This view shares the outer writer lock without acquiring it again.
+        let metadata = WalletMetaView::new(&self.inner.app_kv);
+        let seeds = self.wallet_seeds();
+        let mut metadata_rows = Vec::new();
+        for (seed_hash, mut meta) in metadata.list(self.inner.network) {
+            // V1 metadata omits password fields; preserve them before
+            // the legacy envelope is removed by a successful unlock.
+            if !meta.uses_password && seeds.scheme(&seed_hash)? == secret_seam::SecretScheme::Absent
+            {
+                match seeds.legacy_envelope_get(&seed_hash) {
+                    Ok(Some(envelope)) if envelope.uses_password => {
+                        meta.uses_password = true;
+                        meta.password_hint = envelope.password_hint;
+                        metadata.set_migrated(self.inner.network, &seed_hash, &meta)?;
+                    }
+                    Ok(_) => {}
+                    Err(TaskError::WalletSeedStorage { source })
+                        if matches!(source.as_ref(), SecretStoreError::MalformedVault) =>
+                    {
+                        tracing::warn!(
+                            seed_hash = %hex::encode(seed_hash),
+                            error = ?source,
+                            "Malformed legacy wallet envelope; skipping password prompt metadata",
+                        );
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            metadata_rows.push((seed_hash, meta));
         }
+        Ok(metadata_rows)
     }
 
     /// View over the single-key (imported WIF) operations. The view
@@ -2137,8 +2305,8 @@ impl WalletBackend {
     /// [`Self::sign_single_key`] (the JIT chokepoint), not this view.
     pub fn single_key(&self) -> SingleKeyView<'_> {
         SingleKeyView {
+            context: &self.inner.wallet_context,
             secret_store: &self.inner.secret_store,
-            index: &self.inner.single_key_index,
             network: self.inner.network,
             app_kv: Some(&self.inner.app_kv),
         }
@@ -2179,7 +2347,11 @@ impl WalletBackend {
     /// key schema. The view borrows a shared `Arc<DetKv>` handle, so
     /// callers may build one per operation rather than threading it.
     pub fn wallet_meta(&self) -> WalletMetaView<'_> {
-        WalletMetaView::new(&self.inner.app_kv)
+        WalletMetaView::with_context(
+            &self.inner.app_kv,
+            &self.inner.wallet_context,
+            self.inner.network,
+        )
     }
 
     /// View over the DET-owned identity-metadata sidecar (the password hint for
@@ -2212,7 +2384,13 @@ impl WalletBackend {
                 (
                     id,
                     secret_access::PromptMeta {
-                        alias: Some(qi.to_string()),
+                        alias: Some(
+                            qi.display_name_label(
+                                self.dashpay_view()
+                                    .cached_display_name(&qi.identity.id())
+                                    .as_deref(),
+                            ),
+                        ),
                         password_hint,
                     },
                 )
@@ -2228,7 +2406,11 @@ impl WalletBackend {
     /// key schema. The cache memoises the hardened-path identity-auth
     /// pubkeys so the steady-state read is seed-free.
     pub fn auth_pubkey_cache(&self) -> AuthPubkeyCacheView<'_> {
-        AuthPubkeyCacheView::new(&self.inner.app_kv)
+        AuthPubkeyCacheView::new(
+            &self.inner.app_kv,
+            &self.inner.auth_pubkey_cache_lock,
+            &self.inner.wallet_context,
+        )
     }
 
     /// View over the DET-owned avatar image cache. Backed by the
@@ -2332,6 +2514,15 @@ impl WalletBackend {
             })
     }
 
+    /// Masternode identity ids in the current deterministic masternode list,
+    /// each mapped to whether it is an evonode. `None` until the list has synced.
+    pub async fn masternode_list_membership(
+        &self,
+    ) -> Option<std::collections::BTreeMap<dash_sdk::platform::Identifier, bool>> {
+        let summaries = self.inner.pwm.spv().masternode_list_summaries().await?;
+        Some(membership_from_summaries(summaries))
+    }
+
     /// Whether chain sync has not yet reached the tip.
     pub async fn is_syncing(&self) -> bool {
         match self.inner.pwm.spv().sync_progress().await {
@@ -2340,18 +2531,34 @@ impl WalletBackend {
         }
     }
 
-    /// [`TaskError::WalletNotLoaded`] naming the wallet the caller asked for,
-    /// so a user with several wallets open knows which one to wait for. Reads
-    /// the alias from the meta sidecar — the wallet is by definition absent
-    /// from `id_map` here, so there is no live handle to ask.
+    /// The error for a wallet the backend has not registered, naming the
+    /// wallet the caller asked for so a user with several wallets open knows
+    /// which one it is. A password-protected wallet that is still locked gets
+    /// [`TaskError::WalletLockedNotLoaded`], because only unlocking registers
+    /// it; every other wallet gets [`TaskError::WalletNotLoaded`].
+    ///
+    /// Lock scope: the alias and the wallet handle are committed
+    /// [`WalletContext`](wallet_context::WalletContext) snapshots, which never
+    /// take the writer mutex and are released before the handle is touched.
+    /// The handle is only `try_read`: this runs under whatever the caller
+    /// already holds, so it must never wait on a wallet lock. A busy handle
+    /// reads as not locked and falls back to `WalletNotLoaded`.
     fn wallet_not_loaded(&self, seed_hash: &WalletSeedHash) -> TaskError {
-        let alias = self
-            .wallet_meta()
-            .get(self.inner.network, seed_hash)
-            .map(|meta| meta.alias)
-            .unwrap_or_default();
-        TaskError::WalletNotLoaded {
-            wallet_label: wallet_label(&alias, seed_hash),
+        let wallets = &self.inner.wallet_context;
+        let label = wallet_label(&wallets.hd_alias(seed_hash).unwrap_or_default(), seed_hash);
+        let locked = wallets.hd_wallet(seed_hash).is_some_and(|wallet| {
+            wallet
+                .try_read()
+                .is_ok_and(|wallet| wallet.requires_password_unlock())
+        });
+        if locked {
+            TaskError::WalletLockedNotLoaded {
+                wallet_label: label,
+            }
+        } else {
+            TaskError::WalletNotLoaded {
+                wallet_label: label,
+            }
         }
     }
 
@@ -2725,6 +2932,12 @@ impl WalletBackend {
         self.inner.snapshots.snapshot(seed_hash).utxos.clone()
     }
 
+    /// Number of current unspent outputs for the wallet, without copying
+    /// them. DISPLAY-ONLY, like [`Self::utxos`].
+    pub fn utxo_count(&self, seed_hash: &WalletSeedHash) -> usize {
+        self.inner.snapshots.utxo_count(seed_hash)
+    }
+
     /// UTXO-derived per-address balances for the wallet.
     pub fn address_balances(
         &self,
@@ -2959,12 +3172,12 @@ impl WalletBackend {
         app_data_dir: &Path,
         network: Network,
     ) -> Result<std::path::PathBuf, TaskError> {
-        let mut dir = app_data_dir.join("spv");
-        crate::app_dir::ensure_data_dir_exists(&dir)
-            .map_err(|source| TaskError::FileSystem { source })?;
-        dir.push(kv::network_prefix(network));
-        crate::app_dir::ensure_data_dir_exists(&dir)
-            .map_err(|source| TaskError::FileSystem { source })?;
+        let dir = spv_storage_dir(app_data_dir, network);
+        // Create (and lock down) the shared `spv` root before the network directory.
+        for directory in [spv_root_dir(app_data_dir), dir.clone()] {
+            crate::app_dir::ensure_data_dir_exists(&directory)
+                .map_err(|source| TaskError::FileSystem { source })?;
+        }
         Ok(dir)
     }
 }
@@ -4542,6 +4755,30 @@ mod tests {
         }
     }
 
+    /// Every network rejection shares the `Rejected` bucket, including a failed
+    /// token operation: it carries the SDK rejection that caused it, so the
+    /// caller may resubmit exactly as for a plain SDK or broadcast failure.
+    #[test]
+    fn identity_op_error_kind_buckets_network_rejections_as_rejected() {
+        use platform_wallet::error::PlatformWalletError as P;
+        let errors = [
+            P::TokenOperationFailed {
+                operation: "claim",
+                source: dash_sdk::Error::Generic("rejected by consensus".to_string()),
+            },
+            P::Sdk(dash_sdk::Error::Generic(
+                "rejected by consensus".to_string(),
+            )),
+            P::TransactionBroadcast("peer rejected the transaction".to_string()),
+        ];
+        for error in &errors {
+            assert!(
+                matches!(identity_op_error_kind(error), IdentityOpErrorKind::Rejected),
+                "Expected IdentityOpErrorKind::Rejected for {error:?}"
+            );
+        }
+    }
+
     fn broadcast_unconfirmed() -> platform_wallet::error::PlatformWalletError {
         platform_wallet::error::PlatformWalletError::TransactionBroadcastUnconfirmed(
             "peer timed out after send".to_string(),
@@ -4582,5 +4819,57 @@ mod tests {
             matches!(kind, IdentityOpErrorKind::ConfirmationUnknown),
             "an ambiguous broadcast must not share a bucket with preconditions"
         );
+    }
+}
+
+/// Key list entries by masternode identity id. The summary holds the
+/// proTxHash in wire order; Platform's identity id is the display order
+/// (drive-abci parses the RPC hex into the forward-displayed `ProTxHash`).
+fn membership_from_summaries(
+    summaries: impl IntoIterator<Item = platform_wallet::masternode::MasternodeListSummary>,
+) -> std::collections::BTreeMap<dash_sdk::platform::Identifier, bool> {
+    summaries
+        .into_iter()
+        .map(|summary| {
+            (
+                dash_sdk::platform::Identifier::from(summary.pro_tx_hash_display()),
+                summary.is_evonode,
+            )
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod masternode_membership_tests {
+    use super::*;
+    use dash_sdk::dpp::dashcore::ProTxHash;
+    use dash_sdk::dpp::dashcore::hashes::Hash;
+    use std::str::FromStr;
+
+    const DISPLAY_HEX: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+
+    /// The list key is the id DET loads a masternode under (the explorer /
+    /// `protx list` hex), which is also how Platform derives the identity id.
+    #[test]
+    fn membership_keys_match_the_loaded_masternode_identity_id() {
+        let loaded = crate::model::masternode_input::decode_identity_id(DISPLAY_HEX).unwrap();
+        let platform = ProTxHash::from_str(DISPLAY_HEX).unwrap().to_byte_array();
+        assert_eq!(platform, loaded.to_buffer(), "Platform id = RPC hex bytes");
+
+        let mut wire = loaded.to_buffer();
+        wire.reverse();
+        let summary = platform_wallet::masternode::MasternodeListSummary {
+            pro_tx_hash: wire,
+            service_address: None,
+            platform_http_port: None,
+            operator_public_key: [0; 48],
+            voting_key_id: [0; 20],
+            platform_node_id: None,
+            is_valid: true,
+            is_evonode: true,
+            has_extended_net_info: false,
+        };
+        let membership = membership_from_summaries([summary]);
+        assert_eq!(membership.get(&loaded), Some(&true));
     }
 }

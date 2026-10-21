@@ -39,7 +39,7 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::helpers::{TransactionType, add_key_chooser};
-use crate::ui::theme::{DashColors, ResponseExt};
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 
 /// Transfer destination type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -187,6 +187,7 @@ impl TransferScreen {
                 &mut self.receiver_identity_id,
                 &self.known_identities,
             )
+            .with_context(&self.app_context)
             .width(300.0)
             .label("Receiver Identity ID:")
             .exclude(&[self.identity.identity.id()]),
@@ -195,12 +196,6 @@ impl TransferScreen {
 
     fn render_destination_type_selector(&mut self, ui: &mut Ui) {
         let dark_mode = ui.style().visuals.dark_mode;
-
-        // Colors for selected/unselected states
-        let selected_fill = DashColors::DASH_BLUE;
-        let selected_text = Color32::WHITE;
-        let unselected_fill = DashColors::unselected_fill(dark_mode);
-        let unselected_text = DashColors::text_primary(dark_mode);
 
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
@@ -211,23 +206,12 @@ impl TransferScreen {
 
             // Identity button
             let identity_selected = self.destination_type == TransferDestinationType::Identity;
-            let identity_button = egui::Button::new(
-                RichText::new("Identity")
-                    .color(if identity_selected {
-                        selected_text
-                    } else {
-                        unselected_text
-                    })
-                    .strong(),
-            )
-            .fill(if identity_selected {
-                selected_fill
+            let identity_response = if identity_selected {
+                ComponentStyles::add_primary_button(ui, "Identity")
             } else {
-                unselected_fill
-            })
-            .min_size(egui::vec2(120.0, 28.0));
-
-            if ui.add(identity_button).clicked() {
+                ComponentStyles::add_secondary_button(ui, "Identity", dark_mode)
+            };
+            if identity_response.clicked() {
                 self.destination_type = TransferDestinationType::Identity;
             }
 
@@ -236,23 +220,12 @@ impl TransferScreen {
             // Platform Address button
             let platform_selected =
                 self.destination_type == TransferDestinationType::PlatformAddress;
-            let platform_button = egui::Button::new(
-                RichText::new("Platform Address")
-                    .color(if platform_selected {
-                        selected_text
-                    } else {
-                        unselected_text
-                    })
-                    .strong(),
-            )
-            .fill(if platform_selected {
-                selected_fill
+            let platform_response = if platform_selected {
+                ComponentStyles::add_primary_button(ui, "Platform Address")
             } else {
-                unselected_fill
-            })
-            .min_size(egui::vec2(140.0, 28.0));
-
-            if ui.add(platform_button).clicked() {
+                ComponentStyles::add_secondary_button(ui, "Platform Address", dark_mode)
+            };
+            if platform_response.clicked() {
                 self.destination_type = TransferDestinationType::PlatformAddress;
             }
         });
@@ -602,7 +575,7 @@ impl ScreenLike for TransferScreen {
             ui,
             &self.app_context,
             vec![
-                ("Identities", AppAction::GoToMainScreen),
+                ("Identities", AppAction::OpenIdentityPicker),
                 ("Transfer", AppAction::None),
             ],
             vec![],
@@ -723,11 +696,8 @@ impl ScreenLike for TransferScreen {
 
                 // Show identity info
                 let identity_id_string = self.identity.identity.id().to_string(Encoding::Base58);
-                let identity_label = if let Some(alias) = &self.identity.alias {
-                    format!("From: {alias} ({identity_id_string})")
-                } else {
-                    format!("From: {identity_id_string}")
-                };
+                let name = self.app_context.identity_display_label(&self.identity);
+                let identity_label = format!("From: {name} ({identity_id_string})");
                 ui.label(identity_label);
                 ui.add_space(5.0);
 

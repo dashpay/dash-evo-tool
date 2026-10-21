@@ -4,6 +4,10 @@
 use super::*;
 use crate::model::identity_discovery::DiscoveryIntent;
 
+/// How often a queued wallet identity discovery re-checks whether the
+/// masternode list has synced.
+const MASTERNODES_READY_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
 impl AppContext {
     /// Whether `wallet` still needs its bootstrap address set derived.
     ///
@@ -276,6 +280,23 @@ impl AppContext {
         }
     }
 
+    /// Run [`Self::reconcile_managed_identities`] for every loaded wallet.
+    ///
+    /// For identities stored after their wallet's bootstrap already ran — the
+    /// bootstrap reconcile cannot have seen them. Best-effort and seed-free.
+    pub(crate) async fn reconcile_managed_identities_for_loaded_wallets(&self) {
+        let Ok(backend) = self.wallet_backend() else {
+            return;
+        };
+        let seed_hashes: Vec<WalletSeedHash> = {
+            let wallets = self.wallet_context().wallets();
+            wallets.keys().copied().collect()
+        };
+        for seed_hash in &seed_hashes {
+            self.reconcile_managed_identities(&backend, seed_hash).await;
+        }
+    }
+
     /// Two-way reconcile between DET's wallet-less identities and the
     /// upstream store's unowned scope: registers every DET-known wallet-less
     /// identity upstream doesn't have yet (backfilling nodes stored before
@@ -519,8 +540,8 @@ impl AppContext {
     ) {
         let network = self.network;
         let view = backend.auth_pubkey_cache();
-        let mut cache = view.get(network, &seed_hash);
-        let mut changed = false;
+        let cache = view.get(network, &seed_hash);
+        let mut derived = Vec::new();
 
         for &identity_index in wallet.identities.keys() {
             for key_index in 0..AUTH_PUBKEY_WARM_KEY_COUNT {
@@ -533,9 +554,7 @@ impl AppContext {
                     identity_index,
                     key_index,
                 ) {
-                    Ok(public_key) => {
-                        changed |= cache.insert(network, identity_index, key_index, &public_key);
-                    }
+                    Ok(public_key) => derived.push((identity_index, key_index, public_key)),
                     Err(error) => {
                         tracing::debug!(
                             wallet = %hex::encode(seed_hash),
@@ -549,7 +568,16 @@ impl AppContext {
             }
         }
 
-        if changed && let Err(e) = view.put(network, &seed_hash, &cache) {
+        if derived.is_empty() {
+            return;
+        }
+        // Merge into the freshest blob: the snapshot above may be stale.
+        let merged = view.update(network, &seed_hash, |cache| {
+            for (identity_index, key_index, public_key) in &derived {
+                cache.insert(network, *identity_index, *key_index, public_key);
+            }
+        });
+        if let Err(e) = merged {
             tracing::debug!(
                 wallet = %hex::encode(seed_hash),
                 error = %e,
@@ -671,8 +699,29 @@ impl AppContext {
         }
     }
 
+    /// Wait until the masternode list is synced, so identity lookups can be
+    /// proof-verified. Returns `false` if the app shuts down first.
+    pub(super) async fn wait_for_masternodes_ready(&self) -> bool {
+        if !self.connection_status.masternodes_ready() {
+            tracing::debug!(
+                "Masternode list not synced yet; holding wallet identity discovery until it is"
+            );
+        }
+        while !self.connection_status.masternodes_ready() {
+            tokio::select! {
+                _ = self.subtasks.cancellation_token.cancelled() => return false,
+                _ = tokio::time::sleep(MASTERNODES_READY_POLL_INTERVAL) => {}
+            }
+        }
+        true
+    }
+
     /// Queue automatic discovery of identities derived from a wallet.
     /// Checks identity indices 0 through max_identity_index for existing identities on the network.
+    ///
+    /// The pass waits for the masternode list: an earlier lookup fails proof
+    /// verification and gets the queried node banned. The all-wallets sweep is
+    /// no substitute — it may already have run and ignores `max_identity_index`.
     pub fn queue_wallet_identity_discovery(
         self: &Arc<Self>,
         wallet: &Arc<RwLock<Wallet>>,
@@ -683,6 +732,9 @@ impl AppContext {
         let _ = self
             .subtasks
             .spawn_sync("wallet_identity_discovery", async move {
+                if !ctx.wait_for_masternodes_ready().await {
+                    return;
+                }
                 if let Err(error) = ctx
                     .discover_identities_from_wallet(&wallet_clone, max_identity_index)
                     .await
@@ -707,17 +759,20 @@ impl AppContext {
         }
 
         let wallets: Vec<_> = {
-            let guard = self.wallets.read_recover();
+            let guard = self.wallet_context().wallets();
             guard.values().cloned().collect()
         };
 
-        for wallet in wallets.iter() {
+        let status = self.migration_status();
+        let total = wallets.len() as u32;
+        for (index, wallet) in wallets.iter().enumerate() {
+            status.set_wallet_load(Some((index as u32 + 1, total)));
             self.bootstrap_wallet_addresses_jit(wallet).await;
         }
+        status.set_wallet_load(None);
     }
 
-    /// Update wallet platform address info from SDK-returned AddressInfos.
-    /// This uses the proof-verified data from SDK operations rather than fetching.
+    /// Update this wallet's owned Platform addresses from a proof-verified SDK response.
     pub(crate) fn update_wallet_platform_address_info_from_sdk(
         &self,
         seed_hash: WalletSeedHash,
@@ -726,9 +781,18 @@ impl AppContext {
         let wallet_arc = self.wallet_arc(&seed_hash)?;
 
         let mut wallet = wallet_arc.write()?;
+        // Responses also contain recipient addresses belonging to other wallets.
+        // Ownership comes from the wallet's derivation paths, not its balance cache.
+        let owned_addresses: std::collections::BTreeSet<_> = wallet
+            .platform_addresses(self.network)
+            .into_iter()
+            .map(|(_, platform_address)| platform_address)
+            .collect();
 
         for (platform_addr, maybe_info) in address_infos.iter() {
-            if let Some(info) = maybe_info {
+            if owned_addresses.contains(platform_addr)
+                && let Some(info) = maybe_info
+            {
                 // Convert PlatformAddress to core Address using the network
                 let core_addr = platform_addr.to_address_with_network(self.network);
 
@@ -744,5 +808,93 @@ impl AppContext {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::test_support::test_app_context;
+    use dash_sdk::dpp::address_funds::PlatformAddress;
+    use dash_sdk::query_types::{AddressInfo, AddressInfos};
+
+    #[test]
+    fn sdk_address_balances_remain_scoped_to_owning_wallet() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ctx = test_app_context(dir.path());
+        let mut wallets = Vec::new();
+        let mut response = AddressInfos::new();
+        for (seed_byte, balance) in [(0x31, 205_741_823_420), (0x32, 68_892_360)] {
+            let seed = [seed_byte; 64];
+            let mut wallet = Wallet::new_from_seed(seed, ctx.network, None, None).expect("wallet");
+            let address = wallet
+                .generate_platform_receive_address_with_seed(&seed, ctx.network)
+                .expect("platform address");
+            let platform_address = PlatformAddress::try_from(address.clone()).expect("address");
+            response.insert(
+                platform_address,
+                Some(AddressInfo {
+                    address: platform_address,
+                    balance,
+                    nonce: 2,
+                }),
+            );
+            let seed_hash = wallet.seed_hash();
+            let wallet = Arc::new(RwLock::new(wallet));
+            ctx.wallet_context()
+                .insert_test_wallet(seed_hash, wallet.clone());
+            wallets.push((seed_hash, wallet, address, balance));
+        }
+        let external = PlatformAddress::P2pkh([0x99; 20]);
+        response.insert(
+            external,
+            Some(AddressInfo {
+                address: external,
+                balance: 900,
+                nonce: 1,
+            }),
+        );
+
+        // Identity-to-address transfers return recipients from multiple wallets.
+        for (seed_hash, _, _, _) in &wallets {
+            ctx.update_wallet_platform_address_info_from_sdk(*seed_hash, &response)
+                .expect("update");
+        }
+        for (_, wallet, address, balance) in &wallets {
+            let wallet = wallet.read().expect("wallet");
+            assert_eq!(
+                wallet.total_platform_balance(),
+                *balance,
+                "Another wallet's address must not inflate the available balance"
+            );
+            assert_eq!(wallet.platform_address_info.len(), 1);
+            let info = wallet
+                .get_platform_address_info(address)
+                .expect("owned balance");
+            assert_eq!(info.nonce, 2);
+        }
+
+        // A later spend must still refresh the owner's balance down to zero.
+        let (seed_hash, wallet, address, _) = &wallets[1];
+        let platform_address = PlatformAddress::try_from(address.clone()).expect("address");
+        response.insert(
+            platform_address,
+            Some(AddressInfo {
+                address: platform_address,
+                balance: 0,
+                nonce: 3,
+            }),
+        );
+        ctx.update_wallet_platform_address_info_from_sdk(*seed_hash, &response)
+            .expect("update spent address");
+        let wallet = wallet.read().expect("wallet");
+        assert_eq!(wallet.total_platform_balance(), 0);
+        assert_eq!(
+            wallet
+                .get_platform_address_info(address)
+                .expect("owned balance")
+                .nonce,
+            3
+        );
     }
 }

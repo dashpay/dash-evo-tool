@@ -11,16 +11,17 @@ use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::qr_code_image::QrCodeImage;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{WalletUnlockPopup, try_open_wallet_no_password};
-use crate::ui::identity::funding_common::{WalletFundedScreenStep, generate_qr_code_image};
+use crate::ui::identity::funding_common::WalletFundedScreenStep;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use crate::wallet_backend::poison::RwLockRecover;
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use eframe::egui::{self, Ui};
-use egui::{Button, RichText, Vec2};
+use egui::{Button, RichText};
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
@@ -42,6 +43,7 @@ pub struct CreateAssetLockScreen {
     amount_input: Option<AmountInput>,
     identity_index: u32,
     funding_address: Option<Address>,
+    qr_code: Option<QrCodeImage>,
     /// A queued "derive the deposit address" request the `ui()` loop drains into
     /// a `WalletTask::GenerateReceiveAddress` backend task. The address comes
     /// from the upstream SPV-watched pool so the deposit becomes a spendable,
@@ -88,6 +90,7 @@ impl CreateAssetLockScreen {
             ),
             identity_index,
             funding_address: None,
+            qr_code: None,
             pending_funding_address_request: None,
             is_creating: false,
             asset_lock_tx_id: None,
@@ -132,14 +135,13 @@ impl CreateAssetLockScreen {
         let dash_uri = format!("dash:{}?amount={:.4}", address, amount);
 
         // Generate the QR code image
-        if let Ok(qr_image) = generate_qr_code_image(&dash_uri) {
-            let texture = ui
-                .ctx()
-                .load_texture("qr_code", qr_image, egui::TextureOptions::LINEAR);
-            ui.image((texture.id(), Vec2::new(200.0, 200.0)));
-        } else {
-            ui.label("Failed to generate QR code.");
-        }
+        self.qr_code
+            .get_or_insert_with(|| {
+                QrCodeImage::new().with_fallback_text(
+                    "Could not create the QR code. Copy the address below instead.",
+                )
+            })
+            .show(ui, &dash_uri);
 
         ui.add_space(10.0);
         ui.label(&dash_uri);
@@ -225,7 +227,7 @@ impl ScreenLike for CreateAssetLockScreen {
             .wallet
             .read()
             .ok()
-            .and_then(|w| w.alias.clone())
+            .and_then(|w| self.app_context.wallet_context().hd_alias(&w.seed_hash()))
             .unwrap_or_else(|| "Unknown Wallet".to_string());
 
         let mut action = add_top_panel(

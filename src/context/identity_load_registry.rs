@@ -9,9 +9,8 @@
 //! - **"the task holds a claim"** does not mean "running": a load is outstanding
 //!   from the moment it is dispatched, and only claims its identity once its task
 //!   starts.
-//! - **"the node is in the store"** does not mean "succeeded": `load_identity`
-//!   inserts the node before sealing its keys, so a failed seal leaves the node
-//!   persisted by a load that errored.
+//! - **"the node is in the store"** does not mean "succeeded": an identity may
+//!   already exist, or storage may complete before a final wallet update fails.
 //!
 //! So each load reports its own phase here, and the registry is the single source
 //! of truth for it. Loads are dispatched from several places — the Masternodes
@@ -22,10 +21,14 @@
 //! or publish each other's outcome.
 //!
 //! The records also give a load exclusive use of its identity for its whole
-//! check → fetch → insert → seal span, which is what makes
+//! check → fetch → seal → insert span, which is what makes
 //! `IdentityLoadMode::RejectIfExists` safe: those steps are not one atomic
 //! operation, so two overlapping loads of one identity would otherwise both pass
 //! the duplicate check and clobber each other's insert.
+//!
+//! Removal invalidates outstanding claims. Final load persistence rechecks the
+//! claim while holding the identity record guard, so a fresh import can start
+//! without allowing an older network request to recreate the removed identity.
 //!
 //! A record outlives its load and is replaced by the next load of that identity —
 //! the map holds at most one entry per identity loaded this session.
@@ -47,9 +50,8 @@ pub enum IdentityLoadPhase {
     Running,
     /// Finished, fully applied — the node is stored, with its keys as requested.
     Loaded,
-    /// Finished with an error. The node may still have been persisted: the insert
-    /// precedes the key seal, and a failed seal leaves the insert behind. Anything
-    /// resuming from this phase must offer a retry, not report success.
+    /// Finished with an error. Storage may have completed before a final wallet
+    /// update failed. Offer a retry instead of inferring success from storage.
     Failed,
 }
 
@@ -105,6 +107,26 @@ pub struct IdentityLoadGuard {
 }
 
 impl IdentityLoadGuard {
+    /// Check under the identity record guard before a load writes.
+    /// Removal invalidates this claim even if an explicit import later restores
+    /// the same identity ID.
+    pub(crate) fn ensure_current(&self) -> Result<(), TaskError> {
+        let registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+        if registry
+            .records
+            .get(&self.identity_id)
+            .is_some_and(|record| {
+                record.token == self.token && record.phase == IdentityLoadPhase::Running
+            })
+        {
+            Ok(())
+        } else {
+            Err(TaskError::IdentityLoadSuperseded {
+                identity_id: self.identity_id,
+            })
+        }
+    }
+
     /// Record that the load fully applied. Call it after the last step that can
     /// fail — anything left undone after this point is reported as a success.
     pub fn loaded(mut self) {
@@ -121,7 +143,7 @@ impl Drop for IdentityLoadGuard {
         let Some(record) = registry.records.get_mut(&self.identity_id) else {
             return;
         };
-        if record.token != self.token {
+        if record.token != self.token || record.phase != IdentityLoadPhase::Running {
             return;
         }
         record.phase = if self.loaded {
@@ -170,6 +192,20 @@ impl Drop for IdentityLoadDispatch {
 }
 
 impl AppContext {
+    /// Invalidate outstanding work after delisting, while holding the identity
+    /// record guard shared by identity loads and explicit imports.
+    pub(crate) fn invalidate_identity_load(&self, identity_id: Identifier) {
+        let mut registry = self
+            .identity_loads
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(record) = registry.records.get_mut(&identity_id)
+            && record.phase.is_outstanding()
+        {
+            record.phase = IdentityLoadPhase::Failed;
+        }
+    }
+
     /// Record that a load of `identity_id` has been dispatched, before its task
     /// runs, and return the token identifying it. Callers that gate on a load must
     /// mark it here: until its task claims the identity, nothing else records that
@@ -236,6 +272,9 @@ impl AppContext {
             }
             Some(record) if record.phase.is_outstanding() => {
                 return Err(TaskError::IdentityLoadInProgress { identity_id });
+            }
+            _ if token.is_some() => {
+                return Err(TaskError::IdentityLoadSuperseded { identity_id });
             }
             _ => registry.mint(),
         };
@@ -354,6 +393,37 @@ mod tests {
         );
         ctx.begin_identity_load(id, None)
             .expect("a finished identity can be loaded again");
+    }
+
+    #[test]
+    fn an_invalidated_submission_cannot_mint_a_replacement_claim() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(tmp.path());
+        let id = Identifier::from([0x31; 32]);
+        let old_token = ctx.mark_identity_load_submitted(id).unwrap();
+        ctx.invalidate_identity_load(id);
+        assert!(matches!(
+            ctx.begin_identity_load(id, Some(old_token)),
+            Err(TaskError::IdentityLoadSuperseded { .. })
+        ));
+        let fresh_token = ctx.mark_identity_load_submitted(id).unwrap();
+        drop(ctx.begin_identity_load(id, Some(fresh_token)).unwrap());
+        assert_eq!(
+            ctx.identity_load_phase(&id, fresh_token),
+            Some(IdentityLoadPhase::Failed)
+        );
+        let fresh_token = ctx.mark_identity_load_submitted(id).unwrap();
+        ctx.begin_identity_load(id, Some(fresh_token))
+            .unwrap()
+            .loaded();
+        assert!(matches!(
+            ctx.begin_identity_load(id, Some(old_token)),
+            Err(TaskError::IdentityLoadSuperseded { .. })
+        ));
+        assert_eq!(
+            ctx.identity_load_phase(&id, fresh_token),
+            Some(IdentityLoadPhase::Loaded)
+        );
     }
 
     /// Regression: a load must never adopt a record it was not dispatched under.

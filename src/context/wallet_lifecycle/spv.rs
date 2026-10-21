@@ -16,8 +16,7 @@ impl AppContext {
     /// `DiskStorageManager` has released its file lock and the deletes do not
     /// race a live writer. A missing directory (never synced) is success.
     pub fn clear_spv_data(&self) -> Result<(), TaskError> {
-        let spv_dir = spv_storage_dir(&self.data_dir, self.network);
-        clear_spv_chain_storage(&spv_dir)
+        clear_spv_chain_storage(&self.data_dir, self.network)
     }
 
     pub async fn clear_network_database(self: &Arc<Self>) -> Result<(), TaskError> {
@@ -36,6 +35,7 @@ impl AppContext {
         // asynchronously off the main thread.
         let ClearAllOutcome {
             upstream_ids,
+            hd_seed_hashes,
             mut failures,
         } = backend.forget_all_wallets_local();
         for wallet_id in upstream_ids {
@@ -106,20 +106,27 @@ impl AppContext {
         // empties the per-network store) and unlink DET's two retired legacy
         // shielded files. The legacy-file unlinks are synchronous and scoped
         // strictly to THIS network's spv directory.
-        cleanup_legacy_shielded_files(backend.spv_storage_dir())?;
+        // A failure here must not skip the steps below: upgrade backups hold the
+        // wallet data being cleared, so record it and keep going.
+        if let Err(error) = cleanup_legacy_shielded_files(&self.data_dir, self.network) {
+            tracing::warn!(?error, "Legacy shielded file removal failed during clear");
+            failures.push(error);
+        }
 
         if let Err(error) = backend.clear_shielded().await {
             tracing::warn!(%error, "Shielded coordinator reset failed during clear");
             failures.push(error);
         }
 
-        if let Ok(mut wallets) = self.wallets.write() {
-            wallets.clear();
+        if let Err(error) = self.remove_upgrade_backups() {
+            tracing::warn!(?error, "Upgrade backup removal failed during clear");
+            failures.push(error);
         }
 
-        if let Ok(mut single_key_wallets) = self.single_key_wallets.write() {
-            single_key_wallets.clear();
-        }
+        self.wallet_context().clear();
+        // The per-wallet deletes above ran while the wallets were still loaded,
+        // so a warm in flight could write an entry back; none can from here on.
+        failures.extend(backend.forget_auth_pubkey_caches(&hd_seed_hashes));
 
         self.has_wallet.store(false, Ordering::Relaxed);
 
@@ -140,9 +147,11 @@ impl AppContext {
 
     /// Prepare this network's storage (idempotent) and then start chain sync.
     ///
-    /// This is the single chokepoint for "start SPV" across every entry path:
-    /// GUI boot auto-start, the manual Connect button, MCP/CLI standalone boot,
-    /// and the post-network-switch restart. Chain sync is a *continuation* of a
+    /// With [`Self::start_spv_while`] — the same sequence, which the GUI calls
+    /// so a Disconnect can overrule it — this is the single chokepoint for
+    /// "start SPV" across every entry path: GUI boot auto-start, the manual
+    /// Connect button, MCP/CLI standalone boot, and the post-network-switch
+    /// restart. Chain sync is a *continuation* of a
     /// completed [`Self::prepare_storage`] — a data dependency inside one
     /// function, not a timing coincidence — so neither the historical
     /// `WalletBackendNotYetWired` fast-fail race nor a start that outruns the
@@ -165,18 +174,31 @@ impl AppContext {
         self: &Arc<Self>,
         sender: crate::utils::egui_mpsc::SenderAsync<crate::app::TaskResult>,
     ) -> Result<(), TaskError> {
+        self.start_spv_while(sender, || true).await.map(|_| ())
+    }
+
+    /// [`Self::ensure_wallet_backend_and_start_spv`] for a start the user can
+    /// overrule while it is on its way — see [`WalletBackend::start_while`]
+    /// for when `still_wanted` is read.
+    ///
+    /// Returns whether chain sync is started; `Ok(false)` means the start was
+    /// overruled and stood down.
+    pub async fn start_spv_while(
+        self: &Arc<Self>,
+        sender: crate::utils::egui_mpsc::SenderAsync<crate::app::TaskResult>,
+        still_wanted: impl Fn() -> bool + Send + Sync,
+    ) -> Result<bool, TaskError> {
         if let Err(e) = self.prepare_storage(sender).await {
             self.mark_spv_error(&e);
             return Err(e);
         }
         let backend = self.wallet_backend()?;
-        // `start()` can fail while initializing SPV networking, disk storage,
+        // The start can fail while initializing SPV networking, disk storage,
         // or the client; surface that through both the indicator and result.
-        if let Err(e) = backend.start().await {
-            self.mark_spv_error(&e);
-            return Err(e);
-        }
-        Ok(())
+        backend
+            .start_while(still_wanted)
+            .await
+            .inspect_err(|e| self.mark_spv_error(e))
     }
 
     /// Flip the SPV connection indicator to [`SpvStatus::Error`] and record the
@@ -271,5 +293,18 @@ impl AppContext {
         self.identity_autodiscovery_fired
             .store(false, std::sync::atomic::Ordering::SeqCst);
         self.connection_status.refresh_state();
+    }
+
+    /// Stop chain sync on a network that is not the active one.
+    ///
+    /// The same in-place stop as [`Self::stop_spv`], minus the indicator
+    /// updates: the connection status is shared between networks and reports the
+    /// active one.
+    pub async fn stop_background_spv(self: &Arc<Self>) {
+        if let Ok(backend) = self.wallet_backend() {
+            backend.stop_in_place().await;
+        }
+        self.identity_autodiscovery_fired
+            .store(false, std::sync::atomic::Ordering::SeqCst);
     }
 }

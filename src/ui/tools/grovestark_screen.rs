@@ -2,6 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::grovestark::GroveSTARKTask;
 use crate::context::AppContext;
+use crate::model::datetime;
 use crate::model::qualified_identity::{PrivateKeyTarget, QualifiedIdentity};
 use crate::ui::ScreenLike;
 use crate::ui::components::MessageBanner;
@@ -507,8 +508,8 @@ impl GroveSTARKScreen {
     }
 
     fn format_timestamp(timestamp: u64) -> String {
-        chrono::DateTime::from_timestamp(timestamp as i64, 0)
-            .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+        datetime::instant_from_unix_secs(timestamp)
+            .map(datetime::local_date_time_seconds)
             .unwrap_or_else(|| "Unknown".to_string())
     }
 
@@ -1116,7 +1117,6 @@ impl ScreenLike for GroveSTARKScreen {
                     .fill(DashColors::DASH_BLUE)
                     .stroke(egui::Stroke::NONE)
                     .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
-                    .min_size(egui::Vec2::new(150.0, 28.0))
                 } else {
                     Button::new(
                         RichText::new("🔐 Generate Proof")
@@ -1126,7 +1126,6 @@ impl ScreenLike for GroveSTARKScreen {
                     .fill(DashColors::glass_white(dark_mode))
                     .stroke(egui::Stroke::new(1.0, DashColors::border(dark_mode)))
                     .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
-                    .min_size(egui::Vec2::new(150.0, 28.0))
                 };
 
                 if ui.add(generate_button).clicked() {
@@ -1146,7 +1145,6 @@ impl ScreenLike for GroveSTARKScreen {
                     .fill(DashColors::DASH_BLUE)
                     .stroke(egui::Stroke::NONE)
                     .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
-                    .min_size(egui::Vec2::new(150.0, 28.0))
                 } else {
                     Button::new(
                         RichText::new("✅ Verify Proof")
@@ -1156,7 +1154,6 @@ impl ScreenLike for GroveSTARKScreen {
                     .fill(DashColors::glass_white(dark_mode))
                     .stroke(egui::Stroke::new(1.0, DashColors::border(dark_mode)))
                     .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
-                    .min_size(egui::Vec2::new(150.0, 28.0))
                 };
 
                 if ui.add(verify_button).clicked() {

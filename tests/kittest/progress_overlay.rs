@@ -48,10 +48,6 @@ use dash_evo_tool::model::secret::Secret;
 use dash_evo_tool::model::wallet::Wallet;
 #[cfg(feature = "testing")]
 use dash_evo_tool::model::wallet::birth_height::WalletOrigin;
-#[cfg(feature = "testing")]
-use dash_sdk::dpp::dashcore::Network;
-#[cfg(feature = "testing")]
-use std::cell::Cell as StdCell;
 
 const SPINNER_ROLE: egui::accesskit::Role = egui::accesskit::Role::ProgressIndicator;
 
@@ -1557,8 +1553,6 @@ fn migration_password_prompt_is_hittable_while_spv_overlay_is_active() {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
 
-        let seed_hash = Rc::new(StdCell::new([0; 32]));
-        let seed_hash_for_app = Rc::clone(&seed_hash);
         let mut harness = Harness::builder()
             .with_max_steps(100)
             .build_eframe(move |ctx| {
@@ -1567,31 +1561,32 @@ fn migration_password_prompt_is_hittable_while_spv_overlay_is_active() {
                     .with_animations(false);
                 app.show_welcome_screen = false;
                 app.welcome_screen = None;
-
-                let password = Secret::new("correct password");
-                let seed = [0xA7; 64];
-                let wallet = Wallet::new_from_seed(
-                    seed,
-                    Network::Testnet,
-                    Some("Savings".to_string()),
-                    Some(&password),
-                )
-                .expect("build protected wallet");
-                let (seed_hash, wallet) = app
-                    .current_app_context()
-                    .register_wallet(wallet, &seed, WalletOrigin::Imported)
-                    .expect("register protected wallet fixture");
-                wallet.write().expect("wallet lock").wallet_seed.close();
-                seed_hash_for_app.set(seed_hash);
                 app
             });
         harness.set_size(egui::vec2(800.0, 600.0));
         let app_context = crate::support::wait_for_wallet_backend(&mut harness);
+
+        // The wallet is staged only after startup. Startup opens every wallet
+        // it finds unlocked, and for a protected one that asks for the
+        // password, which nothing here would answer.
+        let password = Secret::new("correct password");
+        let seed = [0xA7; 64];
+        let wallet = Wallet::new_from_seed(
+            seed,
+            app_context.network(),
+            Some("Savings".to_string()),
+            Some(&password),
+        )
+        .expect("build protected wallet");
+        let (seed_hash, wallet) = app_context
+            .register_wallet(wallet, &seed, WalletOrigin::Imported)
+            .expect("register protected wallet fixture");
+        wallet.write().expect("wallet lock").wallet_seed.close();
         harness.run_steps(5);
         app_context
             .migration_status()
             .set_state(MigrationState::AwaitingWalletPasswords {
-                wallets: vec![seed_hash.get()],
+                wallets: vec![seed_hash],
             });
 
         let _spv_overlay = ProgressOverlay::set_global(

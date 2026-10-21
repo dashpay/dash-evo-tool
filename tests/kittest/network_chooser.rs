@@ -107,3 +107,29 @@ fn test_app_renders_at_various_sizes() {
         });
     }
 }
+
+/// A network switch drops stacked detail screens: they hold state loaded on the
+/// previous network, and their submissions would otherwise run through the new
+/// network's context.
+#[test]
+fn network_switch_drops_stacked_screens() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenNetworkChooser);
+        let app_context = harness.state().current_app_context().clone();
+        let network = app_context.network();
+        let screen = dash_evo_tool::ui::ScreenType::AddExistingIdentity.create_screen(&app_context);
+        harness.state_mut().screen_stack.push(screen);
+
+        // The active network always has a context, so this takes the
+        // synchronous switch path.
+        harness.state_mut().change_network(network);
+
+        assert!(
+            harness.state().screen_stack.is_empty(),
+            "a screen bound to the previous network must not survive the switch"
+        );
+    });
+}

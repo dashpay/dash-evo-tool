@@ -1,8 +1,16 @@
 pub mod connection_status;
 mod contested_names_db;
 mod contract_token_db;
+mod dpns_vote_attention;
+mod dpns_vote_operations;
+mod dpns_vote_preferences;
+mod dpns_vote_state;
+mod legacy_scheduled_votes;
+pub(crate) use dpns_vote_operations::DpnsVoterLifecycles;
+pub(crate) use dpns_vote_state::DpnsVoteRefreshResults;
 pub mod feature_gate;
 mod identity_db;
+mod identity_names;
 #[cfg(test)]
 pub(crate) mod lock_probe;
 #[cfg(test)]
@@ -15,7 +23,9 @@ mod settings_db;
 mod system_contracts;
 #[cfg(test)]
 pub(crate) mod test_support;
+mod wallet_balances;
 mod wallet_lifecycle;
+pub use wallet_lifecycle::BackupPruneReport;
 pub use wallet_lifecycle::PrepareGateGuard;
 
 pub use wallet_lifecycle::WalletUnlockRetention;
@@ -26,13 +36,15 @@ use crate::config::{Config, NetworkConfig};
 use crate::context::feature_gate::ExperimentalFeature;
 use crate::context_provider::SpvProvider;
 use crate::database::Database;
+use crate::model::dpns_voting::{DpnsVoteOperationId, DpnsVoteTargetKey};
 use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::model::request_type::RequestType;
-use crate::model::wallet::single_key::{SingleKeyHash, SingleKeyWallet};
+use crate::model::wallet::single_key::SingleKeyHash;
 use crate::model::wallet::{PlatformAddressEntry, PlatformAddressUpdates, Wallet, WalletSeedHash};
 use crate::sdk_wrapper::initialize_sdk;
 use crate::utils::tasks::TaskManager;
+use crate::wallet_backend::wallet_context::WalletContext;
 use crate::wallet_backend::{
     DetKv, DetWalletBalance, NullSecretPrompt, SecretPrompt, WalletBackend,
 };
@@ -66,6 +78,10 @@ use crate::model::user_role::{UserRole, UserRoleCell};
 const ANIMATION_REFRESH_TIME: std::time::Duration = std::time::Duration::from_millis(100);
 pub const SDK_THREAD_STACK_SIZE: usize = 4 * 1024 * 1024; // 4 MB stack size for each worker thread
 
+type DpnsVoteDiagnosticKey = (DpnsVoteOperationId, DpnsVoteTargetKey);
+type DpnsVoteDiagnosticEntry = (u64, Arc<TaskError>);
+type DpnsVoteDiagnostics = BTreeMap<DpnsVoteDiagnosticKey, DpnsVoteDiagnosticEntry>;
+
 /// A guard that ensures settings cache invalidation happens atomically
 ///
 /// This guard holds a write lock on the cached settings, preventing reads
@@ -83,6 +99,67 @@ impl Drop for ContactRequestActionClaim<'_> {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&self.request_id);
+    }
+}
+
+/// Voters DET talks to Platform about at once — the dispatch semaphore, the
+/// per-operation submission fan-out, the due-schedule sweep and the proved
+/// vote-state refresh all share this single budget.
+pub(crate) const MAX_CONCURRENT_DPNS_VOTERS: usize = 4;
+
+/// Startup recovery runs once. Later failures retry only the affected targets.
+#[derive(Debug, Default)]
+pub(crate) struct DpnsVoteRecovery {
+    pub(crate) initialized: bool,
+    pub(crate) pending: std::collections::BTreeMap<
+        crate::model::dpns_voting::DpnsVoteOperationId,
+        std::collections::BTreeSet<crate::model::dpns_voting::DpnsVoteTargetKey>,
+    >,
+}
+
+#[derive(Debug)]
+pub(crate) struct DpnsVoteDispatchCoordinator {
+    voter_gates: Mutex<HashMap<Identifier, Arc<tokio::sync::Mutex<()>>>>,
+    permits: Arc<tokio::sync::Semaphore>,
+}
+
+impl Default for DpnsVoteDispatchCoordinator {
+    fn default() -> Self {
+        Self {
+            voter_gates: Mutex::new(HashMap::new()),
+            permits: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_DPNS_VOTERS)),
+        }
+    }
+}
+
+pub(crate) struct DpnsVoteDispatchGuard {
+    _voter: tokio::sync::OwnedMutexGuard<()>,
+    _permit: tokio::sync::OwnedSemaphorePermit,
+}
+
+impl DpnsVoteDispatchCoordinator {
+    pub(crate) async fn acquire(
+        &self,
+        voter_id: Identifier,
+    ) -> Result<DpnsVoteDispatchGuard, TaskError> {
+        let voter_gate = self
+            .voter_gates
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(voter_id)
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone();
+        // Take the per-voter gate first so queued work for one busy voter
+        // cannot consume all of the cross-voter capacity.
+        let voter = voter_gate.lock_owned().await;
+        let permit = Arc::clone(&self.permits)
+            .acquire_owned()
+            .await
+            .map_err(|_| TaskError::DpnsVoteCoordinatorUnavailable)?;
+        Ok(DpnsVoteDispatchGuard {
+            _voter: voter,
+            _permit: permit,
+        })
     }
 }
 
@@ -120,14 +197,11 @@ pub struct AppContext {
     /// gives a load exclusive use of its identity for its whole
     /// check → fetch → insert → seal span. See [`identity_load_registry`].
     identity_loads: identity_load_registry::SharedLoadRegistry,
-    pub(crate) wallets: RwLock<BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>>,
-    /// Per-wallet guards covering the complete wallet-meta alias update.
-    /// Different wallets remain independent while same-wallet renames serialize.
-    hd_wallet_rename_locks: Mutex<HashMap<WalletSeedHash, Arc<Mutex<()>>>>,
+    wallet_context: Arc<WalletContext>,
     /// Per-identity guards covering every whole-record mutation of one stored
     /// identity. See [`AppContext::identity_record_lock`].
     identity_record_locks: Mutex<HashMap<Identifier, Arc<Mutex<()>>>>,
-    pub(crate) single_key_wallets: RwLock<BTreeMap<SingleKeyHash, Arc<RwLock<SingleKeyWallet>>>>,
+    identity_profile_names: Mutex<HashMap<Identifier, identity_names::ProfileName>>,
     /// Hard override that keeps this context's UI still whatever the role — set by
     /// automated tests through [`AppState::with_animations`](crate::app::AppState::with_animations).
     ///
@@ -139,14 +213,36 @@ pub struct AppContext {
     /// Cached settings to avoid repeated k/v reads + bincode decoding.
     /// Use RwLock to allow multiple readers but exclusive writers for cache invalidation.
     cached_settings: RwLock<Option<AppSettings>>,
-    /// Frame-safe pending DPNS names rebuilt after the contest cache changes.
-    pending_dpns_usernames:
-        RwLock<HashMap<Identifier, crate::model::contested_name::PendingUsername>>,
+    /// Frame-safe identity username state (requests, main name, seen outcomes).
+    pending_dpns_usernames: RwLock<contested_names_db::UsernameCache>,
+    /// Contestant labels read by the progress drawer without storage access.
+    dpns_candidate_labels: RwLock<BTreeMap<String, BTreeMap<Identifier, String>>>,
+    /// What needs the masternode operator's vote, recomputed on refresh and on
+    /// coordinator updates (never per frame). Read by the top-bar chip and nav badge.
+    dpns_vote_attention: RwLock<Arc<crate::model::dpns_voting::operator::AttentionSummary>>,
+    /// Current masternode-list membership (ProTxHash → is evonode); `None`
+    /// until the SPV masternode list is available.
+    masternode_list_membership: RwLock<Option<Arc<BTreeMap<Identifier, bool>>>>,
+    /// Journal operations published after executor transitions (progress drawer).
+    /// Each is shared, so publishing one change copies no other operation.
+    dpns_vote_progress: RwLock<Arc<[Arc<crate::model::dpns_voting::DpnsVoteOperation>]>>,
+    /// A `Review again` request from the progress drawer for the voting panel.
+    dpns_vote_review_request: std::sync::Mutex<Option<crate::model::dpns_voting::DpnsVoteOutcome>>,
+    /// Vote operations dismissed in the progress drawer this session.
+    dpns_dismissed_vote_operations: std::sync::Mutex<
+        std::collections::BTreeSet<crate::model::dpns_voting::DpnsVoteOperationId>,
+    >,
+    /// A request from outside the voting panel to show one contest by label.
+    dpns_votes_name_request: std::sync::Mutex<Option<String>>,
+    /// Unix ms of the last completed contest + vote-state refresh; 0 = never.
+    dpns_contests_refreshed_at_ms: std::sync::atomic::AtomicU64,
     /// Shared app-level k/v store at `<data_dir>/det-app.sqlite`.
     /// Cross-network, global-scoped slot used for `AppSettings` and other
     /// DET-owned application data that must outlive a single network's
     /// wallet persister. Cheap to clone (`Arc<DetKv>` is `Arc`-backed).
     app_kv: Arc<DetKv>,
+    #[cfg(test)]
+    det_kv_override: Mutex<Option<DetKv>>,
     /// Shared encrypted HD-seed vault at `<data_dir>/secrets/det-secrets.pwsvault`.
     /// Opened once and handed to every per-network `AppContext` and to the
     /// `WalletBackend`, because the file backend takes an exclusive advisory
@@ -174,9 +270,32 @@ pub struct AppContext {
     /// Read while holding `prepare_gate`, except for the final release store,
     /// so concurrent callers cannot observe partial preparation.
     storage_prepared: AtomicBool,
+    /// Test seam: a network switch dispatched from this context waits here
+    /// first. See [`AppContext::test_hold_network_switch`].
+    #[cfg(feature = "testing")]
+    pub(crate) test_network_switch_gate: tokio::sync::Mutex<()>,
     /// Process-local claim shared by every UI surface before a paid DashPay
     /// request action enters its backend flow.
     contact_request_actions_in_flight: Mutex<HashSet<Identifier>>,
+    /// Serializes operation journal writes and target-lock acquisition.
+    dpns_vote_operation_guard: Mutex<()>,
+    /// Bumped under `dpns_vote_operation_guard` when a removed voter is loaded
+    /// again; see [`AppContext::dpns_voter_lifecycles`].
+    dpns_voter_lifecycles: Mutex<DpnsVoterLifecycles>,
+    /// Coordinates proof publication and short state-to-journal validation.
+    dpns_vote_state_publications: dpns_vote_state::DpnsVoteStatePublications,
+    /// Serializes all nonce-consuming vote submissions per voter across tasks,
+    /// while bounding unrelated voters globally.
+    pub(crate) dpns_vote_dispatch: DpnsVoteDispatchCoordinator,
+    pub(crate) dpns_vote_refresh_permits: tokio::sync::Semaphore,
+    /// Held for a whole contest refresh pass, so only one runs at a time: two
+    /// at once would each query the contests the other is already reading.
+    pub(crate) dpns_contest_refresh_pass: tokio::sync::Mutex<()>,
+    /// Runs crash recovery before this context first accepts vote work.
+    pub(crate) dpns_vote_recovery: tokio::sync::Mutex<DpnsVoteRecovery>,
+    /// Full in-process diagnostics keyed to sanitized durable outcomes.
+    dpns_vote_diagnostics: Mutex<DpnsVoteDiagnostics>,
+    dpns_vote_diagnostic_sequence: AtomicU64,
     /// Pending wallet selection - set after creating/importing a wallet
     /// so the wallet screen can auto-select the new wallet
     pub(crate) pending_wallet_selection: Mutex<Option<WalletSeedHash>>,
@@ -293,13 +412,9 @@ impl std::fmt::Debug for SecretPromptSlot {
 }
 
 impl AppContext {
-    pub(crate) fn hd_wallet_rename_lock(&self, seed_hash: WalletSeedHash) -> Arc<Mutex<()>> {
-        self.hd_wallet_rename_locks
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .entry(seed_hash)
-            .or_default()
-            .clone()
+    /// Shared wallet membership and committed metadata.
+    pub fn wallet_context(&self) -> &Arc<WalletContext> {
+        &self.wallet_context
     }
 
     /// The guard serializing every whole-record mutation of `identity_id`:
@@ -457,12 +572,9 @@ impl AppContext {
         // T-W-01 / T-W-01b: both HD and single-key wallets are now
         // rehydrated from the upstream `SecretStore` + DET k/v sidecars
         // by `WalletBackend::new`, not from the legacy `wallet` /
-        // `single_key_wallet` SQLite tables. The maps start empty here
-        // and are filled inside `ensure_wallet_backend` (see
+        // `single_key_wallet` SQLite tables. The wallet context starts
+        // empty here and is filled inside `ensure_wallet_backend` (see
         // `WalletBackend::hydrate_context_wallets`).
-        let wallets: BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>> = BTreeMap::new();
-        let single_key_wallets: BTreeMap<SingleKeyHash, Arc<RwLock<SingleKeyWallet>>> =
-            BTreeMap::new();
 
         // Wallet selection is restored from the per-network wallet k/v
         // store inside `ensure_wallet_backend` once the backend is
@@ -482,17 +594,26 @@ impl AppContext {
             config: config_lock,
             system_contracts,
             core_client: core_client.into(),
-            has_wallet: (!wallets.is_empty() || !single_key_wallets.is_empty()).into(),
+            has_wallet: false.into(),
             identity_autodiscovery_fired: AtomicBool::new(false),
             identity_loads: Default::default(),
-            wallets: RwLock::new(wallets),
-            hd_wallet_rename_locks: Mutex::new(HashMap::new()),
+            wallet_context: Arc::new(WalletContext::default()),
             identity_record_locks: Mutex::new(HashMap::new()),
-            single_key_wallets: RwLock::new(single_key_wallets),
+            identity_profile_names: Mutex::default(),
             animations_disabled: AtomicBool::new(false),
             cached_settings: RwLock::new(None),
-            pending_dpns_usernames: RwLock::new(HashMap::new()),
+            pending_dpns_usernames: RwLock::new(Default::default()),
+            dpns_candidate_labels: RwLock::new(Default::default()),
+            dpns_vote_attention: RwLock::new(Default::default()),
+            masternode_list_membership: RwLock::new(None),
+            dpns_contests_refreshed_at_ms: std::sync::atomic::AtomicU64::new(0),
+            dpns_vote_progress: RwLock::new(Arc::from(Vec::new())),
+            dpns_vote_review_request: std::sync::Mutex::new(None),
+            dpns_votes_name_request: std::sync::Mutex::new(None),
+            dpns_dismissed_vote_operations: std::sync::Mutex::new(Default::default()),
             app_kv,
+            #[cfg(test)]
+            det_kv_override: Mutex::new(None),
             secret_store,
             subtasks,
             token_balance_refresh_in_flight: AtomicBool::new(false),
@@ -500,7 +621,18 @@ impl AppContext {
             migration_status: Arc::new(MigrationStatus::new_idle()),
             prepare_gate: tokio::sync::Mutex::new(()),
             storage_prepared: AtomicBool::new(false),
+            #[cfg(feature = "testing")]
+            test_network_switch_gate: tokio::sync::Mutex::new(()),
             contact_request_actions_in_flight: Mutex::new(HashSet::new()),
+            dpns_vote_operation_guard: Mutex::new(()),
+            dpns_voter_lifecycles: Mutex::default(),
+            dpns_vote_dispatch: DpnsVoteDispatchCoordinator::default(),
+            dpns_vote_refresh_permits: tokio::sync::Semaphore::new(MAX_CONCURRENT_DPNS_VOTERS),
+            dpns_contest_refresh_pass: tokio::sync::Mutex::new(()),
+            dpns_vote_state_publications: dpns_vote_state::DpnsVoteStatePublications::default(),
+            dpns_vote_recovery: tokio::sync::Mutex::new(DpnsVoteRecovery::default()),
+            dpns_vote_diagnostics: Mutex::new(BTreeMap::new()),
+            dpns_vote_diagnostic_sequence: AtomicU64::new(0),
             pending_wallet_selection: Mutex::new(None),
             selected_wallet_hash: Mutex::new(selected_wallet_hash),
             selected_single_key_hash: Mutex::new(selected_single_key_hash),
@@ -590,7 +722,24 @@ impl AppContext {
     /// backend is not yet initialized. Single accessor shared by every
     /// `context/*_db.rs` module.
     pub(crate) fn det_kv(&self) -> Result<DetKv, TaskError> {
+        #[cfg(test)]
+        if let Some(kv) = self
+            .det_kv_override
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+        {
+            return Ok(kv);
+        }
         Ok(self.wallet_backend()?.kv())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_det_kv_override_for_test(&self, kv: DetKv) {
+        *self
+            .det_kv_override
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(kv);
     }
 
     /// Shared encrypted HD-seed vault. Cheap clone — `Arc<SecretStore>` is
@@ -617,7 +766,7 @@ impl AppContext {
         use platform_wallet_storage::SqlitePersisterConfig;
         crate::app_dir::ensure_data_dir_exists(data_dir)
             .map_err(|source| TaskError::FileSystem { source })?;
-        let path = data_dir.join("det-app.sqlite");
+        let path = crate::wallet_backend::app_database_path(data_dir);
         let config = SqlitePersisterConfig::new(path);
         let persister = Arc::new(crate::wallet_backend::platform_compatibility::open(config)?);
         Ok(Arc::new(DetKv::new(persister)))
@@ -667,7 +816,7 @@ impl AppContext {
     }
 
     /// Absolute path of the shared seed vault: `<data_dir>/secrets/det-secrets.pwsvault`.
-    fn secret_store_path(data_dir: &std::path::Path) -> std::path::PathBuf {
+    pub(crate) fn secret_store_path(data_dir: &std::path::Path) -> std::path::PathBuf {
         let mut path = data_dir.to_path_buf();
         path.push("secrets");
         path.push("det-secrets.pwsvault");
@@ -823,9 +972,7 @@ impl AppContext {
     {
         use dash_sdk::dpp::key_wallet::PlatformP2PKHAddress;
         let network = self.network;
-        let Ok(wallets) = self.wallets.read() else {
-            return;
-        };
+        let wallets = self.wallet_context().wallets();
         for (seed_hash, entries) in batches {
             if let Some(wallet_arc) = wallets.get(seed_hash)
                 && let Ok(mut wallet) = wallet_arc.write()
@@ -1215,11 +1362,17 @@ impl AppContext {
         .await?;
         self.wallet_backend.store(Some(Arc::new(backend)));
         drop(_build_guard);
+        // Wallet storage is up: apply the retention policy to every database's
+        // backups (the newest usable backup of each is always kept).
+        self.prune_expired_upgrade_backups_best_effort();
         if let Err(error) = self.refresh_pending_dpns_usernames() {
             tracing::warn!(
                 ?error,
                 "Pending DPNS username cache could not be warmed from stored contests"
             );
+        }
+        if let Err(error) = self.refresh_dpns_candidate_labels() {
+            tracing::warn!(?error, "DPNS candidate labels could not be loaded");
         }
         self.restore_selected_wallet_from_kv();
         self.restore_selected_identity_from_kv();
@@ -1234,7 +1387,7 @@ impl AppContext {
         // longer depends on this — the chokepoint pulls the seed just-in-time
         // from the encrypted vault, and a no-password wallet signs via the
         // unprotected fast-path with no prompt regardless. This runs after the
-        // backend is wired and `ctx.wallets` is populated so address bootstrap
+        // backend is wired and the wallet context's HD registry is populated so address bootstrap
         // has the reconstructed wallets to work from. Idempotent.
         self.bootstrap_loaded_wallets().await;
         Ok(())
@@ -1255,16 +1408,27 @@ impl AppContext {
         if let Ok(mut guard) = self.selected_wallet_hash.lock() {
             let candidate = selected
                 .hd_wallet_hash
-                .filter(|h| self.wallets.read().is_ok_and(|w| w.contains_key(h)));
+                .filter(|h| self.wallet_context().contains_hd(h));
             *guard = candidate;
         }
         if let Ok(mut guard) = self.selected_single_key_hash.lock() {
-            let candidate = selected.single_key_hash.filter(|h| {
-                self.single_key_wallets
-                    .read()
-                    .is_ok_and(|w| w.contains_key(h))
-            });
+            let candidate = selected
+                .single_key_hash
+                .filter(|h| self.wallet_context().contains_single(h));
             *guard = candidate;
+        }
+    }
+
+    /// Protocol version a shield from the Core wallet is priced with, as its
+    /// number and as the version itself: that of the wallet backend's SDK,
+    /// which runs the transfer and can be on a different version than the
+    /// app's own SDK once that has been rebuilt. Before the backend is wired
+    /// nothing can be sent, and the app's own SDK stands in.
+    pub(crate) fn shield_from_core_protocol_version(&self) -> (u32, &'static PlatformVersion) {
+        let version_of = |sdk: &Sdk| (sdk.protocol_version_number(), sdk.version());
+        match self.wallet_backend() {
+            Ok(backend) => version_of(backend.sdk()),
+            Err(_) => version_of(&self.sdk.load()),
         }
     }
 
@@ -1377,11 +1541,11 @@ impl AppContext {
         self.selected_single_key_hash.lock().ok().and_then(|g| *g)
     }
 
-    /// Owning HD wallet of an identity, derived from its signing-key
-    /// derivation path (the reliable owner — never
-    /// `associated_wallets.keys().next()`). Best-effort: `None` when the
-    /// identity is unknown or has no wallet-derived signing key.
+    /// Stored owner, falling back to the signing-key wallet for legacy records.
     fn owning_wallet_hash(&self, id: Identifier) -> Option<WalletSeedHash> {
+        if let Ok(Some((hash, _))) = self.stored_identity_wallet_link(&id) {
+            return Some(hash);
+        }
         let identities = self.load_local_qualified_identities().ok()?;
         let qi = identities.into_iter().find(|qi| qi.identity.id() == id)?;
         let wallet = crate::ui::identity::get_selected_wallet(&qi, Some(self), None).ok()??;
@@ -1594,7 +1758,7 @@ impl AppContext {
     /// selection — it only sizes the fee reserved off the displayed balance.
     pub fn snapshot_utxo_count(&self, seed_hash: &WalletSeedHash) -> usize {
         self.wallet_backend()
-            .map(|wb| wb.utxos(seed_hash).len())
+            .map(|wb| wb.utxo_count(seed_hash))
             .unwrap_or(0)
     }
 
@@ -1644,11 +1808,6 @@ impl AppContext {
     /// Returns a reference to the database.
     pub fn db(&self) -> &Arc<Database> {
         &self.db
-    }
-
-    /// Returns a reference to the wallets map.
-    pub fn wallets(&self) -> &RwLock<BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>> {
-        &self.wallets
     }
 
     /// Returns the DashPay contract identifier.
@@ -1770,6 +1929,30 @@ mod tests {
             ctx.connected_platform_version().protocol_version,
             ctx.sdk.load().protocol_version_number()
         );
+    }
+
+    /// Contest windows stay consistent as the SDK ratchets upward from each
+    /// network minimum to a newer supported protocol.
+    #[test]
+    fn contest_durations_match_the_network_minimum_for_every_supported_version() {
+        use crate::model::dpns::contest_durations;
+
+        let newest = PlatformVersion::latest().protocol_version;
+        for network in [Network::Mainnet, Network::Testnet] {
+            let minimum = dash_sdk::sdk::min_protocol_version(network);
+            let pinned = contest_durations(
+                network,
+                PlatformVersion::get(minimum).expect("network minimum"),
+            );
+            for protocol_version in minimum..=newest {
+                let live = PlatformVersion::get(protocol_version).expect("known version");
+                assert_eq!(
+                    contest_durations(network, live),
+                    pinned,
+                    "protocol {protocol_version} on {network}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -2193,5 +2376,64 @@ mod tests {
             Some(user),
             "a User selection is kept by the sanitizer",
         );
+    }
+
+    async fn observe_dispatch(
+        coordinator: Arc<DpnsVoteDispatchCoordinator>,
+        voter_id: Identifier,
+        active: Arc<std::sync::atomic::AtomicUsize>,
+        maximum: Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        let _guard = coordinator.acquire(voter_id).await.unwrap();
+        let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+        maximum.fetch_max(now, Ordering::SeqCst);
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        active.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    #[tokio::test]
+    async fn dpns_dispatch_serializes_independent_operations_for_one_voter() {
+        let coordinator = Arc::new(DpnsVoteDispatchCoordinator::default());
+        let active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let maximum = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let voter = Identifier::from([7; 32]);
+        let first = tokio::spawn(observe_dispatch(
+            Arc::clone(&coordinator),
+            voter,
+            Arc::clone(&active),
+            Arc::clone(&maximum),
+        ));
+        let second = tokio::spawn(observe_dispatch(
+            coordinator,
+            voter,
+            Arc::clone(&active),
+            Arc::clone(&maximum),
+        ));
+        first.await.unwrap();
+        second.await.unwrap();
+
+        assert_eq!(maximum.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn dpns_dispatch_bounds_independent_voters() {
+        let coordinator = Arc::new(DpnsVoteDispatchCoordinator::default());
+        let active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let maximum = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let tasks = (0..8)
+            .map(|voter| {
+                tokio::spawn(observe_dispatch(
+                    Arc::clone(&coordinator),
+                    Identifier::from([voter; 32]),
+                    Arc::clone(&active),
+                    Arc::clone(&maximum),
+                ))
+            })
+            .collect::<Vec<_>>();
+        for task in tasks {
+            task.await.unwrap();
+        }
+
+        assert_eq!(maximum.load(Ordering::SeqCst), MAX_CONCURRENT_DPNS_VOTERS);
     }
 }

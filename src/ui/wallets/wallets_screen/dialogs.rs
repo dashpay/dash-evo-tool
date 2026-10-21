@@ -9,17 +9,15 @@ use crate::ui::MessageType;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::address_input::AddressInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
+use crate::ui::components::qr_code_image::QrCodeImage;
 use crate::ui::helpers::copy_text_to_clipboard;
-use crate::ui::identity::funding_common::generate_qr_code_image;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
 use dash_sdk::dashcore_rpc::dashcore::{Address, Network};
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use eframe::egui::{self, ComboBox, Context};
-use eframe::epaint::TextureHandle;
-use egui::load::SizedTexture;
-use egui::{Frame, Margin, RichText, TextureOptions};
+use egui::{Frame, Margin, RichText};
 use std::sync::{Arc, RwLock};
 
 use super::WalletsBalancesScreen;
@@ -48,8 +46,7 @@ pub(super) struct ReceiveDialogState {
     pub platform_addresses: Vec<(String, u64)>,
     /// Currently selected Platform address index
     pub selected_platform_index: usize,
-    pub qr_texture: Option<TextureHandle>,
-    pub qr_address: Option<String>,
+    pub qr: Option<QrCodeImage>,
     pub status: Option<String>,
     /// A queued "generate Platform receive address" request the `ui()` loop
     /// drains into a `WalletTask::GeneratePlatformReceiveAddress` backend task.
@@ -186,28 +183,6 @@ impl WalletsBalancesScreen {
                 .map(|(addr, _)| addr.clone()),
         };
 
-        // Generate QR texture if needed
-        if let Some(address) = current_address.clone() {
-            let needs_texture = self.receive_dialog.qr_texture.is_none()
-                || self.receive_dialog.qr_address.as_deref() != Some(&address);
-            if needs_texture {
-                match generate_qr_code_image(&address) {
-                    Ok(image) => {
-                        let texture = ctx.load_texture(
-                            format!("receive_{}", address),
-                            image,
-                            TextureOptions::LINEAR,
-                        );
-                        self.receive_dialog.qr_texture = Some(texture);
-                        self.receive_dialog.qr_address = Some(address);
-                    }
-                    Err(err) => {
-                        self.receive_dialog.status = Some(err.to_string());
-                    }
-                }
-            }
-        }
-
         let mut open = self.receive_dialog.is_open;
         let mut close_clicked = false;
 
@@ -256,10 +231,15 @@ impl WalletsBalancesScreen {
                     ui.add_space(10.0);
 
                     // Show QR code
-                    if let Some(texture) = &self.receive_dialog.qr_texture {
-                        ui.image(SizedTexture::new(texture.id(), egui::vec2(220.0, 220.0)));
-                    } else if current_address.is_some() {
-                        ui.label("Generating QR code...");
+                    if let Some(address) = &current_address {
+                        self.receive_dialog
+                            .qr
+                            .get_or_insert_with(|| {
+                                QrCodeImage::new().with_size(220.0).with_fallback_text(
+                                    "The QR code could not be created. Copy the address below instead.",
+                                )
+                            })
+                            .show(ui, address);
                     }
 
                     ui.add_space(10.0);
@@ -303,9 +283,6 @@ impl WalletsBalancesScreen {
                                                     .clicked()
                                                 {
                                                     self.receive_dialog.selected_core_index = idx;
-                                                    // Clear QR so it regenerates
-                                                    self.receive_dialog.qr_texture = None;
-                                                    self.receive_dialog.qr_address = None;
                                                 }
                                             }
                                         });
@@ -417,9 +394,6 @@ impl WalletsBalancesScreen {
                                                     .clicked()
                                                 {
                                                     self.receive_dialog.selected_platform_index = idx;
-                                                    // Clear QR so it regenerates
-                                                    self.receive_dialog.qr_texture = None;
-                                                    self.receive_dialog.qr_address = None;
                                                 }
                                             }
                                         });
@@ -704,16 +678,8 @@ impl WalletsBalancesScreen {
                         } else {
                             "Fund Address"
                         };
-                        let fund_button = ComponentStyles::primary_button(fund_label)
-                            .fill(if can_fund {
-                                ComponentStyles::primary_button_fill()
-                            } else {
-                                DashColors::text_secondary(dark_mode)
-                            });
 
-                        if ui
-                            .add_enabled(can_fund, fund_button)
-                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        if ComponentStyles::add_primary_button_enabled(ui, can_fund, fund_label)
                             .clicked()
                         {
                             // Check if wallet is locked
@@ -983,15 +949,11 @@ impl WalletsBalancesScreen {
             self.receive_dialog.status = Some("Select a wallet first".to_string());
             self.receive_dialog.core_addresses.clear();
             self.receive_dialog.platform_addresses.clear();
-            self.receive_dialog.qr_texture = None;
-            self.receive_dialog.qr_address = None;
             self.receive_dialog.open();
             return AppAction::None;
         };
 
         self.receive_dialog.open();
-        self.receive_dialog.qr_texture = None;
-        self.receive_dialog.qr_address = None;
 
         // Load Core addresses (works with locked wallet - uses existing addresses)
         self.load_core_addresses_for_receive(&wallet);
@@ -1143,7 +1105,12 @@ impl WalletsBalancesScreen {
         let address_input = AddressInput::new(self.app_context.network)
             .with_label("Mine to address:")
             .with_address_kinds(&[AddressKind::Core])
-            .with_wallets(&[(wallet, balances, paths)])
+            .with_wallets(&[(
+                wallet,
+                balances,
+                paths,
+                self.app_context.wallet_context().hd_alias(&seed_hash),
+            )])
             .with_selection_only(true)
             .with_full_addresses(true);
 

@@ -27,7 +27,7 @@ use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicK
 use dash_sdk::dpp::identity::{Identity, KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::platform_value::{Bytes32, Value};
-use dash_sdk::drive::query::{OrderClause, SelectProjection, WhereClause, WhereOperator};
+use dash_sdk::drive::query::{OrderClause, WhereClause, WhereOperator};
 use dash_sdk::platform::documents::transitions::DocumentCreateTransitionBuilder;
 use dash_sdk::platform::{
     Document, DocumentQuery, Fetch, FetchMany, FetchUnproved, Identifier, IdentityPublicKey,
@@ -262,7 +262,7 @@ pub async fn send_contact_request_with_proof(
 
     let to_identity = if crate::model::dpns::has_dash_suffix(&to_username_or_id) {
         // It's a complete username, resolve via DPNS
-        resolve_username_to_identity(app_context, sdk, &to_username_or_id).await?
+        resolve_username_to_identity(sdk, &to_username_or_id).await?
     } else {
         // Try to parse as identity ID first
         match Identifier::from_string_try_encodings(
@@ -277,7 +277,7 @@ pub async fn send_contact_request_with_proof(
             }
             Err(_) => {
                 // Not a valid ID format, assume it's a username without .dash suffix
-                resolve_username_to_identity(app_context, sdk, &to_username_or_id).await?
+                resolve_username_to_identity(sdk, &to_username_or_id).await?
             }
         }
     };
@@ -641,65 +641,18 @@ pub async fn send_contact_request_with_proof(
     ))
 }
 
-async fn resolve_username_to_identity(
-    app_context: &Arc<AppContext>,
-    sdk: &Sdk,
-    username: &str,
-) -> Result<Identity, TaskError> {
-    let normalized = crate::model::dpns::normalize_dpns_label(username);
-
-    // Use the cached DPNS contract from AppContext instead of fetching from network
-    let domain_query = DocumentQuery {
-        sub_queries: Vec::new(),
-        select: SelectProjection::documents(),
-        data_contract: app_context.dpns_contract(),
-        document_type_name: "domain".to_string(),
-        where_clauses: vec![
-            WhereClause {
-                field: "normalizedParentDomainName".to_string(),
-                operator: WhereOperator::Equal,
-                value: Value::Text("dash".to_string()),
-            },
-            WhereClause {
-                field: "normalizedLabel".to_string(),
-                operator: WhereOperator::Equal,
-                value: Value::Text(normalized),
-            },
-        ],
-        time_range_clauses: Vec::new(),
-        group_by: Vec::new(),
-        having: Vec::new(),
-        order_by_clauses: vec![],
-        limit: 1,
-        offset: None,
-        start: None,
-    };
-
-    let results = Document::fetch_many(sdk, domain_query).await?;
-
-    let document = results
-        .values()
-        .filter_map(|maybe_doc| maybe_doc.as_ref())
-        .next()
+async fn resolve_username_to_identity(sdk: &Sdk, username: &str) -> Result<Identity, TaskError> {
+    // The name's own record names its identity, which after a transfer is not
+    // the document's owner.
+    let identity_id = sdk
+        .resolve_dpns_name(username.trim())
+        .await?
         .ok_or_else(|| {
             TaskError::DashPay(DashPayError::UsernameResolutionFailed {
                 username: username.to_string(),
             })
         })?;
 
-    // Extract the identity ID from records.identity — this is the authoritative
-    // identity reference, which may differ from owner_id() after name transfers.
-    let identity_id = crate::model::dpns::extract_identity_id_from_dpns_document(document)
-        .ok_or_else(|| {
-            TaskError::DashPay(DashPayError::InvalidDocument {
-                reason: format!(
-                    "DPNS document for '{}' is missing records.identity field",
-                    username
-                ),
-            })
-        })?;
-
-    // Fetch the identity
     Identity::fetch(sdk, identity_id)
         .await?
         .ok_or(TaskError::IdentityNotFound)
@@ -1354,6 +1307,85 @@ mod tests {
             transferred_at_core_block_height: None,
             contract_version: None,
         })
+    }
+
+    /// Mock the registered-name lookup for the normalized label `normalized`.
+    async fn expect_name_lookup(
+        sdk: &mut Sdk,
+        ctx: &AppContext,
+        normalized: &str,
+        found: Option<Document>,
+    ) {
+        let equals = |field: &str, value: &str| WhereClause {
+            field: field.to_string(),
+            operator: WhereOperator::Equal,
+            value: Value::Text(value.to_string()),
+        };
+        let mut query = DocumentQuery::new(ctx.dpns_contract(), "domain")
+            .expect("domain query")
+            .with_where(equals("normalizedParentDomainName", "dash"))
+            .with_where(equals("normalizedLabel", normalized));
+        query.limit = 1;
+        let documents: dash_sdk::query_types::Documents =
+            found.map(|doc| (doc.id(), Some(doc))).into_iter().collect();
+        sdk.mock()
+            .expect_fetch_many::<Identifier, Document, _, dash_sdk::query_types::Documents>(
+                query,
+                Some(documents),
+            )
+            .await
+            .expect("name lookup expectation");
+    }
+
+    /// The network may hand the name's identity back as plain bytes; the name
+    /// still belongs to that identity.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_username_resolves_when_its_identity_arrives_as_bytes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let target = id(7);
+        let mut sdk = crate::context::test_support::mock_sdk_for(&ctx);
+        let found = crate::context::test_support::dpns_name_document(
+            id(50),
+            "Alice",
+            Value::Bytes32(target.to_buffer()),
+        );
+        expect_name_lookup(&mut sdk, &ctx, "a11ce", Some(found)).await;
+        let identity = Identity::create_basic_identity(
+            target,
+            dash_sdk::dpp::version::PlatformVersion::latest(),
+        )
+        .expect("identity");
+        sdk.mock()
+            .expect_fetch(target, Some(identity))
+            .await
+            .expect("identity expectation");
+
+        let resolved = resolve_username_to_identity(&sdk, "Alice.dash")
+            .await
+            .expect("the name resolves");
+
+        assert_eq!(resolved.id(), target);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unregistered_username_is_reported_as_not_resolved() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let mut sdk = crate::context::test_support::mock_sdk_for(&ctx);
+        expect_name_lookup(&mut sdk, &ctx, "n0b0dy", None).await;
+
+        let error = resolve_username_to_identity(&sdk, "nobody")
+            .await
+            .expect_err("no such name");
+
+        assert!(
+            matches!(
+                error,
+                TaskError::DashPay(DashPayError::UsernameResolutionFailed { .. })
+            ),
+            "got {error:?}"
+        );
     }
 
     #[test]

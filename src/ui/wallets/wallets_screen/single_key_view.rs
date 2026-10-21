@@ -30,9 +30,10 @@ impl WalletsBalancesScreen {
 
         let wallet = wallet_arc.read_recover();
         let address = wallet.address.to_string();
-        let alias = wallet
-            .alias
-            .clone()
+        let alias = self
+            .app_context
+            .wallet_context()
+            .single_alias(&wallet.address.to_string())
             .unwrap_or_else(|| "Unnamed Key".to_string());
         let balance_duffs = wallet.total_balance_duffs();
         let balance_dash = balance_duffs as f64 * 1e-8;

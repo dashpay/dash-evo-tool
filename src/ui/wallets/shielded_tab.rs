@@ -32,6 +32,10 @@ pub const SHIELDED_SKIP_MIGRATION_LABEL: &str = "Skip for now";
 /// Receive-address section copy. Each is a complete sentence or a standalone
 /// label so the i18n pass extracts it as one translation unit; `pub` so the
 /// tests assert against the exact strings the UI renders.
+/// Shown after a shield from the Core wallet when the exact amount shielded
+/// is not known to the app.
+pub const SHIELDED_FROM_CORE_WITHOUT_AMOUNT: &str =
+    "Your Dash was shielded. Your shielded balance will show the new amount after the next sync.";
 pub const SHIELDED_ADDRESS_HEADING: &str = "Shielded Address";
 pub const SHIELDED_ADDRESS_HINT: &str = "Share this address to receive a private transfer.";
 pub const SHIELDED_ADDRESS_PENDING_LABEL: &str =
@@ -152,13 +156,7 @@ impl ShieldedTabView {
     /// Send Private, Unshield) are routes into the one canonical send screen —
     /// there are no bespoke shielded send screens.
     fn open_send_flow(&self, flow: SendFlow) -> AppAction {
-        let Some(wallet) = self
-            .app_context
-            .wallets
-            .read()
-            .ok()
-            .and_then(|wallets| wallets.get(&self.seed_hash).cloned())
-        else {
+        let Some(wallet) = self.app_context.wallet_context().hd_wallet(&self.seed_hash) else {
             return AppAction::None;
         };
         AppAction::AddScreen(
@@ -346,10 +344,13 @@ impl ShieldedTabView {
             BackendTaskSuccessResult::ShieldedFromAssetLock { seed_hash, amount }
                 if *seed_hash == self.seed_hash =>
             {
-                self.success_message = Some(format!(
-                    "Shielded {} from core wallet",
-                    format_credits_as_dash(*amount)
-                ));
+                self.success_message = Some(match amount {
+                    Some(amount) => format!(
+                        "Shielded {} from core wallet",
+                        format_credits_as_dash(*amount)
+                    ),
+                    None => SHIELDED_FROM_CORE_WITHOUT_AMOUNT.to_string(),
+                });
                 true
             }
             BackendTaskSuccessResult::ShieldedWithdrawalComplete { seed_hash, amount }
@@ -539,15 +540,11 @@ impl ShieldedTabView {
                     ui.label("Initializing shielded wallet (deriving ZIP32 keys)...");
                 });
             } else {
-                let wallet_locked = {
-                    let Some(wallets) = self.app_context.wallets.read().ok() else {
-                        ui.label("Unable to read wallet state. Please try again.");
-                        return action;
-                    };
-                    wallets
-                        .get(&self.seed_hash)
-                        .is_some_and(wallet_needs_unlock)
-                };
+                let wallet_locked = self
+                    .app_context
+                    .wallet_context()
+                    .hd_wallet(&self.seed_hash)
+                    .is_some_and(|wallet| wallet_needs_unlock(&wallet));
                 ui.add_space(20.0);
                 if wallet_locked {
                     ui.label(
@@ -959,19 +956,17 @@ mod tests {
             derive_shielded_indicator(
                 &MigrationState::SucceededWithUnreadableData {
                     identities: 0,
-                    votes: 1,
-                    top_ups: 0,
+                    top_ups: 1,
                 },
                 false,
             ),
             ShieldedIndicator::Verified,
-            "an unreadable vote row says nothing about shielded data — the drain completed",
+            "an unreadable top-up row says nothing about shielded data — the drain completed",
         );
         assert_eq!(
             derive_shielded_indicator(
                 &MigrationState::SucceededWithUnreadableData {
                     identities: 1,
-                    votes: 0,
                     top_ups: 0,
                 },
                 false,
@@ -983,8 +978,7 @@ mod tests {
             derive_shielded_indicator(
                 &MigrationState::SucceededWithUnreadableData {
                     identities: 1,
-                    votes: 2,
-                    top_ups: 0,
+                    top_ups: 2,
                 },
                 false,
             ),
@@ -1022,6 +1016,40 @@ mod tests {
                 true,
             ),
             ShieldedIndicator::Hidden,
+        );
+    }
+
+    /// A shield from the Core wallet whose amount is not known still reads as
+    /// a success, and names no figure.
+    #[test]
+    fn shield_from_core_without_an_amount_is_a_success_without_a_figure() {
+        use crate::backend_task::BackendTaskSuccessResult;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(tmp.path());
+        let seed_hash = WalletSeedHash::default();
+        let mut tab = ShieldedTabView::new(&ctx, seed_hash);
+
+        assert!(
+            tab.handle_result(&BackendTaskSuccessResult::ShieldedFromAssetLock {
+                seed_hash,
+                amount: None,
+            })
+        );
+        assert_eq!(
+            tab.success_message.as_deref(),
+            Some(SHIELDED_FROM_CORE_WITHOUT_AMOUNT)
+        );
+        assert!(tab.error_message.is_none());
+
+        assert!(
+            tab.handle_result(&BackendTaskSuccessResult::ShieldedFromAssetLock {
+                seed_hash,
+                amount: Some(100_000_800),
+            })
+        );
+        assert_eq!(
+            tab.success_message.as_deref(),
+            Some("Shielded 0.001000008 DASH from core wallet")
         );
     }
 }

@@ -683,6 +683,15 @@ impl SnapshotStore {
             .unwrap_or_default()
     }
 
+    /// Number of unspent outputs in a wallet's published snapshot, read in
+    /// place; 0 before the first publish.
+    pub(super) fn utxo_count(&self, seed_hash: &WalletSeedHash) -> usize {
+        self.snapshots
+            .load()
+            .get(seed_hash)
+            .map_or(0, |snapshot| snapshot.utxos.len())
+    }
+
     /// Atomically read the generation, exact input composition, and revision.
     pub(super) fn asset_lock_probe_snapshot(
         &self,
@@ -1096,6 +1105,43 @@ mod tests {
         assert!(snap.monitored_receive_addresses.is_empty());
     }
 
+    /// The in-place count agrees with the published output list, and a wallet
+    /// with no snapshot counts as empty.
+    #[test]
+    fn utxo_count_matches_the_published_outputs() {
+        let store = SnapshotStore::new();
+        let utxos: Vec<DetUtxo> = (1..=3)
+            .map(|n| {
+                let address = addr(n);
+                DetUtxo {
+                    outpoint: OutPoint::null(),
+                    value: 1_000 * u64::from(n),
+                    script_pubkey: address.script_pubkey(),
+                    address,
+                }
+            })
+            .collect();
+        store.publish(
+            &seed(3),
+            &wid(3),
+            SnapshotState {
+                balance: DetWalletBalance::default(),
+                asset_lock_inputs: AssetLockInputState::default(),
+                utxos,
+                address_balances: BTreeMap::new(),
+                monitored_receive_addresses: Vec::new(),
+                address_paths: BTreeMap::new(),
+            },
+        );
+
+        assert_eq!(store.utxo_count(&seed(3)), 3);
+        assert_eq!(
+            store.utxo_count(&seed(3)),
+            store.snapshot(&seed(3)).utxos.len()
+        );
+        assert_eq!(store.utxo_count(&seed(4)), 0);
+    }
+
     #[test]
     fn wallet_snapshot_generation_advances_on_each_publish() {
         let store = SnapshotStore::new();
@@ -1194,6 +1240,64 @@ mod tests {
             ),
             "equal final funds with different inputs must advance the input revision"
         );
+    }
+
+    /// Crosses the wallet-selector seam: `AppContext::wallet_selector_entries`
+    /// must hand on the snapshot's Core total and, separately, the funds an
+    /// identity can be funded from. A selector on a screen where the wallet
+    /// pays shows the second figure, so neither may be dropped or swapped.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wallet_selector_entries_carry_the_snapshots_total_and_usable_core_funds() {
+        use crate::model::address::AddressKind;
+        use crate::model::wallet::balance_summary::{CoreFigure, WalletChoice};
+        const USABLE_DUFFS: u64 = 400_000;
+        const NOT_YET_USABLE_DUFFS: u64 = 600_000;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let (sender, _results) = tokio::sync::mpsc::channel(32);
+        ctx.ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+            sender,
+            ctx.egui_ctx().clone(),
+        ))
+        .await
+        .expect("the wallet backend starts offline");
+        let wallet =
+            crate::model::wallet::Wallet::new_from_seed([0x51; 64], Network::Testnet, None, None)
+                .expect("wallet");
+        let seed_hash = wallet.seed_hash();
+        ctx.wallet_context()
+            .insert_test_wallet(seed_hash, Arc::new(std::sync::RwLock::new(wallet)));
+
+        let backend = ctx.wallet_backend().expect("wallet backend");
+        backend.inner.snapshots.publish(
+            &seed_hash,
+            &wid(9),
+            SnapshotState {
+                balance: DetWalletBalance {
+                    confirmed: USABLE_DUFFS,
+                    unconfirmed: NOT_YET_USABLE_DUFFS,
+                    total: USABLE_DUFFS + NOT_YET_USABLE_DUFFS,
+                },
+                asset_lock_inputs: AssetLockInputState::from_inputs([(
+                    OutPoint::new(Txid::from_byte_array([1; 32]), 0),
+                    USABLE_DUFFS,
+                )]),
+                utxos: Vec::new(),
+                address_balances: BTreeMap::new(),
+                monitored_receive_addresses: Vec::new(),
+                address_paths: BTreeMap::new(),
+            },
+        );
+
+        let entries = ctx.wallet_selector_entries(false);
+        assert_eq!(
+            entries.iter().map(|e| e.choice).collect::<Vec<_>>(),
+            [WalletChoice::Hd(seed_hash)]
+        );
+        let core = |figure| entries[0].balances.kind_duffs(AddressKind::Core, figure);
+        assert_eq!(core(CoreFigure::Total), USABLE_DUFFS + NOT_YET_USABLE_DUFFS);
+        assert_eq!(core(CoreFigure::Usable), USABLE_DUFFS);
     }
 
     /// FUNDS-SAFETY (display list): the Receive list is sourced from the

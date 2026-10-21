@@ -289,15 +289,19 @@ longer exists or a deposit the first run already consumed, because the second bu
 flow at all. Steps that only read state (navigation, display checks) aren't affected — reserve this
 for anything that actually spends or registers something.
 
-**Blocker rule** (confirm with the user for each run — the default below is a starting point, not a
-universal constant):
-- **Blocking**: new version worse than old from the user's perspective **in the happy flow**, or a
-  **data-loss** scenario.
+**Blocker rule** (confirm with the user for each run — the default below is the standing default,
+adopted 2026-09-15 after a run where the user explicitly requested it; still not a universal
+constant, so still confirm per run in case a specific campaign wants something looser):
+- **Blocking**: new version worse than old from the user's perspective **in the happy flow**, a
+  **data-loss** scenario, OR **any new, noticeable UX/perf regression even outside the happy flow**
+  (a new error-path regression, a newly-broken secondary flow, a perceptible slowdown) — this is
+  stricter than "happy-flow only" and is the current default.
 - **Not blocking**: timing noise with no user-visible effect; anything reproduced identically on
   **both** builds (pre-existing — note it, don't flag as a regression). Read that exemption
   narrowly — a *new* intermittent race stays blocking whenever it breaks the happy flow, crashes the
-  app, or loses data. "It's a race" never downgrades those; intermittency only means you reproduce it
-  more times before confirming.
+  app, loses data, or produces a noticeable regression anywhere else covered by this run's scenarios.
+  "It's a race" never downgrades those; intermittency only means you reproduce it more times before
+  confirming.
 - Reproduce anything about to be marked blocking at least twice before confirming.
 - If a repro attempt genuinely can't be reproduced after several tries, don't leave it open
   indefinitely — write up the negative evidence, downgrade to backlog, and say explicitly that repro
@@ -413,6 +417,7 @@ by side per scenario/story, with a verdict badge and a one-line rationale each �
 (e.g. base64) so the page has no external file dependencies. Run the pre-embedding secret check from
 § Security incidents during GUI testing over every image and caption first: once inlined, a leaked
 secret travels with every copy of the page. Save it to your artifacts location.
+For presentation-grade annotated images (one spotlight-style image per changed screen), use the `visual-diff` skill.
 Merge Phase 4's findings into Phase 2's report as an additional section, re-validate the combined
 report against whatever schema/format it uses, and re-render any human-readable version. The
 combined report is then ready to hand to the user for triage — code-review and GUI-regression

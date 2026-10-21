@@ -268,7 +268,7 @@ pub enum TokenCreatorStatus {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SortColumn {
     OwnerIdentity,
-    OwnerIdentityAlias,
+    OwnerIdentityName,
     Balance,
 }
 
@@ -1469,7 +1469,7 @@ impl TokensScreen {
             next_cursors: vec![],
             previous_cursors: vec![],
             search_results: Arc::new(Mutex::new(Vec::new())),
-            sort_column: SortColumn::OwnerIdentityAlias,
+            sort_column: SortColumn::OwnerIdentityName,
             sort_order: SortOrder::Ascending,
             use_custom_order: false,
             pending_backend_task: None,
@@ -3264,6 +3264,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test fixture setup/teardown outside any production deletion path"
+    )]
     fn test_token_creator_ui_builds_correct_contract() {
         let db_file_path = "test_db_token_creator";
         let _ = std::fs::remove_file(db_file_path); // Clean up from previous runs
@@ -3566,6 +3570,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test fixture setup/teardown outside any production deletion path"
+    )]
     fn test_distribution_function_random() {
         let db_file_path = "test_db_distribution_random";
         let _ = std::fs::remove_file(db_file_path); // Clean up from previous runs
@@ -3682,6 +3690,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test fixture setup/teardown outside any production deletion path"
+    )]
     fn once_per_identity_distribution_builds_version_1_rules_only_on_protocol_14() {
         let db_file_path = "test_db_once_per_identity_distribution";
         let _ = std::fs::remove_file(db_file_path); // Clean up from previous runs
@@ -3790,6 +3802,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test fixture setup/teardown outside any production deletion path"
+    )]
     fn test_parse_token_build_args_fails_with_empty_token_name() {
         let db_file_path = "test_db_empty_token_name";
         let _ = std::fs::remove_file(db_file_path); // Clean up from previous runs

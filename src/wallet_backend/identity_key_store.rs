@@ -4,9 +4,9 @@
 //! through [`SecretSeam`], scoped to the identity id
 //! (`Identifier::to_buffer()`) under the label
 //! `identity_key_priv.<target_tag>.<key_id>`. There is NO DET-side envelope —
-//! the key bytes ride raw (the no-serialization invariant), and the `InVault`
-//! placeholder in the `QualifiedIdentity` blob is the only on-disk marker that
-//! the key exists.
+//! the key bytes ride raw (the no-serialization invariant). `InVault`
+//! placeholders reference stored keys; the import inventory also tracks
+//! placements retained before an identity record is published.
 //!
 //! The keys are fetched per-use through
 //! [`SecretAccess`](crate::wallet_backend::SecretAccess) at sign time and never
@@ -118,7 +118,7 @@ impl<'a> IdentityKeyView<'a> {
     /// Intentional Tier-1 (raw) write that REPLACES any Tier-2 value at the
     /// label — the deliberate opt-out downgrade (Tier-2→Tier-1 in place).
     /// Unlike [`Self::store`] it does NOT refuse a `Protected` label: removing
-    /// protection is its whole job. Only the `UnprotectIdentityKeys` migration
+    /// protection is its whole job. Only the `UnprotectIdentityKeys` task
     /// calls this.
     pub fn store_unprotected(
         &self,
@@ -169,8 +169,8 @@ impl<'a> IdentityKeyView<'a> {
         Ok(Some(Zeroizing::new(key)))
     }
 
-    /// Store every `(target, key_id) → raw 32 bytes` pair. Used by the
-    /// migration after `KeyStorage::take_plaintext_for_vault` — call this
+    /// Store every `(target, key_id) → raw 32 bytes` pair after
+    /// `KeyStorage::take_plaintext_for_vault` — call this
     /// BEFORE rewriting the QI blob (vault-first ordering).
     pub fn store_all(&self, keys: &[VaultBoundKey]) -> Result<(), TaskError> {
         for ((target, key_id), bytes) in keys {

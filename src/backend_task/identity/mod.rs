@@ -4,6 +4,7 @@ mod discover_identities;
 mod key_limits;
 #[cfg(test)]
 pub(crate) use key_limits::tests::user_identity as key_limits_test_identity;
+mod dpns_usernames;
 mod load_identity;
 mod load_identity_by_dpns_name;
 mod load_identity_from_wallet;
@@ -81,9 +82,8 @@ pub struct IdentityInputToLoad {
     pub selected_wallet_seed_hash: Option<WalletSeedHash>,
     /// Optional load-time key encryption (FR-8). When `Some`, the loaded
     /// voting/owner/payout and identity keys are sealed Tier-2 under this
-    /// password at load time through the existing per-identity protect
-    /// envelope (Argon2id + XChaCha20-Poly1305) — no new crypto, no second
-    /// persistence path. When `None`, the keyless Tier-1 path is unchanged.
+    /// password before their first storage write, using the existing per-identity
+    /// envelope. When `None`, the keyless Tier-1 path is unchanged.
     pub encryption_password: Option<Secret>,
     /// How this load resolves against an already-stored identity of the same id.
     pub load_mode: IdentityLoadMode,
@@ -421,7 +421,6 @@ pub enum TopUpIdentityFundingMethod {
 
 #[derive(Debug, Clone)]
 pub struct IdentityRegistrationInfo {
-    pub alias_input: String,
     pub keys: IdentityKeySpecs,
     pub wallet: Arc<RwLock<Wallet>>,
     pub wallet_identity_index: u32,
@@ -430,9 +429,7 @@ pub struct IdentityRegistrationInfo {
 
 impl PartialEq for IdentityRegistrationInfo {
     fn eq(&self, other: &Self) -> bool {
-        self.alias_input == other.alias_input
-            && self.identity_funding_method == other.identity_funding_method
-            && self.keys == other.keys
+        self.identity_funding_method == other.identity_funding_method && self.keys == other.keys
     }
 }
 
@@ -454,6 +451,10 @@ impl PartialEq for IdentityTopUpInfo {
 pub struct RegisterDpnsNameInput {
     pub qualified_identity: QualifiedIdentity,
     pub name_input: String,
+    /// Community vote fee explicitly approved for this name; zero declines a vote.
+    pub approved_contest_fee: u64,
+    /// Authentication key to sign with; `None` picks the identity's default document key.
+    pub signing_key_id: Option<KeyID>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -475,6 +476,17 @@ pub enum IdentityTask {
         wallet_seed_hash: WalletSeedHash,
     },
     AddKeyToIdentity(QualifiedIdentity, QualifiedIdentityPublicKey, [u8; 32]),
+    /// Add a key from the identity's wallet at the selected derivation index.
+    AddDerivedKeyToIdentity {
+        identity: QualifiedIdentity,
+        key: QualifiedIdentityPublicKey,
+        /// Wallet derivation index of the new key.
+        index: u32,
+        /// Key id the screen showed the slot choice against (the local
+        /// record's highest key id + 1). The add is refused if the network
+        /// assigns a different one.
+        expected_key_id: KeyID,
+    },
     /// Opt-in: seal every keyless (Tier-1) vault-stored key of this
     /// identity under ONE per-identity object `password` (Tier-2), and store
     /// `hint` for the sign-time prompt copy. Idempotent (an already-protected
@@ -551,6 +563,30 @@ pub enum IdentityTask {
     RaiseKeyLimits {
         identity: Box<QualifiedIdentity>,
         raise: crate::model::identity_key_limits::KeyLimitsRaise,
+    },
+    /// Check whether a username label can be requested right now.
+    CheckUsernameAvailability {
+        /// The identity that would request it.
+        identity_id: Identifier,
+        /// The bare label, as typed.
+        label: String,
+    },
+    /// Refresh the community-vote requests of every loaded identity.
+    RefreshMyUsernameRequests,
+    /// Show `name` as the identity's main username on this device.
+    SetMainUsername {
+        identity_id: Identifier,
+        name: String,
+    },
+    /// Remove a finished username request from the identity's list.
+    DismissUsernameRequest {
+        identity_id: Identifier,
+        normalized_label: String,
+    },
+    /// Record that the outcome banners of `requests` were shown.
+    MarkUsernameOutcomesSeen {
+        identity_id: Identifier,
+        requests: Vec<crate::model::dpns_usernames::UsernameRequest>,
     },
 }
 
@@ -666,7 +702,6 @@ pub fn build_identity_registration_with_seed(
     drop(wallet);
 
     Ok(IdentityRegistrationInfo {
-        alias_input: String::new(),
         keys: IdentityKeySpecs::new(Some(master), others),
         wallet: wallet_arc.clone(),
         wallet_identity_index: identity_index,
@@ -728,55 +763,6 @@ pub enum KeyVerificationError {
 }
 
 impl AppContext {
-    #[expect(
-        clippy::result_large_err,
-        reason = "the intermediate error is dpp::ProtocolError, an upstream type we cannot shrink"
-    )]
-    fn verify_voting_key_exists_on_identity(
-        &self,
-        voting_identity: &Identity,
-        private_voting_key: &[u8; 32],
-    ) -> Result<IdentityPublicKey, KeyVerificationError> {
-        // We start by getting all the voting keys
-        let voting_keys: Vec<IdentityPublicKey> = voting_identity
-            .public_keys()
-            .values()
-            .filter_map(|key| {
-                if key.purpose() != Purpose::VOTING {
-                    return None;
-                }
-                Some(key.clone())
-            })
-            .collect();
-        if voting_keys.is_empty() {
-            return Err(KeyVerificationError::NoKeysForPurpose { purpose: "voting" });
-        }
-        // Then we get all the key types of the voting keys
-        let key_types: HashSet<KeyType> = voting_keys.iter().map(|key| key.key_type()).collect();
-        // For every key type get the associated public key data
-        let public_key_bytes_for_each_key_type = key_types
-            .into_iter()
-            .map(|key_type| {
-                Ok((
-                    key_type,
-                    key_type
-                        .public_key_data_from_private_key_data(private_voting_key, self.network)?,
-                ))
-            })
-            .collect::<Result<HashMap<KeyType, Vec<u8>>, ProtocolError>>()
-            .map_err(|e| KeyVerificationError::PublicKeyDerivation(Box::new(e)))?;
-        let Some(key) = voting_keys.into_iter().find(|key| {
-            let Some(public_key_bytes) = public_key_bytes_for_each_key_type.get(&key.key_type())
-            else {
-                return false;
-            };
-            key.data().as_slice() == public_key_bytes.as_slice()
-        }) else {
-            return Err(KeyVerificationError::NoMatchingKey { purpose: "voting" });
-        };
-        Ok(key)
-    }
-
     #[expect(
         clippy::result_large_err,
         reason = "the intermediate error is dpp::ProtocolError, an upstream type we cannot shrink"
@@ -899,6 +885,15 @@ impl AppContext {
                 self.add_key_to_identity(sdk, qualified_identity, public_key_to_add, private_key)
                     .await
             }
+            IdentityTask::AddDerivedKeyToIdentity {
+                identity,
+                key,
+                index,
+                expected_key_id,
+            } => {
+                self.add_derived_key_to_identity(sdk, identity, key, index, expected_key_id)
+                    .await
+            }
             IdentityTask::RegisterIdentity(registration_info) => {
                 Ok(self.register_identity(registration_info).await?)
             }
@@ -948,6 +943,22 @@ impl AppContext {
             IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames => {
                 Ok(self.refresh_loaded_identities_dpns_names(sender).await?)
             }
+            IdentityTask::CheckUsernameAvailability { identity_id, label } => {
+                self.check_username_availability(sdk, identity_id, label)
+                    .await
+            }
+            IdentityTask::RefreshMyUsernameRequests => self.refresh_my_username_requests(sdk).await,
+            IdentityTask::SetMainUsername { identity_id, name } => {
+                self.save_main_username(identity_id, name)
+            }
+            IdentityTask::DismissUsernameRequest {
+                identity_id,
+                normalized_label,
+            } => self.dismiss_username_outcome(identity_id, normalized_label),
+            IdentityTask::MarkUsernameOutcomesSeen {
+                identity_id,
+                requests,
+            } => self.save_username_outcomes_seen(identity_id, requests),
             IdentityTask::ProtectIdentityKeys {
                 identity_id,
                 password,
@@ -1082,8 +1093,7 @@ impl AppContext {
         // Get the identity
         let identity = qualified_identity.identity.clone();
 
-        // Get the signing key if specified
-        let signing_key = key_id.and_then(|id| identity.get_public_key_by_id(id));
+        let signing_key = transfer::transfer_signing_key(&qualified_identity, key_id)?;
 
         // Track balance before transfer for fee calculation
         let balance_before = identity.balance();
@@ -1095,7 +1105,7 @@ impl AppContext {
             .transfer_credits_to_addresses(
                 sdk,
                 outputs.clone(),
-                signing_key,
+                Some(&signing_key),
                 &qualified_identity,
                 None,
             )
@@ -1103,16 +1113,12 @@ impl AppContext {
 
         // Update destination address balances in any wallets that contain them
         // (using proof-verified data from the SDK response)
-        {
-            let wallets = self.wallets.read()?;
-            for (seed_hash, wallet_arc) in wallets.iter() {
-                if let Err(e) =
-                    self.update_wallet_platform_address_info_from_sdk(*seed_hash, &address_infos)
-                {
-                    tracing::warn!("Failed to update wallet platform address info: {}", e);
-                }
-                // Break early since all wallets share the same network addresses
-                let _ = wallet_arc; // silence unused warning
+        let wallet_seed_hashes: Vec<_> = self.wallet_context().wallets().keys().copied().collect();
+        for seed_hash in wallet_seed_hashes {
+            if let Err(e) =
+                self.update_wallet_platform_address_info_from_sdk(seed_hash, &address_infos)
+            {
+                tracing::warn!("Failed to update wallet platform address info: {}", e);
             }
         }
 
@@ -1151,6 +1157,43 @@ impl AppContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// RUST-001: every seed-recovery scan must cover the highest derivation
+    /// index the Add Key chooser can offer. Once the derived key is on-chain the
+    /// identity's highest key id is at least `max_key_id + 1`; a restore scan
+    /// that stops short of `derivation_index_limit(max_key_id) - 1` would lose
+    /// the key the user was told is recoverable from the recovery phrase.
+    #[test]
+    fn every_recovery_scan_covers_the_highest_selectable_derivation_index() {
+        use crate::model::derived_identity_key::derivation_index_limit;
+        for max_key_id in [0, 1, 2, 5, 31, 100, 4089, 4090, 4095, 10_000, u32::MAX - 1] {
+            let limit = derivation_index_limit(max_key_id);
+            assert!(limit > 0, "the chooser must offer at least one index");
+            let highest_selectable = limit - 1;
+            let after_add = max_key_id.saturating_add(1);
+            let scans = [
+                (
+                    "load_identity",
+                    load_identity::identity_key_scan_bound(after_add),
+                ),
+                (
+                    "load_identity_from_wallet",
+                    load_identity_from_wallet::wallet_key_scan_bound(after_add, 0),
+                ),
+                (
+                    "discover_identities",
+                    discover_identities::discovered_key_scan_bound(after_add),
+                ),
+            ];
+            for (site, bound) in scans {
+                assert!(
+                    highest_selectable < bound,
+                    "{site} scans 0..{bound} but the chooser offers index \
+                     {highest_selectable} for max key id {max_key_id}",
+                );
+            }
+        }
+    }
 
     /// Test that the default identity keys include the correct number of keys
     #[test]

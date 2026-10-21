@@ -550,6 +550,7 @@ impl ScreenLike for GroupActionsScreen {
                     &mut self.selected_identity_str,
                     &self.qualified_identities,
                 )
+                .with_context(&self.app_context)
                 .selected_identity(&mut self.selected_identity)
                 .expect("Failed to create identity selector")
                 .other_option(false)

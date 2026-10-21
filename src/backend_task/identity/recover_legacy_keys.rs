@@ -97,7 +97,7 @@ impl AppContext {
     /// identity's key protection changed under the flow, and the prompt's own
     /// cancel / unavailable errors. Every one of them leaves the stored record
     /// unchanged.
-    pub(super) async fn recover_legacy_identity_data(
+    pub(crate) async fn recover_legacy_identity_data(
         &self,
         identity_id: Identifier,
         approved: Vec<RecoveryItem>,
@@ -295,7 +295,7 @@ impl AppContext {
     /// `None` for every ordinary "not here" answer. A row that exists but will
     /// not decode is an error instead: reading it as empty would close the
     /// recovery offer on data that is still on disk.
-    fn legacy_identity_record(
+    pub(crate) fn legacy_identity_record(
         &self,
         identity_id: Identifier,
     ) -> Result<Option<QualifiedIdentity>, TaskError> {
@@ -313,7 +313,10 @@ impl AppContext {
         })?;
 
         match read_identity_row(&conn, self.network, &identity_id.to_buffer()) {
-            Ok(LegacyIdentityLookup::Found(row)) => Ok(Some(row.qi)),
+            Ok(LegacyIdentityLookup::Found(mut row)) => {
+                row.qi.private_keys.normalize_legacy_hash160_keys();
+                Ok(Some(row.qi))
+            }
             Ok(LegacyIdentityLookup::Absent) => Ok(None),
             Ok(LegacyIdentityLookup::Unreadable) => {
                 Err(TaskError::LegacyIdentityUnreadable { identity_id })
@@ -1264,6 +1267,93 @@ mod tests {
         offline.shutdown().await;
     }
 
+    /// The Settings "Restore from Previous Version" run restores a stranded
+    /// key through this same recovery, unprompted on a keyless identity, and a
+    /// second run finds nothing left to restore.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bulk_restore_recovers_a_stranded_identity_key_once() {
+        let offline = Offline::new(None).await;
+        let ctx = &offline.ctx;
+
+        let held = test_key(1, Purpose::AUTHENTICATION, 0x01);
+        let stranded = test_key(2, Purpose::TRANSFER, 0x02);
+        let modern = identity_with_keys(
+            0xB7,
+            IdentityType::User,
+            &[&stranded],
+            vec![(M, &held, held.clear())],
+        );
+        let identity_id = modern.identity.id();
+        ctx.insert_local_qualified_identity(&modern, &None)
+            .expect("insert modern record");
+        offline.stage_legacy(&identity_with_keys(
+            0xB7,
+            IdentityType::User,
+            &[],
+            vec![(M, &held, held.clear()), (M, &stranded, stranded.clear())],
+        ));
+
+        let first = crate::backend_task::migration::legacy_restore::run(ctx)
+            .await
+            .expect("restore");
+        assert_eq!(first.identities_updated, 1);
+        assert_eq!(first.identity_keys_restored, 1);
+        assert_eq!(first.identities_failed, 0);
+        assert_eq!(
+            offline.with_keys(identity_id, |view| *view
+                .get(&M, 2)
+                .expect("restored key")
+                .expect("stored")),
+            stranded.secret,
+        );
+
+        let second = crate::backend_task::migration::legacy_restore::run(ctx)
+            .await
+            .expect("second restore");
+        assert_eq!(second.identity_keys_restored, 0);
+        assert!(!second.restored_anything());
+
+        offline.shutdown().await;
+    }
+
+    /// The state behind a disabled "Get a username" button after an upgrade:
+    /// the identity publishes a key that can register usernames, this device's
+    /// record does not hold it, and the previous version's data does. Restoring
+    /// is what makes the identity able to register.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn restoring_a_stranded_signing_key_lets_the_identity_register_usernames() {
+        use crate::model::dpns_usernames::can_register_usernames;
+
+        let offline = Offline::new(None).await;
+        let ctx = &offline.ctx;
+
+        let signing = test_key(1, Purpose::AUTHENTICATION, 0x5A);
+        let modern = identity_with_keys(0xD1, IdentityType::User, &[&signing], vec![]);
+        let identity_id = modern.identity.id();
+        ctx.insert_local_qualified_identity(&modern, &None)
+            .expect("insert modern record");
+        offline.stage_legacy(&identity_with_keys(
+            0xD1,
+            IdentityType::User,
+            &[],
+            vec![(M, &signing, signing.clear())],
+        ));
+        let stored = || {
+            ctx.get_local_qualified_identity(&identity_id)
+                .expect("read identity")
+                .expect("identity is stored")
+        };
+        assert!(!can_register_usernames(&stored(), SecurityLevel::HIGH));
+
+        let summary = crate::backend_task::migration::legacy_restore::run(ctx)
+            .await
+            .expect("restore");
+        assert_eq!(summary.identity_keys_restored, 1);
+        assert!(can_register_usernames(&stored(), SecurityLevel::HIGH));
+
+        offline.shutdown().await;
+    }
+
     /// B12 — the wallet link lives beside the blob, not inside it, and the
     /// update writer preserves it from the existing record. A legacy row with
     /// no wallet of its own must not null it out.
@@ -1911,6 +2001,26 @@ mod tests {
             .expect("read stored blob")
             .expect("record stored");
         (identity_id, before)
+    }
+
+    /// "Restore from Previous Version": declining an identity's password
+    /// prompt skips that identity — it is counted as skipped, not as a failure.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn restore_counts_a_declined_identity_password_as_skipped() {
+        let prompt = Arc::new(TestPrompt::new([ScriptedAnswer::Cancel]));
+        let offline = Offline::new(Some(prompt.clone())).await;
+        let (identity_id, before) = seed_tier2_with_a_stranded_key(&offline).await;
+
+        let summary = crate::backend_task::migration::legacy_restore::run(&offline.ctx)
+            .await
+            .expect("restore run");
+
+        assert_eq!(prompt.ask_count(), 1, "the user was asked once");
+        assert_eq!(summary.identities_skipped, 1, "{summary:?}");
+        assert_eq!(summary.identities_failed, 0, "{summary:?}");
+        assert!(!summary.has_problems(), "{summary:?}");
+        assert_unchanged(&offline, identity_id, &before);
+        offline.shutdown().await;
     }
 
     /// Assert a failed recovery changed neither the stored record nor the vault.

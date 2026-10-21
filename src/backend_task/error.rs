@@ -3,7 +3,9 @@
 //! `Display` → user-friendly text (shown in `MessageBanner`).
 //! `Debug` → variant name + fields (logged and shown in collapsible details).
 
-use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::asset_lock::validate_asset_lock_minimum;
+use crate::model::fee_estimation::{format_credits_as_dash, format_duffs_as_dash};
+use crate::wallet_backend::platform_compatibility::StorageFailure;
 use dash_sdk::Error as SdkError;
 use dash_sdk::dapi_client::DapiClientError;
 use dash_sdk::dapi_client::transport::TransportError;
@@ -20,6 +22,7 @@ use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::KeyID;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
+use platform_wallet::wallet::asset_lock::tracked::TrackedAssetLock;
 use std::fmt;
 use thiserror::Error;
 
@@ -213,6 +216,18 @@ impl std::error::Error for BackendTaskJoinError {}
 /// Dash Core RPC error code: wallet file not specified (multi-wallet node).
 const RPC_WALLET_NOT_SPECIFIED: i32 = -19;
 
+/// Some expired upgrade backups remain after a retention setting save.
+pub(crate) const BACKUP_RETENTION_SAVED_CLEANUP_INCOMPLETE: &str = "Your backup retention setting was saved, but some old upgrade backups could not be deleted. The app tries again the next time it opens your wallet data.";
+
+/// Shown whenever another window or session holds the wallet database.
+pub(crate) const WALLET_DATA_IN_USE: &str = "Your wallet data is open in another Dash Evo Tool window or command-line session. Close it and try again.";
+
+/// Shown when the network could not be asked whether a username is free: the
+/// message of [`TaskError::UsernameAvailabilityCheckFailed`] and the text of
+/// the availability row that reports the same failure.
+pub(crate) const USERNAME_AVAILABILITY_CHECK_FAILED: &str =
+    "Availability can't be checked right now. Check your internet connection and try again.";
+
 /// App-level error envelope for backend tasks.
 #[derive(Debug, Error)]
 pub enum TaskError {
@@ -255,6 +270,17 @@ pub enum TaskError {
         wallet_label: String,
     },
 
+    /// A wallet operation was requested for a password-protected wallet that
+    /// is still locked. A locked wallet is not registered with the wallet
+    /// backend, and unlike [`Self::WalletNotLoaded`] waiting never changes
+    /// that: only unlocking it does.
+    #[error("The wallet \"{wallet_label}\" is locked. Unlock it with its password and try again.")]
+    WalletLockedNotLoaded {
+        /// Display alias for the affected wallet, with the same seed-hash
+        /// fallback as [`Self::WalletNotLoaded`].
+        wallet_label: String,
+    },
+
     /// An internal wallet-state inconsistency: the wallet backend's records
     /// disagree with each other in a way that should never happen (a wallet
     /// present in one place but missing from another, or an account that just
@@ -293,11 +319,23 @@ pub enum TaskError {
     /// An identity-funding account was derived but could not be saved. Saving
     /// it is what lets a restart find the account again, so the operation is
     /// stopped rather than left able to strand a funding lock the app could no
-    /// longer spend. The technical cause lives in `Debug` and the logs.
+    /// longer spend. Covers non-retryable store failures (constraint, fatal);
+    /// retryable ones use [`Self::IdentityFundingAccountPersistBusy`].
     #[error(
-        "Your wallet could not save the account this payment needs. Check that your disk is not full, then try again."
+        "Your wallet could not save the information it needs for this payment. Restart the application and try again."
     )]
     IdentityFundingAccountPersistFailed {
+        #[source]
+        source: Box<platform_wallet::changeset::PersistenceError>,
+    },
+
+    /// Like [`Self::IdentityFundingAccountPersistFailed`], but the store kept
+    /// reporting a retryable condition until the retry budget ran out. Upstream
+    /// classifies a busy database and a full disk alike, so the copy names both.
+    #[error(
+        "Your wallet could not save the information it needs for this payment because its data is busy or the disk is full. Close any other copy of Dash Evo Tool, make sure there is free disk space, and try again."
+    )]
+    IdentityFundingAccountPersistBusy {
         #[source]
         source: Box<platform_wallet::changeset::PersistenceError>,
     },
@@ -479,6 +517,38 @@ pub enum TaskError {
     )]
     TopUpFundingMethodUnsupported,
 
+    /// A funding amount is smaller than the network fee taken from it, so the
+    /// network would refuse it after the funds had already left the wallet.
+    #[error(
+        "This amount is too small to cover the network fee. Enter at least {minimum_dash} and try again.",
+        minimum_dash = format_duffs_as_dash(*.minimum_duffs)
+    )]
+    AssetLockAmountBelowNetworkFee {
+        amount_duffs: u64,
+        minimum_duffs: u64,
+    },
+
+    /// A funding transaction that already exists is smaller than the network
+    /// fee taken from it, so the network would refuse it on every attempt.
+    #[error(
+        "This funding is too small to cover the network fee of {minimum_dash}. Choose a larger one, or use a different funding method.",
+        minimum_dash = format_duffs_as_dash(*.minimum_duffs)
+    )]
+    ExistingFundingBelowNetworkFee {
+        amount_duffs: u64,
+        minimum_duffs: u64,
+    },
+
+    /// The network fee a funding amount must cover could not be read for the
+    /// protocol version in use, so the amount cannot be checked and is refused.
+    #[error(
+        "The network fee for this amount could not be checked. Update the app to the latest version and try again."
+    )]
+    AssetLockNetworkFeeUnavailable {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
     /// The asset-lock proof finalization (InstantSend → ChainLock fallback)
     /// timed out without producing a usable proof for Platform.
     #[error(
@@ -524,6 +594,24 @@ pub enum TaskError {
         "Could not access wallet data. Check available disk space and restart the application."
     )]
     WalletStorage {
+        #[source]
+        source: platform_wallet_storage::WalletStorageError,
+    },
+
+    /// Another process currently owns the wallet database write lock.
+    #[error("{}", WALLET_DATA_IN_USE)]
+    WalletStorageInUse {
+        #[source]
+        source: platform_wallet_storage::WalletStorageError,
+    },
+
+    /// A wallet database migration failed because the app is not allowed to
+    /// write to its data folder (file permissions or a read-only disk).
+    /// Retrying never fixes it, so it is terminal.
+    #[error(
+        "Could not open your wallet data because the app is not allowed to change its data folder. Make sure the folder is not on a read-only disk and that you have permission to change it, then restart the application."
+    )]
+    WalletStorageAccessDenied {
         #[source]
         source: platform_wallet_storage::WalletStorageError,
     },
@@ -578,13 +666,30 @@ pub enum TaskError {
     ///
     /// The migration diagnostic is preserved through the `#[source]` chain for
     /// logs and the `Debug` view; it is kept out of the user-facing `Display`
-    /// copy. On the active development branch the storage layout changed in an
-    /// incompatible way, so the practical action is to remove the local wallet
-    /// data and let the app recreate it (see `docs/kv-keys.md`).
+    /// copy. The copy names only the rebuildable `.sqlite` stores and tells the
+    /// user to keep the `secrets` folder: the vault holds imported and
+    /// masternode keys that no recovery phrase can re-derive.
     #[error(
-        "Your wallet data is not compatible with this version of the app and cannot be opened. Remove the local wallet data so the app can create it fresh, then restart."
+        "Your wallet data was saved by an app version that this version cannot open, so it was left unchanged. Your recovery phrases and keys are still stored on this device. First open the app version you used before and write down the recovery phrase of every wallet. Separately, write down each imported private key. Close all Dash Evo Tool windows and command-line sessions. Then move each .sqlite file together with its matching .sqlite-wal and .sqlite-shm files, if present, out of the app data folder, leave the secrets folder where it is, and start this app again."
     )]
     WalletDataIncompatible {
+        #[source]
+        source: platform_wallet_storage::WalletStorageError,
+    },
+
+    /// The wallet database refused to open because a folder on its path can be
+    /// modified by another account on this computer (group/other-writable
+    /// without the sticky bit, or owned by another user). Distinct from
+    /// [`Self::WalletStorage`] because disk space and restarting are irrelevant:
+    /// only tightening the folder's permissions or ownership fixes it.
+    ///
+    /// The offending folder and the exact reason travel in `source` (the
+    /// upstream message names the folder and the command to run) for the
+    /// details panel and logs; the user-facing copy stays jargon-free.
+    #[error(
+        "Your wallet data folder, or a folder that contains it, can be changed by other accounts on this computer, so the app will not open your wallet data. Make these folders writable only by your own account, then restart the application."
+    )]
+    WalletDataFolderInsecure {
         #[source]
         source: platform_wallet_storage::WalletStorageError,
     },
@@ -664,9 +769,81 @@ pub enum TaskError {
     /// (never a silent miss that would drop a key). The user must restore the
     /// wallet from its recovery phrase or re-import the key.
     #[error(
-        "This wallet's secret could not be found on this device. Restore the wallet from its recovery phrase to keep using it."
+        "This wallet's secret could not be found on this device. Import the wallet again from its recovery phrase, on the same network, to keep using it. If you updated from an earlier version of Dash Evo Tool, you can instead use Restore from Previous Version in Settings."
     )]
     SecretSeamMissing,
+
+    /// "Restore from Previous Version" could not open or read the earlier
+    /// version's database. Nothing was changed.
+    #[error(
+        "Data saved by the earlier version could not be read. Nothing was changed. Restart Dash Evo Tool and try again."
+    )]
+    LegacyRestoreFailed {
+        #[source]
+        source: Box<crate::backend_task::migration::MigrationError>,
+    },
+
+    /// Signing with an identity key failed because the wallet the key is
+    /// derived from has no secret on this device. Recognised from the DET
+    /// signer's [`SigningKeyUnavailableCause::WalletSecretMissing`] marker; the
+    /// signer's full text (identity, key, wallet) stays in the source chain.
+    #[error(
+        "This identity's key comes from a wallet that is not on this device, so nothing was signed. Import that wallet again from its recovery phrase, on the same network. If you updated from an earlier version of Dash Evo Tool, you can instead use Restore from Previous Version in Settings."
+    )]
+    IdentitySigningWalletSecretMissing {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// Signing with an identity key failed because the wallet it is derived
+    /// from is locked.
+    #[error(
+        "The wallet holding this identity's key is locked, so nothing was signed. Unlock the wallet and try again."
+    )]
+    IdentitySigningWalletLocked {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// Signing with an identity key stopped because the user dismissed its
+    /// password prompt.
+    #[error(
+        "You closed the password prompt, so nothing was signed or changed. Try the action again when you're ready."
+    )]
+    IdentitySigningPasswordDeclined {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// Signing with an identity key needs a password, but no interactive
+    /// prompt is available (headless / MCP).
+    #[error(
+        "This identity's key is protected by a password, which can only be entered in the app window. Open Dash Evo Tool and run this action there."
+    )]
+    IdentitySigningPasswordUnavailable {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// Signing with an identity key failed because the key's private half is
+    /// missing from this device's secure storage.
+    #[error(
+        "This identity's signing key could not be found on this device, so nothing was signed. Add the identity's private key again, then retry."
+    )]
+    IdentitySigningKeyMissing {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// Signing with an identity key failed for any other reason the DET
+    /// signer reports (see [`SigningKeyUnavailableCause::Other`]).
+    #[error(
+        "This identity's signing key could not be used on this device, so nothing was signed. Import the wallet or key again and retry."
+    )]
+    IdentitySigningFailed {
+        #[source]
+        source_error: Box<SdkError>,
+    },
 
     /// An identity private key could not be stored in or read from the secret
     /// vault through the seam. Distinct from [`Self::SecretSeam`] so the banner
@@ -719,6 +896,57 @@ pub enum TaskError {
     )]
     IdentityKeySlotOccupied,
 
+    /// A wallet-derived key was requested for an identity with no single,
+    /// unambiguous wallet path on this device (loaded by id, masternode or
+    /// evonode identity, or keys spanning several wallets). Fieldless: no
+    /// upstream error.
+    #[error(
+        "A single matching wallet could not be identified on this device. Turn off Create from wallet and enter a private key instead."
+    )]
+    DerivedKeyWalletRequired,
+
+    /// A wallet-derived key was requested for a key type the canonical ECDSA
+    /// identity-authentication path cannot produce (see
+    /// [`is_derivable_key_type`](crate::model::derived_identity_key::is_derivable_key_type)).
+    /// Fieldless: no upstream error.
+    #[error(
+        "This key type cannot be created from a wallet. Choose ECDSA_SECP256K1 or ECDSA_HASH160 as the key type, or enter a private key instead."
+    )]
+    DerivedKeyTypeUnsupported,
+
+    /// The selected wallet key slot cannot take a new key: it is outside the
+    /// seed-recovery window, already used by a key saved for this identity
+    /// (including disabled keys and secp256k1/HASH160 equivalents), or its key
+    /// is already on the identity's freshly fetched network record — for
+    /// example added on another device. Nothing was broadcast. Fieldless: no
+    /// upstream error.
+    #[error(
+        "This wallet key slot cannot take a new key. It is already used by a key on this identity, possibly one added on another device, or it is outside the range this wallet can recover. Choose a different slot and add the key again."
+    )]
+    DerivedKeyIndexUnavailable,
+
+    /// The identity's network record gained a key since the Add Key screen
+    /// loaded it, so the new wallet key would get a different key id than the
+    /// one its slot was chosen against. Nothing was broadcast. The screen
+    /// reloads the identity and selects the slot again. Fieldless: no
+    /// upstream error.
+    #[error(
+        "This identity changed on the network since you opened this screen, possibly because a key was added on another device. Check the selected wallet key slot and add the key again."
+    )]
+    DerivedKeyIdChanged,
+
+    /// The public key cached for the selected wallet key slot does not match
+    /// the key the wallet's recovery phrase derives there (a stale, corrupt or
+    /// tampered cache entry). Checked before broadcast because a HASH160 key
+    /// carries no proof of possession: registering the cached value could put
+    /// a key on-chain that the wallet cannot sign for. The cache entry is
+    /// repaired before this is returned, so adding again uses the verified
+    /// key. Nothing was broadcast. Fieldless: no upstream error.
+    #[error(
+        "The key from your wallet could not be confirmed, so nothing was added to your identity. Add the key again."
+    )]
+    DerivedKeySeedMismatch,
+
     /// An identity private key was found in the vault but its bytes are not a
     /// usable signing key (vault corruption or a truncated write). Distinct
     /// from [`Self::IdentityKeyMissing`] (genuinely absent) so the user gets
@@ -750,6 +978,14 @@ pub enum TaskError {
     #[error("That password is not correct. Try again.")]
     IdentityKeyPassphraseIncorrect,
 
+    /// Import would replace different private material already saved at the same placement.
+    #[error("A different private key is already saved for this identity. Check the keys you are importing and try again.")]
+    IdentityImportKeyConflict,
+
+    /// An unpublished import retained protected keys that need the original import password.
+    #[error("This import has password-protected keys saved from an earlier attempt. Retry the import with the password you chose for that attempt.")]
+    IdentityImportPasswordRequired,
+
     /// A keyless (unprotected) write was refused over a password-protected
     /// identity key, which would have silently stripped its protection. Raised
     /// by the protection-aware store guard so adding or changing a key on a
@@ -760,15 +996,35 @@ pub enum TaskError {
     )]
     IdentityKeyProtectionDowngrade,
 
-    /// A new key was accepted onto the identity ON-CHAIN, but sealing it into
-    /// the local secret vault afterward failed, so it is not yet saved on this
-    /// device. The on-chain broadcast and the local persist cannot be atomic, so
-    /// this is the unavoidable post-broadcast gap — surfaced as a loud, typed,
-    /// actionable error rather than a silent loss. It never falls back to a
-    /// keyless write (the protected invariant holds). The upstream seal
-    /// failure is preserved through `#[source]` for logs and the details panel.
+    /// A wallet refresh of an identity (discovery or "load from wallet") was
+    /// refused because only some of its keys are password-protected: the
+    /// stored record still holds unprotected keys next to protected ones, and
+    /// saving them again without that password would strip the protection.
+    /// [`Self::IdentityKeyProtectionDowngrade`] phrased for a refresh the user
+    /// did not start as a change. Removing the protection lets the next save
+    /// move the unprotected keys into the vault; protecting again seals all
+    /// of them. Carries the identity id (data, not a message) because the
+    /// automatic refresh reports it with no screen naming the identity; no
+    /// secret or raw error string is stored here.
     #[error(
-        "The new key was added to your identity on the network, but it could not be saved on this device. Your identity and its existing keys are safe. Check available disk space, then try adding a key again."
+        "Identity {identity_id} could not be updated from your wallet because only some of its keys are password-protected. Remove the password protection from this identity, load it from your wallet again, then add the protection again."
+    )]
+    IdentityRefreshBlockedByPartialProtection {
+        identity_id: dash_sdk::platform::Identifier,
+    },
+
+    /// A new key was accepted onto the identity ON-CHAIN, but saving it on this
+    /// device afterward failed — any post-broadcast step: the roster or record
+    /// read, an occupied slot, the vault seal or write, the record write, or a
+    /// protection-downgrade refusal. The on-chain broadcast and the local
+    /// persist cannot be atomic, so this is the unavoidable post-broadcast gap —
+    /// surfaced as a loud, typed, actionable error rather than a silent loss.
+    /// The add-key screen keeps the private key available to copy. It never
+    /// falls back to a keyless write (the protected invariant holds). The
+    /// upstream failure is preserved through `#[source]` for logs and the
+    /// details panel.
+    #[error(
+        "The new key was added to your identity on the network, but it could not be saved on this device. Your identity and its existing keys are safe. Copy the new private key now and keep it somewhere safe. Then refresh the identity, open the new key and enter its private key to save it here."
     )]
     IdentityKeyAddedButNotSaved {
         #[source]
@@ -782,38 +1038,62 @@ pub enum TaskError {
     /// private key material on a device that reports it holds none, referenced
     /// by no record and reachable by no cleanup.
     ///
-    /// No loss beyond the on-chain slot: the private key was supplied by the
-    /// user on the add-key screen, so they still hold it.
+    /// The private key may have been generated on the add-key screen and exist
+    /// nowhere else, so that screen keeps it available to copy.
     #[error(
-        "The new key was added to your identity on the network, but this identity was removed from this device before the key could be saved here. Load the identity again, then add the key again."
+        "The new key was added to your identity on the network, but this identity was removed from this device before the key could be saved here. Copy the new private key now and keep it somewhere safe. To use this key here, load the identity again with that private key."
     )]
     IdentityKeyAddedButIdentityUnloaded,
 
-    /// Fail-closed guard at the opt-in protect boundary: the task found
-    /// keys still resident as plaintext on disk after the eager load-path vault
-    /// migration, so the identity cannot be reported as fully protected. The
-    /// migration only leaves resident plaintext when its vault write failed or
-    /// was skipped; proceeding would let the seal step silently skip those keys
-    /// and emit a false-protected result. Refusing here keeps the user from
-    /// believing the identity is sealed when it is not. Fieldless: the load-path
-    /// migration outcome is logged where it happens; no secret or raw error
-    /// string is stored here.
+    /// [`Self::IdentityKeyAddedButNotSaved`] when the save was refused by the
+    /// identity's password protection (a protection-downgrade refusal): the
+    /// generic "enter its private key" remedy would be refused the same way,
+    /// so the message adds the protection step. Fieldless: the cause is fully
+    /// named by the variant and the upstream refusal carries no diagnostic.
+    #[error(
+        "The new key was added to your identity on the network, but this identity's password protection kept it from being saved on this device. Your identity and its existing keys are safe. Copy the new private key now and keep it somewhere safe. To save it here, remove the password protection from this identity, refresh the identity, open the new key and enter its private key, then add the protection again."
+    )]
+    IdentityKeyAddedButNotSavedWhileProtected,
+
+    /// [`Self::IdentityKeyAddedButNotSaved`] when a different key already held
+    /// the new key's local slot: the generic "enter its private key" remedy
+    /// would hit the same occupied slot, so the message adds removing the
+    /// other key's saved private half (listed on the identity's Keys screen).
+    /// Fieldless, like [`Self::IdentityKeySlotOccupied`].
+    #[error(
+        "The new key was added to your identity on the network, but a different key is already saved on this device under the number the new key uses. Your identity and its existing keys are safe. Copy the new private key now and keep it somewhere safe. Open the other key in this identity's key list and remove its saved private key from this device. Then refresh the identity, open the new key and enter its private key."
+    )]
+    IdentityKeyAddedButSlotOccupied,
+
+    /// [`Self::IdentityKeyAddedButNotSaved`] for a wallet-derived key. No
+    /// private key exists to copy — the wallet derives it again — so the
+    /// message must not ask for one.
+    #[error(
+        "The new key was added to your identity on the network, but it could not be saved on this device. Your identity and its existing keys are safe. The key was created from your wallet, so there is nothing to copy. To save it here, load this identity from your wallet again."
+    )]
+    DerivedIdentityKeyAddedButNotSaved {
+        #[source]
+        source: Box<TaskError>,
+    },
+
+    /// [`Self::IdentityKeyAddedButIdentityUnloaded`] for a wallet-derived key:
+    /// nothing was saved, and no private key exists to copy.
+    #[error(
+        "The new key was added to your identity on the network, but this identity was removed from this device before the key could be saved here. The key was created from your wallet, so there is nothing to copy. To use this identity here, load it from your wallet again."
+    )]
+    DerivedIdentityKeyAddedButIdentityUnloaded,
+
+    /// Resident plaintext remains after startup migration was skipped or failed.
+    /// Protection must refuse it; storage preparation retries write failures,
+    /// while already-protected identities require explicit key recovery.
     #[error(
         "Some of this identity's keys are not fully protected yet. \
         Close and reopen the application, then try protecting this identity again."
     )]
     IdentityKeyProtectionIncomplete,
 
-    /// Fail-closed guard at the opt-in protect boundary: the identity
-    /// still carries one or more keys saved in the legacy on-disk format this
-    /// version can neither read nor migrate into the protected store. Unlike
-    /// resident plaintext — which the load-path migration finishes on the next
-    /// launch — there is NO automatic migration for these keys, so reopening the
-    /// application would loop on the same error. The only way forward is to add
-    /// the identity again from its recovery phrase or private key, which replaces
-    /// the legacy key entries with ones this version can protect. Fieldless: the
-    /// offending key's presence is logged at the guard; no secret or raw error
-    /// string is stored here.
+    /// Legacy encrypted keys cannot be converted by startup migration.
+    /// Reloading from recovery material is required; restarting cannot repair them.
     #[error(
         "Some of this identity's keys are saved in an older format that cannot be protected. \
         Load this identity again using its recovery phrase or private key, then try protecting it."
@@ -843,6 +1123,17 @@ pub enum TaskError {
         "Could not access identity details. Check available disk space and restart the application."
     )]
     IdentityMetaStorage {
+        #[source]
+        source: Box<crate::wallet_backend::KvAdapterError>,
+    },
+
+    /// A masternode-voting preference (saved node set, last Masternodes
+    /// segment) could not be read or written in the app k/v store. Only the
+    /// convenience preference is lost; voting itself is unaffected.
+    #[error(
+        "Could not save your voting preferences. Check available disk space and try again."
+    )]
+    VotingPreferenceStorage {
         #[source]
         source: Box<crate::wallet_backend::KvAdapterError>,
     },
@@ -913,6 +1204,11 @@ pub enum TaskError {
     )]
     ImportedKeyNotFound,
 
+    /// An add-only import found both this key's secret and its details already
+    /// stored, and left them untouched.
+    #[error("This key is already imported. Pick it from your wallet list to use it.")]
+    ImportedKeyAlreadyStored,
+
     /// Application settings could not be saved to the app k/v store.
     #[error("Could not save your preferences. Check available disk space and try again.")]
     AppSettingsWrite {
@@ -920,12 +1216,17 @@ pub enum TaskError {
         source: crate::wallet_backend::KvAdapterError,
     },
 
-    /// A scheduled DPNS vote could not be read or written in the per-network
-    /// wallet k/v store.
-    #[error(
-        "Could not access your scheduled vote queue. Check available disk space and try again."
-    )]
-    ScheduledVoteStorage {
+    /// The startup check could not read schedules from the previous version.
+    #[error("Your previous scheduled votes could not be checked. Restart the app and try again.")]
+    LegacyScheduledVotesRead {
+        #[source]
+        source: rusqlite::Error,
+    },
+
+    /// The startup check could not read the retired schedule queue an earlier
+    /// pre-release build left behind.
+    #[error("Your previous scheduled votes could not be checked. Restart the app and try again.")]
+    RetiredScheduledVotesRead {
         #[source]
         source: crate::wallet_backend::KvAdapterError,
     },
@@ -1002,10 +1303,101 @@ pub enum TaskError {
 
     /// A DPNS contest record could not be read or written in the
     /// per-network wallet k/v store.
-    #[error("Could not access your DPNS contest data. Check available disk space and try again.")]
+    #[error("Could not access your name contest data. Check available disk space and try again.")]
     ContestStorage {
         #[source]
         source: crate::wallet_backend::KvAdapterError,
+    },
+
+    /// A DPNS vote operation or current-vote snapshot could not be persisted.
+    #[error(
+        "Could not save voting progress. Check available disk space and try again."
+    )]
+    DpnsVoteOperationStorage {
+        #[source]
+        source: crate::wallet_backend::KvAdapterError,
+    },
+
+    /// An indexed journal row could not be decoded, so unresolved target locks
+    /// cannot be reconstructed safely.
+    #[error(
+        "Saved voting progress is unreadable. Restart the app and try loading your votes again."
+    )]
+    DpnsVoteOperationUnreadable {
+        #[source]
+        source: crate::wallet_backend::KvAdapterError,
+    },
+
+    /// An operation index referenced a missing row, so target locks are unknown.
+    #[error(
+        "Saved voting progress is incomplete. Restart the app and try loading your votes again."
+    )]
+    DpnsVoteOperationRecordMissing,
+
+    /// A non-terminal operation was found under a different network namespace.
+    #[error(
+        "Saved voting progress belongs to another network. Switch back to that network or resolve the pending vote there."
+    )]
+    DpnsVoteJournalNetworkMismatch,
+
+    /// The bounded in-process vote coordinator was shut down unexpectedly.
+    #[error("Voting is stopping. Wait for the app to finish closing, then open it and try again.")]
+    DpnsVoteCoordinatorUnavailable,
+
+    /// Another unresolved operation already owns this exact node and contest.
+    #[error(
+        "This node's vote for this name is already in progress. Wait for its result or check again."
+    )]
+    DpnsVoteTargetBusy,
+
+    /// The journal could not advance the exact claimed target into its
+    /// ambiguous network phase, so broadcasting must not start.
+    #[error(
+        "This vote could not be prepared safely. Check its saved status before trying again."
+    )]
+    DpnsVoteBroadcastPhaseNotMarked,
+
+    /// A cancellation lost the race to execution after the target was claimed.
+    #[error(
+        "This scheduled vote has already started and can no longer be cancelled. Check its result once it finishes."
+    )]
+    DpnsScheduledVoteAlreadyStarted,
+
+    /// The schedule changed or started after the edit dialog opened.
+    #[error("This scheduled vote has changed or already started. Refresh the schedule and try again.")]
+    DpnsScheduledVoteNotEditable,
+
+    /// A requested schedule does not fall inside the remaining voting window.
+    #[error("This voting time is outside the available window. Choose a future time before voting ends.")]
+    DpnsScheduledVoteInvalidTime,
+
+    /// The requested contender is absent from the current contest.
+    #[error("This choice is no longer available. Refresh the contest and choose another option.")]
+    DpnsScheduledVoteInvalidChoice,
+
+    /// The original voter has been removed or lacks an eligible voting key.
+    #[error("This node is no longer available for voting. Load a node with its voting key and try again.")]
+    DpnsScheduledVoteVoterUnavailable,
+
+    /// Current proved state is required to suppress duplicate/no-op votes safely.
+    #[error(
+        "This node's current vote could not be checked. Refresh vote state before submitting."
+    )]
+    DpnsCurrentVoteUnavailable,
+
+    /// A newer refresh or confirmation superseded a submission's proved snapshot.
+    #[error("Newer voting information is available. Refresh vote state and try again.")]
+    DpnsVoteStateChanged,
+
+    /// Fresh preflight discovered a vote change that the operator has not reviewed.
+    #[error("This node has voted since your review. Review its current choice and the vote-change warning before submitting again.")]
+    DpnsVoteReviewRequired,
+
+    /// Retains the per-voter cause of a strict current-vote preflight failure.
+    #[error("This node's current vote could not be checked. Refresh vote state before submitting.")]
+    DpnsVotePreflightFailed {
+        #[source]
+        source: std::sync::Arc<TaskError>,
     },
 
     /// A local identity record could not be read or written in the
@@ -1016,15 +1408,6 @@ pub enum TaskError {
         source: crate::wallet_backend::KvAdapterError,
     },
 
-    /// A voter identifier handed to a scheduled-vote operation was not a valid
-    /// 32-byte identity id. Callers always pass an [`Identifier`]'s bytes, so
-    /// this signals an internal inconsistency rather than user input.
-    #[error("Could not read the voter for this scheduled vote. Please refresh and try again.")]
-    InvalidVoterIdentifier {
-        #[source]
-        source: dash_sdk::dpp::platform_value::Error,
-    },
-
     /// A stored [`QualifiedIdentity`](crate::model::qualified_identity::QualifiedIdentity)
     /// blob could not be decoded. Private keys and balance state are at stake,
     /// so this is surfaced rather than silently skipped.
@@ -1032,6 +1415,16 @@ pub enum TaskError {
     IdentityEncoding {
         #[source]
         source: bincode::error::DecodeError,
+    },
+
+    /// The stored balances of the user's identities could not be read for a
+    /// wallet picker, which then leaves identity balances out of its totals.
+    #[error(
+        "Could not read the balances of your identities, so the wallet totals here do not include them. Reopen this screen to try again."
+    )]
+    IdentityBalancesUnavailable {
+        #[source]
+        source: Box<TaskError>,
     },
 
     /// A token registry or balance record could not be read or written in
@@ -1148,6 +1541,25 @@ pub enum TaskError {
         "Could not unlock a saved wallet. Re-enter your password; if it persists, restore the wallet from its recovery phrase."
     )]
     WalletSeedDecryptFailed,
+
+    /// The upgrade-backup retention setting could not be read, so no backup was
+    /// deleted.
+    #[error(
+        "Your backup retention setting could not be read, so no old upgrade backups were deleted. Open Settings, choose a backup retention setting and save it."
+    )]
+    BackupRetentionRead {
+        #[source]
+        source: crate::wallet_backend::KvAdapterError,
+    },
+
+    /// Expired upgrade backups could not all be deleted.
+    #[error(
+        "Some old upgrade backups could not be deleted. The app tries again the next time it opens your wallet data."
+    )]
+    UpgradeBackupCleanup {
+        #[source]
+        source: std::io::Error,
+    },
 
     /// A local filesystem operation failed (e.g. creating a data directory).
     #[error(
@@ -1279,6 +1691,15 @@ pub enum TaskError {
     #[error("Identity not found on the platform. Please check the ID or name and try again.")]
     IdentityNotFound,
 
+    /// No voter identity exists for the selected node and supplied key address.
+    #[error("This voting key could not be matched to the selected node. Check that node's voting private key and try again.")]
+    MasternodeVotingKeyNotFound,
+
+    /// The node's voter identity holds no enabled voting key for the supplied
+    /// key's address, which is what replacing the voting key leaves behind.
+    #[error("This voting key is no longer active on the selected node. Enter that node's current voting private key and try again.")]
+    MasternodeVotingKeyNotUsable,
+
     /// An owner-key withdrawal was directed at an address other than the
     /// masternode's registered payout address, which the network does not allow.
     #[error(
@@ -1293,6 +1714,14 @@ pub enum TaskError {
         "This withdrawal can't be signed because no active transfer key for this identity is available in this app. Load an active transfer key for this identity and try again."
     )]
     NoUsableWithdrawalKey,
+
+    /// No active key this app can sign with was available for the transfer —
+    /// the chosen key may have been disabled, or no transfer key is loaded for
+    /// this identity.
+    #[error(
+        "This transfer can't be signed because no active transfer key for this identity is available in this app. Load an active transfer key for this identity and try again."
+    )]
+    NoUsableTransferKey,
 
     /// Timed out waiting for transaction confirmation.
     #[error(
@@ -1553,11 +1982,18 @@ pub enum TaskError {
         source: crate::model::validation::TextLengthError,
     },
 
-    /// A wallet alias exceeded the shared character limit.
+    /// A wallet alias exceeded the shared character limit after cleaning.
     #[error("The wallet name is too long. Use 64 characters or fewer and try again.")]
     InvalidWalletAliasLength {
         #[source]
-        source: crate::model::validation::TextLengthError,
+        source: crate::model::wallet::alias::AliasError,
+    },
+
+    /// Another wallet of the same kind already uses the requested alias.
+    #[error("Another wallet already uses this name. Choose a different name and try again.")]
+    WalletAliasAlreadyUsed {
+        #[source]
+        source: crate::model::wallet::alias::AliasError,
     },
 
     /// A document's unique values conflict with an existing entry.
@@ -1785,6 +2221,13 @@ pub enum TaskError {
     )]
     DataContractNotFound,
 
+    /// The loaded username contract cannot identify a voting poll.
+    #[error("The username voting information is incomplete. Refresh and try again.")]
+    DpnsVotePollSchema {
+        #[from]
+        source: crate::model::dpns_voting::DpnsVotePollError,
+    },
+
     // ──────────────────────────────────────────────────────────────────────────
     // Identity creation / parsing errors
     // ──────────────────────────────────────────────────────────────────────────
@@ -1807,6 +2250,10 @@ pub enum TaskError {
         "This node is already being loaded. Wait for that load to finish before loading it again."
     )]
     IdentityLoadInProgress { identity_id: Identifier },
+
+    /// The load was invalidated by removal or a scoped target changed protection.
+    #[error("This identity changed while its key was loading. Open the current identity and try again.")]
+    IdentityLoadSuperseded { identity_id: Identifier },
 
     /// The ProTxHash could not be read as a hex ProTxHash or a Base58 identity
     /// id. Carries the offending input (data, not a message).
@@ -1836,6 +2283,60 @@ pub enum TaskError {
     /// A private key could not be parsed or is invalid.
     #[error("The private key you entered is invalid. Please check the format and try again.")]
     InvalidPrivateKey,
+
+    /// The network could not be asked whether a username is free.
+    #[error("{}", USERNAME_AVAILABILITY_CHECK_FAILED)]
+    UsernameAvailabilityCheckFailed {
+        #[source]
+        source: Box<SdkError>,
+    },
+
+    /// The username stopped being available between choosing it and paying.
+    #[error("This username is no longer available. Nothing was spent. Choose another username.")]
+    UsernameNoLongerAvailable {
+        availability: crate::model::dpns_usernames::UsernameAvailability,
+    },
+
+    #[error("The username payment terms changed. Nothing was spent. Review the name and fees again.")]
+    UsernameRegistrationTermsChanged,
+
+    /// The identity cannot cover both registration documents (and the community
+    /// vote fee, when the name needs one); refused before anything is sent.
+    #[error(
+        "This identity has {available_dash}, but registering this username needs {required_dash}. \
+         Nothing was spent. Top up the identity and try again.",
+        available_dash = format_credits_as_dash(*.available),
+        required_dash = format_credits_as_dash(*.required)
+    )]
+    UsernameRegistrationBalanceTooLow { available: u64, required: u64 },
+
+    /// The name request was sent, but nothing proves whether the network applied
+    /// it. It may already be paid for, so this never reads as a plain failure.
+    #[error(
+        "The app could not confirm whether your request for this username went through. Do not pay again yet. Wait a few minutes, then check the Usernames list on your identity. If the name is not there, try again."
+    )]
+    UsernameRegistrationUnconfirmed {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// Username requests or preferences could not be read or written on this device.
+    #[error(
+        "Your username settings could not be saved on this device. Check available disk space and try again."
+    )]
+    UsernameStorage {
+        #[source]
+        source: crate::wallet_backend::KvAdapterError,
+    },
+
+    /// The status of username requests could not be read from the network.
+    #[error(
+        "Username request status can't be updated right now. Check your internet connection and try again."
+    )]
+    UsernameRequestRefreshFailed {
+        #[source]
+        source: Box<SdkError>,
+    },
 
     /// Fetching DPNS names for an identity failed.
     #[error("Could not look up names for this identity. Please check your connection and retry.")]
@@ -2726,6 +3227,17 @@ pub enum TaskError {
     )]
     VotePollNotFound { name: String },
 
+    /// The masternode has used every vote allowed for a contested name.
+    #[error(
+        "This node has already cast the maximum {max_times_allowed} votes allowed for this contest and can't vote again. Choose another contest to vote on."
+    )]
+    MasternodeVoteLimitReached {
+        times_already_voted: u16,
+        max_times_allowed: u16,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
     /// The identity does not have an authentication key required to sign documents.
     #[error(
         "This identity does not have a key for signing documents. Please add an authentication key."
@@ -2735,9 +3247,10 @@ pub enum TaskError {
     // ──────────────────────────────────────────────────────────────────────────
     // Wallet creation / import errors
     // ──────────────────────────────────────────────────────────────────────────
-    /// The wallet has already been imported for this network.
-    #[error("This wallet has already been imported for this network.")]
-    WalletAlreadyImported,
+    /// The wallet has already been imported for this network. `alias` is the
+    /// existing wallet's local name, `None` when it was never named.
+    #[error("{}", wallet_already_imported_message(.alias.as_deref()))]
+    WalletAlreadyImported { alias: Option<String> },
 
     /// A new wallet password is shorter than the persistent secret store's
     /// minimum and therefore could not be migrated to Tier-2 protection.
@@ -2860,6 +3373,12 @@ pub enum TaskError {
     /// Invalid recipient address for shielded transfer.
     #[error("The recipient shielded address is invalid. Please check the address and retry.")]
     ShieldedInvalidRecipientAddress,
+
+    /// A shield from the Core wallet was asked for with a zero amount. The
+    /// network fee would be paid while nothing asked for is shielded, so it is
+    /// refused before any funds move.
+    #[error("The amount to shield is zero. Enter an amount greater than zero and try again.")]
+    ShieldedZeroAmount,
 
     /// Timed out waiting for asset lock proof during shield-from-asset-lock.
     #[error(
@@ -3269,6 +3788,11 @@ impl TaskError {
             Self::IdentityKeyAddedButNotSaved { source } => Self::IdentityKeyAddedButNotSaved {
                 source: Box::new((*source).contextualize_dapi_availability(availability)),
             },
+            Self::DerivedIdentityKeyAddedButNotSaved { source } => {
+                Self::DerivedIdentityKeyAddedButNotSaved {
+                    source: Box::new((*source).contextualize_dapi_availability(availability)),
+                }
+            }
             Self::ScheduledVoteRejected { source } => {
                 Self::ScheduledVoteAllAddressesExhausted { source }
             }
@@ -3366,7 +3890,7 @@ impl TaskError {
 
     /// Map a wallet-storage open failure to the right user-facing variant.
     ///
-    /// Three storage failures get honest, distinct copy; everything else keeps
+    /// Five storage failures get honest, distinct copy; everything else keeps
     /// the generic disk/IO message:
     ///
     /// - A forward-version database (written by a newer build, schema beyond
@@ -3376,14 +3900,26 @@ impl TaskError {
     /// - A divergent migration history (e.g. a database written under an
     ///   earlier, incompatible storage layout that this build's migrations
     ///   cannot reconcile) is surfaced as [`Self::WalletDataIncompatible`] so
-    ///   the banner tells the user to remove the local wallet data — freeing
-    ///   disk space or restarting never resolves a structural mismatch.
-    /// - Every other storage failure keeps the generic disk/IO copy via
-    ///   [`Self::WalletStorage`].
+    ///   the banner tells the user to back up keys and set the databases aside
+    ///   while keeping the vault — freeing disk space or restarting never
+    ///   resolves a structural mismatch.
+    /// - A migration blocked by another SQLite writer is surfaced as
+    ///   [`Self::WalletStorageInUse`] so the user can close the competing
+    ///   process and retry instead of following incompatible-data recovery.
+    /// - A migration refused by file permissions or a read-only disk is
+    ///   surfaced as [`Self::WalletStorageAccessDenied`] so the user fixes
+    ///   the folder instead of setting the databases aside.
+    /// - A folder on the database path that other accounts can modify is
+    ///   surfaced as [`Self::WalletDataFolderInsecure`] so the banner tells the
+    ///   user to tighten folder permissions.
+    /// - A migration that failed on a recoverable resource (disk full, OS I/O
+    ///   failure, out of memory) and every other storage failure keep the
+    ///   generic, retryable disk/IO copy via [`Self::WalletStorage`].
     ///
     /// Discrimination is on the typed upstream variant
     /// (`WalletStorageError::SchemaVersionUnsupported` /
-    /// `WalletStorageError::Migration`), never on its `Display` text.
+    /// `WalletStorageError::Migration` / `WalletStorageError::InsecureParentDir`)
+    /// and the typed migration source chain, never on `Display` text.
     pub fn from_wallet_storage_open_error(
         source: platform_wallet_storage::WalletStorageError,
     ) -> Self {
@@ -3395,11 +3931,55 @@ impl TaskError {
                 found,
                 max_supported,
             },
+            other @ platform_wallet_storage::WalletStorageError::Migration(_)
+                if Self::wallet_storage_error_is_in_use(&other) =>
+            {
+                Self::WalletStorageInUse { source: other }
+            }
+            other @ platform_wallet_storage::WalletStorageError::Migration(_)
+                if Self::wallet_storage_error_is_resource_exhausted(&other) =>
+            {
+                Self::WalletStorage { source: other }
+            }
+            other @ platform_wallet_storage::WalletStorageError::Migration(_)
+                if Self::wallet_storage_error_is_access_denied(&other) =>
+            {
+                Self::WalletStorageAccessDenied { source: other }
+            }
             other @ platform_wallet_storage::WalletStorageError::Migration(_) => {
                 Self::WalletDataIncompatible { source: other }
             }
+            other @ platform_wallet_storage::WalletStorageError::InsecureParentDir { .. } => {
+                Self::WalletDataFolderInsecure { source: other }
+            }
             other => Self::WalletStorage { source: other },
         }
+    }
+
+    fn wallet_storage_error_is_in_use(
+        source: &platform_wallet_storage::WalletStorageError,
+    ) -> bool {
+        StorageFailure::in_chain(source) == Some(StorageFailure::InUse)
+    }
+
+    /// A migration that ran out of disk space, hit an OS I/O failure or ran
+    /// out of memory is recoverable by freeing the resource and retrying, so
+    /// it must not get the terminal incompatible-data guidance.
+    fn wallet_storage_error_is_resource_exhausted(
+        source: &platform_wallet_storage::WalletStorageError,
+    ) -> bool {
+        StorageFailure::in_chain(source)
+            .is_some_and(|failure| failure.is_retryable() && failure != StorageFailure::InUse)
+    }
+
+    /// File permissions or a read-only disk blocked the migration. Uses the
+    /// shared [`StorageFailure`] policy, so it matches the staged-upgrade
+    /// `UpgradeError::AccessDenied` classification for SQLite codes and OS
+    /// error kinds alike.
+    fn wallet_storage_error_is_access_denied(
+        source: &platform_wallet_storage::WalletStorageError,
+    ) -> bool {
+        StorageFailure::in_chain(source) == Some(StorageFailure::AccessDenied)
     }
 
     /// Returns `true` when this is a [`Self::SecretStore`] open failure caused
@@ -3598,6 +4178,51 @@ fn parse_fee_exceeds_spendable(detail: &str) -> Option<(u64, u64, u64)> {
     Some((amount, fee, spendable))
 }
 
+/// Refuse a wallet funding the network would reject for not covering its fee.
+///
+/// Call before any wallet work: by the time the network reports such a refusal
+/// the funds have already left the wallet. A minimum that could not be read
+/// refuses the amount rather than letting it through. Pure — no I/O.
+pub(crate) fn ensure_funding_covers_network_fee(
+    amount_duffs: u64,
+    minimum_duffs: Result<u64, Box<ProtocolError>>,
+) -> Result<(), TaskError> {
+    let minimum_duffs = minimum_duffs.map_err(|e| TaskError::AssetLockNetworkFeeUnavailable {
+        source_error: Box::new(SdkError::Protocol(*e)),
+    })?;
+    validate_asset_lock_minimum(amount_duffs, minimum_duffs).map_err(|e| {
+        TaskError::AssetLockAmountBelowNetworkFee {
+            amount_duffs,
+            minimum_duffs: e.minimum_amount_duffs,
+        }
+    })
+}
+
+/// [`ensure_funding_covers_network_fee`] for the funding transaction at
+/// `out_point`, when the wallet tracks it; one it does not track is left for
+/// the operation to report. Only the amount the transaction was created with
+/// is known here, not what an earlier use left of it, so passing does not
+/// promise that the network accepts it. Pure — no I/O.
+pub(crate) fn ensure_existing_funding_covers_network_fee(
+    tracked: &[TrackedAssetLock],
+    out_point: &dashcore::OutPoint,
+    minimum_duffs: Result<u64, Box<ProtocolError>>,
+) -> Result<(), TaskError> {
+    let Some(lock) = tracked.iter().find(|lock| lock.out_point == *out_point) else {
+        return Ok(());
+    };
+    match ensure_funding_covers_network_fee(lock.amount, minimum_duffs) {
+        Err(TaskError::AssetLockAmountBelowNetworkFee {
+            amount_duffs,
+            minimum_duffs,
+        }) => Err(TaskError::ExistingFundingBelowNetworkFee {
+            amount_duffs,
+            minimum_duffs,
+        }),
+        other => other,
+    }
+}
+
 /// Construct the appropriate `TaskError` for a shielded transition build failure.
 ///
 /// Parses the error string for known patterns and returns a specific variant:
@@ -3679,6 +4304,16 @@ impl From<crate::model::wallet::passphrase::PassphraseError> for TaskError {
     }
 }
 
+impl From<crate::model::wallet::alias::AliasError> for TaskError {
+    fn from(source: crate::model::wallet::alias::AliasError) -> Self {
+        use crate::model::wallet::alias::AliasError;
+        match source {
+            AliasError::TooLong { .. } => TaskError::InvalidWalletAliasLength { source },
+            AliasError::AlreadyUsed => TaskError::WalletAliasAlreadyUsed { source },
+        }
+    }
+}
+
 impl From<crate::model::wallet::PaymentValidationError> for TaskError {
     fn from(e: crate::model::wallet::PaymentValidationError) -> Self {
         use crate::model::wallet::PaymentValidationError;
@@ -3742,6 +4377,100 @@ impl TaskError {
     }
 }
 
+/// Why the DET identity signer could not resolve a signing key.
+///
+/// The upstream `Signer` trait can only return `ProtocolError`, which has no
+/// variant carrying a typed source, so the signer starts its
+/// `ProtocolError::Generic` text with [`Self::marker`] and `From<SdkError>`
+/// maps the marker back to a dedicated `TaskError` variant. Intentional,
+/// sanctioned exception to the no-string-parsing rule (see AGENTS.md): only
+/// the fixed marker is matched; the text after it never reaches a banner.
+// TODO(upstream): replace with a typed ProtocolError source variant in dashpay/platform
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SigningKeyUnavailableCause {
+    /// The wallet the key derives from has no secret on this device.
+    WalletSecretMissing,
+    /// The wallet the key derives from is locked.
+    WalletLocked,
+    /// The user dismissed the password prompt.
+    PasswordDeclined,
+    /// A password is needed but no interactive prompt is available.
+    PasswordUnavailable,
+    /// The key's private half is missing from secure storage.
+    KeyMissing,
+    /// Any other resolution failure.
+    Other,
+}
+
+impl SigningKeyUnavailableCause {
+    const ALL: [Self; 6] = [
+        Self::WalletSecretMissing,
+        Self::WalletLocked,
+        Self::PasswordDeclined,
+        Self::PasswordUnavailable,
+        Self::KeyMissing,
+        Self::Other,
+    ];
+
+    /// The cause a key-resolution failure is reported as.
+    pub fn of(error: &TaskError) -> Self {
+        match error {
+            TaskError::SecretSeamMissing => Self::WalletSecretMissing,
+            TaskError::WalletLocked => Self::WalletLocked,
+            TaskError::SecretPromptCancelled => Self::PasswordDeclined,
+            TaskError::SecretPromptUnavailable => Self::PasswordUnavailable,
+            TaskError::IdentityKeyMissing => Self::KeyMissing,
+            _ => Self::Other,
+        }
+    }
+
+    /// The fixed, DET-owned marker that starts the signer's error text.
+    pub const fn marker(self) -> &'static str {
+        match self {
+            Self::WalletSecretMissing => "[det:signing-key-unavailable:wallet-secret-missing] ",
+            Self::WalletLocked => "[det:signing-key-unavailable:wallet-locked] ",
+            Self::PasswordDeclined => "[det:signing-key-unavailable:password-declined] ",
+            Self::PasswordUnavailable => "[det:signing-key-unavailable:password-unavailable] ",
+            Self::KeyMissing => "[det:signing-key-unavailable:key-missing] ",
+            Self::Other => "[det:signing-key-unavailable:other] ",
+        }
+    }
+
+    /// Prefix shared by every marker; a marker from a cause this build does
+    /// not know still maps to [`Self::Other`].
+    const MARKER_NAMESPACE: &'static str = "[det:signing-key-unavailable:";
+
+    /// The cause whose marker starts an unwrapped signer error, if any.
+    fn recognise(error: &SdkError) -> Option<Self> {
+        let SdkError::Protocol(ProtocolError::Generic(text)) = error else {
+            return None;
+        };
+        Self::ALL
+            .into_iter()
+            .find(|cause| text.starts_with(cause.marker()))
+            .or_else(|| {
+                text.starts_with(Self::MARKER_NAMESPACE)
+                    .then_some(Self::Other)
+            })
+    }
+
+    fn into_task_error(self, source_error: SdkError) -> TaskError {
+        let source_error = Box::new(source_error);
+        match self {
+            Self::WalletSecretMissing => {
+                TaskError::IdentitySigningWalletSecretMissing { source_error }
+            }
+            Self::WalletLocked => TaskError::IdentitySigningWalletLocked { source_error },
+            Self::PasswordDeclined => TaskError::IdentitySigningPasswordDeclined { source_error },
+            Self::PasswordUnavailable => {
+                TaskError::IdentitySigningPasswordUnavailable { source_error }
+            }
+            Self::KeyMissing => TaskError::IdentitySigningKeyMissing { source_error },
+            Self::Other => TaskError::IdentitySigningFailed { source_error },
+        }
+    }
+}
+
 /// A millisecond Unix timestamp as a UTC date and time for error messages.
 fn format_timestamp_ms_utc(ms: u64) -> String {
     i64::try_from(ms)
@@ -3753,6 +4482,13 @@ fn format_timestamp_ms_utc(ms: u64) -> String {
 
 impl From<SdkError> for TaskError {
     fn from(error: SdkError) -> Self {
+        // DET's own signer failure, tagged by `QualifiedIdentity::sign`.
+        // Intentional, sanctioned exception to the no-string-parsing rule (see AGENTS.md).
+        // TODO(upstream): replace with a typed ProtocolError source variant in dashpay/platform
+        if let Some(cause) = SigningKeyUnavailableCause::recognise(&error) {
+            return cause.into_task_error(error);
+        }
+
         if sdk_error_is_masternode_list_not_ready(&error) {
             return TaskError::MasternodeListNotReady {
                 source_error: Box::new(error),
@@ -3828,6 +4564,17 @@ impl From<SdkError> for TaskError {
                             TaskError::IdentityInsufficientBalance {
                                 available,
                                 required,
+                                source_error,
+                            }
+                        }))
+                    }
+                    ConsensusError::StateError(StateError::MasternodeVotedTooManyTimesError(e)) => {
+                        let (times_already_voted, max_times_allowed) =
+                            (e.times_already_voted(), e.max_times_allowed());
+                        Some(Box::new(move |source_error| {
+                            TaskError::MasternodeVoteLimitReached {
+                                times_already_voted,
+                                max_times_allowed,
                                 source_error,
                             }
                         }))
@@ -4397,6 +5144,17 @@ fn sdk_error_is_dapi_reachability_failure(error: &SdkError) -> bool {
     }
 }
 
+/// User-facing text for [`TaskError::WalletAlreadyImported`]: names the existing
+/// wallet so the user knows which one to open.
+fn wallet_already_imported_message(alias: Option<&str>) -> String {
+    match alias {
+        Some(alias) => format!(
+            "This wallet has already been imported for this network as \"{alias}\". Open it from the Wallets screen, or enter a different recovery phrase."
+        ),
+        None => "This wallet has already been imported for this network. Open it from the Wallets screen, or enter a different recovery phrase.".to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4411,11 +5169,129 @@ mod tests {
     use dash_sdk::dpp::consensus::state::identity::duplicated_identity_public_key_state_error::DuplicatedIdentityPublicKeyStateError;
     use dash_sdk::dpp::consensus::state::identity::IdentityInsufficientBalanceError;
     use dash_sdk::dpp::consensus::state::identity::identity_public_key_already_exists_for_unique_contract_bounds_error::IdentityPublicKeyAlreadyExistsForUniqueContractBoundsError;
+    use dash_sdk::dpp::consensus::state::voting::masternode_voted_too_many_times::MasternodeVotedTooManyTimesError;
     use dash_sdk::dpp::identity::Purpose;
     use dash_sdk::platform::Identifier;
 
     const DAPI_EXHAUSTED_MESSAGE: &str =
         "All Dash network servers are temporarily unreachable. Please wait a minute and retry.";
+
+    /// The missing-wallet message offers both self-service paths: re-import
+    /// from the recovery phrase on the same network, or the Settings restore.
+    #[test]
+    fn missing_wallet_secret_message_offers_both_recovery_paths() {
+        let message = TaskError::SecretSeamMissing.to_string();
+        assert!(message.contains("recovery phrase"), "{message}");
+        assert!(message.contains("same network"), "{message}");
+        assert!(
+            message.contains("Restore from Previous Version in Settings"),
+            "{message}"
+        );
+        assert!(!message.to_lowercase().contains("details"), "{message}");
+        assert!(!message.to_lowercase().contains("support"), "{message}");
+    }
+
+    /// An unrelated generic protocol error stays the generic SDK variant.
+    #[test]
+    fn unrelated_generic_protocol_error_stays_an_sdk_error() {
+        let error = TaskError::from(SdkError::Protocol(ProtocolError::Generic(
+            "Key 3 not found in identity".into(),
+        )));
+        assert!(matches!(error, TaskError::SdkError { .. }), "{error:?}");
+    }
+
+    fn marked_signer_error(cause: SigningKeyUnavailableCause) -> SdkError {
+        SdkError::Protocol(ProtocolError::Generic(format!(
+            "{}SDK-carried text for identity Abc123",
+            cause.marker()
+        )))
+    }
+
+    /// Every signer cause maps to its own variant with a fixed banner that
+    /// carries neither the marker nor any text that travelled through the SDK.
+    #[test]
+    fn each_signer_cause_maps_to_its_variant_with_a_fixed_banner() {
+        use SigningKeyUnavailableCause as Cause;
+        type IsVariant = fn(&TaskError) -> bool;
+        let cases: [(Cause, TaskError, IsVariant); 6] = [
+            (
+                Cause::WalletSecretMissing,
+                TaskError::SecretSeamMissing,
+                |e| matches!(e, TaskError::IdentitySigningWalletSecretMissing { .. }),
+            ),
+            (Cause::WalletLocked, TaskError::WalletLocked, |e| {
+                matches!(e, TaskError::IdentitySigningWalletLocked { .. })
+            }),
+            (
+                Cause::PasswordDeclined,
+                TaskError::SecretPromptCancelled,
+                |e| matches!(e, TaskError::IdentitySigningPasswordDeclined { .. }),
+            ),
+            (
+                Cause::PasswordUnavailable,
+                TaskError::SecretPromptUnavailable,
+                |e| matches!(e, TaskError::IdentitySigningPasswordUnavailable { .. }),
+            ),
+            (Cause::KeyMissing, TaskError::IdentityKeyMissing, |e| {
+                matches!(e, TaskError::IdentitySigningKeyMissing { .. })
+            }),
+            (Cause::Other, TaskError::WalletKeyLookupFailed, |e| {
+                matches!(e, TaskError::IdentitySigningFailed { .. })
+            }),
+        ];
+        let mut banners = std::collections::BTreeSet::new();
+        for (cause, resolution_error, is_expected) in cases {
+            assert_eq!(Cause::of(&resolution_error), cause);
+            assert!(cause.marker().starts_with(Cause::MARKER_NAMESPACE));
+            let error = TaskError::from(marked_signer_error(cause));
+            assert!(is_expected(&error), "{cause:?} -> {error:?}");
+            let banner = error.to_string();
+            assert!(!banner.contains("[det:"), "{banner}");
+            assert!(!banner.contains("SDK-carried"), "{banner}");
+            assert!(!banner.contains("Abc123"), "{banner}");
+            assert!(banners.insert(banner), "each cause has its own message");
+            assert!(
+                format!("{error:?}").contains("SDK-carried text"),
+                "the signer text stays in the details"
+            );
+        }
+    }
+
+    /// A marker from a cause this build does not know falls back to the
+    /// generic signing variant, still with a fixed banner.
+    #[test]
+    fn unknown_signer_marker_falls_back_to_the_generic_variant() {
+        let error = TaskError::from(SdkError::Protocol(ProtocolError::Generic(
+            "[det:signing-key-unavailable:from-the-future] SDK-carried text".into(),
+        )));
+        assert!(
+            matches!(error, TaskError::IdentitySigningFailed { .. }),
+            "{error:?}"
+        );
+        assert!(!error.to_string().contains("SDK-carried"));
+    }
+
+    /// A marked signer error the SDK wrapped in another variant is not
+    /// recognised (no string search) and never shows its text.
+    #[test]
+    fn rewrapped_signer_error_is_not_recognised_and_shows_no_sdk_text() {
+        let text = format!(
+            "{}SDK-carried text",
+            SigningKeyUnavailableCause::WalletLocked.marker()
+        );
+        let error = TaskError::from(SdkError::Generic(text));
+        assert!(
+            !matches!(
+                error,
+                TaskError::IdentitySigningWalletLocked { .. }
+                    | TaskError::IdentitySigningFailed { .. }
+            ),
+            "{error:?}"
+        );
+        let banner = error.to_string();
+        assert!(!banner.contains("[det:"), "{banner}");
+        assert!(!banner.contains("SDK-carried"), "{banner}");
+    }
 
     fn dapi_connection_refused_error() -> TaskError {
         let status = dash_sdk::dapi_grpc::tonic::Status::unavailable("tcp connect error");
@@ -5514,6 +6390,63 @@ mod tests {
     }
 
     #[test]
+    fn from_sdk_error_vote_limit_via_consensus_is_specific() {
+        let consensus = ConsensusError::from(MasternodeVotedTooManyTimesError::new(
+            Identifier::random(),
+            6,
+            5,
+        ));
+        let err = TaskError::from(SdkError::from(consensus));
+
+        assert!(
+            matches!(
+                &err,
+                TaskError::MasternodeVoteLimitReached {
+                    times_already_voted: 6,
+                    max_times_allowed: 5,
+                    ..
+                }
+            ),
+            "Expected MasternodeVoteLimitReached, got: {err:?}"
+        );
+        assert_eq!(
+            err.to_string(),
+            "This node has already cast the maximum 5 votes allowed for this contest and can't vote again. Choose another contest to vote on."
+        );
+    }
+
+    #[test]
+    fn from_sdk_error_vote_limit_via_broadcast_is_specific() {
+        let consensus = ConsensusError::from(MasternodeVotedTooManyTimesError::new(
+            Identifier::random(),
+            6,
+            5,
+        ));
+        let broadcast_err = dash_sdk::error::StateTransitionBroadcastError {
+            code: 40303,
+            message: "vote limit reached".to_string(),
+            cause: Some(consensus),
+        };
+        let err = TaskError::from(SdkError::StateTransitionBroadcastError(broadcast_err));
+
+        assert!(
+            matches!(
+                &err,
+                TaskError::MasternodeVoteLimitReached {
+                    times_already_voted: 6,
+                    max_times_allowed: 5,
+                    ..
+                }
+            ),
+            "Expected MasternodeVoteLimitReached, got: {err:?}"
+        );
+        assert_eq!(
+            err.to_string(),
+            "This node has already cast the maximum 5 votes allowed for this contest and can't vote again. Choose another contest to vote on."
+        );
+    }
+
+    #[test]
     fn connection_failed_display_includes_url() {
         let socket_err = dashcore_rpc::jsonrpc::simple_http::Error::SocketError(
             std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "Connection refused"),
@@ -5789,6 +6722,67 @@ mod tests {
         assert!(
             !msg.contains("sync") && !msg.contains("anchor"),
             "Expected no ZK jargon in user message, got: {msg}"
+        );
+    }
+
+    /// The user entered nothing, so the refusal must not ask for an amount.
+    #[test]
+    fn existing_funding_below_the_network_fee_is_refused_with_what_to_do_instead() {
+        use crate::model::asset_lock::confirmed_funding_for_test;
+        let tracked = [
+            confirmed_funding_for_test(1, 50_500),
+            confirmed_funding_for_test(2, 5_237),
+        ];
+        let error =
+            ensure_existing_funding_covers_network_fee(&tracked, &tracked[1].out_point, Ok(50_500))
+                .expect_err("a funding transaction below the network fee must be refused");
+        assert!(
+            matches!(
+                error,
+                TaskError::ExistingFundingBelowNetworkFee {
+                    amount_duffs: 5_237,
+                    minimum_duffs: 50_500,
+                }
+            ),
+            "expected ExistingFundingBelowNetworkFee, got: {error:?}"
+        );
+        assert_eq!(
+            error.to_string(),
+            "This funding is too small to cover the network fee of 0.000505 DASH. \
+             Choose a larger one, or use a different funding method."
+        );
+    }
+
+    /// A funding equal to the fee is accepted, and one the wallet does not
+    /// track is not judged here.
+    #[test]
+    fn existing_funding_that_covers_the_fee_or_is_not_tracked_passes() {
+        use crate::model::asset_lock::confirmed_funding_for_test;
+        let tracked = [
+            confirmed_funding_for_test(1, 50_500),
+            confirmed_funding_for_test(2, 5_237),
+        ];
+        let not_tracked = confirmed_funding_for_test(3, 1).out_point;
+        for out_point in [tracked[0].out_point, not_tracked] {
+            assert!(
+                ensure_existing_funding_covers_network_fee(&tracked, &out_point, Ok(50_500))
+                    .is_ok(),
+                "{out_point} must pass"
+            );
+        }
+    }
+
+    #[test]
+    fn asset_lock_amount_below_network_fee_display_names_the_amount_to_enter() {
+        let message = TaskError::AssetLockAmountBelowNetworkFee {
+            amount_duffs: 5_237,
+            minimum_duffs: 50_500,
+        }
+        .to_string();
+        assert_eq!(
+            message,
+            "This amount is too small to cover the network fee. \
+             Enter at least 0.000505 DASH and try again."
         );
     }
 
@@ -7181,6 +8175,58 @@ mod tests {
         );
     }
 
+    /// A group-writable (or foreign-owned) ancestor of the wallet database maps
+    /// to `WalletDataFolderInsecure`, whose copy names the folder-permission
+    /// problem instead of the misleading disk-space advice. The path and mode
+    /// stay in the source chain, out of the user-facing message.
+    #[test]
+    fn insecure_parent_dir_maps_to_wallet_data_folder_insecure() {
+        let ancestor = std::path::PathBuf::from("/data/tmp/shared-scratch");
+        for reason in [
+            platform_wallet_storage::InsecureAncestor::WritableWithoutSticky { mode: 0o775 },
+            platform_wallet_storage::InsecureAncestor::UntrustedOwner {
+                uid: 4242,
+                current_uid: 1000,
+            },
+        ] {
+            let upstream = platform_wallet_storage::WalletStorageError::InsecureParentDir {
+                ancestor: ancestor.clone(),
+                reason,
+            };
+            let err = TaskError::from_wallet_storage_open_error(upstream);
+            assert!(
+                matches!(
+                    &err,
+                    TaskError::WalletDataFolderInsecure {
+                        source: platform_wallet_storage::WalletStorageError::InsecureParentDir {
+                            ancestor: a,
+                            ..
+                        },
+                    } if *a == ancestor
+                ),
+                "Expected WalletDataFolderInsecure carrying the ancestor, got: {err:?}"
+            );
+
+            let msg = err.to_string();
+            assert!(
+                msg.contains("folder") && msg.contains("other accounts"),
+                "Expected folder-permission guidance, got: {msg}"
+            );
+            assert!(
+                !msg.contains("disk space"),
+                "Folder-permission message must not mention disk space, got: {msg}"
+            );
+            assert!(
+                !msg.contains("shared-scratch") && !msg.contains("775") && !msg.contains("chmod"),
+                "Path, mode and commands must stay out of the user message, got: {msg}"
+            );
+            assert!(
+                std::error::Error::source(&err).is_some(),
+                "Expected source chain to be preserved"
+            );
+        }
+    }
+
     /// Builds a genuine divergent-version [`refinery::Error`] by applying a
     /// `V1__init` migration, then re-running with the same version/name but
     /// different SQL (which changes refinery's checksum) and
@@ -7205,10 +8251,132 @@ mod tests {
             .expect_err("divergent checksum must abort")
     }
 
+    fn busy_migration_error() -> refinery::Error {
+        use refinery::{Migration, Runner};
+
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let path = dir.path().join("wallet.sqlite");
+        let writer = rusqlite::Connection::open(&path).expect("writer connection");
+        writer
+            .execute_batch("BEGIN IMMEDIATE; CREATE TABLE held (id INTEGER);")
+            .expect("hold write lock");
+        let mut contender = rusqlite::Connection::open(&path).expect("contender connection");
+        contender
+            .busy_timeout(std::time::Duration::from_millis(1))
+            .expect("short deterministic timeout");
+        let migration = Migration::unapplied("V1__init", "CREATE TABLE data (id INTEGER);")
+            .expect("valid migration");
+        Runner::new(&[migration])
+            .run(&mut contender)
+            .expect_err("held writer must make the migration busy")
+    }
+
+    #[test]
+    fn busy_migration_error_maps_to_retryable_wallet_storage_message() {
+        let upstream =
+            platform_wallet_storage::WalletStorageError::Migration(busy_migration_error());
+        let err = TaskError::from_wallet_storage_open_error(upstream);
+        assert!(
+            matches!(err, TaskError::WalletStorageInUse { .. }),
+            "Expected WalletStorageInUse, got: {err:?}"
+        );
+        let message = err.to_string();
+        assert!(message.contains("Close") && message.contains("try again"));
+        assert!(!message.contains("incompatible"));
+        assert!(std::error::Error::source(&err).is_some());
+    }
+
+    /// Wraps the supplied SQLite failure code as refinery does during migration,
+    /// preserving the source chain returned by `SqlitePersister::open`.
+    fn sqlite_migration_error(code: std::ffi::c_int) -> refinery::Error {
+        use refinery::error::WrapMigrationError;
+
+        Err::<(), _>(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(code),
+            None,
+        ))
+        .migration_err("error applying migration", None)
+        .expect_err("wrapped SQLite failure")
+    }
+
+    /// Running out of disk space, an OS I/O failure or memory exhaustion
+    /// during a migration is recoverable by freeing the resource and
+    /// retrying. It must keep the generic, non-terminal storage copy instead
+    /// of the terminal move-the-databases-aside guidance.
+    #[test]
+    fn resource_migration_errors_map_to_retryable_wallet_storage() {
+        for code in [
+            rusqlite::ffi::SQLITE_FULL,
+            rusqlite::ffi::SQLITE_IOERR,
+            rusqlite::ffi::SQLITE_NOMEM,
+        ] {
+            let upstream = platform_wallet_storage::WalletStorageError::Migration(
+                sqlite_migration_error(code),
+            );
+            let err = TaskError::from_wallet_storage_open_error(upstream);
+            assert!(
+                matches!(err, TaskError::WalletStorage { .. }),
+                "Expected WalletStorage for SQLite code {code}, got: {err:?}"
+            );
+            assert!(
+                !crate::backend_task::is_terminal_storage_open_error(&err),
+                "SQLite code {code} must stay retryable"
+            );
+        }
+    }
+
+    /// A migration refused by file permissions or a read-only disk is an
+    /// access problem, not incompatible data: it gets its own variant with
+    /// fix-the-folder guidance and never the move-the-databases-aside copy.
+    #[test]
+    fn access_denied_storage_errors_map_to_wallet_storage_access_denied() {
+        let migration = |code| {
+            platform_wallet_storage::WalletStorageError::Migration(sqlite_migration_error(code))
+        };
+        let io_migration = |kind: std::io::ErrorKind| {
+            use refinery::error::WrapMigrationError;
+            platform_wallet_storage::WalletStorageError::Migration(
+                Err::<(), _>(std::io::Error::from(kind))
+                    .migration_err("error applying migration", None)
+                    .expect_err("wrapped I/O failure"),
+            )
+        };
+        let cases = [
+            migration(rusqlite::ffi::SQLITE_PERM),
+            migration(rusqlite::ffi::SQLITE_READONLY),
+            io_migration(std::io::ErrorKind::PermissionDenied),
+            io_migration(std::io::ErrorKind::ReadOnlyFilesystem),
+        ];
+        for upstream in cases {
+            let err = TaskError::from_wallet_storage_open_error(upstream);
+            assert!(
+                matches!(err, TaskError::WalletStorageAccessDenied { .. }),
+                "Expected WalletStorageAccessDenied, got: {err:?}"
+            );
+            assert!(
+                crate::backend_task::is_terminal_storage_open_error(&err),
+                "retrying never fixes permissions, so the message must surface"
+            );
+            let msg = err.to_string();
+            assert!(
+                msg.contains("read-only") && msg.contains("restart"),
+                "{msg}"
+            );
+            let lower = msg.to_lowercase();
+            assert!(
+                !lower.contains("incompatible")
+                    && !lower.contains("disk space")
+                    && !lower.contains("sqlite"),
+                "Access guidance must not reuse other storage copy, got: {msg}"
+            );
+            assert!(std::error::Error::source(&err).is_some());
+        }
+    }
+
     /// A divergent migration history (database written under an
     /// incompatible storage layout) maps to the dedicated
-    /// `WalletDataIncompatible` variant. Its `Display` tells the user to
-    /// remove the local wallet data, NOT the misleading "free disk space" copy.
+    /// `WalletDataIncompatible` variant. Its `Display` must never lead the user
+    /// to destroy the secrets vault, and must not blame disk space.
     #[test]
     fn migration_error_maps_to_wallet_data_incompatible() {
         let upstream =
@@ -7220,9 +8388,18 @@ mod tests {
         );
 
         let msg = err.to_string();
+        assert!(msg.contains(".sqlite-wal") && msg.contains(".sqlite-shm"));
+        assert!(msg.contains("Close all") && msg.contains("write down each imported private key"));
         assert!(
-            msg.contains("not compatible") && msg.contains("Remove"),
-            "Expected incompatibility guidance, got: {msg}"
+            msg.contains("write down the recovery phrase")
+                && msg.contains(".sqlite")
+                && msg.contains("leave the secrets folder where it is"),
+            "Expected scoped, vault-preserving guidance, got: {msg}"
+        );
+        let lower = msg.to_lowercase();
+        assert!(
+            !lower.contains("remove") && !lower.contains("delete"),
+            "Incompatible-data guidance must not tell the user to delete anything, got: {msg}"
         );
         assert!(
             !msg.contains("disk space"),

@@ -21,8 +21,8 @@ name: Migration Fixture Bootstrap
 #   nothing but jq and the GitHub API, and hands the bytes to the verifying job
 #   as a same-run artifact. Delete the draft once the run has succeeded.
 #
-# This is not capture automation: it captures nothing, runs on no schedule and
-# opens no PR. A human dispatches it and records the run id in the manifest.
+# Manual capture upload and recovery; scheduled renewal uses
+# migration-fixture-renewal.yml and proposes updated pointers in a PR.
 #
 # USAGE, small archive:
 #   gh workflow run migration-fixture-bootstrap.yml \
@@ -44,11 +44,8 @@ name: Migration Fixture Bootstrap
 # Either way, copy the values from the run's step summary into the entry's
 # `artifact` block in tests/migration-fixtures/manifest.json.
 #
-# RETENTION HAZARD: artifacts expire, and 90 days is the ceiling for a public
-# repository. Before the manifest's `expires_at`, re-dispatch with the same
-# bytes and record the new `workflow_run_id`/`expires_at`. Once the artifact
-# has expired, the migration matrix fails (download-fixtures.sh --strict)
-# until that is done.
+# For manual renewal, re-dispatch with the same bytes and record the returned
+# pointers. Expired archives require a saved copy; the matrix fails without it.
 #
 # REVOCATION: `gh run delete <run-id>` removes the artifact together with the
 # run's inputs payload.

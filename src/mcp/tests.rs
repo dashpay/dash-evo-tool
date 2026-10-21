@@ -87,7 +87,7 @@ async fn identity_list_reports_only_the_persisted_wallet_binding() {
         hashes.push(hash);
     }
     resolve::ensure_wallets_hydrated(&ctx).await.unwrap();
-    for (byte, link) in [(1, Some((hashes[0], 7))), (2, None)] {
+    for (byte, link) in [(1, Some((hashes[0], 7))), (2, None), (3, None)] {
         let identity = QualifiedIdentity {
             identity: Identity::create_basic_identity(
                 Identifier::new([byte; 32]),
@@ -97,8 +97,19 @@ async fn identity_list_reports_only_the_persisted_wallet_binding() {
             associated_voter_identity: None,
             associated_operator_identity: None,
             associated_owner_key_id: None,
-            identity_type: IdentityType::User,
-            alias: None,
+            identity_type: if byte == 3 {
+                IdentityType::Masternode
+            } else {
+                IdentityType::User
+            },
+            alias: Some(
+                if byte == 3 {
+                    "Administrative node name"
+                } else {
+                    "Legacy private name"
+                }
+                .into(),
+            ),
             private_keys: Default::default(),
             dpns_names: Vec::new(),
             associated_wallets: Default::default(),
@@ -111,6 +122,7 @@ async fn identity_list_reports_only_the_persisted_wallet_binding() {
         ctx.insert_local_qualified_identity(&identity, &link)
             .unwrap();
     }
+    ctx.save_identity_profile_name(Identifier::from([1; 32]), Some("Profile name"));
     let loaded = ctx.load_local_qualified_identities().unwrap();
     assert!(loaded.iter().all(|qi| qi.associated_wallets.len() == 2));
     let service = DashMcpService::new_shared(Arc::new(arc_swap::ArcSwap::new(Arc::clone(&ctx))));
@@ -118,6 +130,16 @@ async fn identity_list_reports_only_the_persisted_wallet_binding() {
         .await
         .unwrap();
     let json = serde_json::to_value(output).unwrap();
+    assert_eq!(json["identities"][0]["display_name"], "Profile name");
+    assert!(
+        json["identities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|identity| identity["identity_type"] == "User")
+            .all(|identity| identity.get("alias").is_none())
+    );
+    assert_eq!(json["identities"][2]["alias"], "Administrative node name");
     ctx.wallet_backend().unwrap().shutdown().await;
     assert_eq!(
         json["identities"][0]["wallet_seed_hashes"],
@@ -179,7 +201,7 @@ async fn ensure_wallets_hydrated_finishes_pending_legacy_migration() {
     .expect("seed legacy wallet");
 
     assert!(
-        ctx.wallets.read().expect("wallet map").is_empty(),
+        !ctx.wallet_context().has_hd_wallets(),
         "precondition: the legacy wallet is not hydrated yet"
     );
 
@@ -187,12 +209,10 @@ async fn ensure_wallets_hydrated_finishes_pending_legacy_migration() {
         .await
         .expect("hydrate and migrate wallets");
 
-    let alias = ctx
-        .wallets
-        .read()
-        .expect("wallet map")
-        .get(&seed_hash)
-        .map(|wallet| wallet.read().expect("wallet").alias.clone());
+    let alias = ctx.wallet_context().hd_wallet(&seed_hash).map(|wallet| {
+        ctx.wallet_context()
+            .hd_alias(&wallet.read().expect("wallet").seed_hash())
+    });
     let migration_state = ctx.migration_status().state();
     let backend = ctx.wallet_backend().expect("backend wired");
     let spv_started = backend.is_started();

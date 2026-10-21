@@ -1,5 +1,4 @@
 use crate::app::AppAction;
-use crate::backend_task::BackendTask;
 use crate::backend_task::identity::IdentityTask;
 use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
@@ -9,7 +8,7 @@ use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::identity::funding_common::WalletFundedScreenStep;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors};
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::Credits;
 use dash_sdk::dpp::dashcore::Address;
@@ -178,27 +177,8 @@ impl TopUpIdentityScreen {
         let can_top_up =
             self.selected_platform_address.is_some() && has_valid_amount && self.wallet.is_some();
 
-        let step = self.current_step();
-
         ui.horizontal(|ui| {
-            let button_text = match step {
-                WalletFundedScreenStep::WaitingForPlatformAcceptance => "Adding funds...",
-                _ => "Add funds",
-            };
-
-            let button = egui::Button::new(
-                RichText::new(button_text)
-                    .color(egui::Color32::WHITE)
-                    .strong(),
-            )
-            .fill(if can_top_up {
-                DashColors::DASH_BLUE
-            } else {
-                DashColors::DASH_BLUE.gamma_multiply(0.5)
-            })
-            .min_size(egui::vec2(120.0, 36.0));
-
-            if ui.add_enabled(can_top_up, button).clicked() {
+            if ComponentStyles::add_primary_button_enabled(ui, can_top_up, "Add funds").clicked() {
                 match self.validate_and_top_up_from_platform() {
                     Ok(top_up_action) => {
                         action = top_up_action;
@@ -276,14 +256,13 @@ impl TopUpIdentityScreen {
         let mut inputs: BTreeMap<PlatformAddress, Credits> = BTreeMap::new();
         inputs.insert(platform_addr, amount);
 
-        self.set_step(WalletFundedScreenStep::WaitingForPlatformAcceptance);
-
-        Ok(AppAction::BackendTask(BackendTask::IdentityTask(
+        Ok(self.begin_top_up(
             IdentityTask::TopUpIdentityFromPlatformAddresses {
                 identity: self.identity.clone(),
                 inputs,
                 wallet_seed_hash,
             },
-        )))
+            WalletFundedScreenStep::WaitingForPlatformAcceptance,
+        ))
     }
 }

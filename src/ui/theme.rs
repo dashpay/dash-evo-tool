@@ -529,6 +529,16 @@ impl DashColors {
         }
     }
 
+    /// Emphasized text (`RichText::strong()`) and the tick, dot or arrow of a
+    /// pressed control; drawn on plain surfaces as well as on the active fill.
+    pub fn text_strong(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            Self::WHITE
+        } else {
+            Self::TEXT_PRIMARY
+        }
+    }
+
     pub fn hover(dark_mode: bool) -> Color32 {
         if dark_mode {
             Self::DARK_HOVER
@@ -1062,17 +1072,7 @@ impl ComponentStyles {
     /// When a `RichText` is passed, its existing formatting (e.g. font size) is
     /// preserved and only `strong` + text color are applied on top.
     pub fn primary_button(label: impl Into<WidgetText>) -> Button<'static> {
-        let text = match label.into() {
-            WidgetText::RichText(rt) => rt
-                .as_ref()
-                .clone()
-                .strong()
-                .color(Self::primary_button_text()),
-            // LayoutJob/Galley variants are not used by any callsite.
-            other => RichText::new(other.text().to_string())
-                .strong()
-                .color(Self::primary_button_text()),
-        };
+        let text = Self::primary_text(label);
         Button::new(text)
             .fill(Self::primary_button_fill())
             .stroke(Self::primary_button_stroke())
@@ -1084,17 +1084,7 @@ impl ComponentStyles {
     ///
     /// Accepts any label type (`&str`, `String`, `RichText`, `WidgetText`).
     pub fn secondary_button(label: impl Into<WidgetText>, dark_mode: bool) -> Button<'static> {
-        let text = match label.into() {
-            WidgetText::RichText(rt) => rt
-                .as_ref()
-                .clone()
-                .strong()
-                .color(Self::secondary_button_text(dark_mode)),
-            // LayoutJob/Galley variants are not used by any callsite.
-            other => RichText::new(other.text().to_string())
-                .strong()
-                .color(Self::secondary_button_text(dark_mode)),
-        };
+        let text = Self::secondary_text(label, dark_mode);
         Button::new(text)
             .fill(Self::secondary_button_fill(dark_mode))
             .stroke(Self::secondary_button_stroke(dark_mode))
@@ -1106,17 +1096,7 @@ impl ComponentStyles {
     ///
     /// Accepts any label type (`&str`, `String`, `RichText`, `WidgetText`).
     pub fn danger_button(label: impl Into<WidgetText>) -> Button<'static> {
-        let text = match label.into() {
-            WidgetText::RichText(rt) => rt
-                .as_ref()
-                .clone()
-                .strong()
-                .color(Self::danger_button_text()),
-            // LayoutJob/Galley variants are not used by any callsite.
-            other => RichText::new(other.text().to_string())
-                .strong()
-                .color(Self::danger_button_text()),
-        };
+        let text = Self::danger_text(label);
         Button::new(text)
             .fill(Self::danger_button_fill())
             .stroke(egui::Stroke::NONE)
@@ -1124,9 +1104,75 @@ impl ComponentStyles {
             .min_size(Self::DIALOG_BUTTON_MIN_SIZE)
     }
 
+    /// Add `button` with its label centered, at least `min_size` large.
+    ///
+    /// `add_sized` gives the button a `centered_and_justified` inner layout, so its
+    /// `AtomLayout` inherits `horizontal_align = Center`. Without it the default
+    /// top-down-left layout left-aligns a label narrower than `min_size`.
+    ///
+    /// `add_sized` also caps the width the label may use, so the target width is the
+    /// label's natural width (floored at `min_size.x`, capped at the available width).
+    /// Passing only `min_size` would wrap long labels in vertical layouts.
+    fn add_centered_button(
+        ui: &mut egui::Ui,
+        text: &WidgetText,
+        button: Button<'_>,
+        min_size: Vec2,
+    ) -> egui::Response {
+        let galley = text.clone().into_galley(
+            ui,
+            Some(egui::TextWrapMode::Extend),
+            f32::INFINITY,
+            egui::FontSelection::Style(egui::TextStyle::Button),
+        );
+        // egui's button frame (inner margin + stroke + outer margin) nets out to
+        // `button_padding` per side.
+        let natural = galley.size() + 2.0 * ui.spacing().button_padding;
+        let width = natural.x.ceil().min(ui.available_width()).max(min_size.x);
+        let height = natural.y.ceil().max(min_size.y);
+        ui.add_sized(Vec2::new(width, height), button)
+    }
+
+    fn primary_text(label: impl Into<WidgetText>) -> WidgetText {
+        Self::styled_label(label, Self::primary_button_text(), true)
+    }
+
+    fn secondary_text(label: impl Into<WidgetText>, dark_mode: bool) -> WidgetText {
+        Self::styled_label(label, Self::secondary_button_text(dark_mode), true)
+    }
+
+    fn danger_text(label: impl Into<WidgetText>) -> WidgetText {
+        Self::styled_label(label, Self::danger_button_text(), true)
+    }
+
+    fn toolbar_text(label: impl Into<WidgetText>) -> WidgetText {
+        Self::styled_label(label, DashColors::WHITE, false)
+    }
+
+    /// Applies `color` (and optionally `strong`) to `label`, preserving any existing
+    /// `RichText` formatting (e.g. font size).
+    fn styled_label(label: impl Into<WidgetText>, color: Color32, strong: bool) -> WidgetText {
+        let rt = match label.into() {
+            WidgetText::RichText(rt) => rt.as_ref().clone(),
+            WidgetText::LayoutJob(mut job) => {
+                for section in &mut std::sync::Arc::make_mut(&mut job).sections {
+                    section.format.color = color;
+                }
+                return WidgetText::LayoutJob(job);
+            }
+            other => RichText::new(other.text().to_string()),
+        };
+        let rt = if strong { rt.strong() } else { rt };
+        rt.color(color).into()
+    }
+
     /// Add a primary button to the UI with pointer cursor on hover.
+    ///
+    /// The label is centered; see [`Self::add_centered_button`].
     pub fn add_primary_button(ui: &mut egui::Ui, label: impl Into<WidgetText>) -> egui::Response {
-        ui.add(Self::primary_button(label))
+        let text = Self::primary_text(label);
+        let button = Self::primary_button(text.clone());
+        Self::add_centered_button(ui, &text, button, Self::DIALOG_BUTTON_MIN_SIZE)
             .on_hover_cursor(CursorIcon::PointingHand)
     }
 
@@ -1144,52 +1190,40 @@ impl ComponentStyles {
         label: impl Into<WidgetText>,
     ) -> egui::Response {
         if enabled {
-            ui.add(Self::primary_button(label))
-                .on_hover_cursor(CursorIcon::PointingHand)
-        } else {
-            let dark_mode = ui.style().visuals.dark_mode;
-            let text = match label.into() {
-                WidgetText::RichText(rt) => rt
-                    .as_ref()
-                    .clone()
-                    .strong()
-                    .color(Self::button_disabled_text(dark_mode)),
-                // LayoutJob/Galley variants are not used by any callsite.
-                other => RichText::new(other.text().to_string())
-                    .strong()
-                    .color(Self::button_disabled_text(dark_mode)),
-            };
-            // `add_sized` sets up a `centered_and_justified` inner layout so the button's
-            // `AtomLayout` inherits `horizontal_align = Center`, centering the text within
-            // the fill rect.  Without this, the default top-down-left layout causes the text
-            // atom to be left-aligned inside the button even when the rect is wider than the
-            // text content.
-            ui.add_sized(
-                Self::DIALOG_BUTTON_MIN_SIZE,
-                Button::new(text)
-                    .fill(Self::button_disabled_fill(dark_mode))
-                    .stroke(egui::Stroke::NONE)
-                    .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-                    .min_size(Self::DIALOG_BUTTON_MIN_SIZE)
-                    .sense(egui::Sense::hover()),
-            )
-            .on_hover_cursor(CursorIcon::NotAllowed)
+            return Self::add_primary_button(ui, label);
         }
+        let dark_mode = ui.style().visuals.dark_mode;
+        let text = Self::styled_label(label, Self::button_disabled_text(dark_mode), true);
+        let button = Button::new(text.clone())
+            .fill(Self::button_disabled_fill(dark_mode))
+            .stroke(egui::Stroke::NONE)
+            .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+            .sense(egui::Sense::hover());
+        Self::add_centered_button(ui, &text, button, Self::DIALOG_BUTTON_MIN_SIZE)
+            .on_hover_cursor(CursorIcon::NotAllowed)
     }
 
     /// Add a secondary button to the UI with pointer cursor on hover.
+    ///
+    /// The label is centered; see [`Self::add_centered_button`].
     pub fn add_secondary_button(
         ui: &mut egui::Ui,
         label: impl Into<WidgetText>,
         dark_mode: bool,
     ) -> egui::Response {
-        ui.add(Self::secondary_button(label, dark_mode))
+        let text = Self::secondary_text(label, dark_mode);
+        let button = Self::secondary_button(text.clone(), dark_mode);
+        Self::add_centered_button(ui, &text, button, Self::DIALOG_BUTTON_MIN_SIZE)
             .on_hover_cursor(CursorIcon::PointingHand)
     }
 
     /// Add a danger button to the UI with pointer cursor on hover.
+    ///
+    /// The label is centered; see [`Self::add_centered_button`].
     pub fn add_danger_button(ui: &mut egui::Ui, label: impl Into<WidgetText>) -> egui::Response {
-        ui.add(Self::danger_button(label))
+        let text = Self::danger_text(label);
+        let button = Self::danger_button(text.clone());
+        Self::add_centered_button(ui, &text, button, Self::DIALOG_BUTTON_MIN_SIZE)
             .on_hover_cursor(CursorIcon::PointingHand)
     }
 
@@ -1203,31 +1237,61 @@ impl ComponentStyles {
     /// Height for toolbar buttons in the top panel.
     const TOOLBAR_BUTTON_HEIGHT: f32 = 30.0;
 
+    /// Default minimum size for toolbar buttons.
+    const TOOLBAR_BUTTON_MIN_SIZE: Vec2 = Vec2::new(100.0, Self::TOOLBAR_BUTTON_HEIGHT);
+
     /// Returns a styled toolbar button with white text on the given accent fill.
     ///
     /// Used for top-panel action buttons (Register Name, Refresh, Documents, etc.)
     /// whose fill color depends on the active network.
     pub fn toolbar_button(label: impl Into<WidgetText>, fill: egui::Color32) -> Button<'static> {
-        let text = match label.into() {
-            WidgetText::RichText(rt) => rt.as_ref().clone().color(DashColors::WHITE),
-            // LayoutJob/Galley variants are not used by any callsite.
-            other => RichText::new(other.text().to_string()).color(DashColors::WHITE),
-        };
+        let text = Self::toolbar_text(label);
         Button::new(text)
             .fill(fill)
             .frame(true)
             .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
             .stroke(egui::Stroke::NONE)
-            .min_size(Vec2::new(100.0, Self::TOOLBAR_BUTTON_HEIGHT))
+            .min_size(Self::TOOLBAR_BUTTON_MIN_SIZE)
+    }
+
+    /// Add a toolbar menu button with a clearly visible dropdown indicator.
+    pub fn add_toolbar_menu_button(
+        ui: &mut egui::Ui,
+        label: &str,
+        fill: egui::Color32,
+    ) -> egui::Response {
+        let font = egui::TextStyle::Button.resolve(ui.style());
+        let mut job = egui::text::LayoutJob::default();
+        job.append(
+            label,
+            0.0,
+            egui::TextFormat::simple(font.clone(), DashColors::WHITE),
+        );
+        job.append(
+            " ▾",
+            0.0,
+            egui::TextFormat {
+                font_id: egui::FontId::new(font.size * 1.5, font.family),
+                color: DashColors::WHITE,
+                line_height: Some(font.size),
+                valign: egui::Align::Center,
+                ..Default::default()
+            },
+        );
+        Self::add_toolbar_button(ui, job, fill)
     }
 
     /// Add a toolbar button to the UI with pointer cursor on hover.
+    ///
+    /// The label is centered; see [`Self::add_centered_button`].
     pub fn add_toolbar_button(
         ui: &mut egui::Ui,
         label: impl Into<WidgetText>,
         fill: egui::Color32,
     ) -> egui::Response {
-        ui.add(Self::toolbar_button(label, fill))
+        let text = Self::toolbar_text(label);
+        let button = Self::toolbar_button(text.clone(), fill);
+        Self::add_centered_button(ui, &text, button, Self::TOOLBAR_BUTTON_MIN_SIZE)
             .on_hover_cursor(CursorIcon::PointingHand)
     }
 }
@@ -1276,7 +1340,9 @@ pub trait ResponseExt {
 
     /// Disabled tooltip with `NotAllowed` cursor.
     ///
-    /// Only applies when the widget is **disabled** -- skips silently when enabled so
+    /// Only applies when the widget is **disabled** (or enabled but not clickable, as
+    /// with `ComponentStyles::add_primary_button_enabled(ui, false, …)`) -- skips
+    /// silently when clickable so
     /// it can be chained with [`clickable_tooltip`](ResponseExt::clickable_tooltip). Use
     /// to explain why an action is unavailable.
     ///
@@ -1305,11 +1371,16 @@ impl ResponseExt for egui::Response {
     }
 
     fn disabled_tooltip(self, text: impl Into<egui::WidgetText>) -> Self {
-        if self.enabled() {
-            self
-        } else {
+        if !self.enabled() {
             self.on_disabled_hover_text(text)
                 .on_hover_cursor(CursorIcon::NotAllowed)
+        } else if !self.sense.senses_click() {
+            // Styled-disabled widgets (e.g. `ComponentStyles::add_primary_button_enabled`)
+            // stay enabled but only sense hover, so `on_disabled_hover_text` never fires.
+            self.on_hover_text(text)
+                .on_hover_cursor(CursorIcon::NotAllowed)
+        } else {
+            self
         }
     }
 }
@@ -1374,7 +1445,8 @@ pub fn apply_theme(ctx: &egui::Context, theme_mode: ThemeMode) {
     // Active state with enhanced feedback
     style.visuals.widgets.active.bg_fill = DashColors::GRADIENT_START;
     style.visuals.widgets.active.bg_stroke = Stroke::new(2.0, DashColors::GRADIENT_END);
-    style.visuals.widgets.active.fg_stroke.color = DashColors::WHITE;
+    // egui colors `RichText::strong()` with this and skips `override_text_color`.
+    style.visuals.widgets.active.fg_stroke.color = DashColors::text_strong(dark_mode);
     style.visuals.widgets.active.weak_bg_fill = DashColors::GRADIENT_START;
     style.visuals.widgets.active.expansion = 1.0;
 
@@ -1457,6 +1529,74 @@ mod tests {
             Typography::SCALE_SM,
             "hint() must use the SCALE_SM token"
         );
+    }
+
+    /// WCAG contrast ratio of two opaque colors.
+    fn contrast_ratio(a: Color32, b: Color32) -> f32 {
+        fn luminance(color: Color32) -> f32 {
+            let linear = |channel: u8| {
+                let value = f32::from(channel) / 255.0;
+                if value <= 0.04045 {
+                    value / 12.92
+                } else {
+                    ((value + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * linear(color.r()) + 0.7152 * linear(color.g()) + 0.0722 * linear(color.b())
+        }
+        let (a, b) = (luminance(a), luminance(b));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    fn themed_style(mode: ThemeMode) -> Arc<egui::Style> {
+        let ctx = egui::Context::default();
+        apply_theme(&ctx, mode);
+        ctx.global_style()
+    }
+
+    /// `RichText::strong()` without a color ignores the theme's text override,
+    /// so the color egui gives it must be readable on every text surface.
+    #[test]
+    fn bold_text_without_a_color_is_readable_on_every_surface() {
+        for (mode, dark_mode) in [(ThemeMode::Light, false), (ThemeMode::Dark, true)] {
+            let style = themed_style(mode);
+            let job = WidgetText::from(RichText::new("Bold").strong()).into_layout_job(
+                &style,
+                egui::FontSelection::Default,
+                egui::Align::Center,
+            );
+            let bold = job.sections[0].format.color;
+            for (surface, fill) in [
+                ("panel", style.visuals.panel_fill),
+                ("window", style.visuals.window_fill),
+                ("card", DashColors::surface(dark_mode)),
+                ("input", style.visuals.extreme_bg_color),
+                ("hovered", DashColors::hover(dark_mode)),
+                ("selected", DashColors::selected(dark_mode)),
+            ] {
+                let ratio = contrast_ratio(bold, fill);
+                assert!(
+                    ratio >= 4.5,
+                    "{mode:?}: bold text {bold:?} on the {surface} fill {fill:?} has contrast {ratio:.2}"
+                );
+            }
+        }
+    }
+
+    /// A pressed or focused control draws its tick, dot or arrow in the active
+    /// foreground over the active fill.
+    #[test]
+    fn pressed_control_foreground_contrasts_with_its_fill() {
+        for mode in [ThemeMode::Light, ThemeMode::Dark] {
+            let active = themed_style(mode).visuals.widgets.active;
+            let ratio = contrast_ratio(active.fg_stroke.color, active.bg_fill);
+            assert!(
+                ratio >= 3.0,
+                "{mode:?}: pressed foreground {:?} on {:?} has contrast {ratio:.2}",
+                active.fg_stroke.color,
+                active.bg_fill
+            );
+        }
     }
 
     #[test]

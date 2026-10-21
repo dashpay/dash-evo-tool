@@ -5,6 +5,7 @@ use dash_evo_tool::backend_task::dashpay::DashPayTask;
 use dash_evo_tool::backend_task::identity::{IdentityKeyEntry, IdentityKeySpecs, IdentityTask};
 use dash_evo_tool::backend_task::wallet::WalletTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
+use dash_evo_tool::model::dashpay::ProfileSnapshot;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::signer::Signer;
@@ -32,7 +33,7 @@ async fn profile_create_and_replace(key_type: KeyType, unavailable_hash160: bool
     let ctx = harness::ctx().await;
     let (seed_hash, wallet) = ctx.create_funded_test_wallet(30_000_000).await;
     let mut registration =
-        identity_helpers::build_identity_registration(&ctx.app_context, &wallet, seed_hash).await;
+        identity_helpers::build_identity_registration(&ctx.app_context, &wallet).await;
     run_task(
         &ctx.app_context,
         BackendTask::WalletTask(WalletTask::WarmIdentityAuthPubkeys {
@@ -121,7 +122,7 @@ async fn profile_create_and_replace(key_type: KeyType, unavailable_hash160: bool
         .await
         .expect("write the profile using its HIGH key");
         assert!(
-            matches!(result, BackendTaskSuccessResult::DashPayProfileUpdated(id) if id == owner)
+            matches!(result, BackendTaskSuccessResult::DashPayProfileUpdated(snapshot) if snapshot.owner == owner)
         );
 
         let backend = ctx.app_context.wallet_backend().expect("wallet backend");
@@ -143,7 +144,7 @@ async fn profile_create_and_replace(key_type: KeyType, unavailable_hash160: bool
             )
             .await;
             if matches!(&result,
-                Ok(BackendTaskSuccessResult::DashPayProfile(Some((actual_name, actual_bio, _))))
+                Ok(BackendTaskSuccessResult::DashPayProfile(ProfileSnapshot { profile: Some((actual_name, actual_bio, _)), .. }))
                     if actual_name == name && actual_bio == bio
             ) {
                 break;

@@ -40,7 +40,6 @@ use crate::ui::state::legacy_recovery::LegacyRecoveryState;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenLike};
 use crate::wallet_backend::IdentityKeyView;
-use crate::wallet_backend::poison::RwLockRecover;
 use crate::wallet_backend::secret_seam::SecretScheme;
 use dash_sdk::dashcore_rpc::dashcore::PrivateKey as RPCPrivateKey;
 use dash_sdk::dpp::dashcore::address::Payload;
@@ -102,7 +101,7 @@ pub struct KeyInfoScreen {
     /// Identity key password protection: cached at-rest protection status of
     /// this identity's vault keys. `None` until first probed; invalidated
     /// after a migration so the status line re-reads the vault.
-    protection_status: Option<IdentityProtectionStatus>,
+    protection_status: Option<Result<IdentityProtectionStatus, TaskError>>,
     /// Which step of the opt-in / opt-out flow is active.
     protection_stage: ProtectionStage,
     /// The danger confirmation dialog gating the active flow.
@@ -148,6 +147,7 @@ pub struct KeyInfoScreen {
     quoted_raise: Option<KeyLimitsRaise>,
     /// A confirmed raise waiting for dispatch.
     pending_raise: Option<KeyLimitsRaise>,
+    masternode_origin: bool,
 }
 
 /// What the screen knows about the remaining budget of a budgeted key. Only
@@ -197,6 +197,14 @@ enum ProtectionStage {
 }
 
 impl ScreenLike for KeyInfoScreen {
+    fn accepts_legacy_recovery_result(
+        &self,
+        context: &BackendTaskContext,
+        completed: bool,
+    ) -> bool {
+        self.recovery.accepts_result(context, completed)
+    }
+
     /// Re-read the record this screen persists, because another writer may have
     /// changed it while the screen sat in the stack.
     ///
@@ -216,7 +224,7 @@ impl ScreenLike for KeyInfoScreen {
     fn refresh(&mut self) {
         self.reload_identity();
         self.protection_status = None;
-        self.recovery.completed();
+        self.recovery.refresh_on_arrival();
         self.remaining_budget = RemainingBudget::NotRequested;
     }
 
@@ -354,7 +362,11 @@ impl ScreenLike for KeyInfoScreen {
         action |= add_left_panel(
             ui,
             &self.app_context,
-            crate::ui::RootScreenType::RootScreenIdentityHub,
+            if self.masternode_origin {
+                crate::ui::RootScreenType::RootScreenMasternodes
+            } else {
+                crate::ui::RootScreenType::RootScreenIdentityHub
+            },
         );
 
         action |= island_central_panel(ui, |ui| {
@@ -945,13 +957,13 @@ impl ScreenLike for KeyInfoScreen {
         // Legacy recovery: the passive check goes out once per opened screen,
         // and a restore only after the user pressed Restore — so the two can
         // never contend for `action`, which keeps only its most recent value.
-        if let Some(task) = self.recovery.ensure_checked() {
-            action |= AppAction::BackendTask(task);
+        if let Some((task, context)) = self.recovery.ensure_checked() {
+            action |= AppAction::BackendTaskWithContext { task, context };
         }
         if let Some(approved) = self.pending_recovery_restore.take()
-            && let Some(task) = self.recovery.restore(approved)
+            && let Some((task, context)) = self.recovery.restore(approved)
         {
-            action |= AppAction::BackendTask(task);
+            action |= AppAction::BackendTaskWithContext { task, context };
         }
 
         action
@@ -967,10 +979,9 @@ impl KeyInfoScreen {
     ) -> Self {
         let selected_wallet =
             if let Some((_, Some(wallet_derivation_path))) = private_key_data.as_ref() {
-                let wallets = app_context.wallets.read_recover();
-                wallets
-                    .get(&wallet_derivation_path.wallet_seed_hash)
-                    .cloned()
+                app_context
+                    .wallet_context()
+                    .hd_wallet(&wallet_derivation_path.wallet_seed_hash)
             } else {
                 None
             };
@@ -1022,6 +1033,7 @@ impl KeyInfoScreen {
             raise_confirmation: None,
             quoted_raise: None,
             pending_raise: None,
+            masternode_origin: false,
         }
     }
 
@@ -1272,21 +1284,25 @@ impl KeyInfoScreen {
         self
     }
 
-    /// The breadcrumb trail, with the parent screen in it when the caller named
-    /// one. The parent crumb pops back rather than clearing the stack, so the
-    /// screen underneath is the one the user actually came from.
+    /// Return to the open node detail when this key was opened from Masternodes.
+    pub fn with_masternode_origin(mut self) -> Self {
+        self.masternode_origin = true;
+        self
+    }
+
+    /// The root follows the caller's section; a named parent pops just one screen.
     fn breadcrumb(&self) -> Vec<(&'static str, AppAction)> {
-        match self.parent {
-            Some(parent) => vec![
-                ("Identities", AppAction::GoToMainScreen),
-                (parent, AppAction::PopScreenAndRefresh),
-                ("Key Info", AppAction::None),
-            ],
-            None => vec![
-                ("Identities", AppAction::GoToMainScreen),
-                ("Key Info", AppAction::None),
-            ],
+        let root = if self.masternode_origin {
+            ("Masternodes", AppAction::GoToMainScreen)
+        } else {
+            ("Identities", AppAction::OpenIdentityPicker)
+        };
+        let mut crumbs = vec![root];
+        if let Some(parent) = self.parent {
+            crumbs.push((parent, AppAction::PopScreenAndRefresh));
         }
+        crumbs.push(("Key Info", AppAction::None));
+        crumbs
     }
 
     /// The key store this screen's key is filed under.
@@ -1381,9 +1397,7 @@ impl KeyInfoScreen {
         );
     }
 
-    /// Build a key-info screen with the add-protection confirmation already open
-    /// when vault-backed protection is available, or show a warning when wallet
-    /// setup has not made protection available yet.
+    /// Open the protection prompt, or explain why locally stored keys cannot be protected.
     pub fn new_with_protection_prompt(
         identity: QualifiedIdentity,
         key: IdentityPublicKey,
@@ -1392,17 +1406,25 @@ impl KeyInfoScreen {
     ) -> Self {
         let mut screen = Self::new(identity, key, private_key_data, app_context);
         let status = screen.compute_protection_status();
-        if status == IdentityProtectionStatus::NoVaultKeys {
-            screen.protection_stage = ProtectionStage::Idle;
-            MessageBanner::set_global(
-                app_context.egui_ctx(),
-                "Password protection is not available yet. Wait for wallet setup to finish, then try again.",
-                MessageType::Warning,
-            );
-        } else {
-            screen.protection_status = Some(status);
-            screen.open_add_confirm();
+        match &status {
+            Ok(IdentityProtectionStatus::NoVaultKeys) => {
+                MessageBanner::set_global(
+                    app_context.egui_ctx(),
+                    "Password protection is not available for this identity because none of its keys are stored on this device. Add a private key to this identity, then try again.",
+                    MessageType::Warning,
+                );
+            }
+            Ok(_) => screen.open_add_confirm(),
+            Err(error) => {
+                MessageBanner::set_global(
+                    app_context.egui_ctx(),
+                    "Key protection status is unavailable. Try again to reload it.",
+                    MessageType::Warning,
+                )
+                .with_details(error);
+            }
         }
+        screen.protection_status = Some(status);
         screen
     }
 
@@ -1736,28 +1758,29 @@ impl KeyInfoScreen {
     /// At-rest protection posture of this identity's vault keys, by probing the
     /// vault scheme of each key. Cheap (a handful of local vault reads). Cached
     /// in `protection_status`; invalidated after a migration.
-    fn compute_protection_status(&self) -> IdentityProtectionStatus {
-        let Ok(backend) = self.app_context.wallet_backend() else {
-            return IdentityProtectionStatus::NoVaultKeys;
-        };
+    fn compute_protection_status(&self) -> Result<IdentityProtectionStatus, TaskError> {
+        let backend = self.app_context.wallet_backend()?;
         let id = self.identity.identity.id().to_buffer();
         let view = IdentityKeyView::new(backend.secret_store(), id);
         let (mut protected, mut unprotected) = (0usize, 0usize);
-        for (target, key_id) in self.identity.private_keys.keys_set() {
-            match view.scheme(&target, key_id) {
-                Ok(SecretScheme::Protected) => protected += 1,
-                Ok(SecretScheme::Unprotected) => unprotected += 1,
-                // Absent (wallet-derived / resident-plaintext) or a transient
-                // vault error: not a protectable vault key — ignore it.
-                _ => {}
+        let mut placements = self.identity.private_keys.keys_set();
+        placements.extend(
+            self.app_context
+                .retained_identity_import_keys(&self.identity.identity.id())?,
+        );
+        for (target, key_id) in placements {
+            match view.scheme(&target, key_id)? {
+                SecretScheme::Protected => protected += 1,
+                SecretScheme::Unprotected => unprotected += 1,
+                SecretScheme::Absent => {}
             }
         }
-        match (protected, unprotected) {
+        Ok(match (protected, unprotected) {
             (0, 0) => IdentityProtectionStatus::NoVaultKeys,
             (_, 0) => IdentityProtectionStatus::Protected,
             (0, _) => IdentityProtectionStatus::Unprotected,
             _ => IdentityProtectionStatus::Mixed,
-        }
+        })
     }
 
     /// Render the collapsible "Key Protection" section (default closed). Hidden
@@ -1765,11 +1788,24 @@ impl KeyInfoScreen {
     fn render_key_protection_section(&mut self, ui: &mut egui::Ui) {
         if self.protection_status.is_none() {
             let status = self.compute_protection_status();
+            if let Err(error) = &status {
+                MessageBanner::set_global(
+                    ui.ctx(),
+                    "Key protection status is unavailable. Try again to reload it.",
+                    MessageType::Warning,
+                )
+                .with_details(error);
+            }
             self.protection_status = Some(status);
         }
-        let status = self
-            .protection_status
-            .unwrap_or(IdentityProtectionStatus::NoVaultKeys);
+        let Some(Ok(status)) = self.protection_status.as_ref() else {
+            ui.label("Key protection status is unavailable. Try again to reload it.");
+            if ui.button("Try again").clicked() {
+                self.protection_status = None;
+            }
+            return;
+        };
+        let status = *status;
         if status == IdentityProtectionStatus::NoVaultKeys {
             return;
         }
@@ -2227,6 +2263,88 @@ mod tests {
         }
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn protection_status_includes_retained_import_keys() {
+        let (ctx, _dir) = offline_ctx().await;
+        let key = public_key(9, Purpose::AUTHENTICATION);
+        let qi = identity_with(0x5C, &[]);
+        let id = qi.identity.id();
+        ctx.insert_local_qualified_identity(&qi, &None).unwrap();
+        let lock = ctx.identity_record_lock(id);
+        {
+            let _guard = lock.lock().unwrap();
+            ctx.record_identity_import_keys(&id, &[(MAIN, 9)].into_iter().collect())
+                .unwrap();
+            let backend = ctx.wallet_backend().unwrap();
+            IdentityKeyView::new(backend.secret_store(), id.to_buffer())
+                .store_protected(
+                    &MAIN,
+                    9,
+                    &[9; 32],
+                    &platform_wallet_storage::secrets::SecretString::new(
+                        "synthetic-protection-password",
+                    ),
+                )
+                .unwrap();
+        }
+        let screen = KeyInfoScreen::new(qi, key, None, &ctx);
+        assert!(screen.compute_protection_status().unwrap() == IdentityProtectionStatus::Protected);
+        ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn protection_status_reports_inventory_decode_failure() {
+        let (ctx, _dir) = offline_ctx().await;
+        let key = public_key(9, Purpose::AUTHENTICATION);
+        let secret = rand::random::<[u8; 32]>();
+        let password = hex::encode(rand::random::<[u8; 32]>());
+        let qi = identity_with(0x5D, &[(key.clone(), secret)]);
+        let id = qi.identity.id();
+        ctx.insert_local_qualified_identity(&qi, &None).unwrap();
+        let backend = ctx.wallet_backend().unwrap();
+        IdentityKeyView::new(backend.secret_store(), id.to_buffer())
+            .store_protected(
+                &MAIN,
+                9,
+                &secret,
+                &platform_wallet_storage::secrets::SecretString::new(&password),
+            )
+            .unwrap();
+        ctx.det_kv()
+            .unwrap()
+            .put(
+                crate::wallet_backend::DetScope::Global,
+                &format!(
+                    "det:identity_import_keys:v1:{}",
+                    id.to_string(Encoding::Base58)
+                ),
+                &1u8,
+            )
+            .unwrap();
+        for retained_only in [false, true] {
+            let mut identity = qi.clone();
+            if retained_only {
+                identity.private_keys = KeyStorage::default();
+            }
+            let screen = KeyInfoScreen::new(identity, key.clone(), None, &ctx);
+            assert!(matches!(
+                screen.compute_protection_status(),
+                Err(TaskError::IdentityStorage {
+                    source: crate::wallet_backend::KvAdapterError::Decode(_),
+                })
+            ));
+            let prompt = KeyInfoScreen::new_with_protection_prompt(
+                screen.identity.clone(),
+                key.clone(),
+                None,
+                &ctx,
+            );
+            assert!(prompt.protection_stage == ProtectionStage::Idle);
+            assert!(matches!(prompt.protection_status, Some(Err(_))));
+        }
+        backend.shutdown().await;
+    }
+
     /// Removing this device's copy of one key must not touch a *different* key
     /// that happens to share its id.
     ///
@@ -2404,7 +2522,8 @@ mod tests {
     }
 
     /// A restore that lands while this screen is off-screen never reaches its
-    /// `display_task_result` — results go only to the visible screen. Returning
+    /// `display_task_result` — it is not this screen's dispatched task, so its
+    /// result goes to the screen in view (see `app/request_routing.rs`). Returning
     /// to it must re-read the record, or the clone it opened with is written
     /// back over the restored keys by the next ordinary key edit, silently and
     /// with no error to show for it.
@@ -2910,10 +3029,8 @@ mod tests {
             );
         }
 
-        screen.display_backend_task_error(
-            &BackendTaskContext::LegacyRecoveryRestore(on_screen_id),
-            &error,
-        );
+        let own_context = screen.recovery.pending_context_for_test();
+        screen.display_backend_task_error(&own_context, &error);
         assert!(
             !screen.recovery.is_restoring(),
             "this restore's own failure must return the offer so it can be retried",

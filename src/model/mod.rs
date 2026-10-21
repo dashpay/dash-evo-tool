@@ -1,19 +1,27 @@
 pub mod address;
 pub mod amount;
 pub mod asset_lock;
+pub mod avatar;
+pub mod backup_retention;
 pub mod contested_name;
 pub mod dashpay;
 pub mod dashpay_derivation;
 pub(crate) mod data_migration;
+pub mod datetime;
+pub mod derived_identity_key;
 pub mod dpns;
+pub mod dpns_usernames;
+pub mod dpns_voting;
 pub mod fee_estimation;
 pub mod grovestark_prover;
 pub mod identity_discovery;
 pub mod identity_key_limits;
 pub mod identity_key_protection;
 pub mod identity_key_usability;
+pub mod identity_name;
 pub mod key_input;
 pub mod legacy_recovery;
+pub mod legacy_restore;
 /// Stateless masternode/evonode input parsing and validation (ProTxHash,
 /// node type). Pure logic with no mcp/cli dependency — used by both the
 /// always-compiled GUI load form and the headless MCP tools, so it must never

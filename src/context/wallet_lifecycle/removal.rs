@@ -15,16 +15,8 @@ fn show_wallet_data_removal_warning(ctx: &egui::Context, error: TaskError) {
 
 impl AppContext {
     pub fn remove_wallet(self: &Arc<Self>, seed_hash: &WalletSeedHash) -> Result<(), TaskError> {
-        // Acquire write lock first to ensure atomicity — if the lock fails,
-        // no changes have been made to the database.
-        let mut wallets = self.wallets.write()?;
-        if !wallets.contains_key(seed_hash) {
-            return Err(TaskError::WalletNotFound);
-        }
-
-        wallets.remove(seed_hash);
-        let has_wallet = !wallets.is_empty();
-        drop(wallets);
+        self.wallet_context().remove_wallet(seed_hash)?;
+        let has_wallet = self.wallet_context().has_any_wallet();
 
         self.has_wallet.store(has_wallet, Ordering::Relaxed);
 
@@ -84,6 +76,20 @@ impl AppContext {
         }
 
         Ok(())
+    }
+
+    /// Delete the retained compatibility-upgrade backups of this network's wallet
+    /// database, which copy the wallet and identity history a network clear wipes.
+    ///
+    /// The shared app database's backups also hold other networks' data, so they are
+    /// left to time-based retention. Filesystem cleanup is available even when the
+    /// wallet backend could not be opened. Removing a single wallet or identity never
+    /// calls this: those backups also hold other wallets' data.
+    pub(crate) fn remove_upgrade_backups(&self) -> Result<(), TaskError> {
+        crate::wallet_backend::platform_compatibility::remove_backups(
+            &crate::wallet_backend::wallet_database_path(self.data_dir(), self.network),
+        )
+        .map_err(|source| TaskError::FileSystem { source })
     }
 }
 

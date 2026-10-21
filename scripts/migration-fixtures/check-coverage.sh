@@ -13,8 +13,13 @@
 # enforcement, and it runs on the weekly schedule rather than per-PR because a
 # gap is created by cutting a release, not by editing code.
 #
-# Releases BEFORE the newest fixture are not reported. Backfilling history is a
-# deliberate decision, not an oversight to nag about; only forward gaps matter.
+# A release is covered by a manifest entry, or by the fixture attached to it:
+# the archive and metadata assets migration-fixture-capture.yml uploads. Only
+# their presence is checked here; download-fixtures.sh verifies them.
+#
+# Releases BEFORE the newest manifest fixture are not reported. Backfilling
+# history is a deliberate decision, not an oversight to nag about; only forward
+# gaps matter. An attached fixture covers its own release and nothing older.
 #
 # Source of truth is the releases API filtered to draft == false, intersected
 # with the tags API. Tags alone would false-positive: weekly-build.yml pushes
@@ -126,9 +131,15 @@ note "Newest fixture tag: $NEWEST_FIXTURE"
 # Published release tags.
 # --------------------------------------------------------------------------
 
-PUBLISHED="$(gh api "repos/$REPO/releases" --paginate \
-    --jq '.[] | select(.draft == false) | .tag_name' 2>/dev/null)" ||
+# One line per published release: its tag, and whether it carries both assets.
+# shellcheck disable=SC2016 # jq variables, not shell expansions
+RELEASES="$(gh api "repos/$REPO/releases" --paginate --jq '.[] | select(.draft == false)
+    | "migration-fixture-\(.tag_name)-wallet-only" as $fixture
+    | [.tag_name, (any(.assets[].name; . == "\($fixture).tar.zst")
+                   and any(.assets[].name; . == "\($fixture).json"))] | @tsv' 2>/dev/null)" ||
     die "Could not list releases for $REPO. Check that GH_TOKEN is set and has read access."
+PUBLISHED="$(cut -f1 <<<"$RELEASES")"
+ATTACHED="$(awk -F'\t' '$2 == "true" { print $1 }' <<<"$RELEASES")"
 
 ALL_TAGS="$(gh api "repos/$REPO/tags" --paginate --jq '.[].name' 2>/dev/null)" ||
     die "Could not list tags for $REPO. Check that GH_TOKEN is set and has read access."
@@ -161,11 +172,17 @@ fi
 missing=()
 while IFS= read -r tag; do
     [ -n "$tag" ] || continue
-    newer="$(jq -L "$SCRIPT_DIR" -nr --arg tag "$tag" --arg baseline "$BASELINE" \
-        'include "semver"; ($tag | semver_key) > ($baseline | semver_key)')"
+    # Historical test/preview tags do not follow SemVer and have no ordering.
+    if ! key="$(jq -L "$SCRIPT_DIR" -en --arg tag "$tag" \
+        'include "semver"; $tag | semver_key' 2>/dev/null)"; then
+        warn "Skipping non-SemVer release tag: $tag"
+        continue
+    fi
+    newer="$(jq -L "$SCRIPT_DIR" -nr --argjson key "$key" --arg baseline "$BASELINE" \
+        'include "semver"; $key > ($baseline | semver_key)')"
     [ "$newer" = true ] || continue
     # Already covered?
-    if printf '%s\n' "$FIXTURE_TAGS" | grep -Fxq "$tag"; then
+    if printf '%s\n' "$FIXTURE_TAGS" "$ATTACHED" | grep -Fxq "$tag"; then
         continue
     fi
     missing+=("$tag")
@@ -178,6 +195,7 @@ fi
 
 printf 'Published releases with no migration fixture:\n' >&2
 printf '  %s\n' "${missing[@]}" >&2
-die "${#missing[@]} published release(s) newer than $BASELINE have no entry in $MANIFEST.
+die "${#missing[@]} published release(s) newer than $BASELINE have neither an attached fixture nor an entry in $MANIFEST.
 Until each is captured, the migration matrix silently tests an older version pair than the one users are actually upgrading across.
-Capture with scripts/migration-fixtures/capture-headless.sh against that release's own binary, pack with pack.sh, upload as a build artifact, and add the entry to the manifest."
+Capture each, oldest first: gh workflow run migration-fixture-capture.yml -f tag=<tag> -f attach=true
+A release that workflow cannot capture needs a manual capture and a manifest entry; see tests/migration-fixtures/README.md."

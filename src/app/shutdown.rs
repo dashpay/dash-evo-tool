@@ -259,6 +259,7 @@ where
 mod shutdown_tests {
     use super::*;
     use crate::app::AppState;
+    use crate::backend_task::error::TaskError;
     use dash_sdk::dpp::dashcore::Network;
     use eframe::egui;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

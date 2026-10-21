@@ -35,6 +35,7 @@ use crate::ui::identity::username_copy::{
     self, AvailabilityRow, Tone, USERNAME_RULES, availability_line, offers_suggestions,
 };
 use crate::ui::identity::usernames_card::{KeyHint, key_hint_links};
+use crate::ui::state::PendingRequest;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
@@ -108,7 +109,7 @@ pub struct RegisterDpnsNameScreen {
     pub source: RegisterDpnsNameSource,
     /// Full-window block while the registration runs; torn down on every terminal result.
     op_overlay: Option<OverlayHandle>,
-    registration_context: Option<BackendTaskContext>,
+    registration_context: PendingRequest,
     registration_error_handled: bool,
     /// Label of the availability check in flight. One check runs at a time, so a
     /// failure always belongs to this label.
@@ -132,7 +133,7 @@ impl RegisterDpnsNameScreen {
             completed_fee_result: None,
             source,
             op_overlay: None,
-            registration_context: None,
+            registration_context: PendingRequest::default(),
             registration_error_handled: false,
             check_in_flight: None,
         };
@@ -363,9 +364,8 @@ impl RegisterDpnsNameScreen {
         self.step = Step::Submitting;
         self.raise_progress_overlay(ctx);
         let task = BackendTask::IdentityTask(task);
-        let context = BackendTaskContext::for_dispatch_on(&task, self.app_context.network());
-        self.registration_context = Some(context.clone());
-        AppAction::BackendTaskWithContext { task, context }
+        self.registration_context
+            .dispatch_on(task, self.app_context.network())
     }
 
     fn raise_progress_overlay(&mut self, ctx: &Context) {
@@ -788,10 +788,9 @@ pub(crate) fn status_line(ui: &mut Ui, tone: Tone, text: &str, dark_mode: bool) 
 impl ScreenLike for RegisterDpnsNameScreen {
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
         self.registration_error_handled = false;
-        if self.registration_context.as_ref() != Some(context) {
+        if self.registration_context.settle(context).is_none() {
             return;
         }
-        self.registration_context = None;
         self.op_overlay.take_and_clear();
         if let TaskError::UsernameNoLongerAvailable { availability } = error {
             self.step = Step::Choose;
@@ -838,7 +837,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
         result: BackendTaskSuccessResult,
     ) {
         if matches!(result, BackendTaskSuccessResult::RegisteredDpnsName { .. })
-            && self.registration_context.as_ref() != Some(context)
+            && !self.registration_context.owns(context)
         {
             return;
         }
@@ -852,7 +851,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
                 fee_result,
             } => {
                 self.op_overlay.take_and_clear();
-                self.registration_context = None;
+                self.registration_context.clear();
                 self.completed_fee_result = Some(fee_result);
                 self.step = Step::Done(outcome);
             }
@@ -985,7 +984,7 @@ mod tests {
         let context = BackendTaskContext::for_dispatch(&BackendTask::ContestedResourceTask(
             crate::backend_task::contested_names::ContestedResourceTask::QueryDPNSContests,
         ));
-        screen.registration_context = Some(context.clone());
+        screen.registration_context.track(context.clone());
         screen.step = Step::Submitting;
         screen.raise_progress_overlay(ctx.egui_ctx());
         let error = TaskError::UsernameNoLongerAvailable {

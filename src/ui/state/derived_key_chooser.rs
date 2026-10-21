@@ -20,6 +20,7 @@ use crate::model::derived_identity_key::{
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::WalletSeedHash;
+use crate::ui::state::PendingRequest;
 
 /// Load cycle of the public keys the chooser needs to tell used slots apart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,7 +69,7 @@ pub struct DerivedKeyChooser {
     load: KeyLoad,
     /// The dispatch of the in-flight warm. Only its outcome settles the load:
     /// a warm of the same wallet slots left running by a closed screen is not.
-    warm_dispatch: Option<BackendTaskContext>,
+    warm_dispatch: PendingRequest,
     limit: u32,
     occupied: BTreeSet<u32>,
     /// Slots the backend rejected as used during this screen's lifetime. Kept
@@ -97,7 +98,7 @@ impl DerivedKeyChooser {
             derivable_type: is_derivable_key_type(key_type),
             backend_available: false,
             load: KeyLoad::Cold,
-            warm_dispatch: None,
+            warm_dispatch: PendingRequest::default(),
             limit: 0,
             occupied: BTreeSet::new(),
             rejected: BTreeSet::new(),
@@ -125,7 +126,7 @@ impl DerivedKeyChooser {
         self.wallet = derivation_wallet(identity, app_context.network);
         if self.wallet != previous {
             self.load = KeyLoad::Cold;
-            self.warm_dispatch = None;
+            self.warm_dispatch.clear();
             self.index = None;
             self.rejected.clear();
             self.submitted = None;
@@ -202,18 +203,14 @@ impl DerivedKeyChooser {
             key_count: self.limit,
         });
         let context = BackendTaskContext::for_dispatch(&task);
-        self.warm_dispatch = Some(context.clone());
+        self.warm_dispatch.track(context.clone());
         Some((task, context))
     }
 
     /// Whether `context` is the in-flight warm this chooser dispatched; takes
     /// it, so each dispatch settles the load once.
     fn take_own_warm(&mut self, context: &BackendTaskContext) -> bool {
-        let own = self.load == KeyLoad::Loading && self.warm_dispatch.as_ref() == Some(context);
-        if own {
-            self.warm_dispatch = None;
-        }
-        own
+        self.load == KeyLoad::Loading && self.warm_dispatch.settle(context).is_some()
     }
 
     /// This chooser's warm task finished. A load that still finds keys

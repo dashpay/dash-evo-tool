@@ -112,11 +112,13 @@ fn add_funds_screen(harness: &mut App) -> &mut TopUpIdentityScreen {
     }
 }
 
-/// Send the top-up the way "Add funds" does and return its dispatch.
+/// Send the top-up the way "Add funds" does and return its dispatch. The app
+/// records Add Funds as the screen that sent it, as for a real dispatch.
 fn begin_top_up(harness: &mut App) -> BackendTaskContext {
     let dispatch = add_funds_screen(harness)
         .begin_top_up_for_test()
         .expect("a dispatched top-up records its dispatch");
+    harness.state_mut().test_record_visible_dispatch(&dispatch);
     harness.run_steps(3);
     assert_eq!(
         count(harness, DIALOG),
@@ -264,6 +266,7 @@ fn wallet_send_waits_while_a_top_up_runs_in_background() -> TwoTopUps {
     state
         .screen_stack
         .push(Screen::WalletSendScreen(wallet_send));
+    state.test_record_visible_dispatch(&own_dispatch);
     harness.run_steps(3);
     assert_eq!(
         count(&harness, WALLET_SEND_WAITING),
@@ -396,6 +399,7 @@ fn a_failed_load_of_another_screen_leaves_wallet_send_waiting() {
             .state_mut()
             .screen_stack
             .push(Screen::WalletSendScreen(wallet_send));
+        harness.state_mut().test_record_visible_dispatch(&own_send);
         // Results are drained at the start of a frame, before it renders.
         harness.step();
         assert_eq!(count(&harness, WALLET_SEND_WAITING), 1);
@@ -483,6 +487,7 @@ fn confirm_top_up(harness: &mut App, identity: &QualifiedIdentity) -> BackendTas
     let dispatch = top_up_form(harness)
         .confirm_send_for_test(top_up_of(identity))
         .expect("a confirmed send records its dispatch");
+    harness.state_mut().test_record_visible_dispatch(&dispatch);
     harness.run_steps(3);
     assert_eq!(count(harness, WALLET_SEND_WAITING), 1);
     assert_eq!(
@@ -688,10 +693,11 @@ fn a_top_up_that_fails_after_its_form_was_left_leaves_no_progress_banner() {
     });
 }
 
-/// A form covered by another screen is not told how its top-up ended. Back in
-/// view it must not go on waiting for a result that already came.
+/// A form covered by another screen is still told how its top-up ended, and
+/// shows it once it is back in view. The user did not see it end, so a banner
+/// confirms it as well.
 #[test]
-fn a_top_up_form_covered_while_its_top_up_ends_stops_waiting() {
+fn a_covered_top_up_form_is_told_how_its_own_top_up_ended() {
     in_app(|| {
         let mut harness = mount_app(RootScreenType::RootScreenWalletsBalances);
         let identity = stored_identity_with_wallet(&harness);
@@ -702,23 +708,77 @@ fn a_top_up_form_covered_while_its_top_up_ends_stops_waiting() {
         open_add_funds(&mut harness, &other);
         assert_eq!(count(&harness, WALLET_SEND_WAITING), 0);
         deliver(&mut harness, topped_up(dispatch, &identity));
-
-        harness.state_mut().screen_stack.pop();
-        harness.run_steps(3);
         assert_eq!(
-            count(&harness, WALLET_SEND_WAITING),
-            0,
-            "the top-up it waited on has ended"
-        );
-        assert_eq!(count(&harness, WALLET_SEND_PROGRESS), 0);
-        assert!(
-            prepare_top_up(&mut harness, &identity).is_ok(),
-            "the form is usable again"
+            count(&harness, FORM),
+            1,
+            "the screen in view did not send the top-up and is left as it was"
         );
         assert_eq!(
             count(&harness, DONE_BANNER),
             1,
             "the covered form could not say how it ended, so a banner did"
+        );
+
+        harness.state_mut().screen_stack.pop();
+        harness.run_steps(3);
+        assert_eq!(
+            count(&harness, WALLET_SEND_COMPLETE),
+            1,
+            "back in view, the form shows how its own top-up ended"
+        );
+        assert_eq!(count(&harness, WALLET_SEND_WAITING), 0);
+        assert_eq!(count(&harness, WALLET_SEND_PROGRESS), 0);
+    });
+}
+
+/// Add Funds continued its top-up in the background, and a send form now
+/// covers it while waiting on a top-up of its own. The Add Funds result goes
+/// to Add Funds: the send form keeps waiting with its progress shown.
+#[test]
+fn another_screen_result_leaves_a_waiting_send_form_alone() {
+    in_app(|| {
+        let (mut harness, identity) = mount_add_funds();
+        let dispatch = begin_top_up(&mut harness);
+        continue_in_background(&mut harness);
+
+        let other = identity_with_id([0x55; 32], identity.network);
+        let (wallet_send, own_dispatch) = waiting_wallet_send(&harness, &other);
+        harness
+            .state_mut()
+            .screen_stack
+            .push(Screen::WalletSendScreen(wallet_send));
+        harness
+            .state_mut()
+            .test_record_visible_dispatch(&own_dispatch);
+        harness.run_steps(3);
+        assert_eq!(count(&harness, WALLET_SEND_WAITING), 1);
+
+        deliver(&mut harness, topped_up(dispatch, &identity));
+        assert_eq!(
+            count(&harness, WALLET_SEND_WAITING),
+            1,
+            "the send form still waits on its own transfer"
+        );
+        assert_eq!(count(&harness, WALLET_SEND_COMPLETE), 0);
+        assert_eq!(
+            count(&harness, DONE_BANNER),
+            1,
+            "the background top-up is confirmed by its own banner"
+        );
+
+        deliver(&mut harness, topped_up(own_dispatch, &other));
+        assert_eq!(
+            count(&harness, WALLET_SEND_COMPLETE),
+            1,
+            "the send form completes on the result of its own transfer"
+        );
+
+        harness.state_mut().screen_stack.pop();
+        harness.run_steps(3);
+        assert_eq!(
+            count(&harness, "Identity Topped Up Successfully!"),
+            1,
+            "Add Funds was told how its own top-up ended while covered"
         );
     });
 }
@@ -786,6 +846,11 @@ fn top_up_survives_a_network_switch_that_drops_its_screen() {
             harness.state().screen_stack.is_empty(),
             "the switch drops the screen that sent the top-up"
         );
+        assert_eq!(
+            harness.state().test_dispatch_owner_count(),
+            0,
+            "results of tasks sent before the switch go to the screen in view"
+        );
         assert_eq!(count(&harness, DIALOG), 0);
         assert_eq!(
             count(&harness, BACKGROUND_BANNER),
@@ -841,8 +906,8 @@ fn top_up_ends_on_a_failure_handled_outside_the_general_error_path() {
             &mut harness,
             TaskResult::Error {
                 context: dispatch,
-                error: TaskError::CoreWalletAutoDetected {
-                    wallet_name: "fixture".to_string(),
+                error: TaskError::NetworkContextCreationFailed {
+                    network: Network::Regtest,
                 },
             },
         );

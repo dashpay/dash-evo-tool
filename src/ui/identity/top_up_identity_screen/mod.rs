@@ -41,7 +41,7 @@ use crate::ui::identity::funding_common::{
     receive_deposit_ceiling_duffs, required_deposit_credits, required_wallet_credits,
     show_network_fee_minimum, step_after_task_failure,
 };
-use crate::ui::state::{AssetLockBalanceCache, TrackedAssetLockCache};
+use crate::ui::state::{AssetLockBalanceCache, PendingRequest, TrackedAssetLockCache};
 use crate::ui::theme::DashColors;
 use crate::ui::{
     MessageType, ScreenLike, append_concurrent_backend_tasks, can_append_concurrent_backend_tasks,
@@ -125,13 +125,6 @@ pub(crate) fn top_up_in_flight_for(ctx: &egui::Context, identity_id: &Identifier
     top_ups_in_flight(ctx)
         .iter()
         .any(|top_up| top_up.dispatch.identity_top_up_identity() == Some(*identity_id))
-}
-
-/// Whether the top-up sent as `dispatch` still waits for its result.
-pub(crate) fn top_up_awaits_result(ctx: &egui::Context, dispatch: &BackendTaskContext) -> bool {
-    top_ups_in_flight(ctx)
-        .iter()
-        .any(|top_up| top_up.dispatch == *dispatch)
 }
 
 /// Record the top-up sent as `dispatch`. It stays in flight until
@@ -298,7 +291,7 @@ pub struct TopUpIdentityScreen {
     asset_lock_cache: TrackedAssetLockCache,
     asset_lock_balance: AssetLockBalanceCache,
     /// The dispatch of the top-up this screen is waiting on.
-    top_up_context: Option<BackendTaskContext>,
+    top_up_context: PendingRequest,
     /// Blocks the app while the top-up runs, until it ends or the user
     /// continues in the background.
     top_up_overlay: Option<OverlayHandle>,
@@ -336,7 +329,7 @@ impl TopUpIdentityScreen {
             completed_fee_result: None,
             asset_lock_cache: TrackedAssetLockCache::default(),
             asset_lock_balance: AssetLockBalanceCache::default(),
-            top_up_context: None,
+            top_up_context: PendingRequest::default(),
             top_up_overlay: None,
             top_up_background_offered: false,
         }
@@ -362,19 +355,14 @@ impl TopUpIdentityScreen {
                 &self.identity.identity.id(),
             ),
         );
-        self.top_up_context = Some(context.clone());
+        self.top_up_context.track(context.clone());
         AppAction::BackendTaskWithContext { task, context }
-    }
-
-    /// Whether `dispatch` is the top-up this screen sent and still waits on.
-    pub(crate) fn awaits_top_up(&self, dispatch: &BackendTaskContext) -> bool {
-        self.top_up_context.as_ref() == Some(dispatch)
     }
 
     /// Stop waiting on the top-up: lower the overlay and forget its dispatch.
     fn release_top_up(&mut self) {
         self.top_up_overlay.take_and_clear();
-        self.top_up_context = None;
+        self.top_up_context.clear();
     }
 
     /// Whether a top-up of this identity is running — one this screen
@@ -390,7 +378,6 @@ impl TopUpIdentityScreen {
     /// Notice the end of the top-up, offer the background button once it runs
     /// long, and act on a click of it.
     fn sync_top_up_overlay(&mut self) {
-        self.resume_after_unseen_top_up_end();
         let Some(handle) = self.top_up_overlay.clone() else {
             return;
         };
@@ -418,26 +405,9 @@ impl TopUpIdentityScreen {
     /// to a progress banner that follows the user to other screens.
     fn continue_top_up_in_background(&mut self) {
         self.top_up_overlay.take_and_clear();
-        if let Some(dispatch) = &self.top_up_context {
+        if let Some(dispatch) = self.top_up_context.context() {
             send_top_up_to_background(self.app_context.egui_ctx(), dispatch);
         }
-    }
-
-    /// Bring back an empty form once the top-up this screen sent has ended
-    /// without its result reaching the screen: only a screen in view when its
-    /// top-up ends is told how it ended.
-    fn resume_after_unseen_top_up_end(&mut self) {
-        let Some(dispatch) = &self.top_up_context else {
-            return;
-        };
-        if top_up_awaits_result(self.app_context.egui_ctx(), dispatch) {
-            return;
-        }
-        self.release_top_up();
-        // The top-up may have succeeded, so the form must not offer it again.
-        self.forget_sent_funding();
-        self.set_step(step_after_task_failure(self.current_step()));
-        self.reload_identity();
     }
 
     /// Re-read the identity: a top-up changes its stored balance and top-up
@@ -465,7 +435,7 @@ impl TopUpIdentityScreen {
             },
             WalletFundedScreenStep::WaitingForPlatformAcceptance,
         );
-        self.top_up_context.clone()
+        self.top_up_context.context().cloned()
     }
 
     /// Test seam: age the blocking overlay of the running top-up by `by`.
@@ -1093,7 +1063,7 @@ impl ScreenLike for TopUpIdentityScreen {
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
         // Only the top-up's own failure releases the screen; an unrelated
         // error must leave a running top-up blocked.
-        if self.top_up_context.as_ref() == Some(context) {
+        if self.top_up_context.owns(context) {
             self.release_top_up();
             self.set_step(step_after_task_failure(self.current_step()));
         }
@@ -1143,7 +1113,7 @@ impl ScreenLike for TopUpIdentityScreen {
         self.identity = qualified_identity;
         // Another transfer to this identity, such as one from Wallet Send, is
         // not the top-up this screen waits on.
-        if self.top_up_context.as_ref() != Some(context) {
+        if !self.top_up_context.owns(context) {
             return;
         }
         self.release_top_up();
@@ -2756,9 +2726,8 @@ mod tests {
         );
     }
 
-    /// A screen that is not in view when its top-up ends never learns how it
-    /// ended, so the form it brings back must not still hold the amount that
-    /// was just sent.
+    /// A screen out of view when its background top-up ends is still told how
+    /// it ended, and it must not offer the amount that was just sent again.
     #[test]
     fn form_comes_back_clean_when_a_background_top_up_ends_out_of_sight() {
         let (mut screen, _temp_dir) = funded_form_screen(0x47);
@@ -2775,17 +2744,18 @@ mod tests {
         screen.continue_top_up_in_background();
         assert!(screen_shows(&mut screen, TOP_UP_FORM_PAUSED));
 
-        assert!(finish_top_up(&ctx, &context, true, true));
+        assert!(finish_top_up(&ctx, &context, true, false));
+        let identity = screen.identity.clone();
+        screen.display_backend_task_result(
+            &context,
+            BackendTaskSuccessResult::ToppedUpIdentity(identity, FeeResult::new(1, 1)),
+        );
         assert!(
             !screen_shows(&mut screen, TOP_UP_FORM_PAUSED),
-            "the form must come back once the background top-up ended"
+            "the screen leaves the paused form once its top-up ended"
         );
         assert!(!screen.top_up_in_flight());
-        assert_eq!(screen.current_step(), WalletFundedScreenStep::ReadyToCreate);
-        assert!(
-            !screen_shows(&mut screen, ADD_FUNDS_BUTTON),
-            "the form must not offer the amount that was just sent"
-        );
+        assert_eq!(screen.current_step(), WalletFundedScreenStep::Success);
         assert_eq!(screen.funding_amount_exact, None);
         assert_eq!(screen.funding_asset_lock, None);
         assert!(screen.platform_top_up_amount.is_none());

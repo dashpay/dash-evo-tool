@@ -625,6 +625,10 @@ pub(crate) mod loads {
             Screen::IdentityHubScreen(hub_screen),
         );
         state.selected_main_screen = RootScreenType::RootScreenIdentityHub;
+        // The hub sent its own requests while it was the screen in view.
+        for (context, _) in &results {
+            state.test_record_visible_dispatch(context);
+        }
         state.screen_stack.push(
             ScreenType::IdentitySendScreen(identity, IdentitySendMode::Send)
                 .create_screen(&app_context),

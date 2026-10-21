@@ -4,6 +4,7 @@ use crate::app::AppAction;
 use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::ui::state::PendingRequest;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
 use std::collections::{HashMap, HashSet};
@@ -34,7 +35,7 @@ pub struct ProfileCache {
     /// Identities a load has already been dispatched for (debounce).
     requested: HashSet<Identifier>,
     /// The owner and exact dispatch whose completion this cache accepts.
-    in_flight: Option<(Identifier, BackendTaskContext)>,
+    in_flight: PendingRequest<Identifier>,
     /// Identities a tab asked for this frame that still need a load dispatched.
     wanted: Vec<QualifiedIdentity>,
     /// Loaded identities due a reload; their profile is shown until it lands.
@@ -89,7 +90,7 @@ impl ProfileCache {
     /// Dispatch one queued profile load, if any and none is in flight. Call
     /// after rendering the tabs; fold the returned action into the frame's.
     pub fn dispatch_pending(&mut self) -> AppAction {
-        if self.in_flight.is_some() {
+        if self.in_flight.is_pending() {
             return AppAction::None;
         }
         let Some(identity) = self.wanted.pop() else {
@@ -98,9 +99,7 @@ impl ProfileCache {
         let id = identity.identity.id();
         self.requested.insert(id);
         let task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadProfile { identity }));
-        let context = BackendTaskContext::for_dispatch(&task);
-        self.in_flight = Some((id, context.clone()));
-        AppAction::BackendTaskWithContext { task, context }
+        self.in_flight.dispatch_with(task, id)
     }
 
     /// Record a `LoadProfile` result against the in-flight identity. Returns
@@ -114,14 +113,9 @@ impl ProfileCache {
         let BackendTaskSuccessResult::DashPayProfile(data) = result else {
             return false;
         };
-        let Some((id, expected)) = self.in_flight.as_ref() else {
+        let Some(id) = self.in_flight.settle(context) else {
             return false;
         };
-        if expected != context {
-            return false;
-        }
-        let id = *id;
-        self.in_flight = None;
         if data.owner != id || !app_context.profile_snapshot_is_current(data) {
             self.requested.remove(&id);
             self.loaded.remove(&id);
@@ -141,26 +135,15 @@ impl ProfileCache {
 
     /// Release a failed load so other identities can load; retry it on refresh.
     pub fn record_error(&mut self, context: &BackendTaskContext) {
-        self.release_failed(context);
+        self.in_flight.settle(context);
     }
 
     /// Release a load that failed only because the network was still syncing;
     /// [`Self::retry_after_sync`] asks for it again once the network is ready.
     pub fn record_error_while_syncing(&mut self, context: &BackendTaskContext) {
-        if let Some(id) = self.release_failed(context) {
+        if let Some(id) = self.in_flight.settle(context) {
             self.awaiting_sync.insert(id);
         }
-    }
-
-    /// Clear the in-flight load if `context` is its dispatch, returning its owner.
-    fn release_failed(&mut self, context: &BackendTaskContext) -> Option<Identifier> {
-        let (id, expected) = self.in_flight.as_ref()?;
-        if expected != context {
-            return None;
-        }
-        let id = *id;
-        self.in_flight = None;
-        Some(id)
     }
 
     /// Ask again for every profile whose load failed while the network was
@@ -183,12 +166,8 @@ impl ProfileCache {
     pub(crate) fn invalidate(&mut self, id: Identifier) {
         self.loaded.remove(&id);
         self.requested.remove(&id);
-        if self
-            .in_flight
-            .as_ref()
-            .is_some_and(|(loading, _)| *loading == id)
-        {
-            self.in_flight = None;
+        if self.in_flight.subject() == Some(&id) {
+            self.in_flight.clear();
         }
         self.wanted.retain(|q| q.identity.id() != id);
         self.stale.remove(&id);
@@ -199,7 +178,7 @@ impl ProfileCache {
     /// A profile whose load is still running is left to that load; one whose
     /// load failed before anything was loaded is asked for again.
     pub fn reload_kept(&mut self) {
-        let loading = self.in_flight.as_ref().map(|(id, _)| *id);
+        let loading = self.in_flight.subject().copied();
         let loaded = &self.loaded;
         self.requested
             .retain(|id| loaded.contains_key(id) || Some(*id) == loading);
@@ -218,7 +197,7 @@ impl ProfileCache {
     pub fn reset(&mut self) {
         self.loaded.clear();
         self.requested.clear();
-        self.in_flight = None;
+        self.in_flight.clear();
         self.wanted.clear();
         self.stale.clear();
         self.awaiting_sync.clear();
@@ -323,10 +302,8 @@ mod race_tests {
                     assert!(app.record_identity_profile_name(id, revision, Some("Old")));
                 }
                 let context = BackendTaskContext::Other;
-                let mut cache = ProfileCache {
-                    in_flight: Some((id, context.clone())),
-                    ..Default::default()
-                };
+                let mut cache = ProfileCache::default();
+                cache.in_flight.track_with(context.clone(), id);
                 app.save_identity_profile_name(id, Some("Saved"));
                 if !accepted_before_save {
                     assert!(!app.record_identity_profile_name(id, revision, Some("Old")));
@@ -348,7 +325,7 @@ mod race_tests {
                     "a queued load must not undo a completed save"
                 );
                 assert!(
-                    cache.in_flight.is_none(),
+                    !cache.in_flight.is_pending(),
                     "stale results must terminate the load"
                 );
             }

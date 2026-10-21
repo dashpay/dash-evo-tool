@@ -1,14 +1,15 @@
 //! Tools ▸ Platform info: a fetch and its result outlive refresh notifications.
 //!
-//! `AppState::update` calls `refresh()` on the visible screen for every
 //! Scoped cache notifications can arrive during a Platform Info request.
-//! second for minutes. The test drives that real path: the button click, the
-//! notifications and the result all go through `AppState`.
+//! The button click, notifications, and captured request's result all go through
+//! `AppState`; backend execution is replaced with a deterministic completion.
 
 use crate::support::{mount_app, with_isolated_data_dir};
 use dash_evo_tool::app::{AppState, TaskResult};
-use dash_evo_tool::backend_task::platform_info::PlatformInfoTaskResult;
-use dash_evo_tool::backend_task::{BackendTaskContext, BackendTaskSuccessResult};
+use dash_evo_tool::backend_task::platform_info::{
+    PlatformInfoTaskRequestType, PlatformInfoTaskResult,
+};
+use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_evo_tool::ui::RootScreenType;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
@@ -40,13 +41,23 @@ fn a_fetch_started_during_a_refresh_burst_shows_progress_and_then_its_result() {
             .expect("tokio runtime");
         let _guard = rt.enter();
         let mut harness = mount_app(RootScreenType::RootScreenToolsPlatformInfoScreen);
-        // No network: the click's backend task is never spawned, and the result
-        // it would have produced is delivered by hand below.
-        rt.block_on(harness.state().subtasks.shutdown_async())
-            .expect("stop backend dispatch");
+        // Capture an accepted request without executing its network work.
+        harness.state_mut().test_capture_dispatches();
 
         harness.get_by_label("Fetch Current Epoch Info").click();
         harness.run_steps(2);
+        let context = harness
+            .state()
+            .test_captured_dispatches()
+            .iter()
+            .find_map(|(task, context)| {
+                matches!(
+                    task,
+                    BackendTask::PlatformInfo(PlatformInfoTaskRequestType::CurrentEpochInfo)
+                )
+                .then(|| context.clone())
+            })
+            .expect("the button dispatches a current-epoch request");
         assert!(
             harness.query_by_label("Loading...").is_some(),
             "the premise: a started fetch shows its progress"
@@ -68,7 +79,7 @@ fn a_fetch_started_during_a_refresh_burst_shows_progress_and_then_its_result() {
             .state()
             .task_result_sender
             .try_send(TaskResult::Success {
-                context: BackendTaskContext::Unknown,
+                context,
                 result: Box::new(BackendTaskSuccessResult::PlatformInfo(
                     PlatformInfoTaskResult::TextResult(EPOCH_RESULT.to_owned()),
                 )),

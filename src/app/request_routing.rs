@@ -53,12 +53,32 @@ pub enum ResultRoute {
 }
 
 impl ResultRoute {
+    /// Whether primary delivery reaches this screen. A closed owner never does.
+    pub fn delivers_to(self, screen: ScreenOwner, visible: ScreenOwner) -> bool {
+        match self {
+            Self::Owner(owner) => owner == screen,
+            Self::Visible => screen == visible,
+            Self::ClosedOwner => false,
+        }
+    }
     /// The open screen that dispatched the task.
     pub fn owner(self) -> Option<ScreenOwner> {
         match self {
             Self::Owner(owner) => Some(owner),
             Self::ClosedOwner | Self::Visible => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod delivery_tests {
+    use super::*;
+    #[test]
+    fn a_closed_owner_never_suppresses_the_visible_domain_observer() {
+        let root = ScreenOwner::Root(RootScreenType::RootScreenIdentityHub);
+        assert!(ResultRoute::Visible.delivers_to(root, root));
+        assert!(ResultRoute::Owner(root).delivers_to(root, root));
+        assert!(!ResultRoute::ClosedOwner.delivers_to(root, root));
     }
 }
 

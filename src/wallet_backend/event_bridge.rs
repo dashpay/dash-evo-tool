@@ -21,8 +21,8 @@ use platform_wallet::manager::shielded_sync::{ShieldedSyncPassSummary, WalletShi
 
 use super::coordinator_gate::CoordinatorGate;
 use super::snapshot::{SnapshotStore, incoming_payment_candidates, received_outputs_for_record};
-use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::TaskResult;
 use crate::backend_task::core::CoreItem;
 use crate::context::connection_status::{
     ConnectionStatus, ShieldedSyncProgress, ShieldedTreeProgress,
@@ -831,7 +831,7 @@ mod tests {
         assert!(
             !results
                 .iter()
-                .any(|result| matches!(result, TaskResult::Refresh))
+                .any(|result| matches!(result, TaskResult::CacheUpdated(_)))
         );
     }
 

@@ -99,11 +99,8 @@ fn open_key_info(harness: &mut egui_kittest::Harness<'static, dash_evo_tool::app
 /// re-read when the app refreshes it, or the next ordinary key edit writes that
 /// clone back over the restored key.
 ///
-/// Drives the refresh the running app actually performs: `AppState::update`
-/// drains `task_result_sender` every frame, and `TaskResult::Refresh` calls
-/// `refresh()` on the *visible* screen — the pushed `KeyInfoScreen`. A screen
-/// that puts its re-read on `refresh_on_arrival` instead is never asked, since
-/// `AppState` sends that hook only to root screens.
+/// Drives the scoped identity cache notification through AppState. The open
+/// KeyInfoScreen re-reads stored keys without resetting an unrelated form.
 #[test]
 fn a_write_that_lands_while_key_info_is_open_survives_the_next_key_edit() {
     with_isolated_data_dir(|| {
@@ -157,7 +154,12 @@ fn a_write_that_lands_while_key_info_is_open_survives_the_next_key_edit() {
         harness
             .state()
             .task_result_sender
-            .try_send(TaskResult::Refresh)
+            .try_send(TaskResult::CacheUpdated(
+                dash_evo_tool::backend_task::CacheUpdate {
+                    network: harness.state().current_app_context().network(),
+                    domain: dash_evo_tool::backend_task::CacheDomain::Identities,
+                },
+            ))
             .expect("queue the refresh the app dispatches");
         harness.run_steps(3);
 

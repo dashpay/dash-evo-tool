@@ -5,8 +5,8 @@ mod query_ending_times;
 mod refresh_vote_states;
 mod vote_on_dpns_name;
 
-use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::TaskResult;
 use crate::backend_task::error::{DapiAddressAvailability, TaskError};
 use crate::context::{AppContext, DpnsVoterLifecycles, MAX_CONCURRENT_DPNS_VOTERS};
 use crate::model::contested_name::ContestedName;
@@ -317,11 +317,21 @@ impl AppContext {
             }
             ContestedResourceTask::ClearExecutedScheduledVotes => {
                 self.clear_executed_scheduled_votes()?;
-                Ok(BackendTaskSuccessResult::Refresh)
+                Ok(BackendTaskSuccessResult::CacheUpdated(
+                    crate::backend_task::CacheUpdate {
+                        network: self.network,
+                        domain: crate::backend_task::CacheDomain::Dpns,
+                    },
+                ))
             }
             ContestedResourceTask::CancelScheduledDpnsVote { operation_id, key } => {
                 self.cancel_scheduled_dpns_vote_target(operation_id, &key)?;
-                Ok(BackendTaskSuccessResult::Refresh)
+                Ok(BackendTaskSuccessResult::CacheUpdated(
+                    crate::backend_task::CacheUpdate {
+                        network: self.network,
+                        domain: crate::backend_task::CacheDomain::Dpns,
+                    },
+                ))
             }
             ContestedResourceTask::EditScheduledDpnsVote(edit) => {
                 self.edit_scheduled_dpns_vote(edit, sdk, sender).await
@@ -3151,8 +3161,8 @@ mod tests {
 
     #[tokio::test]
     async fn scheduled_sweep_dispatch_wraps_recovery_failures() {
-        use crate::app::TaskResult;
         use crate::app_dir::ensure_env_file;
+        use crate::backend_task::TaskResult;
         use crate::context::connection_status::ConnectionStatus;
         use crate::database::test_helpers::create_database_at_path;
         use crate::utils::egui_mpsc::SenderAsync;
@@ -3234,7 +3244,7 @@ mod tests {
             temp_dir.path(),
             Arc::new(crate::wallet_backend::DetKv::from_store(store.clone())),
         );
-        let (sender, _receiver) = tokio::sync::mpsc::channel::<crate::app::TaskResult>(8);
+        let (sender, _receiver) = tokio::sync::mpsc::channel::<crate::backend_task::TaskResult>(8);
         context
             .ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
                 sender,

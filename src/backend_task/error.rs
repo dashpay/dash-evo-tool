@@ -75,13 +75,16 @@ pub enum WalletTransactionHistoryError {
 }
 
 /// Redacted diagnostic for a backend task that panicked or was cancelled.
+#[derive(Clone)]
 pub struct BackendTaskJoinError {
-    source: tokio::task::JoinError,
+    source: std::sync::Arc<tokio::task::JoinError>,
 }
 
 impl From<tokio::task::JoinError> for BackendTaskJoinError {
     fn from(source: tokio::task::JoinError) -> Self {
-        Self { source }
+        Self {
+            source: std::sync::Arc::new(source),
+        }
     }
 }
 
@@ -1498,6 +1501,14 @@ pub enum TaskError {
         #[source]
         source: BackendTaskJoinError,
     },
+
+    /// A caught task panic; the payload can contain secrets and is not retained.
+    #[error("The requested action stopped unexpectedly. Check its outcome before trying again.")]
+    BackendTaskPanicked,
+
+    /// Later sequential work is not started after an uncertain task outcome.
+    #[error("This action was not started because an earlier action stopped. Check the earlier action before trying again.")]
+    BackendTaskBatchAborted,
 
     /// A backend task reached the app after the shutdown admission barrier closed.
     #[error("This action could not start because the app is closing. Reopen the app and try again.")]

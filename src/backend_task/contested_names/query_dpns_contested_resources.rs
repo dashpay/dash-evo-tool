@@ -1,4 +1,4 @@
-use crate::app::TaskResult;
+use crate::backend_task::TaskResult;
 use crate::backend_task::error::{DapiAddressAvailability, TaskError};
 use crate::backend_task::{BackendTaskSuccessResult, contextualize_dapi_task_result};
 use crate::context::AppContext;
@@ -213,7 +213,10 @@ impl AppContext {
             names_to_be_updated.extend(new_names_to_be_updated);
 
             sender
-                .send(TaskResult::DpnsContestsChanged)
+                .send(TaskResult::CacheUpdated(crate::backend_task::CacheUpdate {
+                    network: self.network,
+                    domain: crate::backend_task::CacheDomain::Dpns,
+                }))
                 .await
                 .map_err(|_| TaskError::InternalSendError)?;
 
@@ -245,7 +248,13 @@ impl AppContext {
                     .await
                 {
                     Ok(_) => {
-                        if let Err(e) = sender.send(TaskResult::DpnsContestsChanged).await {
+                        if let Err(e) = sender
+                            .send(TaskResult::CacheUpdated(crate::backend_task::CacheUpdate {
+                                network: self_ref.network,
+                                domain: crate::backend_task::CacheDomain::Dpns,
+                            }))
+                            .await
+                        {
                             tracing::warn!(
                                 "Failed to send refresh after dpns end times query: {}",
                                 e
@@ -292,7 +301,13 @@ impl AppContext {
                     .await
                 {
                     Ok(_) => {
-                        if let Err(e) = sender.send(TaskResult::DpnsContestsChanged).await {
+                        if let Err(e) = sender
+                            .send(TaskResult::CacheUpdated(crate::backend_task::CacheUpdate {
+                                network: self_ref.network,
+                                domain: crate::backend_task::CacheDomain::Dpns,
+                            }))
+                            .await
+                        {
                             tracing::warn!(
                                 "Failed to send refresh after vote contenders query for {}: {}",
                                 name,
@@ -341,7 +356,10 @@ impl AppContext {
             self.prove_current_votes(sdk).await;
             self.recompute_dpns_vote_attention();
             sender
-                .send(TaskResult::DpnsContestsChanged)
+                .send(TaskResult::CacheUpdated(crate::backend_task::CacheUpdate {
+                    network: self.network,
+                    domain: crate::backend_task::CacheDomain::Dpns,
+                }))
                 .await
                 .map_err(|_| TaskError::InternalSendError)?;
         }
@@ -699,14 +717,23 @@ mod tests {
 
         let sent: Vec<TaskResult> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
         assert!(
-            !sent
-                .iter()
-                .any(|result| matches!(result, TaskResult::Refresh)),
+            !sent.iter().any(|result| matches!(
+                result,
+                TaskResult::CacheUpdated(crate::backend_task::CacheUpdate {
+                    domain: crate::backend_task::CacheDomain::All,
+                    ..
+                })
+            )),
             "a pass must not ask whatever screen is visible to refresh: {sent:?}"
         );
         assert!(
-            sent.iter()
-                .any(|result| matches!(result, TaskResult::DpnsContestsChanged)),
+            sent.iter().any(|result| matches!(
+                result,
+                TaskResult::CacheUpdated(crate::backend_task::CacheUpdate {
+                    domain: crate::backend_task::CacheDomain::Dpns,
+                    ..
+                })
+            )),
             "a pass must still report that contest data changed: {sent:?}"
         );
     }

@@ -152,6 +152,18 @@ enum ProtectionStage {
 }
 
 impl ScreenLike for KeyInfoScreen {
+    fn cached_data_changed(&mut self, update: crate::backend_task::CacheUpdate) {
+        if update.network == self.app_context.network
+            && matches!(
+                update.domain,
+                crate::backend_task::CacheDomain::Identities
+                    | crate::backend_task::CacheDomain::All
+            )
+        {
+            self.reload_identity();
+            self.protection_status = None;
+        }
+    }
     fn accepts_legacy_recovery_result(
         &self,
         context: &BackendTaskContext,
@@ -173,7 +185,7 @@ impl ScreenLike for KeyInfoScreen {
     /// This is the hook that has to carry it: `AppState` dispatches
     /// `refresh_on_arrival` only to root screens, and this screen is always
     /// pushed onto the screen stack. What reaches a pushed screen is `refresh` —
-    /// from `TaskResult::Refresh`, from `AppAction::Refresh`, and from the
+    /// from `AppAction::Refresh` and from the
     /// `PopScreenAndRefresh` that reveals it. `refresh_on_arrival` defaults to
     /// delegating here, so both hooks run this.
     fn refresh(&mut self) {

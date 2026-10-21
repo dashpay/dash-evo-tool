@@ -9,7 +9,7 @@ use dash_sdk::platform::FetchMany;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use crate::app::TaskResult;
+use crate::backend_task::TaskResult;
 use dash_sdk::Sdk;
 impl AppContext {
     pub(super) async fn query_dpns_ending_times(

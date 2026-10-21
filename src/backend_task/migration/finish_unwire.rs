@@ -5720,7 +5720,7 @@ mod tests {
     /// wallet drain aborts at its first step without a wired backend, so the
     /// funds-reachability tests below cannot use [`fresh_app_context`] alone.
     async fn wire_backend(app_context: &Arc<AppContext>) {
-        let (tx, _rx) = tokio::sync::mpsc::channel::<crate::app::TaskResult>(32);
+        let (tx, _rx) = tokio::sync::mpsc::channel::<crate::backend_task::TaskResult>(32);
         let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, app_context.egui_ctx().clone());
         app_context
             .ensure_wallet_backend(sender)
@@ -6137,7 +6137,7 @@ mod tests {
     /// `app_storage_update` MCP tool does, bounded so a regression that waits
     /// for a person fails instead of hanging.
     async fn prepare_with_password(ctx: &Arc<AppContext>, password: &str) -> Result<(), TaskError> {
-        let (tx, _rx) = tokio::sync::mpsc::channel::<crate::app::TaskResult>(32);
+        let (tx, _rx) = tokio::sync::mpsc::channel::<crate::backend_task::TaskResult>(32);
         let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, ctx.egui_ctx().clone());
         let supplied = SecretString::new(password);
         tokio::time::timeout(

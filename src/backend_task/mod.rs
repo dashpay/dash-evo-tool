@@ -1,4 +1,5 @@
-use crate::app::TaskResult;
+pub mod events;
+pub use events::{CacheDomain, CacheUpdate, TaskResult};
 use crate::backend_task::error::{DapiAddressAvailability, TaskError};
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::contract::ContractTask;
@@ -721,7 +722,7 @@ impl From<&BackendTask> for BackendTaskContext {
 pub enum BackendTaskSuccessResult {
     // General results
     None,
-    Refresh,
+    CacheUpdated(CacheUpdate),
     NetworkDatabaseCleared {
         network: Network,
     },

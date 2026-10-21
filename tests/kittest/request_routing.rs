@@ -459,3 +459,149 @@ fn a_closed_send_form_result_leaves_a_running_query_alone() {
         );
     });
 }
+
+#[test]
+fn a_closed_batch_purchase_does_not_complete_the_next_form() {
+    use dash_evo_tool::app::{AppAction, BackendTasksExecutionMode};
+    use dash_evo_tool::backend_task::tokens::TokenTask;
+    use dash_evo_tool::backend_task::{BackendTask, FeeResult};
+    use dash_evo_tool::model::qualified_contract::QualifiedContract;
+    use dash_evo_tool::ui::tokens::direct_token_purchase_screen::PurchaseTokenScreen;
+    use dash_evo_tool::ui::tokens::tokens_screen::IdentityTokenInfo;
+    use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+    use dash_sdk::dpp::identity::Purpose;
+    use std::sync::Arc;
+    in_app(|| {
+        let mut harness = mount_app(RootScreenType::RootScreenMyTokenBalances);
+        harness.state_mut().test_capture_dispatches();
+        let context = harness.state().current_app_context().clone();
+        let key = crate::identity_home::key(0, Purpose::AUTHENTICATION);
+        let id = crate::identity_home::seed_identity(&context, vec![key.clone()], vec![]);
+        let info = IdentityTokenInfo {
+            token_id: Identifier::from([0x23; 32]),
+            token_alias: "Test token".into(),
+            identity: context.get_identity_by_id(&id).unwrap().unwrap(),
+            data_contract: QualifiedContract {
+                contract: dash_sdk::dpp::system_data_contracts::load_system_data_contract(
+                    dash_sdk::dpp::system_data_contracts::SystemDataContract::DPNS,
+                    dash_sdk::dpp::version::PlatformVersion::latest(),
+                )
+                .unwrap(),
+                alias: None,
+            },
+            token_config: TokenConfigurationV0::default_most_restrictive().into(),
+            token_position: 0,
+        };
+        harness
+            .state_mut()
+            .screen_stack
+            .push(Screen::PurchaseTokenScreen(PurchaseTokenScreen::new(
+                info.clone(),
+                &context,
+            )));
+        harness
+            .state_mut()
+            .test_dispatch_screen_action(AppAction::BackendTasks(
+                vec![
+                    BackendTask::TokenTask(Box::new(TokenTask::PurchaseTokens {
+                        identity: info.identity.clone(),
+                        data_contract: Arc::new(info.data_contract.contract.clone()),
+                        token_position: 0,
+                        signing_key: key,
+                        amount: 1,
+                        total_agreed_price: 1,
+                    })),
+                    BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
+                ],
+                BackendTasksExecutionMode::Sequential,
+            ));
+        let dispatch = harness.state().test_captured_dispatches()[0].1.clone();
+        harness.state_mut().screen_stack.pop();
+        harness
+            .state_mut()
+            .screen_stack
+            .push(Screen::PurchaseTokenScreen(PurchaseTokenScreen::new(
+                info, &context,
+            )));
+        deliver(
+            &mut harness,
+            TaskResult::Success {
+                context: dispatch,
+                result: Box::new(BackendTaskSuccessResult::PurchasedTokens(FeeResult::new(
+                    1, 1,
+                ))),
+            },
+        );
+        assert!(
+            harness.query_by_label("Purchase Successful!").is_none(),
+            "the newly opened form did not make the previous form's purchase"
+        );
+    });
+}
+
+#[test]
+fn a_balance_cache_notification_keeps_a_document_query_pending() {
+    in_app(|| {
+        let mut harness = mount_app(RootScreenType::RootScreenDocumentQuery);
+        harness.state_mut().test_capture_dispatches();
+        let query = documents(&mut harness).begin_fetch_for_test().unwrap();
+        harness.state_mut().test_record_visible_dispatch(&query);
+        // The notification emitted when QueryMyTokenBalances updates its cache.
+        let network = harness.state().current_app_context().network();
+        deliver(
+            &mut harness,
+            TaskResult::CacheUpdated(dash_evo_tool::backend_task::CacheUpdate {
+                network,
+                domain: dash_evo_tool::backend_task::CacheDomain::Tokens,
+            }),
+        );
+        assert!(
+            documents(&mut harness).fetch_pending_for_test(),
+            "a balance cache update must not reset an unrelated query"
+        );
+        deliver(
+            &mut harness,
+            TaskResult::Success {
+                context: query,
+                result: Box::new(BackendTaskSuccessResult::PageDocuments(
+                    Default::default(),
+                    None,
+                )),
+            },
+        );
+        assert!(!documents(&mut harness).fetch_pending_for_test());
+    });
+}
+
+#[test]
+fn rejected_dispatch_settles_its_owner_even_when_the_result_channel_is_full() {
+    use dash_evo_tool::app::AppAction;
+    use dash_evo_tool::backend_task::{BackendTask, system_task::SystemTask};
+    in_app(|| {
+        let mut harness = mount_app(RootScreenType::RootScreenDocumentQuery);
+        tokio::runtime::Handle::current()
+            .block_on(harness.state().subtasks.shutdown_async())
+            .unwrap();
+        while harness
+            .state()
+            .task_result_sender
+            .try_send(TaskResult::Repaint)
+            .is_ok()
+        {}
+        harness
+            .state_mut()
+            .test_dispatch_screen_action(AppAction::BackendTask(BackendTask::SystemTask(
+                SystemTask::WipePlatformData,
+            )));
+        assert_eq!(harness.state().test_dispatch_owner_count(), 1);
+        harness.run_steps(3);
+        assert_eq!(harness.state().test_dispatch_owner_count(), 0);
+        let message = TaskError::TaskManagerShuttingDown.to_string();
+        assert!(
+            harness
+                .query_all_by_label_contains(&message)
+                .next()
+                .is_some()
+        );
+    });
+}

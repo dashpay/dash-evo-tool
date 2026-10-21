@@ -445,6 +445,28 @@ fn home_username_summary_limits_to_three_and_routes_add_and_overflow() {
             true,
         );
         let mut harness = mount_home(ctx);
+        for theme in [
+            dash_evo_tool::ui::theme::ThemeMode::Light,
+            dash_evo_tool::ui::theme::ThemeMode::Dark,
+        ] {
+            dash_evo_tool::ui::theme::apply_theme(&harness.ctx, theme);
+            harness.run();
+            let names = harness.get_by_label("@alex2, @alex3, @alex4").rect();
+            let overflow = harness.get_by_label("…").rect();
+            let add = harness.get_by_label("Add username").rect();
+            for button in [overflow, add] {
+                assert!(
+                    button.width() <= 24.0 && button.height() <= 24.0,
+                    "Username actions must stay compact with the app theme: {button:?}"
+                );
+                assert!(
+                    (button.center().y - names.center().y).abs() <= 1.0,
+                    "Username actions must align with the names: {button:?} vs {names:?}"
+                );
+            }
+            assert_eq!(overflow.size(), add.size());
+            assert!(names.right() < overflow.left() && overflow.right() < add.left());
+        }
         assert!(harness.query_by_label("@alex2, @alex3, @alex4").is_some());
         assert!(harness.query_by_label_contains("@alex5").is_none());
         harness.get_by_label("…").click();

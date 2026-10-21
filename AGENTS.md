@@ -278,6 +278,8 @@ The UI and async backend communicate through the action/channel pattern describe
 
 **Backend task enums**: `BackendTask` has variants like `IdentityTask(IdentityTask)`, `WalletTask(WalletTask)`, `TokenTask(Box<TokenTask>)`, etc. Each sub-enum has its own variants and corresponding `run_*_task()` method. Results are `BackendTaskSuccessResult` with 50+ typed variants.
 
+**Result routing**: A screen that waits on its own task dispatches it with `AppAction::BackendTaskWithContext` and a `BackendTaskContext::for_dispatch[_on]` context, kept in a `ui::state::PendingRequest`. `AppState` records the dispatching screen (`app/request_routing.rs`) and delivers that task's result or error to it even while it is hidden. When the dispatching screen has been closed, no screen receives the result: an error raises the global banner, and a finished send raises a success banner. Results of undispatched tasks, and dispatched results that arrive after a network switch (which forgets every sender), go to the visible screen.
+
 **Error handling**: Backend tasks return `Result<T, TaskError>` (`src/backend_task/error.rs`). `TaskError` is a typed error envelope — `Display` produces user-friendly text for `MessageBanner`, `Debug` provides technical details for logs. Domain errors (`DashPayError`, `SpvError`, etc.) are wired as `#[from]` variants for automatic conversion via `?`. When adding new backend error types, add a dedicated `TaskError` variant rather than converting to `String`.
 
 ## Screen Pattern

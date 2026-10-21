@@ -5,6 +5,7 @@ use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::qr_code_image::QrCodeImage;
+use crate::ui::state::PendingRequest;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
@@ -17,7 +18,7 @@ pub struct HomeState {
     pub receive_qr: Option<QrCodeImage>,
     pub payments: Vec<(String, String, u64, bool, String)>,
     requested_payments: bool,
-    pending_payments: Option<BackendTaskContext>,
+    pending_payments: PendingRequest,
     /// The identity this content belongs to, once Home has rendered it.
     owner: Option<(Network, Identifier)>,
 }
@@ -39,7 +40,7 @@ impl HomeState {
     /// Refresh on arrival while retaining the visible preview.
     pub fn refresh_payments(&mut self) {
         self.requested_payments = false;
-        self.pending_payments = None;
+        self.pending_payments.clear();
     }
 
     /// Whether the payment history has not been asked for since its last refresh.
@@ -56,9 +57,7 @@ impl HomeState {
         let task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadPaymentHistory {
             identity: identity.clone(),
         }));
-        let context = BackendTaskContext::for_dispatch(&task);
-        self.pending_payments = Some(context.clone());
-        AppAction::BackendTaskWithContext { task, context }
+        self.pending_payments.dispatch(task)
     }
 
     /// Accept only the response belonging to this Home request.
@@ -67,11 +66,10 @@ impl HomeState {
         context: &BackendTaskContext,
         result: &BackendTaskSuccessResult,
     ) {
-        if self.pending_payments.as_ref() == Some(context)
-            && let BackendTaskSuccessResult::DashPayPaymentHistory(payments) = result
+        if let BackendTaskSuccessResult::DashPayPaymentHistory(payments) = result
+            && self.pending_payments.settle(context).is_some()
         {
             self.payments = payments.clone();
-            self.pending_payments = None;
         }
     }
 }

@@ -5,6 +5,16 @@ use crate::ui::dpns::copy::dpns_vote_feedback;
 mod reconcilers;
 mod shutdown;
 use shutdown::{ShutdownOutcome, ShutdownSession, shutdown_hard_deadline};
+mod dpns_background;
+use dpns_background::{DpnsBackground, migration_allows_scheduled_vote_sweep, unix_time_ms};
+pub use reconcilers::{
+    MIGRATION_APP_DATA_ACK_ACTION_ID, MIGRATION_IDENTITIES_ACK_ACTION_ID,
+    MIGRATION_RETRY_ACTION_ID, MIGRATION_UNREADABLE_ACK_ACTION_ID, SPV_CANCEL_ACTION_ID,
+    SPV_CANCEL_CONFIRM_ACTION_ID, SPV_CANCEL_KEEP_ACTION_ID, SPV_CANCEL_QUESTION,
+    STORAGE_PREP_CLOSE_ACTION_ID, STORAGE_PREP_PASSWORD_DESCRIPTION, STORAGE_PREP_RETRY_ACTION_ID,
+    migration_failed_with_unreadable_identities_text, migration_running_text,
+    migration_unreadable_data_text, migration_unreadable_identities_text,
+};
 pub mod request_routing;
 mod result_delivery;
 mod task_dispatch;
@@ -23,18 +33,16 @@ use request_routing::{RequestOwners, ResultRoute, ScreenOwner, ScreenStack};
 use crate::app_dir::data_file_path;
 #[cfg(feature = "testing")]
 use crate::app_dir::{app_user_data_dir_path, ensure_data_dir_exists, ensure_env_file};
-use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::context::connection_status::{ConnectionStatus, OverallConnectionState};
 use crate::context::feature_gate::FeatureGate;
-use crate::context::migration_status::{MigrationState, MigrationStep};
+use crate::context::migration_status::MigrationState;
 use crate::database::Database;
 use crate::model::settings::AppSettings;
 use crate::model::spv_status::SpvStatus;
-use crate::model::wallet::{TransactionConfirmation, TransactionStatus};
 use crate::ui::components::passphrase_modal;
 use crate::ui::components::secret_prompt_host::{ActivePrompt, EguiSecretPromptHost, QueuedPrompt};
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ProgressOverlay};
@@ -44,7 +52,6 @@ use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen, ProfileSearchScreen};
 use crate::ui::dpns::copy::scheduled_vote_clear_feedback;
 #[cfg(test)]
 use crate::ui::dpns::dpns_contested_names_screen::DPNSScreen;
-use crate::ui::identity::identity_pill::shorten_id;
 use crate::ui::identity::top_up_identity_screen::{
     finish_top_up, follow_top_ups_after_network_switch,
 };
@@ -65,60 +72,21 @@ use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
 use crate::utils::egui_mpsc::{self, EguiMpscAsync};
 use crate::utils::tasks::TaskManager;
 use crate::wallet_backend::DetScope;
-use dash_sdk::dpp::dashcore::{Network, Txid};
+use dash_sdk::dpp::dashcore::Network;
 #[cfg(test)]
 use dash_sdk::platform::Identifier;
 use eframe::{App, egui};
 use platform_wallet_storage::secrets::SecretStore;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::ops::BitOrAssign;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc as tokiompsc;
 use tokio::sync::watch;
 
-/// Banner action id pushed when the user clicks "Retry now" on the
-/// migration-failure banner. The app loop matches this id and
-/// re-dispatches the FinishUnwire backend task. Kept as a `const` so a
-/// future second migration variant can pick a distinct id without
-/// risking a typo collision. Exposed for kittest coverage.
-pub const MIGRATION_RETRY_ACTION_ID: &str = "migration:retry:finish_unwire";
-
-/// Banner action id pushed when the user acknowledges the warning about
-/// unreadable balance top-up records. Until it fires, the warning is re-raised
-/// on every launch — a dismissed banner is not an acknowledgement. Exposed for
-/// kittest coverage.
-pub const MIGRATION_APP_DATA_ACK_ACTION_ID: &str = "migration:ack:unreadable_app_data";
-
-/// Banner action id pushed when the user acknowledges the unreadable-identity
-/// warning. Until it fires, the warning is re-raised on every launch — a
-/// dismissed banner is not an acknowledgement, because the identities it names
-/// hold keys the user cannot sign with until they are loaded again. Exposed for
-/// kittest coverage.
-pub const MIGRATION_IDENTITIES_ACK_ACTION_ID: &str = "migration:ack:unreadable_identities";
-
-/// Banner action id pushed when the user acknowledges the combined warning — the
-/// launch where both unreadable identities and unreadable top-up records were
-/// left behind.
-/// One banner names both problems, so its single acknowledgement retires both
-/// records: re-raising either half after the user has read and dismissed the
-/// sentence describing it would be a notice they have already acted on. Exposed
-/// for kittest coverage.
-pub const MIGRATION_UNREADABLE_ACK_ACTION_ID: &str =
-    "migration:ack:unreadable_identities_and_app_data";
-
 pub(crate) use result_delivery::{deliver_identity_removal_result, deliver_legacy_recovery_result};
-
-fn migration_allows_scheduled_vote_sweep(state: &MigrationState) -> bool {
-    matches!(
-        state,
-        MigrationState::Ready
-            | MigrationState::Success
-            | MigrationState::SucceededWithUnreadableData { .. }
-    )
-}
 
 pub(crate) fn scheduled_vote_sweep_is_quiet(error: &TaskError) -> bool {
     matches!(
@@ -207,127 +175,6 @@ fn boot_auto_start_spv(
     onboarding_completed && auto_start_spv && !network_selection_required
 }
 
-fn clear_scheduled_vote_sweep_guard_on_error(
-    in_progress: &mut BTreeSet<Network>,
-    context: &BackendTaskContext,
-    error: &TaskError,
-) {
-    let network = match (context, error) {
-        (_, TaskError::ScheduledVoteSweepFailed { network, .. }) => Some(*network),
-        (_, TaskError::ScheduledVoteSweepAllAddressesExhausted { network, .. }) => Some(*network),
-        (
-            BackendTaskContext::ScheduledVoteSweep { network },
-            TaskError::BackendTaskFailed { .. }
-            | TaskError::BackendTaskPanicked
-            | TaskError::BackendTaskBatchAborted,
-        ) => Some(*network),
-        _ => None,
-    };
-    if let Some(network) = network {
-        in_progress.remove(&network);
-    }
-}
-
-/// How often local state re-derives the voting attention summary.
-const DPNS_ATTENTION_RECOMPUTE_INTERVAL: Duration = Duration::from_secs(60);
-
-/// Sweeps that re-check unconfirmed votes right after startup or vote activity.
-const UNCONFIRMED_VOTE_QUICK_CHECKS: u8 = 3;
-
-/// How often unconfirmed votes are re-checked once the quick checks are used.
-const UNCONFIRMED_VOTE_RECHECK_INTERVAL: Duration = Duration::from_secs(10 * 60);
-
-/// Paces the sweep's re-check of unconfirmed votes. A vote can stay
-/// unconfirmed until its contest closes, so it is queried on a few sweeps and
-/// then only every [`UNCONFIRMED_VOTE_RECHECK_INTERVAL`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct UnconfirmedVoteChecks {
-    quick_left: u8,
-    last_check: Option<Instant>,
-}
-
-impl Default for UnconfirmedVoteChecks {
-    fn default() -> Self {
-        Self {
-            quick_left: UNCONFIRMED_VOTE_QUICK_CHECKS,
-            last_check: None,
-        }
-    }
-}
-
-impl UnconfirmedVoteChecks {
-    /// Whether the sweep starting at `now` re-checks; records the check if so.
-    fn take_due(&mut self, now: Instant) -> bool {
-        let due = self.quick_left > 0
-            || self
-                .last_check
-                .is_none_or(|last| now.duration_since(last) >= UNCONFIRMED_VOTE_RECHECK_INTERVAL);
-        if due {
-            self.quick_left = self.quick_left.saturating_sub(1);
-            self.last_check = Some(now);
-        }
-        due
-    }
-}
-
-/// Whether `result` reports vote activity that can leave a vote unconfirmed.
-fn restarts_unconfirmed_vote_checks(result: &BackendTaskSuccessResult) -> bool {
-    matches!(
-        result,
-        BackendTaskSuccessResult::DpnsVoteOperationUpdated { .. }
-            | BackendTaskSuccessResult::ScheduledVotesInProgress(_)
-    )
-}
-
-fn unix_time_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or(0)
-}
-
-fn clear_confirmed_vote_recovery_cutoff(
-    deferred: &mut BTreeMap<Network, u64>,
-    network: Network,
-    confirmed_cutoff: Option<u64>,
-) -> bool {
-    if confirmed_cutoff.is_some() && deferred.get(&network).copied() == confirmed_cutoff {
-        deferred.remove(&network);
-        true
-    } else {
-        false
-    }
-}
-
-/// Action id for the SPV-sync block's "Cancel" button.
-///
-/// SPV sync is **unbounded** — with no peers it stays Connecting/Syncing forever
-/// with no terminal signal — so a button-less hard block would trap the user
-/// (violating the overlay's C1/C2 contract). Cancel is also designated the
-/// block's single keyboard-reachable escape (`with_keyboard_escape`), so a
-/// keyboard-only / assistive-tech user can activate it with Enter or Space.
-///
-/// Because that makes a *destructive* action reachable by the universal dismiss
-/// key, for users who may not be able to see what they are dismissing, Cancel
-/// does not stop sync: it swaps the action row for the confirmation below. One
-/// reflexive keypress is therefore never destructive.
-/// Colon-namespaced per the overlay action-id convention. Exposed for kittest
-/// coverage.
-pub const SPV_CANCEL_ACTION_ID: &str = "spv:sync:cancel";
-
-/// Action id for the "Stop syncing" button of the Cancel confirmation.
-/// Activating it disconnects; it is deliberately NOT the keyboard escape.
-pub const SPV_CANCEL_CONFIRM_ACTION_ID: &str = "spv:sync:cancel_confirm";
-
-/// Action id for the "Keep syncing" button of the Cancel confirmation — the
-/// non-destructive default, and the confirmation's keyboard escape, so Enter or
-/// Space returns to the block rather than disconnecting.
-pub const SPV_CANCEL_KEEP_ACTION_ID: &str = "spv:sync:cancel_keep";
-
-/// The Cancel confirmation's question. Names the consequence and the way back,
-/// so the choice is answerable without seeing the screen behind it.
-pub const SPV_CANCEL_QUESTION: &str = "Stop syncing? You can start again from the Network screen.";
-
 /// The root screen every fallback route lands on: an unregistered persisted
 /// screen at startup, and live de-gating of a role-gated tab.
 ///
@@ -374,28 +221,6 @@ fn dpns_result_needs_route(
     // The voting panel says which results it acts on, so it receives each of
     // them even while its root screen is hidden.
     DPNSScreen::handles_result(result) && !voting_root_takes_result
-}
-
-/// Plain, jargon-free descriptions for the SPV-sync block (Everyday-User rule:
-/// no "SPV"/"headers"/"masternodes"/raw heights/percentages — the jargon-free
-/// "Step N of 5" counter carries the granularity). Complete sentences (NFR-2).
-const SPV_CONNECTING_DESCRIPTION: &str = "Connecting to the Dash network.";
-const SPV_SYNCING_DESCRIPTION: &str = "Syncing with the Dash network.";
-
-/// What the per-frame SPV-sync block driver should do with the overlay this
-/// frame, given whether a startup/Connect sync is **armed** and the current
-/// connection state. Pure so the policy is unit-testable in isolation from
-/// `AppState`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SpvBlockStep {
-    /// Armed and still connecting/syncing: raise (or keep + update).
-    Block,
-    /// Armed episode reached a terminal state (Synced/Error): lower the block and
-    /// DISARM, so subsequent ambient Connecting/Syncing (reconnect, per-block
-    /// catch-up) never re-blocks (F-SPV-A).
-    Disarm,
-    /// Not armed (ambient sync, or already disarmed): ensure no block is shown.
-    Idle,
 }
 
 #[cfg(test)]
@@ -641,7 +466,20 @@ mod backend_task_join_tests {
     async fn panicking_scheduled_vote_sweep_clears_in_progress_guard() {
         let network = Network::Testnet;
         let unrelated_network = Network::Regtest;
-        let mut in_progress = BTreeSet::from([network, unrelated_network]);
+        let now = Instant::now();
+        let mut scheduler = DpnsBackground::new(now);
+        for net in [network, unrelated_network] {
+            assert!(
+                scheduler
+                    .scheduled_vote_task(net, false, false, now, 42)
+                    .is_none()
+            );
+            assert!(
+                scheduler
+                    .scheduled_vote_task(net, true, false, now, 43)
+                    .is_some()
+            );
+        }
         let result = task_dispatch::run_batch(
             vec![async {
                 panic!("scheduled sweep panic");
@@ -656,14 +494,24 @@ mod backend_task_join_tests {
         let error = result.expect_err("the actual executor catches the sweep panic");
         let context = BackendTaskContext::ScheduledVoteSweep { network };
         assert!(matches!(error, TaskError::BackendTaskPanicked));
-        clear_scheduled_vote_sweep_guard_on_error(&mut in_progress, &context, &error);
+        scheduler.sweep_failed(&context, &error);
 
         assert!(
-            !in_progress.contains(&network),
+            scheduler
+                .scheduled_vote_task(network, true, false, now + Duration::from_secs(61), 44)
+                .is_some(),
             "a terminal panic must allow the next scheduled-vote sweep"
         );
         assert!(
-            in_progress.contains(&unrelated_network),
+            scheduler
+                .scheduled_vote_task(
+                    unrelated_network,
+                    true,
+                    false,
+                    now + Duration::from_secs(61),
+                    44
+                )
+                .is_none(),
             "a terminal panic must not release another network's sweep guard"
         );
     }
@@ -734,142 +582,6 @@ mod backend_task_join_tests {
     }
 }
 
-/// Pure SPV-sync block policy (F-SPV-A scope gate + C1/C2). The block is **scoped
-/// to user-initiated sync** — armed only on startup auto-start and the Connect
-/// button — so an ambient reconnect or the SPV engine flipping Synced→Syncing on
-/// each new block never hard-blocks a working user. Once an armed episode reaches
-/// a terminal state it disarms and stays disarmed until the next Connect/startup.
-fn spv_block_step(armed: bool, state: OverallConnectionState) -> SpvBlockStep {
-    use OverallConnectionState as S;
-    if !armed {
-        return SpvBlockStep::Idle;
-    }
-    match state {
-        // Terminal for an armed episode: lower and disarm (banner surfaces Error).
-        S::Synced | S::Error => SpvBlockStep::Disarm,
-        // Still getting connected/synced for this episode. Disconnected stays
-        // blocking while armed — it just means we are still trying to connect.
-        S::Connecting | S::Syncing | S::Disconnected => SpvBlockStep::Block,
-    }
-}
-
-/// One-sentence user-facing label for an in-progress migration step.
-/// Mirrors Diziet §2.2 D-1 banner copy — single complete sentence per
-/// variant so i18n extraction is trivial. Exposed for kittest
-/// coverage so a regression in the label table fails the test suite.
-pub fn migration_running_text(step: MigrationStep) -> &'static str {
-    match step {
-        MigrationStep::Wiring => "The app is opening your saved data.",
-        MigrationStep::Detecting => "The app is checking your wallet data.",
-        MigrationStep::AppData => "The app is restoring your identity balance history.",
-        MigrationStep::SingleKey => "The app is updating your imported keys.",
-        MigrationStep::Shielded => "The app is verifying your shielded balance.",
-        MigrationStep::WalletSeeds => "The app is moving your wallets into secure storage.",
-        MigrationStep::WalletMeta => "The app is updating your wallet names.",
-        MigrationStep::Identities => "The app is restoring your identities and their keys.",
-        MigrationStep::Finalize => "The app is finishing the storage update.",
-    }
-}
-
-/// User-facing banner copy for a migration that finished the wallet drain but
-/// could not decode `count` identities. Their keys are therefore not loaded, so
-/// the sentence names both the screen and the control that restore them — a user
-/// who has never opened that flow cannot act on "load them again" alone. The
-/// previous version's data is never deleted, so the re-import is always
-/// possible. No "Retry now": a corrupt row decodes no better on a second pass.
-/// Exposed for kittest coverage.
-pub fn migration_unreadable_identities_text(count: u32) -> String {
-    format!(
-        "Some identities from the previous version could not be read and were not carried over \
-         ({count} in total). Your previous data is untouched. For a user identity, choose Load \
-         Identity on the Identities screen. For a masternode or evonode identity, choose + Load \
-         on the Masternodes tab."
-    )
-}
-
-/// User-facing banner copy for the rare launch where both DET-owned passes broke:
-/// `count` identities could not be read AND updating the rest of the previous
-/// version's data (such as balance top-up records) hit a hard error. Names each problem
-/// in its own sentence and offers the retry the app-data half needs — the
-/// identity half recovers by loading the identities again. The previous version's
-/// data is never deleted, so both are recoverable. Exposed for kittest coverage.
-pub fn migration_failed_with_unreadable_identities_text(count: u32) -> String {
-    format!(
-        "Some identities from the previous version could not be read and were not carried over \
-         ({count} in total), and updating the rest of your previous data did not finish. Your \
-         previous data is untouched. Choose Retry now to finish updating. For a user identity, \
-         choose Load Identity on the Identities screen. For a masternode or evonode identity, \
-         choose + Load on the Masternodes tab."
-    )
-}
-
-/// User-facing banner copy for every combination of unreadable legacy identity
-/// and top-up rows. One sentence per problem, each naming its own remedy.
-/// Exposed for kittest coverage.
-pub fn migration_unreadable_data_text(identities: u32, top_ups: u32) -> String {
-    match (identities > 0, top_ups > 0) {
-        (true, false) => migration_unreadable_identities_text(identities),
-        (false, true) => format!(
-            "Some records of earlier additions to identity balances from the previous version \
-             could not be read and were not carried over ({top_ups} in total). Check each \
-             identity's balance history before adding more funds."
-        ),
-        (true, true) => format!(
-            "Some identities ({identities} in total) and some records of earlier additions to \
-             identity balances ({top_ups} in total) from the previous version could not be read \
-             and were not carried over. For a user identity, choose Load Identity on the \
-             Identities screen. For a masternode or evonode identity, choose + Load on the \
-             Masternodes tab. Check each identity's balance history before adding more funds."
-        ),
-        (false, false) => {
-            "Some data from the previous version could not be read. Check your identities and identity balance history before continuing.".to_string()
-        }
-    }
-}
-
-/// How long storage preparation may run before the gate offers a way out.
-///
-/// Preparation is local, non-network work (open the SQLite sidecar, run the
-/// schema ladder, hydrate wallets, drain the previous version's rows) that
-/// normally completes within a few frames of boot — sub-second in the common
-/// case. 30 seconds is ~two orders of magnitude past that, generous enough never
-/// to false-positive on a slow disk or a large wallet set, yet short enough that
-/// a genuinely wedged persister (or a second process holding the file lock)
-/// surfaces within half a minute instead of never. It sits well below the
-/// network-bound waits (the 120 s SPV no-progress watchdog, the 10 min MCP sync
-/// gate), matching that this wait is local, not on the wire. The bound matters
-/// more than it used to: the gate has no background escape, so a hang here would
-/// otherwise be unrecoverable.
-const STORAGE_PREP_STUCK_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Overlay copy once preparation exceeds [`STORAGE_PREP_STUCK_TIMEOUT`].
-/// Everyday-User copy (no "backend"/"wiring"/"SPV" jargon): what happened plus
-/// the two self-serviceable choices. Complete sentences so i18n extracts each as
-/// one unit.
-const STORAGE_PREP_STUCK_MESSAGE: &str = "Preparing your saved data is taking longer than usual. \
-     Wait a little longer, or close the app and open it again.";
-
-/// Overlay copy for a preparation that failed and can be retried. Names what
-/// happened, reassures about the data, and offers both actions the surface has.
-const STORAGE_PREP_FAILED_MESSAGE: &str = "We couldn't finish updating your saved data. Your \
-     wallets and keys are unchanged. Try again, or close the app and open it later.";
-
-/// Overlay copy while preparation waits for a migrated wallet's password. The
-/// password prompt itself renders above the gate and carries the controls; this
-/// is what the card says once the prompt closes. Exposed for kittest coverage:
-/// the gate's contract is that this is NOT painted while the prompt is up, and a
-/// test asserting that has to name the exact string the card would show.
-pub const STORAGE_PREP_PASSWORD_DESCRIPTION: &str =
-    "Enter your wallet password to continue the storage update.";
-
-/// Action id for the storage-preparation gate's "Try again" button.
-pub const STORAGE_PREP_RETRY_ACTION_ID: &str = "storage:prepare:retry";
-
-/// Action id for the storage-preparation gate's "Close the app" button. Also the
-/// gate's single keyboard-reachable exit, so a keyboard-only / assistive-tech
-/// user is never stranded behind a block with no background escape.
-pub const STORAGE_PREP_CLOSE_ACTION_ID: &str = "storage:prepare:close";
-
 /// Where boot has got to, and therefore what may render.
 ///
 /// The app is three things that used to race — wiring, the legacy drain, chain
@@ -896,119 +608,6 @@ impl BootPhase {
     /// network chooser.
     pub fn renders_screens(self) -> bool {
         !matches!(self, BootPhase::Preparing { .. })
-    }
-}
-
-/// How often a pending-confirmation watch re-reads the display snapshot. The
-/// snapshot only changes when a wallet event lands, so a faster tick would buy
-/// nothing but a repeated scan of every wallet's history.
-const PENDING_POLL_INTERVAL: Duration = Duration::from_secs(2);
-
-/// How long a watch stays unconfirmed before its banner is re-worded once.
-/// dash-spv rebroadcasts a pending transaction every 600 s and Dash targets a
-/// block every 2.5 min, so by eleven minutes the network has had a full retry
-/// cycle and several block windows — past which "wait a moment" is no longer
-/// true. The watch itself continues; only the copy changes.
-const PENDING_STALE_AFTER: Duration = Duration::from_secs(11 * 60);
-
-/// Cap on simultaneously watched transactions, so a pathological run of
-/// ambiguous sends cannot grow the watch list without bound. The oldest watch
-/// is retired to [`PENDING_STALE_MESSAGE`], which points at the durable
-/// transaction-history row rather than going silent.
-const MAX_PENDING_WATCHES: usize = 8;
-
-/// Replaces the ambiguous-outcome banner once the network has demonstrably
-/// taken the transaction. Everyday-User copy: the whole outcome in one plain
-/// sentence, with nothing left for the user to do.
-///
-/// Names the transaction because up to [`MAX_PENDING_WATCHES`] payments can be
-/// waiting at once and the warning for the others stays up beside this. An
-/// unattributed "your transaction is confirmed" next to an unattributed "could
-/// not be verified" leaves the user to guess which is which, and guessing wrong
-/// in either direction ends in paying the same person twice. The id is
-/// shortened the way every other identifier in the app is, and its head and
-/// tail still match by eye against the full id in the transaction history the
-/// stale copy points at.
-fn pending_confirmed_message(txid: &Txid) -> String {
-    let transaction = shorten_id(&txid.to_string());
-    format!("Your transaction {transaction} is confirmed.")
-}
-
-/// Replaces the ambiguous-outcome banner once a watch passes
-/// [`PENDING_STALE_AFTER`]. Deliberately promises nothing about the funds
-/// becoming spendable again — upstream releases them on a block-height
-/// schedule this app does not measure — and hands the user the transaction
-/// history, which tracks the same data live, instead of an instruction to act
-/// blind. It names no status either: this copy is reached for every
-/// non-confirmed observation, including one no loaded wallet has seen at all,
-/// so the history row it points at may not exist and may not read the way a
-/// named status would promise. Complete sentences so i18n extracts it as one
-/// unit.
-const PENDING_STALE_MESSAGE: &str = "The app still cannot verify whether your transaction was confirmed. Check the transaction history for the wallet you sent from before sending it again, because sending now could pay the same person twice if the first one arrives later.";
-
-/// What the pending-confirmation watch should do about one watched transaction
-/// this tick. Pure so the policy is unit-testable in isolation from `AppState`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PendingStep {
-    /// No verdict yet: keep the ambiguous-outcome banner and keep watching.
-    Waiting,
-    /// The network took it: replace the banner and retire the watch.
-    Confirmed,
-    /// Unconfirmed for long enough that the original advice has expired:
-    /// re-word the banner once and keep watching.
-    Stale,
-}
-
-/// Pure pending-confirmation policy. `confirmation` is the watched
-/// transaction's state in the display snapshot (`None` when no loaded wallet
-/// has seen it), `elapsed` how long the watch has been open, and
-/// `already_stale` whether the re-wording has already happened — so the copy
-/// changes at most once.
-///
-/// There is deliberately no failure outcome. Modern Dash Core has no rejection
-/// signal on the wire, so an invalid transaction and a slow one are
-/// indistinguishable; a synthesised "failed" would eventually tell someone
-/// their money is safe to send again when it is not.
-///
-/// TODO(R-1, docs/gui-testing/scenarios/pending-broadcast-auto-reconcile.md):
-/// still unverified against a live network — no funded testnet wallet is
-/// available in this environment. `network_took_transaction`'s
-/// `height.is_some()` guard is the code-side mitigation for a locally-injected
-/// transaction reaching `Confirmed` without a real network verdict, and that
-/// guard is what the scenario exists to exercise. Unit tests cover the policy
-/// against a synthetic snapshot; what is outstanding is confirming that a real
-/// dash-spv mempool injection is in fact reported height-less, which only a
-/// funded run can show. Also closes R-4 (no-change-output send shape).
-fn pending_step(
-    confirmation: Option<TransactionConfirmation>,
-    elapsed: Duration,
-    already_stale: bool,
-) -> PendingStep {
-    if confirmation.is_some_and(network_took_transaction) {
-        PendingStep::Confirmed
-    } else if !already_stale && elapsed >= PENDING_STALE_AFTER {
-        PendingStep::Stale
-    } else {
-        PendingStep::Waiting
-    }
-}
-
-/// Whether a snapshot entry is evidence the network actually took the
-/// transaction, rather than evidence this app tried to send it.
-///
-/// Presence alone proves nothing: dash-spv injects a broadcast transaction into
-/// its own mempool before any peer verdict, so an `Unconfirmed` entry appears
-/// even for one no peer ever accepted. An InstantSend lock is driven only by a
-/// real lock message, and a genuinely mined transaction carries the height of
-/// the block holding it — a mined tier without one is not evidence worth
-/// spending a funds message on.
-fn network_took_transaction(confirmation: TransactionConfirmation) -> bool {
-    match confirmation.status {
-        TransactionStatus::Unconfirmed => false,
-        TransactionStatus::InstantSendLocked => true,
-        TransactionStatus::Confirmed | TransactionStatus::ChainLocked => {
-            confirmation.height.is_some()
-        }
     }
 }
 
@@ -1130,25 +729,9 @@ pub struct AppState {
     pub task_result_sender: egui_mpsc::SenderAsync<TaskResult>, // Channel sender for sending task results
     pub task_result_receiver: tokiompsc::Receiver<TaskResult>, // Channel receiver for receiving task results
     theme: ThemeState,
-    last_scheduled_vote_check: Instant, // Last time we checked if there are scheduled masternode votes to cast
-    /// Per-network start of a migration wait that deferred scheduled-vote casting.
-    scheduled_vote_sweep_deferred_since_ms: BTreeMap<Network, u64>,
-    /// Networks with a scheduled-vote sweep currently running.
-    scheduled_vote_sweeps_in_progress: BTreeSet<Network>,
-    /// Per-network pacing of the sweep's re-check of unconfirmed votes.
-    unconfirmed_vote_checks: BTreeMap<Network, UnconfirmedVoteChecks>,
-    /// Unix ms of the last background contest refresh dispatched per network.
-    dpns_background_refresh_dispatched_at_ms: BTreeMap<Network, u64>,
-    /// Unix ms at which an incomplete background refresh is retried per network.
-    dpns_background_refresh_retry_at_ms: BTreeMap<Network, u64>,
-    /// When the voting attention summary was last recomputed per network, so
-    /// nodes loaded or keys added elsewhere reach the chip, badge and timer.
-    dpns_attention_recomputed_at: BTreeMap<Network, Instant>,
+    dpns_background: DpnsBackground,
     /// The vote progress drawer shown over every screen (VOTE-FR-083).
     dpns_progress_drawer: crate::ui::dpns::progress_drawer::DrawerState,
-    /// Last recovery-sweep attempt per network, used to throttle retries while
-    /// retaining the original eligibility cutoff.
-    scheduled_vote_recovery_last_attempt: BTreeMap<Network, Instant>,
     last_repaint_request: Instant, // Throttle periodic repaint scheduling to once per second
     pub subtasks: Arc<TaskManager>, // Subtasks manager for graceful shutdown
     /// Whether to show the welcome/onboarding screen
@@ -1737,15 +1320,8 @@ impl AppState {
             task_result_sender,
             task_result_receiver,
             theme: ThemeState::new(theme_preference),
-            last_scheduled_vote_check: Instant::now(),
-            scheduled_vote_sweep_deferred_since_ms: BTreeMap::new(),
-            scheduled_vote_sweeps_in_progress: BTreeSet::new(),
-            unconfirmed_vote_checks: BTreeMap::new(),
-            dpns_background_refresh_dispatched_at_ms: BTreeMap::new(),
-            dpns_background_refresh_retry_at_ms: BTreeMap::new(),
-            dpns_attention_recomputed_at: BTreeMap::new(),
+            dpns_background: DpnsBackground::new(Instant::now()),
             dpns_progress_drawer: crate::ui::dpns::progress_drawer::DrawerState::new(unix_time_ms()),
-            scheduled_vote_recovery_last_attempt: BTreeMap::new(),
             last_repaint_request: Instant::now(),
             subtasks,
             show_welcome_screen: show_welcome_screen(
@@ -2530,30 +2106,14 @@ impl AppState {
         }
     }
 
-    /// Called when a background contest refresh ends: if it failed, or left a
-    /// contest unread or a node's vote state unchecked, try again soon instead
-    /// of a whole interval later.
-    fn retry_incomplete_dpns_background_refresh(&mut self, network: Network) {
-        use crate::model::dpns_voting::operator::{
-            background_refresh_incomplete, background_refresh_retry_delay,
-        };
-        let Some(dispatched_at) = self
-            .dpns_background_refresh_dispatched_at_ms
-            .get(&network)
-            .copied()
-        else {
-            return;
-        };
+    /// Supplies the originating network's completion timestamp to the scheduler.
+    fn record_dpns_refresh_completion(&mut self, network: Network) {
         let completed_at = self
             .network_contexts
             .get(&network)
             .and_then(|context| context.dpns_contests_refreshed_at_ms());
-        if background_refresh_incomplete(completed_at, dispatched_at) {
-            let delay = u64::try_from(background_refresh_retry_delay(network).as_millis())
-                .unwrap_or(u64::MAX);
-            self.dpns_background_refresh_retry_at_ms
-                .insert(network, unix_time_ms().saturating_add(delay));
-        }
+        self.dpns_background
+            .refresh_completed(network, completed_at, unix_time_ms());
     }
 
     /// Promote at most one queued passphrase request before overlay handling.
@@ -2793,7 +2353,7 @@ impl App for AppState {
                 } => {
                     let unboxed_message = *message;
                     if let BackendTaskContext::DpnsBackgroundRefresh { network } = &context {
-                        self.retry_incomplete_dpns_background_refresh(*network);
+                        self.record_dpns_refresh_completion(*network);
                     }
                     clear_profile_saving_banner_after_success(ctx, &context, &unboxed_message);
                     self.route_result_to_observers(route, &context, &unboxed_message);
@@ -2810,9 +2370,7 @@ impl App for AppState {
                     ) {
                         crate::ui::identity::task_feedback::show(ctx, &unboxed_message);
                     }
-                    if restarts_unconfirmed_vote_checks(&unboxed_message) {
-                        self.unconfirmed_vote_checks.clear();
-                    }
+                    self.dpns_background.record_vote_result(&unboxed_message);
                     match unboxed_message {
                         BackendTaskSuccessResult::RemovedIdentities { .. } => {
                             deliver_identity_removal_result(
@@ -2935,14 +2493,6 @@ impl App for AppState {
                             network,
                             preserve_eligibility_since_ms,
                         } => {
-                            self.scheduled_vote_sweeps_in_progress.remove(&network);
-                            if clear_confirmed_vote_recovery_cutoff(
-                                &mut self.scheduled_vote_sweep_deferred_since_ms,
-                                network,
-                                preserve_eligibility_since_ms,
-                            ) {
-                                self.scheduled_vote_recovery_last_attempt.remove(&network);
-                            }
                             self.deliver_result(
                                 route,
                                 &context,
@@ -3056,7 +2606,7 @@ impl App for AppState {
                     // A background refresh retries by itself; the voting
                     // panel's Refresh is where failures are reported.
                     tracing::debug!(?error, ?network, "Background contest refresh failed");
-                    self.retry_incomplete_dpns_background_refresh(network);
+                    self.record_dpns_refresh_completion(network);
                 }
                 TaskResult::Error {
                     context,
@@ -3064,11 +2614,7 @@ impl App for AppState {
                         err @ (TaskError::ScheduledVoteSweepFailed { .. }
                         | TaskError::ScheduledVoteSweepAllAddressesExhausted { .. }),
                 } => {
-                    clear_scheduled_vote_sweep_guard_on_error(
-                        &mut self.scheduled_vote_sweeps_in_progress,
-                        &context,
-                        &err,
-                    );
+                    self.dpns_background.sweep_failed(&context, &err);
                     self.route_error_to_observers(route, &context, &err);
                     self.visible_screen_mut()
                         .display_backend_task_error(&context, &err);
@@ -3087,11 +2633,7 @@ impl App for AppState {
                     error: err,
                 } => {
                     clear_profile_saving_banner_after_error(ctx, &context);
-                    clear_scheduled_vote_sweep_guard_on_error(
-                        &mut self.scheduled_vote_sweeps_in_progress,
-                        &context,
-                        &err,
-                    );
+                    self.dpns_background.sweep_failed(&context, &err);
                     self.route_error_to_observers(route, &context, &err);
                     let chooser_owned = network_chooser_owns_task(&context);
                     // A top-up nobody open sent, or any task whose screen is
@@ -3192,104 +2734,41 @@ impl App for AppState {
             self.last_repaint_request = Instant::now();
         }
 
-        // Periodically cast any scheduled masternode votes that have come due.
-        // The poll itself — the journal read, local-identity load, and per-vote
-        // casting — runs off the UI thread in the `CastDueScheduledVotes`
-        // backend task; this tick only dispatches it. The voting panel learns
-        // which votes are in progress / cast via `display_task_result`, so a
-        // slow or failing query never stalls a frame.
-        let now = Instant::now();
         let network = active_context.network;
-        if !migration_allows_scheduled_vote_sweep(migration_state.as_ref()) {
-            self.scheduled_vote_sweep_deferred_since_ms
-                .entry(network)
-                .or_insert_with(unix_time_ms);
-        } else if !self.network_selection_required
-            && !self.scheduled_vote_sweeps_in_progress.contains(&network)
-        {
-            let preserve_eligibility_since_ms = self
-                .scheduled_vote_sweep_deferred_since_ms
-                .get(&network)
-                .copied();
-            let recovery_due = preserve_eligibility_since_ms.is_some()
-                && self
-                    .scheduled_vote_recovery_last_attempt
-                    .get(&network)
-                    .is_none_or(|last| now.duration_since(*last) > Duration::from_secs(60));
-            let periodic_due = preserve_eligibility_since_ms.is_none()
-                && now.duration_since(self.last_scheduled_vote_check) > Duration::from_secs(60);
-            if recovery_due || periodic_due {
-                self.last_scheduled_vote_check = now;
-                if preserve_eligibility_since_ms.is_some() {
-                    self.scheduled_vote_recovery_last_attempt
-                        .insert(network, now);
-                }
-                self.scheduled_vote_sweeps_in_progress.insert(network);
-                let reconcile_unconfirmed = self
-                    .unconfirmed_vote_checks
-                    .entry(network)
-                    .or_default()
-                    .take_due(now);
-                self.handle_backend_task_with_context(
-                    BackendTask::ContestedResourceTask(
-                        ContestedResourceTask::CastDueScheduledVotes {
-                            preserve_eligibility_since_ms,
-                            reconcile_unconfirmed,
-                        },
-                    ),
-                    BackendTaskContext::ScheduledVoteSweep { network },
-                );
-            }
+        if let Some(task) = self.dpns_background.scheduled_vote_task(
+            network,
+            migration_allows_scheduled_vote_sweep(migration_state.as_ref()),
+            self.network_selection_required,
+            Instant::now(),
+            unix_time_ms(),
+        ) {
+            self.handle_backend_task_with_context(
+                BackendTask::ContestedResourceTask(task),
+                BackendTaskContext::ScheduledVoteSweep { network },
+            );
         }
 
-        // Prime and periodically re-derive the attention summary from local
-        // state (no network); the timer below depends on its voting-node count.
-        if self.boot.phase().renders_screens()
+        let voting_available = self.boot.phase().renders_screens()
             && !self.network_selection_required
-            && FeatureGate::Masternodes.is_available(&active_context)
-            && active_context.wallet_backend().is_ok()
-            && self
-                .dpns_attention_recomputed_at
-                .get(&network)
-                .is_none_or(|at| at.elapsed() >= DPNS_ATTENTION_RECOMPUTE_INTERVAL)
-        {
-            self.dpns_attention_recomputed_at
-                .insert(network, Instant::now());
+            && FeatureGate::Masternodes.is_available(&active_context);
+        // Refresh local attention before deciding whether loaded nodes need network work.
+        if self.dpns_background.attention_recompute_due(
+            network,
+            voting_available && active_context.wallet_backend().is_ok(),
+            Instant::now(),
+        ) {
             active_context.recompute_dpns_vote_attention();
         }
-
-        // Background contest + vote-state refresh feeding the attention chip and
-        // the Masternodes badge (VOTE-FR-074): only while voting nodes are loaded.
-        if self.boot.phase().renders_screens()
-            && !self.network_selection_required
-            && FeatureGate::Masternodes.is_available(&active_context)
-            && active_context.dpns_vote_attention().voting_nodes > 0
-        {
-            let now_ms = unix_time_ms();
-            let retry_due = self
-                .dpns_background_refresh_retry_at_ms
-                .get(&network)
-                .is_some_and(|retry_at| now_ms >= *retry_at);
-            if retry_due
-                || crate::model::dpns_voting::operator::background_refresh_due(
-                    active_context.dpns_contests_refreshed_at_ms(),
-                    self.dpns_background_refresh_dispatched_at_ms
-                        .get(&network)
-                        .copied(),
-                    now_ms,
-                    crate::model::dpns_voting::operator::background_refresh_interval(network),
-                )
-            {
-                self.dpns_background_refresh_retry_at_ms.remove(&network);
-                self.dpns_background_refresh_dispatched_at_ms
-                    .insert(network, now_ms);
-                self.handle_backend_task_with_context(
-                    BackendTask::ContestedResourceTask(
-                        ContestedResourceTask::RefreshContestsInBackground,
-                    ),
-                    BackendTaskContext::DpnsBackgroundRefresh { network },
-                );
-            }
+        if let Some(task) = self.dpns_background.refresh_task(
+            network,
+            voting_available && active_context.dpns_vote_attention().voting_nodes > 0,
+            active_context.dpns_contests_refreshed_at_ms(),
+            unix_time_ms(),
+        ) {
+            self.handle_backend_task_with_context(
+                BackendTask::ContestedResourceTask(task),
+                BackendTaskContext::DpnsBackgroundRefresh { network },
+            );
         }
 
         // Drive the SPV-sync block BEFORE claiming input and running the screen, so
@@ -3983,38 +3462,6 @@ mod migration_banner_tests {
         );
     }
 
-    /// Scheduled-vote work resumes only after every migration pass has finished.
-    #[test]
-    fn scheduled_vote_sweep_waits_for_successful_migration_completion() {
-        use crate::context::migration_status::{MigrationState, MigrationStep};
-
-        assert!(!migration_allows_scheduled_vote_sweep(
-            &MigrationState::Idle
-        ));
-        assert!(migration_allows_scheduled_vote_sweep(
-            &MigrationState::Ready
-        ));
-        assert!(!migration_allows_scheduled_vote_sweep(
-            &MigrationState::Running {
-                step: MigrationStep::Identities,
-            },
-        ));
-        assert!(!migration_allows_scheduled_vote_sweep(
-            &MigrationState::AwaitingWalletPasswords {
-                wallets: Vec::new(),
-            },
-        ));
-        assert!(migration_allows_scheduled_vote_sweep(
-            &MigrationState::Success,
-        ));
-        assert!(migration_allows_scheduled_vote_sweep(
-            &MigrationState::SucceededWithUnreadableData {
-                identities: 1,
-                top_ups: 1,
-            },
-        ));
-    }
-
     #[test]
     fn startup_reports_old_schedules_without_queueing_them() {
         let dir = tempfile::tempdir().unwrap();
@@ -4049,18 +3496,6 @@ mod migration_banner_tests {
             "Votes you scheduled in an earlier version of the app on Mainnet were not carried over and will not be cast. They are not listed in this version. Open Masternodes > Votes and schedule the ones you still want."
         );
         assert!(!notice.contains("review"));
-    }
-
-    /// Scheduled votes are never imported or inspected by the storage update:
-    /// no migration copy may claim otherwise.
-    #[test]
-    fn migration_copy_does_not_mention_scheduled_votes() {
-        let progress = MigrationStep::ALL.map(|step| migration_running_text(step).to_owned());
-        let warnings = [(0, 0), (1, 0), (0, 2), (1, 2)]
-            .map(|(identities, top_ups)| migration_unreadable_data_text(identities, top_ups));
-        for text in progress.iter().chain(&warnings) {
-            assert!(!text.to_lowercase().contains("scheduled vote"), "{text}");
-        }
     }
 
     #[test]
@@ -4140,180 +3575,6 @@ mod migration_banner_tests {
         assert!(!show_welcome_screen(false, true));
         assert!(show_welcome_screen(false, false));
         assert!(!show_welcome_screen(true, false));
-    }
-
-    #[test]
-    fn deferred_vote_cutoff_clears_only_after_matching_success() {
-        let mut deferred = BTreeMap::from([(Network::Testnet, 42)]);
-
-        assert!(!clear_confirmed_vote_recovery_cutoff(
-            &mut deferred,
-            Network::Testnet,
-            None,
-        ));
-        assert!(!clear_confirmed_vote_recovery_cutoff(
-            &mut deferred,
-            Network::Testnet,
-            Some(41),
-        ));
-        assert_eq!(deferred.get(&Network::Testnet), Some(&42));
-
-        assert!(clear_confirmed_vote_recovery_cutoff(
-            &mut deferred,
-            Network::Testnet,
-            Some(42),
-        ));
-        assert!(!deferred.contains_key(&Network::Testnet));
-    }
-
-    #[test]
-    fn unreadable_identity_copy_names_both_loading_paths() {
-        let text = migration_unreadable_identities_text(2);
-        assert!(text.contains("Identities screen"));
-        assert!(text.contains("Masternodes tab"));
-        assert!(text.contains("+ Load"));
-    }
-
-    #[test]
-    fn unreadable_top_up_copy_is_actionable() {
-        let text = migration_unreadable_data_text(0, 2);
-        assert!(text.contains("balance history"));
-        assert!(text.contains("before adding more funds"));
-        assert!(text.ends_with('.'));
-    }
-
-    /// TC-MIG-014 — every `MigrationStep` exposes a non-empty,
-    /// sentence-shaped label so i18n extraction picks it up as one
-    /// translation unit (no concatenation).
-    #[test]
-    fn migration_running_text_is_sentence_for_every_step() {
-        for step in MigrationStep::ALL {
-            let text = migration_running_text(step);
-            assert!(!text.is_empty(), "{step:?} has empty banner text");
-            assert!(
-                text.ends_with('.'),
-                "{step:?} text `{text}` is not a complete sentence",
-            );
-        }
-    }
-
-    /// TC-MIG-001 / TC-MIG-013 — every step has a distinct sentence so
-    /// the per-frame reconciler can detect transitions by text equality
-    /// alone (`set_global` is idempotent for matching text).
-    #[test]
-    fn migration_running_text_distinct_per_step() {
-        let labels = MigrationStep::ALL.map(migration_running_text);
-        let unique: std::collections::HashSet<&str> = labels.iter().copied().collect();
-        assert_eq!(
-            unique.len(),
-            labels.len(),
-            "duplicate banner text across MigrationStep variants",
-        );
-    }
-
-    /// Retry action id is stable — kittest + production both match on
-    /// this constant, so a typo would mean the click silently drops on
-    /// the floor.
-    #[test]
-    fn migration_retry_action_id_is_stable() {
-        assert_eq!(MIGRATION_RETRY_ACTION_ID, "migration:retry:finish_unwire");
-    }
-
-    /// Every banner action id is distinct. `drain_actions` dispatches on these
-    /// strings, so a collision would silently route one banner's acknowledgement
-    /// to another's task — retiring a warning the user was never shown.
-    #[test]
-    fn migration_action_ids_are_distinct() {
-        let ids = [
-            MIGRATION_RETRY_ACTION_ID,
-            MIGRATION_APP_DATA_ACK_ACTION_ID,
-            MIGRATION_IDENTITIES_ACK_ACTION_ID,
-            MIGRATION_UNREADABLE_ACK_ACTION_ID,
-        ];
-        let unique: std::collections::BTreeSet<_> = ids.iter().collect();
-        assert_eq!(
-            unique.len(),
-            ids.len(),
-            "banner action ids must not collide"
-        );
-    }
-
-    /// The combined-failure banner must surface BOTH signals in one message: the
-    /// unreadable-identity count AND the app-data failure, plus the retry the
-    /// app-data half needs. If it named only one, the other would be silently
-    /// swallowed — exactly the bug this copy exists to prevent.
-    #[test]
-    fn migration_combined_failure_text_names_both_problems_and_the_retry() {
-        let text = migration_failed_with_unreadable_identities_text(3);
-        assert!(
-            text.contains("identities"),
-            "must name the identity problem"
-        );
-        assert!(
-            text.contains('3'),
-            "must carry the unreadable-identity count"
-        );
-        assert!(
-            text.contains("did not finish"),
-            "must name the app-data failure, not only the identities",
-        );
-        assert!(
-            text.contains("Retry now"),
-            "must offer the retry the app-data half needs",
-        );
-        assert!(text.ends_with('.'), "one complete sentence-shaped message");
-    }
-
-    /// The gate's copy must be self-contained, actionable Everyday-User text:
-    /// what happened plus what the user can do, in complete sentences so i18n
-    /// extracts each as one unit. No jargon — these surface behind a block the
-    /// user cannot dismiss, so a vague sentence has no screen to fall back to.
-    #[test]
-    fn storage_prep_copy_is_actionable_and_jargon_free() {
-        for text in [
-            STORAGE_PREP_FAILED_MESSAGE,
-            STORAGE_PREP_STUCK_MESSAGE,
-            STORAGE_PREP_PASSWORD_DESCRIPTION,
-            SPV_CANCEL_QUESTION,
-        ] {
-            assert!(
-                text.ends_with('.') || text.ends_with('?'),
-                "`{text}` is not a sentence"
-            );
-            for jargon in [
-                "SPV",
-                "backend",
-                "wiring",
-                "migration",
-                "sentinel",
-                "persister",
-            ] {
-                assert!(
-                    !text.contains(jargon),
-                    "`{text}` leaks the internal term `{jargon}`",
-                );
-            }
-        }
-        assert!(
-            STORAGE_PREP_FAILED_MESSAGE.contains("unchanged"),
-            "a failed update must say the user's wallets and keys are untouched",
-        );
-    }
-
-    /// Every gate and cancel action id is distinct, so a click can never be
-    /// attributed to the wrong button — the confirm/keep pair especially, where
-    /// a collision would turn "Keep syncing" into a disconnect.
-    #[test]
-    fn overlay_action_ids_are_distinct() {
-        let ids = [
-            SPV_CANCEL_ACTION_ID,
-            SPV_CANCEL_CONFIRM_ACTION_ID,
-            SPV_CANCEL_KEEP_ACTION_ID,
-            STORAGE_PREP_RETRY_ACTION_ID,
-            STORAGE_PREP_CLOSE_ACTION_ID,
-        ];
-        let unique: std::collections::HashSet<&str> = ids.iter().copied().collect();
-        assert_eq!(unique.len(), ids.len(), "duplicate overlay action id");
     }
 
     /// Root screens exist only once preparation is done, so only `Ready` may
@@ -4400,39 +3661,6 @@ mod dpns_result_routing_tests {
         DpnsScheduledVoteClearDisposition, DpnsScheduledVoteClearOutcome, DpnsScheduledVoteKey,
         DpnsVoteOperationId,
     };
-
-    /// A vote can stay unconfirmed until its contest closes: it is re-checked
-    /// on a few sweeps, then rarely, and promptly again after vote activity.
-    #[test]
-    fn unconfirmed_votes_are_rechecked_a_few_times_then_rarely() {
-        let start = Instant::now();
-        let minute = Duration::from_secs(60);
-        let mut checks = UnconfirmedVoteChecks::default();
-        let due: Vec<bool> = (0..15u32)
-            .map(|sweep| checks.take_due(start + minute * sweep))
-            .collect();
-        let mut expected = vec![false; 15];
-        expected[..usize::from(UNCONFIRMED_VOTE_QUICK_CHECKS)].fill(true);
-        // The last quick check ran at minute 2; the next is one interval later.
-        expected[12] = true;
-        assert_eq!(due, expected);
-
-        assert!(restarts_unconfirmed_vote_checks(
-            &BackendTaskSuccessResult::DpnsVoteOperationUpdated {
-                network: Network::Testnet,
-                operation_id: DpnsVoteOperationId::from_bytes([7; 16]),
-            }
-        ));
-        assert!(restarts_unconfirmed_vote_checks(
-            &BackendTaskSuccessResult::ScheduledVotesInProgress(Vec::new())
-        ));
-        assert!(!restarts_unconfirmed_vote_checks(
-            &BackendTaskSuccessResult::ScheduledVoteSweepCompleted {
-                network: Network::Testnet,
-                preserve_eligibility_since_ms: None,
-            }
-        ));
-    }
 
     #[test]
     fn voting_ui_results_route_to_the_hidden_voting_panel_only_once() {
@@ -4649,279 +3877,6 @@ mod dpns_result_routing_tests {
                 MessageType::Info
             )
         );
-    }
-}
-
-#[cfg(test)]
-mod pending_confirmation_tests {
-    use super::*;
-    use dash_sdk::dpp::dashcore::hashes::Hash;
-
-    fn seen(status: TransactionStatus, height: Option<u32>) -> Option<TransactionConfirmation> {
-        Some(TransactionConfirmation { status, height })
-    }
-
-    /// The window the whole feature lives in: the transaction is in the
-    /// snapshot because this app injected it locally, which says nothing about
-    /// whether any peer took it. Keep the ambiguous banner, keep watching.
-    #[test]
-    fn a_mempool_only_transaction_keeps_waiting() {
-        assert_eq!(
-            pending_step(
-                seen(TransactionStatus::Unconfirmed, None),
-                Duration::from_secs(5),
-                false
-            ),
-            PendingStep::Waiting,
-        );
-    }
-
-    /// A transaction no loaded wallet has seen at all is likewise no verdict.
-    #[test]
-    fn an_unseen_transaction_keeps_waiting() {
-        assert_eq!(
-            pending_step(None, Duration::from_secs(5), false),
-            PendingStep::Waiting,
-        );
-    }
-
-    /// An InstantSend lock is driven only by a real lock message from the
-    /// network, and arrives before any block — so it confirms on its own, with
-    /// no height to wait for.
-    #[test]
-    fn an_instant_send_lock_confirms_without_a_height() {
-        assert_eq!(
-            pending_step(
-                seen(TransactionStatus::InstantSendLocked, None),
-                Duration::from_secs(5),
-                false
-            ),
-            PendingStep::Confirmed,
-        );
-    }
-
-    /// A mined transaction carries the height of the block holding it.
-    #[test]
-    fn a_mined_transaction_confirms() {
-        for status in [TransactionStatus::Confirmed, TransactionStatus::ChainLocked] {
-            assert_eq!(
-                pending_step(seen(status, Some(1_234)), Duration::from_secs(5), false),
-                PendingStep::Confirmed,
-                "{status:?} at a known height must confirm"
-            );
-        }
-    }
-
-    /// The phantom guard. A record reported at a mined tier but carrying no
-    /// block height is not evidence of a block, and this verdict becomes a
-    /// message about someone's money — so withhold it and keep watching.
-    #[test]
-    fn a_mined_tier_without_a_height_keeps_waiting() {
-        for status in [TransactionStatus::Confirmed, TransactionStatus::ChainLocked] {
-            assert_eq!(
-                pending_step(seen(status, None), Duration::from_secs(5), false),
-                PendingStep::Waiting,
-                "{status:?} without a height must not be treated as mined"
-            );
-        }
-    }
-
-    /// Past the threshold, "wait a moment, then refresh" has expired and the
-    /// user needs different advice.
-    #[test]
-    fn a_long_unconfirmed_watch_goes_stale() {
-        assert_eq!(
-            pending_step(
-                seen(TransactionStatus::Unconfirmed, None),
-                PENDING_STALE_AFTER,
-                false
-            ),
-            PendingStep::Stale,
-        );
-    }
-
-    /// The re-wording happens once. Repeating it every tick would keep
-    /// rebuilding a banner the user is trying to read, or dismiss.
-    #[test]
-    fn an_already_stale_watch_does_not_re_word_itself() {
-        assert_eq!(
-            pending_step(
-                seen(TransactionStatus::Unconfirmed, None),
-                PENDING_STALE_AFTER * 4,
-                true
-            ),
-            PendingStep::Waiting,
-        );
-    }
-
-    /// The watch never expires: a confirmation long after the copy changed
-    /// still resolves it, so a slow network ends in the truth rather than in
-    /// the warning.
-    #[test]
-    fn a_late_confirmation_still_beats_a_stale_watch() {
-        assert_eq!(
-            pending_step(
-                seen(TransactionStatus::Confirmed, Some(9_001)),
-                PENDING_STALE_AFTER * 4,
-                true
-            ),
-            PendingStep::Confirmed,
-        );
-    }
-
-    /// Both pending messages are written for the Everyday User: no jargon, and
-    /// no promise about the funds becoming spendable again, which this app
-    /// cannot verify.
-    #[test]
-    fn pending_copy_stays_jargon_free_and_promises_nothing_about_the_funds() {
-        let confirmed = pending_confirmed_message(&Txid::from_byte_array([0xab; 32]));
-        for message in [confirmed.as_str(), PENDING_STALE_MESSAGE] {
-            for jargon in [
-                "mempool",
-                "broadcast",
-                "InstantSend",
-                "SPV",
-                "nonce",
-                "state transition",
-                "txid",
-                "UTXO",
-            ] {
-                assert!(
-                    !message.contains(jargon),
-                    "Expected no jargon ({jargon}) in: {message}"
-                );
-            }
-            assert!(
-                !message.contains("safe"),
-                "the copy must not vouch for the safety of a resend: {message}"
-            );
-        }
-    }
-
-    /// The confirmation has to name the payment it answers for. Several can be
-    /// waiting at once and the others keep their warning on screen beside it,
-    /// so an unattributed "your transaction is confirmed" leaves the user to
-    /// guess which one landed — and either guess ends in paying twice.
-    #[test]
-    fn the_confirmation_copy_names_the_payment_it_answers_for() {
-        let first = Txid::from_byte_array([0x11; 32]);
-        let second = Txid::from_byte_array([0x22; 32]);
-
-        let message = pending_confirmed_message(&first);
-        assert_ne!(
-            message,
-            pending_confirmed_message(&second),
-            "two payments must not produce the same confirmation, or the shared \
-             banner list collapses them into one indistinguishable message"
-        );
-
-        let full = first.to_string();
-        let head = &full[..5];
-        assert!(
-            message.contains(head),
-            "the copy must carry enough of the id to match the transaction \
-             history row it sends the user to: {message}"
-        );
-    }
-
-    /// The stale copy is reached for every non-confirmed observation, including
-    /// one no loaded wallet has seen at all and one reported at a mined tier
-    /// with no block height. Naming a status asserts a transaction-history row
-    /// the app has not established — and, in the mined-tier case, one the
-    /// wallet would render under a different word entirely.
-    #[test]
-    fn the_stale_copy_names_no_transaction_status_it_cannot_establish() {
-        for status in ["Pending", "Unconfirmed", "Confirmed", "ChainLocked"] {
-            assert!(
-                !PENDING_STALE_MESSAGE.contains(status),
-                "the copy must not name the {status} status: {PENDING_STALE_MESSAGE}"
-            );
-        }
-        assert!(
-            PENDING_STALE_MESSAGE.contains("transaction history"),
-            "the copy must still hand the user the durable surface: {PENDING_STALE_MESSAGE}"
-        );
-    }
-}
-
-#[cfg(test)]
-mod spv_overlay_tests {
-    use super::*;
-
-    const ALL_STATES: [OverallConnectionState; 5] = [
-        OverallConnectionState::Disconnected,
-        OverallConnectionState::Connecting,
-        OverallConnectionState::Syncing,
-        OverallConnectionState::Synced,
-        OverallConnectionState::Error,
-    ];
-
-    /// F-SPV-A — UN-armed (ambient sync, or already disarmed): NEVER block, for
-    /// every state. This is the regression guard: a mid-session reconnect or
-    /// per-block Synced→Syncing flip must not hard-block.
-    #[test]
-    fn unarmed_never_blocks() {
-        for state in ALL_STATES {
-            assert_eq!(
-                spv_block_step(false, state),
-                SpvBlockStep::Idle,
-                "un-armed {state:?} must not block"
-            );
-        }
-    }
-
-    /// Armed + getting-connected (Connecting/Syncing/Disconnected) → hard block.
-    ///
-    /// There is no longer a "stand down without disarming" row: the background
-    /// escape it modelled is gone. Cancel stops sync outright (after a confirm),
-    /// which lands on Disarm through the reconciler, not on a third step.
-    #[test]
-    fn armed_blocks_while_getting_connected() {
-        for state in [
-            OverallConnectionState::Disconnected,
-            OverallConnectionState::Connecting,
-            OverallConnectionState::Syncing,
-        ] {
-            assert_eq!(spv_block_step(true, state), SpvBlockStep::Block);
-        }
-    }
-
-    /// C1 / F-SPV-A — armed + terminal (Synced/Error) → Disarm: lower and disarm
-    /// so ambient sync afterwards never re-blocks.
-    #[test]
-    fn armed_terminal_state_disarms() {
-        for state in [
-            OverallConnectionState::Synced,
-            OverallConnectionState::Error,
-        ] {
-            assert_eq!(spv_block_step(true, state), SpvBlockStep::Disarm);
-        }
-    }
-
-    /// The cancel action ids are stable — production raises them and the
-    /// SPV-sync block reconciler matches on them; a typo would drop the click,
-    /// and on the confirm pair it could drop it onto the wrong button.
-    #[test]
-    fn cancel_action_ids_are_stable() {
-        assert_eq!(SPV_CANCEL_ACTION_ID, "spv:sync:cancel");
-        assert_eq!(SPV_CANCEL_CONFIRM_ACTION_ID, "spv:sync:cancel_confirm");
-        assert_eq!(SPV_CANCEL_KEEP_ACTION_ID, "spv:sync:cancel_keep");
-    }
-
-    /// F-SPV-B — the block descriptions are jargon-free complete sentences (no
-    /// "SPV"/"headers"/"masternodes"/raw heights/percentages).
-    #[test]
-    fn descriptions_are_jargon_free_sentences() {
-        for desc in [SPV_CONNECTING_DESCRIPTION, SPV_SYNCING_DESCRIPTION] {
-            assert!(desc.ends_with('.'), "`{desc}` must be a complete sentence");
-            let lower = desc.to_lowercase();
-            for jargon in ["header", "masternode", "filter", "spv", "rpc", "%", "/"] {
-                assert!(
-                    !lower.contains(jargon),
-                    "`{desc}` leaks blockchain jargon `{jargon}` to the Everyday User"
-                );
-            }
-        }
     }
 }
 

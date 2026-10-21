@@ -5,13 +5,14 @@ use crate::support::{mount_app, with_isolated_data_dir};
 use dash_evo_tool::app::TaskResult;
 use dash_evo_tool::backend_task::{BackendTaskContext, BackendTaskSuccessResult};
 use dash_evo_tool::context::AppContext;
+use dash_evo_tool::model::dpns_voting::operator::MasternodesSegment;
 use dash_evo_tool::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
 use dash_evo_tool::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use dash_evo_tool::model::qualified_identity::{
     IdentityStatus, IdentityType, PrivateKeyTarget, QualifiedIdentity,
 };
 use dash_evo_tool::model::user_role::UserRole;
-use dash_evo_tool::ui::{RootScreenType, ScreenLike};
+use dash_evo_tool::ui::{RootScreenType, Screen, ScreenLike};
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
@@ -84,6 +85,19 @@ fn seed_node(app_context: &Arc<AppContext>, byte: u8, alias: &str, node_type: Id
 /// node and its (separately stored) voter identity into the local DB. Returns
 /// the voter identity's id so a test can assert its deletion. The node id is
 /// `[byte; 32]`; the voter id is `[byte ^ 0xFF; 32]`.
+/// Cache a contest that Platform reports as still running.
+fn seed_open_contest(app_context: &Arc<AppContext>, name: &str) {
+    app_context
+        .insert_name_contests_as_normalized_names(vec![name.to_owned()])
+        .expect("list the contest");
+    app_context
+        .update_contested_name_ending_times([(
+            name.to_owned(),
+            dash_evo_tool::utils::time::now_ms() + 600_000,
+        )])
+        .expect("store its end time");
+}
+
 fn seed_node_with_voter(app_context: &Arc<AppContext>, byte: u8, alias: &str) -> Identifier {
     let pv = PlatformVersion::latest();
     let voter_id = Identifier::from([byte ^ 0xFF; 32]);
@@ -152,12 +166,18 @@ fn seed_node_with_voter_key(app_context: &Arc<AppContext>, byte: u8, alias: &str
         .expect("node basic identity");
     let node_qi = QualifiedIdentity {
         identity: node_identity,
-        associated_voter_identity: Some((voter_identity, voter_key)),
+        associated_voter_identity: Some((voter_identity, voter_key.clone())),
         associated_operator_identity: None,
         associated_owner_key_id: None,
         identity_type: IdentityType::Masternode,
         alias: Some(alias.to_string()),
-        private_keys: KeyStorage::default(),
+        private_keys: KeyStorage::from(BTreeMap::from([(
+            (PrivateKeyTarget::PrivateKeyOnVoterIdentity, voter_key.id()),
+            (
+                QualifiedIdentityPublicKey::from(voter_key),
+                PrivateKeyData::InVault,
+            ),
+        )])),
         dpns_names: vec![],
         associated_wallets: BTreeMap::new(),
         secret_access: None,
@@ -333,6 +353,321 @@ fn empty_state_renders_canonical_copy() {
                 )
                 .is_some(),
             "empty-state reassurance line must render verbatim (TC-FR2-05)"
+        );
+    });
+}
+
+/// VOTE-TC-081 — Masternodes carries the `Votes | Nodes` header with Votes
+/// listed first; with nothing needing a vote and no history, Nodes opens.
+#[test]
+fn masternodes_opens_on_nodes_when_nothing_needs_a_vote() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
+        let app_context = harness.state().current_app_context().clone();
+        activate_masternodes_tab(&mut harness, &app_context);
+
+        let votes = harness.get_by_label("Votes");
+        let nodes = harness.get_by_label("Nodes");
+        assert!(
+            votes.rect().left() < nodes.rect().left(),
+            "Votes must be listed before Nodes"
+        );
+        assert!(harness.query_by_label("No masternodes loaded").is_some());
+        assert_eq!(masternodes_segment(&mut harness), MasternodesSegment::Nodes);
+    });
+}
+
+/// The Votes segment keeps its sub-views reachable: Scheduled opens in place.
+#[test]
+fn votes_scheduled_view_is_clickable() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenMasternodes);
+        harness.run_steps(3);
+        harness.get_by_label("Votes").click();
+        harness.run_steps(3);
+
+        harness.get_by_label("Scheduled").click();
+        harness.run_steps(3);
+
+        assert_eq!(
+            harness.state().selected_main_screen,
+            RootScreenType::RootScreenMasternodes
+        );
+        assert!(harness.query_by_label("No scheduled votes.").is_some());
+    });
+}
+
+/// VOTE-TC-082 — a persisted retired DPNS route opens the matching Votes view.
+#[test]
+fn persisted_scheduled_votes_route_opens_votes_scheduled() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenDPNSScheduledVotes);
+        harness.run_steps(3);
+
+        assert_eq!(
+            harness.state().selected_main_screen,
+            RootScreenType::RootScreenMasternodes
+        );
+        assert_eq!(masternodes_segment(&mut harness), MasternodesSegment::Votes);
+        assert!(harness.query_by_label("No scheduled votes.").is_some());
+    });
+}
+
+/// VOTE-TC-083 — the retired "My usernames" route opens the Identities hub.
+#[test]
+fn persisted_owned_names_route_opens_the_identity_hub() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let harness = mount_app(RootScreenType::RootScreenDPNSOwnedNames);
+        assert_eq!(
+            harness.state().selected_main_screen,
+            RootScreenType::RootScreenIdentityHub
+        );
+    });
+}
+
+fn masternodes_segment(
+    harness: &mut egui_kittest::Harness<'static, dash_evo_tool::app::AppState>,
+) -> MasternodesSegment {
+    let Screen::MasternodesScreen(screen) = harness
+        .state_mut()
+        .main_screens
+        .get_mut(&RootScreenType::RootScreenMasternodes)
+        .expect("masternodes screen")
+    else {
+        panic!("the Masternodes root must contain the Masternodes screen");
+    };
+    screen.segment()
+}
+
+/// VOTE-TC-013 — To decide exposes the actionable no-voter-key state; its
+/// `Load a masternode` action opens the Nodes load form.
+#[test]
+fn to_decide_without_a_voting_key_shows_the_load_action() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenDPNSActiveContests);
+        let app_context = harness.state().current_app_context().clone();
+        seed_open_contest(&app_context, "alice");
+        let Screen::MasternodesScreen(masternodes) = harness
+            .state_mut()
+            .main_screens
+            .get_mut(&RootScreenType::RootScreenMasternodes)
+            .expect("masternodes screen")
+        else {
+            panic!("the Masternodes root must contain the Masternodes screen");
+        };
+        masternodes.votes_mut().refresh();
+        harness.run_steps(5);
+
+        assert!(
+            harness
+                .query_by_label("No masternodes are loaded.")
+                .is_some(),
+            "the no-voter-key explanation must render in To decide"
+        );
+        harness.get_by_label("Load a masternode").click();
+        harness.run_steps(3);
+        assert_eq!(
+            harness.state().selected_main_screen,
+            RootScreenType::RootScreenMasternodes
+        );
+        assert_eq!(masternodes_segment(&mut harness), MasternodesSegment::Nodes);
+        assert!(
+            harness.query_by_label("ProTxHash").is_some(),
+            "the load form must open"
+        );
+    });
+}
+
+#[test]
+fn blocker_keyless_node_add_voting_key_opens_reimport_form() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenDPNSActiveContests);
+        let app_context = harness.state().current_app_context().clone();
+        seed_node(&app_context, 93, "keyless", IdentityType::Masternode);
+        seed_open_contest(&app_context, "alice");
+        let Screen::MasternodesScreen(masternodes) = harness
+            .state_mut()
+            .main_screens
+            .get_mut(&RootScreenType::RootScreenMasternodes)
+            .expect("masternodes screen")
+        else {
+            panic!("the Masternodes root must contain the Masternodes screen");
+        };
+        masternodes.votes_mut().refresh();
+        harness.run_steps(5);
+
+        assert!(
+            harness
+                .query_by_label("None of your nodes has a voting key on this device.")
+                .is_some(),
+            "the no-voter-key explanation must render in To decide"
+        );
+        harness.get_by_label("Add a voting key").click();
+        harness.run_steps(3);
+        assert_eq!(
+            harness.state().selected_main_screen,
+            RootScreenType::RootScreenMasternodes
+        );
+        assert_eq!(masternodes_segment(&mut harness), MasternodesSegment::Nodes);
+        assert!(
+            harness.query_by_label("ProTxHash").is_some(),
+            "the load form must open"
+        );
+    });
+}
+
+/// A full result queue must yield to the window event loop while Voting refreshes a large cache.
+#[test]
+fn voting_refresh_burst_yields_between_frames() {
+    with_isolated_data_dir(|| {
+        // Disable backend dispatch before the click; inject equivalent results without network work.
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = rt.enter();
+        let mut harness = mount_app(RootScreenType::RootScreenMasternodes);
+        let context = harness.state().current_app_context().clone();
+        rt.block_on(harness.state().subtasks.shutdown_async())
+            .unwrap();
+        context
+            .insert_name_contests_as_normalized_names(
+                (0..985).map(|index| format!("cached{index:04}")).collect(),
+            )
+            .unwrap();
+        harness.get_by_label("Votes").click();
+        harness.run_steps(3);
+        assert_eq!(masternodes_segment(&mut harness), MasternodesSegment::Votes);
+        let sender = harness.state().task_result_sender.clone();
+        let mut queued = 0;
+        while sender.try_send(TaskResult::Refresh).is_ok() {
+            queued += 1;
+        }
+        assert!(
+            queued >= 192,
+            "the synthetic burst must fill most of the channel"
+        );
+        let started = Instant::now();
+        harness.step();
+        let elapsed = started.elapsed();
+        let remaining = harness.state().task_result_receiver.len();
+        eprintln!(
+            "Voting985contest refresh burst: frame={elapsed:?}; remaining={remaining}/{queued}"
+        );
+        // Egui may run multiple update passes during one frame; it must still yield with work queued.
+        assert!(
+            remaining > 0,
+            "A frame must yield instead of processing the entire refresh burst; elapsed={elapsed:?}, remaining={remaining}"
+        );
+        assert_eq!(
+            harness.output().viewport_output[&egui::ViewportId::ROOT].repaint_delay,
+            Duration::ZERO,
+            "pending results must schedule another frame"
+        );
+        let mut frames = 1;
+        let mut longest = elapsed;
+        while !harness.state().task_result_receiver.is_empty() && frames < 512 {
+            let started = Instant::now();
+            harness.step();
+            longest = longest.max(started.elapsed());
+            frames += 1;
+        }
+        eprintln!("Voting refresh burst completed in {frames} frames; longest frame={longest:?}");
+        assert!(
+            harness.state().task_result_receiver.is_empty(),
+            "deferred refreshes must eventually be delivered"
+        );
+        rt.block_on(context.wallet_backend().unwrap().shutdown());
+    });
+}
+
+#[test]
+fn deferred_backend_results_preserve_success_error_order() {
+    use dash_evo_tool::backend_task::error::TaskError;
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = rt.enter();
+        let mut harness = mount_app(RootScreenType::RootScreenMasternodes);
+        rt.block_on(harness.state().subtasks.shutdown_async())
+            .unwrap();
+        let sender = harness.state().task_result_sender.clone();
+        for _ in 0..192 {
+            sender.try_send(TaskResult::Repaint).unwrap();
+        }
+        sender
+            .try_send(TaskResult::Success {
+                context: BackendTaskContext::Unknown,
+                result: Box::new(BackendTaskSuccessResult::Message(
+                    "First result delivered.".to_owned(),
+                )),
+            })
+            .unwrap();
+        let error = TaskError::DpnsCurrentVoteUnavailable;
+        let error_text = error.to_string();
+        sender
+            .try_send(TaskResult::Error {
+                context: BackendTaskContext::Unknown,
+                error,
+            })
+            .unwrap();
+        sender.try_send(TaskResult::Refresh).unwrap();
+        sender
+            .try_send(TaskResult::Success {
+                context: BackendTaskContext::Unknown,
+                result: Box::new(BackendTaskSuccessResult::Message(
+                    "Last result delivered.".to_owned(),
+                )),
+            })
+            .unwrap();
+        harness.step();
+        assert!(
+            harness.query_by_label("Last result delivered.").is_none(),
+            "later results must remain queued when a frame yields"
+        );
+        for _ in 0..64 {
+            harness.step();
+            if harness.state().task_result_receiver.is_empty() {
+                break;
+            }
+        }
+        assert!(harness.state().task_result_receiver.is_empty());
+        let first = harness.get_by_label("First result delivered.").rect();
+        let error = harness.get_by_label(&error_text).rect();
+        let last = harness.get_by_label("Last result delivered.").rect();
+        assert!(
+            first.top() < error.top() && error.top() < last.top(),
+            "typed success/error results must retain their arrival order across frames"
+        );
+        rt.block_on(
+            harness
+                .state()
+                .current_app_context()
+                .wallet_backend()
+                .unwrap()
+                .shutdown(),
         );
     });
 }
@@ -574,13 +909,11 @@ fn detail_view_opens_from_card_with_sections_and_back() {
     });
 }
 
-/// TC-DPNS-01/02/09/10 — the DPNS section is collapsed by default (its body is
-/// not rendered), the header carries the open-contest count, and for a node with
-/// no voter identity the expanded section shows the actionable missing-voter
-/// message with an `Add voting key` action that opens a scoped in-place prompt
-/// (not FR-4's load form — no ProTxHash field).
+/// VOTE-TC-091: the node detail lists the node's votes and its list status;
+/// `Vote with this node` opens Votes ▸ To decide with that node alone and no
+/// staged decision. Without a voting key the action is disabled.
 #[test]
-fn dpns_section_missing_voter_scoped_prompt() {
+fn detail_vote_with_this_node_opens_votes_for_that_node() {
     with_isolated_data_dir(|| {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
@@ -588,45 +921,40 @@ fn dpns_section_missing_voter_scoped_prompt() {
         let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
         let app_context = harness.state().current_app_context().clone();
         seed_node(&app_context, 0x95, "mn-vote-01", IdentityType::Masternode);
+        seed_node_with_voter_key(&app_context, 0x96, "mn-vote-02");
         activate_masternodes_tab(&mut harness, &app_context);
+
         harness.get_by_label("Open mn-vote-01").click();
         harness.run_steps(3);
-
-        // With no voter key the "Add voting key" CTA and its
-        // actionable message are rendered ABOVE, outside the collapsed-by-default
-        // DPNS section, so they are visible immediately without expanding
-        // anything. The empty DPNS header is omitted in this state (no contests
-        // are possible without a voter).
+        assert!(harness.query_by_label("This node's votes").is_some());
         assert!(
             harness
-                .query_by_label("DPNS name contests to vote on (0)")
-                .is_none(),
-            "the empty DPNS header must be omitted when the node has no voter key"
+                .query_by_label("Masternode list membership unknown.")
+                .is_some()
         );
+        assert!(harness.query_by_label("DPNS Voting").is_none());
+        let keyless = harness.get_by_label("Vote with this node");
         assert!(
-            harness
-                .query_by_label(
-                    "This node has no voting key loaded. Add its voting private key to cast votes."
-                )
-                .is_some(),
-            "the actionable missing-voter message must be visible without expanding"
-        );
-        assert!(
-            harness.query_by_label("Add voting key").is_some(),
-            "missing-voter state must offer an Add voting key action"
+            keyless.accesskit_node().is_disabled(),
+            "a key-less node cannot vote"
         );
 
-        // Click Add voting key → scoped in-place prompt (Save/Cancel), NOT the
-        // load form (no ProTxHash field) (TC-DPNS-10/11).
-        harness.get_by_label("Add voting key").click();
+        harness.get_by_label("‹ All masternodes").click();
         harness.run_steps(3);
-        assert!(
-            harness.query_by_label("Save").is_some(),
-            "scoped voter-key prompt must open with a Save action"
+        harness.get_by_label("Open mn-vote-02").click();
+        harness.run_steps(3);
+        harness.get_by_label("Vote with this node").click();
+        harness.run_steps(3);
+        assert_eq!(
+            harness.state().selected_main_screen,
+            RootScreenType::RootScreenMasternodes
         );
+        assert!(harness.query_by_label("To decide").is_some());
         assert!(
-            harness.query_by_label("ProTxHash").is_none(),
-            "the scoped prompt must not be FR-4's load form (no ProTxHash re-entry)"
+            harness
+                .query_by_label_contains("Vote with: Custom · 1 node")
+                .is_some(),
+            "the node-set chip names that single node"
         );
     });
 }
@@ -849,6 +1177,9 @@ fn remove_flow_deletes_associated_voter_identity() {
 
         // Open the node's detail and confirm removal.
         harness.get_by_label("Open mn-with-voter").click();
+        harness.run_steps(3);
+        // A node without a signing key also shows the add-key form above removal.
+        harness.get_by_label("Remove masternode").scroll_to_me();
         harness.run_steps(3);
         harness.get_by_label("Remove masternode").click();
         harness.run_steps(3);
@@ -1184,7 +1515,8 @@ fn go_to_main_screen_from_key_info_preserves_masternode_detail() {
         ));
 
         harness
-            .query_all_by_role_and_label(Role::Button, "Identities")
+            .query_all_by_role_and_label(Role::Button, "Masternodes")
+            .filter(|node| node.rect().top() < 120.0)
             .min_by(|left, right| left.rect().top().total_cmp(&right.rect().top()))
             .expect("Key Info breadcrumb")
             .click();
@@ -1429,6 +1761,293 @@ fn the_masternode_page_resolves_held_keys_the_way_the_keys_list_does() {
             key_info.private_key_data.is_some(),
             "the node's page must find the private half wherever it is filed, as \
              the identity keys list does — not only under the structural target"
+        );
+    });
+}
+
+/// The identity a withdrawal form on top of the screen stack is showing.
+fn withdrawal_form_alias(
+    harness: &egui_kittest::Harness<'static, dash_evo_tool::app::AppState>,
+) -> Option<String> {
+    let Some(Screen::WithdrawalScreen(form)) = harness.state().screen_stack.last() else {
+        panic!("the withdrawal form must stay open");
+    };
+    form.identity.alias.clone()
+}
+
+/// A contest refresh runs for minutes while the user works elsewhere, and
+/// reports each step. A screen that shows no contest data must be left alone:
+/// here a withdrawal form, whose `refresh()` re-reads its identity from storage.
+#[test]
+fn contest_notifications_do_not_refresh_a_screen_without_contest_data() {
+    use dash_evo_tool::ui::identity::withdraw_screen::WithdrawalScreen;
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
+        let app_context = harness.state().current_app_context().clone();
+        seed_node(&app_context, 0x71, "before", IdentityType::User);
+        let stored = app_context
+            .get_local_qualified_identity(&Identifier::from([0x71; 32]))
+            .expect("read the identity")
+            .expect("identity stored");
+        harness
+            .state_mut()
+            .screen_stack
+            .push(Screen::WithdrawalScreen(WithdrawalScreen::new(
+                stored.clone(),
+                &app_context,
+            )));
+        harness.run_steps(3);
+
+        // A write behind the form's back: the form shows it only once refreshed.
+        let mut renamed = stored;
+        renamed.alias = Some("after".to_owned());
+        app_context
+            .update_local_qualified_identity(&renamed)
+            .expect("rename the stored identity");
+
+        let sender = harness.state().task_result_sender.clone();
+        for _ in 0..3 {
+            sender
+                .try_send(TaskResult::DpnsContestsChanged)
+                .expect("queue the contest notification");
+            harness.run_steps(2);
+        }
+        assert_eq!(
+            withdrawal_form_alias(&harness).as_deref(),
+            Some("before"),
+            "a contest notification must not refresh a screen that shows no contest data"
+        );
+
+        sender
+            .try_send(TaskResult::Refresh)
+            .expect("queue the refresh");
+        harness.run_steps(2);
+        assert_eq!(
+            withdrawal_form_alias(&harness).as_deref(),
+            Some("after"),
+            "the premise: a refresh that reaches this form is visible in it"
+        );
+    });
+}
+
+/// The Votes view in view keeps following a contest refresh: each of its
+/// notifications makes the view re-read the contest cache.
+#[test]
+fn contest_notifications_update_the_open_votes_view() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = rt.enter();
+        let mut harness = mount_app(RootScreenType::RootScreenMasternodes);
+        let context = harness.state().current_app_context().clone();
+        // No network: arriving at Votes would start a real contest refresh.
+        rt.block_on(harness.state().subtasks.shutdown_async())
+            .unwrap();
+        harness.get_by_label("Votes").click();
+        harness.run_steps(3);
+        assert_eq!(masternodes_segment(&mut harness), MasternodesSegment::Votes);
+        assert!(
+            harness.query_by_label("alice.dash").is_none(),
+            "the premise: the contest is not cached yet"
+        );
+
+        seed_open_contest(&context, "alice");
+        harness
+            .state()
+            .task_result_sender
+            .try_send(TaskResult::DpnsContestsChanged)
+            .expect("queue the contest notification");
+        harness.run_steps(3);
+
+        assert!(
+            harness.query_by_label("alice.dash").is_some(),
+            "the open Votes view must show a contest the refresh has just cached"
+        );
+        rt.block_on(context.wallet_backend().unwrap().shutdown());
+    });
+}
+
+type App = egui_kittest::Harness<'static, dash_evo_tool::app::AppState>;
+
+/// Turn the mouse wheel towards the end of the list under the pointer.
+fn wheel_down(harness: &mut App) {
+    harness.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: egui::vec2(0.0, -300.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: egui::Modifiers::NONE,
+    });
+    harness.run_steps(6);
+}
+
+/// Scroll bars painted this frame right of the navigation panel. A bar has no
+/// accessibility node, so it is told by its shape: a filled strip no wider
+/// than a bar and taller than a row. One that is not shown is fully
+/// transparent.
+fn painted_scroll_bars(harness: &App) -> Vec<egui::Rect> {
+    fn collect(shape: &egui::Shape, bars: &mut Vec<egui::Rect>) {
+        match shape {
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| collect(shape, bars)),
+            egui::Shape::Rect(strip)
+                if strip.rect.width() <= 12.0
+                    && strip.rect.height() >= 40.0
+                    && strip.rect.left() > 150.0
+                    && strip.fill.a() > 0 =>
+            {
+                bars.push(strip.rect);
+            }
+            _ => {}
+        }
+    }
+    let mut bars = Vec::new();
+    for clipped in &harness.output().shapes {
+        collect(&clipped.shape, &mut bars);
+    }
+    bars
+}
+
+fn top_of(harness: &App, label: &str) -> f32 {
+    harness.get_by_label(label).rect().top()
+}
+
+/// Mount the Nodes list with `count` nodes named `node-00`, `node-01`, … in a
+/// window of `size`.
+fn mount_node_list(count: u8, size: egui::Vec2) -> App {
+    let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
+    let app_context = harness.state().current_app_context().clone();
+    for index in 0..count {
+        seed_node(
+            &app_context,
+            0x40 + index,
+            &format!("node-{index:02}"),
+            IdentityType::Masternode,
+        );
+    }
+    harness.set_size(size);
+    activate_masternodes_tab(&mut harness, &app_context);
+    harness
+}
+
+/// In a window wider than its cards the node list scrolls, and shows its
+/// scroll bar at the edge of the panel, wherever in the panel the pointer is —
+/// also in the space beside the cards.
+#[test]
+fn node_list_scrolls_and_shows_its_bar_from_the_space_beside_the_cards() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+        let mut harness = mount_node_list(12, egui::vec2(1280.0, 800.0));
+
+        let last_card_right = harness.get_by_label("Open node-11").rect().right();
+        let beside_cards = egui::pos2(last_card_right + 100.0, 500.0);
+        harness.hover_at(beside_cards);
+        harness.run_steps(4);
+        let bars = painted_scroll_bars(&harness);
+        assert!(
+            bars.iter().any(|bar| bar.left() > beside_cards.x),
+            "a scroll bar must show at the edge of the panel: {bars:?}"
+        );
+
+        let before = top_of(&harness, "Open node-00");
+        wheel_down(&mut harness);
+        assert!(
+            top_of(&harness, "Open node-00") < before,
+            "the list must scroll with the pointer beside the cards"
+        );
+    });
+}
+
+/// In the window size the app opens with, every node of a list longer than
+/// the window is reached by scrolling, and the scroll bar shows meanwhile.
+#[test]
+fn every_node_is_reached_by_scrolling_in_the_default_window() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+        let window = egui::vec2(800.0, 600.0);
+        let mut harness = mount_node_list(12, window);
+        assert!(
+            top_of(&harness, "Open node-11") > window.y,
+            "the last node starts below the window"
+        );
+
+        harness.hover_at(harness.get_by_label("Open node-00").rect().center());
+        harness.run_steps(4);
+        assert!(
+            !painted_scroll_bars(&harness).is_empty(),
+            "a list longer than the window shows a scroll bar"
+        );
+        for _ in 0..20 {
+            wheel_down(&mut harness);
+        }
+        assert!(
+            harness.get_by_label("Open node-11").rect().bottom() <= window.y,
+            "the last node must scroll into the window"
+        );
+    });
+}
+
+/// The `Vote with` list names every loaded node. With more nodes than the
+/// window is tall it scrolls, and the button below it stays in the window.
+#[test]
+fn vote_with_list_scrolls_when_it_outgrows_the_window() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+        let window = egui::vec2(800.0, 600.0);
+        let mut harness = mount_app(RootScreenType::RootScreenDPNSActiveContests);
+        let app_context = harness.state().current_app_context().clone();
+        seed_open_contest(&app_context, "alice");
+        for index in 0..40u8 {
+            seed_node_with_voter(&app_context, 0x20 + index, &format!("node-{index:02}"));
+        }
+        harness.set_size(window);
+        let Screen::MasternodesScreen(masternodes) = harness
+            .state_mut()
+            .main_screens
+            .get_mut(&RootScreenType::RootScreenMasternodes)
+            .expect("masternodes screen")
+        else {
+            panic!("the Masternodes root must contain the Masternodes screen");
+        };
+        masternodes.votes_mut().refresh();
+        harness.run_steps(5);
+
+        let chip = harness
+            .query_all_by_role(Role::Button)
+            .filter_map(|button| button.accesskit_node().label())
+            .find(|label| label.starts_with("Vote with:"))
+            .expect("the Vote with chip");
+        harness.get_by_label(&chip).click();
+        harness.run_steps(4);
+
+        let save = harness.get_by_label("Save as my default").rect();
+        assert!(
+            save.top() >= 0.0 && save.bottom() <= window.y,
+            "the button below the list must stay in the window: {save:?}"
+        );
+        let first = "node-00 · Masternode";
+        let last = "node-39 · Masternode";
+        assert!(
+            harness.get_by_label(last).rect().bottom() > save.top(),
+            "the last node starts out of view"
+        );
+
+        harness.hover_at(harness.get_by_label(first).rect().center());
+        harness.run_steps(3);
+        for _ in 0..20 {
+            wheel_down(&mut harness);
+        }
+        let save = harness.get_by_label("Save as my default").rect();
+        let last = harness.get_by_label(last).rect();
+        assert!(
+            last.top() >= 0.0 && last.bottom() <= save.top(),
+            "the last node must scroll into view above the button: {last:?}"
         );
     });
 }

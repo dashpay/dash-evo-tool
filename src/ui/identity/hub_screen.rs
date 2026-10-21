@@ -8,7 +8,7 @@
 
 use super::breadcrumb_switcher::{self, BreadcrumbEffect};
 use super::identity_hub_tab_bar::IdentityHubTabBar;
-use crate::app::AppAction;
+use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::IdentityTask;
@@ -58,6 +58,11 @@ pub struct IdentityHubScreen {
     /// Settings-tab state. Held on the hub so edit fields, unsaved drafts,
     /// and modal state persist across frames.
     settings_tab: SettingsTab,
+    /// When a username status refresh was last dispatched (Unix ms). The cadence
+    /// keys off dispatch time, so a result routed elsewhere never stalls it.
+    usernames_refreshed_at: Option<u64>,
+    /// The hub was just shown; the next frame applies the arrival refresh rule.
+    usernames_arriving: bool,
     /// Identities this screen dispatched an unload for, each retained until its
     /// own result lands. Neither selection pointer survives that wait: a frame
     /// can render before the result arrives and reconcile both of them onto the
@@ -89,6 +94,8 @@ pub struct IdentityHubScreen {
     /// removed in the platform-wallet migration). Read by the Home, Contacts,
     /// and Settings tabs; loads are dispatched after rendering each frame.
     profile_cache: super::profile_cache::ProfileCache,
+    avatar_cache: crate::ui::state::AvatarCache,
+    pending_avatars: Vec<BackendTask>,
     /// Breadcrumb-switcher view state (picker override + dropdown search
     /// buffers). The active identity itself is app-scoped on `AppContext`.
     selection: HubSelection,
@@ -107,6 +114,37 @@ enum ContactInfoTaskKey {
 }
 
 impl IdentityHubScreen {
+    /// Refresh username request status when due (USR-FR-021); schedules the next check.
+    fn username_refresh_action(&mut self, ctx: &egui::Context) -> AppAction {
+        let arriving = std::mem::take(&mut self.usernames_arriving);
+        let network = self.app_context.network;
+        let needs_refresh = self.app_context.username_requests_need_refresh();
+        let now = crate::utils::time::now_ms();
+        if needs_refresh {
+            ctx.request_repaint_after(crate::model::dpns_usernames::pending_refresh_interval(
+                network,
+            ));
+        }
+        if !crate::model::dpns_usernames::username_refresh_due(
+            now,
+            self.usernames_refreshed_at,
+            arriving,
+            needs_refresh,
+            network,
+        ) {
+            return AppAction::None;
+        }
+        self.usernames_refreshed_at = Some(now);
+        AppAction::BackendTask(BackendTask::IdentityTask(
+            IdentityTask::RefreshMyUsernameRequests,
+        ))
+    }
+
+    /// Whether an avatar result still belongs to an outstanding hub request.
+    pub(crate) fn is_waiting_for_avatar(&self, url: &str) -> bool {
+        self.avatar_cache.awaits_result(url)
+    }
+
     /// Construct a new hub screen. Follows the project convention: constructors
     /// handle errors internally via `MessageBanner` and return `Self`. The
     /// scaffold has nothing to fail on yet.
@@ -118,9 +156,13 @@ impl IdentityHubScreen {
             last_good_landing: HubLanding::Onboarding,
             home_state: HomeState::default(),
             settings_tab: SettingsTab::new(),
+            usernames_refreshed_at: None,
+            usernames_arriving: true,
             pending_unloads: BTreeSet::new(),
             contacts_state: super::contacts::ContactsState::default(),
             profile_cache: super::profile_cache::ProfileCache::default(),
+            avatar_cache: crate::ui::state::AvatarCache::default(),
+            pending_avatars: Vec::new(),
             selection: HubSelection::default(),
             contact_info_overwrite_dialog: None,
             pending_contact_info_tasks: HashMap::new(),
@@ -166,6 +208,7 @@ impl IdentityHubScreen {
                     .map(|(_, key)| key),
             ),
         );
+        self.home_state = HomeState::default();
         self.contacts_state.reset_for_identity_change();
         self.pending_contact_info_tasks.clear();
         self.pending_contact_info_confirmations.clear();
@@ -202,14 +245,37 @@ impl IdentityHubScreen {
         }
     }
 
+    /// Clear the stale load-error banner so the next `landing()` call can try
+    /// again cleanly, and re-arm the per-tab loads. With `keep_shown`, the
+    /// profile and contacts stay on screen until their reload lands.
+    fn reload(&mut self, keep_shown: bool) {
+        self.load_error_banner.take_and_clear();
+        if keep_shown {
+            self.contacts_state.invalidate();
+            self.contacts_state.search_mut().clear();
+            self.profile_cache.reload_kept();
+            self.avatar_cache.reload_kept();
+        } else {
+            self.contacts_state.reset();
+            self.profile_cache.reset();
+            self.avatar_cache.invalidate();
+        }
+        self.home_state.refresh_payments();
+        self.selection.clear_searches();
+        self.pending_avatars.clear();
+    }
+
     /// Reset all identity-scoped state after the owning application context
     /// changes. Abandoned confirmations release their guards; live paid actions
     /// remain guarded, and stale guards are pruned during the contacts reset.
     pub(crate) fn reset_for_context_change(&mut self) {
         self.reset_contacts_for_identity_change();
+        self.settings_tab = SettingsTab::new();
         self.profile_cache.reset();
         self.selection.clear_picker_override();
         self.selection.clear_searches();
+        self.avatar_cache.invalidate();
+        self.pending_avatars.clear();
         self.load_error_banner.take_and_clear();
     }
 
@@ -328,6 +394,13 @@ impl IdentityHubScreen {
         true
     }
 
+    /// Show all User identities, clearing the selected wallet filter.
+    pub(crate) fn open_picker(&mut self) {
+        self.app_context.set_selected_hd_wallet(None);
+        self.reset_contacts_for_identity_change();
+        self.selection.open_picker();
+    }
+
     /// Apply a breadcrumb-switcher effect: wallet / identity switches mutate the
     /// app-scoped selection and reset identity-scoped caches; add-flows route to
     /// the existing screens.
@@ -335,12 +408,12 @@ impl IdentityHubScreen {
         match effect {
             BreadcrumbEffect::None => AppAction::None,
             BreadcrumbEffect::OpenPicker => {
-                self.selection.open_picker();
+                self.open_picker();
                 AppAction::None
             }
             BreadcrumbEffect::SwitchWallet(hash) => {
-                self.app_context.set_selected_hd_wallet(Some(hash));
-                self.selection.clear_picker_override();
+                self.app_context.set_selected_hd_wallet(hash);
+                self.selection.open_picker();
                 self.reset_contacts_for_identity_change();
                 self.profile_cache.reset();
                 AppAction::None
@@ -355,10 +428,13 @@ impl IdentityHubScreen {
             BreadcrumbEffect::AddWallet => {
                 AppAction::SetMainScreen(RootScreenType::RootScreenWalletsBalances)
             }
-            // The bulk-create flow is not wired yet; route to the single-create
-            // screen so the dev entry is functional in the interim.
-            BreadcrumbEffect::AddIdentityCreate | BreadcrumbEffect::CreateTestIdentities => {
-                AppAction::AddScreen(ScreenType::AddNewIdentity.create_screen(&self.app_context))
+            BreadcrumbEffect::AddIdentityCreate => {
+                AppAction::AddScreen(crate::ui::Screen::AddNewIdentityScreen(
+                    super::add_new_identity_screen::AddNewIdentityScreen::new_with_wallet(
+                        &self.app_context,
+                        self.app_context.selected_wallet_hash(),
+                    ),
+                ))
             }
             BreadcrumbEffect::AddIdentityLoad => AppAction::AddScreen(
                 ScreenType::AddExistingIdentity.create_screen(&self.app_context),
@@ -369,17 +445,14 @@ impl IdentityHubScreen {
 
 impl ScreenLike for IdentityHubScreen {
     fn refresh(&mut self) {
-        // Clear the stale load-error banner so the next `landing()` call can
-        // try again cleanly, and reset per-tab load guards so a refresh
-        // re-fires the Contacts load.
-        self.load_error_banner.take_and_clear();
-        self.contacts_state.reset();
-        self.profile_cache.reset();
-        self.selection.clear_searches();
+        self.reload(false);
     }
 
+    /// Returning keeps the profile and contacts already shown and reloads them
+    /// behind; lists of another identity are dropped as the hub renders.
     fn refresh_on_arrival(&mut self) {
-        self.refresh();
+        self.reload(true);
+        self.usernames_arriving = true;
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
@@ -400,7 +473,10 @@ impl ScreenLike for IdentityHubScreen {
                 breadcrumb_effect = breadcrumb_switcher::render(ui, &app_context, selection);
                 AppAction::None
             },
-            vec![],
+            vec![(
+                "Add",
+                DesiredAppAction::Menu(breadcrumb_switcher::add_identity_menu_items()),
+            )],
         );
 
         action |= add_left_panel(ui, &self.app_context, RootScreenType::RootScreenIdentityHub);
@@ -417,11 +493,36 @@ impl ScreenLike for IdentityHubScreen {
             Vec::new()
         } else {
             // FR-6: User identities only — the picker grid never lists MN/Evonode.
-            self.app_context
-                .load_local_user_identities()
-                .unwrap_or_default()
+            match self.app_context.selected_wallet_hash() {
+                Some(hash) => self
+                    .app_context
+                    .load_local_qualified_identities_for_wallet(&hash)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|identity| {
+                        identity.identity_type
+                            == crate::model::qualified_identity::IdentityType::User
+                    })
+                    .collect(),
+                None => self
+                    .app_context
+                    .load_local_user_identities()
+                    .unwrap_or_default(),
+            }
         };
-        let view = if matches!(landing, HubLanding::Onboarding) {
+        for identity in &frame_identities {
+            self.profile_cache.seed_cached(&self.app_context, identity);
+        }
+        // A profile load sent before the masternode list synced (right after
+        // start-up) failed; ask for it again now that the network is ready.
+        if self.app_context.connection_status().masternodes_ready() {
+            self.profile_cache.retry_after_sync();
+        }
+        let view = if self.selection.picker_override()
+            || self.app_context.selected_wallet_hash().is_some() && frame_identities.is_empty()
+        {
+            HubView::Picker
+        } else if matches!(landing, HubLanding::Onboarding) {
             HubView::Onboarding
         } else {
             let active = self.app_context.selected_identity_id();
@@ -435,9 +536,11 @@ impl ScreenLike for IdentityHubScreen {
         };
 
         let mut picked_identity: Option<String> = None;
+        // The tab whose content this frame rendered, if the hub shows one.
+        let mut rendered_tab: Option<IdentityHubTab> = None;
         action |= island_central_panel(ui, |ui| {
             // Claim the island's full width so its bordered panel reaches the
-            // window edges; the content below stays centered.
+            // window edges; each view lays out its own content inside it.
             ui.set_min_width(ui.available_width());
             match view {
                 HubView::Onboarding => super::onboarding::render(ui, &self.app_context),
@@ -445,12 +548,35 @@ impl ScreenLike for IdentityHubScreen {
                     ui,
                     &self.app_context,
                     &frame_identities,
+                    &mut self.profile_cache,
+                    &mut self.avatar_cache,
+                    &mut self.pending_avatars,
                     Some(&mut picked_identity),
                 ),
                 HubView::Home => {
-                    // `ui.vertical_centered(...).inner` carries the tab's
-                    // `AppAction` back out.
-                    let inner = ui.vertical_centered(|ui| {
+                    // One roster read per frame serves the header and every tab.
+                    let selected = self.app_context.resolve_selected_identity();
+                    // Share the island's available width across the header and
+                    // tabs; each tab handles its own responsive columns.
+                    let inner = ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                        let (header_action, header_outcome) = match &selected {
+                            Some(identity) => super::home::render_header(
+                                ui,
+                                &self.app_context,
+                                identity,
+                                &mut self.profile_cache,
+                                &mut self.avatar_cache,
+                                &mut self.pending_avatars,
+                            ),
+                            None => (AppAction::None, super::home::HomeOutcome::None),
+                        };
+                        if let Some(tab) =
+                            super::home::apply_outcome(&mut self.home_state, header_outcome)
+                        {
+                            self.selected_tab = tab;
+                            self.settings_tab.focus_section(header_outcome);
+                        }
+                        ui.add_space(16.0);
                         // Hub tab bar; selection state lives on the screen so
                         // refreshes and deep links can update it from outside.
                         let tab_response = IdentityHubTabBar::new(self.selected_tab).show(ui);
@@ -463,14 +589,20 @@ impl ScreenLike for IdentityHubScreen {
                             self.selected_tab = clicked;
                         }
                         ui.add_space(16.0);
-                        match self.selected_tab {
+                        rendered_tab = Some(self.selected_tab);
+                        let mut tab_action = match self.selected_tab {
                             IdentityHubTab::Home => {
-                                let (home_action, outcome) = super::home::render(
-                                    ui,
-                                    &self.app_context,
-                                    &self.home_state,
-                                    &mut self.profile_cache,
-                                );
+                                let (home_action, outcome) = match &selected {
+                                    Some(identity) => super::home::render(
+                                        ui,
+                                        &self.app_context,
+                                        identity,
+                                        &mut self.home_state,
+                                        &mut self.profile_cache,
+                                        &mut self.contacts_state,
+                                    ),
+                                    None => (AppAction::None, super::home::HomeOutcome::None),
+                                };
                                 if let Some(next_tab) =
                                     super::home::apply_outcome(&mut self.home_state, outcome)
                                 {
@@ -478,12 +610,14 @@ impl ScreenLike for IdentityHubScreen {
                                         self.contacts_state.reset();
                                     }
                                     self.selected_tab = next_tab;
+                                    self.settings_tab.focus_section(outcome);
                                 }
                                 home_action
                             }
                             IdentityHubTab::Contacts => super::contacts::render(
                                 ui,
                                 &self.app_context,
+                                selected.as_ref(),
                                 &mut self.contacts_state,
                                 &mut self.profile_cache,
                             ),
@@ -493,9 +627,12 @@ impl ScreenLike for IdentityHubScreen {
                             IdentityHubTab::Settings => self.settings_tab.render(
                                 ui,
                                 &self.app_context,
+                                selected.as_ref(),
                                 &mut self.profile_cache,
                             ),
-                        }
+                        };
+                        tab_action |= header_action;
+                        tab_action
                     });
                     inner.inner
                 }
@@ -515,11 +652,12 @@ impl ScreenLike for IdentityHubScreen {
         }
 
         action |= self.apply_breadcrumb_effect(breadcrumb_effect);
-
-        // Dispatch any profile load a tab requested this frame (single load
-        // in flight; the local profile cache was removed in the platform-wallet
-        // migration, so profiles resolve asynchronously via the backend).
-        action |= self.profile_cache.dispatch_pending();
+        // The top-bar "Add" menu and the picker's add card emit
+        // `AppAction::Custom` commands; route them like the identity pill's
+        // add entries.
+        if let Some(effect) = breadcrumb_switcher::add_identity_command_effect(&action) {
+            action = self.apply_breadcrumb_effect(effect);
+        }
 
         self.prepare_contact_info_dialog();
         if let Some((dialog, key)) = &mut self.contact_info_overwrite_dialog {
@@ -549,7 +687,78 @@ impl ScreenLike for IdentityHubScreen {
             }
         }
 
+        // Every part of the frame above has had its say; this is where the
+        // action that leaves the frame is settled. A data load claims its one
+        // dispatch slot when it is asked for, so it is asked for only here and
+        // only when nothing produced an action: a click anywhere on the screen
+        // keeps its frame, and a claimed load is the action returned — nothing
+        // below replaces an action.
+        if matches!(action, AppAction::None) {
+            action = match rendered_tab {
+                Some(IdentityHubTab::Home) => super::home::load_action(
+                    &self.app_context,
+                    &mut self.home_state,
+                    &mut self.contacts_state,
+                ),
+                Some(IdentityHubTab::Contacts) => super::contacts::tab_load_action(
+                    &self.app_context,
+                    &mut self.contacts_state,
+                    &mut self.profile_cache,
+                ),
+                _ => AppAction::None,
+            };
+        }
+        if matches!(action, AppAction::None) {
+            action = if let Some(task) = self.pending_avatars.pop() {
+                AppAction::BackendTask(task)
+            } else {
+                self.profile_cache.dispatch_pending()
+            };
+        }
+        if matches!(action, AppAction::None) {
+            action = self.username_refresh_action(ctx);
+        }
+        if matches!(action, AppAction::None)
+            && let Some((task, context)) = self.settings_tab.usernames_card_mut().recovery_check()
+        {
+            action = AppAction::BackendTaskWithContext { task, context };
+        }
         action
+    }
+
+    fn accepts_legacy_recovery_result(
+        &self,
+        context: &BackendTaskContext,
+        completed: bool,
+    ) -> bool {
+        self.settings_tab
+            .accepts_legacy_recovery_result(context, completed)
+    }
+
+    fn display_backend_task_result(
+        &mut self,
+        context: &BackendTaskContext,
+        result: BackendTaskSuccessResult,
+    ) {
+        self.home_state.record_payments(context, &result);
+        if self
+            .profile_cache
+            .record_result(&self.app_context, context, &result)
+            && let BackendTaskSuccessResult::DashPayProfile(snapshot) = &result
+        {
+            self.settings_tab.profile_refreshed(snapshot.owner);
+        }
+        if let BackendTaskSuccessResult::DashPayProfileUpdated(snapshot) = &result {
+            handle_profile_updated(
+                &self.app_context,
+                &mut self.settings_tab,
+                &mut self.profile_cache,
+                context,
+                snapshot,
+            );
+            return;
+        }
+        self.display_task_result(result);
     }
 
     fn display_message(&mut self, _message: &str, _message_type: MessageType) {
@@ -558,25 +767,30 @@ impl ScreenLike for IdentityHubScreen {
     }
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
-        // Feed an async DashPay profile load back into the cache the tabs read.
-        self.profile_cache.record_result(&result);
+        // The record a finished restore wrote is re-read by the Settings tab on
+        // its next frame, so the offer's own outcome needs no follow-up here.
+        if let Some(offer) = self.settings_tab.usernames_card_mut().recovery_mut() {
+            offer.absorb_result(self.app_context.egui_ctx(), &result);
+        }
+        if matches!(
+            result,
+            BackendTaskSuccessResult::MyUsernameRequestsRefreshed
+                | BackendTaskSuccessResult::UsernamePreferencesSaved
+        ) {
+            return;
+        }
+        if let BackendTaskSuccessResult::DashPayAvatar { url, bytes } = result {
+            if self.is_waiting_for_avatar(&url) {
+                self.avatar_cache.store(url, bytes);
+            }
+            return;
+        }
 
         if self.handle_contact_request_result(&result) {
             return;
         }
 
         match &result {
-            // A confirmed profile-save success: commit the edit baseline on the
-            // Settings tab so the Save button re-enables only after the next
-            // edit. Guard by identity ID to reject stale results.
-            BackendTaskSuccessResult::DashPayProfileUpdated(saved_id) => {
-                handle_profile_updated(
-                    &mut self.settings_tab,
-                    &mut self.profile_cache,
-                    self.app_context.egui_ctx(),
-                    *saved_id,
-                );
-            }
             // Populate the Received/Sent request caches so the Contacts tab
             // can render real RequestCard rows instead of hardcoded empties.
             // The result arrives from LoadContactRequests,
@@ -662,14 +876,24 @@ impl ScreenLike for IdentityHubScreen {
         }
     }
 
-    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
-        if let Some(identity_id) = context.dashpay_profile_update_identity() {
-            self.settings_tab
-                .clear_pending_save_for_identity(&identity_id);
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
+        if matches!(error, TaskError::MasternodeListNotReady { .. }) {
+            self.profile_cache.record_error_while_syncing(context);
+        } else {
+            self.profile_cache.record_error(context);
+        }
+        self.settings_tab.clear_pending_save(context);
+        if let Some(offer) = self.settings_tab.usernames_card_mut().recovery_mut() {
+            offer.absorb_error(context);
         }
     }
 
     fn display_task_error(&mut self, error: &TaskError) -> bool {
+        // The status refresh runs in the background; a failure keeps the stored
+        // status and retries on the next cadence tick instead of raising a banner.
+        if matches!(error, TaskError::UsernameRequestRefreshFailed { .. }) {
+            return true;
+        }
         if self.handle_contact_request_error(error) {
             return matches!(
                 contact_info_read_error_key(error),
@@ -892,19 +1116,34 @@ fn removal_invalidates_identity_caches(
     })
 }
 
-fn handle_profile_updated(
+pub(super) fn handle_profile_updated(
+    app_context: &AppContext,
     settings: &mut SettingsTab,
     profiles: &mut super::profile_cache::ProfileCache,
-    ctx: &egui::Context,
-    saved_id: Identifier,
+    context: &BackendTaskContext,
+    snapshot: &crate::model::dashpay::ProfileSnapshot,
 ) {
-    let matches = settings
-        .selected_identity()
-        .is_some_and(|identity| identity.identity.id() == saved_id);
-    if matches && let Some(fields) = settings.on_profile_saved() {
-        profiles.record_saved(saved_id, fields);
+    if snapshot.network != app_context.network {
+        return;
+    }
+    if !app_context.profile_snapshot_is_current(snapshot) {
+        settings.retry_stale_profile_save(context);
+        profiles.invalidate(snapshot.owner);
+        return;
+    }
+    if let Some((display_name, bio, avatar_url)) = &snapshot.profile {
+        profiles.record_saved(
+            snapshot.owner,
+            super::profile_cache::ProfileFields {
+                display_name: display_name.clone(),
+                bio: bio.clone(),
+                avatar_url: avatar_url.clone(),
+            },
+        );
+    }
+    if settings.owns_profile_save(context) && settings.on_profile_saved().is_some() {
         MessageBanner::set_global(
-            ctx,
+            app_context.egui_ctx(),
             crate::ui::identity::settings::PROFILE_SAVED,
             MessageType::Success,
         );
@@ -968,14 +1207,27 @@ mod tests {
 
     #[test]
     fn stale_profile_success_does_not_show_confirmation() {
-        let ctx = egui::Context::default();
+        let dir = tempfile::tempdir().unwrap();
+        let app = crate::context::test_support::test_app_context(dir.path());
+        let ctx = app.egui_ctx();
         let mut settings = SettingsTab::new();
         let mut profiles = crate::ui::identity::profile_cache::ProfileCache::default();
 
-        handle_profile_updated(&mut settings, &mut profiles, &ctx, id(1));
+        handle_profile_updated(
+            &app,
+            &mut settings,
+            &mut profiles,
+            &BackendTaskContext::Other,
+            &crate::model::dashpay::ProfileSnapshot {
+                network: app.network,
+                owner: id(1),
+                revision: 0,
+                profile: None,
+            },
+        );
 
         assert!(
-            !MessageBanner::has_global(&ctx),
+            !MessageBanner::has_global(ctx),
             "a stale result has no pending save to confirm"
         );
     }
@@ -1016,6 +1268,408 @@ mod tests {
             .insert_local_qualified_identity(&qualified_identity, &None)
             .expect("seed identity");
         identity_id
+    }
+
+    /// Right after the app starts, the network's masternode list is not synced
+    /// yet, so the first profile load fails. The hub must ask for the profile
+    /// again once the list is ready, instead of leaving the identity without
+    /// its profile until the user loads it again by hand.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn profile_load_failed_while_syncing_is_retried_once_the_network_is_ready() {
+        let (_dir, context) = wired_test_context().await;
+        let owner = seed_user_identity(&context, 0x5A);
+        context.set_selected_identity(Some(owner));
+        context.connection_status().set_masternodes_ready(false);
+
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 1000.0))
+            .build_ui_state(
+                |ui, state: &mut (IdentityHubScreen, Vec<BackendTaskContext>)| {
+                    if let AppAction::BackendTaskWithContext {
+                        task: BackendTask::DashPayTask(task),
+                        context,
+                    } = state.0.ui(ui)
+                        && matches!(*task, DashPayTask::LoadProfile { .. })
+                    {
+                        state.1.push(context);
+                    }
+                },
+                (IdentityHubScreen::new(&context), Vec::new()),
+            );
+        harness.run_steps(4);
+        let first_load = {
+            let loads = &harness.state().1;
+            assert_eq!(loads.len(), 1, "the hub asks for the profile once");
+            loads[0].clone()
+        };
+
+        harness.state_mut().0.display_backend_task_error(
+            &first_load,
+            &TaskError::MasternodeListNotReady {
+                source_error: Box::new(dash_sdk::Error::Generic(
+                    "masternode list not yet synced".into(),
+                )),
+            },
+        );
+        harness.run_steps(4);
+        assert_eq!(
+            harness.state().1.len(),
+            1,
+            "no new load while the masternode list is still syncing"
+        );
+
+        context.connection_status().set_masternodes_ready(true);
+        harness.run_steps(4);
+        assert_eq!(
+            harness.state().1.len(),
+            2,
+            "the profile is asked for again once the masternode list is ready"
+        );
+        harness.run_steps(4);
+        assert_eq!(harness.state().1.len(), 2, "and only once");
+    }
+
+    /// On an updated install the hub sends the Usernames card's check of the
+    /// previous version's data exactly once and accepts its answer, so the
+    /// restore offer can reach an identity whose key is not on this device.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn hub_sends_the_usernames_card_recovery_check_once_and_accepts_its_answer() {
+        let (_dir, context) = wired_test_context().await;
+        crate::database::test_helpers::LegacyIdentityFixture::new(
+            [0x31; 32],
+            Some(vec![0x01]),
+            "testnet",
+        )
+        .insert(&context.db.locked_conn())
+        .expect("stage a legacy identity row");
+        let identity = crate::context::test_support::user_identity_with_signing_key(
+            id(0x31),
+            Network::Testnet,
+            false,
+        );
+        context
+            .insert_local_qualified_identity(&identity, &None)
+            .expect("seed identity");
+        context.set_selected_identity(Some(identity.identity.id()));
+
+        let mut hub = IdentityHubScreen::new(&context);
+        hub.select_tab(IdentityHubTab::Settings);
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 1000.0))
+            .build_ui_state(
+                |ui, state: &mut (IdentityHubScreen, Vec<BackendTaskContext>)| {
+                    if let AppAction::BackendTaskWithContext {
+                        task: BackendTask::IdentityTask(IdentityTask::CheckLegacyRecovery { .. }),
+                        context,
+                    } = state.0.ui(ui)
+                    {
+                        state.1.push(context);
+                    }
+                },
+                (hub, Vec::new()),
+            );
+        harness.run_steps(12);
+
+        let (hub, checks) = harness.state();
+        assert_eq!(checks.len(), 1);
+        assert!(hub.accepts_legacy_recovery_result(&checks[0], false));
+        assert!(!hub.accepts_legacy_recovery_result(
+            &BackendTaskContext::LegacyRecoveryCheck(id(0x32)),
+            false
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn authoritative_profile_refresh_rebases_seeded_settings_before_save() {
+        use crate::model::dashpay::ProfileSnapshot;
+        use egui_kittest::{Harness, kittest::Queryable};
+        let (_dir, context) = wired_test_context().await;
+        let identity = seed_cached_profile(&context).await;
+        let owner = identity.identity.id();
+        for absent in [false, true] {
+            for dirty in [false, true] {
+                let mut hub = IdentityHubScreen::new(&context);
+                hub.profile_cache.seed_cached(&context, &identity);
+                let AppAction::BackendTaskWithContext { context: load, .. } =
+                    hub.profile_cache.dispatch_pending()
+                else {
+                    panic!("load dispatch")
+                };
+                let mut editor = Harness::builder()
+                    .with_size(egui::vec2(1100.0, 1100.0))
+                    .build_ui_state(
+                        |ui, state: &mut (IdentityHubScreen, Option<BackendTask>)| {
+                            let hub = &mut state.0;
+                            if let AppAction::BackendTaskWithContext { task, .. } =
+                                hub.settings_tab.render(
+                                    ui,
+                                    &hub.app_context,
+                                    hub.app_context.resolve_selected_identity().as_ref(),
+                                    &mut hub.profile_cache,
+                                )
+                            {
+                                state.1 = Some(task);
+                            }
+                        },
+                        (hub, None),
+                    );
+                editor.run();
+                if dirty {
+                    editor
+                        .query_all_by_role(egui::accesskit::Role::TextInput)
+                        .next()
+                        .unwrap()
+                        .focus();
+                    editor.run();
+                    editor
+                        .query_all_by_role(egui::accesskit::Role::TextInput)
+                        .next()
+                        .unwrap()
+                        .type_text(" draft");
+                    editor.run();
+                }
+                let profile = (!absent).then(|| {
+                    (
+                        "Authoritative name".into(),
+                        "New biography".into(),
+                        "https://example.com/new.png".into(),
+                    )
+                });
+                let result = BackendTaskSuccessResult::DashPayProfile(ProfileSnapshot {
+                    network: context.network,
+                    owner,
+                    revision: context.identity_profile_revision(owner),
+                    profile,
+                });
+                editor
+                    .state_mut()
+                    .0
+                    .display_backend_task_result(&load, result);
+                editor.run();
+                if !dirty {
+                    editor.get_by_label("Save social profile").click();
+                    editor.run();
+                    assert!(
+                        editor.state().1.is_none(),
+                        "refreshed fields must be a clean baseline"
+                    );
+                    editor
+                        .query_all_by_role(egui::accesskit::Role::TextInput)
+                        .next()
+                        .unwrap()
+                        .focus();
+                    editor.run();
+                    editor
+                        .query_all_by_role(egui::accesskit::Role::TextInput)
+                        .next()
+                        .unwrap()
+                        .type_text(" draft");
+                    editor.run();
+                }
+                editor.get_by_label("Save social profile").click();
+                editor.run();
+                let Some(BackendTask::DashPayTask(task)) = editor.state_mut().1.take() else {
+                    panic!("save dispatch")
+                };
+                let DashPayTask::UpdateProfile {
+                    display_name,
+                    bio,
+                    avatar_url,
+                    ..
+                } = *task
+                else {
+                    panic!("profile save")
+                };
+                let expected_name = if dirty {
+                    "Cached profile draft"
+                } else if absent {
+                    "draft"
+                } else {
+                    "Authoritative name draft"
+                };
+                assert_eq!(display_name.as_deref(), Some(expected_name));
+                assert_eq!(bio.as_deref(), (!absent).then_some("New biography"));
+                assert_eq!(
+                    avatar_url.as_deref(),
+                    (!absent).then_some("https://example.com/new.png")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn hub_avatar_completions_only_retain_requested_urls() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let mut hub = IdentityHubScreen::new(&context);
+        let url = "https://example.com/requested.png";
+        let unrelated = "https://example.com/contact.png";
+        hub.avatar_cache.ensure_requested(url);
+        assert!(hub.is_waiting_for_avatar(url));
+        assert!(!hub.is_waiting_for_avatar(unrelated));
+        for current in [unrelated, url] {
+            hub.display_backend_task_result(
+                &BackendTaskContext::Other,
+                BackendTaskSuccessResult::DashPayAvatar {
+                    url: current.into(),
+                    bytes: Some(vec![1, 2]),
+                },
+            );
+        }
+        assert!(
+            hub.avatar_cache.fetched_bytes(unrelated).is_none(),
+            "unrelated contact bytes must not be retained"
+        );
+        assert_eq!(hub.avatar_cache.fetched_bytes(url), Some(&[1, 2][..]));
+        assert!(hub.avatar_cache.ensure_requested(url).is_none());
+        assert!(!hub.is_waiting_for_avatar(url));
+        hub.display_task_result(BackendTaskSuccessResult::DashPayAvatar {
+            url: url.into(),
+            bytes: Some(vec![3]),
+        });
+        assert_eq!(
+            hub.avatar_cache.fetched_bytes(url),
+            Some(&[1, 2][..]),
+            "duplicate completion keeps the first result"
+        );
+        hub.avatar_cache.invalidate();
+        hub.display_task_result(BackendTaskSuccessResult::DashPayAvatar {
+            url: url.into(),
+            bytes: Some(vec![4]),
+        });
+        assert!(
+            hub.avatar_cache.fetched_bytes(url).is_none(),
+            "obsolete completion stays discarded"
+        );
+
+        hub.avatar_cache.seed(url, vec![5]);
+        hub.refresh_on_arrival();
+        assert_eq!(hub.avatar_cache.fetched_bytes(url), Some(&[5][..]));
+        assert!(hub.avatar_cache.ensure_requested(url).is_some());
+        assert!(hub.is_waiting_for_avatar(url), "the renewal is awaited");
+        hub.display_task_result(BackendTaskSuccessResult::DashPayAvatar {
+            url: url.into(),
+            bytes: Some(vec![6]),
+        });
+        assert_eq!(
+            hub.avatar_cache.fetched_bytes(url),
+            Some(&[6][..]),
+            "the renewal replaces the kept image"
+        );
+    }
+
+    async fn seed_cached_profile(context: &Arc<AppContext>) -> QualifiedIdentity {
+        let id = seed_user_identity(context, 42);
+        let identity = context.load_local_user_identities().unwrap().remove(0);
+        let backend = context.wallet_backend().unwrap();
+        let wallet =
+            crate::model::wallet::Wallet::new_from_seed([42; 64], Network::Testnet, None, None)
+                .unwrap();
+        let (hash, _) = context
+            .register_wallet(
+                wallet,
+                &[42; 64],
+                crate::model::wallet::birth_height::WalletOrigin::Fresh,
+            )
+            .unwrap();
+        backend
+            .register_wallet_from_seed(&hash, &[42; 64], None)
+            .await
+            .unwrap();
+        backend
+            .ensure_identity_managed(&hash, &identity.identity, 0)
+            .await
+            .unwrap();
+        backend
+            .dashpay_set_profile(
+                &id,
+                Some(
+                    platform_wallet::wallet::identity::types::dashpay::profile::DashPayProfile {
+                        display_name: Some("Cached profile".into()),
+                        avatar_url: Some("https://example.com/cached.png".into()),
+                        bio: None,
+                        public_message: None,
+                        avatar_hash: None,
+                        avatar_fingerprint: None,
+                    },
+                ),
+            )
+            .await
+            .unwrap();
+        identity
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cached_profile_primes_avatar_without_overwriting_saved_or_absent_profile() {
+        let (_dir, context) = wired_test_context().await;
+        let identity = seed_cached_profile(&context).await;
+        let id = identity.identity.id();
+        let mut harness = egui_kittest::Harness::builder().build_ui_state(
+            |ui, screen: &mut IdentityHubScreen| {
+                screen.ui(ui);
+            },
+            IdentityHubScreen::new(&context),
+        );
+        // Avatar fetching stays pending in this offline harness, so its spinner keeps repainting.
+        harness.run_steps(2);
+        assert!(
+            harness
+                .state()
+                .is_waiting_for_avatar("https://example.com/cached.png")
+        );
+        let fields = harness
+            .state_mut()
+            .profile_cache
+            .get_or_request(&identity)
+            .and_then(Option::as_ref)
+            .expect("persisted profile is immediately available offline");
+        assert_eq!(fields.avatar_url, "https://example.com/cached.png");
+        harness.state_mut().profile_cache.record_saved(
+            id,
+            super::super::profile_cache::ProfileFields {
+                display_name: "Saved".into(),
+                ..Default::default()
+            },
+        );
+        harness.run_steps(2);
+        assert_eq!(
+            harness
+                .state_mut()
+                .profile_cache
+                .get_or_request(&identity)
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .display_name,
+            "Saved"
+        );
+        let cache = &mut harness.state_mut().profile_cache;
+        cache.reset();
+        cache.get_or_request(&identity);
+        let AppAction::BackendTaskWithContext { context: load, .. } = cache.dispatch_pending()
+        else {
+            panic!("profile load")
+        };
+        assert!(cache.record_result(
+            &context,
+            &load,
+            &BackendTaskSuccessResult::DashPayProfile(crate::model::dashpay::ProfileSnapshot {
+                network: context.network,
+                owner: id,
+                revision: context.identity_profile_revision(id),
+                profile: None
+            })
+        ));
+        harness.run_steps(2);
+        assert!(
+            harness
+                .state_mut()
+                .profile_cache
+                .get_or_request(&identity)
+                .unwrap()
+                .is_none(),
+            "authoritative absence must not be replaced by old persisted fields"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

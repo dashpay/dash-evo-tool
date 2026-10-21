@@ -14,33 +14,36 @@ use crate::backend_task::{BackendTask, BackendTaskContext};
 use crate::context::AppContext;
 use crate::context::connection_status::spv_phase_summary;
 use crate::context::feature_gate::FeatureGate;
+use crate::model::address::AddressKind;
+use crate::model::datetime;
 use crate::model::fee_estimation::format_duffs_as_dash;
 use crate::model::spv_status::SpvStatus;
 use crate::model::user_role::UserRole;
 use crate::model::wallet::alias::AliasSource;
+use crate::model::wallet::balance_summary::WalletChoice;
 use crate::model::wallet::{TransactionStatus, Wallet, WalletSeedHash, WalletTransaction};
 use crate::ui::components::MessageBanner;
 use crate::ui::components::alias_input::AliasInput;
-use crate::ui::components::component_trait::Component;
+use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::global_nav_switcher::GlobalNavEffect;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::{add_top_panel_with_global_nav_capturing, wallet_only_spec};
+use crate::ui::components::wallet_selector::WalletSelector;
 use crate::ui::components::wallet_unlock_popup::{WalletUnlockPopup, WalletUnlockResult};
 use crate::ui::helpers::{ModalOpeningGuard, clicked_outside_window_after_open};
-use crate::ui::state::TrackedAssetLockCache;
 use crate::ui::state::account_summary::{
     AccountCategory, AccountSummary, collect_account_summaries,
 };
+use crate::ui::state::{PendingRequest, TrackedAssetLockCache};
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
 use crate::wallet_backend::TransactionHistoryStatus;
 use crate::wallet_backend::poison::RwLockRecover;
-use chrono::{DateTime, Utc};
 use dash_sdk::dashcore_rpc::dashcore::Address;
-use eframe::egui::{self, ComboBox, Context, Ui};
+use eframe::egui::{self, Context, Ui};
 use egui::{Color32, Frame, Margin, RichText};
 use egui_extras::{Column, TableBuilder};
 use std::sync::{Arc, RwLock};
@@ -210,7 +213,8 @@ pub struct WalletsBalancesScreen {
     /// when the user saves.
     rename_alias_input: AliasInput,
     /// The exact in-flight dispatch whose result may close or re-enable the dialog.
-    pending_rename_context: Option<BackendTaskContext>,
+    pending_rename_context: PendingRequest,
+    wallet_selector: Option<WalletSelector>,
     wallet_unlock_popup: WalletUnlockPopup,
     show_sk_unlock_dialog: bool,
     sk_password_input: PasswordInput,
@@ -347,7 +351,8 @@ impl WalletsBalancesScreen {
                 .with_hint_text("Enter wallet name")
                 .with_helper_text("Leave the name blank to reset it to a default name.")
                 .with_desired_width(250.0),
-            pending_rename_context: None,
+            pending_rename_context: Default::default(),
+            wallet_selector: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             show_sk_unlock_dialog: false,
             sk_password_input: PasswordInput::new().with_hint_text("Enter password"),
@@ -399,7 +404,7 @@ impl WalletsBalancesScreen {
                 }
             })
         };
-        self.pending_rename_context = None;
+        self.pending_rename_context.clear();
         self.rename_dialog_opening_guard.arm();
     }
 
@@ -452,6 +457,15 @@ impl WalletsBalancesScreen {
     fn apply_nav_effect(&mut self, effect: GlobalNavEffect) {
         if let GlobalNavEffect::SwitchWallet(seed_hash) = effect {
             self.select_hd_wallet_by_hash(seed_hash);
+        }
+    }
+
+    /// The page's wallet as a choice in the wallet picker.
+    fn selected_wallet_choice(&self) -> Option<WalletChoice> {
+        match (&self.selected_wallet, &self.selected_single_key_wallet) {
+            (Some(wallet), _) => Some(WalletChoice::of_hd_wallet(wallet)),
+            (None, Some(wallet)) => Some(WalletChoice::SingleKey(wallet.read_recover().key_hash)),
+            (None, None) => None,
         }
     }
 
@@ -562,164 +576,52 @@ impl WalletsBalancesScreen {
     fn render_wallet_selection(&mut self, ui: &mut Ui) -> AppAction {
         let action = AppAction::None;
 
-        // Build items for the selector - both HD and single key wallets
-        #[derive(Clone)]
-        enum WalletItem {
-            Hd(Arc<RwLock<Wallet>>),
-            SingleKey(Arc<RwLock<SingleKeyWallet>>),
-        }
-
-        let mut items: Vec<(String, WalletItem)> = Vec::new();
-
-        // Add HD wallets
-        {
-            let wallets_guard = self.app_context.wallet_context().wallets();
-            for wallet in wallets_guard.values() {
-                let guard = wallet.read_recover();
-                let seed_hash = guard.seed_hash();
-                let core_balance = self.core_balance_duffs(&seed_hash);
-                let platform_balance = self.platform_balance_duffs(&seed_hash);
-                let shielded_balance = self.shielded_balance_duffs(&seed_hash);
-                let balance_dash =
-                    (core_balance + platform_balance + shielded_balance) as f64 * 1e-8;
-                let label = format!(
-                    "HD: {alias} ({balance_dash:.4} DASH)",
-                    alias = self
-                        .app_context
-                        .wallet_context()
-                        .hd_alias(&guard.seed_hash())
-                        .unwrap_or_else(|| "Unnamed".to_string())
-                );
-                items.push((label, WalletItem::Hd(wallet.clone())));
-            }
-        }
-
-        // Add single key wallets
-        {
-            let wallets_guard = self.app_context.wallet_context().single_key_wallets();
-            for wallet in wallets_guard.values() {
-                let guard = wallet.read_recover();
-                let balance_dash = guard.total_balance_duffs() as f64 * 1e-8;
-                let label = format!(
-                    "SK: {alias} ({balance_dash:.4} DASH)",
-                    alias = self
-                        .app_context
-                        .wallet_context()
-                        .single_alias(&guard.address.to_string())
-                        .unwrap_or_else(|| "Unnamed".to_string())
-                );
-                items.push((label, WalletItem::SingleKey(wallet.clone())));
-            }
-        }
-
-        if items.is_empty() {
+        let entries = self.app_context.wallet_selector_entries(true);
+        if entries.is_empty() {
             self.render_no_wallets_view(ui);
             return action;
         }
-
-        // Determine the currently selected label
-        let selected_label = if let Some(wallet) = &self.selected_wallet {
-            wallet
-                .read()
-                .ok()
-                .map(|guard| {
-                    format!(
-                        "HD: {alias}",
-                        alias = self
-                            .app_context
-                            .wallet_context()
-                            .hd_alias(&guard.seed_hash())
-                            .unwrap_or_else(|| "Unnamed".to_string())
-                    )
-                })
-                .unwrap_or_else(|| "Select a wallet".to_string())
-        } else if let Some(wallet) = &self.selected_single_key_wallet {
-            wallet
-                .read()
-                .ok()
-                .map(|guard| {
-                    format!(
-                        "SK: {alias}",
-                        alias = self
-                            .app_context
-                            .wallet_context()
-                            .single_alias(&guard.address.to_string())
-                            .unwrap_or_else(|| "Unnamed".to_string())
-                    )
-                })
-                .unwrap_or_else(|| "Select a wallet".to_string())
-        } else {
-            "Select a wallet".to_string()
-        };
-
-        // Get current balance
-        let current_balance = if let Some(wallet) = &self.selected_wallet {
-            wallet
-                .read()
-                .ok()
-                .map(|g| {
-                    let seed_hash = g.seed_hash();
-                    let core = self.core_balance_duffs(&seed_hash);
-                    let platform = self.platform_balance_duffs(&seed_hash);
-                    let shielded = self.shielded_balance_duffs(&seed_hash);
-                    core + platform + shielded
-                })
-                .unwrap_or(0)
-        } else if let Some(wallet) = &self.selected_single_key_wallet {
-            wallet
-                .read()
-                .ok()
-                .map(|g| g.total_balance_duffs())
-                .unwrap_or(0)
-        } else {
-            0
-        };
 
         ui.with_layout(
             egui::Layout::left_to_right(egui::Align::TOP).with_main_justify(true),
             |ui| {
                 ui.horizontal(|ui| {
-                    ComboBox::from_id_salt("wallet_selector")
-                        .selected_text(&selected_label)
-                        .show_ui(ui, |ui| {
-                            for (label, wallet_item) in &items {
-                                let is_selected = match wallet_item {
-                                    WalletItem::Hd(w) => self
-                                        .selected_wallet
-                                        .as_ref()
-                                        .is_some_and(|selected| Arc::ptr_eq(selected, w)),
-                                    WalletItem::SingleKey(w) => self
-                                        .selected_single_key_wallet
-                                        .as_ref()
-                                        .is_some_and(|selected| Arc::ptr_eq(selected, w)),
-                                };
-                                if ui.selectable_label(is_selected, label).clicked() {
-                                    match wallet_item {
-                                        WalletItem::Hd(w) => {
-                                            self.select_hd_wallet(w.clone());
-                                        }
-                                        WalletItem::SingleKey(w) => {
-                                            self.select_single_key_wallet(w.clone());
-                                        }
-                                    }
+                    let selected = self.selected_wallet_choice();
+                    let selector = self.wallet_selector.get_or_insert_with(|| {
+                        // The kinds the page's own balance totals.
+                        WalletSelector::new("wallet_selector").with_balance_kinds(&[
+                            AddressKind::Core,
+                            AddressKind::Platform,
+                            AddressKind::Shielded,
+                        ])
+                    });
+                    selector.set_entries(entries);
+                    selector.set_selected(selected);
+                    let response = selector.show(ui).inner;
+                    if response.has_changed() {
+                        match response.changed_value() {
+                            Some(WalletChoice::Hd(seed_hash)) => {
+                                self.select_hd_wallet_by_hash(*seed_hash);
+                            }
+                            Some(WalletChoice::SingleKey(key_hash)) => {
+                                let wallet = self
+                                    .app_context
+                                    .wallet_context()
+                                    .single_key_wallet(key_hash);
+                                if let Some(wallet) = wallet {
+                                    self.select_single_key_wallet(wallet);
                                 }
                             }
-                        });
-
-                    ui.colored_label(
-                        DashColors::text_primary(ui.style().visuals.dark_mode),
-                        format!(
-                            " Balance: {balance}",
-                            balance = format_duffs_as_dash(current_balance)
-                        ),
-                    );
+                            None => {}
+                        }
+                    }
                 });
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
                     // Clone wallet arcs before using to avoid borrow conflicts
                     let hd_wallet_opt = self.selected_wallet.clone();
                     let single_key_wallet_opt = self.selected_single_key_wallet.clone();
-                    let rename_enabled = self.pending_rename_context.is_none();
+                    let rename_enabled = !self.pending_rename_context.is_pending();
 
                     // Buttons for HD wallet
                     if let Some(wallet_arc) = hd_wallet_opt {
@@ -966,7 +868,7 @@ impl WalletsBalancesScreen {
                 self.set_selected_hd_wallet(next_wallet);
 
                 self.rename_task = None;
-                self.pending_rename_context = None;
+                self.pending_rename_context.clear();
                 self.wallet_unlock_popup.close();
                 self.refreshing = false;
 
@@ -1138,8 +1040,8 @@ impl WalletsBalancesScreen {
         if ts == 0 {
             return "Date unavailable".to_string();
         }
-        DateTime::<Utc>::from_timestamp(ts as i64, 0)
-            .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+        datetime::instant_from_unix_secs(ts)
+            .map(datetime::local_date_time_seconds)
             .unwrap_or_else(|| "Unknown".to_string())
     }
 
@@ -2352,7 +2254,16 @@ impl WalletsBalancesScreen {
         match crate::backend_task::migration::single_key_restore::list_pending_protected_restores(
             &self.app_context,
         ) {
-            Ok(list) => self.pending_protected_restores = list,
+            Ok(list) => {
+                self.pending_protected_restores = list.pending;
+                if list.unreadable > 0 {
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        "Some imported keys saved by the earlier version could not be read. Import those keys again from your backup.",
+                        MessageType::Warning,
+                    );
+                }
+            }
             Err(e) => {
                 tracing::warn!(
                     error = ?e,
@@ -2603,7 +2514,7 @@ impl ScreenLike for WalletsBalancesScreen {
         }
 
         if let Some(mut rename_task) = self.rename_task.take() {
-            let is_saving = self.pending_rename_context.is_some();
+            let is_saving = self.pending_rename_context.is_pending();
             let mut cancel = false;
             let mut save = false;
             let window_response = egui::Window::new("Rename Wallet")
@@ -2646,7 +2557,7 @@ impl ScreenLike for WalletsBalancesScreen {
                     )
                 });
             if cancel || clicked_outside {
-                self.pending_rename_context = None;
+                self.pending_rename_context.clear();
             } else if save {
                 match &mut rename_task {
                     WalletTask::RenameHdWallet { alias, .. }
@@ -2656,10 +2567,8 @@ impl ScreenLike for WalletsBalancesScreen {
                     _ => unreachable!("rename dialog stores only rename tasks"),
                 }
                 let task = BackendTask::WalletTask(rename_task.clone());
-                let context = BackendTaskContext::for_dispatch(&task);
-                self.pending_rename_context = Some(context.clone());
                 self.rename_task = Some(rename_task);
-                return AppAction::BackendTaskWithContext { task, context };
+                return self.pending_rename_context.dispatch(task);
             } else {
                 self.rename_task = Some(rename_task);
             }
@@ -2920,14 +2829,14 @@ impl ScreenLike for WalletsBalancesScreen {
         context: &BackendTaskContext,
         result: crate::ui::BackendTaskSuccessResult,
     ) {
-        let rename_succeeded = self.pending_rename_context.as_ref() == Some(context)
+        let rename_succeeded = self.pending_rename_context.owns(context)
             && context
                 .wallet_rename_task()
                 .is_some_and(|task| rename_result_matches_task(task, &result));
         self.display_task_result(result);
         if rename_succeeded {
             self.rename_task = None;
-            self.pending_rename_context = None;
+            self.pending_rename_context.clear();
         }
     }
 
@@ -2946,10 +2855,8 @@ impl ScreenLike for WalletsBalancesScreen {
                 .set_details(error)
                 .disable_auto_dismiss();
         }
-        if self.pending_rename_context.as_ref() == Some(context)
-            && context.wallet_rename_task().is_some()
-        {
-            self.pending_rename_context = None;
+        if context.wallet_rename_task().is_some() {
+            self.pending_rename_context.settle(context);
         }
     }
 
@@ -3049,8 +2956,6 @@ impl ScreenLike for WalletsBalancesScreen {
                         .push((address.clone(), balance));
                     self.receive_dialog.selected_core_index =
                         self.receive_dialog.core_addresses.len() - 1;
-                    self.receive_dialog.qr_texture = None;
-                    self.receive_dialog.qr_address = None;
                     self.receive_dialog.status = None;
                 }
             }
@@ -3070,8 +2975,6 @@ impl ScreenLike for WalletsBalancesScreen {
                 self.receive_dialog.platform_addresses.push((address, 0));
                 self.receive_dialog.selected_platform_index =
                     self.receive_dialog.platform_addresses.len() - 1;
-                self.receive_dialog.qr_texture = None;
-                self.receive_dialog.qr_address = None;
                 self.receive_dialog.status = Some("New address generated!".to_string());
             }
             crate::ui::BackendTaskSuccessResult::PlatformAddressWithdrawal { .. } => {
@@ -3171,8 +3074,8 @@ impl ScreenLike for WalletsBalancesScreen {
     fn refresh_on_arrival(&mut self) {
         self.pending_transfers.on_arrival();
         // Clear the spinner in case a refresh completed while this screen was not
-        // visible (task results are dispatched to the visible screen, so ours would
-        // have been silently discarded).
+        // visible (the refresh is not a dispatched task, so its result went to the
+        // screen in view and ours was silently discarded).
         self.refreshing = false;
         // Asset-lock mutations happen on pushed screens. Returning to this root
         // screen must re-fetch instead of reusing a terminal Loaded(empty) entry.
@@ -3248,10 +3151,17 @@ mod tests {
     }
 
     #[test]
-    fn format_transaction_timestamp_nonzero_renders_the_block_date() {
+    fn format_transaction_timestamp_nonzero_renders_the_block_time_in_local_time() {
+        use chrono::TimeZone;
+        let local = chrono::Local
+            .timestamp_opt(1_700_000_000, 0)
+            .single()
+            .expect("valid test instant")
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
         assert_eq!(
             WalletsBalancesScreen::format_transaction_timestamp(1_700_000_000),
-            "2023-11-14 22:13:20"
+            local
         );
     }
 
@@ -3893,12 +3803,168 @@ mod tests {
             );
         }
 
+        /// Render the wallet's funding transactions and click the only "Fund".
+        fn click_fund(screen: &mut WalletsBalancesScreen) {
+            use egui_kittest::{Harness, kittest::Queryable};
+            let mut harness = Harness::builder()
+                .with_size(egui::vec2(1400.0, 900.0))
+                .build_ui(|ui| {
+                    screen.render_wallet_asset_locks(ui);
+                });
+            harness.run_steps(2);
+            harness.get_by_label("Fund").click();
+            harness.run_steps(2);
+        }
+
+        /// The network refuses a funding transaction that cannot cover the fee
+        /// for funding a Platform address, so the list must not offer it.
+        #[test]
+        fn funding_below_the_network_fee_cannot_fund_a_platform_address() {
+            use crate::model::asset_lock::confirmed_funding_for_test;
+            let tmp = tempfile::tempdir().unwrap();
+            let ctx = test_app_context(tmp.path());
+            let (seed_hash, wallet) = seed_hd(&ctx, 9);
+            let mut screen = WalletsBalancesScreen::create_with_selection(&ctx, Some(wallet), None);
+            let minimum = ctx
+                .fee_estimator()
+                .address_funding_min_amount_duffs(true, ctx.sdk_platform_version());
+
+            screen
+                .asset_lock_cache
+                .store(seed_hash, vec![confirmed_funding_for_test(1, minimum - 1)]);
+            click_fund(&mut screen);
+            assert!(
+                !screen.fund_platform_dialog.is_open,
+                "a funding transaction below the network fee must not be usable"
+            );
+
+            screen
+                .asset_lock_cache
+                .store(seed_hash, vec![confirmed_funding_for_test(2, minimum)]);
+            click_fund(&mut screen);
+            assert!(
+                screen.fund_platform_dialog.is_open,
+                "a funding transaction that covers the network fee stays usable"
+            );
+        }
+
         /// TC-WALLETLINK-07 (the dual-hash trap, highest-risk case). (a) A
         /// single-key selection survives navigation without auto-picking an HD
         /// wallet; (b) a later HD pick from the pill supersedes the stale
         /// single-key selection. Goes RED against a setter that preserves the
         /// stale single-key hash on an HD set (store then resolves single-key
         /// first and re-shows the wrong wallet).
+        /// Render the whole screen and let `drive` act on it.
+        fn with_rendered_screen(
+            screen: &mut WalletsBalancesScreen,
+            drive: impl FnOnce(&mut egui_kittest::Harness<'_>),
+        ) {
+            let mut harness = egui_kittest::Harness::builder()
+                .with_size(egui::vec2(1400.0, 900.0))
+                .build_ui(|ui| {
+                    screen.ui(ui);
+                });
+            // A fixed step count: the sync indicators never stop repainting.
+            harness.run_steps(2);
+            drive(&mut harness);
+        }
+
+        /// The wallet picker reads like every other wallet picker: type, name
+        /// and balance in one text, with no second balance repeated beside it.
+        #[test]
+        fn picker_shows_the_chosen_hd_wallet_in_the_shared_format() {
+            use egui_kittest::kittest::Queryable;
+            let tmp = tempfile::tempdir().unwrap();
+            let ctx = test_app_context(tmp.path());
+            let (_hd_hash, hd) = seed_hd(&ctx, 5);
+            let mut screen = WalletsBalancesScreen::create_with_selection(&ctx, Some(hd), None);
+
+            with_rendered_screen(&mut screen, |harness| {
+                assert!(
+                    harness.query_by_value("HD: hd-5 — 0.0000 DASH").is_some(),
+                    "the closed picker must show type, name and balance"
+                );
+                assert!(
+                    harness.query_by_label(" Balance: 0 DASH").is_none(),
+                    "the balance belongs to the picker text, not to a second label"
+                );
+            });
+        }
+
+        #[test]
+        fn picker_shows_the_chosen_single_key_wallet_in_the_shared_format() {
+            use egui_kittest::kittest::Queryable;
+            let tmp = tempfile::tempdir().unwrap();
+            let ctx = test_app_context(tmp.path());
+            let (_sk_hash, sk) = seed_sk(&ctx, 7);
+            let mut screen = WalletsBalancesScreen::create_with_selection(&ctx, None, Some(sk));
+
+            with_rendered_screen(&mut screen, |harness| {
+                assert!(
+                    harness.query_by_value("SK: sk-7 — 0.0000 DASH").is_some(),
+                    "the closed picker must show type, name and balance"
+                );
+            });
+        }
+
+        /// Picking an imported key from the list makes it the page's wallet and
+        /// the remembered selection, replacing the recovery-phrase wallet.
+        #[test]
+        fn picking_a_single_key_row_selects_and_remembers_it() {
+            use egui_kittest::kittest::Queryable;
+            let tmp = tempfile::tempdir().unwrap();
+            let ctx = test_app_context(tmp.path());
+            let (_hd_hash, hd) = seed_hd(&ctx, 5);
+            let (sk_hash, sk) = seed_sk(&ctx, 7);
+            let mut screen = WalletsBalancesScreen::create_with_selection(&ctx, Some(hd), None);
+
+            with_rendered_screen(&mut screen, |harness| {
+                harness.get_by_value("HD: hd-5 — 0.0000 DASH").click();
+                harness.run_steps(2);
+                harness.get_by_label("SK: sk-7 — 0.0000 DASH").click();
+                harness.run_steps(2);
+            });
+
+            assert!(
+                screen
+                    .selected_single_key_wallet
+                    .as_ref()
+                    .is_some_and(|w| Arc::ptr_eq(w, &sk))
+            );
+            assert!(screen.selected_wallet.is_none());
+            assert_eq!(*ctx.selected_single_key_hash.lock().unwrap(), Some(sk_hash));
+            assert_eq!(ctx.selected_wallet_hash(), None);
+        }
+
+        /// Picking a recovery-phrase wallet from the list makes it the page's
+        /// wallet and the remembered selection, replacing the imported key.
+        #[test]
+        fn picking_an_hd_row_selects_and_remembers_it() {
+            use egui_kittest::kittest::Queryable;
+            let tmp = tempfile::tempdir().unwrap();
+            let ctx = test_app_context(tmp.path());
+            let (hd_hash, hd) = seed_hd(&ctx, 5);
+            let (_sk_hash, sk) = seed_sk(&ctx, 7);
+            let mut screen = WalletsBalancesScreen::create_with_selection(&ctx, None, Some(sk));
+
+            with_rendered_screen(&mut screen, |harness| {
+                harness.get_by_value("SK: sk-7 — 0.0000 DASH").click();
+                harness.run_steps(2);
+                harness.get_by_label("HD: hd-5 — 0.0000 DASH").click();
+                harness.run_steps(2);
+            });
+
+            assert!(
+                screen
+                    .selected_wallet
+                    .as_ref()
+                    .is_some_and(|w| Arc::ptr_eq(w, &hd))
+            );
+            assert!(screen.selected_single_key_wallet.is_none());
+            assert_eq!(ctx.selected_wallet_hash(), Some(hd_hash));
+            assert_eq!(*ctx.selected_single_key_hash.lock().unwrap(), None);
+        }
+
         #[test]
         fn hd_pick_supersedes_a_prior_single_key_selection() {
             let tmp = tempfile::tempdir().unwrap();

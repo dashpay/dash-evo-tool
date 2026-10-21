@@ -24,6 +24,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::cli::CliRun;
+use crate::identity_storage::IDENTITY_KEY;
 use crate::manifest::{ExpectedWallet, WalletOutcome};
 
 /// Legacy DET database carrying the `settings.database_version` ladder.
@@ -31,10 +32,6 @@ pub const DATA_DB: &str = "data.db";
 
 /// Cross-network app store holding the migration sentinels.
 pub const APP_DB: &str = "det-app.sqlite";
-
-/// Key every stored identity lives under in the per-network store
-/// (`IDENTITY_KEY` in `src/context/identity_db.rs`).
-const IDENTITY_KEY: &str = "det:identity:v1";
 
 /// Namespace shared by every migration sentinel. Discovering keys by prefix
 /// picks up the ones whose constants are private (the legacy-settings import)
@@ -1307,9 +1304,11 @@ mod tests {
 
         let network_db = dir.path().join(network_db_name(Network::Testnet));
         let conn = Connection::open(&network_db).expect("create network db");
-        conn.execute_batch(
-            "CREATE TABLE meta_identity (identity_id BLOB, key TEXT, value BLOB);
-             INSERT INTO meta_identity (identity_id, key, value) VALUES (X'AABB', 'det:identity:v1', X'00');",
+        conn.execute_batch("CREATE TABLE meta_identity (identity_id BLOB, key TEXT, value BLOB);")
+            .expect("create identity table");
+        conn.execute(
+            "INSERT INTO meta_identity (identity_id, key, value) VALUES (X'AABB', ?1, X'00')",
+            [IDENTITY_KEY],
         )
         .expect("seed identity");
         drop(conn);

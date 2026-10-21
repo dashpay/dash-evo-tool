@@ -207,7 +207,7 @@ fn dispatch_request_shared(
 /// `AppAction::BackendTask`s would not: `AppAction`'s `|=` is last-writer-wins,
 /// so the first load would be dropped on the floor and the active section would
 /// never fill.
-fn load_action(identity: &QualifiedIdentity, state: &mut ContactsState) -> AppAction {
+pub(super) fn load_action(identity: &QualifiedIdentity, state: &mut ContactsState) -> AppAction {
     if !state.claim_load() {
         return AppAction::None;
     }
@@ -270,16 +270,41 @@ pub fn unhide_task(identity: QualifiedIdentity, contact: &ContactData) -> DashPa
 /// identity is loaded, or the active identity has no DashPay profile, the gated
 /// state is rendered.
 ///
-/// The caller owns a [`ContactsState`] so the populated shell only dispatches
-/// its backend tasks once per tab entry — not once per paint.
+/// The caller owns the [`ContactsState`]. The tab's data load is not part of
+/// rendering: see [`tab_load_action`].
 pub fn render(
     ui: &mut Ui,
+    app_context: &Arc<AppContext>,
+    identity: Option<&QualifiedIdentity>,
+    state: &mut ContactsState,
+    profiles: &mut super::profile_cache::ProfileCache,
+) -> AppAction {
+    let tab_state = ContactsTabState::resolve(app_context, identity, profiles);
+    render_state(ui, app_context, &tab_state, state)
+}
+
+/// The populated Contacts tab's load, when it is due: the contact list and the
+/// request lists of the identity the tab shows. A gated tab loads nothing.
+///
+/// Returning the load claims its one dispatch slot, so the caller must ask only
+/// once nothing else on the screen produced an action this frame, and must
+/// return what it gets: a load that is replaced never goes out again.
+pub fn tab_load_action(
     app_context: &Arc<AppContext>,
     state: &mut ContactsState,
     profiles: &mut super::profile_cache::ProfileCache,
 ) -> AppAction {
-    let tab_state = ContactsTabState::resolve(app_context, profiles);
-    render_state(ui, app_context, &tab_state, state)
+    if !state.load_is_due() {
+        return AppAction::None;
+    }
+    let active = app_context.resolve_selected_identity();
+    match ContactsTabState::resolve(app_context, active.as_ref(), profiles) {
+        ContactsTabState::Populated { identity } => {
+            state.reconcile_owner(&identity);
+            load_action(&identity, state)
+        }
+        ContactsTabState::Gated { .. } => AppAction::None,
+    }
 }
 
 /// Resolved rendering mode for the Contacts tab.
@@ -306,19 +331,20 @@ impl ContactsTabState {
     /// identity has no DashPay profile (or one has not loaded yet).
     pub fn resolve(
         app_context: &Arc<AppContext>,
+        active: Option<&QualifiedIdentity>,
         profiles: &mut super::profile_cache::ProfileCache,
     ) -> Self {
-        // The app-scoped active identity (selected → first → none). `None` on a
-        // load error or no identities falls back to Gated so the hub never
-        // draws a half-broken populated UI.
-        let Some(active) = app_context.resolve_selected_identity() else {
+        // `active` is the app-scoped active identity (selected → first → none).
+        // `None` on a load error or no identities falls back to Gated so the
+        // hub never draws a half-broken populated UI.
+        let Some(active) = active else {
             return ContactsTabState::Gated { handle: None };
         };
 
-        let handle = primary_dpns_handle(&active);
-        if has_social_profile(profiles, &active) {
+        let handle = app_context.main_username(active);
+        if has_social_profile(profiles, active) {
             ContactsTabState::Populated {
-                identity: Box::new(active),
+                identity: Box::new(active.clone()),
             }
         } else {
             ContactsTabState::Gated { handle }
@@ -377,27 +403,21 @@ fn render_populated(
     identity: &QualifiedIdentity,
     state: &mut ContactsState,
 ) -> AppAction {
+    state.reconcile_owner(identity);
     let dark_mode = ui.ctx().global_style().visuals.dark_mode;
     let mut action = AppAction::None;
 
     action |= header_row(ui, app_context, dark_mode);
 
-    action |= received_section(ui, app_context, identity, state, dark_mode);
-    action |= active_section(ui, app_context, identity, state, dark_mode);
-    action |= sent_section(ui, app_context, identity, state, dark_mode);
-
-    // Fire LoadContacts + LoadContactRequests once per tab entry. The hub
-    // resets the guard in `refresh_on_arrival()` so a tab switch or explicit
-    // refresh triggers another load.
-    //
-    // Only when nothing else claimed this frame: `|=` is last-writer-wins, so a
-    // load dispatched alongside a click would swallow one of the two. The load
-    // guard is untouched until it actually dispatches, so it simply goes out on
-    // the next paint.
-    if matches!(action, AppAction::None) {
-        action = load_action(identity, state);
-    }
-
+    // The sections scroll below the header, so a long contact list stays
+    // reachable in a short window.
+    eframe::egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            action |= received_section(ui, app_context, identity, state, dark_mode);
+            action |= active_section(ui, app_context, identity, state, dark_mode);
+            action |= sent_section(ui, app_context, identity, state, dark_mode);
+        });
     action
 }
 
@@ -478,60 +498,74 @@ fn active_section(
             ui.label(RichText::new(NO_SEARCH_MATCH).color(DashColors::text_secondary(dark_mode)));
         } else {
             for contact in matches {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new(contact_label(contact))
-                            .strong()
-                            .color(DashColors::text_primary(dark_mode)),
-                    );
-                    ui.with_layout(
-                        eframe::egui::Layout::right_to_left(eframe::egui::Align::Center),
-                        |ui| {
-                            if pay_available {
-                                let pay = ui
-                                    .add(ComponentStyles::secondary_button(PAY_LABEL, dark_mode))
-                                    .clickable_tooltip("Send Dash to this contact.");
-                                if pay.clicked() {
-                                    action = AppAction::AddScreen(
-                                        ScreenType::DashPaySendPayment(
-                                            identity.clone(),
-                                            contact.identity_id,
-                                        )
-                                        .create_screen(app_context),
-                                    );
-                                }
+                let label = contact_label(contact);
+                // The actions are laid out first so a long name or handle is
+                // shortened to the room they leave instead of running under
+                // them; hovering shows the full text.
+                eframe::egui::Sides::new().shrink_left().truncate().show(
+                    ui,
+                    |ui| {
+                        ui.vertical(|ui| {
+                            ui.label(
+                                RichText::new(&label)
+                                    .strong()
+                                    .color(DashColors::text_primary(dark_mode)),
+                            );
+                            if let Some(handle) = contact_handle(contact, &label) {
+                                ui.label(
+                                    RichText::new(handle)
+                                        .small()
+                                        .color(DashColors::text_secondary(dark_mode)),
+                                );
                             }
-
-                            let view_profile = ui
-                                .add(ComponentStyles::secondary_button(
-                                    VIEW_PROFILE_LABEL,
-                                    dark_mode,
-                                ))
-                                .clickable_tooltip("View this contact's public profile.");
-                            if view_profile.clicked() {
+                        });
+                    },
+                    |ui| {
+                        if pay_available {
+                            let pay = ui
+                                .add(ComponentStyles::secondary_button(PAY_LABEL, dark_mode))
+                                .clickable_tooltip("Send Dash to this contact.");
+                            if pay.clicked() {
                                 action = AppAction::AddScreen(
-                                    contact_profile_screen_type(
+                                    ScreenType::DashPaySendPayment(
                                         identity.clone(),
                                         contact.identity_id,
                                     )
                                     .create_screen(app_context),
                                 );
                             }
-                        },
-                    );
-                });
+                        }
+
+                        let view_profile = ui
+                            .add(ComponentStyles::secondary_button(
+                                VIEW_PROFILE_LABEL,
+                                dark_mode,
+                            ))
+                            .clickable_tooltip("View this contact's public profile.");
+                        if view_profile.clicked() {
+                            action = AppAction::AddScreen(
+                                contact_profile_screen_type(identity.clone(), contact.identity_id)
+                                    .create_screen(app_context),
+                            );
+                        }
+                    },
+                );
                 ui.add_space(4.0);
             }
         }
 
-        ui.add_space(8.0);
-        let add = ui
-            .add(ComponentStyles::primary_button(ADD_BY_USERNAME_LABEL))
-            .clickable_tooltip(
-                "Find someone by their Dash username or identity ID and add them as a contact.",
-            );
-        if add.clicked() {
-            action = resolve_contacts_button(ContactsButton::ActiveAddByUsername, app_context);
+        // The header already offers Add by username; the section repeats it
+        // only as the empty state's call to action (design-spec §B.4).
+        if !has_contacts {
+            ui.add_space(8.0);
+            let add = ui
+                .add(ComponentStyles::primary_button(ADD_BY_USERNAME_LABEL))
+                .clickable_tooltip(
+                    "Find someone by their Dash username or identity ID and add them as a contact.",
+                );
+            if add.clicked() {
+                action = resolve_contacts_button(ContactsButton::ActiveAddByUsername, app_context);
+            }
         }
 
         action |= hidden_section(ui, identity, state, dark_mode);
@@ -573,22 +607,25 @@ fn hidden_section(
     // `state` once the read borrow the row loop holds has ended.
     let mut clicked: Option<ContactData> = None;
     for contact in state.hidden_contacts() {
-        ui.horizontal(|ui| {
-            ui.label(
-                RichText::new(contact_label(contact)).color(DashColors::text_secondary(dark_mode)),
-            );
-            ui.with_layout(
-                eframe::egui::Layout::right_to_left(eframe::egui::Align::Center),
-                |ui| {
-                    let unhide = ui
-                        .add(ComponentStyles::secondary_button(UNHIDE_LABEL, dark_mode))
-                        .clickable_tooltip(UNHIDE_TOOLTIP);
-                    if unhide.clicked() {
-                        clicked = Some(contact.clone());
-                    }
-                },
-            );
-        });
+        // Unhide is laid out first so a long name is shortened to the room it
+        // leaves instead of pushing the button past the content column.
+        eframe::egui::Sides::new().shrink_left().truncate().show(
+            ui,
+            |ui| {
+                ui.label(
+                    RichText::new(contact_label(contact))
+                        .color(DashColors::text_secondary(dark_mode)),
+                );
+            },
+            |ui| {
+                let unhide = ui
+                    .add(ComponentStyles::secondary_button(UNHIDE_LABEL, dark_mode))
+                    .clickable_tooltip(UNHIDE_TOOLTIP);
+                if unhide.clicked() {
+                    clicked = Some(contact.clone());
+                }
+            },
+        );
         ui.add_space(4.0);
     }
 
@@ -735,6 +772,8 @@ fn section_card(ui: &mut Ui, dark_mode: bool, heading: &str, body: impl FnOnce(&
         .corner_radius(CornerRadius::same(Shape::RADIUS_MD))
         .inner_margin(Margin::symmetric(16, 12));
     frame.show(ui, |ui| {
+        // Every section spans the content width, so the cards line up.
+        ui.set_width(ui.available_width());
         ui.label(
             RichText::new(heading)
                 .strong()
@@ -743,16 +782,6 @@ fn section_card(ui: &mut Ui, dark_mode: bool, heading: &str, body: impl FnOnce(&
         ui.add_space(8.0);
         body(ui);
     });
-}
-
-/// Primary DPNS handle for an identity: the first registered DPNS name, when
-/// available. Returns the bare handle without the leading `@`.
-fn primary_dpns_handle(identity: &QualifiedIdentity) -> Option<String> {
-    identity
-        .dpns_names
-        .first()
-        .map(|n| n.name.trim().to_string())
-        .filter(|s| !s.is_empty())
 }
 
 /// Detect whether the identity has a DashPay social profile. Reads the hub's
@@ -766,8 +795,74 @@ fn has_social_profile(
     matches!(profiles.get_or_request(identity), Some(Some(_)))
 }
 
+/// A contact's `@username`, shown under its label unless the label already
+/// is that username.
+fn contact_handle(contact: &ContactData, label: &str) -> Option<String> {
+    let username = contact.username.as_deref()?.trim();
+    if username.is_empty() {
+        return None;
+    }
+    let handle = format!("@{}", username.trim_start_matches('@'));
+    (handle != label && username != label).then_some(handle)
+}
+
 fn contact_profile_screen_type(identity: QualifiedIdentity, contact_id: Identifier) -> ScreenType {
     ScreenType::DashPayContactProfileViewer(identity, contact_id)
+}
+
+/// Compact Home preview; request actions share the Contacts tab's paid-action guards.
+pub(super) fn render_preview(
+    ui: &mut Ui,
+    app_context: &Arc<AppContext>,
+    identity: &QualifiedIdentity,
+    state: &mut ContactsState,
+    outcome: &mut super::home::HomeOutcome,
+) -> AppAction {
+    let mut action = AppAction::None;
+    super::home::card(ui, |ui| {
+        ui.strong("Contacts");
+        let mut clicked = None;
+        for entry in state.incoming().iter().take(3) {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(format!(
+                    "{} wants to connect.",
+                    shorten_id(&entry.counterpart_id.to_string(Encoding::Base58))
+                ));
+                let busy = state.is_in_flight(&entry.request_id)
+                    || app_context.contact_request_action_is_in_flight(&entry.request_id);
+                if ui
+                    .add_enabled(
+                        !busy,
+                        ComponentStyles::secondary_button("Accept", ui.visuals().dark_mode),
+                    )
+                    .clicked()
+                {
+                    clicked = Some((entry.request_id, RequestAction::Accepted));
+                }
+            });
+        }
+        for contact in state.matching_contacts().take(6) {
+            if ui.button(contact_label(contact)).clicked() {
+                action = AppAction::AddScreen(
+                    contact_profile_screen_type(identity.clone(), contact.identity_id)
+                        .create_screen(app_context),
+                );
+            }
+        }
+        if state.contacts_len() == 0 && state.incoming().is_empty() {
+            ui.label("No contacts yet. Add someone by their username.");
+        }
+        if ui.button("See all contacts").clicked() {
+            *outcome = super::home::HomeOutcome::GoToContacts;
+        }
+        if ComponentStyles::add_secondary_button(ui, "Add contact", ui.visuals().dark_mode)
+            .clicked()
+        {
+            action = resolve_contacts_button(ContactsButton::HeaderAddByUsername, app_context);
+        }
+        action |= dispatch_request_shared(app_context, state, identity, clicked);
+    });
+    action
 }
 
 #[cfg(test)]
@@ -841,6 +936,114 @@ mod tests {
             format!("{ACTIVE_HEADING_PREFIX} · {}", state.contacts_len()),
             "Active contacts · 1",
             "the heading count must reflect the loaded contacts, not a hardcoded zero"
+        );
+    }
+
+    fn contact_named(nickname: &str) -> ContactData {
+        ContactData {
+            identity_id: id(5),
+            nickname: Some(nickname.into()),
+            note: None,
+            is_hidden: false,
+            account_reference: 0,
+            username: None,
+            display_name: None,
+            avatar_url: None,
+            bio: None,
+        }
+    }
+
+    /// A contact row adds the `@username` under its label, unless the label
+    /// already is the username or there is none.
+    #[test]
+    fn contact_rows_show_the_username_once() {
+        let mut contact = contact_named("Bao");
+        assert_eq!(contact_handle(&contact, "Bao"), None);
+
+        contact.username = Some("bao".into());
+        assert_eq!(contact_handle(&contact, "Bao"), Some("@bao".into()));
+
+        contact.nickname = None;
+        let label = contact_label(&contact);
+        assert_eq!(contact_handle(&contact, &label), None, "label {label}");
+
+        contact.username = Some("  ".into());
+        assert_eq!(contact_handle(&contact, "Bao"), None);
+    }
+
+    fn request_from(
+        request_id: Identifier,
+        sender: Identifier,
+    ) -> (Identifier, dash_sdk::platform::Document) {
+        use dash_sdk::dpp::document::DocumentV0;
+        (
+            request_id,
+            dash_sdk::platform::Document::V0(DocumentV0 {
+                id: request_id,
+                owner_id: sender,
+                ..Default::default()
+            }),
+        )
+    }
+
+    fn load_owner_ids(action: AppAction) -> Vec<Identifier> {
+        let AppAction::BackendTasks(tasks, _) = action else {
+            panic!("expected the contact loads, got {action:?}");
+        };
+        tasks
+            .into_iter()
+            .map(|task| match task {
+                BackendTask::DashPayTask(task) => match *task {
+                    DashPayTask::LoadContacts { identity }
+                    | DashPayTask::LoadContactRequests { identity } => identity.identity.id(),
+                    other => panic!("unexpected task {other:?}"),
+                },
+                other => panic!("unexpected task {other:?}"),
+            })
+            .collect()
+    }
+
+    /// The selection can change without the hub resetting this state. The lists
+    /// must then follow the identity on screen, while an action already paid
+    /// for and still running for the previous identity keeps its guard.
+    #[test]
+    fn lists_follow_the_identity_and_running_request_guards_survive_the_change() {
+        let first = qualified_identity(id(1));
+        let second = qualified_identity(id(2));
+        let request = id(9);
+        let mut state = ContactsState::default();
+
+        state.reconcile_owner(&first);
+        assert_eq!(
+            load_owner_ids(load_action(&first, &mut state)),
+            [id(1), id(1)]
+        );
+        state.record_contacts(vec![contact_named("Bao")]);
+        state.record_requests(vec![request_from(request, id(3))], vec![]);
+        assert!(state.begin_request(request));
+
+        state.reconcile_owner(&first);
+        assert_eq!(state.contacts_len(), 1, "the same identity keeps its lists");
+        assert!(
+            matches!(load_action(&first, &mut state), AppAction::None),
+            "and its load is not dispatched again"
+        );
+
+        state.reconcile_owner(&second);
+        assert_eq!(state.contacts_len(), 0);
+        assert!(state.incoming().is_empty());
+        assert_eq!(
+            load_owner_ids(load_action(&second, &mut state)),
+            [id(2), id(2)],
+            "the lists of the identity on screen must load"
+        );
+        assert!(
+            state.is_in_flight(&request),
+            "the action still running for the previous identity keeps its guard"
+        );
+        assert!(
+            !state.begin_request(request),
+            "the same request must not be acted on a second time"
         );
     }
 

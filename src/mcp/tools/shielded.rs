@@ -35,7 +35,9 @@ pub struct ShieldFromCoreParams {
 #[derive(Serialize, schemars::JsonSchema)]
 pub struct ShieldFromCoreOutput {
     amount_duffs: u64,
-    shielded_credits: u64,
+    /// Credits shielded. `null` when the transfer succeeded but the exact
+    /// figure is not known; read the shielded balance after the next sync.
+    shielded_credits: Option<u64>,
 }
 
 impl ToolBase for ShieldedShieldFromCore {
@@ -760,5 +762,25 @@ impl AsyncTool<DashMcpService> for ShieldedAddressGet {
             .map_err(|e| McpToolError::Internal(e.to_string()))?;
 
         Ok(ShieldedAddressGetOutput { address })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Automation must be able to tell a transfer that succeeded without a
+    /// known amount from one that reports a figure.
+    #[test]
+    fn shield_from_core_output_states_an_unknown_amount_as_null() {
+        let output = serde_json::to_value(ShieldFromCoreOutput {
+            amount_duffs: 100_000,
+            shielded_credits: None,
+        })
+        .expect("serialize");
+        assert_eq!(
+            output,
+            serde_json::json!({ "amount_duffs": 100_000, "shielded_credits": null })
+        );
     }
 }

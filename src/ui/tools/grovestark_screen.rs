@@ -2,6 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::grovestark::GroveSTARKTask;
 use crate::context::AppContext;
+use crate::model::datetime;
 use crate::model::qualified_identity::{PrivateKeyTarget, QualifiedIdentity};
 use crate::ui::ScreenLike;
 use crate::ui::components::MessageBanner;
@@ -507,8 +508,8 @@ impl GroveSTARKScreen {
     }
 
     fn format_timestamp(timestamp: u64) -> String {
-        chrono::DateTime::from_timestamp(timestamp as i64, 0)
-            .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+        datetime::instant_from_unix_secs(timestamp)
+            .map(datetime::local_date_time_seconds)
             .unwrap_or_else(|| "Unknown".to_string())
     }
 

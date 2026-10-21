@@ -67,21 +67,54 @@ jobs:
         run: |
           set -euo pipefail
 
-          # CI-red is a HARD block — never overridable by force or version
-          # (it's a safety net, not a convenience toggle). Treated as "latest
-          # *completed* run of each CI workflow on v1.0-dev" rather than
-          # HEAD-sha check-runs, because tests.yml/clippy.yml are path-filtered
-          # and a docs-only HEAD would otherwise have zero check-runs and read
-          # as falsely green. A workflow that has never run is treated as
-          # absent, not red.
+          # Use completed branch runs: path filters can leave docs-only HEAD unchecked.
+          # Gate push suites and scheduled fixture/pin checks independently.
+          # Missing history is absent, not red; force/version never bypass red CI.
+          # A manual run never stands in for a push suite.
           red=false
-          for wf in tests.yml clippy.yml migration-matrix.yml; do
-            concl=$(gh run list --workflow "$wf" --branch "$REF_NAME" --status completed \
+          for check in tests.yml:push clippy.yml:push; do
+            wf="${check%:*}"
+            event="${check#*:}"
+            concl=$(gh run list --workflow "$wf" --branch "$REF_NAME" --event "$event" --status completed \
                       --limit 1 --json conclusion --jq '.[0].conclusion // ""')
             case "$concl" in
               failure | cancelled | timed_out | startup_failure) red=true ;;
             esac
           done
+
+          # Scheduled slot. A manual tests.yml run of this branch at exactly this
+          # commit decides it when not older (run creation time) than the scheduled
+          # run: red blocks, also on a tie; green replaces the scheduled result only
+          # when strictly newer and with both scheduled checks passed.
+          head_sha=$(git rev-parse HEAD)
+          # Prints "<createdAt> <conclusion> <id>" of the newest completed run, or nothing.
+          newest_tests_run() {
+            gh run list --workflow tests.yml --branch "$REF_NAME" --status completed --limit 1 "$@" \
+              --json conclusion,createdAt,databaseId \
+              --jq '.[0] | select(. != null) | "\(.createdAt) \(.conclusion) \(.databaseId)"'
+          }
+          sched=$(newest_tests_run --event schedule)
+          manual=$(newest_tests_run --event workflow_dispatch --commit "$head_sha")
+          read -r sched_at sched_concl _ <<<"$sched"
+          read -r manual_at manual_concl manual_id <<<"$manual"
+          # Equal-width UTC timestamps: string order is time order.
+          if [ -n "$manual_at" ] && [[ ! "$manual_at" < "$sched_at" ]]; then
+            case "$manual_concl" in
+              failure | cancelled | timed_out | startup_failure) red=true ;;
+              success)
+                if [[ "$manual_at" > "$sched_at" ]]; then
+                  # A run that skipped either check proves nothing for this slot.
+                  passed=$(gh run view "$manual_id" --json jobs --jq '[.jobs[]
+                    | select(.conclusion == "success") | .name
+                    | select(. == "Fixture coverage" or . == "Platform pin guard")] | unique | length')
+                  if [ "$passed" = 2 ]; then sched_concl=success; fi
+                fi
+                ;;
+            esac
+          fi
+          case "$sched_concl" in
+            failure | cancelled | timed_out | startup_failure) red=true ;;
+          esac
           if [ "$red" = true ]; then
             {
               echo "should_release=false"
@@ -245,9 +278,34 @@ jobs:
     with:
       version_override: ${{ needs.gate.outputs.version }}
 
+  # Captures this version's migration fixture with the binary just built and
+  # attaches it to the draft, so a release never needs one captured by hand.
+  # A failed capture blocks the release: `finalize` is skipped and `cleanup`
+  # removes the tag and the draft, exactly as for a failed build.
+  fixture:
+    name: Capture migration fixture
+    needs: [gate, release]
+    uses: ./.github/workflows/migration-fixture-capture.yml
+    # The most any job of that workflow declares; a nested job asking for more
+    # than its caller grants fails the whole run at startup. Its `capture` job,
+    # the only one that runs the binaries, holds read access and gets no secret.
+    permissions:
+      contents: write
+      actions: read
+      id-token: write
+      attestations: write
+    with:
+      tag: ${{ needs.gate.outputs.tag }}
+      binary_artifact: dash-evo-tool-linux-x86_64.zip
+      # The fixture's users trust captures of v1.0-dev only (`TRUSTED_REF` in
+      # download-fixtures.sh). A cut from any other ref is captured as a dry
+      # run: attaching a fixture they would reject fails every Tests run once
+      # that release is published.
+      attach: ${{ github.ref == 'refs/heads/v1.0-dev' }}
+
   finalize:
     name: Attach Flatpak bundles and fetch release URL
-    needs: [gate, release, flatpak]
+    needs: [gate, release, flatpak, fixture]
     if: success()
     runs-on: ubuntu-24.04
     permissions:
@@ -335,7 +393,7 @@ jobs:
 
   notify:
     name: Slack notification
-    needs: [gate, tag, release, flatpak, finalize, cleanup]
+    needs: [gate, tag, release, flatpak, fixture, finalize, cleanup]
     if: always() && (needs.gate.outputs.should_release == 'true' || needs.gate.outputs.ci_red == 'true')
     runs-on: ubuntu-24.04
     permissions:
@@ -352,6 +410,7 @@ jobs:
           PUBLISHED: ${{ needs.finalize.outputs.published }}
           RELEASE_RESULT: ${{ needs.release.result }}
           FLATPAK_RESULT: ${{ needs.flatpak.result }}
+          FIXTURE_RESULT: ${{ needs.fixture.result }}
           TAG_RESULT: ${{ needs.tag.result }}
           CLEANUP_RESULT: ${{ needs.cleanup.result }}
         run: |
@@ -371,6 +430,10 @@ jobs:
             TEXT=":sparkles: *I, Claudius the Magnificent, have published another weekly for \`${REPO}\`.* Version \`${VERSION}\` is live as a pre-release, no assent required: <${RELEASE_URL}|the release page>."
           elif [ "$SHOULD_RELEASE" = "true" ] && [ "$FINALIZE_RESULT" = "success" ]; then
             TEXT=":sparkles: *I, Claudius the Magnificent, have sealed another weekly draft for \`${REPO}\`.* Version \`${VERSION}\` awaits your royal assent — undraft it here: <${RELEASE_URL}|the release page>."
+          elif [ "$SHOULD_RELEASE" = "true" ] && [ "$FLATPAK_RESULT" = "success" ] && [ "$FIXTURE_RESULT" = "failure" ] && [ "$CLEANUP_RESULT" = "success" ]; then
+            TEXT=":rotating_light: *Even I, Claudius the Magnificent, will not publish a release whose upgrade I could not prove.* Version \`${VERSION}\` for \`${REPO}\` was built, yet its migration fixture could not be captured — I have swept the tag and the draft away. Mend it, then cut the week again: <${RUN_URL}|the run>."
+          elif [ "$SHOULD_RELEASE" = "true" ] && [ "$FLATPAK_RESULT" = "success" ] && [ "$FIXTURE_RESULT" = "failure" ]; then
+            TEXT=":rotating_light: *Even I, Claudius the Magnificent, will not publish a release whose upgrade I could not prove, and I could not clean up after myself either.* Version \`${VERSION}\` for \`${REPO}\` was built, yet its migration fixture could not be captured, and automatic cleanup did not finish — a stray tag or draft release may remain. Manual sweep required: <${RUN_URL}|the run>."
           elif [ "$SHOULD_RELEASE" = "true" ] && [ "$TAG_RESULT" = "success" ] && [ "$CLEANUP_RESULT" = "success" ]; then
             TEXT=":rotating_light: *Even I, Claudius the Magnificent, cannot forge a release from a broken build.* Version \`${VERSION}\` for \`${REPO}\` was tagged, yet the platform build faltered — I have swept the orphaned tag away so next week begins unblemished. Inspect the wreckage: <${RUN_URL}|the run>."
           elif [ "$SHOULD_RELEASE" = "true" ] && [ "$TAG_RESULT" = "success" ]; then

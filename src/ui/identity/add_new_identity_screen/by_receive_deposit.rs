@@ -2,24 +2,34 @@ use crate::app::AppAction;
 use crate::model::amount::Amount;
 use crate::ui::MessageType;
 use crate::ui::components::MessageBanner;
+use crate::ui::components::qr_code_image::QrCodeImage;
 use crate::ui::identity::add_new_identity_screen::AddNewIdentityScreen;
 use crate::ui::identity::funding_common::{
-    FundingMethod, WalletFundedScreenStep, generate_qr_code_image, round_up_dash_4dp,
-    should_queue_funding_address, snapshot_deposit_outcome,
+    FundingMethod, WalletFundedScreenStep, required_deposit_credits, round_up_dash_4dp,
+    should_queue_funding_address, snapshot_deposit_outcome, spendable_covers_minimum,
 };
 use crate::ui::theme::DashColors;
 use crate::wallet_backend::poison::RwLockRecover;
-use egui::{Color32, RichText, Ui, Vec2};
+use egui::{Color32, RichText, Ui};
 use std::time::Duration;
 
 impl AddNewIdentityScreen {
-    /// The minimum credits needed to create the identity with the current key
-    /// set — shown as the amount to deposit.
-    fn deposit_minimum_credits(&self) -> u64 {
-        let key_count = self.identity_keys.others.len() + 1; // +1 for master key
-        self.app_context
-            .fee_estimator()
-            .estimate_identity_create(key_count)
+    /// The smallest deposit, in credits, that leaves a funding the network
+    /// accepts for the current key set once the payments the wallet holds, and
+    /// `incoming` more, are spent to make it.
+    fn deposit_minimum_credits(&self, incoming: usize) -> u64 {
+        let held = self
+            .selected_wallet
+            .as_ref()
+            .and_then(|wallet| wallet.read().ok().map(|wallet| wallet.seed_hash()))
+            .map_or(0, |seed_hash| {
+                self.app_context.snapshot_utxo_count(&seed_hash)
+            });
+        required_deposit_credits(
+            self.minimum_creation_duffs(),
+            self.creation_reserve_duffs(),
+            held + incoming,
+        )
     }
 
     /// Queue a deposit-address derivation unless one is already shown, in
@@ -41,7 +51,7 @@ impl AddNewIdentityScreen {
         }
     }
 
-    fn render_deposit_qr(&mut self, ui: &mut Ui) {
+    pub(super) fn render_deposit_qr(&mut self, ui: &mut Ui) {
         let Some(address) = self.funding_address.clone() else {
             if self.funding_address_request_failed {
                 ui.label("Could not prepare a deposit address.");
@@ -57,19 +67,19 @@ impl AddNewIdentityScreen {
 
         // The QR URI encodes the amount at 4 decimals; show that same rounded-up
         // figure in the hint so the two never disagree or understate the minimum.
-        let minimum_credits = self.deposit_minimum_credits();
+        // One more payment is still to come.
+        let minimum_credits = self.deposit_minimum_credits(1);
         let minimum_dash = round_up_dash_4dp(Amount::dash_from_credits(minimum_credits).to_f64());
         let minimum_amount = format!("{minimum_dash:.4} DASH");
         let dash_uri = format!("dash:{address}?amount={minimum_dash:.4}");
 
-        if let Ok(qr_image) = generate_qr_code_image(&dash_uri) {
-            let texture =
-                ui.ctx()
-                    .load_texture("deposit_qr_code", qr_image, egui::TextureOptions::LINEAR);
-            ui.image((texture.id(), Vec2::new(200.0, 200.0)));
-        } else {
-            ui.label("Could not create the deposit QR code. Copy the address below instead.");
-        }
+        self.qr_code
+            .get_or_insert_with(|| {
+                QrCodeImage::new().with_fallback_text(
+                    "Could not create the deposit QR code. Copy the address below instead.",
+                )
+            })
+            .show(ui, &dash_uri);
 
         ui.add_space(10.0);
         ui.label(format!(
@@ -94,7 +104,11 @@ impl AddNewIdentityScreen {
         // Show only funds currently available at this address. Unrelated wallet
         // funds must never read as progress toward this deposit.
         let received = self.funding_address_balance_duffs;
-        if received > 0 {
+        if spendable_covers_minimum(received, minimum_credits) {
+            // Enough is here, yet the form has nothing to offer from it: the
+            // wallet cannot spend the deposit until the network confirms it.
+            ui.label("Your deposit has arrived. Waiting for the network to confirm it.");
+        } else if received > 0 {
             ui.label(format!(
                 "This address has {received_amount} available. Waiting for at least \
                  {minimum_amount}.",
@@ -126,13 +140,34 @@ impl AddNewIdentityScreen {
             .copied()
             .unwrap_or(0);
         self.funding_address_balance_duffs = address_balance_duffs;
+        self.settle_deposit_step();
+    }
 
-        let minimum_credits = self.deposit_minimum_credits();
+    /// Move between the deposit request and the form according to what the
+    /// form can offer from the funds at the deposit address.
+    pub(super) fn settle_deposit_step(&mut self) {
+        let minimum_credits = self.deposit_minimum_credits(0);
+        // A check that covered only part of the wallet may understate what it
+        // can send; its "nothing to offer" keeps the form, which offers Retry.
+        let may_understate = self
+            .selected_wallet
+            .as_ref()
+            .and_then(|wallet| wallet.read().ok().map(|wallet| wallet.seed_hash()))
+            .is_some_and(|seed_hash| self.asset_lock_balance.should_offer_retry(&seed_hash));
+        let form_offers_amount = self
+            .form_offers_amount(FundingMethod::ReceiveDeposit)
+            .filter(|offers| *offers || !may_understate);
         let current_step = *self.step.read_recover();
-        let (next_step, prefill) =
-            snapshot_deposit_outcome(current_step, address_balance_duffs, minimum_credits);
+        let (next_step, prefill) = snapshot_deposit_outcome(
+            current_step,
+            self.funding_address_balance_duffs,
+            minimum_credits,
+            form_offers_amount,
+        );
         if prefill.is_some() {
             self.prefill_funding_amount = true;
+        }
+        if next_step != current_step {
             *self.step.write_recover() = next_step;
         }
     }
@@ -216,7 +251,6 @@ impl AddNewIdentityScreen {
                 .unwrap_or(false);
 
             if has_valid_amount {
-                self.render_alias_input(ui, step_number + 1);
                 let button =
                     egui::Button::new(RichText::new("Create Identity").color(Color32::WHITE))
                         .fill(DashColors::DASH_BLUE)

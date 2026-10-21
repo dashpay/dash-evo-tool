@@ -8,6 +8,7 @@ use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscree
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::qr_code_image::QrCodeImage;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
@@ -15,11 +16,9 @@ use crate::ui::components::wallet_unlock_popup::{
 };
 use crate::ui::components::{MessageBanner, ResultBannerExt};
 use crate::ui::dashpay::dashpay_screen::DashPaySubscreen;
-use crate::ui::identity::funding_common::generate_qr_code_image;
 use crate::ui::identity::get_selected_wallet;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
-use eframe::epaint::TextureHandle;
 use egui::{RichText, ScrollArea, TextEdit, Ui};
 use std::sync::{Arc, RwLock};
 
@@ -44,6 +43,7 @@ pub struct QRCodeGeneratorScreen {
     account_index: String,
     validity_hours: String,
     generated_qr_data: Option<String>,
+    qr_code: Option<QrCodeImage>,
     show_info_popup: bool,
     show_advanced_options: bool,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
@@ -60,6 +60,7 @@ impl QRCodeGeneratorScreen {
             account_index: "0".to_string(),
             validity_hours: "24".to_string(),
             generated_qr_data: None,
+            qr_code: None,
             show_info_popup: false,
             show_advanced_options: false,
             selected_wallet: None,
@@ -320,21 +321,13 @@ impl QRCodeGeneratorScreen {
 
                     // Center the QR code
                     ui.vertical_centered(|ui| {
-                        // Generate and display the actual QR code image
-                        if let Ok(qr_image) = generate_qr_code_image(qr_data) {
-                            let texture: TextureHandle = ui.ctx().load_texture(
-                                "dashpay_qr_code",
-                                qr_image,
-                                egui::TextureOptions::LINEAR,
-                            );
-                            // Display at a reasonable size
-                            ui.image(&texture);
-                        } else {
-                            ui.label(
-                                RichText::new("Failed to generate QR code image")
-                                    .color(DashColors::error_color(dark_mode)),
-                            );
-                        }
+                        self.qr_code
+                            .get_or_insert_with(|| {
+                                QrCodeImage::new().with_natural_size().with_fallback_text(
+                                    "The QR code could not be created. Copy the data below instead.",
+                                )
+                            })
+                            .show(ui, qr_data);
                     });
 
                     ui.add_space(10.0);

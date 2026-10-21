@@ -14,6 +14,7 @@
 
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use dash_sdk::dashcore_rpc::dashcore::Address;
+use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::address_funds::{AddressFundsFeeStrategyStep, PlatformAddress};
 use dash_sdk::dpp::balances::credits::{CREDITS_PER_DUFF, Credits};
 use dash_sdk::dpp::identity::core_script::CoreScript;
@@ -21,8 +22,16 @@ use dash_sdk::dpp::prelude::{AddressNonce, AssetLockProof};
 use dash_sdk::dpp::state_transition::StateTransitionEstimatedFeeValidation;
 use dash_sdk::dpp::state_transition::address_credit_withdrawal_transition::AddressCreditWithdrawalTransition;
 use dash_sdk::dpp::state_transition::address_credit_withdrawal_transition::v0::AddressCreditWithdrawalTransitionV0;
-use dash_sdk::dpp::state_transition::address_funding_from_asset_lock_transition::AddressFundingFromAssetLockTransition;
 use dash_sdk::dpp::state_transition::address_funding_from_asset_lock_transition::v0::AddressFundingFromAssetLockTransitionV0;
+use dash_sdk::dpp::state_transition::address_funding_from_asset_lock_transition::{
+    AddressFundingFromAssetLockTransition,
+    calculate_address_funding_from_asset_lock_min_required_fee,
+};
+use dash_sdk::dpp::state_transition::identity_create_transition::IdentityCreateTransition;
+use dash_sdk::dpp::state_transition::identity_create_transition::v0::IdentityCreateTransitionV0;
+use dash_sdk::dpp::state_transition::identity_topup_transition::IdentityTopUpTransition;
+use dash_sdk::dpp::state_transition::identity_topup_transition::v0::IdentityTopUpTransitionV0;
+use dash_sdk::dpp::state_transition::public_key_in_creation::IdentityPublicKeyInCreation;
 
 /// Subtract an estimated fee from a credit balance without floating-point conversion.
 pub const fn max_spendable_credits(balance: u64, estimated_fee: u64) -> u64 {
@@ -37,6 +46,52 @@ pub(crate) const MAX_PLATFORM_INPUTS: usize = 16;
 
 /// Estimated serialized bytes per input (address + signature/witness data).
 const ESTIMATED_BYTES_PER_INPUT: usize = 225;
+
+// TODO(dashpay/platform#5383): the `USERNAME_*` figures are fitted to how Drive
+// bills the DPNS contract; replace them with Platform's own numbers. The charge
+// comes from `drive::document::cost::document_create_cost`
+// (dashpay/platform#5159), which the pinned Platform revision does not have
+// yet. The balance Drive wants before it accepts a document has no function
+// yet; dashpay/platform#5265 asks for one.
+
+/// Bytes Platform bills for a username's first registration document and its
+/// index entry: 726, plus 428 the first time an identity writes to the name
+/// contract.
+const USERNAME_FIRST_DOCUMENT_BYTES: usize = 1_154;
+/// Processing Platform charges for the first document on top of its storage.
+const USERNAME_FIRST_DOCUMENT_PROCESSING_CREDITS: u64 = 3_500_000;
+/// Balance Platform wants before it accepts the name document of an empty
+/// label, in bytes at the storage rate. It reserves about twice what it then
+/// charges, and more for a name that needs a community vote.
+const USERNAME_NAME_RESERVED_BYTES: usize = 3_019;
+const USERNAME_VOTED_NAME_RESERVED_BYTES: usize = 4_517;
+/// Bytes each label character adds to the name document and its index entries.
+const USERNAME_NAME_BYTES_PER_CHAR: usize = 4;
+const USERNAME_VOTED_NAME_BYTES_PER_CHAR: usize = 5;
+/// Headroom over the figures above, which were read from Platform's engine on
+/// an empty network; a live network charges somewhat more processing.
+const USERNAME_REGISTRATION_MARGIN_PERCENT: u64 = 10;
+
+// TODO(dashpay/platform#5265): the `*_TRANSFER_RESERVE_*` figures are fitted to
+// the balance Drive wants before it accepts a transfer out of an identity;
+// replace them with Platform's own number once it offers a function for it.
+// Their source is docs/ai-design/2026-10-13-identity-transfer-fee-reserve.
+
+/// Balance Platform wants on an identity, above the amount, before it accepts a
+/// transfer to another identity. It then charges about a third of it.
+const CREDIT_TRANSFER_RESERVE_CREDITS: u64 = 8_755_720;
+/// The same for a transfer to Platform addresses: a part for the transfer and
+/// a part for each address that receives.
+const ADDRESS_TRANSFER_RESERVE_CREDITS: u64 = 11_261_680;
+const ADDRESS_TRANSFER_RESERVE_PER_ADDRESS_CREDITS: u64 = 6_176_980;
+/// Headroom over the figures above. They are for a transfer signed with an
+/// ECDSA key; a BLS key adds 285,000 credits.
+const IDENTITY_TRANSFER_MARGIN_PERCENT: u64 = 10;
+
+/// `reserve` with the headroom for a transfer out of an identity added.
+const fn with_identity_transfer_margin(reserve: u64) -> u64 {
+    reserve.saturating_mul(100 + IDENTITY_TRANSFER_MARGIN_PERCENT) / 100
+}
 
 /// Storage fee constants from FEE_STORAGE_VERSION1 in rs-platform-version.
 /// These determine the cost of storing and processing data on Platform.
@@ -268,19 +323,35 @@ impl PlatformFeeEstimator {
         self.apply_multiplier(self.calculate_storage_based_fee(bytes, estimated_seeks))
     }
 
-    /// Estimate fee for credit transfer between identities
+    /// Balance an identity must keep, above the amount, to transfer credits to
+    /// another identity.
+    ///
+    /// Platform accepts the transfer only while the balance holds a reserve
+    /// above the fee it then charges, so the fee actually charged is lower.
     pub fn estimate_credit_transfer(&self) -> u64 {
-        self.apply_multiplier(self.min_fees.credit_transfer)
+        let reserve = with_identity_transfer_margin(CREDIT_TRANSFER_RESERVE_CREDITS);
+        self.apply_multiplier(reserve.max(self.min_fees.credit_transfer))
     }
 
-    /// Estimate fee for credit transfer to platform addresses
-    pub fn estimate_credit_transfer_to_addresses(&self, output_count: usize) -> u64 {
-        let base_fee = self.min_fees.credit_transfer_to_addresses.saturating_add(
+    /// Smallest fee Platform takes for a transfer to `output_count` Platform
+    /// addresses, before the fee multiplier.
+    fn credit_transfer_to_addresses_min_fee(&self, output_count: usize) -> u64 {
+        self.min_fees.credit_transfer_to_addresses.saturating_add(
             self.min_fees
                 .address_funds_transfer_output_cost
                 .saturating_mul(output_count as u64),
-        );
-        self.apply_multiplier(base_fee)
+        )
+    }
+
+    /// Balance an identity must keep, above the amount, to transfer credits to
+    /// `output_count` Platform addresses. As with
+    /// [`Self::estimate_credit_transfer`], the fee actually charged is lower.
+    pub fn estimate_credit_transfer_to_addresses(&self, output_count: usize) -> u64 {
+        let reserve =
+            with_identity_transfer_margin(ADDRESS_TRANSFER_RESERVE_CREDITS.saturating_add(
+                ADDRESS_TRANSFER_RESERVE_PER_ADDRESS_CREDITS.saturating_mul(output_count as u64),
+            ));
+        self.apply_multiplier(reserve.max(self.credit_transfer_to_addresses_min_fee(output_count)))
     }
 
     /// Estimate fee for credit withdrawal to core chain
@@ -301,25 +372,81 @@ impl PlatformFeeEstimator {
         // - Base transfer cost to addresses
         // - Per-output costs
         // We add a 50% buffer to account for any additional costs
-        let base_fee_credits = self.estimate_credit_transfer_to_addresses(output_count);
+        let base_fee_credits =
+            self.apply_multiplier(self.credit_transfer_to_addresses_min_fee(output_count));
         let fee_duffs = base_fee_credits / CREDITS_PER_DUFF;
         // Add 50% buffer and ensure minimum of 10,000 duffs based on observed behavior
         fee_duffs.saturating_add(fee_duffs / 2).max(10_000)
     }
 
-    /// Estimate fees (in duffs) for a shield-from-core asset lock operation.
+    /// Smallest amount, in duffs, a user can enter when funding a Platform
+    /// address from the wallet without the network refusing the funding.
+    ///
+    /// The network compares the whole funding with a fee that follows the
+    /// protocol version and the number of recipients. With the fee taken from
+    /// the amount, the amount is the whole funding. Otherwise the funding is
+    /// the amount plus [`Self::estimate_address_funding_from_asset_lock_duffs`]
+    /// and is shared with a change recipient, so the amount must make up what
+    /// that estimate leaves short, and still meet the smallest amount the
+    /// network accepts for a named recipient.
+    pub fn address_funding_min_amount_duffs(
+        &self,
+        fee_deduct_from_output: bool,
+        platform_version: &PlatformVersion,
+    ) -> u64 {
+        let required_duffs = |recipients| {
+            calculate_address_funding_from_asset_lock_min_required_fee(
+                0,
+                recipients,
+                platform_version,
+            )
+            .div_ceil(CREDITS_PER_DUFF)
+        };
+        if fee_deduct_from_output {
+            return required_duffs(1);
+        }
+        let smallest_named_amount = platform_version
+            .dpp
+            .state_transitions
+            .address_funds
+            .min_output_amount
+            .div_ceil(CREDITS_PER_DUFF);
+        required_duffs(2)
+            .saturating_sub(self.estimate_address_funding_from_asset_lock_duffs(2))
+            .max(smallest_named_amount)
+    }
+
+    /// Fees (in duffs) for shielding from the Core wallet.
     ///
     /// Returns `(platform_fee_duffs, l1_tx_fee_duffs)`:
-    /// - Platform fee: `address_funding_asset_lock_cost` with fee multiplier applied,
-    ///   converted to duffs, plus 20% buffer
+    /// - Platform fee: what the network takes from the funding before the rest
+    ///   reaches the shielded pool, rounded up to whole duffs
     /// - L1 tx fee: flat estimate covering Core minimum relay fee (~3000 duffs)
-    pub fn estimate_shield_from_core_fees_duffs(&self) -> (u64, u64) {
-        let platform_fee_credits =
-            self.apply_multiplier(self.min_fees.address_funding_asset_lock_cost);
+    pub fn estimate_shield_from_core_fees_duffs(
+        &self,
+        platform_version: &PlatformVersion,
+    ) -> Result<(u64, u64), Box<ProtocolError>> {
         let platform_fee_duffs =
-            (platform_fee_credits / CREDITS_PER_DUFF).saturating_mul(120) / 100;
+            shield_from_core_pool_fee_credits(platform_version)?.div_ceil(CREDITS_PER_DUFF);
         let l1_tx_fee_duffs = 3_000_u64;
-        (platform_fee_duffs, l1_tx_fee_duffs)
+        Ok((platform_fee_duffs, l1_tx_fee_duffs))
+    }
+
+    /// What shielding `amount_duffs` from the Core wallet locks, and what
+    /// reaches the shielded pool once the network has taken its fee.
+    pub(crate) fn shield_from_core_funding(
+        &self,
+        amount_duffs: u64,
+        platform_version: &PlatformVersion,
+    ) -> Result<ShieldFromCoreFunding, Box<ProtocolError>> {
+        let pool_fee_credits = shield_from_core_pool_fee_credits(platform_version)?;
+        let lock_duffs = amount_duffs.saturating_add(pool_fee_credits.div_ceil(CREDITS_PER_DUFF));
+        Ok(ShieldFromCoreFunding {
+            lock_duffs,
+            shielded_credits: lock_duffs
+                .saturating_mul(CREDITS_PER_DUFF)
+                .saturating_sub(pool_fee_credits),
+        })
     }
 
     /// Estimate fee for identity update (adding/disabling keys)
@@ -500,12 +627,40 @@ impl PlatformFeeEstimator {
     }
 
     /// Estimate fee for document batch transition
+    // TODO(dashpay/platform#5383): mirrors Platform's minimum-fee floor; it is
+    // not an estimate of the charge.
     pub fn estimate_document_batch(&self, transition_count: usize) -> u64 {
         let base_fee = self
             .min_fees
             .document_batch_sub_transition
             .saturating_mul(transition_count.max(1) as u64);
         self.apply_multiplier(base_fee)
+    }
+
+    /// Balance an identity needs to register a username of `label_chars`
+    /// characters, without the community vote fee.
+    ///
+    /// Covers both registration documents of an identity's first name. Platform
+    /// accepts the second one only while the balance holds a reserve above what
+    /// it then charges, so the amount actually charged is lower than this.
+    pub fn estimate_username_registration(&self, label_chars: usize, needs_vote: bool) -> u64 {
+        let (name_bytes, bytes_per_char) = if needs_vote {
+            (
+                USERNAME_VOTED_NAME_RESERVED_BYTES,
+                USERNAME_VOTED_NAME_BYTES_PER_CHAR,
+            )
+        } else {
+            (USERNAME_NAME_RESERVED_BYTES, USERNAME_NAME_BYTES_PER_CHAR)
+        };
+        let bytes = USERNAME_FIRST_DOCUMENT_BYTES
+            .saturating_add(name_bytes)
+            .saturating_add(bytes_per_char.saturating_mul(label_chars));
+        let base_fee = self
+            .calculate_storage_fee(bytes)
+            .saturating_add(USERNAME_FIRST_DOCUMENT_PROCESSING_CREDITS);
+        self.apply_multiplier(
+            base_fee.saturating_mul(100 + USERNAME_REGISTRATION_MARGIN_PERCENT) / 100,
+        )
     }
 
     /// Estimate fee for document creation with known size.
@@ -741,6 +896,17 @@ impl PlatformFeeEstimator {
     }
 }
 
+/// Community vote fee for registering a contested username, in credits.
+///
+/// Read from the protocol's vote-resolution fund (0.2 DASH before protocol 14,
+/// 0.1 DASH from 14). Platform never returns it, whatever the vote outcome.
+pub fn contest_fee_credits(platform_version: &PlatformVersion) -> Credits {
+    platform_version
+        .fee_version
+        .vote_resolution_fund_fees
+        .contested_document_vote_resolution_fund_required_amount
+}
+
 /// Credits per DASH: 1 DASH = 10^DASH_DECIMAL_PLACES credits (100 billion).
 pub const CREDITS_PER_DASH: u64 = 10u64.pow(DASH_DECIMAL_PLACES as u32);
 
@@ -815,6 +981,63 @@ pub(crate) fn estimate_withdrawal_fee_from_transition(
     transition
         .calculate_min_required_fee(platform_version)
         .unwrap_or(0)
+}
+
+/// Fee, in credits, the network takes from a Core wallet funding before the
+/// rest reaches the shielded pool: the shielded fee for the two actions of the
+/// bundle plus the cost of processing the funding transaction. It follows the
+/// protocol version and is not scaled by the epoch fee multiplier.
+fn shield_from_core_pool_fee_credits(
+    platform_version: &PlatformVersion,
+) -> Result<u64, Box<ProtocolError>> {
+    let funding_cost_credits = platform_version
+        .dpp
+        .state_transitions
+        .identities
+        .asset_locks
+        .required_asset_lock_duff_balance_for_processing_start_for_address_funding
+        .saturating_mul(CREDITS_PER_DUFF);
+    Ok(shielded_fee_for_actions(2, platform_version)?.saturating_add(funding_cost_credits))
+}
+
+/// A shield from the Core wallet: the funding to lock, and the credits that
+/// reach the shielded pool from it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ShieldFromCoreFunding {
+    pub lock_duffs: u64,
+    pub shielded_credits: u64,
+}
+
+/// Smallest identity top-up funding, in duffs, the network accepts.
+///
+/// The network takes its fee out of the funding and refuses one that cannot
+/// cover it. That fee follows the protocol version, is not scaled by the epoch
+/// fee multiplier, and is rounded up here to whole duffs.
+pub(crate) fn identity_topup_min_funding_duffs(
+    platform_version: &PlatformVersion,
+) -> Result<u64, Box<ProtocolError>> {
+    IdentityTopUpTransition::V0(IdentityTopUpTransitionV0::default())
+        .calculate_min_required_fee(platform_version)
+        .map(|credits| credits.div_ceil(CREDITS_PER_DUFF))
+        .map_err(Box::new)
+}
+
+/// Smallest identity-creation funding, in duffs, the network accepts for an
+/// identity created with `key_count` keys.
+///
+/// Same rule as [`identity_topup_min_funding_duffs`]; the fee the network
+/// takes grows with every key the new identity starts with.
+pub(crate) fn identity_create_min_funding_duffs(
+    key_count: usize,
+    platform_version: &PlatformVersion,
+) -> Result<u64, Box<ProtocolError>> {
+    IdentityCreateTransition::V0(IdentityCreateTransitionV0 {
+        public_keys: vec![IdentityPublicKeyInCreation::V0(Default::default()); key_count],
+        ..Default::default()
+    })
+    .calculate_min_required_fee(platform_version)
+    .map(|credits| credits.div_ceil(CREDITS_PER_DUFF))
+    .map_err(Box::new)
 }
 
 /// Calculate the estimated fee for funding a Platform address from an asset lock.
@@ -1023,6 +1246,19 @@ pub fn estimate_core_l1_send_fee_duffs(num_inputs: usize, num_outputs: usize) ->
     raw_fee.saturating_add(raw_fee.saturating_mul(SAFETY_MARGIN_PERCENT) / 100)
 }
 
+/// Core transaction fee, in duffs, to allow for when `num_inputs` payments
+/// received by the wallet are spent into one funding transaction.
+///
+/// What the funding builder can lock is the spent amount less this fee, so a
+/// deposit meant to be used whole must bring it on top. Never understates
+/// what the builder charges.
+pub fn estimate_asset_lock_core_fee_duffs(num_inputs: usize) -> u64 {
+    // Sized as two outputs: the burn output and the credit output carried in
+    // the payload. A test in `wallet_backend::payments` holds this against
+    // the builder.
+    estimate_core_l1_send_fee_duffs(num_inputs, 2)
+}
+
 /// Compute the maximum spendable amount, in duffs, for a Core "Max" send:
 /// the whole balance minus the estimated L1 network fee.
 ///
@@ -1102,9 +1338,115 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_credit_transfer_estimate() {
+    fn contest_fee_follows_protocol_version() {
+        // USR-TC-005
+        let pv13 = PlatformVersion::get(13).expect("PV13");
+        let pv14 = PlatformVersion::get(14).expect("PV14");
+        assert_eq!(contest_fee_credits(pv13), 20_000_000_000);
+        assert_eq!(contest_fee_credits(pv14), 10_000_000_000);
+    }
+
+    /// Balance above the amount below which Platform refuses a transfer between
+    /// identities, as read from its engine and seen in a refusal on testnet.
+    #[test]
+    fn credit_transfer_estimate_covers_the_balance_the_network_requires() {
+        let required_above_amount = [
+            8_555_220_u64, // protocol 11
+            8_753_740,     // protocols 12 to 14
+            8_754_240,     // signed with a hashed ECDSA key
+            8_755_720,     // testnet
+            9_038_740,     // signed with a BLS key
+        ];
+        let estimate = PlatformFeeEstimator::new().estimate_credit_transfer();
+        for required in required_above_amount {
+            assert!(estimate >= required, "{estimate} is below {required}");
+            assert!(
+                estimate <= required / 100 * 115,
+                "{estimate} is far above {required}"
+            );
+        }
+    }
+
+    /// The same for a transfer to Platform addresses, by number of addresses.
+    /// Each address adds a little more once it receives 2,147,483,648 credits
+    /// or more; BLS keys add to that.
+    #[test]
+    fn credit_transfer_to_addresses_estimate_covers_the_balance_the_network_requires() {
+        let required_above_amount = [
+            (1, 17_091_200_u64), // protocol 11
+            (1, 17_329_060),     // protocols 12 to 14
+            (1, 17_331_040),     // testnet
+            (1, 17_438_660),     // a larger amount
+            (1, 17_723_660),     // a larger amount, signed with a BLS key
+            (2, 23_396_440),
+            (2, 23_615_640),
+            (2, 23_900_640),
+            (3, 29_463_820),
+            (3, 29_792_620),
+            (3, 30_077_620),
+        ];
         let estimator = PlatformFeeEstimator::new();
-        assert_eq!(estimator.estimate_credit_transfer(), 100_000);
+        for (addresses, required) in required_above_amount {
+            let estimate = estimator.estimate_credit_transfer_to_addresses(addresses);
+            assert!(
+                estimate >= required,
+                "{addresses} addresses: {estimate} is below {required}"
+            );
+            assert!(
+                estimate <= required / 100 * 115,
+                "{addresses} addresses: {estimate} is far above {required}"
+            );
+        }
+    }
+
+    #[test]
+    fn credit_transfer_estimates_follow_the_fee_multiplier() {
+        let base = PlatformFeeEstimator::new();
+        let doubled = PlatformFeeEstimator::with_fee_multiplier(2000);
+        assert_eq!(
+            doubled.estimate_credit_transfer(),
+            base.estimate_credit_transfer() * 2
+        );
+        assert_eq!(
+            doubled.estimate_credit_transfer_to_addresses(2),
+            base.estimate_credit_transfer_to_addresses(2) * 2
+        );
+    }
+
+    /// Platform refuses any transfer that leaves less than its own minimum
+    /// fee, so an estimate never falls below that minimum, whatever it becomes.
+    #[test]
+    fn credit_transfer_estimates_never_fall_below_the_minimum_fee_of_the_network() {
+        let raised = StateTransitionMinFees {
+            credit_transfer: 50_000_000,
+            credit_transfer_to_addresses: 60_000_000,
+            ..StateTransitionMinFees::default()
+        };
+        let per_address = raised.address_funds_transfer_output_cost;
+        let estimator = PlatformFeeEstimator {
+            min_fees: raised,
+            ..PlatformFeeEstimator::new()
+        };
+        assert_eq!(estimator.estimate_credit_transfer(), 50_000_000);
+        assert_eq!(
+            estimator.estimate_credit_transfer_to_addresses(1),
+            60_000_000 + per_address
+        );
+    }
+
+    /// Funding an address from the wallet is priced from the minimum fee of
+    /// the network, not from what a transfer out of an identity reserves.
+    #[test]
+    fn address_funding_from_the_wallet_keeps_its_own_estimate() {
+        let estimator = PlatformFeeEstimator::new();
+        assert_eq!(
+            estimator.estimate_address_funding_from_asset_lock_duffs(1),
+            10_000
+        );
+        assert_eq!(
+            estimator.estimate_address_funding_from_asset_lock_duffs(2),
+            18_750
+        );
     }
 
     #[test]
@@ -1112,6 +1454,87 @@ mod tests {
         let balance = (1_u64 << 53) + 17;
         assert_eq!(max_spendable_credits(balance, 11), balance - 11);
         assert_eq!(max_spendable_credits(10, 11), 0);
+    }
+
+    /// 0.000505 DASH is the "required" figure the network reports when it
+    /// refuses a smaller top-up funding under protocol 13.
+    #[test]
+    fn identity_topup_minimum_funding_is_the_fee_the_network_requires() {
+        let pv13 = PlatformVersion::get(13).expect("PV13");
+        assert_eq!(
+            identity_topup_min_funding_duffs(pv13).expect("PV13 defines the top-up fee"),
+            50_500
+        );
+    }
+
+    /// Under protocol 13 the network takes 0.00202 DASH plus 0.000065 DASH for
+    /// every key from the funding of a new identity.
+    #[test]
+    fn identity_create_minimum_funding_grows_with_the_number_of_keys() {
+        let pv13 = PlatformVersion::get(13).expect("PV13");
+        let minimum = |keys| {
+            identity_create_min_funding_duffs(keys, pv13).expect("PV13 defines the creation fee")
+        };
+        assert_eq!(minimum(1), 208_500);
+        assert_eq!(minimum(4), 228_000);
+    }
+
+    /// With the fee taken from the amount, the amount is the whole funding and
+    /// must cover the fee for one recipient: 0.00056 DASH under protocol 13.
+    #[test]
+    fn address_funding_minimum_is_the_whole_fee_when_taken_from_the_amount() {
+        let pv13 = PlatformVersion::get(13).expect("PV13");
+        assert_eq!(
+            PlatformFeeEstimator::new().address_funding_min_amount_duffs(true, pv13),
+            56_000
+        );
+    }
+
+    /// With the fee paid on top, the funding is the amount plus the estimate
+    /// (18 750 duffs), and the network requires 62 000 for two recipients.
+    #[test]
+    fn address_funding_minimum_with_change_makes_up_what_the_estimate_leaves_short() {
+        let pv13 = PlatformVersion::get(13).expect("PV13");
+        assert_eq!(
+            PlatformFeeEstimator::new().address_funding_min_amount_duffs(false, pv13),
+            43_250
+        );
+    }
+
+    /// Whatever the fee multiplier, an amount at the minimum yields a funding
+    /// the network accepts for two recipients, and one duff less does not
+    /// unless the smallest named amount is what binds.
+    #[test]
+    fn address_funding_with_change_at_the_minimum_funds_what_the_network_requires() {
+        let pv13 = PlatformVersion::get(13).expect("PV13");
+        let required_credits =
+            calculate_address_funding_from_asset_lock_min_required_fee(0, 2, pv13);
+        let smallest_output_duffs = pv13
+            .dpp
+            .state_transitions
+            .address_funds
+            .min_output_amount
+            .div_ceil(CREDITS_PER_DUFF);
+        for multiplier in [1000, 1500, 2000, 3000, 4000, 10_000] {
+            let estimator = PlatformFeeEstimator::with_fee_multiplier(multiplier);
+            let minimum = estimator.address_funding_min_amount_duffs(false, pv13);
+            let funding = |amount: u64| {
+                (amount + estimator.estimate_address_funding_from_asset_lock_duffs(2))
+                    * CREDITS_PER_DUFF
+            };
+            assert!(
+                funding(minimum) >= required_credits,
+                "multiplier {multiplier}: minimum {minimum} leaves the funding short"
+            );
+            assert!(
+                minimum >= smallest_output_duffs,
+                "multiplier {multiplier}: minimum {minimum} is below the smallest named amount"
+            );
+            assert!(
+                minimum == smallest_output_duffs || funding(minimum - 1) < required_credits,
+                "multiplier {multiplier}: minimum {minimum} refuses an amount the network accepts"
+            );
+        }
     }
 
     #[test]
@@ -1246,6 +1669,70 @@ mod tests {
         // 3 documents - base fee only
         let fee = estimator.estimate_document_batch(3);
         assert_eq!(fee, 3 * 100_000);
+    }
+
+    /// Registering a 29-character name for a newly created identity was
+    /// charged 75,646,740 credits on testnet. The estimate must cover that
+    /// without being several times larger.
+    #[test]
+    fn username_registration_estimate_covers_the_charge_measured_on_testnet() {
+        const CHARGED_ON_TESTNET: u64 = 75_646_740;
+        let estimate = PlatformFeeEstimator::new().estimate_username_registration(29, false);
+        assert!(estimate >= CHARGED_ON_TESTNET, "{estimate}");
+        assert!(estimate <= 2 * CHARGED_ON_TESTNET, "{estimate}");
+    }
+
+    /// Platform accepts the second document only while the balance covers a
+    /// reserve well above what it then charges. These are the smallest balances
+    /// its engine (protocol 14) accepted for both documents of an identity's
+    /// first name, without the community vote fee. The estimate must reach
+    /// each one and stay within 15% of it.
+    #[test]
+    fn username_registration_estimate_covers_the_balance_the_network_requires() {
+        let smallest_accepted_balance = [
+            (6, false, 115_965_270_u64),
+            (29, false, 118_309_783),
+            (63, false, 122_264_862),
+            (3, true, 156_187_414),
+            (5, true, 156_750_678),
+            (19, true, 158_495_902),
+        ];
+        let estimator = PlatformFeeEstimator::new();
+        for (label_chars, needs_vote, required) in smallest_accepted_balance {
+            let estimate = estimator.estimate_username_registration(label_chars, needs_vote);
+            assert!(
+                estimate >= required,
+                "{label_chars} characters, vote {needs_vote}: {estimate} is below {required}"
+            );
+            assert!(
+                estimate <= required / 100 * 115,
+                "{label_chars} characters, vote {needs_vote}: {estimate} is far above {required}"
+            );
+        }
+    }
+
+    /// On testnet the network refused the name document below these balances,
+    /// counting what the first document had cost: 32,090,520 + 83,627,060 for
+    /// 20 characters and 32,400,260 + 88,397,980 for 63.
+    #[test]
+    fn username_registration_estimate_covers_the_balance_testnet_required() {
+        let estimator = PlatformFeeEstimator::new();
+        for (label_chars, required) in [(20, 115_717_580_u64), (63, 120_798_240)] {
+            let estimate = estimator.estimate_username_registration(label_chars, false);
+            assert!(estimate >= required, "{label_chars}: {estimate}");
+            assert!(
+                estimate <= required / 100 * 115,
+                "{label_chars}: {estimate}"
+            );
+        }
+    }
+
+    #[test]
+    fn username_registration_estimate_follows_the_fee_multiplier() {
+        let base = PlatformFeeEstimator::new().estimate_username_registration(29, false);
+        let doubled = PlatformFeeEstimator::with_fee_multiplier(2000)
+            .estimate_username_registration(29, false);
+        assert_eq!(doubled, 2 * base);
     }
 
     #[test]
@@ -1388,6 +1875,134 @@ mod tests {
         assert_eq!(core_max_send_reserve_duffs(fee, 1, 1), None);
         assert_eq!(core_max_send_reserve_duffs(0, 1, 1), None);
         assert_eq!(core_max_send_reserve_duffs(fee + 1, 1, 1), Some(fee));
+    }
+
+    /// What the network takes from a Core wallet funding that is shielded, by
+    /// the platform's own functions: the shielded fee for the two actions of
+    /// the bundle, plus the cost of processing the funding transaction.
+    fn network_shield_from_core_fee_credits(platform_version: &PlatformVersion) -> u64 {
+        use dash_sdk::dpp::shielded::compute_minimum_shielded_fee;
+        use dash_sdk::dpp::state_transition::shield_from_asset_lock_transition::ShieldFromAssetLockTransition;
+        use dash_sdk::dpp::state_transition::shield_from_asset_lock_transition::v0::ShieldFromAssetLockTransitionV0;
+
+        let funding_cost = ShieldFromAssetLockTransition::V0(ShieldFromAssetLockTransitionV0 {
+            asset_lock_proof: AssetLockProof::default(),
+            actions: Vec::new(),
+            value_balance: 1,
+            anchor: [0; 32],
+            proof: Vec::new(),
+            binding_signature: [0; 64],
+            surplus_output: None,
+            signature: Default::default(),
+        })
+        .calculate_min_required_fee(platform_version)
+        .expect("funding cost");
+        compute_minimum_shielded_fee(2, platform_version).expect("shielded fee") + funding_cost
+    }
+
+    /// Protocol versions that know the shield from the Core wallet, with the
+    /// fee the network takes under each, in credits. Under 12 and 13 the fee is
+    /// not a whole number of duffs; under 14 it is.
+    const SHIELD_FROM_CORE_FEE_BY_PROTOCOL: [(u32, u64); 3] =
+        [(12, 212_851_200), (13, 212_851_200), (14, 164_140_000)];
+
+    /// The fee added to a shield from the Core wallet must be the fee the
+    /// network takes, rounded up to whole duffs — not less, and not padded.
+    #[test]
+    fn shield_from_core_fee_is_what_the_network_takes() {
+        for (protocol, fee_credits) in SHIELD_FROM_CORE_FEE_BY_PROTOCOL {
+            let platform_version = PlatformVersion::get(protocol).expect("known protocol");
+            let network_fee_credits = network_shield_from_core_fee_credits(platform_version);
+            assert_eq!(network_fee_credits, fee_credits, "protocol {protocol}");
+            for multiplier in [1000, 3000] {
+                let (fee_duffs, _) = PlatformFeeEstimator::with_fee_multiplier(multiplier)
+                    .estimate_shield_from_core_fees_duffs(platform_version)
+                    .expect("known version");
+                assert_eq!(
+                    fee_duffs,
+                    network_fee_credits.div_ceil(CREDITS_PER_DUFF),
+                    "protocol {protocol}, multiplier {multiplier}: the network takes \
+                     {network_fee_credits} credits"
+                );
+            }
+        }
+    }
+
+    /// The network shields what is left of the funding after its fee. That
+    /// must be the entered amount (plus what rounding the fee up to whole
+    /// duffs adds), and it is the amount to report as shielded.
+    #[test]
+    fn shield_from_core_delivers_and_reports_the_entered_amount() {
+        for (protocol, _) in SHIELD_FROM_CORE_FEE_BY_PROTOCOL {
+            let platform_version = PlatformVersion::get(protocol).expect("known protocol");
+            let network_fee_credits = network_shield_from_core_fee_credits(platform_version);
+            for amount_duffs in [1, 100_000, 100_000_000] {
+                let funding = PlatformFeeEstimator::new()
+                    .shield_from_core_funding(amount_duffs, platform_version)
+                    .expect("known version");
+                let delivered_credits = (funding.lock_duffs * CREDITS_PER_DUFF)
+                    .checked_sub(network_fee_credits)
+                    .filter(|delivered| *delivered > 0)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "protocol {protocol}, {amount_duffs} duffs: a funding of {} duffs \
+                             does not cover the network fee of {network_fee_credits} credits, \
+                             so nothing is shielded",
+                            funding.lock_duffs
+                        )
+                    });
+                let entered_credits = amount_duffs * CREDITS_PER_DUFF;
+                assert!(
+                    (entered_credits..entered_credits + CREDITS_PER_DUFF)
+                        .contains(&delivered_credits),
+                    "protocol {protocol}, {amount_duffs} duffs: {delivered_credits} credits are \
+                     shielded"
+                );
+                assert_eq!(
+                    funding.shielded_credits, delivered_credits,
+                    "protocol {protocol}, {amount_duffs} duffs: the reported amount must be \
+                     what is shielded"
+                );
+            }
+        }
+    }
+
+    /// Rounding the fee up to whole duffs shields a little more than was
+    /// entered wherever the fee is not a whole number of duffs. The reported
+    /// amount carries that remainder; the entered amount would understate it.
+    #[test]
+    fn shield_from_core_reports_the_remainder_of_rounding_the_fee_up() {
+        for (protocol, remainder_credits) in [(12, 800), (13, 800), (14, 0)] {
+            let platform_version = PlatformVersion::get(protocol).expect("known protocol");
+            for amount_duffs in [1, 100_000, 100_000_000] {
+                let funding = PlatformFeeEstimator::new()
+                    .shield_from_core_funding(amount_duffs, platform_version)
+                    .expect("known version");
+                assert_eq!(
+                    funding.shielded_credits,
+                    amount_duffs * CREDITS_PER_DUFF + remainder_credits,
+                    "protocol {protocol}, {amount_duffs} duffs"
+                );
+            }
+        }
+    }
+
+    /// A fee that cannot be read must stop the shield, not default to a guess.
+    #[test]
+    fn shield_from_core_fee_is_unavailable_for_an_unknown_fee_version() {
+        let mut platform_version = PlatformVersion::latest().clone();
+        platform_version.dpp.methods.compute_minimum_shielded_fee = 99;
+        let estimator = PlatformFeeEstimator::new();
+        assert!(
+            estimator
+                .estimate_shield_from_core_fees_duffs(&platform_version)
+                .is_err()
+        );
+        assert!(
+            estimator
+                .shield_from_core_funding(100_000, &platform_version)
+                .is_err()
+        );
     }
 
     #[test]

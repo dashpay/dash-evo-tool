@@ -3,7 +3,7 @@
 use super::*;
 
 impl AppContext {
-    /// Migrate stored identity keys under each identity's record lock.
+    /// Migrate secrets and normalize legacy public metadata under each identity's record lock.
     /// Failed secret writes leave the legacy blob intact for the next preparation.
     pub(crate) fn migrate_local_identity_keys_to_vault(&self) -> Result<(), TaskError> {
         let kv = self.det_kv()?;
@@ -51,6 +51,15 @@ impl AppContext {
                         .map_err(identity_err)
                 },
             )?;
+            // Old HASH160 snapshots carried the compressed public key instead
+            // of its hash. Repair metadata only after resident secrets are gone.
+            if !qi.private_keys.has_plaintext_for_vault()
+                && qi.private_keys.normalize_legacy_hash160_keys()
+            {
+                stored.qi_bytes = qi.to_bytes();
+                kv.put(DetScope::Identity(&id), IDENTITY_KEY, &stored)
+                    .map_err(identity_err)?;
+            }
         }
         Ok(())
     }

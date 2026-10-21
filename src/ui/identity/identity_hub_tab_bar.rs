@@ -1,8 +1,8 @@
 //! Horizontal tab bar for the unified Identities hub.
 //!
-//! Renders the four top-level tabs — `Home`, `Contacts`, `Activity`, `Settings`
+//! Renders the three top-level tabs — `Home`, `Contacts`, `Profile`
 //! — as a single-row, selectable button strip that sits directly beneath the
-//! breadcrumb row on every hub tab. The selected tab uses the project's
+//! identity summary on every hub tab. The selected tab uses the project's
 //! `DashColors::DASH_BLUE` accent fill; unselected tabs use the transparent /
 //! border-light treatment shared with the existing subscreen chooser panels.
 //!

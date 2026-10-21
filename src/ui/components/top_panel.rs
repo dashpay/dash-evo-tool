@@ -1,6 +1,7 @@
 use crate::app::{AppAction, DesiredAppAction};
 use crate::context::AppContext;
 use crate::context::connection_status::OverallConnectionState;
+use crate::ui::components::action_menu::show_action_menu;
 use crate::ui::components::global_nav_switcher::{self, GlobalNavEffect};
 use crate::ui::state::global_nav::{PageNavSpec, PillConsumption};
 use crate::ui::state::hub_selection::HubSelection;
@@ -221,39 +222,29 @@ fn render_top_island(
                                 if !doc_actions.is_empty() {
                                     ui.add_space(3.0);
 
-                                    let resp = ComponentStyles::add_toolbar_button(
+                                    let resp = ComponentStyles::add_toolbar_menu_button(
                                         ui,
                                         "Documents",
                                         network_accent,
                                     );
                                     let popup_id = ui.make_persistent_id("docs_popup");
 
-                                    let dark_mode = ui.style().visuals.dark_mode;
-                                    egui::Popup::new(
-                                        popup_id,
-                                        ui.ctx().clone(),
-                                        &resp,
-                                        resp.layer_id,
-                                    )
-                                    .open_memory(
-                                        resp.clicked().then_some(egui::SetOpenCommand::Toggle),
-                                    )
-                                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                                    .frame(
-                                        egui::Frame::popup(ui.style())
-                                            .fill(DashColors::popup_fill(dark_mode)),
-                                    )
-                                    .show(|ui| {
-                                        ui.set_min_width(150.0);
-                                        for (text, da) in doc_actions {
-                                            let btn = egui::Button::new(text)
-                                                .min_size(egui::vec2(ui.available_width(), 0.0));
-                                            if ComponentStyles::add_button(ui, btn).clicked() {
-                                                action = da.create_action(app_context);
-                                                ui.close();
-                                            }
-                                        }
-                                    });
+                                    action |= show_action_menu(
+                                        ui,
+                                        app_context,
+                                        egui::Popup::new(
+                                            popup_id,
+                                            ui.ctx().clone(),
+                                            &resp,
+                                            resp.layer_id,
+                                        )
+                                        .open_memory(
+                                            resp.clicked().then_some(egui::SetOpenCommand::Toggle),
+                                        ),
+                                        doc_actions
+                                            .iter()
+                                            .map(|(label, action)| (*label, action, true, "")),
+                                    );
                                 }
 
                                 // Grouped Contracts menu
@@ -261,96 +252,77 @@ fn render_top_island(
                                     ui.add_space(3.0);
 
                                     let popup_id = ui.auto_id_with("contracts_popup");
-                                    let resp = ComponentStyles::add_toolbar_button(
+                                    let resp = ComponentStyles::add_toolbar_menu_button(
                                         ui,
                                         "Contracts",
                                         network_accent,
                                     );
 
-                                    let dark_mode = ui.style().visuals.dark_mode;
-                                    egui::Popup::new(
-                                        popup_id,
-                                        ui.ctx().clone(),
-                                        &resp,
-                                        resp.layer_id,
-                                    )
-                                    .open_memory(
-                                        resp.clicked().then_some(egui::SetOpenCommand::Toggle),
-                                    )
-                                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                                    .frame(
-                                        egui::Frame::popup(ui.style())
-                                            .fill(DashColors::popup_fill(dark_mode)),
-                                    )
-                                    .show(|ui| {
-                                        ui.set_min_width(150.0);
-                                        for (text, ca) in contract_actions {
-                                            let btn = egui::Button::new(text)
-                                                .min_size(egui::vec2(ui.available_width(), 0.0));
-                                            if ComponentStyles::add_button(ui, btn).clicked() {
-                                                action = ca.create_action(app_context);
-                                                ui.close();
-                                            }
-                                        }
-                                    });
+                                    action |= show_action_menu(
+                                        ui,
+                                        app_context,
+                                        egui::Popup::new(
+                                            popup_id,
+                                            ui.ctx().clone(),
+                                            &resp,
+                                            resp.layer_id,
+                                        )
+                                        .open_memory(
+                                            resp.clicked().then_some(egui::SetOpenCommand::Toggle),
+                                        ),
+                                        contract_actions
+                                            .iter()
+                                            .map(|(label, action)| (*label, action, true, "")),
+                                    );
                                 }
 
                                 // Render other buttons normally
                                 for (text, btn_act) in other_actions.into_iter().rev() {
                                     ui.add_space(3.0);
-                                    let label = if matches!(btn_act, DesiredAppAction::Menu(_)) {
-                                        format!("{text} ▾")
+                                    let response = if matches!(btn_act, DesiredAppAction::Menu(_)) {
+                                        ComponentStyles::add_toolbar_menu_button(
+                                            ui,
+                                            text,
+                                            network_accent,
+                                        )
                                     } else {
-                                        text.to_owned()
+                                        ComponentStyles::add_toolbar_button(
+                                            ui,
+                                            text,
+                                            network_accent,
+                                        )
                                     };
-                                    let response = ComponentStyles::add_toolbar_button(
-                                        ui,
-                                        &label,
-                                        network_accent,
-                                    );
                                     if let DesiredAppAction::Menu(items) = btn_act {
-                                        egui::Popup::new(
-                                            ui.make_persistent_id(text),
-                                            ui.ctx().clone(),
-                                            &response,
-                                            response.layer_id,
-                                        )
-                                        .open_memory(
-                                            response
-                                                .clicked()
-                                                .then_some(egui::SetOpenCommand::Toggle),
-                                        )
-                                        .close_behavior(
-                                            egui::PopupCloseBehavior::CloseOnClickOutside,
-                                        )
-                                        .frame(
-                                            egui::Frame::popup(ui.style()).fill(
-                                                DashColors::popup_fill(ui.visuals().dark_mode),
+                                        action |= show_action_menu(
+                                            ui,
+                                            app_context,
+                                            egui::Popup::new(
+                                                ui.make_persistent_id(text),
+                                                ui.ctx().clone(),
+                                                &response,
+                                                response.layer_id,
+                                            )
+                                            .open_memory(
+                                                response
+                                                    .clicked()
+                                                    .then_some(egui::SetOpenCommand::Toggle),
                                             ),
-                                        )
-                                        .show(|ui| {
-                                            for item in items {
-                                                let clicked = ui
-                                                    .add_enabled_ui(item.enabled, |ui| {
-                                                        ComponentStyles::add_button(
-                                                            ui,
-                                                            egui::Button::new(item.label),
-                                                        )
-                                                    })
-                                                    .inner
-                                                    .clickable_tooltip(item.tooltip)
-                                                    .disabled_tooltip(item.tooltip)
-                                                    .clicked();
-                                                if clicked {
-                                                    action = item.action.create_action(app_context);
-                                                    ui.close();
-                                                }
-                                            }
-                                        });
+                                            items.iter().map(|item| {
+                                                (
+                                                    item.label,
+                                                    &item.action,
+                                                    item.enabled,
+                                                    item.tooltip,
+                                                )
+                                            }),
+                                        );
                                     } else if response.clicked() {
                                         action = btn_act.create_action(app_context);
                                     }
                                 }
+
+                                ui.add_space(3.0);
+                                action |= crate::ui::dpns::attention_chip::show(ui, app_context);
                             },
                         );
                     });
@@ -424,6 +396,9 @@ pub fn apply_global_nav_effect(
 ) -> AppAction {
     match effect {
         GlobalNavEffect::None => AppAction::None,
+        GlobalNavEffect::NavigateToRoot(RootScreenType::RootScreenIdentityHub) => {
+            AppAction::OpenIdentityPicker
+        }
         GlobalNavEffect::NavigateToRoot(target) => AppAction::SetMainScreen(target),
         // Silent app-scoped write, NO forced navigation (FR-GLOBAL-NAV-2 rule
         // 1). `set_selected_hd_wallet` also reconciles the app-global *identity*
@@ -432,6 +407,10 @@ pub fn apply_global_nav_effect(
         // intentional; combined with the resolution-layer MN/Evonode filter it
         // must never reconcile onto a masternode/evonode identity — the FR-6
         // boundary is enforced there, not re-checked here.
+        GlobalNavEffect::ClearWallet => {
+            app_context.set_selected_hd_wallet(None);
+            AppAction::None
+        }
         GlobalNavEffect::SwitchWallet(hash) => {
             app_context.set_selected_hd_wallet(Some(hash));
             AppAction::None
@@ -446,7 +425,7 @@ pub fn apply_global_nav_effect(
         GlobalNavEffect::AddWallet => {
             AppAction::SetMainScreen(RootScreenType::RootScreenWalletsBalances)
         }
-        GlobalNavEffect::AddIdentityCreate | GlobalNavEffect::CreateTestIdentities => {
+        GlobalNavEffect::AddIdentityCreate => {
             AppAction::AddScreen(ScreenType::AddNewIdentity.create_screen(app_context))
         }
         GlobalNavEffect::AddIdentityLoad => {

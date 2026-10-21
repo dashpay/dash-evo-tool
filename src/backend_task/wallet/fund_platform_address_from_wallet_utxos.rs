@@ -1,5 +1,5 @@
 use crate::backend_task::BackendTaskSuccessResult;
-use crate::backend_task::error::TaskError;
+use crate::backend_task::error::{TaskError, ensure_funding_covers_network_fee};
 use crate::context::AppContext;
 use crate::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::address_funds::AddressFundsFeeStrategy;
@@ -74,6 +74,15 @@ impl AppContext {
         destination: PlatformAddress,
         fee_deduct_from_output: bool,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
+        // Before any wallet work: the network refuses a funding below its
+        // fee only after the funds have left the wallet.
+        ensure_funding_covers_network_fee(
+            amount,
+            Ok(self.fee_estimator().address_funding_min_amount_duffs(
+                fee_deduct_from_output,
+                self.sdk_platform_version(),
+            )),
+        )?;
         let backend = self.wallet_backend()?;
         let destination_in_pool = backend
             .platform_address_in_pool(&seed_hash, &destination)

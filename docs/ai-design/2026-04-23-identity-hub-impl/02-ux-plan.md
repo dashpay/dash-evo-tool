@@ -33,7 +33,7 @@ entry (tt-1), developer-mode chip footer hidden for Alex / Priya, shown for Jord
 **Interaction patterns**:
 - Hero card avatar is a `StyledCard` with gradient background overriding the default
   surface.
-- Quick-actions row uses three `StyledButton::primary` instances with equal width.
+- Quick-actions row uses three `StyledButton::new` instances with equal width.
 - Secondary-actions row uses three `StyledButton::ghost` instances.
 - Onboarding checklist dismiss button uses tt-20.
 - Recent activity preview: each row is a new `ActivityRow` component with compact 48px

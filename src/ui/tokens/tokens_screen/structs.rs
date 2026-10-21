@@ -210,7 +210,7 @@ pub struct IdentityTokenMaybeBalanceWithActions {
     pub token_alias: String,
     pub token_config: TokenConfiguration,
     pub identity_id: Identifier,
-    pub identity_alias: Option<String>,
+    pub identity_name: Option<String>,
     pub balance: Option<TokenAmount>,
     pub estimated_unclaimed_rewards: Option<TokenAmount>,
     pub data_contract_id: Identifier,

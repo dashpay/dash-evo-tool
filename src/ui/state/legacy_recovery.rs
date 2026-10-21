@@ -21,6 +21,7 @@ use crate::model::legacy_recovery::{RecoveryItem, RecoveryPlan};
 use crate::ui::MessageType;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::legacy_recovery_section::completion_message;
+use crate::ui::state::PendingRequest;
 
 /// Where one identity's recovery offer currently stands.
 enum FetchState {
@@ -48,7 +49,7 @@ enum FetchState {
 pub struct LegacyRecoveryState {
     identity_id: Identifier,
     network: Network,
-    pending_context: Option<BackendTaskContext>,
+    pending_context: PendingRequest,
     state: FetchState,
 }
 
@@ -69,7 +70,7 @@ impl LegacyRecoveryState {
             identity_id,
             state,
             network: app_context.network,
-            pending_context: None,
+            pending_context: PendingRequest::default(),
         }
     }
 
@@ -137,7 +138,7 @@ impl LegacyRecoveryState {
             network: self.network,
             operation: Box::new(BackendTaskContext::for_dispatch(&task)),
         };
-        self.pending_context = Some(context.clone());
+        self.pending_context.track(context.clone());
         (task, context)
     }
 
@@ -148,9 +149,10 @@ impl LegacyRecoveryState {
         {
             return false;
         }
-        match &self.pending_context {
-            Some(pending) => pending == context,
-            None => completed,
+        if self.pending_context.is_pending() {
+            self.pending_context.owns(context)
+        } else {
+            completed
         }
     }
 
@@ -162,7 +164,7 @@ impl LegacyRecoveryState {
             && !matches!(self.state, FetchState::Restoring(_) | FetchState::Retry(_))
         {
             self.state = FetchState::Offered(plan);
-            self.pending_context = None;
+            self.pending_context.clear();
         }
     }
 
@@ -191,7 +193,7 @@ impl LegacyRecoveryState {
 
     /// Re-arm detection after a restore completes, except on fresh installs.
     pub fn completed(&mut self) {
-        self.pending_context = None;
+        self.pending_context.clear();
         if !matches!(self.state, FetchState::Unavailable) {
             self.state = FetchState::NotRequested;
         }
@@ -216,7 +218,7 @@ impl LegacyRecoveryState {
         if identity_id != self.identity_id {
             return false;
         }
-        self.pending_context = None;
+        self.pending_context.clear();
         self.state = match std::mem::replace(&mut self.state, FetchState::Failed) {
             FetchState::Restoring(plan) => FetchState::Retry(plan),
             FetchState::Checking => FetchState::Failed,
@@ -279,7 +281,7 @@ impl LegacyRecoveryState {
     /// restore on any error that merely landed while it was visible would
     /// re-enable Restore while the original task still held the identity.
     pub fn absorb_error(&mut self, context: &BackendTaskContext) -> bool {
-        if self.pending_context.as_ref() != Some(context) {
+        if !self.pending_context.owns(context) {
             return false;
         }
         context
@@ -292,7 +294,8 @@ impl LegacyRecoveryState {
 impl LegacyRecoveryState {
     pub(crate) fn pending_context_for_test(&self) -> BackendTaskContext {
         self.pending_context
-            .clone()
+            .context()
+            .cloned()
             .expect("pending recovery operation")
     }
     /// A state as it stands on an install that does have a previous-version
@@ -301,7 +304,7 @@ impl LegacyRecoveryState {
         Self {
             identity_id,
             network: Network::Testnet,
-            pending_context: None,
+            pending_context: PendingRequest::default(),
             state: FetchState::NotRequested,
         }
     }
@@ -311,7 +314,7 @@ impl LegacyRecoveryState {
         Self {
             identity_id,
             network: Network::Testnet,
-            pending_context: None,
+            pending_context: PendingRequest::default(),
             state: FetchState::Unavailable,
         }
     }

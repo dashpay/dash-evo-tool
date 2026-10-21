@@ -611,8 +611,12 @@ held from the record alone, so restoring a key the node rotated away from — or
 a voter link with no key behind it — flips the role to "present", retires both
 the recovery offer and the missing-voter remedy, and surfaces later as a
 rejected transaction. Failing candidates go to `RecoveryPlan::excluded` with
-their own reasons (`KeyNoLongerOnIdentity`, `VoterLinkWithoutVotingKey`), the
-same treatment §3.2 already gave the legacy `Encrypted` format. This is the
+their own reasons (`KeyNoLongerOnIdentity`, `WalletNotOnDevice`,
+`VoterLinkWithoutVotingKey`), the same treatment §3.2 already gave the legacy
+`Encrypted` format. A key whose only fault is a wallet this install does not
+hold gets `WalletNotOnDevice`, so the user is told to bring the wallet back; a
+key the identity no longer uses keeps `KeyNoLongerOnIdentity` even when its
+wallet is missing too, since the wallet would not help. This is the
 check the manual "type the WIF" path (`verify_voting_key_exists_on_identity` and
 friends) has always enforced; restoring should not be a way around it.
 

@@ -16,6 +16,7 @@ use crate::ui::components::wallet_unlock_popup::{
 };
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ResultBannerExt};
 use crate::ui::identity::get_selected_wallet;
+use crate::ui::state::PendingRequest;
 use crate::ui::state::derived_key_chooser::{ChooserStatus, DerivedKeyChooser};
 use crate::ui::theme::{DashColors, ResponseExt};
 use crate::ui::{MessageType, ScreenLike};
@@ -111,7 +112,7 @@ pub struct AddKeyScreen {
     /// settle the add: an add of the same identity left running by a closed
     /// Add Key screen reaches this screen too, since results go to the
     /// visible screen.
-    add_dispatch: Option<BackendTaskContext>,
+    add_dispatch: PendingRequest,
     /// The slot chooser was rendered this frame. A slot load (which may open
     /// the wallet's secret prompt) is dispatched only then — never while the
     /// wallet-locked notice or the success page hides the chooser.
@@ -157,7 +158,7 @@ impl AddKeyScreen {
                 .with_char_limit(64)
                 .with_monospace(),
             submitted_private_key: submitted_private_key_field(),
-            add_dispatch: None,
+            add_dispatch: PendingRequest::default(),
             key_type: KeyType::ECDSA_SECP256K1,
             purpose: Purpose::AUTHENTICATION,
             security_level: SecurityLevel::HIGH,
@@ -208,7 +209,7 @@ impl AddKeyScreen {
                 .with_char_limit(64)
                 .with_monospace(),
             submitted_private_key: submitted_private_key_field(),
-            add_dispatch: None,
+            add_dispatch: PendingRequest::default(),
             key_type: KeyType::ECDSA_SECP256K1,
             purpose: Purpose::ENCRYPTION,
             security_level: SecurityLevel::MEDIUM,
@@ -259,7 +260,7 @@ impl AddKeyScreen {
                 .with_char_limit(64)
                 .with_monospace(),
             submitted_private_key: submitted_private_key_field(),
-            add_dispatch: None,
+            add_dispatch: PendingRequest::default(),
             key_type: KeyType::ECDSA_SECP256K1,
             purpose: Purpose::DECRYPTION,
             security_level: SecurityLevel::MEDIUM,
@@ -544,19 +545,13 @@ impl AddKeyScreen {
     /// Dispatches `task` as this screen's add, bound to a fresh dispatch
     /// context that alone settles it.
     fn dispatch_add(&mut self, task: BackendTask) -> AppAction {
-        let context = BackendTaskContext::for_dispatch(&task);
-        self.add_dispatch = Some(context.clone());
-        AppAction::BackendTaskWithContext { task, context }
+        self.add_dispatch.dispatch(task)
     }
 
     /// Whether `context` is this screen's in-flight add; takes it, so each
     /// dispatch settles the add once.
     fn take_own_add(&mut self, context: &BackendTaskContext) -> bool {
-        let own = self.add_dispatch.as_ref() == Some(context);
-        if own {
-            self.add_dispatch = None;
-        }
-        own
+        self.add_dispatch.settle(context).is_some()
     }
 
     /// Why the Add Key button is disabled, or `None` when it is enabled.
@@ -865,7 +860,7 @@ impl ScreenLike for AddKeyScreen {
             ui,
             &self.app_context,
             vec![
-                ("Identities", AppAction::GoToMainScreen),
+                ("Identities", AppAction::OpenIdentityPicker),
                 ("Add Key", AppAction::None),
             ],
             vec![],

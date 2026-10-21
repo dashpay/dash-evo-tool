@@ -8,8 +8,11 @@
 
 use crate::backend_task::dashpay::ContactData;
 use crate::model::dashpay::contact_request_recipient;
-use crate::ui::identity::identity_pill::display_label;
+use crate::model::identity_name::display_label as profile_display_label;
+use crate::model::qualified_identity::QualifiedIdentity;
+use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::document::DocumentV0Getters;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Document, Identifier};
 use std::collections::HashMap;
@@ -49,6 +52,9 @@ pub struct ContactsState {
     outgoing: Vec<ContactRequestEntry>,
     /// Established contacts the user has not hidden.
     contacts: Vec<ContactData>,
+    /// Whether `contacts` holds a loaded list, not the empty one before the
+    /// first load lands.
+    contacts_known: bool,
     /// Established contacts flagged `display_hidden`, kept aside so the tab can
     /// offer a way back. Declining or cancelling a request hides that person,
     /// so without this list a contact could only be recovered from the legacy
@@ -65,6 +71,8 @@ pub struct ContactsState {
     /// A matching task outcome, abandoned confirmation, or reset after
     /// [`REQUEST_IN_FLIGHT_TIMEOUT`] releases the guard.
     in_flight: HashMap<Identifier, Instant>,
+    /// The identity the lists belong to, once a renderer has bound them.
+    owner: Option<(Network, Identifier)>,
 }
 
 impl ContactsState {
@@ -84,6 +92,7 @@ impl ContactsState {
         self.incoming.clear();
         self.outgoing.clear();
         self.contacts.clear();
+        self.contacts_known = false;
         self.hidden.clear();
         self.show_hidden = false;
         self.search.clear();
@@ -93,9 +102,28 @@ impl ContactsState {
         });
     }
 
+    /// Whether the lists have not been asked for since the load was last armed.
+    pub fn load_is_due(&self) -> bool {
+        !self.load_requested
+    }
+
     /// Reset identity-scoped view data while retaining live paid-action guards.
     pub fn reset_for_identity_change(&mut self) {
         self.reset();
+    }
+
+    /// Bind the lists to the identity on screen. The selection can change
+    /// without the hub hearing of it, so every renderer calls this before it
+    /// reads or loads them: lists of another identity are dropped and the load
+    /// re-armed, the same identity keeps its own. Paid-action guards are keyed
+    /// by request, not by identity, and outlive the change — a request both
+    /// identities can see stays guarded while its action runs.
+    pub fn reconcile_owner(&mut self, identity: &QualifiedIdentity) {
+        let owner = Some((identity.network, identity.identity.id()));
+        if self.owner != owner {
+            self.reset_for_identity_change();
+            self.owner = owner;
+        }
     }
 
     /// Re-arm the load without clearing what is already on screen. Used after a
@@ -161,6 +189,12 @@ impl ContactsState {
         let (hidden, visible) = contacts.into_iter().partition(|c| c.is_hidden);
         self.contacts = visible;
         self.hidden = hidden;
+        self.contacts_known = true;
+    }
+
+    /// Whether the established-contact list has been loaded for this identity.
+    pub fn contacts_known(&self) -> bool {
+        self.contacts_known
     }
 
     /// Number of established contacts, before search filtering. Drives the
@@ -171,11 +205,15 @@ impl ContactsState {
 
     /// Contacts matching the current search query, in list order. An empty or
     /// whitespace-only query matches every contact.
-    pub fn filtered_contacts(&self) -> Vec<&ContactData> {
+    pub fn matching_contacts(&self) -> impl Iterator<Item = &ContactData> {
         self.contacts
             .iter()
             .filter(|c| matches_contact_search((*c).into(), &self.search))
-            .collect()
+    }
+
+    /// All of [`Self::matching_contacts`], for a caller that needs their number.
+    pub fn filtered_contacts(&self) -> Vec<&ContactData> {
+        self.matching_contacts().collect()
     }
 
     /// Established contacts currently flagged hidden. Never search-filtered:
@@ -300,10 +338,19 @@ pub fn matches_contact_search(fields: ContactSearchFields<'_>, query: &str) -> b
             .contains(&needle)
 }
 
-/// Best label for a contact row. Delegates to [`display_label`], the one
-/// resolver for the hub-wide priority rule (local nickname → DashPay display
-/// name → DPNS username → shortened identity ID), so a contact row and an
-/// identity pill can never disagree on what to call the same identity.
+fn display_label(
+    nickname: Option<&str>,
+    display_name: Option<&str>,
+    username: Option<&str>,
+    id: &str,
+) -> String {
+    let name = nickname
+        .filter(|name| !name.trim().is_empty())
+        .or(display_name);
+    profile_display_label(name, username, id)
+}
+
+/// Best contact label, preserving the contact's personal nickname.
 pub fn contact_label(contact: &ContactData) -> String {
     display_label(
         contact.nickname.as_deref(),

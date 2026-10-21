@@ -12,6 +12,9 @@ use crate::backend_task::wallet::WalletTask;
 use crate::context::AppContext;
 use crate::context::identity_load_registry::IdentityLoadToken;
 use crate::model::masternode_input::decode_identity_id;
+use crate::model::dpns_voting::{
+    DpnsScheduledVoteClearOutcome, DpnsScheduledVoteKey, DpnsVoteOperationId, DpnsVoteTargetKey,
+};
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -31,7 +34,6 @@ use dash_sdk::dpp::group::group_action::GroupAction;
 use dash_sdk::dpp::prelude::DataContract;
 use dash_sdk::dpp::state_transition::StateTransition;
 use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
-use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::platform::{Document, DocumentQuery, Identifier};
 use dash_sdk::query_types::{Documents, IndexMap};
@@ -192,6 +194,7 @@ fn is_wallet_touching(task: &BackendTask) -> bool {
             | BackendTask::IdentityTask(_)
             | BackendTask::DashPayTask(_)
             | BackendTask::ShieldedTask(_)
+            | BackendTask::MigrationTask(MigrationTask::RestoreFromPreviousVersion)
     )
 }
 
@@ -230,17 +233,20 @@ fn identity_load_ticket(task: &BackendTask) -> Option<(Identifier, IdentityLoadT
 }
 
 /// Whether a wallet-backend build error is terminal (storage written by a
-/// newer/incompatible app build, or a data folder other accounts can modify).
-/// These must surface their actionable message instead of being
-/// logged-and-discarded as a transient deferral (F50); retrying cannot fix
-/// them. Every other init error is retried by the cold-boot bridge.
+/// newer/incompatible app build, an unwritable or insecure data folder, or
+/// a compatibility upgrade that fails the same way on every attempt). These
+/// must surface their actionable message instead of being logged-and-discarded
+/// as a transient deferral (F50); retrying cannot fix them. Every other init
+/// error is retried by the cold-boot bridge.
 pub(crate) fn is_terminal_storage_open_error(error: &TaskError) -> bool {
-    matches!(
-        error,
+    match error {
         TaskError::WalletDataTooNew { .. }
-            | TaskError::WalletDataIncompatible { .. }
-            | TaskError::WalletDataFolderInsecure { .. }
-    )
+        | TaskError::WalletDataIncompatible { .. }
+        | TaskError::WalletStorageAccessDenied { .. }
+        | TaskError::WalletDataFolderInsecure { .. } => true,
+        TaskError::PlatformDatabaseUpgrade { source } => !source.is_retryable(),
+        _ => false,
+    }
 }
 
 /// Information about fees for a platform state transition.
@@ -326,12 +332,32 @@ pub enum BackendTaskContext {
     TokenBalanceRefresh,
     /// A DashPay social-profile update for one identity.
     DashPayProfileUpdate(Identifier),
+    /// A top-up of one identity's balance.
+    IdentityTopUp(Identifier),
     /// A perpetual-reward estimate for one identity-token pair.
     TokenRewardEstimate(IdentityTokenIdentifier),
     /// The destructive per-network database clear.
     ClearNetworkDatabase,
+    /// One durable DPNS vote operation.
+    DpnsVoteOperation {
+        network: Network,
+        operation_id: DpnsVoteOperationId,
+    },
+    /// The Settings "Restore from Previous Version" run.
+    RestoreFromPreviousVersion,
+    /// Saving the upgrade-backup retention policy.
+    UpdateBackupRetention,
     /// A scheduled-vote sweep for one network.
     ScheduledVoteSweep { network: Network },
+    /// The background contest + vote-state refresh; its failures are logged,
+    /// never bannered.
+    DpnsBackgroundRefresh { network: Network },
+    /// A user-requested contest refresh.
+    DpnsContestRefresh,
+    /// A single schedule action, before its journal operation is resolved.
+    DpnsScheduledVote { key: DpnsScheduledVoteKey },
+    /// An optimistic edit of one durable scheduled target.
+    DpnsScheduledVoteEdit { key: DpnsVoteTargetKey },
     /// Receive-address derivation for one wallet's deposit flow.
     GenerateReceiveAddress { seed_hash: WalletSeedHash },
     /// Read-only funding assessment, scoped to one UI request.
@@ -379,8 +405,9 @@ pub enum BackendTaskContext {
 }
 
 impl BackendTaskContext {
-    /// Bind payment and recovery outcomes to their dispatch network, so a late
-    /// result cannot affect a screen after the user switches networks.
+    /// Bind tasks whose payload omits a network to their originating network,
+    /// so late wallet, recovery and scheduled-vote results cannot affect
+    /// another context.
     pub(crate) fn for_task_on(task: &BackendTask, network: Network) -> Self {
         match task {
             BackendTask::IdentityTask(
@@ -389,6 +416,21 @@ impl BackendTaskContext {
             ) => Self::LegacyRecoveryOnNetwork {
                 network,
                 operation: Box::new(Self::from(task)),
+            },
+            BackendTask::ContestedResourceTask(ContestedResourceTask::EditScheduledDpnsVote(
+                edit,
+            )) => Self::DpnsScheduledVoteEdit {
+                key: edit.key.clone(),
+            },
+            BackendTask::ContestedResourceTask(ContestedResourceTask::CastScheduledVote(
+                vote,
+                _,
+            )) => Self::DpnsScheduledVote {
+                key: DpnsScheduledVoteKey {
+                    network,
+                    voter_id: vote.voter_id,
+                    contested_name: vote.contested_name.clone(),
+                },
             },
             BackendTask::CoreTask(CoreTask::SendWalletPayment { .. }) => {
                 Self::WalletPaymentBroadcast { network }
@@ -420,6 +462,42 @@ impl BackendTaskContext {
         }
     }
 
+    /// The id of the one dispatch this context belongs to, or `None` for an
+    /// undispatched task. Looks through the network binding of recovery tasks.
+    pub(crate) fn dispatch_id(&self) -> Option<u64> {
+        match self {
+            Self::Dispatched { dispatch_id, .. } => Some(*dispatch_id),
+            Self::LegacyRecoveryOnNetwork { operation, .. } => operation.dispatch_id(),
+            _ => None,
+        }
+    }
+
+    /// Test seam: a dispatch context as a screen creates one.
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    pub fn for_dispatch_for_test(task: &BackendTask) -> Self {
+        Self::for_dispatch(task)
+    }
+
+    pub(crate) fn is_dpns_vote_task(&self) -> bool {
+        matches!(
+            self.operation(),
+            Self::DpnsVoteOperation { .. }
+                | Self::DpnsContestRefresh
+                | Self::DpnsScheduledVote { .. }
+                | Self::DpnsScheduledVoteEdit { .. }
+                | Self::ScheduledVoteSweep { .. }
+        )
+    }
+
+    /// Unique UI correlation for one task on its originating network.
+    pub(crate) fn for_dispatch_on(task: &BackendTask, network: Network) -> Self {
+        Self::Dispatched {
+            dispatch_id: BACKEND_TASK_DISPATCH_ID.fetch_add(1, Ordering::Relaxed),
+            operation: Box::new(Self::for_task_on(task, network)),
+        }
+    }
+
     fn operation(&self) -> &Self {
         match self {
             Self::Dispatched { operation, .. }
@@ -438,6 +516,10 @@ impl BackendTaskContext {
         }
     }
 
+    pub(crate) fn is_dpns_contest_refresh(&self) -> bool {
+        matches!(self.operation(), Self::DpnsContestRefresh)
+    }
+
     pub(crate) fn is_fetch_documents(&self) -> bool {
         matches!(self.operation(), Self::FetchDocuments(_))
     }
@@ -449,6 +531,13 @@ impl BackendTaskContext {
     pub(crate) fn dashpay_profile_update_identity(&self) -> Option<Identifier> {
         match self.operation() {
             Self::DashPayProfileUpdate(identity_id) => Some(*identity_id),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn identity_top_up_identity(&self) -> Option<Identifier> {
+        match self.operation() {
+            Self::IdentityTopUp(identity_id) => Some(*identity_id),
             _ => None,
         }
     }
@@ -576,6 +665,13 @@ impl From<&BackendTask> for BackendTaskContext {
             BackendTask::IdentityTask(IdentityTask::RefreshIdentity(identity)) => {
                 Self::IdentityRefresh(identity.identity.id())
             }
+            BackendTask::IdentityTask(IdentityTask::TopUpIdentity(info)) => {
+                Self::IdentityTopUp(info.qualified_identity.identity.id())
+            }
+            BackendTask::IdentityTask(IdentityTask::TopUpIdentityFromPlatformAddresses {
+                identity,
+                ..
+            }) => Self::IdentityTopUp(identity.identity.id()),
             BackendTask::IdentityTask(
                 IdentityTask::AddKeyToIdentity(identity, ..)
                 | IdentityTask::AddDerivedKeyToIdentity { identity, .. },
@@ -589,6 +685,29 @@ impl From<&BackendTask> for BackendTaskContext {
                 identity_index: *identity_index,
             },
             BackendTask::SystemTask(SystemTask::ClearNetworkDatabase) => Self::ClearNetworkDatabase,
+            BackendTask::ContestedResourceTask(
+                ContestedResourceTask::SubmitDpnsVoteOperation {
+                    operation, network, ..
+                },
+            ) => Self::DpnsVoteOperation {
+                network: *network,
+                operation_id: operation.id,
+            },
+            BackendTask::ContestedResourceTask(
+                ContestedResourceTask::ReconcileDpnsVoteOperation(operation_id, network),
+            ) => Self::DpnsVoteOperation {
+                network: *network,
+                operation_id: *operation_id,
+            },
+            BackendTask::ContestedResourceTask(ContestedResourceTask::QueryDPNSContests) => {
+                Self::DpnsContestRefresh
+            }
+            BackendTask::MigrationTask(MigrationTask::RestoreFromPreviousVersion) => {
+                Self::RestoreFromPreviousVersion
+            }
+            BackendTask::SystemTask(SystemTask::UpdateBackupRetention(_)) => {
+                Self::UpdateBackupRetention
+            }
             BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { seed_hash }) => {
                 Self::GenerateReceiveAddress {
                     seed_hash: *seed_hash,
@@ -619,11 +738,6 @@ impl From<&BackendTask> for BackendTaskContext {
     }
 }
 
-/// How one contest in a DPNS vote cast turned out: the normalized contested
-/// name, the choice sent for it, and whether Platform took it. A cast is
-/// per-contest, so one contest failing says nothing about the rest.
-pub type DPNSVoteOutcome = (String, ResourceVoteChoice, Result<(), Arc<TaskError>>);
-
 #[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
 pub enum BackendTaskSuccessResult {
@@ -633,6 +747,8 @@ pub enum BackendTaskSuccessResult {
     NetworkDatabaseCleared {
         network: Network,
     },
+    /// Outcome of the Settings "Restore from Previous Version" run.
+    PreviousVersionRestored(crate::model::legacy_restore::LegacyRestoreSummary),
     Message(String), // Used for: placeholder messages for
     // not-yet-implemented functionality, and DashPay operations that would need their own typed variants.
     /// Progress updates during long-running operations (e.g. batch identity search).
@@ -661,8 +777,6 @@ pub enum BackendTaskSuccessResult {
     CoreItem(CoreItem),
     RegisteredIdentity(QualifiedIdentity, FeeResult),
     ToppedUpIdentity(QualifiedIdentity, FeeResult),
-    DPNSVoteResults(Vec<DPNSVoteOutcome>),
-    CastScheduledVote(ScheduledDPNSVote),
     /// A scheduled-vote sweep finished without a query, identity or Platform
     /// failure. The app uses this acknowledgement to retire a preserved
     /// migration eligibility cutoff only after the recovery attempt succeeds.
@@ -670,6 +784,11 @@ pub enum BackendTaskSuccessResult {
         network: Network,
         preserve_eligibility_since_ms: Option<u64>,
     },
+    DpnsVoteOperationUpdated {
+        network: Network,
+        operation_id: DpnsVoteOperationId,
+    },
+    ScheduledVotesCleared(Vec<DpnsScheduledVoteClearOutcome>),
     /// The scheduled votes that the `CastDueScheduledVotes` sweep is about to
     /// cast this cycle, so the Scheduled Votes screen can mark them in progress.
     ScheduledVotesInProgress(Vec<ScheduledDPNSVote>),
@@ -695,11 +814,21 @@ pub enum BackendTaskSuccessResult {
         prices: Option<TokenPricingSchedule>,
     },
     UpdatedThemePreference(crate::ui::theme::ThemeMode),
+    /// The upgrade-backup retention policy was saved and applied.
+    UpdatedBackupRetention {
+        /// The policy now in effect.
+        retention: crate::model::backup_retention::BackupRetention,
+        /// Expired backups deleted under the new policy.
+        deleted: usize,
+        /// Why some expired backups could not be deleted; they are retried the next
+        /// time wallet data opens.
+        cleanup_failure: Option<Arc<TaskError>>,
+    },
     PlatformInfo(PlatformInfoTaskResult),
 
     // DashPay related results
-    DashPayProfile(Option<(String, String, String)>), // (display_name, bio, avatar_url)
-    DashPayContactProfile(Option<Document>),          // Contact's public profile document
+    DashPayProfile(crate::model::dashpay::ProfileSnapshot),
+    DashPayContactProfile(Option<Document>), // Contact's public profile document
     DashPayProfileSearchResults(Vec<(Identifier, Option<Document>, String)>), // Search results: (identity_id, profile_document, username)
     DashPayContactRequests {
         /// The identity the requests were loaded for. An identity switch cannot
@@ -717,7 +846,7 @@ pub enum BackendTaskSuccessResult {
         contacts: Vec<ContactData>,
     },
     DashPayPaymentHistory(Vec<(String, String, u64, bool, String)>), // (tx_id, contact_name, amount, is_incoming, memo)
-    DashPayProfileUpdated(Identifier), // Identity ID of updated profile
+    DashPayProfileUpdated(crate::model::dashpay::ProfileSnapshot),
     DashPayContactRequestSent(String), // Username or ID of recipient
     DashPayContactRequestAccepted(Identifier), // Request ID that was accepted
     DashPayContactRequestRejected(Identifier), // Request ID that was rejected
@@ -1016,6 +1145,17 @@ pub enum BackendTaskSuccessResult {
     RefreshedDpnsContests,
     RefreshedOwnedDpnsNames,
 
+    // Identity username results (Stream U)
+    /// Result of an availability check for `label`.
+    UsernameAvailability {
+        label: String,
+        availability: crate::model::dpns_usernames::UsernameAvailability,
+    },
+    /// Every loaded identity's username requests were refreshed and stored.
+    MyUsernameRequestsRefreshed,
+    /// A device-only username preference (main name, dismissal, seen banner) was saved.
+    UsernamePreferencesSaved,
+
     // Broadcast results
     BroadcastedStateTransition,
 
@@ -1036,9 +1176,11 @@ pub enum BackendTaskSuccessResult {
         seed_hash: WalletSeedHash,
         amount: u64,
     },
+    /// A shield from the Core wallet went through. `amount` is the credits
+    /// shielded, or `None` when the app cannot vouch for the exact figure.
     ShieldedFromAssetLock {
         seed_hash: WalletSeedHash,
-        amount: u64,
+        amount: Option<u64>,
     },
     ShieldedWithdrawalComplete {
         seed_hash: WalletSeedHash,
@@ -1089,11 +1231,6 @@ pub enum BackendTaskSuccessResult {
 impl BackendTaskSuccessResult {
     fn contains_dapi_reachability_failure(&self) -> bool {
         match self {
-            Self::DPNSVoteResults(results) => results.iter().any(|(_, _, result)| {
-                result
-                    .as_ref()
-                    .is_err_and(|error| error.contains_dapi_reachability_failure())
-            }),
             Self::RefreshedWallet { warning } => warning
                 .as_ref()
                 .is_some_and(|error| error.contains_dapi_reachability_failure()),
@@ -1103,17 +1240,6 @@ impl BackendTaskSuccessResult {
 
     fn contextualize_dapi_availability(self, availability: DapiAddressAvailability) -> Self {
         match self {
-            Self::DPNSVoteResults(results) => Self::DPNSVoteResults(
-                results
-                    .into_iter()
-                    .map(|(name, choice, result)| {
-                        let result = result.map_err(|error| {
-                            error.contextualize_shared_dapi_availability(availability)
-                        });
-                        (name, choice, result)
-                    })
-                    .collect(),
-            ),
             Self::RefreshedWallet { warning } => Self::RefreshedWallet {
                 warning: warning
                     .map(|error| error.contextualize_shared_dapi_availability(availability)),
@@ -1337,6 +1463,14 @@ impl AppContext {
         }
     }
 
+    /// Test seam: keep every network switch dispatched from this context
+    /// pending at its first line until the returned guard is dropped. Lets a
+    /// test act while the outgoing network is provably still the active one.
+    #[cfg(feature = "testing")]
+    pub async fn test_hold_network_switch(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.test_network_switch_gate.lock().await
+    }
+
     async fn run_switch_network<F>(
         self: &Arc<Self>,
         network: Network,
@@ -1347,6 +1481,9 @@ impl AppContext {
     where
         F: Future<Output = Result<(), TaskError>>,
     {
+        #[cfg(feature = "testing")]
+        drop(self.test_network_switch_gate.lock().await);
+
         // Create a new AppContext for the target network, reusing shared
         // resources (db, subtasks, connection_status) from the current context.
         // Wrapped in block_in_place because AppContext::new() does DB init
@@ -1895,29 +2032,6 @@ mod tests {
     }
 
     #[test]
-    fn dapi_context_maps_errors_embedded_in_success_results() {
-        let result = contextualize_dapi_result(
-            Ok(BackendTaskSuccessResult::DPNSVoteResults(vec![(
-                "alice".to_owned(),
-                ResourceVoteChoice::Lock,
-                Err(Arc::new(dapi_connection_refused_error())),
-            )])),
-            || DapiAddressAvailability {
-                configured_total: 1,
-                live_count: 0,
-            },
-        );
-
-        let Ok(BackendTaskSuccessResult::DPNSVoteResults(results)) = result else {
-            panic!("expected DPNS vote results");
-        };
-        assert!(matches!(
-            results[0].2,
-            Err(ref error) if matches!(error.as_ref(), TaskError::DapiAllAddressesExhausted { .. })
-        ));
-    }
-
-    #[test]
     fn dapi_context_maps_spawned_dpns_query_task_result() {
         let result = contextualize_dapi_task_result(
             TaskResult::unattributed_error(dapi_connection_refused_error()),
@@ -2026,6 +2140,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn dpns_vote_context_preserves_the_originating_network() {
+        let operation_id = DpnsVoteOperationId::from_bytes([7; 16]);
+        let task = BackendTask::ContestedResourceTask(
+            ContestedResourceTask::ReconcileDpnsVoteOperation(operation_id, Network::Mainnet),
+        );
+
+        assert_eq!(
+            BackendTaskContext::from(&task),
+            BackendTaskContext::DpnsVoteOperation {
+                network: Network::Mainnet,
+                operation_id,
+            }
+        );
+    }
+
     /// Both shapes of payment broadcast must carry the network they were
     /// dispatched on: it is the only way a late "outcome unknown" error can be
     /// told apart from one belonging to the network the user has since left.
@@ -2075,6 +2205,32 @@ mod tests {
                 .payment_broadcast_network(),
             None,
         );
+    }
+
+    #[test]
+    fn dispatch_id_names_one_dispatch_through_its_network_binding() {
+        let check = BackendTask::IdentityTask(IdentityTask::CheckLegacyRecovery {
+            identity_id: Identifier::from([5; 32]),
+        });
+        let first = BackendTaskContext::for_dispatch(&check);
+        let second = BackendTaskContext::for_dispatch(&check);
+        assert!(first.dispatch_id().is_some());
+        assert_ne!(first.dispatch_id(), second.dispatch_id());
+
+        let bound = BackendTaskContext::for_dispatch_on(&check, Network::Testnet);
+        assert!(bound.dispatch_id().is_some());
+        let wrapped = BackendTaskContext::LegacyRecoveryOnNetwork {
+            network: Network::Testnet,
+            operation: Box::new(first.clone()),
+        };
+        assert_eq!(wrapped.dispatch_id(), first.dispatch_id());
+
+        assert_eq!(BackendTaskContext::from(&check).dispatch_id(), None);
+        assert_eq!(
+            BackendTaskContext::for_task_on(&check, Network::Testnet).dispatch_id(),
+            None
+        );
+        assert_eq!(BackendTaskContext::Unknown.dispatch_id(), None);
     }
 
     /// `is_wallet_touching` covers every task family that funnels
@@ -2461,6 +2617,26 @@ mod tests {
                         mode: 0o777,
                     },
                 },
+            }
+        ));
+        assert!(is_terminal_storage_open_error(
+            &TaskError::WalletStorageAccessDenied {
+                source: platform_wallet_storage::WalletStorageError::Io(std::io::Error::from(
+                    std::io::ErrorKind::PermissionDenied,
+                )),
+            }
+        ));
+        use crate::wallet_backend::platform_compatibility::UpgradeError;
+        assert!(
+            is_terminal_storage_open_error(&TaskError::PlatformDatabaseUpgrade {
+                source: UpgradeError::Verification,
+            }),
+            "a deterministic upgrade failure must surface instead of re-running"
+        );
+        // A user-clearable upgrade failure keeps offering a retry.
+        assert!(!is_terminal_storage_open_error(
+            &TaskError::PlatformDatabaseUpgrade {
+                source: UpgradeError::from(std::io::Error::from(std::io::ErrorKind::StorageFull)),
             }
         ));
         // A transient pre-wire state must NOT be treated as terminal.

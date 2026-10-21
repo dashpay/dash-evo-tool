@@ -5,20 +5,21 @@
 //! Layout: a responsive grid of [`IdentityPickerCard`]s followed by an
 //! [`IdentityPickerAddCard`]. Cards flow left-to-right, wrapping based on the
 //! available panel width. Clicking an identity card is reported to the caller
-//! so the hub can route to Identity Home. Clicking the add card routes to the
-//! **existing** `AddNewIdentityScreen` via `AppAction::AddScreen` — no new
-//! navigation surface is introduced.
+//! so the hub can route to Identity Home. Clicking the add card opens a menu
+//! with the hub's shared "Add" items (create a new identity / load an existing
+//! one); the chosen item's `AppAction::Custom` command is returned for the hub
+//! to route to the **existing** screens — no new navigation surface.
 //!
 //! This module is the UI shell only. No backend tasks are dispatched here —
 //! identity lookup is handled upstream by `IdentityHubScreen::landing()`.
 
+use super::breadcrumb_switcher::add_identity_menu_items;
 use super::identity_picker_add_card::IdentityPickerAddCard;
 use super::identity_picker_card::{CARD_MIN_WIDTH, IdentityPickerCard};
 use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::ui::Screen;
-use crate::ui::identity::add_new_identity_screen::AddNewIdentityScreen;
+use crate::ui::components::action_menu::show_action_menu;
 use crate::ui::theme::DashColors;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
@@ -35,8 +36,9 @@ const EMPTY_BALANCE_LABEL: &str = "No balance";
 /// Rendered the picker grid. Returns the `AppAction` the caller must propagate:
 ///
 /// * `AppAction::None` on hover / no interaction.
-/// * `AppAction::AddScreen(Screen::AddNewIdentityScreen(...))` when the
-///   "Add a new identity" card is clicked.
+/// * The chosen item's `AppAction::Custom` command when an entry of the
+///   "Add a new identity" card's menu is clicked; the hub maps it with
+///   [`super::breadcrumb_switcher::add_identity_command_effect`].
 /// * For identity-card clicks the action is `AppAction::None` by default —
 ///   identity selection is deferred to a follow-up task (Home-tab routing
 ///   lands in T8); the visible banner is left to the hub screen.
@@ -48,6 +50,9 @@ pub fn render(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
     identities: &[QualifiedIdentity],
+    profiles: &mut super::profile_cache::ProfileCache,
+    avatars: &mut crate::ui::state::AvatarCache,
+    pending_avatars: &mut Vec<crate::backend_task::BackendTask>,
     selected_id_out: Option<&mut Option<String>>,
 ) -> AppAction {
     let dark_mode = ui.ctx().global_style().visuals.dark_mode;
@@ -74,52 +79,59 @@ pub fn render(
         ui.add_space(20.0);
     });
 
-    // Grid layout: horizontal flow with manual wrapping.
-    //
-    // We do not use `egui::Grid` because it requires a fixed column count;
-    // the design-spec `repeat(auto-fill, minmax(260px, 1fr))` rule needs the
-    // column count to depend on the available width.
-    let available_width = ui.available_width();
-    let columns = compute_column_count(available_width);
+    egui::ScrollArea::vertical()
+        .id_salt(("identity_picker", app_context.selected_wallet_hash()))
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            let available_width = ui.available_width();
+            let columns = compute_column_count(available_width);
+            let card_width = (available_width - GRID_GAP * (columns - 1) as f32) / columns as f32;
+            if identities.is_empty() && app_context.selected_wallet_hash().is_some() {
+                ui.label("This wallet has no identities yet. Add an identity to get started.");
+                ui.add_space(GRID_GAP);
+            }
+            let cells: Vec<PickerCell<'_>> = identities
+                .iter()
+                .map(PickerCell::Identity)
+                .chain(std::iter::once(PickerCell::Add))
+                .collect();
 
-    ui.vertical(|ui| {
-        let cells: Vec<PickerCell<'_>> = identities
-            .iter()
-            .map(PickerCell::Identity)
-            .chain(std::iter::once(PickerCell::Add))
-            .collect();
-
-        for row in cells.chunks(columns.max(1)) {
-            ui.horizontal(|ui| {
-                for (i, cell) in row.iter().enumerate() {
-                    if i > 0 {
-                        ui.add_space(GRID_GAP);
-                    }
-                    match cell {
-                        PickerCell::Identity(identity) => {
-                            let card = build_card(identity);
-                            let response = card.show(ui);
-                            if response.clicked {
-                                captured_selection = Some(response.identity_id.clone());
+            for row in cells.chunks(columns.max(1)) {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = GRID_GAP;
+                    for cell in row {
+                        match cell {
+                            PickerCell::Identity(identity) => {
+                                let profile =
+                                    profiles.get_or_request(identity).and_then(Option::as_ref);
+                                let name = app_context.identity_display_name_or(
+                                    identity.identity.id(),
+                                    profile.and_then(|p| p.display_name_opt()),
+                                );
+                                let mut card = build_card(app_context, identity, name.as_deref())
+                                    .with_width(card_width);
+                                if let Some(profile) = profile {
+                                    card = card.with_avatar_url(&profile.avatar_url);
+                                }
+                                let response = card.show(ui, avatars);
+                                if let Some(fetch) = response.avatar_fetch {
+                                    pending_avatars.push(fetch);
+                                }
+                                if response.clicked {
+                                    captured_selection = Some(response.identity_id.clone());
+                                }
+                            }
+                            PickerCell::Add => {
+                                let card = IdentityPickerAddCard::new().with_width(card_width);
+                                let response = card.show(ui);
+                                action |= show_add_menu(ui, app_context, &response);
                             }
                         }
-                        PickerCell::Add => {
-                            let card = IdentityPickerAddCard::new();
-                            let response = card.show(ui);
-                            if response.add_requested {
-                                // Navigate to the existing AddNewIdentityScreen —
-                                // no duplicated screen, no new backend task.
-                                action = AppAction::AddScreen(Screen::AddNewIdentityScreen(
-                                    AddNewIdentityScreen::new(app_context),
-                                ));
-                            }
-                        }
                     }
-                }
-            });
-            ui.add_space(GRID_GAP);
-        }
-    });
+                });
+                ui.add_space(GRID_GAP);
+            }
+        });
 
     // Propagate captured selection to the caller, if they supplied a slot.
     // Only update when an identity was actually clicked — never overwrite with
@@ -133,12 +145,35 @@ pub fn render(
     action
 }
 
+/// Render the create/load menu anchored to the add card; a card click toggles
+/// it. Returns the clicked item's action, or `AppAction::None`.
+fn show_add_menu(
+    ui: &Ui,
+    app_context: &Arc<AppContext>,
+    card: &super::identity_picker_add_card::IdentityPickerAddCardResponse,
+) -> AppAction {
+    show_action_menu(
+        ui,
+        app_context,
+        egui::Popup::new(
+            egui::Id::new("identity_picker_add_menu"),
+            ui.ctx().clone(),
+            card.rect,
+            ui.layer_id(),
+        )
+        .open_memory(card.add_requested.then_some(egui::SetOpenCommand::Toggle)),
+        add_identity_menu_items()
+            .iter()
+            .map(|item| (item.label, &item.action, item.enabled, item.tooltip)),
+    )
+}
+
 /// Compute how many cards fit per row at the given available width. Matches
 /// the design-spec `minmax(260px, 1fr)` rule — at least 260 px per column,
 /// stretching to fill the remaining space when extra room exists.
 pub fn compute_column_count(available_width: f32) -> usize {
     let min_width = CARD_MIN_WIDTH + GRID_GAP;
-    let columns = (available_width / min_width).floor() as usize;
+    let columns = ((available_width + GRID_GAP) / min_width).floor() as usize;
     columns.max(1)
 }
 
@@ -147,15 +182,13 @@ enum PickerCell<'a> {
     Add,
 }
 
-/// Build a [`IdentityPickerCard`] from a [`QualifiedIdentity`].
-///
-/// Display-name is not yet a first-class field on `QualifiedIdentity` (it
-/// comes from the DashPay social profile, loaded asynchronously). Until that
-/// integration lands we use the local nickname (`alias`) as a stand-in for
-/// display-name so users who have labelled their identities still see a
-/// familiar heading. When a real social-profile display name becomes
-/// available upstream, wiring it into this function is a one-line change.
-fn build_card(identity: &QualifiedIdentity) -> IdentityPickerCard {
+/// Build a picker card using the same profile name as navigation and the
+/// identity's main username as its handle.
+fn build_card(
+    app_context: &AppContext,
+    identity: &QualifiedIdentity,
+    display_name: Option<&str>,
+) -> IdentityPickerCard {
     let id_base58 = identity.identity.id().to_string(Encoding::Base58);
 
     // Balance formatting: design-spec §B.14 uses `{amount} DASH` with tabular
@@ -178,14 +211,11 @@ fn build_card(identity: &QualifiedIdentity) -> IdentityPickerCard {
              breadcrumb.",
             );
 
-    // Heading priority: local alias → DPNS → shortened id.
-    if let Some(alias) = identity.alias.as_deref().filter(|s| !s.trim().is_empty()) {
-        card = card.with_display_name(alias);
+    if let Some(name) = display_name {
+        card = card.with_display_name(name);
     }
-    if let Some(dpns) = identity.dpns_names.first().map(|n| n.name.as_str())
-        && !dpns.is_empty()
-    {
-        card = card.with_dpns_handle(dpns);
+    if let Some(dpns) = app_context.main_username(identity) {
+        card = card.with_dpns_handle(&dpns);
     }
 
     card
@@ -194,6 +224,68 @@ fn build_card(identity: &QualifiedIdentity) -> IdentityPickerCard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The "Add a new identity" card keeps its promise: clicking it offers both
+    /// create and load, and picking "Load an existing identity" returns the
+    /// load command the hub routes to `AddExistingIdentityScreen`.
+    #[test]
+    fn add_card_offers_create_and_load_in_both_themes() {
+        use super::super::breadcrumb_switcher::{BreadcrumbEffect, add_identity_command_effect};
+        use egui_kittest::{Harness, kittest::Queryable};
+        for dark in [false, true] {
+            let tmp = tempfile::tempdir().expect("temp dir");
+            let ctx = crate::context::test_support::test_app_context(tmp.path());
+            let mut profiles = super::super::profile_cache::ProfileCache::default();
+            let mut avatars = crate::ui::state::AvatarCache::new();
+            let mut pending = Vec::new();
+            let mut harness = Harness::builder()
+                .with_size(egui::vec2(1200.0, 800.0))
+                .build_ui_state(
+                    |ui, last_action| {
+                        let action = render(
+                            ui,
+                            &ctx,
+                            &[],
+                            &mut profiles,
+                            &mut avatars,
+                            &mut pending,
+                            None,
+                        );
+                        if action != AppAction::None {
+                            *last_action = action;
+                        }
+                    },
+                    AppAction::None,
+                );
+            harness.ctx.set_visuals(if dark {
+                egui::Visuals::dark()
+            } else {
+                egui::Visuals::light()
+            });
+            harness.run();
+            assert!(
+                harness
+                    .query_by_label("Load an existing identity")
+                    .is_none()
+            );
+            harness
+                .get_by_role_and_label(egui::accesskit::Role::Button, "Add a new identity")
+                .click();
+            harness.run();
+            assert!(harness.query_by_label("Create a new identity").is_some());
+            harness.get_by_label("Load an existing identity").click();
+            harness.run();
+            assert_eq!(
+                add_identity_command_effect(harness.state()),
+                Some(BreadcrumbEffect::AddIdentityLoad)
+            );
+            assert!(
+                harness
+                    .query_by_label("Load an existing identity")
+                    .is_none()
+            );
+        }
+    }
 
     #[test]
     fn column_count_narrow_panel_is_one() {

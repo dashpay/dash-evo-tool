@@ -1268,13 +1268,13 @@ mod tests {
         assert_eq!(renamed.display_label, "renamed");
         assert_eq!(renamed.hint.as_deref(), Some("new hint"));
 
-        storage.fail_deletes(true);
+        storage.fail_all_deletes(true);
         view.delete(Network::Testnet, &seed_hash)
             .expect_err("failed sidecar delete");
         let after_failed_delete = sa.build_request(&scope, None);
         assert_eq!(after_failed_delete.display_label, "renamed");
         assert_eq!(after_failed_delete.hint.as_deref(), Some("new hint"));
-        storage.fail_deletes(false);
+        storage.fail_all_deletes(false);
         view.delete(Network::Testnet, &seed_hash)
             .expect("delete metadata");
         let deleted = sa.build_request(&scope, None);

@@ -1,6 +1,7 @@
 use crate::app::AppAction;
 use crate::model::wallet::DerivationPathHelpers;
 use crate::ui::ScreenType;
+use crate::ui::identity::funding_common::{existing_funding_refusal, show_no_funding_large_enough};
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::wallet_backend::poison::RwLockRecover;
 use eframe::egui::{self, Ui};
@@ -52,6 +53,12 @@ impl WalletsBalancesScreen {
         let tracked: Option<Vec<TrackedAssetLock>> =
             self.asset_lock_cache.get(&seed_hash).map(<[_]>::to_vec);
         let load_failed = self.asset_lock_cache.is_failed(&seed_hash);
+        // Funding a Platform address takes the network fee out of the funding.
+        let minimum_duffs = Some(
+            self.app_context
+                .fee_estimator()
+                .address_funding_min_amount_duffs(true, self.app_context.sdk_platform_version()),
+        );
         let mut retry_clicked = false;
 
         let dark_mode = ui.style().visuals.dark_mode;
@@ -137,6 +144,8 @@ impl WalletsBalancesScreen {
                                 })
                                 .body(|mut body| {
                                     for lock in tracked {
+                                        let refusal =
+                                            existing_funding_refusal(lock.amount, minimum_duffs);
                                         body.row(25.0, |mut row| {
                                             row.col(|ui| {
                                                 ui.label(lock.out_point.txid.to_string());
@@ -151,7 +160,7 @@ impl WalletsBalancesScreen {
                                                 ui.label(format!("{:?}", lock.status));
                                             });
                                             row.col(|ui| {
-                                                let usable = if lock.proof.is_some() { "Yes" } else { "No" };
+                                                let usable = if lock.proof.is_none() { "No" } else if refusal.is_some() { "Too small" } else { "Yes" };
                                                 ui.label(usable);
                                             });
                                             row.col(|ui| {
@@ -167,7 +176,10 @@ impl WalletsBalancesScreen {
                                                         .create_screen(&self.app_context),
                                                     );
                                                 }
-                                                if lock.proof.is_some()
+                                                if let (Some(_), Some(reason)) = (&lock.proof, &refusal) {
+                                                    ui.add_enabled(false, egui::Button::new("Fund").small())
+                                                        .on_disabled_hover_text(reason);
+                                                } else if lock.proof.is_some()
                                                     && ui.small_button("Fund")
                                                         .clickable_tooltip("Fund a Platform address with this asset lock")
                                                         .clicked()
@@ -182,6 +194,7 @@ impl WalletsBalancesScreen {
                                     }
                                 });
                         });
+                    show_no_funding_large_enough(ui, tracked, minimum_duffs);
                 }
 
                 ui.add_space(10.0);

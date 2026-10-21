@@ -47,7 +47,7 @@ are deleted by this UI.
 
 Tracked locks also lack durable recipient intent and creation time. Safe
 cancellation, verified Platform consumption, and idempotent continuation require
-upstream support; they remain WAL-034 gaps rather than implemented actions.
+upstream support; they remain WAL-036 gaps rather than implemented actions.
 
 ## Regression checks
 

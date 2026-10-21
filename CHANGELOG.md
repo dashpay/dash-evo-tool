@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- Avatar decoding rejects images wider or taller than 2048 pixels, including cached images,
+  and applies a decoder allocation budget. Rejected images show the existing fallback.
+- Identity labels strip control and bidirectional formatting characters while retaining
+  display name, username, and identity ID priority.
+
+- Avatar downloads reject private and internal destinations, including DNS answers
+  and redirects, and cannot bypass destination checks through system proxies.
+
 - Identity imports with a password now encrypt private keys before their first
   storage write. Interrupted new imports retain protected entries, and retries
   preserve existing keys when a supplied password or key conflicts. A durable
@@ -64,6 +72,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Full resync, which rescans the selected HD wallet’s Core history from genesis,
   and Get test DASH on Testnet. Full resync uses the blocking initial-sync
   progress window until the wallet scan completes.
+- **Upgrade backup retention setting**: Settings → Upgrade Backups controls how
+  long the backup copies taken before a storage upgrade are kept. By default,
+  backups older than 90 days are now deleted automatically; choose another
+  period (1 to 3650 days) or keep them forever. The newest complete backup of
+  each database is always kept (or the newest backup, if none is complete), and
+  a shorter period asks for confirmation because it deletes backups at once.
 
 - **Add wallet-created identity keys**: for identities loaded from a wallet on
   this device, the Add Key screen defaults to "Create from wallet", which
@@ -141,16 +155,66 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Masternodes tab**: a new "Masternodes" entry in the left nav (visible when
   Expert mode is on) for loading and managing masternode and evonode (HP
   masternode) identities by ProTxHash. Loaded nodes appear as a card list
-  showing type, voter-key readiness, key status, and DPNS-voting status;
-  opening a card shows a detail view with inline DPNS contested-name voting,
-  Withdraw / Top up / Transfer actions, key management, and — for evonodes
-  only — a link to claim token rewards. The load form accepts an optional
-  password to encrypt the entered voting/owner/payout keys immediately
-  instead of only after a separate step; leaving it blank keeps today's
-  behavior, and protection can always be added later from the key screen.
-  This replaces loading a masternode or evonode from *Identities → Load
-  Existing Identity → Show Advanced Options*, which no longer offers those
-  identity types.
+  showing type, voter-key readiness, key status, and username-voting status;
+  opening a card shows a detail view with Withdraw / Top up / Transfer
+  actions, key management, "This node's votes", a "Vote with this node"
+  button that opens Masternodes → Votes with that node selected, and — for
+  evonodes only — a link to claim token rewards.
+  The load form accepts an optional password to encrypt the entered
+  voting/owner/payout keys immediately instead of only after a separate
+  step; leaving it blank keeps today's behavior, and protection can always
+  be added later from the key screen. This replaces loading a masternode or
+  evonode from *Identities → Load Existing Identity → Show Advanced
+  Options*, which no longer offers those identity types.
+
+- **Username voting in Masternodes → Votes**: decide contests across your
+  masternodes with To decide / Voted / Scheduled / History views, remembered
+  node sets, bulk choices, and one aggregate confirmation for the batch.
+  Cards show weighted tallies and your nodes' influence. The confirmation
+  lists names, choices with full contender identities, node counts and timing
+  (scheduled times in your local time zone). Node details show remaining
+  vote changes (four after the initial vote, or Unknown when this device has
+  no count). If a first vote becomes a change before
+  submission, another review is required. Nodes without available voting
+  information are skipped with a refresh action; missing voting keys can be
+  added from node detail without replacing other keys.
+
+  Cast now, choose a local time, or schedule shortly before voting ends.
+  Scheduled decisions can be edited or removed before execution; missed
+  schedules and failed attempts offer recovery actions. Mixed batches report
+  cast and scheduled results together. A progress drawer shows live results.
+  Decisions staged or changed during submission survive its completion, and
+  entering Votes picks up newly added voting nodes without changing staged
+  choices: such a node stays out of them until it is included in the confirm
+  step. Uncertain votes stay visible and blocked from resubmission; neither
+  passing the estimated deadline nor the contest closing releases them.
+  Completed history is bounded without discarding unresolved votes. Removing a
+  node cancels its unstarted scheduled votes.
+
+  A top-bar indicator and navigation badge highlight contests needing a vote,
+  with background refresh every 30 minutes on Mainnet and every 3 minutes on
+  other networks. History has a final “details” column that opens the contest
+  in Platform Explorer on Mainnet or Testnet.
+
+- **Usernames in Identities**: check availability, request a name, and follow
+  its status without opening the voting screen. Names needing a community
+  vote show the non-refundable fee before payment, and availability is
+  checked again before registration. Registration prevents duplicate payment;
+  if the app cannot confirm that a paid request went through, it says so
+  instead of reporting a failure and asks you to check the Usernames list
+  before paying again. Returning from a top-up preserves the chosen name and
+  payment review.
+  Changing the name, payer, network or fee requires a fresh review; the backend
+  rejects an unapproved community vote fee before spending funds.
+  Request status shows the timeline, tally and outcome, with alternatives
+  that need no vote. Saved requests refresh before the wider contest search;
+  after the estimated deadline they show “Awaiting result” until the network
+  confirms an outcome. Removed identities disappear immediately from username
+  views; failed record cleanup is retried after restarting.
+  Won usernames retry failed fetches and identity writes, including after
+  restarting the app.
+  Profile → Usernames lists names and requests, with a “Show as main” choice
+  for the username displayed when no profile display name is set.
 
 - **Wallet/identity indicator on more screens (rollout in progress)**: the
   wallet and identity picker previously shown only at the top of the Identity
@@ -174,6 +238,241 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - CI runs documentation tests once as part of the main test suite and uses
   Cargo directly instead of the retired Cargo action.
+- Long lists of masternodes can be scrolled everywhere. In Masternodes →
+  Votes, the "Vote with" list named every loaded node but did not scroll: with
+  more nodes than fit in the window, the rest of the list and the "Save as my
+  default" button could not be reached. It now scrolls and keeps the button
+  in view. In Masternodes → Nodes, the list scrolled only while the pointer
+  was over a card, and its scroll bar sat at the edge of the last card; it
+  now scrolls from anywhere in the panel, with the scroll bar at the panel's
+  edge.
+
+- Sending credits out of an identity now keeps back what the network needs.
+  Max, and the check made before sending, used to keep back about 0.000001
+  DASH for a transfer to another identity and 0.000065 DASH for a transfer to
+  a Platform address. The network accepts such a transfer only while the
+  identity holds about 0.000088 DASH or 0.000173 DASH above the amount, so a
+  Max transfer passed the check and was then refused. About 0.000096 DASH and
+  0.000192 DASH are now kept back. The network charges less than it wants
+  kept back, about 0.00003 DASH for a transfer to another identity, and the
+  rest stays in the identity.
+
+- Registering a username now shows a realistic cost. The review step used to
+  show a registration fee of about 0.000002 DASH, while the network charges
+  roughly 0.0008 DASH and wants about 0.0012 DASH on the identity before it
+  accepts the request. The amount shown, and the balance required to pay, is
+  now what the network needs, with a small margin. An identity that holds less
+  is asked to top up before anything is sent; before, it could pay for the
+  first registration step and be turned down at the second.
+
+- Adding a masternode or evonode with a voting key that has since been replaced
+  on the network is now refused when you add it, with a message asking for the
+  node's current voting private key. Before, the node was added as if the key
+  were usable and the problem only showed later, when a vote failed.
+
+- An identity whose key is not on this device is no longer told to add a key
+  before it can get a username. After an update from an earlier version, the
+  Usernames card now offers to restore the key right there when the earlier
+  version saved it, and otherwise points to Restore from Previous Version in
+  Settings. On a new installation it says to enter the key. Only an identity
+  that really has no suitable key is still told to add one.
+
+- Get a username is no longer offered when the identity's key comes from a
+  wallet that is not on this device. Before, the button was enabled and the
+  registration failed when it tried to sign. The Usernames card now says to
+  import that wallet again and links to the wallets screen; after an update
+  from an earlier version it also points to Restore from Previous Version. A
+  wallet that is on this device but locked does not disable the button.
+
+- Restoring keys from a previous version no longer says a key is "not one of
+  the keys this identity uses now" when the real cause is that its wallet is not
+  on this device. Such a key now says to import the wallet again and restore
+  once more.
+
+- The background refresh of name contests no longer resets the screen you are
+  working on. While it ran, a lookup on another screen could lose its spinner
+  and its answer, typed search text could be cleared, and an amount field could
+  disappear for a moment and drop what you were typing. The refresh now updates
+  only the voting screen and the indicators that show votes waiting for you.
+
+- Refreshing name contests no longer reads every finished contest from the
+  network again. With a voting node loaded this happened on opening
+  Masternodes → Votes and every few minutes in the background, and on a
+  network with a long contest history it sent about a thousand requests at
+  once: the servers then refused the app for a while, which could fail
+  unrelated actions. A finished contest is now read once and only one refresh
+  runs at a time. The first load of a long history is spread out: contests
+  still open are read first and can be voted on within seconds, while the
+  finished ones fill in over a couple of minutes without being listed as
+  waiting for a vote.
+
+- Starting the app no longer warns that your old scheduled votes will not be
+  cast when an earlier pre-release build had already cast them and still lists
+  them as cast. This affected installs that went from 0.9 through a
+  pre-release build, where the notice returned on every launch for up to 14
+  days on Mainnet. Old schedules that are still waiting to be cast raise the
+  notice as before. So do schedules you cleared or removed in that build,
+  because the app can no longer tell whether they were cast.
+
+- The Platform Info screen under Tools now shows the answer to a fetch started
+  while the app is refreshing name contests in the background. The result area
+  used to fall back to "No results yet" with no spinner and no error, and the
+  answer never appeared until the button was pressed again after the refresh
+  had finished. The spinner now stays until the answer arrives, and the answer
+  stays until another fetch replaces it.
+
+- Adding funds to an identity no longer sends an amount too small to cover the
+  network fee. Such a transfer used to leave the wallet and was then refused
+  with a message about insufficient funds in the transaction. The amount field
+  now states the smallest amount it accepts, the Max button and the amount
+  filled in after a deposit never go below it, and a deposit request asks for
+  enough to leave a usable amount. Wallet Send and the command-line tool refuse
+  a too-small amount before anything is sent as well.
+
+- Creating an identity, and sending from your wallet to an identity or to a
+  Platform address, no longer send an amount too small to cover the network
+  fee. These transfers used to leave the wallet and were then refused. Each
+  amount field now states the smallest amount it accepts, and the Max button
+  never goes below it. When your wallet cannot send an amount that covers the
+  fee, the form says so instead of offering an amount. For a new identity the
+  smallest amount grows with the number of keys, and a deposit request asks for
+  enough to leave a usable amount. In advanced mode, a transfer to a Platform
+  address with the fee paid on top is refused when the amount is too small for
+  the network to accept.
+
+- Shielding Dash from your Core wallet now shields the amount you entered. The
+  app used to set aside less than the network takes for this transfer, and the
+  difference came out of the amount: about 0.0015 DASH less was shielded than
+  entered, while the result reported the full amount. The fee shown before
+  sending was too low for the same reason (about 0.00063 DASH instead of about
+  0.00216 DASH), and a small amount, or Max on a small wallet, ended in an
+  error. The wallet now pays the real fee on top of the amount, the fee shown
+  is the real one, the result reports what was shielded, and the form says so
+  when your wallet cannot cover the fee. The command-line tool is corrected the
+  same way.
+
+- An unfinished funding too small to cover the network fee can no longer be
+  picked when you add funds to an identity, create an identity, or fund a
+  Platform address from the Wallets screen. It used to be offered, was refused
+  by the network, and stayed on the list. It is still listed, with the reason
+  and what to do instead, and the list says so when nothing on it is large
+  enough. Only the amount a funding was created with is checked, so one that
+  was partly used before can still be refused by the network.
+
+- Disconnect now stops a connection that is still starting. Disconnecting, or
+  stopping the startup sync, before the app had connected used to be ignored,
+  and the app connected anyway a moment later. Press Connect to connect again.
+
+- After you press Disconnect, the app stays disconnected when you switch
+  networks. It used to reconnect on the new network whenever "Auto-start SPV on
+  startup" was enabled. Disconnect also stops syncing on a network you left
+  without disconnecting. Press Connect or restart the app to connect again.
+
+- Adding funds to an identity shows a progress dialog and pauses the funding
+  form until the transfer ends, so it can no longer be changed or sent twice.
+  The form used to stay active and briefly warned that the wallet did not have
+  enough Dash while the transfer it had just started was going through. A
+  transfer that takes longer than 30 seconds can continue in the background,
+  with a banner that follows it and confirms when the funds arrive.
+
+- The progress dialog shown while a username is being registered names the
+  username.
+
+- A transfer that adds funds to an identity stays in progress until its own
+  result arrives, also when its screen is closed or the network is switched:
+  the funding form for that identity stays paused and a banner follows the
+  transfer. Its result is shown only on the screen that started it, so a
+  payment waiting on the Send screen is no longer reported as finished or
+  failed by it. The confirmation names the identity that received the funds
+  and shows its ID.
+
+- Importing a wallet while the app is still connecting finds the wallet's
+  identities. The search used to start at once, before the network was ready,
+  so every lookup failed and the identity list stayed empty until the
+  identities were loaded by hand. It now waits until the network is ready and
+  then runs on its own.
+
+- Scheduling votes "At a specific time" starts from a time you can use: an hour
+  after you open the confirmation, or halfway to the earliest deadline when a
+  contest ends sooner. It used to suggest a time about a day ahead, often past
+  the deadline, so the confirmation opened with a warning and no votes to
+  schedule.
+
+- Emphasized text is readable in light mode. Section headings, usernames,
+  totals and the labels of a few buttons were drawn in white on a light
+  background, and so were some loading spinners.
+
+- Restoring imported keys remains recoverable after interrupted storage writes
+  and reports unreadable protected keys. Startup migration preserves existing
+  keys, seeds, and their password protection.
+
+- Updating from v0.9.x carries mainnet wallets and imported keys across, and
+  "Restore from Previous Version" finds mainnet data those versions saved.
+  They stored mainnet under an older name that both steps skipped. Mainnet
+  users who already updated with an earlier build that missed them can bring
+  them back with Settings → "Restore from Previous Version"; nothing is
+  brought back automatically, so wallets removed since the update stay
+  removed. The restore now also brings back imported keys without a password,
+  never overwrites anything already on this device, and keeps
+  password-protected wallets protected. Password-protected imported keys are
+  not restored by it yet; the summary counts them and points to the Wallets
+  screen, which restores them with their old password.
+
+- "Restore from Previous Version" reports an identity whose password prompt was
+  declined as skipped, with a note to run the restore again, instead of as a
+  failure.
+
+- When an identity key cannot be used for signing, the message now names the
+  cause in a fixed, plain sentence — wallet not on this device, wallet locked,
+  password prompt closed, password needed in the app window, or key missing —
+  with what to do next. The identity, key and wallet involved are kept in the
+  technical details.
+
+- The Identities page lets you load an existing identity when you already have
+  identities. A new "Add" menu in the top bar offers "Create a new identity" and
+  "Load an existing identity", and the "Add a new identity" card now offers both
+  choices instead of opening only identity creation.
+
+- Token detail headers sort rows by identity name, identity ID, or numeric balance;
+  unchecked balances stay last in either direction.
+
+- Profile saves confirm their exact submitted fields even after leaving the hub.
+  Delayed profile loads and saves cannot replace newer data; drafts survive a
+  refresh after an obsolete completion.
+
+- Refresh identity recipient names without clearing typed searches, show cached profile avatars while refreshing, and keep delayed profile results tied to their owning screen request.
+
+- Identity cards fit the window, display available profile avatars, and scroll
+  to every identity and the add/load actions. Clickable identity controls show a
+  link cursor. The Identities breadcrumb opens all User identities; choosing a
+  wallet in Identities filters the picker to that wallet. The All wallets
+  identity dropdown includes both wallet-backed and imported User identities.
+- Avatar downloads stop once they exceed 5 MiB, including responses without a
+  declared size, instead of buffering the entire response first.
+
+- **Safer guidance for wallet data this version cannot open**: the message no
+  longer tells you to remove your local wallet data, which could have deleted
+  the `secrets` folder along with keys no recovery phrase can restore. It asks
+  you to write down your recovery phrases and imported keys in the version you
+  used before, close every running instance, and set aside the `.sqlite` files
+  while keeping the `secrets` folder. A database held by another session asks
+  you to close that session and try again. A wallet data upgrade blocked by
+  folder permissions or a read-only disk asks you to fix access to the data
+  folder and restart, instead of reporting incompatible data.
+
+- **Upgrade backups no longer pile up**: repeated failed upgrades no longer
+  leave an identical backup on every attempt, and a failed upgrade that can
+  never succeed shows its message instead of retrying silently. Clearing a
+  network's data removes that network's upgrade backups; backups of the shared
+  app data are left to the retention setting. Removing a wallet or an identity
+  keeps upgrade backups.
+
+- **Clearing a network's data works with moved chain data**: chain-sync data
+  that was moved to another disk and linked back no longer stops the clear.
+
+- **Clearer identity funding errors**: when the wallet cannot save the data a
+  payment needs, the message now distinguishes a busy or full store from other
+  failures and says how to retry.
 
 - **Identity keys added by hand no longer disappear**: unlocking a wallet,
   starting the app or loading an identity from a wallet refreshed the identity
@@ -215,8 +514,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Removing a wallet deletes its cached identity public keys right away, and a
   key-slot load that finishes after the removal no longer stores them again.
-- The dedicated migration CI workflow runs archived-profile checks without
-  repeating the helper tests and bundled migration covered by the main suite.
 
 - Migration fixture coverage skips historical non-SemVer release tags instead
   of failing to parse them and blocking weekly builds. Missing fixtures for
@@ -593,6 +890,63 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Full resync clears the selected wallet’s displayed Core history across restarts
   and rebuilds it from observed blocks, retaining spend accounting and reservations.
+- Masternodes → Votes → History now opens with the contest that ended most
+  recently at the top, instead of in name order. Contests that ended at the
+  same time follow their names. The column headings show which column orders
+  the list and in which direction; choosing a heading reorders the list as
+  before.
+
+- Every weekly release carries its own migration fixture. The weekly workflow
+  captures it with the binary it just built and attaches it to the release
+  before publishing, instead of someone recording it in the fixture manifest
+  afterwards; a failed capture blocks that release. The new Migration Fixture
+  Capture workflow can also be run by hand for an older release. Fixture
+  coverage accepts a release that carries its fixture, and the migration tests
+  use the eight newest attached fixtures after verifying their build
+  attestation and checksum. Manifest fixtures stored as build artifacts work
+  as before.
+
+- The weekly release gate accepts a manual Tests run in place of the Monday
+  scheduled checks when it ran on the release branch for the exact commit
+  being released, was created after the scheduled run, and passed both fixture
+  coverage and the platform pin guard. A failed or cancelled manual run of that
+  commit blocks the release unless a scheduled run was created after it. Manual
+  Tests runs of a `v*-dev` branch now check fixture coverage. Push results are
+  never replaced by a manual run.
+
+- Registering a username, finding an identity or a DashPay contact by name, and
+  searching DashPay users by name now go through the Dash SDK's own name
+  functions instead of the app's own copies. A newly registered username shows
+  the date the network confirmed it.
+
+- Choosing a wallet looks the same on the Wallets page and on the
+  create-identity, add-funds and load-identity screens: every wallet shows its
+  type, its name and a balance to four decimal places
+  (`HD: Main — 0.5000 DASH`), and hovering a wallet breaks the balance down.
+  Where the wallet pays, the balance is the amount it can use right now. A
+  wallet that cannot be used for the chosen funding method is greyed out and
+  says why when you hover it.
+
+- Dates and times are shown in your local time zone in one format
+  (`2026-10-05 14:00`) across name voting, usernames, wallet transactions, token
+  claims and GroveSTARK proofs, instead of a mix of UTC and local styles. A scheduled
+  vote time is entered in local time, and its label shows the zone's distance
+  from UTC.
+
+- The vote choices on a contested name are listed one per row as a pick-one
+  list, so they read as options rather than plain text.
+
+- The startup "The app is opening your saved data." block now counts the saved
+  wallets as it prepares them ("Step 3 of 12"), so a profile with many wallets
+  shows progress instead of a still screen.
+
+- The Tests workflow incorporates the archived-profile checks from Migration
+  Matrix, sharing one build and running the regular and migration suites in
+  parallel. Monday schedules run only lightweight fixture and pin checks in a
+  separate concurrency group. Weekly releases check push test/Clippy results
+  and scheduled fixture/pin results independently.
+
+- User identities use their DashPay Display name on cards, navigation, and selectors, falling back to a username or shortened identity ID. The identity-list tool reports cached profile display names for User identities and preserves administrative node names.
 
 - Wallet registries and live names now share one WalletContext across the UI,
   MCP tools and password prompts. Metadata writes are serialized while wallet
@@ -787,6 +1141,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Removed
 
+- Scheduled votes now use only the voting journal. Schedules from the previous
+  SQLite storage are no longer imported or executed automatically; a startup
+  notice asks you to schedule them again in Masternodes → Votes. The notice
+  lists no votes, returns on each launch, and stops once no contest such a
+  schedule could refer to can still be open (14 days after it first appeared
+  on Mainnet, 90 minutes on Testnet).
+  Votes scheduled with an earlier development (pre-release) build of this
+  version were saved in a storage format that is no longer used: they are not
+  carried over and raise no notice, so schedule them again in
+  Masternodes → Votes.
+
+- The standalone DPNS tool and voting controls embedded in node details. Voting now
+  lives in Masternodes → Votes and username management in Identities;
+  existing shortcuts redirect to their replacements.
+
+- Local names for User identities in profile, create, load, and owned-name screens. Existing records remain readable; node administrative names and contact nicknames remain available.
+
 - Proof log screen (internal developer tool, not part of the public feature set).
   Proof-log records now go only to the `tracing` log target — both the persisted
   history and the in-app viewer are gone; there is no replacement UI to inspect
@@ -879,16 +1250,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   hidden. Switching Identity Hub tabs also keeps paid request actions disabled until their original
   task finishes.
 
-- **Your settings and scheduled votes now survive an upgrade**: upgrading from an
-  earlier version no longer starts the app with a blank configuration. The first
-  launch after the upgrade brings across your selected network, start screen,
-  theme, onboarding state, Dash-Qt path and the remaining toggles — so a testnet
-  user is no longer relaunched on Mainnet — along with your scheduled DPNS votes
-  (choice, time and already-cast state) and your identities' top-up history.
-  Scheduled votes are imported even on an install whose wallets were already
-  moved by a previous launch. If a scheduled vote cannot be read, the app says so
-  in a banner with a "Retry now" action instead of dropping it silently; the
-  original data is never deleted from the previous version's storage.
+- **Your settings and top-up history now survive an upgrade**: upgrading from an
+  earlier version restores your selected network, start screen, theme,
+  onboarding state, Dash-Qt path and the remaining toggles, together with your
+  identities' top-up history. Scheduled votes from the previous SQLite storage
+  require a new decision; a startup notice asks you to cast or schedule them again.
 
 - **Expert mode now reveals the Masternodes tab without a restart**: turning on
   Expert mode in Settings immediately shows the "Masternodes" entry in the left

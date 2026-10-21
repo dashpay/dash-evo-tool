@@ -6,6 +6,7 @@ mod initialization;
 /// it, and the cross-version migration matrix (`tests/migration-matrix/`, a
 /// separate integration-test crate) asserts against it directly.
 pub use initialization::DEFAULT_DB_VERSION;
+pub(crate) mod legacy_backups;
 pub(crate) mod legacy_import;
 mod settings;
 mod single_key_wallet;

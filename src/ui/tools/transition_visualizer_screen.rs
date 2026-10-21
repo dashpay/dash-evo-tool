@@ -22,6 +22,31 @@ use serde_json::Value;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// Successfully parsed transition plus the text shown in the visualizer pane.
+struct ParsedTransition {
+    state_transition: StateTransition,
+    rendered: String,
+}
+
+/// Render a parsed state transition for display.
+///
+/// Prefer pretty JSON. When serialization fails (e.g. non-string map keys in
+/// platform-address transitions), fall back to a plain-text header plus the
+/// multi-line `Debug` representation so newlines stay readable in the UI.
+fn state_transition_to_display(
+    state_transition: &(impl serde::Serialize + std::fmt::Debug),
+) -> String {
+    serde_json::to_string_pretty(state_transition).unwrap_or_else(|error| {
+        tracing::debug!(%error, "Transition JSON serialization failed; using debug fallback");
+        format!(
+            "State transition parsed successfully, but JSON serialization failed.\n\
+             Serialization error: {error}\n\n\
+             Debug representation:\n\
+             {state_transition:#?}"
+        )
+    })
+}
+
 #[derive(PartialEq)]
 enum TransitionBroadcastStatus {
     NotStarted,
@@ -32,7 +57,7 @@ enum TransitionBroadcastStatus {
 pub struct TransitionVisualizerScreen {
     pub app_context: Arc<AppContext>,
     input_data: String,
-    parsed_json: Option<String>,
+    parsed: Option<ParsedTransition>,
     parse_error: Option<(String, Instant)>,
     broadcast_status: TransitionBroadcastStatus,
     submit_banner: Option<BannerHandle>,
@@ -47,7 +72,7 @@ impl TransitionVisualizerScreen {
         Self {
             app_context: app_context.clone(),
             input_data: String::new(),
-            parsed_json: None,
+            parsed: None,
             parse_error: None,
             broadcast_status: TransitionBroadcastStatus::NotStarted,
             submit_banner: None,
@@ -86,7 +111,7 @@ impl TransitionVisualizerScreen {
 
     fn parse_input(&mut self) {
         // Clear previous parse results...
-        self.parsed_json = None;
+        self.parsed = None;
         self.parse_error = None;
         self.detected_contract_ids.clear();
 
@@ -126,31 +151,28 @@ impl TransitionVisualizerScreen {
                 // pre-allocating from length prefixes.
                 match StateTransition::deserialize_from_bytes_untrusted(&bytes) {
                     Ok(state_transition) => {
-                        // Convert to JSON
-                        match serde_json::to_string_pretty(&state_transition) {
-                            Ok(json) => {
-                                self.parsed_json = Some(json.clone());
+                        // Convert to JSON, falling back to a readable debug view for
+                        // transition variants whose map keys cannot currently be
+                        // represented as JSON object keys.
+                        let rendered = state_transition_to_display(&state_transition);
 
-                                // Extract contract IDs from the JSON
-                                if let Ok(json_value) = serde_json::from_str::<Value>(&json) {
-                                    Self::extract_contract_ids(
-                                        &json_value,
-                                        &mut self.detected_contract_ids,
-                                    );
-                                }
-                            }
-                            Err(error) => {
-                                tracing::debug!(?error, "Transition JSON serialization failed");
-                                self.parse_error = Some((
-                                    format!(
-                                        "The transition could not be displayed as JSON. Check the input and try again. ({error})"
-                                    ),
-                                    Instant::now(),
-                                ));
-                            }
+                        // Extract contract IDs when the rendered output is real JSON.
+                        // Fallback plain-text rendering intentionally has none.
+                        if let Ok(json_value) = serde_json::from_str::<Value>(&rendered) {
+                            Self::extract_contract_ids(
+                                &json_value,
+                                &mut self.detected_contract_ids,
+                            );
                         }
+
+                        self.parsed = Some(ParsedTransition {
+                            state_transition,
+                            rendered,
+                        });
                     }
                     Err(error) => {
+                        // Live typing frequently produces incomplete bytes; keep this at
+                        // DEBUG so interactive use does not spam WARN logs.
                         tracing::debug!(?error, "State-transition deserialization failed");
                         self.parse_error = Some((
                             format!(
@@ -220,13 +242,17 @@ impl TransitionVisualizerScreen {
             ui.add_space(5.0);
         }
 
-        // Show the JSON if we have it
+        // Show the rendered transition if we have it
         ScrollArea::vertical().show(ui, |ui| {
-            if let Some(ref json) = self.parsed_json {
+            if let Some(ParsedTransition {
+                state_transition,
+                rendered,
+            }) = &self.parsed
+            {
                 ui.add_space(5.0);
                 let dark_mode = ui.style().visuals.dark_mode;
                 ui.add(
-                    TextEdit::multiline(&mut json.clone())
+                    TextEdit::multiline(&mut rendered.clone())
                         .desired_rows(10)
                         .desired_width(ui.available_width())
                         .text_color(DashColors::text_primary(dark_mode))
@@ -236,7 +262,8 @@ impl TransitionVisualizerScreen {
 
                 ui.add_space(10.0);
 
-                // Show the button when not currently submitting or done
+                // Show the button when not currently submitting or done.
+                // `ParsedTransition` guarantees a typed transition is available.
                 if matches!(self.broadcast_status, TransitionBroadcastStatus::NotStarted) {
                     let mut new_style = (**ui.style()).clone();
                     new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
@@ -256,17 +283,15 @@ impl TransitionVisualizerScreen {
                         self.submit_banner = Some(handle);
                         self.broadcast_status = TransitionBroadcastStatus::Submitting;
 
-                        if let Some(json) = &self.parsed_json
-                            && let Ok(state_transition) = serde_json::from_str(json)
-                        {
-                            app_action = AppAction::BackendTask(
-                                BackendTask::BroadcastStateTransition(state_transition),
-                            );
-                        }
+                        // Broadcast the retained typed transition — never re-parse
+                        // the rendered pane (which may be a debug fallback).
+                        app_action = AppAction::BackendTask(BackendTask::BroadcastStateTransition(
+                            state_transition.clone(),
+                        ));
                     }
                 }
             } else {
-                // If parsed_json is None
+                // If parsed is None
                 if matches!(self.broadcast_status, TransitionBroadcastStatus::NotStarted) {
                     ui.colored_label(Color32::GRAY, "No state transition parsed yet.");
                 }
@@ -538,5 +563,88 @@ impl ScreenLike for TransitionVisualizerScreen {
         }
 
         action
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::test_support::test_app_context_for_network;
+    use dash_sdk::dpp::dashcore::Network;
+    use dash_sdk::dpp::serialization::PlatformSerializable;
+    use egui_kittest::{Harness, kittest::Queryable};
+
+    /// Historical AddressFundsTransfer payload from issue #573.
+    const ISSUE_573_BASE64: &str = "DAABAEZJ8lqSWSBK4JRgM6A4o7EoAM/IDPwAD0JAAQA2I7Ax2quQXVnyAKnezuNPE75q7vwAD0JAAQAAAAEAQR/vseNQooUa8QVJbujMgP22M8EzL3C9AAEibx6iMtmWHA1ou89lGCCtHgJmKcieCtdhZMhqcnU9O+fc4Y575ryF";
+
+    #[test]
+    fn issue_573_platform_address_transition_deserializes_and_renders() {
+        let bytes = STANDARD.decode(ISSUE_573_BASE64).expect("base64");
+        let transition =
+            StateTransition::deserialize_from_bytes_untrusted(&bytes).expect("transition");
+        // The current Platform pin serializes this historical payload successfully.
+        assert_eq!(
+            state_transition_to_display(&transition),
+            serde_json::to_string_pretty(&transition).expect("JSON")
+        );
+    }
+
+    #[test]
+    fn non_string_map_keys_use_readable_debug_fallback() {
+        let value = std::collections::BTreeMap::from([((1u8, 2u8), 3u8)]);
+        assert!(serde_json::to_string_pretty(&value).is_err());
+        let rendered = state_transition_to_display(&value);
+        assert!(rendered.starts_with("State transition parsed successfully"));
+        assert!(rendered.ends_with(&format!("Debug representation:\n{value:#?}")));
+        assert!(rendered.lines().count() > 3);
+    }
+
+    #[test]
+    fn issue_573_broadcast_uses_retained_transition_not_display_text() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = test_app_context_for_network(dir.path(), Network::Regtest);
+        let mut screen = TransitionVisualizerScreen::new(&context);
+        screen.input_data = ISSUE_573_BASE64.to_owned();
+        screen.parse_input();
+        assert!(screen.parse_error.is_none());
+        let parsed = screen.parsed.as_mut().expect("parsed transition");
+        let bytes = STANDARD.decode(ISSUE_573_BASE64).expect("base64");
+        assert!(matches!(
+            parsed.state_transition,
+            StateTransition::AddressFundsTransfer(_)
+        ));
+        assert_eq!(
+            parsed.state_transition.serialize_to_bytes().expect("bytes"),
+            bytes
+        );
+        // Simulate a non-JSON fallback pane: broadcasting must ignore its text.
+        parsed.rendered = "Debug representation:\nnot JSON".to_owned();
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, (screen, action): &mut (TransitionVisualizerScreen, AppAction)| {
+                let next = screen.show_output(ui);
+                if !matches!(next, AppAction::None) {
+                    *action = next;
+                }
+            },
+            (screen, AppAction::None),
+        );
+        harness.run();
+        harness
+            .get_by_label("Broadcast Transition to Platform")
+            .click();
+        harness.run();
+        let AppAction::BackendTask(BackendTask::BroadcastStateTransition(transition)) =
+            &harness.state().1
+        else {
+            panic!("expected a broadcast task");
+        };
+        assert_eq!(transition.serialize_to_bytes().expect("bytes"), bytes);
+
+        // A subsequent invalid input must discard the old broadcast payload.
+        let screen = &mut harness.state_mut().0;
+        screen.input_data = "not a transition".to_owned();
+        screen.parse_input();
+        assert!(screen.parsed.is_none());
+        assert!(screen.parse_error.is_some());
     }
 }

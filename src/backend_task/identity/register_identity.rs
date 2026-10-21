@@ -1,7 +1,10 @@
-use crate::backend_task::error::TaskError;
+use crate::backend_task::error::{
+    TaskError, ensure_existing_funding_covers_network_fee, ensure_funding_covers_network_fee,
+};
 use crate::backend_task::identity::{IdentityRegistrationInfo, RegisterIdentityFundingMethod};
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
+use crate::model::fee_estimation::identity_create_min_funding_duffs;
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
 use crate::model::request_type::RequestType;
 use dash_sdk::dash_spv::Network;
@@ -29,7 +32,6 @@ impl AppContext {
         input: IdentityRegistrationInfo,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let IdentityRegistrationInfo {
-            alias_input,
             keys,
             wallet,
             wallet_identity_index,
@@ -54,6 +56,12 @@ impl AppContext {
         // tracked asset lock on success.
         match identity_funding_method {
             RegisterIdentityFundingMethod::FundWithWallet(amount_duffs, identity_index) => {
+                // Before any wallet work: the network refuses a funding below
+                // its fee only after the funds have left the wallet.
+                ensure_funding_covers_network_fee(
+                    amount_duffs,
+                    identity_create_min_funding_duffs(key_count, sdk.version()),
+                )?;
                 let funding =
                     platform_wallet::wallet::asset_lock::AssetLockFunding::FromWalletBalance {
                         amount_duffs,
@@ -67,7 +75,6 @@ impl AppContext {
                     keys,
                     wallet,
                     wallet_seed_hash,
-                    alias_input,
                     estimated_fee,
                 )
                 .await
@@ -76,6 +83,13 @@ impl AppContext {
                 out_point,
                 identity_index,
             } => {
+                // Before any signing or network work.
+                let backend = self.wallet_backend()?;
+                ensure_existing_funding_covers_network_fee(
+                    &backend.list_tracked_asset_locks(&wallet_seed_hash).await?,
+                    &out_point,
+                    identity_create_min_funding_duffs(key_count, sdk.version()),
+                )?;
                 let funding =
                     platform_wallet::wallet::asset_lock::AssetLockFunding::FromExistingAssetLock {
                         out_point,
@@ -92,7 +106,6 @@ impl AppContext {
                     keys,
                     wallet,
                     wallet_seed_hash,
-                    alias_input,
                     estimated_fee,
                 )
                 .await
@@ -131,7 +144,6 @@ impl AppContext {
                     .collect::<BTreeMap<PlatformAddress, (AddressNonce, Credits)>>();
 
                 self.register_identity_from_platform_addresses(
-                    alias_input,
                     keys,
                     wallet,
                     wallet_identity_index,
@@ -160,7 +172,6 @@ impl AppContext {
         keys: super::IdentityKeySpecs,
         wallet: std::sync::Arc<std::sync::RwLock<super::Wallet>>,
         wallet_seed_hash: super::WalletSeedHash,
-        alias_input: String,
         estimated_fee: u64,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let backend = self.wallet_backend()?;
@@ -184,11 +195,7 @@ impl AppContext {
             associated_operator_identity: None,
             associated_owner_key_id: None,
             identity_type: IdentityType::User,
-            alias: if alias_input.is_empty() {
-                None
-            } else {
-                Some(alias_input)
-            },
+            alias: None,
             private_keys: keys.to_key_storage(wallet_seed_hash),
             dpns_names: vec![],
             associated_wallets: BTreeMap::from([(wallet_seed_hash, wallet.clone())]),
@@ -260,7 +267,6 @@ impl AppContext {
     /// from the current nonce of the address.
     async fn register_identity_from_platform_addresses(
         &self,
-        alias_input: String,
         keys: super::IdentityKeySpecs,
         wallet: std::sync::Arc<std::sync::RwLock<super::Wallet>>,
         wallet_identity_index: u32,
@@ -316,10 +322,6 @@ impl AppContext {
             status: IdentityStatus::PendingCreation,
             network: self.network,
         };
-
-        if !alias_input.is_empty() {
-            qualified_identity.alias = Some(alias_input);
-        }
 
         // Sign each funding input through a JIT platform signer that borrows the
         // HD seed only for the duration of the SDK call. The pure path index is

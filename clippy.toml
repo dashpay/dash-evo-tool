@@ -1,0 +1,9 @@
+# Every production file deletion goes through `src/utils/file_deletion.rs`.
+disallowed-methods = [
+    { path = "std::fs::remove_file", reason = "delete through utils::file_deletion::delete_file" },
+    { path = "std::fs::remove_dir", reason = "delete through utils::file_deletion::delete_tree" },
+    { path = "std::fs::remove_dir_all", reason = "delete through utils::file_deletion::delete_tree" },
+    { path = "tokio::fs::remove_file", reason = "delete through utils::file_deletion::delete_file" },
+    { path = "tokio::fs::remove_dir", reason = "delete through utils::file_deletion::delete_tree" },
+    { path = "tokio::fs::remove_dir_all", reason = "delete through utils::file_deletion::delete_tree" },
+]

@@ -37,7 +37,7 @@ use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
-use crate::context::connection_status::{ConnectionStatus, OverallConnectionState};
+use crate::context::connection_status::ConnectionStatus;
 use crate::context::feature_gate::FeatureGate;
 use crate::context::migration_status::MigrationState;
 use crate::database::Database;
@@ -184,44 +184,8 @@ fn boot_auto_start_spv(
 /// locks that invariant.
 pub(crate) const FALLBACK_ROOT_SCREEN: RootScreenType = RootScreenType::RootScreenIdentityHub;
 
-/// Whether the root screen `root` is the one a task result goes to: the screen
-/// that dispatched the task while it is open, or else the screen in view.
-#[cfg(test)]
-fn root_takes_result(root: RootScreenType, owner: Option<ScreenOwner>, root_in_view: bool) -> bool {
-    owner.map_or(root_in_view, |owner| owner == ScreenOwner::Root(root))
-}
-
-#[cfg(test)]
-fn identity_hub_is_visible(selected: RootScreenType, screen_stack_is_empty: bool) -> bool {
-    selected == RootScreenType::RootScreenIdentityHub && screen_stack_is_empty
-}
-
 /// The root screen hosting the voting workspace (Masternodes ▸ Votes).
 const VOTING_ROOT_SCREEN: RootScreenType = RootScreenType::RootScreenMasternodes;
-
-/// Whether a DPNS root screen is currently out of view, either because another
-/// root screen is selected or because a modal covers it. Shared by success and
-/// error routing so both agree on what "hidden" means.
-#[cfg(test)]
-fn dpns_screen_is_hidden(
-    target: RootScreenType,
-    selected: RootScreenType,
-    screen_stack_is_empty: bool,
-) -> bool {
-    selected != target || !screen_stack_is_empty
-}
-
-/// Whether a result needs its own route to the voting panel: one the panel
-/// acts on, going to another screen than the voting root.
-#[cfg(test)]
-fn dpns_result_needs_route(
-    voting_root_takes_result: bool,
-    result: &BackendTaskSuccessResult,
-) -> bool {
-    // The voting panel says which results it acts on, so it receives each of
-    // them even while its root screen is hidden.
-    DPNSScreen::handles_result(result) && !voting_root_takes_result
-}
 
 #[cfg(test)]
 mod backend_task_join_tests {
@@ -432,30 +396,20 @@ mod backend_task_join_tests {
     }
 
     #[tokio::test]
-    async fn panicking_backend_task_is_forwarded_as_typed_error() {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-        let sender = SenderAsync::new(tx, egui::Context::default());
-        let join_handle = tokio::task::spawn_blocking(|| panic!("backend task panic"));
-
-        forward_backend_task_join_error(
-            join_handle.await,
-            sender,
-            None,
-            BackendTaskContext::Unknown,
+    async fn panicking_backend_task_produces_redacted_typed_error() {
+        let error = task_dispatch::run_batch(
+            vec![async {
+                panic!("backend task panic");
+                #[expect(unreachable_code)]
+                Ok::<(), TaskError>(())
+            }],
+            BackendTasksExecutionMode::Sequential,
         )
-        .await;
-
-        let result = tokio::time::timeout(Duration::from_secs(1), rx.recv())
-            .await
-            .expect("join failure must be reported promptly")
-            .expect("join failure result must be sent");
-        let TaskResult::Error {
-            error: error @ TaskError::BackendTaskFailed { .. },
-            ..
-        } = result
-        else {
-            panic!("expected typed backend task failure, got {result:?}");
-        };
+        .await
+        .pop()
+        .unwrap()
+        .expect_err("the executor must report the panic");
+        assert!(matches!(error, TaskError::BackendTaskPanicked));
         assert!(
             !format!("{error:?}").contains("backend task panic"),
             "panic payload must be redacted from diagnostics"
@@ -517,34 +471,47 @@ mod backend_task_join_tests {
     }
 
     #[tokio::test]
-    async fn panicking_paid_contact_action_keeps_its_request_correlation() {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+    async fn rejected_paid_contact_action_keeps_its_request_correlation() {
+        let dir = tempfile::tempdir().unwrap();
+        let app_context = crate::context::test_support::test_app_context(dir.path());
+        let manager = TaskManager::new();
+        manager.shutdown_async().await.unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
         let sender = SenderAsync::new(tx, egui::Context::default());
         let request_id = Identifier::from([0x44; 32]);
-        let join_handle = tokio::task::spawn_blocking(|| panic!("backend task panic"));
-
-        forward_backend_task_join_error(
-            join_handle.await,
+        let identity = crate::context::test_support::bare_user_identity(
+            Identifier::from([0x45; 32]),
+            Network::Testnet,
+        );
+        let task = BackendTask::DashPayTask(Box::new(
+            crate::backend_task::dashpay::DashPayTask::AcceptContactRequest {
+                identity,
+                request_id,
+            },
+        ));
+        let context = BackendTaskContext::Dispatched {
+            dispatch_id: 77,
+            operation: Box::new(BackendTaskContext::for_task_on(&task, Network::Testnet)),
+        };
+        let results = task_dispatch::spawn(
+            app_context,
+            &manager,
             sender,
-            Some(request_id),
-            BackendTaskContext::Unknown,
-        )
-        .await;
-
-        let result = tokio::time::timeout(Duration::from_secs(1), rx.recv())
-            .await
-            .expect("join failure must be reported promptly")
-            .expect("join failure result must be sent");
+            vec![(task, context.clone())],
+            BackendTasksExecutionMode::Sequential,
+        );
+        assert_eq!(results.len(), 1);
         assert!(matches!(
-            result,
+            &results[0],
             TaskResult::Error {
+                context: actual_context,
                 error: TaskError::DashPayContactRequestActionFailed {
                     request_id: correlated,
                     source,
                 },
-                ..
-            } if correlated == request_id
-                && matches!(source.as_ref(), TaskError::BackendTaskFailed { .. })
+            } if *correlated == request_id
+                && *actual_context == context
+                && matches!(source.as_ref(), TaskError::TaskManagerShuttingDown)
         ));
     }
 
@@ -612,30 +579,6 @@ impl BootPhase {
 }
 
 pub use crate::backend_task::TaskResult;
-
-#[cfg(test)]
-async fn forward_backend_task_join_error(
-    join_result: Result<(), tokio::task::JoinError>,
-    sender: egui_mpsc::SenderAsync<TaskResult>,
-    request_id: Option<Identifier>,
-    context: BackendTaskContext,
-) {
-    if let Err(source) = join_result {
-        let stopped = TaskError::BackendTaskFailed {
-            source: source.into(),
-        };
-        let error = match request_id {
-            Some(request_id) => TaskError::DashPayContactRequestActionFailed {
-                request_id,
-                source: Box::new(stopped),
-            },
-            None => stopped,
-        };
-        if let Err(error) = sender.send(TaskResult::Error { context, error }).await {
-            tracing::error!(%error, "Failed to report a stopped backend task");
-        }
-    }
-}
 
 struct ThemeState {
     preference: ThemeMode,
@@ -3599,40 +3542,19 @@ mod contact_request_routing_tests {
     use super::*;
 
     #[test]
-    fn hidden_hub_needs_authoritative_contact_result_forwarding() {
-        assert!(!identity_hub_is_visible(
-            RootScreenType::RootScreenWalletsBalances,
-            true
-        ));
-        assert!(!identity_hub_is_visible(
-            RootScreenType::RootScreenIdentityHub,
-            false
-        ));
-        assert!(identity_hub_is_visible(
-            RootScreenType::RootScreenIdentityHub,
-            true
-        ));
-    }
-
-    /// A root screen hears about a result it would not otherwise get: one
-    /// another open screen dispatched, even while the root is in view, and
-    /// one nobody open dispatched while the root is hidden.
-    #[test]
-    fn a_root_takes_its_own_results_and_undispatched_ones_in_view() {
-        use super::request_routing::ScreenStack;
-        let hub = RootScreenType::RootScreenIdentityHub;
-        let other_root = ScreenOwner::Root(RootScreenType::RootScreenWalletsBalances);
+    fn hub_completion_routes_distinguish_owners_visibility_and_closed_forms() {
+        let hub = ScreenOwner::Root(RootScreenType::RootScreenIdentityHub);
+        let other = ScreenOwner::Root(RootScreenType::RootScreenWalletsBalances);
         let stacked = ScreenOwner::Stacked(ScreenStack::default().push(()));
-
-        for in_view in [false, true] {
-            assert!(root_takes_result(
-                hub,
-                Some(ScreenOwner::Root(hub)),
-                in_view
-            ));
-            assert!(!root_takes_result(hub, Some(other_root), in_view));
-            assert!(!root_takes_result(hub, Some(stacked), in_view));
-            assert_eq!(root_takes_result(hub, None, in_view), in_view);
+        for visible in [hub, other, stacked] {
+            assert!(ResultRoute::Owner(hub).delivers_to(hub, visible));
+            assert!(!ResultRoute::Owner(other).delivers_to(hub, visible));
+            assert!(!ResultRoute::Owner(stacked).delivers_to(hub, visible));
+            assert_eq!(
+                ResultRoute::Visible.delivers_to(hub, visible),
+                visible == hub
+            );
+            assert!(!ResultRoute::ClosedOwner.delivers_to(hub, visible));
         }
     }
 }
@@ -3641,137 +3563,13 @@ mod contact_request_routing_tests {
 mod dpns_result_routing_tests {
     use super::*;
 
-    /// The route a result nobody open dispatched takes to the voting panel.
-    fn dpns_result_needs_hidden_route(
-        target: RootScreenType,
-        selected: RootScreenType,
-        screen_stack_is_empty: bool,
-        result: &BackendTaskSuccessResult,
-    ) -> bool {
-        dpns_result_needs_route(
-            root_takes_result(
-                target,
-                None,
-                !dpns_screen_is_hidden(target, selected, screen_stack_is_empty),
-            ),
-            result,
-        )
-    }
     use crate::model::dpns_voting::{
         DpnsScheduledVoteClearDisposition, DpnsScheduledVoteClearOutcome, DpnsScheduledVoteKey,
         DpnsVoteOperationId,
     };
 
     #[test]
-    fn voting_ui_results_route_to_the_hidden_voting_panel_only_once() {
-        let result = BackendTaskSuccessResult::ScheduledVoteSweepCompleted {
-            network: Network::Testnet,
-            preserve_eligibility_since_ms: None,
-        };
-        let root = VOTING_ROOT_SCREEN;
-        assert_eq!(root, RootScreenType::RootScreenMasternodes);
-        assert!(!dpns_result_needs_hidden_route(root, root, true, &result));
-        assert!(dpns_result_needs_hidden_route(root, root, false, &result));
-        assert!(dpns_result_needs_hidden_route(
-            root,
-            RootScreenType::RootScreenIdentityHub,
-            true,
-            &result
-        ));
-        assert!(!dpns_result_needs_hidden_route(
-            root,
-            RootScreenType::RootScreenIdentityHub,
-            true,
-            &BackendTaskSuccessResult::None
-        ));
-    }
-
-    #[test]
-    fn correlated_vote_result_routes_when_masternodes_is_hidden() {
-        let result = BackendTaskSuccessResult::DpnsVoteOperationUpdated {
-            network: Network::Testnet,
-            operation_id: DpnsVoteOperationId::from_bytes([7; 16]),
-        };
-
-        assert!(dpns_result_needs_hidden_route(
-            VOTING_ROOT_SCREEN,
-            RootScreenType::RootScreenWalletsBalances,
-            true,
-            &result,
-        ));
-        assert!(dpns_result_needs_hidden_route(
-            VOTING_ROOT_SCREEN,
-            VOTING_ROOT_SCREEN,
-            false,
-            &result,
-        ));
-        assert!(!dpns_result_needs_hidden_route(
-            VOTING_ROOT_SCREEN,
-            VOTING_ROOT_SCREEN,
-            true,
-            &result,
-        ));
-    }
-
-    #[test]
-    fn refreshed_contests_route_when_masternodes_is_hidden() {
-        assert!(dpns_result_needs_hidden_route(
-            VOTING_ROOT_SCREEN,
-            RootScreenType::RootScreenWalletsBalances,
-            true,
-            &BackendTaskSuccessResult::RefreshedDpnsContests,
-        ));
-    }
-
-    #[test]
-    fn scheduled_vote_sweep_completion_routes_when_masternodes_is_hidden() {
-        let result = BackendTaskSuccessResult::ScheduledVoteSweepCompleted {
-            network: Network::Testnet,
-            preserve_eligibility_since_ms: None,
-        };
-
-        assert!(dpns_result_needs_hidden_route(
-            VOTING_ROOT_SCREEN,
-            RootScreenType::RootScreenWalletsBalances,
-            true,
-            &result,
-        ));
-        assert!(dpns_result_needs_hidden_route(
-            VOTING_ROOT_SCREEN,
-            VOTING_ROOT_SCREEN,
-            false,
-            &result,
-        ));
-        assert!(!dpns_result_needs_hidden_route(
-            VOTING_ROOT_SCREEN,
-            VOTING_ROOT_SCREEN,
-            true,
-            &result,
-        ));
-    }
-
-    #[test]
-    fn cleared_scheduled_votes_route_when_masternodes_is_hidden() {
-        assert!(dpns_result_needs_hidden_route(
-            VOTING_ROOT_SCREEN,
-            RootScreenType::RootScreenIdentityHub,
-            true,
-            &BackendTaskSuccessResult::ScheduledVotesCleared(Vec::new()),
-        ));
-    }
-
-    /// The panel itself says which results it handles, so routing follows the
-    /// handler: every such result reaches a hidden panel, and nothing else does.
-    #[test]
-    fn hidden_routing_follows_the_results_the_voting_panel_handles() {
-        let hidden = |result: &BackendTaskSuccessResult| {
-            dpns_result_needs_hidden_route(
-                VOTING_ROOT_SCREEN,
-                RootScreenType::RootScreenIdentityHub,
-                true,
-                result,
-            )
-        };
+    fn voting_observer_interest_matches_supported_results() {
         for handled in [
             BackendTaskSuccessResult::DpnsVoteOperationUpdated {
                 network: Network::Testnet,
@@ -3786,7 +3584,6 @@ mod dpns_result_routing_tests {
             BackendTaskSuccessResult::RefreshedDpnsContests,
         ] {
             assert!(DPNSScreen::handles_result(&handled));
-            assert!(hidden(&handled));
         }
         for unrelated in [
             BackendTaskSuccessResult::None,
@@ -3797,33 +3594,7 @@ mod dpns_result_routing_tests {
             BackendTaskSuccessResult::MyUsernameRequestsRefreshed,
         ] {
             assert!(!DPNSScreen::handles_result(&unrelated));
-            assert!(!hidden(&unrelated));
         }
-    }
-
-    #[test]
-    fn scheduled_votes_in_progress_route_when_masternodes_is_hidden() {
-        assert!(dpns_result_needs_hidden_route(
-            VOTING_ROOT_SCREEN,
-            RootScreenType::RootScreenWalletsBalances,
-            true,
-            &BackendTaskSuccessResult::ScheduledVotesInProgress(Vec::new()),
-        ));
-    }
-
-    /// The visibility rule both `route_dpns_vote_result_to_hidden_screens` and
-    /// `route_dpns_vote_error_to_hidden_screens` route on.
-    #[test]
-    fn the_voting_panel_is_hidden_behind_another_root_screen_or_a_modal() {
-        let target = VOTING_ROOT_SCREEN;
-
-        assert!(!dpns_screen_is_hidden(target, target, true));
-        assert!(dpns_screen_is_hidden(target, target, false));
-        assert!(dpns_screen_is_hidden(
-            target,
-            RootScreenType::RootScreenWalletsBalances,
-            true
-        ));
     }
 
     #[test]

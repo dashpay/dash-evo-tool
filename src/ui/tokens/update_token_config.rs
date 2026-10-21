@@ -606,6 +606,11 @@ impl UpdateTokenConfigScreen {
             TokenConfigurationChangeItem::MarketplaceTradeMode(_) => {
                 ui.label("Marketplace settings are not yet supported.");
             }
+            TokenConfigurationChangeItem::MinimumPoolNotesForOutgoing(_)
+            | TokenConfigurationChangeItem::MinimumPoolNotesForOutgoingControlGroup(_)
+            | TokenConfigurationChangeItem::MinimumPoolNotesForOutgoingAdminGroup(_) => {
+                ui.label("This setting cannot be changed here. Use another token configuration editor.");
+            }
         }
         });
         });
@@ -670,6 +675,7 @@ impl UpdateTokenConfigScreen {
         );
 
         if (self.app_context.user_role().at_least(UserRole::Power) || !button_text.contains("Test"))
+            && token_change_item_is_supported(&self.change_item)
             && self.change_item != TokenConfigurationChangeItem::TokenConfigurationNoChange
         {
             ui.add_space(20.0);
@@ -1094,5 +1100,47 @@ fn token_change_item_label(item: &TokenConfigurationChangeItem) -> &'static str 
             "Marketplace Trade Mode Admin Group"
         }
         TokenConfigurationChangeItem::MainControlGroup(_) => "Main Control Group",
+        TokenConfigurationChangeItem::MinimumPoolNotesForOutgoing(_) => {
+            "Minimum Pool Notes for Outgoing Transfers"
+        }
+        TokenConfigurationChangeItem::MinimumPoolNotesForOutgoingControlGroup(_) => {
+            "Minimum Pool Notes Control Group"
+        }
+        TokenConfigurationChangeItem::MinimumPoolNotesForOutgoingAdminGroup(_) => {
+            "Minimum Pool Notes Admin Group"
+        }
+    }
+}
+
+fn token_change_item_is_supported(item: &TokenConfigurationChangeItem) -> bool {
+    !matches!(
+        item,
+        TokenConfigurationChangeItem::MinimumPoolNotesForOutgoing(_)
+            | TokenConfigurationChangeItem::MinimumPoolNotesForOutgoingControlGroup(_)
+            | TokenConfigurationChangeItem::MinimumPoolNotesForOutgoingAdminGroup(_)
+    )
+}
+
+#[cfg(test)]
+mod sdk_adapter_tests {
+    use super::*;
+
+    #[test]
+    fn shielded_pool_configuration_cannot_be_submitted_from_this_editor() {
+        for item in [
+            TokenConfigurationChangeItem::MinimumPoolNotesForOutgoing(17),
+            TokenConfigurationChangeItem::MinimumPoolNotesForOutgoingControlGroup(
+                AuthorizedActionTakers::NoOne,
+            ),
+            TokenConfigurationChangeItem::MinimumPoolNotesForOutgoingAdminGroup(
+                AuthorizedActionTakers::NoOne,
+            ),
+        ] {
+            assert!(!token_change_item_is_supported(&item));
+            assert!(token_change_item_label(&item).contains("Pool"));
+        }
+        assert!(token_change_item_is_supported(
+            &TokenConfigurationChangeItem::MaxSupply(Some(17))
+        ));
     }
 }

@@ -808,10 +808,10 @@ fn home_contacts_follow_an_identity_selected_outside_the_hub() {
             &mut harness,
             "the newly selected identity's contact load",
             |action| match action {
-                AppAction::BackendTasks(tasks, _) => Some(
+                AppAction::BackendTasksWithContexts(tasks, _) => Some(
                     tasks
                         .iter()
-                        .filter_map(|task| match task {
+                        .filter_map(|(task, _)| match task {
                             BackendTask::DashPayTask(task) => match &**task {
                                 DashPayTask::LoadContacts { identity }
                                 | DashPayTask::LoadContactRequests { identity } => {

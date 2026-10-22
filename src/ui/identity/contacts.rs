@@ -20,8 +20,8 @@
 use super::request_card::{RequestAction, RequestCard};
 use super::social_profile_gate_card::SocialProfileGateCard;
 use crate::app::{AppAction, BackendTasksExecutionMode};
-use crate::backend_task::BackendTask;
 use crate::backend_task::dashpay::{ContactData, DashPayTask};
+use crate::backend_task::{BackendTask, BackendTaskContext};
 use crate::context::AppContext;
 use crate::context::feature_gate::FeatureGate;
 use crate::model::dashpay::{
@@ -238,15 +238,20 @@ pub(super) fn load_action(identity: &QualifiedIdentity, state: &mut ContactsStat
     if !state.claim_load() {
         return AppAction::None;
     }
-    AppAction::BackendTasks(
-        vec![
-            BackendTask::DashPayTask(Box::new(DashPayTask::LoadContacts {
-                identity: identity.clone(),
-            })),
-            BackendTask::DashPayTask(Box::new(DashPayTask::LoadContactRequests {
-                identity: identity.clone(),
-            })),
-        ],
+    let contacts = BackendTask::DashPayTask(Box::new(DashPayTask::LoadContacts {
+        identity: identity.clone(),
+    }));
+    // Its own dispatch, so an older load answering late is recognised as stale.
+    let contacts_context = BackendTaskContext::for_dispatch_on(&contacts, identity.network);
+    if let Some(dispatch_id) = contacts_context.dispatch_id() {
+        state.record_contacts_load(dispatch_id);
+    }
+    let requests = BackendTask::DashPayTask(Box::new(DashPayTask::LoadContactRequests {
+        identity: identity.clone(),
+    }));
+    let requests_context = BackendTaskContext::for_task_on(&requests, identity.network);
+    AppAction::BackendTasksWithContexts(
+        vec![(contacts, contacts_context), (requests, requests_context)],
         BackendTasksExecutionMode::Concurrent,
     )
 }
@@ -1318,12 +1323,12 @@ mod tests {
     }
 
     fn load_owner_ids(action: AppAction) -> Vec<Identifier> {
-        let AppAction::BackendTasks(tasks, _) = action else {
+        let AppAction::BackendTasksWithContexts(tasks, _) = action else {
             panic!("expected the contact loads, got {action:?}");
         };
         tasks
             .into_iter()
-            .map(|task| match task {
+            .map(|(task, _)| match task {
                 BackendTask::DashPayTask(task) => match *task {
                     DashPayTask::LoadContacts { identity }
                     | DashPayTask::LoadContactRequests { identity } => identity.identity.id(),
@@ -1765,20 +1770,21 @@ mod tests {
         let identity = qualified_identity(id(1));
         let mut state = ContactsState::default();
 
-        let AppAction::BackendTasks(tasks, mode) = load_action(&identity, &mut state) else {
+        let AppAction::BackendTasksWithContexts(tasks, mode) = load_action(&identity, &mut state)
+        else {
             panic!("hydration must dispatch its loads as one multi-task action");
         };
 
         assert_eq!(mode, BackendTasksExecutionMode::Concurrent);
         assert!(
-            tasks.iter().any(|t| matches!(
+            tasks.iter().any(|(t, _)| matches!(
                 t,
                 BackendTask::DashPayTask(task) if matches!(**task, DashPayTask::LoadContacts { .. })
             )),
             "the contact list must be loaded — without it the active section stays empty"
         );
         assert!(
-            tasks.iter().any(|t| matches!(
+            tasks.iter().any(|(t, _)| matches!(
                 t,
                 BackendTask::DashPayTask(task)
                     if matches!(**task, DashPayTask::LoadContactRequests { .. })

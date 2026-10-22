@@ -116,6 +116,12 @@ enum ContactInfoTaskKey {
 impl IdentityHubScreen {
     /// Refresh username request status when due (USR-FR-021); schedules the next check.
     fn username_refresh_action(&mut self, ctx: &egui::Context) -> AppAction {
+        // The refresh reads DPNS documents with proof verification; sent before
+        // the masternode list is synced it gets the queried nodes banned. Wait,
+        // keeping any arrival owed, until the list is ready.
+        if !self.app_context.connection_status().masternodes_ready() {
+            return AppAction::None;
+        }
         let arriving = std::mem::take(&mut self.usernames_arriving);
         let network = self.app_context.network;
         let needs_refresh = self.app_context.username_requests_need_refresh();
@@ -1425,6 +1431,42 @@ mod tests {
     /// therefore holds its contact, payment-history (which syncs DashPay
     /// first) and profile reads until the network is ready, while still
     /// showing that contacts are loading.
+    /// The hub's automatic username-status refresh reads DPNS documents with
+    /// proof verification, so it waits for the masternode list like Home's own
+    /// reads; otherwise it can ban the endpoints contact recovery needs.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_username_refresh_waits_until_masternodes_are_ready() {
+        let (_dir, context) = wired_test_context().await;
+        let owner = seed_user_identity(&context, 0x60);
+        context.set_selected_identity(Some(owner));
+        context.connection_status().set_masternodes_ready(false);
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 1000.0))
+            .build_ui_state(
+                |ui, state: &mut (IdentityHubScreen, usize, usize)| {
+                    state.1 += 1;
+                    if let AppAction::BackendTask(BackendTask::IdentityTask(
+                        IdentityTask::RefreshMyUsernameRequests,
+                    )) = state.0.ui(ui)
+                    {
+                        state.2 += 1;
+                    }
+                },
+                (IdentityHubScreen::new(&context), 0, 0),
+            );
+        harness.run_steps(6);
+        assert!(harness.state().1 >= 6, "the hub rendered every frame");
+        assert_eq!(harness.state().2, 0, "no refresh before readiness");
+
+        context.connection_status().set_masternodes_ready(true);
+        harness.run_steps(10);
+        assert_eq!(
+            harness.state().2,
+            1,
+            "one refresh once the network is ready"
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn home_holds_its_proof_reads_until_masternodes_are_ready() {
         let (_dir, context) = wired_test_context().await;

@@ -482,7 +482,12 @@ pub async fn load_contacts(
             let synced = synced.remove(&contact_id);
             let published = published.remove(&contact_id);
             let synced_before = backend.as_ref().is_some_and(|backend| {
-                let synced_before = backend.dashpay_details_synced(&identity_id, &contact_id);
+                let synced_before = backend
+                    .dashpay_details_synced(&identity_id, &contact_id)
+                    .unwrap_or_else(|error| {
+                        tracing::debug!(?error, "LoadContacts: synced record not read");
+                        false
+                    });
                 if !synced_before
                     && holds_details(published.as_ref(), synced.as_ref())
                     && let Err(error) =

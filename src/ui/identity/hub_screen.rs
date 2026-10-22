@@ -875,7 +875,7 @@ impl ScreenLike for IdentityHubScreen {
                 };
                 let network = self.contact_info_write_network(identity, contact_id);
                 self.contacts_state
-                    .finish_contact_info_write(network, identity, contact_id);
+                    .finish_contact_info_write(network, identity, contact_id, *published);
                 if let Some(task) = self.forget_contact_info_task(&key) {
                     self.contacts_state.invalidate();
                     let (message, kind) = if *published {
@@ -2371,6 +2371,8 @@ mod tests {
     enum NoteEvent {
         /// The hub's write succeeds.
         Saved,
+        /// The hub's write succeeds and is kept on this device only.
+        SavedOnThisDevice,
         /// The hub's write fails.
         Failed,
         /// The hub's write succeeds after the hub moved to another network.
@@ -2397,6 +2399,16 @@ mod tests {
                 "a list from before the save",
                 &[Saved, ListFromBefore("Old")],
                 "Mine",
+            ),
+            (
+                "a list from before a save kept on this device",
+                &[SavedOnThisDevice, ListFromBefore("Old")],
+                "Mine",
+            ),
+            (
+                "a published note wins over a save kept on this device",
+                &[SavedOnThisDevice, ListFromAfter("Old")],
+                "Old",
             ),
             (
                 "a read lagging behind the save",
@@ -2535,6 +2547,14 @@ mod tests {
         for event in events {
             match *event {
                 NoteEvent::Saved => screen.display_backend_task_result(&write, saved.clone()),
+                NoteEvent::SavedOnThisDevice => screen.display_backend_task_result(
+                    &write,
+                    BackendTaskSuccessResult::DashPayContactInfoUpdated {
+                        identity: owner,
+                        contact_id: contact,
+                        published: false,
+                    },
+                ),
                 NoteEvent::Failed => {
                     let error = TaskError::DashPayContactInfoActionFailed {
                         identity_id: owner,

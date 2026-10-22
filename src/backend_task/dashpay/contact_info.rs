@@ -168,7 +168,7 @@ impl SaveOps for PlatformSaveOps<'_> {
         let legacy = stored.legacy?;
         let synced_before = self
             .backend
-            .dashpay_details_synced(&owner, &self.contact_id)
+            .dashpay_details_synced(&owner, &self.contact_id)?
             || super::contacts::holds_details(published.as_ref(), local.as_ref());
         let legacy = legacy
             .get(&self.contact_id)

@@ -924,6 +924,21 @@ fn kv_contains(kv: &DetKv, owner: &Identifier, prefix: &str, counterparty: &Iden
     )
 }
 
+/// Whether `owner`'s marker for `counterparty` exists, whatever its value
+/// encodes. Unlike [`kv_contains`], a failed read is an error, not absence.
+fn kv_marker_present(
+    kv: &DetKv,
+    owner: &Identifier,
+    prefix: &str,
+    counterparty: &Identifier,
+) -> Result<bool, crate::wallet_backend::KvAdapterError> {
+    let owner_buf = owner.to_buffer();
+    kv.contains(
+        DetScope::Identity(&owner_buf),
+        &sidecar_key(prefix, counterparty),
+    )
+}
+
 fn kv_timestamps(kv: &DetKv, id: &Identifier) -> (i64, i64) {
     let key = sidecar_key(KV_PREFIX_TIMESTAMPS, id);
     kv_get_or_default(kv, DetScope::Global, &key, "dashpay_contact_timestamps")
@@ -1311,12 +1326,18 @@ impl WalletBackend {
     }
 
     /// Whether platform-wallet holds `owner`'s details for `contact_id`.
+    ///
+    /// # Errors
+    ///
+    /// The marker could not be read; a save must not take that for absence,
+    /// or legacy details would stand in for ones the user cleared.
     pub(crate) fn dashpay_details_synced(
         &self,
         owner: &Identifier,
         contact_id: &Identifier,
-    ) -> bool {
-        kv_contains(&self.kv(), owner, KV_PREFIX_DETAILS_SYNCED, contact_id)
+    ) -> Result<bool, TaskError> {
+        kv_marker_present(&self.kv(), owner, KV_PREFIX_DETAILS_SYNCED, contact_id)
+            .map_err(|source| TaskError::ContactDetailsStateRead { source })
     }
 
     pub(crate) async fn dashpay_lock_contact_request_action(
@@ -2637,6 +2658,50 @@ mod tests {
                 &kv
             ),
             ContactRequestStatus::Expired
+        );
+    }
+
+    /// PRRT_kwDOM8GK3c6vZ6qO: the synced marker is read for presence only, so
+    /// a value in an unknown encoding still counts; a failed read is an error.
+    #[test]
+    fn a_marker_read_tells_failure_from_absence() {
+        use platform_wallet_storage::{KvError, KvStore, ObjectId};
+
+        let store = Arc::new(crate::wallet_backend::kv_test_support::InMemoryKv::default());
+        let kv = DetKv::from_store(store.clone());
+        let (owner, contact) = (id_from_byte(1), id_from_byte(2));
+        assert!(!kv_marker_present(&kv, &owner, KV_PREFIX_DETAILS_SYNCED, &contact).unwrap());
+        store
+            .put(
+                &ObjectId::Identity(owner.to_buffer()),
+                &sidecar_key(KV_PREFIX_DETAILS_SYNCED, &contact),
+                &[crate::wallet_backend::kv::SCHEMA_VERSION.wrapping_add(1), 0],
+            )
+            .unwrap();
+        assert!(
+            kv_marker_present(&kv, &owner, KV_PREFIX_DETAILS_SYNCED, &contact).unwrap(),
+            "a marker in an unknown encoding is still present"
+        );
+
+        struct UnreadableKv;
+        impl KvStore for UnreadableKv {
+            fn get(&self, _: &ObjectId, _: &str) -> Result<Option<Vec<u8>>, KvError> {
+                Err(KvError::LockPoisoned)
+            }
+            fn put(&self, _: &ObjectId, _: &str, _: &[u8]) -> Result<(), KvError> {
+                Ok(())
+            }
+            fn delete(&self, _: &ObjectId, _: &str) -> Result<(), KvError> {
+                Ok(())
+            }
+            fn list_keys(&self, _: &ObjectId, _: Option<&str>) -> Result<Vec<String>, KvError> {
+                Ok(Vec::new())
+            }
+        }
+        let unreadable = DetKv::from_store(Arc::new(UnreadableKv));
+        assert!(
+            kv_marker_present(&unreadable, &owner, KV_PREFIX_DETAILS_SYNCED, &contact).is_err(),
+            "a failed read is not absence"
         );
     }
 

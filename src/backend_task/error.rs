@@ -1352,6 +1352,14 @@ pub enum TaskError {
         source: crate::wallet_backend::KvAdapterError,
     },
 
+    /// The record of which contact details this device already holds could
+    /// not be read, so a save cannot tell which stored details to keep.
+    #[error("Could not read your contact details saved on this device. Try saving again in a moment.")]
+    ContactDetailsStateRead {
+        #[source]
+        source: crate::wallet_backend::KvAdapterError,
+    },
+
     /// A private contact note exceeds the application's byte limit.
     #[error("This note is too long. Shorten it to save it.")]
     DashPayContactNoteTooLong {

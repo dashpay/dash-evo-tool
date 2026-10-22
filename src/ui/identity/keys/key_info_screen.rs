@@ -932,20 +932,14 @@ impl ScreenLike for KeyInfoScreen {
             ));
         }
 
-        // A budgeted key: ask Platform what is left of the budget, once per
-        // opened (or refreshed) screen.
-        if self.remaining_budget == RemainingBudget::NotRequested
-            && self.limits_key().total_budget().is_some()
-        {
-            self.remaining_budget = RemainingBudget::Loading;
-            action |= AppAction::BackendTask(BackendTask::IdentityTask(
-                IdentityTask::FetchKeyRemainingBudgets {
-                    identity_id,
-                    key_ids: vec![self.key.id()],
-                },
-            ));
-        }
+        self.queued_requests(action)
+    }
+}
 
+impl KeyInfoScreen {
+    /// Add the requests this screen sends on its own (budget read, queued
+    /// raise, legacy recovery) to `action`, the frame's action so far.
+    fn queued_requests(&mut self, mut action: AppAction) -> AppAction {
         if let Some(raise) = self.pending_raise.take() {
             action |=
                 AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::RaiseKeyLimits {
@@ -966,11 +960,29 @@ impl ScreenLike for KeyInfoScreen {
             action |= AppAction::BackendTaskWithContext { task, context };
         }
 
+        // A budgeted key: ask Platform what is left of the budget, once per
+        // opened (or refreshed) screen. An action carries one request, so the
+        // read waits for a frame nothing else claimed, and counts as sent only
+        // once it actually goes out.
+        if self.remaining_budget == RemainingBudget::NotRequested
+            && self.limits_key().total_budget().is_some()
+        {
+            if matches!(action, AppAction::None) {
+                self.remaining_budget = RemainingBudget::Loading;
+                action = AppAction::BackendTask(BackendTask::IdentityTask(
+                    IdentityTask::FetchKeyRemainingBudgets {
+                        identity_id: self.identity.identity.id(),
+                        key_ids: vec![self.key.id()],
+                    },
+                ));
+            } else {
+                self.app_context.egui_ctx().request_repaint();
+            }
+        }
+
         action
     }
-}
 
-impl KeyInfoScreen {
     pub fn new(
         identity: QualifiedIdentity,
         key: IdentityPublicKey,
@@ -2989,6 +3001,53 @@ mod tests {
                 .has(&(MAIN, other_writer_key.id())),
             "another identity's completion must not be acted on here at all",
         );
+
+        app_context
+            .wallet_backend()
+            .expect("backend")
+            .shutdown()
+            .await;
+    }
+
+    /// Whether `action` asks Platform for the remaining budget of a key.
+    fn requests_budget(action: &AppAction) -> bool {
+        matches!(
+            action,
+            AppAction::BackendTask(BackendTask::IdentityTask(
+                IdentityTask::FetchKeyRemainingBudgets { .. }
+            ))
+        )
+    }
+
+    /// Regression: on an install with the previous version's identities, the
+    /// legacy recovery check went out in the same frame as the budget read and
+    /// replaced it (an action keeps only its last task). The budget then stayed
+    /// "loading" for good, since it was marked as requested.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_budget_read_is_sent_even_when_the_recovery_check_goes_out() {
+        let (app_context, _dir) = offline_ctx().await;
+
+        let budgeted = public_key(1, Purpose::AUTHENTICATION).with_limits(Some(5_000), None);
+        let identity = identity_with(0xB6, &[(budgeted.clone(), [0x11; 32])]);
+        let identity_id = identity.identity.id();
+        let mut screen = KeyInfoScreen::new(identity, budgeted, None, &app_context);
+        // Arm the recovery check, as on an install with legacy identities.
+        screen
+            .recovery
+            .offered(identity_id, RecoveryPlan::default());
+        screen.recovery.completed();
+
+        let first = screen.queued_requests(AppAction::None);
+        assert!(
+            matches!(first, AppAction::BackendTaskWithContext { .. }),
+            "the recovery check goes out on the first frame"
+        );
+        let second = screen.queued_requests(AppAction::None);
+        assert!(
+            requests_budget(&first) || requests_budget(&second),
+            "the budget read must go out once the recovery check took the first frame"
+        );
+        assert_eq!(screen.remaining_budget, RemainingBudget::Loading);
 
         app_context
             .wallet_backend()

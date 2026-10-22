@@ -1422,10 +1422,11 @@ mod tests {
 
     /// Proof-verifying reads sent before the masternode list is synced fail
     /// locally, and the SDK bans every node they reach for that failure. Home
-    /// therefore holds its contact and profile reads until the network is
-    /// ready, while still showing that contacts are loading.
+    /// therefore holds its contact, payment-history (which syncs DashPay
+    /// first) and profile reads until the network is ready, while still
+    /// showing that contacts are loading.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn home_holds_contact_and_profile_reads_until_masternodes_are_ready() {
+    async fn home_holds_its_proof_reads_until_masternodes_are_ready() {
         let (_dir, context) = wired_test_context().await;
         let owner = seed_user_identity(&context, 0x5F);
         context.set_selected_identity(Some(owner));
@@ -1446,6 +1447,7 @@ mod tests {
                                 DashPayTask::LoadContacts { .. } => "contacts",
                                 DashPayTask::LoadContactRequests { .. } => "requests",
                                 DashPayTask::LoadProfile { .. } => "profile",
+                                DashPayTask::LoadPaymentHistory { .. } => "payments",
                                 _ => continue,
                             });
                         }
@@ -1472,7 +1474,7 @@ mod tests {
         harness.run_steps(6);
         let mut reads = harness.state().1.clone();
         reads.sort_unstable();
-        assert_eq!(reads, ["contacts", "profile", "requests"]);
+        assert_eq!(reads, ["contacts", "payments", "profile", "requests"]);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -302,13 +302,14 @@ pub fn load_action(
     };
     state.reconcile_owner(&identity);
     contacts.reconcile_owner(&identity);
-    // Contact reads verify proofs; sent before the masternode list is synced
-    // they fail locally and get the queried nodes banned. Hold them until then.
-    let action = if app_context.connection_status().masternodes_ready() {
-        super::contacts::load_action(&identity, contacts)
-    } else {
-        AppAction::None
-    };
+    // Both loads reach proof-verifying reads: the contact lists directly, the
+    // payment history through the DashPay sync it runs first. Sent before the
+    // masternode list is synced they fail locally and get the queried nodes
+    // banned, so hold both until then.
+    if !app_context.connection_status().masternodes_ready() {
+        return AppAction::None;
+    }
+    let action = super::contacts::load_action(&identity, contacts);
     if matches!(action, AppAction::None) {
         state.load_payments(&identity)
     } else {

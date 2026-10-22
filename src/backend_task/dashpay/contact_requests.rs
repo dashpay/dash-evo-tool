@@ -13,7 +13,6 @@ use crate::context::AppContext;
 use crate::model::dashpay::{
     ContactInfoUpdate, UnreadableContactInfoPolicy, contact_request_recipient,
 };
-use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::wallet_backend::{ContactRequestActionKind, ContactRequestActionPhase};
 // Upstream contact-request type: used to record the sent request in the
@@ -712,17 +711,8 @@ pub async fn accept_contact_request(
         });
     }
 
-    // Get an AUTHENTICATION key for signing the state transition
-    // Platform requires CRITICAL or HIGH security level for document creation
     let signing_key = identity
-        .signing_key_now(KeyRequirements::new(
-            Purpose::AUTHENTICATION,
-            &[SecurityLevel::CRITICAL, SecurityLevel::HIGH],
-            SigningScope::Document {
-                contract_id: app_context.dashpay_contract().id(),
-                document_type_name: "contactRequest",
-            },
-        ))
+        .document_action_signing_key(&app_context.dashpay_contract(), "contactRequest", None)
         .ok_or_else(|| TaskError::DashPay(DashPayError::MissingAuthenticationKey))?
         .clone();
 

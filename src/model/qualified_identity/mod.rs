@@ -9,7 +9,7 @@ pub mod qualified_identity_public_key;
 // type — a wallet_backend change out of scope here.
 use crate::backend_task::error::{SigningKeyUnavailableCause, TaskError};
 use crate::model::identity_key_usability::{
-    KeyRequirements, SigningScope, now_ms, select_identity_signing_key,
+    KeyRequirements, SigningScope, document_security_levels, now_ms, select_identity_signing_key,
 };
 use crate::model::qualified_identity::encrypted_key_storage::{
     KeyStorage, ResolvedPrivateKey, same_key,
@@ -24,6 +24,8 @@ use dash_sdk::dpp::async_trait::async_trait;
 use dash_sdk::dpp::dashcore::address::Payload;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{Address, Network, ScriptHash};
+use dash_sdk::dpp::data_contract::DataContract;
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::document_type::DocumentTypeRef;
 use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
 use dash_sdk::dpp::ed25519_dalek::Signer as EDDSASigner;
@@ -1170,6 +1172,33 @@ impl QualifiedIdentity {
             &[document_type.security_level_requirement()],
             scope,
         ))
+    }
+
+    /// The key to sign an action on document type `document_type_name` of
+    /// `contract` with: a live AUTHENTICATION key at a level the type accepts
+    /// ([`document_security_levels`]), of one of `key_types` when given, whose
+    /// bounds permit that document type; unlimited keys first. `None` when the
+    /// contract has no such type or no key qualifies.
+    pub fn document_action_signing_key(
+        &self,
+        contract: &DataContract,
+        document_type_name: &str,
+        key_types: Option<&[KeyType]>,
+    ) -> Option<&IdentityPublicKey> {
+        let document_type = contract.document_type_for_name(document_type_name).ok()?;
+        let levels = document_security_levels(document_type);
+        let mut requirements = KeyRequirements::new(
+            Purpose::AUTHENTICATION,
+            &levels,
+            SigningScope::Document {
+                contract_id: contract.id(),
+                document_type_name,
+            },
+        );
+        if let Some(key_types) = key_types {
+            requirements = requirements.with_key_types(key_types);
+        }
+        self.signing_key_now(requirements)
     }
 
     /// The key as the identity holds it now for `snapshot`, a copy taken

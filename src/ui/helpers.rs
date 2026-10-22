@@ -151,16 +151,7 @@ pub fn compute_allowed_security_levels(
 ) -> Vec<SecurityLevel> {
     match (transaction_type, document_type) {
         (TransactionType::DocumentAction, Some(doc_type)) => {
-            let required_level = doc_type.security_level_requirement();
-            let allowed_range = SecurityLevel::CRITICAL as u8..=required_level as u8;
-            [
-                SecurityLevel::CRITICAL,
-                SecurityLevel::HIGH,
-                SecurityLevel::MEDIUM,
-            ]
-            .into_iter()
-            .filter(|level| allowed_range.contains(&(*level as u8)))
-            .collect()
+            crate::model::identity_key_usability::document_security_levels(doc_type.as_ref())
         }
         _ => transaction_type.allowed_security_levels(),
     }

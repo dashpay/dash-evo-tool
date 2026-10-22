@@ -13,6 +13,8 @@
 //! membership is Platform state, not known offline), and what is left of a
 //! budget is not known offline either, so a spent key is refused by Platform.
 
+use dash_sdk::dpp::data_contract::document_type::DocumentTypeRef;
+use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v1::IdentityPublicKeyGettersV1;
@@ -157,6 +159,21 @@ pub fn is_auto_selectable(
         && bounds_permit(key.contract_bounds(), scope) == Some(true)
 }
 
+/// The security levels Platform accepts for a document action on
+/// `document_type`: CRITICAL up to and including the level the type requires,
+/// since a stronger key satisfies a weaker requirement. Never MASTER.
+pub fn document_security_levels(document_type: DocumentTypeRef<'_>) -> Vec<SecurityLevel> {
+    let required = document_type.security_level_requirement() as u8;
+    [
+        SecurityLevel::CRITICAL,
+        SecurityLevel::HIGH,
+        SecurityLevel::MEDIUM,
+    ]
+    .into_iter()
+    .filter(|level| (SecurityLevel::CRITICAL as u8..=required).contains(&(*level as u8)))
+    .collect()
+}
+
 /// The signing key requirements of a transition.
 #[derive(Debug, Clone, Copy)]
 pub struct KeyRequirements<'a> {
@@ -254,6 +271,25 @@ mod tests {
     use super::*;
     use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
     use dash_sdk::dpp::platform_value::BinaryData;
+
+    /// A HIGH document type accepts CRITICAL and HIGH keys, never MEDIUM.
+    #[test]
+    fn a_high_document_type_accepts_critical_and_high_keys() {
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+        let dashpay = crate::context::test_support::dashpay_contract();
+        for name in ["contactRequest", "contactInfo"] {
+            let document_type = dashpay.document_type_for_name(name).expect("document type");
+            assert_eq!(
+                document_type.security_level_requirement(),
+                SecurityLevel::HIGH
+            );
+            assert_eq!(
+                document_security_levels(document_type),
+                vec![SecurityLevel::CRITICAL, SecurityLevel::HIGH],
+                "{name}"
+            );
+        }
+    }
 
     const CONTRACT: Identifier = Identifier::new([0xDA; 32]);
     const OTHER: Identifier = Identifier::new([0x0E; 32]);

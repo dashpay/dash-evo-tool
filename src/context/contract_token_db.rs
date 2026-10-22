@@ -808,8 +808,8 @@ fn parse_untracked_key(key: &str) -> Option<IdentityTokenIdentifier> {
     })
 }
 
-/// Dismiss one pair. A single upsert of that pair's marker — idempotent, and
-/// independent of every other pair's marker.
+/// When `identity_id` took its once-per-identity claim of `token_id`, as
+/// recorded on this device.
 fn once_per_identity_claimed_at_in(
     kv: &DetKv,
     token_id: &Identifier,
@@ -851,6 +851,8 @@ fn clear_once_per_identity_claim_in(
     .map_err(token_err)
 }
 
+/// Dismiss one pair. A single upsert of that pair's marker — idempotent, and
+/// independent of every other pair's marker.
 fn mark_untracked_in(
     kv: &DetKv,
     pair: IdentityTokenIdentifier,

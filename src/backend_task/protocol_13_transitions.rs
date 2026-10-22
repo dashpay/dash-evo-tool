@@ -260,3 +260,101 @@ async fn a_fee_agreement_is_refused_on_protocol_13() {
     );
     assert!(create_note(platform_version, Some(options)).await.is_err());
 }
+
+/// A key with limits built at protocol 13 (the feature gate and the SDK's
+/// version can disagree during the 13 → 14 switch) is either refused or keeps
+/// its limits; it never goes out as an unlimited version 0 key.
+#[tokio::test]
+async fn a_limited_key_built_at_protocol_13_never_loses_its_limits() {
+    use dash_sdk::dpp::state_transition::public_key_in_creation::accessors::IdentityPublicKeyInCreationV1Getters;
+
+    let (_tmp, _ctx, platform_version) = mainnet_context();
+    let mut identity = Identity::create_basic_identity(Identifier::from([5; 32]), platform_version)
+        .expect("identity");
+    identity.add_public_key(plain_key(0, SecurityLevel::MASTER));
+    let limited =
+        plain_key(1, SecurityLevel::HIGH).with_limits(Some(5_000), Some(2_000_000_000_000));
+
+    let built = IdentityUpdateTransition::try_from_identity_with_signer(
+        &identity,
+        &0,
+        vec![limited],
+        vec![],
+        1,
+        UserFeeIncrease::default(),
+        &PlaceholderSigner,
+        platform_version,
+        None,
+    )
+    .await;
+
+    let Ok(transition) = built else {
+        return; // Refused: nothing reaches the network.
+    };
+    let StateTransition::IdentityUpdate(IdentityUpdateTransition::V0(update)) = transition else {
+        panic!("expected a version 0 identity update, got {transition:?}");
+    };
+    let IdentityPublicKeyInCreation::V1(added) = &update.add_public_keys[0] else {
+        panic!("the limits were dropped: {:?}", update.add_public_keys[0]);
+    };
+    assert_eq!(added.total_budget(), Some(5_000));
+    assert_eq!(added.expires_at(), Some(2_000_000_000_000));
+}
+
+/// A token contract with a once-per-identity distribution, encoded at
+/// protocol 13, either fails to encode or keeps the distribution; it is never
+/// silently rewritten to version 0 rules without it.
+#[test]
+fn once_per_identity_rules_encoded_at_protocol_13_are_never_dropped() {
+    use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
+    use dash_sdk::dpp::data_contract::associated_token::token_configuration::TokenConfiguration;
+    use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+    use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::TokenDistributionRules;
+    use dash_sdk::dpp::data_contract::v1::DataContractV1;
+    use dash_sdk::dpp::serialization::{
+        PlatformDeserializableWithPotentialValidationFromVersionedStructureUntrusted,
+        PlatformSerializableWithPlatformVersion,
+    };
+
+    let (_tmp, _ctx, platform_version) = mainnet_context();
+    let mut config = TokenConfigurationV0::default_most_restrictive();
+    let TokenDistributionRules::V0(rules) = config.distribution_rules.clone() else {
+        panic!("the default rules are version 0");
+    };
+    config.distribution_rules =
+        crate::model::token::distribution_rules_with_once_per_identity(rules, Some(25));
+    let contract = dash_sdk::platform::DataContract::V1(DataContractV1 {
+        id: Identifier::from([9; 32]),
+        version: 1,
+        owner_id: Identifier::from([4; 32]),
+        document_types: BTreeMap::new(),
+        config: DataContractConfig::default_for_version(platform_version).expect("config"),
+        schema_defs: None,
+        groups: BTreeMap::new(),
+        tokens: BTreeMap::from([(0, TokenConfiguration::V0(config))]),
+        keywords: vec![],
+        created_at: None,
+        updated_at: None,
+        created_at_block_height: None,
+        updated_at_block_height: None,
+        created_at_epoch: None,
+        updated_at_epoch: None,
+        description: None,
+    });
+
+    let Ok(bytes) = contract.serialize_to_bytes_with_platform_version(platform_version) else {
+        return; // Refused: nothing reaches the network.
+    };
+    let decoded = dash_sdk::platform::DataContract::versioned_deserialize_untrusted(
+        &bytes,
+        false,
+        PlatformVersion::latest(),
+    )
+    .expect("decodes");
+    let token = decoded.tokens().get(&0).expect("the token");
+    assert_eq!(
+        crate::model::token::once_per_identity_amount(token),
+        Some(25),
+        "the once-per-identity distribution was dropped"
+    );
+}

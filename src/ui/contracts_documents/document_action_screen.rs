@@ -158,12 +158,17 @@ pub struct DocumentActionScreen {
     /// carries no token payment and its gas is paid in credits instead.
     pay_optional_token_cost: bool,
     /// The confirmation of a document action fee, open while the user decides.
-    action_fee_confirmation: Option<ConfirmationDialog>,
-    /// The action fee quote the open confirmation shows; the agreement signed
-    /// is exactly this one.
-    pending_action_fee: Option<DocumentActionFeeQuote>,
-    /// The action fee agreement the user confirmed, used by the next dispatch.
+    action_fee_confirmation: Option<PendingActionFeeConfirmation>,
+    /// The action fee agreement the next built action carries.
     agreed_action_fee: Option<DocumentActionFeeAgreement>,
+}
+
+/// An open contract fee confirmation and the action it was opened for: the
+/// action is built, fee agreement included, when the dialog opens, and that
+/// exact action is sent on confirm.
+struct PendingActionFeeConfirmation {
+    dialog: ConfirmationDialog,
+    task: BackendTask,
 }
 
 impl DocumentActionScreen {
@@ -222,7 +227,6 @@ impl DocumentActionScreen {
             refresh_banner: None,
             pay_optional_token_cost: true,
             action_fee_confirmation: None,
-            pending_action_fee: None,
             agreed_action_fee: None,
         }
     }
@@ -246,6 +250,7 @@ impl DocumentActionScreen {
         self.wallet_unlock_popup = WalletUnlockPopup::new();
         self.wallet_failure = None;
         self.broadcast_status = BroadcastStatus::NotBroadcasted;
+        self.action_fee_confirmation = None;
         self.selected_contract = None;
         self.selected_document_type = None;
         self.contract_search.clear();
@@ -1036,13 +1041,7 @@ impl DocumentActionScreen {
             match action_fee {
                 // A contract fee is paid only with the user's explicit
                 // agreement to the amount shown.
-                Some(quote) => {
-                    self.pending_action_fee = Some(quote);
-                    self.action_fee_confirmation = Some(ConfirmationDialog::new(
-                        "Confirm contract fee".to_string(),
-                        action_fee_confirmation_text(&quote),
-                    ));
-                }
+                Some(quote) => self.open_action_fee_confirmation(quote),
                 None => {
                     self.agreed_action_fee = None;
                     action = self.dispatch_document_action(ui.ctx());
@@ -1053,18 +1052,14 @@ impl DocumentActionScreen {
         let fee_response = self
             .action_fee_confirmation
             .as_mut()
-            .and_then(|dialog| dialog.show(ui).inner.dialog_response);
+            .and_then(|pending| pending.dialog.show(ui).inner.dialog_response);
         if let Some(response) = fee_response {
             match response {
                 ConfirmationStatus::Confirmed => {
-                    self.action_fee_confirmation = None;
-                    self.agreed_action_fee =
-                        self.pending_action_fee.take().map(|quote| quote.agreement);
-                    action = self.dispatch_document_action(ui.ctx());
+                    action = self.confirm_action_fee(ui.ctx());
                 }
                 ConfirmationStatus::Canceled => {
                     self.action_fee_confirmation = None;
-                    self.pending_action_fee = None;
                 }
             }
         }
@@ -1081,9 +1076,44 @@ impl DocumentActionScreen {
         action
     }
 
+    /// Ask the user to agree to the contract fee `quote` before the action is
+    /// sent.
+    /// The action is built now, carrying the quoted agreement, and the dialog
+    /// blocks the form behind it, so what the user confirms is what is sent.
+    fn open_action_fee_confirmation(&mut self, quote: DocumentActionFeeQuote) {
+        self.agreed_action_fee = Some(quote.agreement);
+        let task = self.create_document_action();
+        self.agreed_action_fee = None;
+        if task == BackendTask::None {
+            return;
+        }
+        self.action_fee_confirmation = Some(PendingActionFeeConfirmation {
+            dialog: ConfirmationDialog::new(
+                "Confirm contract fee".to_string(),
+                action_fee_confirmation_text(&quote),
+            )
+            .blocks_input(true),
+            task,
+        });
+    }
+
+    /// The user agreed to the contract fee: send the action the confirmation
+    /// was opened for.
+    fn confirm_action_fee(&mut self, ctx: &egui::Context) -> AppAction {
+        match self.action_fee_confirmation.take() {
+            Some(pending) => self.dispatch_task(ctx, pending.task),
+            None => AppAction::None,
+        }
+    }
+
     /// Build and dispatch the document action, carrying the agreed action fee.
     fn dispatch_document_action(&mut self, ctx: &egui::Context) -> AppAction {
         let task = self.create_document_action();
+        self.dispatch_task(ctx, task)
+    }
+
+    /// Send `task`, a built document action, showing its progress.
+    fn dispatch_task(&mut self, ctx: &egui::Context, task: BackendTask) -> AppAction {
         if task == BackendTask::None {
             return AppAction::None;
         }
@@ -2349,6 +2379,45 @@ mod tests {
             total,
             max_total,
         }
+    }
+
+    /// Regression: Confirm rebuilt the action from the live form, so an input
+    /// changed while the fee confirmation was open was signed with the fee
+    /// agreed for the action shown. What is confirmed is what is sent.
+    #[test]
+    fn confirming_a_contract_fee_sends_the_action_it_was_shown_for() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let contract = dpns();
+        let domain = owned_document_type(&contract, "domain");
+        let key = auth_key(1, domain.security_level_requirement(), None);
+        let mut screen = DocumentActionScreen::new(context, None, DocumentActionType::Delete);
+        screen.selected_contract = Some(contract);
+        screen.selected_document_type = Some(domain);
+        screen.selected_identity = Some(identity_holding(std::slice::from_ref(&key)));
+        screen.selected_key = Some(key);
+        let shown = Identifier::new([0x11; 32]);
+        screen.document_id_input = shown.to_string(Encoding::Base58);
+
+        let quote = quote(ActionFeePricing::Fixed, 1_000, 0);
+        screen.open_action_fee_confirmation(quote);
+        // The form behind the dialog changes before the user confirms.
+        screen.document_id_input = Identifier::new([0x22; 32]).to_string(Encoding::Base58);
+
+        let sent = screen.confirm_action_fee(&egui::Context::default());
+        let AppAction::BackendTask(BackendTask::DocumentTask(task)) = sent else {
+            panic!("the confirmed action is sent, got {sent:?}");
+        };
+        let DocumentTask::DeleteDocument {
+            document_id,
+            action_fee_agreement,
+            ..
+        } = *task
+        else {
+            panic!("a delete was confirmed");
+        };
+        assert_eq!(document_id, shown);
+        assert_eq!(action_fee_agreement, Some(quote.agreement));
     }
 
     /// The user agrees to the most that can be charged, so the confirmation

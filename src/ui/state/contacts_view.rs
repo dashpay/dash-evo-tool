@@ -140,9 +140,13 @@ impl ContactsState {
         }
     }
 
-    /// Whether a read failed without replacing the displayed contact list.
+    /// Whether the contact-list read failed with no automatic retry left, so
+    /// the user has to recover by hand. A failure whose retry is still waiting
+    /// for its delay or for the network counts as loading.
     pub fn load_failed(&self) -> bool {
-        self.load_failed
+        let retry_pending = self.retry_at.contains_key(&ContactsLoadKind::Contacts)
+            || self.due_reads.contains(&ContactsLoadKind::Contacts);
+        self.load_failed && !retry_pending
     }
 
     /// Claim the initial reads or only the failed reads due for a retry.
@@ -1014,6 +1018,35 @@ mod tests {
             state.retry_load_if_due(now);
             assert_eq!(state.claim_reads(), Some(BTreeSet::from([kind])));
         }
+    }
+
+    /// A Contacts failure that will be retried automatically is still loading,
+    /// not failed: Home must not ask the user to recover by hand while the
+    /// retry waits for its delay or for the network to finish syncing.
+    #[test]
+    fn a_contacts_failure_with_an_automatic_retry_pending_is_not_reported_failed() {
+        use ContactsLoadKind::Contacts;
+        let start = Instant::now();
+        let mut state = ContactsState::default();
+        assert!(state.claim_reads().is_some());
+        for retry in 1..=3u64 {
+            let due = start + Duration::from_secs(retry);
+            state.record_load_error(Contacts, Some(due));
+            assert!(!state.load_failed(), "retry {retry} is scheduled");
+            state.retry_load_if_due(due);
+            assert!(!state.load_failed(), "retry {retry} is due");
+            assert_eq!(state.claim_reads(), Some(BTreeSet::from([Contacts])));
+        }
+        state.record_load_error(Contacts, Some(start + Duration::from_secs(4)));
+        assert!(state.load_failed(), "no retry is left after the cap");
+
+        state.invalidate();
+        assert!(state.claim_reads().is_some());
+        state.record_load_error(Contacts, None);
+        assert!(
+            state.load_failed(),
+            "a permanent failure is reported at once"
+        );
     }
 
     #[test]

@@ -284,11 +284,25 @@ impl DocumentActionScreen {
                 .as_ref()
                 .map(|d| d.name().to_owned());
         if contract_changed || doc_type_changed {
-            self.no_documents_found = false;
-            self.fetched_documents.clear();
+            self.signing_scope_changed();
         }
 
         ui.add_space(10.0);
+    }
+
+    /// The contract or document type changed: what was fetched for the old
+    /// one no longer applies, and the key is picked again for the new scope
+    /// (a key bound to the old contract or type cannot sign in the new one).
+    fn signing_scope_changed(&mut self) {
+        self.no_documents_found = false;
+        self.fetched_documents.clear();
+        if let Some(identity) = &self.selected_identity {
+            self.selected_key = auto_selected_document_key(
+                identity,
+                self.selected_contract.as_ref(),
+                self.selected_document_type.as_ref(),
+            );
+        }
     }
 
     fn render_identity_and_key_selection(&mut self, ui: &mut Ui) {
@@ -322,24 +336,11 @@ impl DocumentActionScreen {
             self.no_documents_found = false;
             self.fetched_documents.clear();
             if let Some(identity) = &self.selected_identity {
-                // Auto-select a suitable key for document actions. MASTER keys
-                // cannot sign document operations, so only MEDIUM, HIGH or
-                // CRITICAL keys qualify.
-                use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
-                self.selected_key = identity
-                    .signing_key_now(KeyRequirements::new(
-                        Purpose::AUTHENTICATION,
-                        &[
-                            SecurityLevel::CRITICAL,
-                            SecurityLevel::HIGH,
-                            SecurityLevel::MEDIUM,
-                        ],
-                        signing_scope(
-                            self.selected_contract.as_ref(),
-                            self.selected_document_type.as_ref(),
-                        ),
-                    ))
-                    .cloned();
+                self.selected_key = auto_selected_document_key(
+                    identity,
+                    self.selected_contract.as_ref(),
+                    self.selected_document_type.as_ref(),
+                );
 
                 // Update wallet
                 self.wallet = get_selected_wallet(identity, Some(&self.app_context), None)
@@ -2013,6 +2014,29 @@ impl DocumentActionScreen {
 /// The contract-bounds scope of a document action on `document_type` of
 /// `contract`. Before a contract is chosen nothing is known about the target,
 /// so only keys that can sign anywhere (unbound keys) qualify.
+/// The key to sign a document action with when the user has not picked one:
+/// a live AUTHENTICATION key this device can sign with, at a security level
+/// the document type accepts, within the contract and document type's scope.
+fn auto_selected_document_key(
+    identity: &QualifiedIdentity,
+    contract: Option<&QualifiedContract>,
+    document_type: Option<&DocumentType>,
+) -> Option<IdentityPublicKey> {
+    // The levels the document type accepts (never MASTER), so the preference
+    // for unlimited keys only ever chooses among keys Platform accepts.
+    let levels = crate::ui::helpers::compute_allowed_security_levels(
+        TransactionType::DocumentAction,
+        document_type,
+    );
+    identity
+        .signing_key_now(KeyRequirements::new(
+            dash_sdk::dpp::identity::Purpose::AUTHENTICATION,
+            &levels,
+            signing_scope(contract, document_type),
+        ))
+        .cloned()
+}
+
 fn signing_scope<'a>(
     contract: Option<&QualifiedContract>,
     document_type: Option<&'a DocumentType>,
@@ -2103,6 +2127,154 @@ mod tests {
             platform_value!({"type": "object", "properties": {"value": property}, "additionalProperties": false}),
             None, &BTreeMap::new(), &config, false, &mut Vec::new(), version,
         ).unwrap()
+    }
+
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+
+    /// An AUTHENTICATION key at `level`, optionally bound to `bounds`.
+    fn auth_key(
+        id: u32,
+        level: dash_sdk::dpp::identity::SecurityLevel,
+        bounds: Option<
+            dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds,
+        >,
+    ) -> IdentityPublicKey {
+        dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0 {
+            id,
+            purpose: dash_sdk::dpp::identity::Purpose::AUTHENTICATION,
+            security_level: level,
+            contract_bounds: bounds,
+            key_type: dash_sdk::dpp::identity::KeyType::ECDSA_SECP256K1,
+            read_only: false,
+            data: vec![2; 33].into(),
+            disabled_at: None,
+        }
+        .into()
+    }
+
+    /// A user identity holding the private half of each of `keys`.
+    fn identity_holding(keys: &[IdentityPublicKey]) -> QualifiedIdentity {
+        use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+        use crate::model::qualified_identity::{IdentityStatus, IdentityType, PrivateKeyTarget};
+        use dash_sdk::dpp::identity::Identity;
+        use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+        use dash_sdk::dpp::version::PlatformVersion;
+
+        let mut identity =
+            Identity::create_basic_identity(Identifier::new([0xD0; 32]), PlatformVersion::latest())
+                .expect("basic identity");
+        identity.set_public_keys(keys.iter().map(|key| (key.id(), key.clone())).collect());
+        let mut qi = QualifiedIdentity {
+            identity,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: None,
+            private_keys: Default::default(),
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: dash_sdk::dpp::dashcore::Network::Testnet,
+        };
+        for key in keys {
+            qi.private_keys
+                .insert_non_encrypted(
+                    (PrivateKeyTarget::PrivateKeyOnMainIdentity, key.id()),
+                    (
+                        QualifiedIdentityPublicKey {
+                            identity_public_key: key.clone(),
+                            in_wallet_at_derivation_path: None,
+                        },
+                        [key.id() as u8; 32],
+                    ),
+                )
+                .expect("a free slot");
+        }
+        qi
+    }
+
+    /// The DPNS contract, whose document types require a HIGH key.
+    fn dpns() -> QualifiedContract {
+        use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
+        use dash_sdk::dpp::version::PlatformVersion;
+        QualifiedContract {
+            contract: load_system_data_contract(
+                SystemDataContract::DPNS,
+                PlatformVersion::latest(),
+            )
+            .expect("the DPNS contract"),
+            alias: None,
+        }
+    }
+
+    fn owned_document_type(contract: &QualifiedContract, name: &str) -> DocumentType {
+        contract
+            .contract
+            .document_type_for_name(name)
+            .expect("document type")
+            .to_owned_document_type()
+    }
+
+    /// Regression: automatic selection admitted every non-master level and
+    /// preferred unlimited keys, so an unlimited MEDIUM key beat a limited key
+    /// at the level the document type requires, and Platform refused it.
+    #[test]
+    fn auto_selection_honours_the_document_types_security_level() {
+        use dash_sdk::dpp::identity::SecurityLevel;
+        let contract = dpns();
+        let domain = owned_document_type(&contract, "domain");
+        let required = domain.security_level_requirement();
+        assert_ne!(
+            required,
+            SecurityLevel::MEDIUM,
+            "the test needs a stricter type"
+        );
+
+        let limited = auth_key(1, required, None).with_limits(Some(5_000), None);
+        let weaker_unlimited = auth_key(2, SecurityLevel::MEDIUM, None);
+        let identity = identity_holding(&[limited, weaker_unlimited]);
+
+        let chosen = auto_selected_document_key(&identity, Some(&contract), Some(&domain));
+        assert_eq!(chosen.map(|key| key.id()), Some(1));
+    }
+
+    /// Regression: a key picked for one document type survived a switch to a
+    /// type it is not bound to, and the action was signed with it anyway.
+    #[test]
+    fn changing_the_document_type_picks_the_key_again() {
+        use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let contract = dpns();
+        let domain = owned_document_type(&contract, "domain");
+        let preorder = owned_document_type(&contract, "preorder");
+        let domain_only = auth_key(
+            1,
+            domain.security_level_requirement(),
+            Some(ContractBounds::SingleContractDocumentType {
+                id: contract.contract.id(),
+                document_type_name: "domain".to_string(),
+            }),
+        );
+        let identity = identity_holding(&[domain_only]);
+
+        let mut screen = DocumentActionScreen::new(context, None, DocumentActionType::Create);
+        screen.selected_contract = Some(contract.clone());
+        screen.selected_document_type = Some(domain.clone());
+        screen.selected_key = auto_selected_document_key(&identity, Some(&contract), Some(&domain));
+        screen.selected_identity = Some(identity);
+        assert_eq!(screen.selected_key.as_ref().map(|key| key.id()), Some(1));
+
+        screen.selected_document_type = Some(preorder);
+        screen.signing_scope_changed();
+        assert_eq!(
+            screen.selected_key, None,
+            "a key bound to domain cannot sign a preorder"
+        );
     }
 
     #[test]

@@ -530,10 +530,14 @@ fn render_key_combo(
                 } else {
                     format_key_label(key)
                 };
+                let caveats = key_caveats(key, scope, now);
+                if !offered_for_manual_choice(&caveats) {
+                    continue;
+                }
                 // A key Platform may refuse stays selectable (the user may know
                 // better, e.g. a contract group that covers this contract), but
                 // its entry says why it may not work.
-                let label = match key_caveats(key, scope, now).first() {
+                let label = match caveats.first() {
                     Some(caveat) => format!("{label} ({tag})", tag = key_caveat_tag(caveat)),
                     None => label,
                 };
@@ -556,6 +560,16 @@ fn render_key_combo(
     if let Some(key) = selected_key.as_ref() {
         render_key_caveats(ui, &key_caveats(key, scope, now));
     }
+}
+
+/// Whether a key with `caveats` is offered for the user to pick: every key
+/// but one whose bounds tie it to another contract or document type, which
+/// Platform is certain to refuse here. Expired and limited keys stay on
+/// offer with their warning; the user may know better.
+fn offered_for_manual_choice(caveats: &[KeyCaveat]) -> bool {
+    !caveats
+        .iter()
+        .any(|caveat| matches!(caveat, KeyCaveat::OutOfBounds))
 }
 
 /// A one- or two-word tag for a key list entry, naming the most severe caveat.
@@ -1203,6 +1217,30 @@ pub fn show_group_token_success_screen_with_fee(
 
 #[cfg(test)]
 mod tests {
+    /// Regression: a key bound to another contract or document type was
+    /// offered, though its bounds prove Platform refuses it here. Expired and
+    /// limited keys stay on offer (IDN-024), with their warning.
+    #[test]
+    fn the_manual_chooser_leaves_out_keys_bound_elsewhere() {
+        use super::{KeyCaveat, offered_for_manual_choice};
+        assert!(!offered_for_manual_choice(&[KeyCaveat::OutOfBounds]));
+        assert!(!offered_for_manual_choice(&[
+            KeyCaveat::Expired { expired_at: 1 },
+            KeyCaveat::OutOfBounds,
+        ]));
+        for kept in [
+            KeyCaveat::Expired { expired_at: 1 },
+            KeyCaveat::Budgeted { total_budget: 5 },
+            KeyCaveat::Expiring { expires_at: 9 },
+            KeyCaveat::ContractGroupBound {
+                group_id: dash_sdk::platform::Identifier::new([3; 32]),
+            },
+        ] {
+            assert!(offered_for_manual_choice(&[kept.clone()]), "{kept:?}");
+        }
+        assert!(offered_for_manual_choice(&[]));
+    }
+
     use super::*;
 
     fn outside_press() -> egui::RawInput {

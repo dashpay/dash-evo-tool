@@ -282,8 +282,11 @@ impl ScreenLike for KeyInfoScreen {
                 identity_id,
                 ref budgets,
             } if identity_id == self.identity.identity.id() => {
-                self.remaining_budget =
-                    RemainingBudget::Known(budgets.get(&self.key.id()).copied().flatten());
+                // The answer holds an entry for every key it was asked about:
+                // no entry means it is about other keys, not this one.
+                if let Some(budget) = budgets.get(&self.key.id()) {
+                    self.remaining_budget = RemainingBudget::Known(*budget);
+                }
             }
             BackendTaskSuccessResult::IdentityKeyLimitsRaised {
                 identity_id,
@@ -3048,6 +3051,38 @@ mod tests {
             "the budget read must go out once the recovery check took the first frame"
         );
         assert_eq!(screen.remaining_budget, RemainingBudget::Loading);
+
+        app_context
+            .wallet_backend()
+            .expect("backend")
+            .shutdown()
+            .await;
+    }
+
+    /// Regression: a budget answer that does not include the key on screen
+    /// (a late answer for another key of the same identity) replaced its
+    /// budget with "none tracked". Only an answer naming the key counts.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_budget_answer_for_another_key_leaves_this_one_alone() {
+        let (app_context, _dir) = offline_ctx().await;
+
+        let budgeted = public_key(1, Purpose::AUTHENTICATION).with_limits(Some(5_000), None);
+        let identity = identity_with(0xB7, &[(budgeted.clone(), [0x11; 32])]);
+        let identity_id = identity.identity.id();
+        let mut screen = KeyInfoScreen::new(identity, budgeted, None, &app_context);
+        screen.remaining_budget = RemainingBudget::Loading;
+
+        screen.display_task_result(BackendTaskSuccessResult::IdentityKeyRemainingBudgets {
+            identity_id,
+            budgets: BTreeMap::from([(7, Some(10))]),
+        });
+        assert_eq!(screen.remaining_budget, RemainingBudget::Loading);
+
+        screen.display_task_result(BackendTaskSuccessResult::IdentityKeyRemainingBudgets {
+            identity_id,
+            budgets: BTreeMap::from([(1, Some(3_000))]),
+        });
+        assert_eq!(screen.remaining_budget, RemainingBudget::Known(Some(3_000)));
 
         app_context
             .wallet_backend()

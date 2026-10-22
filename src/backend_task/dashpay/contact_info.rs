@@ -85,16 +85,18 @@ pub async fn create_or_update_contact_info(
     let synced = backend
         .dashpay_contact_details(&owner)
         .await
-        .remove(&contact_user_id)
-        .filter(|details| !details.is_empty());
-    let current = match synced {
-        Some(details) => details,
-        None => super::contacts::legacy_contact_details(app_context, sdk, &identity)
+        .remove(&contact_user_id);
+    let synced_before = backend.dashpay_details_synced(&owner, &contact_user_id)
+        || super::contacts::holds_details(synced.as_ref());
+    let legacy = if synced_before {
+        None
+    } else {
+        super::contacts::legacy_contact_details(app_context, sdk, &identity)
             .await?
             .get(&contact_user_id)
             .map(super::contacts::ContactData::details)
-            .unwrap_or_default(),
     };
+    let current = super::contacts::shown_contact_details(synced, synced_before, legacy);
     let details = update.apply_to(current);
 
     validate_contact_note(details.note.as_deref().unwrap_or_default())?;
@@ -109,10 +111,17 @@ pub async fn create_or_update_contact_info(
         source: Box::new(source),
     })?;
 
-    let published = match backend
+    let outcome = backend
         .dashpay_set_contact_info(&identity, &contact_user_id, details)
-        .await?
-    {
+        .await?;
+    // platform-wallet holds these details now, published or not.
+    if let Err(error) = backend.dashpay_mark_details_synced(&owner, &contact_user_id) {
+        tracing::debug!(
+            ?error,
+            "could not record that the contact details are synced"
+        );
+    }
+    let published = match outcome {
         ContactInfoPublishOutcome::Published => true,
         ContactInfoPublishOutcome::DeferredUntilTwoContacts => false,
         // The write checks for a wallet identity index before platform-wallet

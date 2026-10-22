@@ -234,17 +234,52 @@ pub(super) async fn legacy_contact_details(
     .await
 }
 
-/// The details the contacts list shows for one contact: platform-wallet's
-/// synced details, or a legacy-key document's when platform-wallet holds
-/// none for the contact.
+/// The details the contacts list shows for one contact, and that a save
+/// keeps for every field it does not replace: platform-wallet's synced
+/// details, or a legacy-key document's while platform-wallet has never held
+/// any for the contact (`synced_before` false and nothing synced now).
+///
+/// Once platform-wallet has held details, they win even when empty, so a
+/// cleared note or an unhide is never undone by an old legacy document.
 pub(super) fn shown_contact_details(
     synced: Option<ContactDetails>,
+    synced_before: bool,
     legacy: Option<ContactDetails>,
 ) -> ContactDetails {
+    if synced_before {
+        return synced.unwrap_or_default();
+    }
     synced
         .filter(|details| !details.is_empty())
         .or(legacy)
         .unwrap_or_default()
+}
+
+/// Whether platform-wallet holds details worth recording as its own: any
+/// non-empty synced details mean a `contactInfo` document or a local save
+/// set them.
+pub(super) fn holds_details(synced: Option<&ContactDetails>) -> bool {
+    synced.is_some_and(|details| !details.is_empty())
+}
+
+/// The people both sides have sent a contact request to, minus anyone the
+/// owner withdrew their request from: a reply to a withdrawn request is a new
+/// request for the owner to answer, not an established contact.
+pub(super) fn mutual_contacts(
+    incoming: &[(Identifier, Document)],
+    outgoing: &[(Identifier, Document)],
+    is_withdrawn: impl Fn(&Identifier) -> bool,
+) -> HashSet<Identifier> {
+    incoming
+        .iter()
+        .map(|(_, doc)| doc.owner_id())
+        .filter(|from_id| !is_withdrawn(from_id))
+        .filter(|from_id| {
+            outgoing
+                .iter()
+                .any(|(_, doc)| contact_request_recipient(doc).as_ref() == Some(from_id))
+        })
+        .collect()
 }
 
 impl ContactData {
@@ -322,20 +357,17 @@ pub async fn load_contacts(
         .collect();
 
     // Find mutual contacts (where both parties have sent requests to each other)
-    let contacts: HashSet<Identifier> = incoming
-        .iter()
-        .map(|(_, doc)| doc.owner_id())
-        .filter(|from_id| {
-            outgoing
-                .iter()
-                .any(|(_, doc)| contact_request_recipient(doc).as_ref() == Some(from_id))
-        })
-        .collect();
+    let backend = app_context.wallet_backend().ok();
+    let contacts = mutual_contacts(&incoming, &outgoing, |peer| {
+        backend
+            .as_ref()
+            .is_some_and(|backend| backend.dashpay_is_withdrawn(&identity_id, peer))
+    });
 
     // platform-wallet's synced details first; a refresh failure leaves the
     // last synced details in place.
-    let mut synced = match app_context.wallet_backend() {
-        Ok(backend) => {
+    let mut synced = match &backend {
+        Some(backend) => {
             if let Err(error) = backend.dashpay_sync(&identity_id).await {
                 tracing::debug!(
                     ?error,
@@ -350,11 +382,8 @@ pub async fn load_contacts(
             }
             backend.dashpay_contact_details(&identity_id).await
         }
-        Err(error) => {
-            tracing::debug!(
-                ?error,
-                "LoadContacts: no wallet backend; showing legacy details"
-            );
+        None => {
+            tracing::debug!("LoadContacts: no wallet backend; showing legacy details");
             Default::default()
         }
     };
@@ -365,8 +394,20 @@ pub async fn load_contacts(
         .into_iter()
         .map(|contact_id| {
             let legacy = legacy.get(&contact_id);
+            let synced = synced.remove(&contact_id);
+            let synced_before = backend.as_ref().is_some_and(|backend| {
+                let synced_before = backend.dashpay_details_synced(&identity_id, &contact_id);
+                if !synced_before
+                    && holds_details(synced.as_ref())
+                    && let Err(error) =
+                        backend.dashpay_mark_details_synced(&identity_id, &contact_id)
+                {
+                    tracing::debug!(?error, "LoadContacts: could not record synced details");
+                }
+                synced_before
+            });
             let details =
-                shown_contact_details(synced.remove(&contact_id), legacy.map(ContactData::details));
+                shown_contact_details(synced, synced_before, legacy.map(ContactData::details));
             ContactData {
                 identity_id: contact_id,
                 nickname: details.nickname,
@@ -582,23 +623,87 @@ mod tests {
     #[test]
     fn synced_contact_details_win_over_legacy_ones() {
         assert_eq!(
-            shown_contact_details(Some(details("synced")), Some(details("legacy"))),
+            shown_contact_details(Some(details("synced")), false, Some(details("legacy"))),
             details("synced")
         );
     }
 
     #[test]
-    fn legacy_contact_details_show_when_none_are_synced() {
+    fn legacy_contact_details_show_when_none_were_ever_synced() {
         assert_eq!(
-            shown_contact_details(None, Some(details("legacy"))),
+            shown_contact_details(None, false, Some(details("legacy"))),
             details("legacy")
         );
         assert_eq!(
-            shown_contact_details(Some(ContactDetails::default()), Some(details("legacy"))),
+            shown_contact_details(
+                Some(ContactDetails::default()),
+                false,
+                Some(details("legacy"))
+            ),
             details("legacy"),
-            "a contact platform-wallet holds no details for shows the legacy ones"
+            "a contact platform-wallet never held details for shows the legacy ones"
         );
-        assert_eq!(shown_contact_details(None, None), ContactDetails::default());
+        assert_eq!(
+            shown_contact_details(None, false, None),
+            ContactDetails::default()
+        );
+    }
+
+    /// SEC-002: a note the user cleared, or a contact they unhid, must not
+    /// come back from an old legacy document — nor be saved again by the
+    /// next edit, which keeps these details for every field it leaves alone.
+    #[test]
+    fn cleared_details_do_not_come_back_from_a_legacy_document() {
+        let legacy = ContactDetails {
+            nickname: None,
+            note: Some("old".into()),
+            hidden: true,
+        };
+        assert_eq!(
+            shown_contact_details(Some(ContactDetails::default()), true, Some(legacy.clone())),
+            ContactDetails::default()
+        );
+        assert_eq!(
+            shown_contact_details(None, true, Some(legacy)),
+            ContactDetails::default()
+        );
+    }
+
+    #[test]
+    fn only_non_empty_synced_details_are_recorded_as_synced() {
+        assert!(holds_details(Some(&details("note"))));
+        assert!(!holds_details(Some(&ContactDetails::default())));
+        assert!(!holds_details(None));
+    }
+
+    fn request(document_id: u8, owner: Identifier, to: Identifier) -> (Identifier, Document) {
+        use dash_sdk::dpp::document::DocumentV0;
+        let id = Identifier::from([document_id; 32]);
+        let document = Document::V0(DocumentV0 {
+            id,
+            owner_id: owner,
+            properties: std::collections::BTreeMap::from([(
+                "toUserId".to_string(),
+                Value::Identifier(to.to_buffer()),
+            )]),
+            ..Default::default()
+        });
+        (id, document)
+    }
+
+    /// SEC-001: after the owner withdraws their request, a reply from the
+    /// other person does not make them a contact.
+    #[test]
+    fn a_reply_to_a_withdrawn_request_is_not_a_contact() {
+        let owner = Identifier::from([1; 32]);
+        let bob = Identifier::from([2; 32]);
+        let carol = Identifier::from([3; 32]);
+        let incoming = [request(10, bob, owner), request(11, carol, owner)];
+        let outgoing = [request(20, owner, bob), request(21, owner, carol)];
+
+        let contacts = mutual_contacts(&incoming, &outgoing, |peer| *peer == bob);
+
+        assert_eq!(contacts, HashSet::from([carol]));
     }
 
     /// Known-answer vectors generated independently with Python

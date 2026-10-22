@@ -239,6 +239,11 @@ const KV_PREFIX_DECLINED: &str = "det:dashpay:declined:";
 /// opposite directions: withdrawing our request to Bob says nothing about a
 /// request Bob later sends us, and a single marker would silently hide it.
 const KV_PREFIX_WITHDRAWN: &str = "det:dashpay:withdrawn:";
+/// Presence marker: platform-wallet holds `owner`'s details for this contact,
+/// so a legacy-key `contactInfo` document no longer stands in for them — not
+/// even when those details are empty because the user cleared them.
+/// Scope: the owner identity.
+const KV_PREFIX_DETAILS_SYNCED: &str = "det:dashpay:details_synced:";
 /// Recovery journal older versions kept while a decline or withdrawal wrote
 /// contact details. Declines and withdrawals only clear it. Scope: the
 /// acting identity.
@@ -1295,6 +1300,25 @@ impl WalletBackend {
         self.delete_marker(owner, KV_PREFIX_WITHDRAWN, counterparty_id)
     }
 
+    /// Record that platform-wallet holds `owner`'s details for `contact_id`;
+    /// see [`KV_PREFIX_DETAILS_SYNCED`]. Idempotent.
+    pub(crate) fn dashpay_mark_details_synced(
+        &self,
+        owner: &Identifier,
+        contact_id: &Identifier,
+    ) -> Result<(), TaskError> {
+        self.put_marker(owner, KV_PREFIX_DETAILS_SYNCED, contact_id)
+    }
+
+    /// Whether platform-wallet holds `owner`'s details for `contact_id`.
+    pub(crate) fn dashpay_details_synced(
+        &self,
+        owner: &Identifier,
+        contact_id: &Identifier,
+    ) -> bool {
+        kv_contains(&self.kv(), owner, KV_PREFIX_DETAILS_SYNCED, contact_id)
+    }
+
     pub(crate) async fn dashpay_lock_contact_request_action(
         &self,
         owner: &Identifier,
@@ -1534,6 +1558,7 @@ impl WalletBackend {
             KV_PREFIX_DECLINED,
             KV_PREFIX_WITHDRAWN,
             KV_PREFIX_REQUEST_ACTION,
+            KV_PREFIX_DETAILS_SYNCED,
         ] {
             let keys = kv.list(scope, Some(prefix)).map_err(sidecar_err)?;
             for key in keys {
@@ -3083,6 +3108,7 @@ mod tests {
             KV_PREFIX_DECLINED,
             KV_PREFIX_WITHDRAWN,
             KV_PREFIX_REQUEST_ACTION,
+            KV_PREFIX_DETAILS_SYNCED,
         ] {
             for k in kv.list(DetScope::Identity(&owner), Some(prefix)).unwrap() {
                 kv.delete(DetScope::Identity(&owner), &k).unwrap();

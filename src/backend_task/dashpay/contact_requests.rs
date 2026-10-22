@@ -935,6 +935,10 @@ trait CancelOps {
     /// makes the pending request an established contact instead.
     fn reciprocal_request_exists(&self) -> impl Future<Output = Result<bool, TaskError>> + Send;
 
+    /// Ignore the recipient in platform-wallet (local only), so a reply to
+    /// the withdrawn request cannot establish the contact on its own.
+    fn ignore_recipient(&self) -> impl Future<Output = Result<(), TaskError>> + Send;
+
     /// Record the withdrawal in the DET sidecar so the request stops being
     /// listed as pending.
     ///
@@ -953,6 +957,7 @@ async fn cancel_flow<O: CancelOps>(ops: &O) -> Result<CancelOutcome, TaskError> 
     let outcome = if ops.reciprocal_request_exists().await? {
         CancelOutcome::AlreadyEstablished
     } else {
+        ops.ignore_recipient().await?;
         ops.mark_withdrawn()?;
         CancelOutcome::Withdrawn
     };
@@ -1012,6 +1017,13 @@ impl CancelOps for PlatformCancelOps<'_> {
         self.app_context
             .wallet_backend()?
             .dashpay_mark_withdrawn(&self.owner_id, &self.to_identity_id)
+    }
+
+    async fn ignore_recipient(&self) -> Result<(), TaskError> {
+        self.app_context
+            .wallet_backend()?
+            .dashpay_ignore_contact_sender(&self.owner_id, &self.to_identity_id)
+            .await
     }
 }
 
@@ -1335,6 +1347,7 @@ mod tests {
         withdrawn: Mutex<bool>,
         withdraw_fails: bool,
         phase_cleared: Mutex<bool>,
+        ignored: Mutex<bool>,
     }
 
     impl CancelOps for ScriptedOps {
@@ -1349,6 +1362,11 @@ mod tests {
 
         async fn reciprocal_request_exists(&self) -> Result<bool, TaskError> {
             Ok(self.reciprocal)
+        }
+
+        async fn ignore_recipient(&self) -> Result<(), TaskError> {
+            *self.ignored.lock().unwrap() = true;
+            Ok(())
         }
 
         fn mark_withdrawn(&self) -> Result<(), TaskError> {
@@ -1372,6 +1390,10 @@ mod tests {
         );
         assert!(*ops.withdrawn.lock().unwrap());
         assert!(
+            *ops.ignored.lock().unwrap(),
+            "SEC-001: a later reply must not establish the contact on its own"
+        );
+        assert!(
             *ops.phase_cleared.lock().unwrap(),
             "an older version's record is retired"
         );
@@ -1389,6 +1411,10 @@ mod tests {
             CancelOutcome::AlreadyEstablished
         );
         assert!(!*ops.withdrawn.lock().unwrap());
+        assert!(
+            !*ops.ignored.lock().unwrap(),
+            "an established contact is not ignored"
+        );
     }
 
     #[tokio::test]

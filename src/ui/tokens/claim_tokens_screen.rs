@@ -65,7 +65,8 @@ pub struct ClaimTokensScreen {
     status: ClaimTokensStatus,
     refresh_banner: Option<BannerHandle>,
     pub app_context: Arc<AppContext>,
-    confirmation_dialog: Option<ConfirmationDialog>,
+    /// The open claim confirmation and the claim it was opened for.
+    confirmation_dialog: Option<PendingClaim>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_open_attempted: bool,
     wallet_unlock_popup: WalletUnlockPopup,
@@ -75,6 +76,13 @@ pub struct ClaimTokensScreen {
     /// token, as far as this device knows (a local hint; Platform has no query
     /// for it).
     once_per_identity_claimed_at: Option<u64>,
+}
+
+/// An open claim confirmation and the claim it names: the claim is built when
+/// the dialog opens, and that exact claim is sent on confirm.
+struct PendingClaim {
+    dialog: ConfirmationDialog,
+    action: Box<AppAction>,
 }
 
 impl ClaimTokensScreen {
@@ -267,7 +275,13 @@ impl ClaimTokensScreen {
         ui.add_space(10.0);
     }
 
-    fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
+    /// Ask the user to confirm the claim of the selected distribution. The
+    /// claim is built now and the dialog blocks the form behind it, so what
+    /// the user confirms is what is sent.
+    fn open_claim_confirmation(&mut self) {
+        let Some(distribution_type) = self.distribution_type else {
+            return;
+        };
         let Some(identity) = self.identity.clone() else {
             MessageBanner::set_global(
                 self.app_context.egui_ctx(),
@@ -275,67 +289,74 @@ impl ClaimTokensScreen {
                 MessageType::Error,
             );
             self.status = ClaimTokensStatus::Error;
+            return;
+        };
+        let Some(signing_key) = self.selected_key.clone() else {
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "No signing key selected",
+                MessageType::Error,
+            );
+            self.status = ClaimTokensStatus::Error;
+            return;
+        };
+        let action = AppAction::BackendTasks(
+            vec![
+                BackendTask::TokenTask(Box::new(TokenTask::ClaimTokens {
+                    data_contract: Arc::new(self.token_contract.contract.clone()),
+                    token_position: self.identity_token_basic_info.token_position,
+                    actor_identity: identity,
+                    distribution_type,
+                    signing_key,
+                    public_note: self.public_note.clone(),
+                })),
+                BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
+            ],
+            BackendTasksExecutionMode::Sequential,
+        );
+        self.confirmation_dialog = Some(PendingClaim {
+            dialog: ConfirmationDialog::new(
+                "Confirm Claim".to_string(),
+                claim_confirmation_text(
+                    distribution_type,
+                    &self.identity_token_basic_info.token_alias,
+                    once_per_identity_amount(&self.token_configuration),
+                ),
+            )
+            .blocks_input(true),
+            action: Box::new(action),
+        });
+    }
+
+    fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
+        let Some(pending) = self.confirmation_dialog.as_mut() else {
             return AppAction::None;
         };
-        let distribution_type = self
-            .distribution_type
-            .unwrap_or(TokenDistributionType::Perpetual);
-
-        let dialog = self.confirmation_dialog.get_or_insert_with(|| {
-            ConfirmationDialog::new(
-                "Confirm Claim".to_string(),
-                "Are you sure you want to claim tokens for this contract?".to_string(),
-            )
-        });
-
-        match dialog.show(ui).inner.dialog_response {
-            Some(ConfirmationStatus::Confirmed) => {
-                self.confirmation_dialog = None;
-
-                let signing_key = match self.selected_key.clone() {
-                    Some(key) => key,
-                    None => {
-                        MessageBanner::set_global(
-                            self.app_context.egui_ctx(),
-                            "No signing key selected",
-                            MessageType::Error,
-                        );
-                        self.status = ClaimTokensStatus::Error;
-                        return AppAction::None;
-                    }
-                };
-
-                self.status = ClaimTokensStatus::WaitingForResult;
-                self.refresh_banner.take_and_clear();
-                let handle = MessageBanner::set_global(
-                    self.app_context.egui_ctx(),
-                    "Claiming tokens...",
-                    MessageType::Info,
-                );
-                handle.with_elapsed();
-                self.refresh_banner = Some(handle);
-
-                AppAction::BackendTasks(
-                    vec![
-                        BackendTask::TokenTask(Box::new(TokenTask::ClaimTokens {
-                            data_contract: Arc::new(self.token_contract.contract.clone()),
-                            token_position: self.identity_token_basic_info.token_position,
-                            actor_identity: identity,
-                            distribution_type,
-                            signing_key,
-                            public_note: self.public_note.clone(),
-                        })),
-                        BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
-                    ],
-                    BackendTasksExecutionMode::Sequential,
-                )
-            }
+        match pending.dialog.show(ui).inner.dialog_response {
+            Some(ConfirmationStatus::Confirmed) => self.confirm_claim(),
             Some(ConfirmationStatus::Canceled) => {
                 self.confirmation_dialog = None;
                 AppAction::None
             }
             None => AppAction::None,
         }
+    }
+
+    /// The user confirmed: send the claim the confirmation was opened for.
+    fn confirm_claim(&mut self) -> AppAction {
+        let Some(pending) = self.confirmation_dialog.take() else {
+            return AppAction::None;
+        };
+        self.status = ClaimTokensStatus::WaitingForResult;
+        self.refresh_banner.take_and_clear();
+        let handle = MessageBanner::set_global(
+            self.app_context.egui_ctx(),
+            "Claiming tokens...",
+            MessageType::Info,
+        );
+        handle.with_elapsed();
+        self.refresh_banner = Some(handle);
+        *pending.action
     }
 
     fn show_success_screen(&self, ui: &mut Ui) -> AppAction {
@@ -682,10 +703,7 @@ impl ScreenLike for ClaimTokensScreen {
                         self.status = ClaimTokensStatus::Error;
                         return;
                     } else if self.confirmation_dialog.is_none() {
-                        self.confirmation_dialog = Some(ConfirmationDialog::new(
-                            "Confirm Claim".to_string(),
-                            "Are you sure you want to claim tokens for this contract?".to_string(),
-                        ));
+                        self.open_claim_confirmation();
                     }
                 }
 
@@ -715,6 +733,29 @@ impl ScreenLike for ClaimTokensScreen {
     }
 }
 
+/// The claim confirmation text: which distribution of `token` is claimed and,
+/// for the once-per-identity distribution, how much.
+fn claim_confirmation_text(
+    distribution_type: TokenDistributionType,
+    token: &str,
+    once_per_identity_amount: Option<dash_sdk::dpp::balances::credits::TokenAmount>,
+) -> String {
+    match (distribution_type, once_per_identity_amount) {
+        (TokenDistributionType::Perpetual, _) => format!(
+            "You are about to claim the {token} rewards this identity has earned from the perpetual distribution."
+        ),
+        (TokenDistributionType::PreProgrammed, _) => format!(
+            "You are about to claim the {token} this identity is due from the pre-programmed distribution."
+        ),
+        (TokenDistributionType::OncePerIdentity, Some(amount)) => format!(
+            "You are about to claim this identity's one-time share of {amount} base {token} tokens from the once-per-identity distribution. Each identity can claim it only once."
+        ),
+        (TokenDistributionType::OncePerIdentity, None) => format!(
+            "You are about to claim this identity's one-time share of {token} from the once-per-identity distribution. Each identity can claim it only once."
+        ),
+    }
+}
+
 /// The once-per-identity claim hint for the screen's identity and token. A
 /// read failure only hides the hint (Platform still refuses a second claim),
 /// so it is logged and treated as unknown.
@@ -728,4 +769,128 @@ fn load_once_per_identity_claim(
             tracing::warn!(?error, "Could not read the once-per-identity claim hint");
             None
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::qualified_identity::IdentityStatus;
+    use crate::ui::tokens::tokens_screen::IdentityTokenBasicInfo;
+    use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+    use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::TokenDistributionRules;
+    use dash_sdk::dpp::identity::Identity;
+    use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+    use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
+    use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::platform::{Identifier, IdentityPublicKey};
+
+    /// A token offering only a once-per-identity distribution of `amount`.
+    fn once_per_identity_token(amount: u64) -> TokenConfiguration {
+        let mut config = TokenConfigurationV0::default_most_restrictive();
+        let TokenDistributionRules::V0(rules) = config.distribution_rules.clone() else {
+            panic!("the default rules are version 0");
+        };
+        config.distribution_rules =
+            crate::model::token::distribution_rules_with_once_per_identity(rules, Some(amount));
+        config.into()
+    }
+
+    fn screen_for(config: TokenConfiguration) -> (ClaimTokensScreen, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let contract = QualifiedContract {
+            contract: load_system_data_contract(
+                SystemDataContract::DPNS,
+                PlatformVersion::latest(),
+            )
+            .expect("a contract"),
+            alias: None,
+        };
+        let info = IdentityTokenBasicInfo {
+            token_id: Identifier::new([0x70; 32]),
+            token_alias: "Gold".to_string(),
+            identity_id: Identifier::new([0x71; 32]),
+            contract_id: contract.contract.id(),
+            token_position: 0,
+        };
+        let mut screen = ClaimTokensScreen::new(info, contract, config, &context);
+        screen.identity = Some(QualifiedIdentity {
+            identity: Identity::create_basic_identity(
+                Identifier::new([0x71; 32]),
+                PlatformVersion::latest(),
+            )
+            .expect("basic identity"),
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: None,
+            private_keys: Default::default(),
+            dpns_names: vec![],
+            associated_wallets: Default::default(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: Default::default(),
+            status: IdentityStatus::Active,
+            network: dash_sdk::dpp::dashcore::Network::Testnet,
+        });
+        screen.selected_key = Some(IdentityPublicKey::V0(IdentityPublicKeyV0 {
+            id: 1,
+            purpose: Purpose::AUTHENTICATION,
+            security_level: SecurityLevel::CRITICAL,
+            contract_bounds: None,
+            key_type: KeyType::ECDSA_SECP256K1,
+            read_only: false,
+            data: vec![2; 33].into(),
+            disabled_at: None,
+        }));
+        (screen, dir)
+    }
+
+    /// Regression: the confirmation asked only whether to "claim tokens for
+    /// this contract", so the user could not see which distribution, or for a
+    /// one-time claim how much, they were about to spend their claim on.
+    #[test]
+    fn the_claim_confirmation_names_the_distribution_and_the_amount() {
+        let text =
+            claim_confirmation_text(TokenDistributionType::OncePerIdentity, "Gold", Some(25));
+        assert!(text.contains("Gold"), "{text}");
+        assert!(text.contains("once-per-identity"), "{text}");
+        assert!(text.contains("25"), "{text}");
+        for (kind, name) in [
+            (TokenDistributionType::Perpetual, "perpetual"),
+            (TokenDistributionType::PreProgrammed, "pre-programmed"),
+        ] {
+            let text = claim_confirmation_text(kind, "Gold", None);
+            assert!(text.contains(name), "{text}");
+            assert!(text.contains("Gold"), "{text}");
+        }
+    }
+
+    /// Regression: Confirm read the distribution at confirm time, so one
+    /// changed while the dialog was open was claimed instead of the one shown.
+    #[test]
+    fn confirming_claims_the_distribution_the_confirmation_named() {
+        let (mut screen, _dir) = screen_for(once_per_identity_token(25));
+        assert_eq!(
+            screen.distribution_type,
+            Some(TokenDistributionType::OncePerIdentity)
+        );
+        screen.open_claim_confirmation();
+        screen.distribution_type = Some(TokenDistributionType::Perpetual);
+
+        let AppAction::BackendTasks(tasks, _) = screen.confirm_claim() else {
+            panic!("the confirmed claim is sent");
+        };
+        let Some(BackendTask::TokenTask(task)) = tasks.first() else {
+            panic!("the claim comes first");
+        };
+        let TokenTask::ClaimTokens {
+            distribution_type, ..
+        } = task.as_ref()
+        else {
+            panic!("a claim was confirmed");
+        };
+        assert_eq!(*distribution_type, TokenDistributionType::OncePerIdentity);
+    }
 }

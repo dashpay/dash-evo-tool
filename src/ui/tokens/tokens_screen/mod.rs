@@ -1881,9 +1881,12 @@ impl TokensScreen {
     }
 
     fn estimate_registration_cost(&self) -> Credits {
+        // Every term from one fee table: the one of the version the network
+        // confirmed, not the SDK's starting seed (they differ while a network
+        // moves to a new protocol version).
         let registration_fees = &self
             .app_context
-            .platform_version()
+            .connected_platform_version()
             .fee_version
             .data_contract_registration;
         let mut fee = registration_fees.base_contract_registration_fee;
@@ -1895,14 +1898,7 @@ impl TokensScreen {
             fee += registration_fees.token_uses_pre_programmed_distribution_fee;
         }
         if self.enable_once_per_identity_distribution {
-            // Charged from protocol version 14, so priced from the fee table of
-            // the version the network confirmed, not the SDK's starting seed.
-            fee += self
-                .app_context
-                .connected_platform_version()
-                .fee_version
-                .data_contract_registration
-                .token_uses_once_per_identity_distribution_fee;
+            fee += registration_fees.token_uses_once_per_identity_distribution_fee;
         }
         let contract_keywords = if self.contract_keywords_input.trim().is_empty() {
             Vec::new()

@@ -75,6 +75,10 @@ pub enum KeyLimitsError {
         "The key chosen to approve this change can no longer approve it, because this identity's keys changed. Review the change again and confirm it."
     )]
     SignerChanged,
+    #[error(
+        "Key limits can only be raised. Enter an amount to add to the spending limit or a number of days to extend the expiry."
+    )]
+    NotARaise,
 }
 
 /// Whether a key of this purpose and security level may carry limits.
@@ -355,6 +359,24 @@ impl KeyLimitsRaise {
         }
         if self.total_budget.is_none() && self.expires_at.is_none() {
             return Err(KeyLimitsError::NothingToRaise);
+        }
+        // Only a raise is signed, whoever built it: an existing limit grows,
+        // and no limit is added to a key that has none.
+        if let Some(total_budget) = self.total_budget {
+            match live.total_budget() {
+                None => return Err(KeyLimitsError::NoBudgetToRaise),
+                Some(current) if total_budget <= current => {
+                    return Err(KeyLimitsError::NotARaise);
+                }
+                Some(_) => {}
+            }
+        }
+        if let Some(expires_at) = self.expires_at {
+            match live.expires_at() {
+                None => return Err(KeyLimitsError::NoExpiryToExtend),
+                Some(current) if expires_at <= current => return Err(KeyLimitsError::NotARaise),
+                Some(_) => {}
+            }
         }
         if let Some(expiry_after) = self.expires_at.or(self.seen_expires_at)
             && expiry_after <= now_ms
@@ -678,6 +700,53 @@ mod tests {
         assert_eq!(
             raise.check_against(&raised_elsewhere, NOW),
             Err(KeyLimitsError::LimitsChanged)
+        );
+    }
+
+    /// Regression: the raise's fields are public and `check_against`, the
+    /// last check before signing, only compared freshness. A lowered budget
+    /// or a limit the key never had passed and would have been signed.
+    #[test]
+    fn a_raise_that_lowers_or_adds_a_limit_is_refused_before_signing() {
+        let seen = key(Some(1_000), Some(NOW + DAY_MS));
+        let raise = KeyLimitsRaise::quote(&seen, Some(500), Some(10), 0, NOW).expect("quotes");
+        let lowered_budget = KeyLimitsRaise {
+            total_budget: Some(500),
+            ..raise
+        };
+        let shortened_expiry = KeyLimitsRaise {
+            expires_at: Some(NOW + DAY_MS / 2),
+            ..raise
+        };
+        for lowered in [lowered_budget, shortened_expiry] {
+            assert_eq!(
+                lowered.check_against(&seen, NOW),
+                Err(KeyLimitsError::NotARaise),
+                "{lowered:?}"
+            );
+        }
+
+        let unlimited = key(None, None);
+        let added = KeyLimitsRaise {
+            key_id: 3,
+            seen_total_budget: None,
+            seen_expires_at: None,
+            total_budget: Some(5_000),
+            expires_at: None,
+            signing_key_id: 0,
+        };
+        assert_eq!(
+            added.check_against(&unlimited, NOW),
+            Err(KeyLimitsError::NoBudgetToRaise)
+        );
+        let added_expiry = KeyLimitsRaise {
+            total_budget: None,
+            expires_at: Some(NOW + DAY_MS),
+            ..added
+        };
+        assert_eq!(
+            added_expiry.check_against(&unlimited, NOW),
+            Err(KeyLimitsError::NoExpiryToExtend)
         );
     }
 

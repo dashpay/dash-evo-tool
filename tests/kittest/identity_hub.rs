@@ -626,8 +626,12 @@ pub(crate) mod loads {
         );
         state.selected_main_screen = RootScreenType::RootScreenIdentityHub;
         // The hub sent its own requests while it was the screen in view.
-        for (context, _) in &results {
-            state.test_record_visible_dispatch(context);
+        for result in &results {
+            if let dash_evo_tool::app::TaskResult::Success { context, .. }
+            | dash_evo_tool::app::TaskResult::Error { context, .. } = result
+            {
+                state.test_record_visible_dispatch(context);
+            }
         }
         state.screen_stack.push(
             ScreenType::IdentitySendScreen(identity, IdentitySendMode::Send)

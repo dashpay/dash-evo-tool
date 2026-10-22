@@ -2990,12 +2990,13 @@ impl AppState {
         }
     }
 
-    /// Release the hub's contact-request guards on a failed request action,
-    /// which it dispatches without a dispatch context, when the error goes to
-    /// another screen.
+    /// Release the hub's contact-request and contact details guards on a
+    /// failed action, which it dispatches without a dispatch context, when the
+    /// error goes to another screen.
     fn route_identity_error_to_hidden_hub(
         &mut self,
         owner: Option<ScreenOwner>,
+        context: &BackendTaskContext,
         error: &TaskError,
     ) {
         if self.hub_takes_result(owner) {
@@ -3005,6 +3006,11 @@ impl AppState {
             .main_screens
             .get_mut(&RootScreenType::RootScreenIdentityHub)
         {
+            // A bare error names its contact details write only through the
+            // context; the hub releases that write's guard from it.
+            if context.dashpay_contact_info_target().is_some() {
+                hub.display_backend_task_error(context, error);
+            }
             hub.handle_contact_request_error(error);
             hub.handle_contact_info_error(error);
         }
@@ -3908,7 +3914,7 @@ impl App for AppState {
                         &context,
                         &err,
                     );
-                    self.route_identity_error_to_hidden_hub(owner, &err);
+                    self.route_identity_error_to_hidden_hub(owner, &context, &err);
                     self.route_dpns_vote_error_to_hidden_screens(owner, &context, &err);
                     let chooser_owned = network_chooser_owns_task(&context);
                     // A top-up nobody open sent, or any task whose screen is

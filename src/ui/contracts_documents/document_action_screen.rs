@@ -22,12 +22,12 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
-use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ResultBannerExt};
+use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::helpers::{
     TransactionType, add_contract_doc_type_chooser_with_filtering, add_key_chooser_with_doc_type,
     show_success_screen_with_info,
 };
-use crate::ui::identity::get_selected_wallet;
+use crate::ui::identity::wallet_for_signing_key;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
@@ -305,6 +305,13 @@ impl DocumentActionScreen {
     /// The contract or document type changed: what was fetched for the old
     /// one no longer applies, and the key is picked again for the new scope
     /// (a key bound to the old contract or type cannot sign in the new one).
+    /// The wallet holding the key the action is signed with, for the unlock
+    /// prompt.
+    fn signing_wallet(&self) -> Option<Arc<RwLock<Wallet>>> {
+        let identity = self.selected_identity.as_ref()?;
+        wallet_for_signing_key(identity, self.selected_key.as_ref())
+    }
+
     fn signing_scope_changed(&mut self) {
         self.no_documents_found = false;
         self.fetched_documents.clear();
@@ -354,10 +361,7 @@ impl DocumentActionScreen {
                     self.selected_document_type.as_ref(),
                 );
 
-                // Update wallet
-                self.wallet = get_selected_wallet(identity, Some(&self.app_context), None)
-                    .or_show_error(self.app_context.egui_ctx())
-                    .unwrap_or(None);
+                self.wallet = self.signing_wallet();
                 self.wallet_open_attempted = false;
             } else {
                 self.selected_key = None;
@@ -2002,11 +2006,8 @@ impl DocumentActionScreen {
                 ui.add_space(10.0);
 
                 // Wallet unlock
-                if let Some(selected_identity) = &self.selected_identity {
-                    let new_wallet =
-                        get_selected_wallet(selected_identity, Some(&self.app_context), None)
-                            .or_show_error(self.app_context.egui_ctx())
-                            .unwrap_or(None);
+                if self.selected_identity.is_some() {
+                    let new_wallet = self.signing_wallet();
                     let wallet_changed = match (&self.wallet, &new_wallet) {
                         (Some(a), Some(b)) => !Arc::ptr_eq(a, b),
                         (None, None) => false,
@@ -2285,6 +2286,35 @@ mod tests {
 
         let chosen = auto_selected_document_key(&identity, Some(&contract), Some(&domain));
         assert_eq!(chosen.map(|key| key.id()), Some(1));
+    }
+
+    /// Regression: the unlock prompt looked for a DPNS signing key, so an
+    /// identity whose only key is bound to the action's contract got no
+    /// wallet to unlock although that key signs the action.
+    #[test]
+    fn the_unlock_wallet_follows_the_key_that_signs() {
+        use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let contract = QualifiedContract {
+            contract: crate::context::test_support::dashpay_contract(),
+            alias: None,
+        };
+        let (identity, wallet) = crate::context::test_support::identity_with_bound_wallet_key(
+            ContractBounds::SingleContract {
+                id: contract.contract.id(),
+            },
+        );
+
+        let mut screen = DocumentActionScreen::new(context, None, DocumentActionType::Create);
+        screen.selected_document_type = Some(owned_document_type(&contract, "contactInfo"));
+        screen.selected_contract = Some(contract);
+        screen.selected_identity = Some(identity);
+        screen.signing_scope_changed();
+        assert_eq!(screen.selected_key.as_ref().map(|key| key.id()), Some(1));
+
+        let resolved = screen.signing_wallet();
+        assert!(resolved.is_some_and(|resolved| Arc::ptr_eq(&resolved, &wallet)));
     }
 
     /// Regression: a key picked for one document type survived a switch to a

@@ -1238,7 +1238,7 @@ impl ThemeState {
             let now = Instant::now();
             if now.duration_since(self.last_checked) >= Duration::from_secs(2) {
                 self.last_checked = now;
-                if let Some(detected) = crate::ui::theme::try_detect_system_theme()
+                if let Some(detected) = crate::ui::theme::poll_system_theme()
                     && detected != self.resolved
                 {
                     self.resolved = detected;
@@ -1258,6 +1258,7 @@ impl ThemeState {
         self.preference = new_theme;
         let mut detection_failed = false;
         self.resolved = if new_theme == ThemeMode::System {
+            // Keep this bounded synchronous probe to avoid a flash when switching to System.
             use crate::ui::theme::ThemeDetectionOutcome;
             match crate::ui::theme::try_detect_system_theme_detailed() {
                 ThemeDetectionOutcome::Detected(detected) => detected,
@@ -1274,10 +1275,64 @@ impl ThemeState {
         } else {
             new_theme
         };
-        self.last_checked = Instant::now();
+        if new_theme == ThemeMode::System {
+            self.last_checked = Instant::now();
+        }
         crate::ui::theme::apply_theme(ctx, self.resolved);
         self.last_applied = Some(self.resolved);
         detection_failed
+    }
+}
+
+#[cfg(test)]
+mod theme_state_tests {
+    use super::*;
+
+    #[test]
+    fn system_theme_poll_after_throttle_needs_no_tokio_runtime() {
+        assert!(tokio::runtime::Handle::try_current().is_err());
+        let ctx = egui::Context::default();
+        let mut state = ThemeState::new(ThemeMode::System);
+        state.last_checked = Instant::now() - Duration::from_secs(3);
+        let previous_check = state.last_checked;
+
+        state.poll_and_apply(&ctx);
+
+        assert!(
+            state.last_checked > previous_check,
+            "the poll must actually run"
+        );
+        assert_eq!(state.last_applied, Some(state.resolved));
+    }
+
+    #[test]
+    fn system_theme_poll_is_throttled() {
+        let ctx = egui::Context::default();
+        let mut state = ThemeState::new(ThemeMode::Light);
+        state.preference = ThemeMode::System;
+        let previous_check = state.last_checked;
+
+        assert!(state.poll_and_apply(&ctx));
+        assert_eq!(state.last_checked, previous_check);
+        assert_eq!(state.resolved, ThemeMode::Light);
+        assert!(
+            !state.poll_and_apply(&ctx),
+            "unchanged appearance is not reapplied"
+        );
+    }
+
+    #[test]
+    fn explicit_preference_is_not_overwritten_by_system_polling() {
+        let ctx = egui::Context::default();
+        let mut state = ThemeState::new(ThemeMode::System);
+        state.last_checked = Instant::now() - Duration::from_secs(3);
+        let previous_check = state.last_checked;
+
+        assert!(!state.apply_new_preference(&ctx, ThemeMode::Dark));
+        assert!(!state.poll_and_apply(&ctx));
+        assert_eq!(state.resolved, ThemeMode::Dark);
+        assert_eq!(state.last_applied, Some(ThemeMode::Dark));
+        assert_eq!(state.last_checked, previous_check);
     }
 }
 

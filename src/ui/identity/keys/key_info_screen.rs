@@ -1073,7 +1073,7 @@ impl KeyInfoScreen {
 
         if let Some(total_budget) = key.total_budget() {
             ui.label(
-                RichText::new("Spending limit:")
+                RichText::new("Spending Limit:")
                     .strong()
                     .color(text_primary),
             );
@@ -1176,7 +1176,7 @@ impl KeyInfoScreen {
             .show(ui, |ui| {
                 if key.total_budget().is_some() {
                     ui.label(
-                        RichText::new("Add to spending limit:")
+                        RichText::new("Add to Spending Limit:")
                             .strong()
                             .color(text_primary),
                     );
@@ -1189,7 +1189,7 @@ impl KeyInfoScreen {
                 }
                 if key.expires_at().is_some() {
                     ui.label(
-                        RichText::new("Extend expiry by (days):")
+                        RichText::new("Extend Expiry by (days):")
                             .strong()
                             .color(text_primary),
                     );

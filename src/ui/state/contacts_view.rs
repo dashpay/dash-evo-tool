@@ -56,8 +56,8 @@ pub struct ContactsState {
     /// Whether `contacts` holds a loaded list, not the empty one before the
     /// first load lands.
     contacts_known: bool,
-    /// Confirmed notes override lagging reads until the network returns them.
-    confirmed_notes: HashMap<(Identifier, Identifier), Option<String>>,
+    /// Notes the hub saved, shown over lists that may not hold them yet.
+    confirmed_notes: HashMap<(Network, Identifier, Identifier), ConfirmedNote>,
     /// Established contacts flagged `display_hidden`, kept aside so the tab can
     /// offer a way back. Declining or cancelling a request hides that person,
     /// so without this list a contact could only be recovered from the legacy
@@ -82,6 +82,29 @@ pub struct ContactsState {
     /// cancelling, so an older load can answer after a newer one; its list is
     /// stale and would undo a confirmed note.
     latest_contacts_load: Option<u64>,
+}
+
+/// A note the hub saved, shown over contact lists that may not hold it yet.
+///
+/// Invariant:
+/// - Created only by a successful note write the hub itself dispatched, keyed
+///   by the network the write ran on, the owner, and the contact. It applies
+///   only to lists of that owner on that network.
+/// - `after_load` is the newest contact-list load dispatched before the save
+///   was confirmed. A list from that load or an earlier one, or from no load,
+///   predates the save: it shows `note` whatever it holds.
+/// - A list from a later load shows `note` only while it still holds
+///   `lagging`, the note a read behind the save can return.
+/// - Retired by: a list holding `note`; a later list holding anything other
+///   than `lagging`; another screen's successful write to the contact; the
+///   hub's next confirmed save of it (replaced).
+/// - Untouched by: the hub's failed writes, identity switches, and network
+///   switches (another network's lists never match the key).
+#[derive(Debug, Clone)]
+struct ConfirmedNote {
+    note: Option<String>,
+    lagging: Option<Option<String>>,
+    after_load: u64,
 }
 
 impl ContactsState {
@@ -211,16 +234,30 @@ impl ContactsState {
     /// out of the active list — that is what "hidden" promises — but remain
     /// reachable through [`ContactsState::hidden_contacts`]. The selected
     /// contact's note draft follows the reloaded note.
-    pub fn record_contacts(&mut self, mut contacts: Vec<ContactData>) {
-        if let Some(owner) = self.owner_id() {
+    pub fn record_contacts(&mut self, contacts: Vec<ContactData>) {
+        self.record_loaded_contacts(contacts, None);
+    }
+
+    /// [`Self::record_contacts`] for the list load `dispatch_id` returned; see
+    /// [`ConfirmedNote`] for how it meets the notes the hub saved.
+    pub fn record_loaded_contacts(
+        &mut self,
+        mut contacts: Vec<ContactData>,
+        dispatch_id: Option<u64>,
+    ) {
+        if let Some((network, owner)) = self.owner {
             for contact in &mut contacts {
-                let key = (owner, contact.identity_id);
-                if let Some(confirmed) = self.confirmed_notes.get(&key) {
-                    if &contact.note == confirmed {
-                        self.confirmed_notes.remove(&key);
-                    } else {
-                        contact.note.clone_from(confirmed);
-                    }
+                let key = (network, owner, contact.identity_id);
+                let Some(confirmed) = self.confirmed_notes.get(&key) else {
+                    continue;
+                };
+                let from_before = dispatch_id.is_none_or(|id| id <= confirmed.after_load);
+                if contact.note != confirmed.note
+                    && (from_before || confirmed.lagging.as_ref() == Some(&contact.note))
+                {
+                    contact.note.clone_from(&confirmed.note);
+                } else {
+                    self.confirmed_notes.remove(&key);
                 }
             }
         }
@@ -360,40 +397,67 @@ impl ContactsState {
         &mut self.detail
     }
 
-    /// Settle a confirmed contact details write. Returns whether one was
-    /// running. After a note save the listed contact shows the stored note
-    /// right away when the lists belong to `owner`, without waiting for the
-    /// reload.
+    /// Settle a confirmed contact details write `owner` ran on `network`.
+    /// Returns whether one was running. After a note save the listed contact
+    /// shows the stored note right away when the lists belong to that owner on
+    /// that network, without waiting for the reload; see [`ConfirmedNote`].
     pub fn finish_contact_info_write(
         &mut self,
+        network: Network,
         owner: &Identifier,
         contact_id: &Identifier,
     ) -> bool {
         let Some(write) = self.detail.finish_write(owner, contact_id) else {
             return false;
         };
-        if let PendingWrite::Note(note) = &write {
-            self.confirmed_notes
-                .insert((*owner, *contact_id), note.clone());
-        }
-        if let PendingWrite::Note(note) = write
-            && self.owner_id() == Some(*owner)
-            && let Some(contact) = self
-                .contacts
+        let PendingWrite::Note(note) = write else {
+            return true;
+        };
+        let listed = if self.owner == Some((network, *owner)) {
+            self.contacts
                 .iter_mut()
                 .chain(self.hidden.iter_mut())
                 .find(|c| c.identity_id == *contact_id)
-        {
+        } else {
+            None
+        };
+        let lagging = listed.as_ref().map(|contact| contact.note.clone());
+        self.confirmed_notes.insert(
+            (network, *owner, *contact_id),
+            ConfirmedNote {
+                note: note.clone(),
+                lagging,
+                after_load: self.latest_contacts_load.unwrap_or_default(),
+            },
+        );
+        if let Some(contact) = listed {
             contact.note = note;
             self.detail.sync(contact);
         }
         true
     }
 
-    /// Release a failed or abandoned write, rolling back an optimistic unhide.
-    pub fn release_contact_info_write(&mut self, owner: &Identifier, contact_id: &Identifier) {
+    /// Another screen saved the contact's details after the hub did, so the
+    /// hub's confirmed note is no longer the newest.
+    pub fn forget_confirmed_note(
+        &mut self,
+        network: Network,
+        owner: &Identifier,
+        contact_id: &Identifier,
+    ) {
+        self.confirmed_notes.remove(&(network, *owner, *contact_id));
+    }
+
+    /// Release a failed or abandoned write `owner` ran on `network`, rolling
+    /// back an optimistic unhide in that owner's lists on that network.
+    pub fn release_contact_info_write(
+        &mut self,
+        network: Network,
+        owner: &Identifier,
+        contact_id: &Identifier,
+    ) {
         if self.detail.finish_write(owner, contact_id) == Some(PendingWrite::Visibility)
-            && self.owner_id() == Some(*owner)
+            && self.owner == Some((network, *owner))
         {
             if let Some(pos) = self
                 .contacts
@@ -582,7 +646,7 @@ mod tests {
         *state.detail_mut().note_mut(&id(7)).expect("draft") = "Met at the meetup".into();
         assert!(state.detail_mut().begin_save(id(1), id(7)).is_some());
 
-        assert!(state.finish_contact_info_write(&id(1), &id(7)));
+        assert!(state.finish_contact_info_write(Network::Testnet, &id(1), &id(7)));
 
         assert_eq!(
             state.selected_contact().and_then(|c| c.note.as_deref()),
@@ -590,7 +654,7 @@ mod tests {
         );
         assert!(!state.detail().is_dirty(&id(7)));
         assert!(
-            !state.finish_contact_info_write(&id(1), &id(7)),
+            !state.finish_contact_info_write(Network::Testnet, &id(1), &id(7)),
             "a save settles only once"
         );
     }
@@ -607,7 +671,7 @@ mod tests {
             state.select_contact(&id(7));
             *state.detail_mut().note_mut(&id(7)).unwrap() = note.unwrap_or_default().into();
             assert!(state.detail_mut().begin_save(id(1), id(7)).is_some());
-            assert!(state.finish_contact_info_write(&id(1), &id(7)));
+            assert!(state.finish_contact_info_write(Network::Testnet, &id(1), &id(7)));
             state.reset();
             state.record_contacts(vec![stale.clone()]);
             state.select_contact(&id(7));
@@ -636,7 +700,7 @@ mod tests {
         *state.detail_mut().note_mut(&id(7)).expect("draft") = "Theirs".into();
         assert!(state.detail_mut().begin_save(id(2), id(7)).is_some());
 
-        assert!(state.finish_contact_info_write(&id(2), &id(7)));
+        assert!(state.finish_contact_info_write(Network::Testnet, &id(2), &id(7)));
 
         assert_eq!(
             state.selected_contact().and_then(|c| c.note.as_deref()),
@@ -766,13 +830,13 @@ mod tests {
         assert!(state.detail_mut().begin_visibility_write(id(1), id(8)));
         state.unhide_contact(&id(8));
         state.select_contact(&id(8));
-        state.release_contact_info_write(&id(2), &id(8));
+        state.release_contact_info_write(Network::Testnet, &id(2), &id(8));
         assert_eq!(
             state.contacts_len(),
             1,
             "another owner's failure cannot move this row"
         );
-        state.release_contact_info_write(&id(1), &id(8));
+        state.release_contact_info_write(Network::Testnet, &id(1), &id(8));
         assert_eq!(state.contacts_len(), 0);
         assert_eq!(state.hidden_contacts().len(), 1);
         assert!(state.hidden_contacts()[0].is_hidden);

@@ -203,6 +203,12 @@ impl IdentityHubScreen {
         AppAction::BackendTaskWithContext { task, context }
     }
 
+    /// Retire a settled or abandoned write's records together.
+    fn forget_contact_info_task(&mut self, key: &ContactInfoTaskKey) -> Option<DashPayTask> {
+        self.contact_info_dispatches.remove(key);
+        self.pending_contact_info_tasks.remove(key)
+    }
+
     /// Whether `context` is the dispatch of the hub's own write for its contact.
     fn is_own_contact_info_dispatch(&self, context: &BackendTaskContext) -> bool {
         context
@@ -237,8 +243,15 @@ impl IdentityHubScreen {
     fn reset_contacts_for_identity_change(&mut self) {
         self.home_state = HomeState::default();
         self.contacts_state.reset_for_identity_change();
-        self.pending_contact_info_tasks.clear();
-        self.contact_info_dispatches.clear();
+        // A write still running keeps its guard across the change, so it keeps
+        // the records its outcome is matched against too.
+        let detail = self.contacts_state.detail();
+        let live = |key: &ContactInfoTaskKey| {
+            matches!(key, ContactInfoTaskKey::Direct { identity_id, contact_id }
+                if detail.is_writing(identity_id, contact_id))
+        };
+        self.pending_contact_info_tasks.retain(|key, _| live(key));
+        self.contact_info_dispatches.retain(|key, _| live(key));
     }
 
     /// Clear the stale load-error banner so the next `landing()` call can try
@@ -377,7 +390,7 @@ impl IdentityHubScreen {
             return false;
         }
         if let Some(key) = contact_info_error_key(error) {
-            self.pending_contact_info_tasks.remove(&key);
+            self.forget_contact_info_task(&key);
         }
         release_request_guard_for_error(&mut self.contacts_state, error);
         true
@@ -393,7 +406,7 @@ impl IdentityHubScreen {
             return false;
         }
         if let Some(key) = contact_info_error_key(error) {
-            self.pending_contact_info_tasks.remove(&key);
+            self.forget_contact_info_task(&key);
         }
         release_contact_info_write_for_error(&mut self.contacts_state, error);
         false
@@ -821,7 +834,7 @@ impl ScreenLike for IdentityHubScreen {
                 };
                 self.contacts_state
                     .finish_contact_info_write(identity, contact_id);
-                if let Some(task) = self.pending_contact_info_tasks.remove(&key) {
+                if let Some(task) = self.forget_contact_info_task(&key) {
                     self.contacts_state.invalidate();
                     let (message, kind) = if *published {
                         (contact_info_saved_message(&task), MessageType::Success)
@@ -886,11 +899,10 @@ impl ScreenLike for IdentityHubScreen {
             && !matches!(error, TaskError::DashPayContactInfoActionFailed { .. })
             && let Some((identity_id, contact_id)) = context.dashpay_contact_info_target()
         {
-            self.pending_contact_info_tasks
-                .remove(&ContactInfoTaskKey::Direct {
-                    identity_id,
-                    contact_id,
-                });
+            self.forget_contact_info_task(&ContactInfoTaskKey::Direct {
+                identity_id,
+                contact_id,
+            });
             self.contacts_state
                 .release_contact_info_write(&identity_id, &contact_id);
         }
@@ -2121,5 +2133,111 @@ mod tests {
             },
         );
         assert!(!state.detail().is_writing(&id(3), &id(4)));
+    }
+
+    /// A note save for identity A that is still running when the user switches
+    /// to B and back keeps its dispatch: its success settles it, and either
+    /// kind of failure releases it, instead of leaving A's contact on Saving….
+    async fn settle_after_an_identity_switch(outcome: &str) {
+        use crate::model::dashpay::ContactInfoUpdate;
+        let (owner, contact) = (id(3), id(4));
+        let wrapped = TaskError::DashPayContactInfoActionFailed {
+            identity_id: owner,
+            contact_id: contact,
+            source: Box::new(TaskError::WalletLocked),
+        };
+        {
+            let (_temp_dir, app_context) = wired_test_context().await;
+            let mut screen = IdentityHubScreen::new(&app_context);
+            screen.contacts_state.record_contacts(vec![
+                crate::backend_task::dashpay::ContactData {
+                    identity_id: contact,
+                    nickname: None,
+                    note: None,
+                    is_hidden: false,
+                    account_reference: 0,
+                    username: None,
+                    display_name: None,
+                    avatar_url: None,
+                    bio: None,
+                },
+            ]);
+            screen.contacts_state.select_contact(&contact);
+            *screen
+                .contacts_state
+                .detail_mut()
+                .note_mut(&contact)
+                .expect("draft") = "Bao".into();
+            assert!(
+                screen
+                    .contacts_state
+                    .detail_mut()
+                    .begin_save(owner, contact)
+                    .is_some()
+            );
+            let action = AppAction::BackendTask(BackendTask::DashPayTask(Box::new(
+                DashPayTask::UpdateContactInfo {
+                    identity: hub_identity(owner),
+                    contact_id: contact,
+                    update: ContactInfoUpdate::note(Some("Bao".into())),
+                },
+            )));
+            screen.capture_contact_info_update(&action);
+            let AppAction::BackendTaskWithContext {
+                context: dispatched,
+                ..
+            } = screen.bind_contact_info_dispatch(action)
+            else {
+                panic!("the write is sent under its own dispatch");
+            };
+
+            // A → B → A while the write runs.
+            screen.reset_contacts_for_identity_change();
+            screen.reset_contacts_for_identity_change();
+
+            match outcome {
+                "success" => screen.display_backend_task_result(
+                    &dispatched,
+                    BackendTaskSuccessResult::DashPayContactInfoUpdated {
+                        identity: owner,
+                        contact_id: contact,
+                        published: true,
+                    },
+                ),
+                "wrapped failure" => {
+                    screen.display_backend_task_error(&dispatched, &wrapped);
+                    screen.display_task_error(&wrapped);
+                }
+                _ => {
+                    screen.display_backend_task_error(&dispatched, &TaskError::WalletLocked);
+                    screen.display_task_error(&TaskError::WalletLocked);
+                }
+            }
+
+            assert!(
+                !screen.contacts_state.detail().is_writing(&owner, &contact),
+                "{outcome} after A → B → A must settle the write"
+            );
+            assert!(
+                screen.contact_info_dispatches.is_empty()
+                    && screen.pending_contact_info_tasks.is_empty(),
+                "{outcome}: the dispatch record retires with its guard"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_write_succeeding_after_an_identity_switch_settles() {
+        settle_after_an_identity_switch("success").await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_write_failing_after_an_identity_switch_is_released() {
+        settle_after_an_identity_switch("wrapped failure").await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_write_failing_bare_after_an_identity_switch_is_released() {
+        settle_after_an_identity_switch("bare failure").await;
     }
 }

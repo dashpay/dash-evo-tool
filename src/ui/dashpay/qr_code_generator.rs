@@ -4,6 +4,7 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::info_popup::InfoPopup;
@@ -14,9 +15,8 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
-use crate::ui::components::{MessageBanner, ResultBannerExt};
 use crate::ui::dashpay::dashpay_screen::DashPaySubscreen;
-use crate::ui::identity::get_selected_wallet;
+use crate::ui::identity::wallet_for_signing_key;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use egui::{RichText, ScrollArea, TextEdit, Ui};
@@ -84,9 +84,8 @@ impl QRCodeGeneratorScreen {
             new_self.selected_identity_string = preferred.identity.id().to_string(Encoding::Base58);
 
             // Get wallet for the selected identity
-            new_self.selected_wallet = get_selected_wallet(&preferred, Some(&app_context), None)
-                .or_show_error(app_context.egui_ctx())
-                .unwrap_or(None);
+            new_self.selected_wallet =
+                wallet_for_signing_key(&preferred, preferred.auto_accept_proof_key());
         }
 
         new_self
@@ -205,13 +204,10 @@ impl QRCodeGeneratorScreen {
                             if response.changed() {
                                 // Update wallet for the newly selected identity
                                 if let Some(identity) = &self.selected_identity {
-                                    self.selected_wallet = get_selected_wallet(
+                                    self.selected_wallet = wallet_for_signing_key(
                                         identity,
-                                        Some(&self.app_context),
-                                        None,
-                                    )
-                                    .or_show_error(self.app_context.egui_ctx())
-                                    .unwrap_or(None);
+                                        identity.auto_accept_proof_key(),
+                                    );
                                 } else {
                                     self.selected_wallet = None;
                                 }

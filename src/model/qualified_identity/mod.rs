@@ -1201,6 +1201,17 @@ impl QualifiedIdentity {
         self.signing_key_now(requirements)
     }
 
+    /// The ENCRYPTION key whose wallet seeds DashPay auto-accept proofs
+    /// (DIP-15): the first MEDIUM ECDSA_SECP256K1 one.
+    pub fn auto_accept_proof_key(&self) -> Option<&IdentityPublicKey> {
+        self.identity.get_first_public_key_matching(
+            Purpose::ENCRYPTION,
+            std::collections::HashSet::from([SecurityLevel::MEDIUM]),
+            std::collections::HashSet::from([KeyType::ECDSA_SECP256K1]),
+            false,
+        )
+    }
+
     /// The key as the identity holds it now for `snapshot`, a copy taken
     /// earlier (e.g. stored next to its private half): budget and expiry move
     /// with key limits updates, so the snapshot may be stale. Falls back to

@@ -17,7 +17,7 @@ use crate::ui::components::wallet_unlock_popup::{
 };
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ResultBannerExt};
 use crate::ui::helpers::{TransactionType, add_key_chooser};
-use crate::ui::identity::get_selected_wallet;
+use crate::ui::identity::wallet_for_signing_key;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{BackendTaskSuccessResult, MessageType, ScreenLike};
 use dash_sdk::dpp::data_contract::accessors::v0::{DataContractV0Getters, DataContractV0Setters};
@@ -83,12 +83,6 @@ impl UpdateDataContractScreen {
             })
             .or_else(|| qualified_identities.first().cloned());
 
-        let selected_wallet = if let Some(ref identity) = selected_qualified_identity {
-            get_selected_wallet(identity, Some(app_context), None).unwrap_or(None)
-        } else {
-            None
-        };
-
         let excluded_aliases = ["dpns", "keyword_search", "token_history", "withdrawals"];
         let contracts = app_context.get_contracts().unwrap_or_else(|error| {
             MessageBanner::set_global(
@@ -116,6 +110,10 @@ impl UpdateDataContractScreen {
                 ))
                 .cloned()
         });
+
+        let selected_wallet = selected_qualified_identity
+            .as_ref()
+            .and_then(|identity| wallet_for_signing_key(identity, selected_key.as_ref()));
 
         let selected_identity_string = selected_qualified_identity
             .as_ref()
@@ -498,11 +496,8 @@ impl ScreenLike for UpdateDataContractScreen {
                         ))
                         .cloned();
 
-                    // Update wallet
                     self.selected_wallet =
-                        get_selected_wallet(identity, Some(&self.app_context), None)
-                            .or_show_error(self.app_context.egui_ctx())
-                            .unwrap_or(None);
+                        wallet_for_signing_key(identity, self.selected_key.as_ref());
                     self.wallet_open_attempted = false;
 
                     // Re-parse contract with new owner ID

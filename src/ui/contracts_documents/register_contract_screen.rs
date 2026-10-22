@@ -16,7 +16,7 @@ use crate::ui::components::wallet_unlock_popup::{
 };
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ResultBannerExt};
 use crate::ui::helpers::{TransactionType, add_key_chooser};
-use crate::ui::identity::get_selected_wallet;
+use crate::ui::identity::wallet_for_signing_key;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{BackendTaskSuccessResult, MessageType, ScreenLike};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Setters;
@@ -75,12 +75,6 @@ impl RegisterDataContractScreen {
             })
             .or_else(|| qualified_identities.first().cloned());
 
-        let selected_wallet = if let Some(ref identity) = selected_qualified_identity {
-            get_selected_wallet(identity, Some(app_context), None).unwrap_or(None)
-        } else {
-            None
-        };
-
         // Auto-select a suitable key for contract registration
         let selected_key = selected_qualified_identity.as_ref().and_then(|identity| {
             identity
@@ -91,6 +85,10 @@ impl RegisterDataContractScreen {
                 ))
                 .cloned()
         });
+
+        let selected_wallet = selected_qualified_identity
+            .as_ref()
+            .and_then(|identity| wallet_for_signing_key(identity, selected_key.as_ref()));
 
         let selected_identity_string = selected_qualified_identity
             .as_ref()
@@ -469,14 +467,8 @@ impl ScreenLike for RegisterDataContractScreen {
                             ))
                             .cloned();
 
-                        // Update wallet
-                        self.selected_wallet = get_selected_wallet(
-                            identity,
-                            Some(&self.app_context),
-                            None,
-                        )
-                        .or_show_error(self.app_context.egui_ctx())
-                        .unwrap_or(None);
+                        self.selected_wallet =
+                            wallet_for_signing_key(identity, self.selected_key.as_ref());
                         self.wallet_open_attempted = false;
 
                         // Re-parse contract with new owner ID

@@ -1236,7 +1236,10 @@ mod tests {
                 group_id: dash_sdk::platform::Identifier::new([3; 32]),
             },
         ] {
-            assert!(offered_for_manual_choice(&[kept.clone()]), "{kept:?}");
+            assert!(
+                offered_for_manual_choice(std::slice::from_ref(&kept)),
+                "{kept:?}"
+            );
         }
         assert!(offered_for_manual_choice(&[]));
     }

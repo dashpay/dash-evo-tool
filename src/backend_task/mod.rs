@@ -879,6 +879,9 @@ pub enum BackendTaskSuccessResult {
         identity: Identifier,
         /// Contact whose private details were updated.
         contact_id: Identifier,
+        /// Whether the details reached Platform. `false` when they are saved on
+        /// this device only, until the identity has two contacts (DIP-0015).
+        published: bool,
     },
     DashPayPaymentSent(String, String, u64), // (recipient, address, amount in duffs)
     /// Result of a [`FetchAvatar`](crate::backend_task::dashpay::DashPayTask::FetchAvatar):
@@ -2480,7 +2483,6 @@ mod tests {
     #[test]
     fn dashpay_request_id_extracts_only_the_three_contact_actions() {
         use crate::backend_task::dashpay::DashPayTask;
-        use crate::model::dashpay::UnreadableContactInfoPolicy;
 
         let request_id = Identifier::from([0x11; 32]);
         let dashpay = |t: DashPayTask| BackendTask::DashPayTask(Box::new(t));
@@ -2496,7 +2498,6 @@ mod tests {
             dashpay_request_id(&dashpay(DashPayTask::RejectContactRequest {
                 identity: qualified_identity(1),
                 request_id,
-                unreadable: UnreadableContactInfoPolicy::Abort,
             })),
             Some(request_id)
         );
@@ -2504,7 +2505,6 @@ mod tests {
             dashpay_request_id(&dashpay(DashPayTask::CancelContactRequest {
                 identity: qualified_identity(1),
                 request_id,
-                unreadable: UnreadableContactInfoPolicy::Abort,
             })),
             Some(request_id)
         );

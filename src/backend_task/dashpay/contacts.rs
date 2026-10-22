@@ -3,7 +3,7 @@ use crate::backend_task::dashpay::contact_request_query;
 use crate::backend_task::dashpay::errors::DashPayError;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
-use crate::model::dashpay::contact_request_recipient;
+use crate::model::dashpay::{ContactDetails, contact_request_recipient};
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::data_contract::DataContract;
@@ -128,11 +128,12 @@ pub(super) fn decrypt_private_data(
     Ok(decrypted.to_vec())
 }
 
-/// The nickname, note and visibility the owner stored for each contact, read
-/// from every page of the owner's `contactInfo` documents.
+/// The nickname, note and visibility the owner stored for each contact in
+/// `contactInfo` documents sealed under the legacy key root, read from every
+/// page of the owner's documents.
 ///
-/// Pages follow the order the write lookup scans, and the first document for
-/// a contact wins, so the load shows the document a save rewrites.
+/// Pages are ordered by `$updatedAt`, oldest first, and a later document for
+/// a contact replaces an earlier one, so the newest document wins.
 pub(super) async fn load_contact_details<P, PF, D, DF>(
     query: DocumentQuery,
     fetch_page: P,
@@ -176,10 +177,6 @@ where
             );
             continue;
         };
-        if contact_info_map.contains_key(&contact_id) {
-            continue;
-        }
-
         // The DIP-15 codec platform-wallet writes with; an unreadable payload
         // shows as no stored details.
         let private_data = match props.get("privateData") {
@@ -207,6 +204,57 @@ where
     }
 
     Ok(contact_info_map)
+}
+
+/// The details legacy-key `contactInfo` documents hold for each contact.
+pub(super) async fn legacy_contact_details(
+    app_context: &Arc<AppContext>,
+    sdk: &Sdk,
+    identity: &QualifiedIdentity,
+) -> Result<HashMap<Identifier, ContactData>, TaskError> {
+    let query = DocumentQuery::new(app_context.dashpay_contract.clone(), "contactInfo")
+        .map_err(|e| DashPayError::QueryCreation {
+            query_target: "DashPay contactInfo",
+            source: Box::new(e.into()),
+        })?
+        .with_where(WhereClause {
+            field: "$ownerId".to_string(),
+            operator: WhereOperator::Equal,
+            value: Value::Identifier(identity.identity.id().to_buffer()),
+        });
+    load_contact_details(
+        query,
+        |query| async move {
+            Document::fetch_many(sdk, query)
+                .await
+                .map_err(TaskError::from)
+        },
+        |derivation_index| derive_contact_info_keys(app_context, identity, derivation_index),
+    )
+    .await
+}
+
+/// The details the contacts list shows for one contact: platform-wallet's
+/// synced details, or a legacy-key document's when platform-wallet holds
+/// none for the contact.
+pub(super) fn shown_contact_details(
+    synced: Option<ContactDetails>,
+    legacy: Option<ContactDetails>,
+) -> ContactDetails {
+    synced
+        .filter(|details| !details.is_empty())
+        .or(legacy)
+        .unwrap_or_default()
+}
+
+impl ContactData {
+    pub(super) fn details(&self) -> ContactDetails {
+        ContactDetails {
+            nickname: self.nickname.clone(),
+            note: self.note.clone(),
+            hidden: self.is_hidden,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -284,47 +332,52 @@ pub async fn load_contacts(
         })
         .collect();
 
-    // Now query for contact info documents
-    let mut contact_info_query = DocumentQuery::new(dashpay_contract.clone(), "contactInfo")
-        .map_err(|e| DashPayError::QueryCreation {
-            query_target: "DashPay contactInfo",
-            source: Box::new(e.into()),
-        })?;
-
-    contact_info_query = contact_info_query.with_where(WhereClause {
-        field: "$ownerId".to_string(),
-        operator: WhereOperator::Equal,
-        value: Value::Identifier(identity_id.to_buffer()),
-    });
-    let contact_info_map = load_contact_details(
-        contact_info_query,
-        |query| async move {
-            Document::fetch_many(sdk, query)
-                .await
-                .map_err(TaskError::from)
-        },
-        |derivation_index| derive_contact_info_keys(app_context, &identity, derivation_index),
-    )
-    .await?;
+    // platform-wallet's synced details first; a refresh failure leaves the
+    // last synced details in place.
+    let mut synced = match app_context.wallet_backend() {
+        Ok(backend) => {
+            if let Err(error) = backend.dashpay_sync(&identity_id).await {
+                tracing::debug!(
+                    ?error,
+                    "LoadContacts: DashPay sync degraded; using cached state"
+                );
+            }
+            if let Err(error) = backend.dashpay_sync_contact_infos(&identity_id).await {
+                tracing::debug!(
+                    ?error,
+                    "LoadContacts: contact details sync degraded; using cached state"
+                );
+            }
+            backend.dashpay_contact_details(&identity_id).await
+        }
+        Err(error) => {
+            tracing::debug!(
+                ?error,
+                "LoadContacts: no wallet backend; showing legacy details"
+            );
+            Default::default()
+        }
+    };
+    let legacy = legacy_contact_details(app_context, sdk, &identity).await?;
 
     // Build enriched contact list with basic data
     let mut contact_list: Vec<ContactData> = contacts
         .into_iter()
         .map(|contact_id| {
-            contact_info_map
-                .get(&contact_id)
-                .cloned()
-                .unwrap_or(ContactData {
-                    identity_id: contact_id,
-                    nickname: None,
-                    note: None,
-                    is_hidden: false,
-                    account_reference: 0,
-                    username: None,
-                    display_name: None,
-                    avatar_url: None,
-                    bio: None,
-                })
+            let legacy = legacy.get(&contact_id);
+            let details =
+                shown_contact_details(synced.remove(&contact_id), legacy.map(ContactData::details));
+            ContactData {
+                identity_id: contact_id,
+                nickname: details.nickname,
+                note: details.note,
+                is_hidden: details.hidden,
+                account_reference: legacy.map_or(0, |legacy| legacy.account_reference),
+                username: None,
+                display_name: None,
+                avatar_url: None,
+                bio: None,
+            }
         })
         .collect();
 
@@ -517,6 +570,36 @@ fn cache_contact_profiles(app_context: &Arc<AppContext>, contacts: &[ContactData
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn details(note: &str) -> ContactDetails {
+        ContactDetails {
+            nickname: None,
+            note: Some(note.to_string()),
+            hidden: false,
+        }
+    }
+
+    #[test]
+    fn synced_contact_details_win_over_legacy_ones() {
+        assert_eq!(
+            shown_contact_details(Some(details("synced")), Some(details("legacy"))),
+            details("synced")
+        );
+    }
+
+    #[test]
+    fn legacy_contact_details_show_when_none_are_synced() {
+        assert_eq!(
+            shown_contact_details(None, Some(details("legacy"))),
+            details("legacy")
+        );
+        assert_eq!(
+            shown_contact_details(Some(ContactDetails::default()), Some(details("legacy"))),
+            details("legacy"),
+            "a contact platform-wallet holds no details for shows the legacy ones"
+        );
+        assert_eq!(shown_contact_details(None, None), ContactDetails::default());
+    }
 
     /// Known-answer vectors generated independently with Python
     /// `cryptography` 46 (OpenSSL). They pin DIP-15 interoperability with other

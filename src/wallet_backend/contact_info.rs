@@ -1,0 +1,451 @@
+//! DashPay `contactInfo` (DIP-0015) through platform-wallet.
+//!
+//! platform-wallet fetches, matches, encodes and publishes `contactInfo`
+//! documents itself; it asks the host only to seal and open their two
+//! ciphertexts. [`ContactInfoCrypto`] answers those two calls from the wallet
+//! seed the secret seam lends for one operation. The child keys come from
+//! platform-wallet's own `derive_contact_info_keys`, the AES steps from the
+//! `platform-encryption` crate it uses, so both sides always agree.
+
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::dashcore::secp256k1::{PublicKey, SecretKey};
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::key_wallet::bip32::{
+    ChildNumber, DerivationPath, ExtendedPubKey, KeyDerivationType,
+};
+use dash_sdk::dpp::key_wallet::wallet::Wallet;
+use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
+use dash_sdk::platform::Identifier;
+use platform_wallet::error::PlatformWalletError;
+use platform_wallet::wallet::identity::crypto::contact_info::{
+    ContactInfoKeys, derive_contact_info_keys,
+};
+use platform_wallet::wallet::identity::network::{
+    ContactCryptoProvider, ContactInfoOpened, ContactInfoPublishOutcome, ContactInfoSealed,
+    identity_auth_derivation_path_for_type,
+};
+use zeroize::Zeroizing;
+
+use crate::backend_task::error::TaskError;
+use crate::model::dashpay::ContactDetails;
+use crate::model::qualified_identity::QualifiedIdentity;
+use crate::wallet_backend::{SecretScope, WalletBackend};
+
+impl WalletBackend {
+    /// Refresh the contact details platform-wallet holds for the identities
+    /// of the wallet that manages `owner`. Does nothing when no wallet does.
+    pub(crate) async fn dashpay_sync_contact_infos(
+        &self,
+        owner: &Identifier,
+    ) -> Result<(), TaskError> {
+        let Some(wallet) = self.find_wallet_for_identity(owner).await else {
+            return Ok(());
+        };
+        wallet
+            .identity()
+            .dashpay()
+            .sync_contact_infos()
+            .await
+            .map(|_| ())
+            .map_err(|source| TaskError::WalletBackend {
+                source: Arc::new(source),
+            })
+    }
+
+    /// The details platform-wallet holds for each of `owner`'s established
+    /// contacts. Empty when no wallet manages `owner`.
+    pub(crate) async fn dashpay_contact_details(
+        &self,
+        owner: &Identifier,
+    ) -> BTreeMap<Identifier, ContactDetails> {
+        let Some(wallet) = self.find_wallet_for_identity(owner).await else {
+            return BTreeMap::new();
+        };
+        let state = wallet.state().await;
+        let Some(managed) = state.identity_manager.managed_identity(owner) else {
+            return BTreeMap::new();
+        };
+        managed
+            .dashpay()
+            .established_contacts()
+            .values()
+            .map(|contact| {
+                (
+                    contact.contact_identity_id,
+                    ContactDetails {
+                        nickname: contact.alias.clone(),
+                        note: contact.note.clone(),
+                        hidden: contact.is_hidden,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// Save `details` for `contact_id` and publish them through
+    /// platform-wallet, which writes the identity's `contactInfo` document.
+    ///
+    /// # Errors
+    ///
+    /// Before platform-wallet changes anything: the identity is not managed
+    /// by its DashPay wallet or has no wallet identity index
+    /// ([`TaskError::ContactInfoIdentityNotFromWallet`]), or `contact_id` is
+    /// not an established contact
+    /// ([`TaskError::ContactInfoContactNotEstablished`]). A failed publish is
+    /// [`TaskError::DashPayContactInfoWriteFailed`].
+    pub(crate) async fn dashpay_set_contact_info(
+        &self,
+        identity: &QualifiedIdentity,
+        contact_id: &Identifier,
+        details: ContactDetails,
+    ) -> Result<ContactInfoPublishOutcome, TaskError> {
+        let owner = identity.identity.id();
+        let seed_hash = identity
+            .dashpay_wallet_seed_hash()
+            .ok_or(TaskError::ContactInfoIdentityNotFromWallet)?;
+        let wallet = self.resolve_wallet(&seed_hash).await?;
+        let identity_index = {
+            let state = wallet.state().await;
+            let managed = state.identity_manager.managed_identity(&owner);
+            contact_info_write_index(
+                managed.and_then(|managed| managed.identity_index),
+                managed.is_some_and(|managed| {
+                    managed
+                        .dashpay()
+                        .established_contacts()
+                        .contains_key(contact_id)
+                }),
+            )?
+        };
+        let network = identity.network;
+        let identity_wallet = wallet.identity();
+        let dashpay = identity_wallet.dashpay();
+
+        self.secret_access()
+            .with_secret_session(&SecretScope::HdSeed { seed_hash }, async |session| {
+                let plaintext = session.plaintext();
+                let seed = plaintext
+                    .expose_hd_seed()
+                    .ok_or(TaskError::ContactWalletSeedUnavailable)?;
+                let crypto = ContactInfoCrypto::new(seed, network, identity_index);
+                dashpay
+                    .set_contact_info_with_external_signer(
+                        &owner,
+                        contact_id,
+                        details.nickname,
+                        details.note,
+                        details.hidden,
+                        identity,
+                        &crypto,
+                    )
+                    .await
+                    .map_err(|source| TaskError::DashPayContactInfoWriteFailed {
+                        source: Arc::new(source),
+                    })
+            })
+            .await
+    }
+}
+
+/// The wallet identity index a contact details write derives beneath,
+/// checked before platform-wallet changes any local state.
+fn contact_info_write_index(
+    identity_index: Option<u32>,
+    contact_is_established: bool,
+) -> Result<u32, TaskError> {
+    let identity_index = identity_index.ok_or(TaskError::ContactInfoIdentityNotFromWallet)?;
+    if !contact_is_established {
+        return Err(TaskError::ContactInfoContactNotEstablished);
+    }
+    Ok(identity_index)
+}
+
+/// Seals and opens `contactInfo` ciphertexts for one wallet identity.
+///
+/// Holds a borrow of the seed for one operation only; it never copies the
+/// seed out of that operation.
+pub(crate) struct ContactInfoCrypto<'a> {
+    seed: &'a [u8; 64],
+    network: Network,
+    identity_index: u32,
+}
+
+impl<'a> ContactInfoCrypto<'a> {
+    pub(crate) fn new(seed: &'a [u8; 64], network: Network, identity_index: u32) -> Self {
+        Self {
+            seed,
+            network,
+            identity_index,
+        }
+    }
+
+    /// The two AES keys beneath `root_path`, derived by platform-wallet.
+    ///
+    /// `root_path` must be one of this identity's key paths: any other root is
+    /// refused, so a request can never select another identity's keys.
+    #[expect(
+        clippy::result_large_err,
+        reason = "ContactCryptoProvider fixes PlatformWalletError as the error type"
+    )]
+    fn keys(
+        &self,
+        root_path: &DerivationPath,
+        derivation_index: u32,
+    ) -> Result<ContactInfoKeys, PlatformWalletError> {
+        let key_id = match root_path.len().checked_sub(1).map(|last| root_path[last]) {
+            Some(ChildNumber::Hardened { index }) => index,
+            _ => return Err(foreign_root()),
+        };
+        let own_root = identity_auth_derivation_path_for_type(
+            self.network,
+            KeyDerivationType::ECDSA,
+            self.identity_index,
+            key_id,
+        )?;
+        if own_root != *root_path {
+            return Err(foreign_root());
+        }
+        let wallet =
+            Wallet::from_seed_bytes(*self.seed, self.network, WalletAccountCreationOptions::None)
+                .map_err(|error| PlatformWalletError::KeyDerivation(error.to_string()))?;
+        derive_contact_info_keys(
+            &wallet,
+            self.network,
+            self.identity_index,
+            key_id,
+            derivation_index,
+        )
+    }
+}
+
+fn foreign_root() -> PlatformWalletError {
+    PlatformWalletError::InvalidParameter(
+        "contactInfo root is not a key path of this identity".to_string(),
+    )
+}
+
+/// The provider serves `contactInfo` only; contact requests, invitations and
+/// auto-accept keys go through their own paths.
+fn not_contact_info() -> PlatformWalletError {
+    PlatformWalletError::InvalidParameter(
+        "this crypto provider serves contactInfo only".to_string(),
+    )
+}
+
+#[async_trait::async_trait]
+impl ContactCryptoProvider for ContactInfoCrypto<'_> {
+    async fn receiving_xpub(
+        &self,
+        _path: &DerivationPath,
+    ) -> Result<ExtendedPubKey, PlatformWalletError> {
+        Err(not_contact_info())
+    }
+
+    async fn ecdh_shared_secret(
+        &self,
+        _path: &DerivationPath,
+        _peer: &PublicKey,
+    ) -> Result<Zeroizing<[u8; 32]>, PlatformWalletError> {
+        Err(not_contact_info())
+    }
+
+    async fn export_auto_accept_private_key(
+        &self,
+        _path: &DerivationPath,
+    ) -> Result<SecretKey, PlatformWalletError> {
+        Err(not_contact_info())
+    }
+
+    async fn export_invitation_private_key(
+        &self,
+        _path: &DerivationPath,
+    ) -> Result<SecretKey, PlatformWalletError> {
+        Err(not_contact_info())
+    }
+
+    async fn account_reference(
+        &self,
+        _path: &DerivationPath,
+        _compact_xpub: &[u8],
+        _account_index: u32,
+        _version: u32,
+    ) -> Result<u32, PlatformWalletError> {
+        Err(not_contact_info())
+    }
+
+    async fn unmask_account_reference(
+        &self,
+        _path: &DerivationPath,
+        _compact_xpub: &[u8],
+        _account_reference: u32,
+    ) -> Result<(u32, u32), PlatformWalletError> {
+        Err(not_contact_info())
+    }
+
+    async fn contact_info_seal(
+        &self,
+        root_path: &DerivationPath,
+        derivation_index: u32,
+        contact_id: &[u8; 32],
+        private_data_plaintext: &[u8],
+        private_data_iv: &[u8; 16],
+    ) -> Result<ContactInfoSealed, PlatformWalletError> {
+        let keys = self.keys(root_path, derivation_index)?;
+        Ok(ContactInfoSealed {
+            enc_to_user_id: platform_encryption::encrypt_enc_to_user_id(
+                &keys.enc_to_user_id_key,
+                contact_id,
+            ),
+            private_data: platform_encryption::encrypt_private_data(
+                &keys.private_data_key,
+                private_data_iv,
+                private_data_plaintext,
+            ),
+        })
+    }
+
+    async fn contact_info_open(
+        &self,
+        root_path: &DerivationPath,
+        derivation_index: u32,
+        enc_to_user_id: &[u8; 32],
+        private_data_blob: &[u8],
+    ) -> Result<ContactInfoOpened, PlatformWalletError> {
+        let keys = self.keys(root_path, derivation_index)?;
+        let private_data =
+            platform_encryption::decrypt_private_data(&keys.private_data_key, private_data_blob)
+                .map_err(|error| {
+                    PlatformWalletError::InvalidIdentityData(format!(
+                        "contactInfo privateData could not be decrypted: {error}"
+                    ))
+                })?;
+        Ok(ContactInfoOpened {
+            contact_id: platform_encryption::decrypt_enc_to_user_id(
+                &keys.enc_to_user_id_key,
+                enc_to_user_id,
+            ),
+            private_data,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SEED: [u8; 64] = [0x42; 64];
+    const NETWORK: Network = Network::Testnet;
+    const IDENTITY_INDEX: u32 = 1;
+
+    fn root(identity_index: u32, key_id: u32) -> DerivationPath {
+        identity_auth_derivation_path_for_type(
+            NETWORK,
+            KeyDerivationType::ECDSA,
+            identity_index,
+            key_id,
+        )
+        .expect("root path")
+    }
+
+    fn upstream_keys(key_id: u32, derivation_index: u32) -> ContactInfoKeys {
+        let wallet = Wallet::from_seed_bytes(SEED, NETWORK, WalletAccountCreationOptions::None)
+            .expect("wallet");
+        derive_contact_info_keys(&wallet, NETWORK, IDENTITY_INDEX, key_id, derivation_index)
+            .expect("upstream keys")
+    }
+
+    /// What this provider seals, platform-wallet's own keys open: the
+    /// documents are readable by every client that uses platform-wallet.
+    #[tokio::test]
+    async fn sealed_details_open_with_platform_wallet_keys() {
+        let crypto = ContactInfoCrypto::new(&SEED, NETWORK, IDENTITY_INDEX);
+        let contact = [7u8; 32];
+        let iv = [3u8; 16];
+
+        let sealed = crypto
+            .contact_info_seal(&root(IDENTITY_INDEX, 2), 5, &contact, b"note", &iv)
+            .await
+            .expect("seal");
+
+        let keys = upstream_keys(2, 5);
+        assert_eq!(
+            platform_encryption::decrypt_enc_to_user_id(
+                &keys.enc_to_user_id_key,
+                &sealed.enc_to_user_id
+            ),
+            contact
+        );
+        assert_eq!(
+            platform_encryption::decrypt_private_data(&keys.private_data_key, &sealed.private_data)
+                .expect("decrypt"),
+            b"note"
+        );
+    }
+
+    /// A document platform-wallet sealed opens here.
+    #[tokio::test]
+    async fn opens_what_platform_wallet_sealed() {
+        let crypto = ContactInfoCrypto::new(&SEED, NETWORK, IDENTITY_INDEX);
+        let keys = upstream_keys(2, 0);
+        let contact = [9u8; 32];
+        let enc = platform_encryption::encrypt_enc_to_user_id(&keys.enc_to_user_id_key, &contact);
+        let blob =
+            platform_encryption::encrypt_private_data(&keys.private_data_key, &[1; 16], b"alias");
+
+        let opened = crypto
+            .contact_info_open(&root(IDENTITY_INDEX, 2), 0, &enc, &blob)
+            .await
+            .expect("open");
+
+        assert_eq!(opened.contact_id, contact);
+        assert_eq!(opened.private_data, b"alias");
+    }
+
+    /// A root that belongs to another wallet identity is refused.
+    #[tokio::test]
+    async fn another_identitys_root_is_refused() {
+        let crypto = ContactInfoCrypto::new(&SEED, NETWORK, IDENTITY_INDEX);
+        let result = crypto
+            .contact_info_seal(&root(IDENTITY_INDEX + 1, 2), 0, &[0; 32], b"", &[0; 16])
+            .await;
+        assert!(matches!(
+            result,
+            Err(PlatformWalletError::InvalidParameter(_))
+        ));
+    }
+
+    /// A write is refused before platform-wallet runs when the identity has no
+    /// wallet index or the contact is not established.
+    #[test]
+    fn a_write_needs_a_wallet_identity_and_an_established_contact() {
+        assert!(matches!(
+            contact_info_write_index(None, true),
+            Err(TaskError::ContactInfoIdentityNotFromWallet)
+        ));
+        assert!(matches!(
+            contact_info_write_index(Some(3), false),
+            Err(TaskError::ContactInfoContactNotEstablished)
+        ));
+        assert_eq!(contact_info_write_index(Some(3), true).expect("index"), 3);
+    }
+
+    /// Everything other than contactInfo is refused rather than served.
+    #[tokio::test]
+    async fn other_crypto_requests_are_refused() {
+        let crypto = ContactInfoCrypto::new(&SEED, NETWORK, IDENTITY_INDEX);
+        let path = root(IDENTITY_INDEX, 0);
+        assert!(crypto.receiving_xpub(&path).await.is_err());
+        assert!(crypto.export_auto_accept_private_key(&path).await.is_err());
+        assert!(crypto.export_invitation_private_key(&path).await.is_err());
+        assert!(crypto.account_reference(&path, &[], 0, 0).await.is_err());
+        assert!(
+            crypto
+                .unmask_account_reference(&path, &[], 0)
+                .await
+                .is_err()
+        );
+    }
+}

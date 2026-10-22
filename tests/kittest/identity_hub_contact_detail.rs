@@ -12,9 +12,11 @@ use dash_evo_tool::backend_task::dashpay::{ContactData, DashPayTask};
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use dash_evo_tool::model::dashpay::ContactInfoField;
 use dash_evo_tool::ui::ScreenLike;
+use dash_evo_tool::ui::components::MessageBanner;
 use dash_evo_tool::ui::identity::IdentityHubTab;
 use dash_evo_tool::ui::identity::contacts::{
-    DETAIL_HEADING, NO_SELECTION, NOTE_HEADING, SAVE_NOTE_LABEL, SAVING_NOTE_LABEL,
+    DETAIL_HEADING, DETAILS_SAVED_ON_THIS_DEVICE, NO_SELECTION, NOTE_HEADING, NOTE_SAVED,
+    SAVE_NOTE_LABEL, SAVING_NOTE_LABEL,
 };
 use dash_sdk::platform::Identifier;
 use egui::accesskit::Role;
@@ -268,6 +270,7 @@ fn save_note_shows_the_fee_first_and_sends_the_note_once() {
             BackendTaskSuccessResult::DashPayContactInfoUpdated {
                 identity: owner,
                 contact_id: Identifier::from(CONTACT),
+                published: true,
             },
         );
         hub.run_steps(4);
@@ -283,6 +286,48 @@ fn save_note_shows_the_fee_first_and_sends_the_note_once() {
         assert_eq!(
             note_editor(&hub).value().as_deref(),
             Some("Met at the meetup")
+        );
+    });
+}
+
+/// DIP-0015 holds contact details back until the identity has two contacts;
+/// the user is told the note is kept on this device instead of "saved".
+#[test]
+fn a_note_kept_on_this_device_says_so() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let (mut hub, owner) = hub_with_bao_selected(&app_context, WIDE, None);
+        note_editor(&hub).focus();
+        hub.run();
+        note_editor(&hub).type_text("Met at the meetup");
+        hub.run();
+        hub.get_by_role_and_label(Role::Button, SAVE_NOTE_LABEL)
+            .click();
+        hub.run_steps(2);
+        assert_eq!(saved_notes(&hub).len(), 1);
+
+        // The hub harness does not draw global banners; read them instead.
+        let ctx = app_context.egui_ctx();
+        MessageBanner::clear_all_global(ctx);
+        hub.state_mut().0.display_task_result(
+            BackendTaskSuccessResult::DashPayContactInfoUpdated {
+                identity: owner,
+                contact_id: Identifier::from(CONTACT),
+                published: false,
+            },
+        );
+        hub.run_steps(4);
+        assert!(hub.query_by_label(SAVING_NOTE_LABEL).is_none());
+
+        MessageBanner::clear_global_message(ctx, NOTE_SAVED);
+        assert!(
+            MessageBanner::has_global(ctx),
+            "the user is told the note is kept on this device"
+        );
+        MessageBanner::clear_global_message(ctx, DETAILS_SAVED_ON_THIS_DEVICE);
+        assert!(
+            !MessageBanner::has_global(ctx),
+            "the only banner is the on-this-device one"
         );
     });
 }
@@ -424,6 +469,7 @@ fn a_note_saved_behind_another_screen_is_settled_on_return() {
                 result: Box::new(BackendTaskSuccessResult::DashPayContactInfoUpdated {
                     identity: owner,
                     contact_id: Identifier::from(CONTACT),
+                    published: true,
                 }),
             }],
         );
@@ -506,40 +552,6 @@ fn bare_contact_info_failure_behind_another_screen_releases_only_its_save() {
             .click();
         hub.run_steps(2);
         assert_eq!(saved_notes(&hub).len(), 1);
-    });
-}
-
-#[test]
-fn unreadable_details_found_behind_another_screen_still_ask_first() {
-    use dash_evo_tool::backend_task::error::{ContactInfoReadError, TaskError};
-    with_isolated_data_dir(|| {
-        let runtime = tokio::runtime::Runtime::new().expect("runtime");
-        let _guard = runtime.enter();
-        let mut app =
-            crate::support::mount_app(dash_evo_tool::ui::RootScreenType::RootScreenWalletsBalances);
-        let (mut hub, owner, context) = hub_saving_a_note(&app);
-
-        crate::identity_hub::loads::receive_task_results_behind_the_send_screen(
-            &runtime,
-            &mut app,
-            &mut hub,
-            vec![dash_evo_tool::app::TaskResult::Error {
-                context,
-                error: contact_info_failure(
-                    owner,
-                    TaskError::DashPayContactInfoRead {
-                        source: ContactInfoReadError::DeserializeFailed,
-                    },
-                ),
-            }],
-        );
-        hub.run_steps(2);
-
-        assert!(
-            hub.query_by_label("Save note and replace saved details?")
-                .is_some(),
-            "the overwrite question must be asked once the hub is back in view"
-        );
     });
 }
 

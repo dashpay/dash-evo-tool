@@ -24,9 +24,7 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::dashpay::{ContactData, DashPayTask};
 use crate::context::AppContext;
 use crate::context::feature_gate::FeatureGate;
-use crate::model::dashpay::{
-    ContactInfoUpdate, MAX_CONTACT_NOTE_BYTES, UnreadableContactInfoPolicy, validate_contact_note,
-};
+use crate::model::dashpay::{ContactInfoUpdate, MAX_CONTACT_NOTE_BYTES, validate_contact_note};
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::ScreenType;
@@ -62,6 +60,9 @@ pub const SAVING_NOTE_LABEL: &str = "Saving…";
 pub const NOTE_UNCHANGED_TOOLTIP: &str = "There are no changes to save.";
 pub const NOTE_SAVE_TOOLTIP: &str = "Save this note on Dash Platform. Saving costs a small fee.";
 pub const NOTE_SAVED: &str = "Your note is saved.";
+/// Shown when contact details are kept on this device only: DIP-0015 holds
+/// them back until the identity has two contacts.
+pub const DETAILS_SAVED_ON_THIS_DEVICE: &str = "Your contact details are saved on this device. They will sync to your other devices once this identity has two contacts.";
 const NOTE_SAVING_TOOLTIP: &str = "This contact's details are being saved.";
 pub const RECEIVED_HEADING: &str = "Received requests";
 pub const ACTIVE_HEADING_PREFIX: &str = "Active contacts";
@@ -266,12 +267,10 @@ pub fn request_task(
         RequestAction::Declined => DashPayTask::RejectContactRequest {
             identity,
             request_id,
-            unreadable: UnreadableContactInfoPolicy::Abort,
         },
         RequestAction::Cancelled => DashPayTask::CancelContactRequest {
             identity,
             request_id,
-            unreadable: UnreadableContactInfoPolicy::Abort,
         },
     }
 }
@@ -1734,22 +1733,6 @@ mod tests {
                     crate::model::dashpay::ContactInfoField::Preserve
                 );
             }
-            other => panic!("expected UpdateContactInfo, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn unhide_leaves_the_accepted_accounts_alone() {
-        // The write replaces the whole contactInfo document. Unhiding says
-        // nothing about which accounts the user accepted, so it must not
-        // volunteer an empty list — that would erase every one of them.
-        let task = unhide_task(qualified_identity(id(1)), &hidden_contact(None, None));
-        match task {
-            DashPayTask::UpdateContactInfo { update, .. } => assert_eq!(
-                update.accepted_accounts,
-                crate::model::dashpay::AcceptedAccounts::Preserve,
-                "unhiding must preserve the contact's accepted accounts, not overwrite them"
-            ),
             other => panic!("expected UpdateContactInfo, got {other:?}"),
         }
     }

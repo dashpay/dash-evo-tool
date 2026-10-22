@@ -713,8 +713,12 @@ impl ScreenLike for IdentityHubScreen {
         if matches!(action, AppAction::None) {
             action = if let Some(task) = self.pending_avatars.pop() {
                 AppAction::BackendTask(task)
-            } else {
+            } else if self.app_context.connection_status().masternodes_ready() {
+                // Profile reads verify proofs; sent before the masternode list
+                // is synced they get the queried nodes banned.
                 self.profile_cache.dispatch_pending()
+            } else {
+                AppAction::None
             };
         }
         if matches!(action, AppAction::None) {
@@ -1330,11 +1334,16 @@ mod tests {
                 (IdentityHubScreen::new(&context), Vec::new()),
             );
         harness.run_steps(4);
+        assert!(harness.state().1.is_empty(), "no read before readiness");
+        context.connection_status().set_masternodes_ready(true);
+        harness.run_steps(4);
         let first_load = {
             let loads = &harness.state().1;
             assert_eq!(loads.len(), 1, "the hub asks for the profile once");
             loads[0].clone()
         };
+        // Readiness can drop again (a reconnect) while the read is running.
+        context.connection_status().set_masternodes_ready(false);
 
         harness.state_mut().0.display_backend_task_error(
             &first_load,
@@ -1385,7 +1394,12 @@ mod tests {
                 (IdentityHubScreen::new(&context), Vec::new()),
             );
         harness.run_steps(4);
+        assert!(harness.state().1.is_empty(), "no read before readiness");
+        context.connection_status().set_masternodes_ready(true);
+        harness.run_steps(4);
         assert_eq!(harness.state().1.len(), 1);
+        // Readiness can drop again (a reconnect) while the read is running.
+        context.connection_status().set_masternodes_ready(false);
         let first = harness.state().1[0].clone();
         harness.state_mut().0.display_backend_task_error(
             &first,
@@ -1404,6 +1418,61 @@ mod tests {
         );
         harness.run_steps(4);
         assert_eq!(harness.state().1.len(), 2, "retry only once");
+    }
+
+    /// Proof-verifying reads sent before the masternode list is synced fail
+    /// locally, and the SDK bans every node they reach for that failure. Home
+    /// therefore holds its contact and profile reads until the network is
+    /// ready, while still showing that contacts are loading.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn home_holds_contact_and_profile_reads_until_masternodes_are_ready() {
+        let (_dir, context) = wired_test_context().await;
+        let owner = seed_user_identity(&context, 0x5F);
+        context.set_selected_identity(Some(owner));
+        context.connection_status().set_masternodes_ready(false);
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 1000.0))
+            .build_ui_state(
+                |ui, state: &mut (IdentityHubScreen, Vec<&'static str>)| {
+                    let tasks = match state.0.ui(ui) {
+                        AppAction::BackendTask(task)
+                        | AppAction::BackendTaskWithContext { task, .. } => vec![task],
+                        AppAction::BackendTasks(tasks, _) => tasks,
+                        _ => Vec::new(),
+                    };
+                    for task in tasks {
+                        if let BackendTask::DashPayTask(task) = task {
+                            state.1.push(match *task {
+                                DashPayTask::LoadContacts { .. } => "contacts",
+                                DashPayTask::LoadContactRequests { .. } => "requests",
+                                DashPayTask::LoadProfile { .. } => "profile",
+                                _ => continue,
+                            });
+                        }
+                    }
+                },
+                (IdentityHubScreen::new(&context), Vec::new()),
+            );
+        harness.run_steps(4);
+        assert_eq!(
+            harness.state().1,
+            Vec::<&str>::new(),
+            "no read before readiness"
+        );
+        assert!(
+            harness.state().0.contacts_state.load_is_due(),
+            "Home asked for its contacts and was held, not skipped"
+        );
+        {
+            use egui_kittest::kittest::Queryable;
+            assert!(harness.query_by_label("Loading contacts…").is_some());
+        }
+
+        context.connection_status().set_masternodes_ready(true);
+        harness.run_steps(6);
+        let mut reads = harness.state().1.clone();
+        reads.sort_unstable();
+        assert_eq!(reads, ["contacts", "profile", "requests"]);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

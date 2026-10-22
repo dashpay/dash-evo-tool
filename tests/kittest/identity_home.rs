@@ -105,6 +105,9 @@ type HomeHarnessState = (
 );
 
 fn mount_home(app_context: Arc<AppContext>) -> Harness<'static, HomeHarnessState> {
+    // The hub holds its proof-verifying reads until the masternode list is
+    // synced; these tests start on a synced network.
+    app_context.connection_status().set_masternodes_ready(true);
     let mut harness = Harness::builder()
         .with_size(egui::vec2(1280.0, 900.0))
         .build_ui_state(

@@ -483,12 +483,14 @@ fn home_retries_a_contact_read_that_failed_while_covered() {
     in_app(|| {
         let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
         let app_context = harness.state().current_app_context().clone();
-        app_context.connection_status().set_masternodes_ready(false);
+        app_context.connection_status().set_masternodes_ready(true);
         harness.state_mut().test_capture_dispatches();
         crate::identity_home::seed_identity(&app_context, vec![], vec![]);
         harness.run_steps(3);
         let reads = home_contact_list_reads(&harness);
         assert_eq!(reads.len(), 1, "Home asks for its contact list once");
+        // A reconnect drops readiness while the read is running.
+        app_context.connection_status().set_masternodes_ready(false);
 
         let add_contact = ScreenType::DashPayAddContact.create_screen(&app_context);
         harness.state_mut().screen_stack.push(add_contact);

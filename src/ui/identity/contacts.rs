@@ -310,7 +310,13 @@ pub fn tab_load_action(
     match ContactsTabState::resolve(app_context, active.as_ref(), profiles) {
         ContactsTabState::Populated { identity } => {
             state.reconcile_owner(&identity);
-            load_action(&identity, state)
+            // Held until the masternode list is synced, as on Home: an earlier
+            // proof-verifying read gets the queried nodes banned.
+            if app_context.connection_status().masternodes_ready() {
+                load_action(&identity, state)
+            } else {
+                AppAction::None
+            }
         }
         ContactsTabState::Gated { .. } => AppAction::None,
     }

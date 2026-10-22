@@ -1081,8 +1081,8 @@ As a user, I want to edit contact details (nickname, note, hidden status) so tha
 - The Identity Hub contact details edit the private note, which is saved encrypted on Dash
   Platform in the DashPay (DIP-0015) format other DashPay clients read; a conservative fee
   estimate is shown before saving, and the saved note loads with the contact from the network.
-  Until the identity has two contacts, details are kept on this device and published later, and
-  the app says so. Details saved by older versions of this app still show until replaced. Hub notes are not copied to the local memo: offline views and
+  Until the identity has two contacts, details are kept on this device only, and the app says so;
+  saving them again after that publishes them. Details saved by older versions of this app still show until replaced. Hub notes are not copied to the local memo: offline views and
   legacy DashPay screens can continue to show an older local note.
 - Edits made through the legacy contact-details screen persist in its local memo.
 

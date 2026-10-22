@@ -99,33 +99,8 @@ pub async fn load_contact_requests(
         .filter_map(|(id, doc)| doc.map(|d| (id, d)))
         .collect();
 
-    // Filter out mutual requests (where both parties have sent requests to each other)
-    // These are now contacts, not pending requests
-    let contacts_established: HashSet<Identifier> = incoming
-        .iter()
-        .map(|(_, doc)| doc.owner_id())
-        .filter(|from_id| {
-            outgoing
-                .iter()
-                .any(|(_, doc)| contact_request_recipient(doc).as_ref() == Some(from_id))
-        })
-        .collect();
-
-    // Filter out established contacts from both lists. An outgoing document
-    // with an unreadable recipient is kept: it cannot be attributed, and hiding
-    // a request the user may still be waiting on is the worse failure.
-    incoming.retain(|(_, doc)| !contacts_established.contains(&doc.owner_id()));
-
-    outgoing.retain(|(_, doc)| match contact_request_recipient(doc) {
-        Some(to_id) => !contacts_established.contains(&to_id),
-        None => true,
-    });
-
-    // Drop requests the user has already resolved locally (declined an incoming
-    // one, or withdrawn a sent one). Platform keeps contactRequest documents
-    // forever, so without this the resolved row reappears on every reload.
     let backend = app_context.wallet_backend().ok();
-    retain_unresolved(
+    pending_requests(
         &mut incoming,
         &mut outgoing,
         |sender| match &backend {
@@ -149,6 +124,28 @@ pub async fn load_contact_requests(
         incoming,
         outgoing,
     })
+}
+
+/// Keep only the requests still waiting for an answer: drop the pairs that
+/// are contacts (both sides sent a request, unless the owner withdrew theirs —
+/// a reply to a withdrawn request is a new request to answer), then every
+/// request the user resolved on this device; see [`retain_unresolved`].
+fn pending_requests(
+    incoming: &mut Vec<(Identifier, Document)>,
+    outgoing: &mut Vec<(Identifier, Document)>,
+    is_declined: impl Fn(&Identifier) -> bool,
+    is_withdrawn: impl Fn(&Identifier) -> bool,
+) {
+    let contacts_established = super::contacts::mutual_contacts(incoming, outgoing, &is_withdrawn);
+    // An outgoing document with an unreadable recipient is kept: it cannot be
+    // attributed, and hiding a request the user may still be waiting on is
+    // the worse failure.
+    incoming.retain(|(_, doc)| !contacts_established.contains(&doc.owner_id()));
+    outgoing.retain(|(_, doc)| match contact_request_recipient(doc) {
+        Some(to_id) => !contacts_established.contains(&to_id),
+        None => true,
+    });
+    retain_unresolved(incoming, outgoing, is_declined, is_withdrawn);
 }
 
 /// Drop every request the user has already resolved: an incoming one they
@@ -306,6 +303,20 @@ pub async fn send_contact_request_with_proof(
     let existing = Document::fetch_many(sdk, existing_query).await?;
 
     if !existing.is_empty() {
+        // A withdrawn request still stands on Platform: sending again restores
+        // it instead of publishing a duplicate.
+        if let Ok(backend) = app_context.wallet_backend()
+            && restore_withdrawn_request(&PlatformReEngage {
+                backend: &backend,
+                owner: identity.identity.id(),
+                peer: to_identity_id,
+            })
+            .await?
+        {
+            return Ok(BackendTaskSuccessResult::DashPayContactRequestSent(
+                to_username_or_id.to_string(),
+            ));
+        }
         return Err(DashPayError::ContactRequestAlreadySent {
             to: to_username_or_id.to_string(),
         }
@@ -704,9 +715,22 @@ pub async fn accept_contact_request(
     let existing = Document::fetch_many(sdk, existing_query).await?;
 
     if !existing.is_empty() {
-        return Ok(BackendTaskSuccessResult::DashPayContactAlreadyEstablished {
-            request_id,
-            contact_id: from_identity_id,
+        // Our earlier request still stands on Platform. If it was withdrawn,
+        // accepting restores it, and with it the contact.
+        let backend = app_context.wallet_backend()?;
+        let restored = restore_withdrawn_request(&PlatformReEngage {
+            backend: &backend,
+            owner: identity.identity.id(),
+            peer: from_identity_id,
+        })
+        .await?;
+        return Ok(if restored {
+            BackendTaskSuccessResult::DashPayContactRequestAccepted(request_id)
+        } else {
+            BackendTaskSuccessResult::DashPayContactAlreadyEstablished {
+                request_id,
+                contact_id: from_identity_id,
+            }
         });
     }
 
@@ -795,6 +819,48 @@ pub async fn accept_contact_request(
             request_id,
         )),
         Err(e) => Err(e),
+    }
+}
+
+/// The local state that re-engages someone the owner withdrew a request
+/// from, behind a trait so the decision can be driven in tests.
+trait ReEngageOps {
+    fn is_withdrawn(&self) -> bool;
+    /// Lift the ignore and clear the withdrawal and decline markers.
+    fn re_engage(&self) -> impl Future<Output = Result<(), TaskError>> + Send;
+}
+
+/// Restore a withdrawn request the owner sent earlier, which still stands on
+/// Platform; returns whether there was one. Nothing is published.
+async fn restore_withdrawn_request<O: ReEngageOps>(ops: &O) -> Result<bool, TaskError> {
+    if !ops.is_withdrawn() {
+        return Ok(false);
+    }
+    ops.re_engage().await?;
+    Ok(true)
+}
+
+struct PlatformReEngage<'a> {
+    backend: &'a crate::wallet_backend::WalletBackend,
+    owner: Identifier,
+    peer: Identifier,
+}
+
+impl ReEngageOps for PlatformReEngage<'_> {
+    fn is_withdrawn(&self) -> bool {
+        self.backend.dashpay_is_withdrawn(&self.owner, &self.peer)
+    }
+
+    async fn re_engage(&self) -> Result<(), TaskError> {
+        // The ignore first: the withdrawal keeps the person out of the lists
+        // until it is lifted, so a failure here leaves a retry possible.
+        self.backend
+            .dashpay_unignore_contact_sender(&self.owner, &self.peer)
+            .await?;
+        self.backend
+            .dashpay_unmark_declined(&self.owner, &self.peer)?;
+        self.backend
+            .dashpay_unmark_withdrawn(&self.owner, &self.peer)
     }
 }
 
@@ -1244,6 +1310,73 @@ mod tests {
             sender_of_received_request(&doc, &id(2)),
             Err(DashPayError::InvalidDocument { .. })
         ));
+    }
+
+    /// PRRT_kwDOM8GK3c6vWRKJ: after the owner withdraws their request to
+    /// id(3), id(3)'s later request is listed for the owner to answer; the
+    /// pair is not taken for a contact and both rows dropped.
+    #[test]
+    fn a_reply_to_a_withdrawn_request_is_listed_to_answer() {
+        let owner = id(9);
+        let mut incoming = vec![
+            (id(10), request_doc(id(3), Some(owner))),
+            (id(11), request_doc(id(4), Some(owner))),
+        ];
+        let mut outgoing = vec![
+            (id(12), request_doc(owner, Some(id(3)))),
+            (id(13), request_doc(owner, Some(id(4)))),
+        ];
+
+        pending_requests(
+            &mut incoming,
+            &mut outgoing,
+            |_| false,
+            |peer| *peer == id(3),
+        );
+
+        assert_eq!(
+            incoming.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            vec![id(10)],
+            "id(3)'s reply waits for an answer; id(4) is a contact"
+        );
+        assert!(outgoing.is_empty(), "the withdrawn request is not listed");
+    }
+
+    #[derive(Default)]
+    struct ScriptedReEngage {
+        withdrawn: bool,
+        re_engaged: std::sync::Mutex<bool>,
+    }
+
+    impl ReEngageOps for ScriptedReEngage {
+        fn is_withdrawn(&self) -> bool {
+            self.withdrawn
+        }
+
+        async fn re_engage(&self) -> Result<(), TaskError> {
+            *self.re_engaged.lock().unwrap() = true;
+            Ok(())
+        }
+    }
+
+    /// PRRT_kwDOM8GK3c6vWRKe: accepting (or sending again) where the owner's
+    /// withdrawn request still stands restores it without a new publish.
+    #[tokio::test]
+    async fn an_existing_withdrawn_request_is_restored() {
+        let ops = ScriptedReEngage {
+            withdrawn: true,
+            ..Default::default()
+        };
+        assert!(restore_withdrawn_request(&ops).await.expect("restored"));
+        assert!(*ops.re_engaged.lock().unwrap());
+
+        let pending = ScriptedReEngage::default();
+        assert!(
+            !restore_withdrawn_request(&pending)
+                .await
+                .expect("nothing to restore")
+        );
+        assert!(!*pending.re_engaged.lock().unwrap());
     }
 
     #[test]

@@ -236,8 +236,10 @@ where
 
 /// The details the owner's stored `contactInfo` documents hold.
 pub(super) struct StoredContactDetails {
-    /// From DIP-0015 documents platform-wallet can read, newest per contact.
-    pub(super) published: BTreeMap<Identifier, ContactDetails>,
+    /// From DIP-0015 documents platform-wallet can read, newest per contact;
+    /// an error when the seed could not be used to read them. A save must not
+    /// guess past that error; the contacts list may.
+    pub(super) published: Result<BTreeMap<Identifier, ContactDetails>, TaskError>,
     /// From documents older versions of this app wrote under the legacy
     /// key root, newest per contact.
     pub(super) legacy: HashMap<Identifier, ContactData>,
@@ -276,7 +278,7 @@ pub(super) async fn stored_contact_details(
                 .dashpay_open_contact_infos(identity, &documents)
                 .await
         }
-        Err(_) => BTreeMap::new(),
+        Err(_) => Ok(BTreeMap::new()),
     };
     let legacy = legacy_details_from(&documents, |derivation_index| {
         derive_contact_info_keys(app_context, identity, derivation_index)
@@ -447,10 +449,12 @@ pub async fn load_contacts(
             Default::default()
         }
     };
-    let StoredContactDetails {
-        mut published,
-        legacy,
-    } = stored_contact_details(app_context, sdk, &identity).await?;
+    let StoredContactDetails { published, legacy } =
+        stored_contact_details(app_context, sdk, &identity).await?;
+    let mut published = published.unwrap_or_else(|error| {
+        tracing::debug!(?error, "LoadContacts: published contact details not read");
+        BTreeMap::new()
+    });
 
     // Build enriched contact list with basic data
     let mut contact_list: Vec<ContactData> = contacts

@@ -156,20 +156,25 @@ impl WalletBackend {
     /// with platform-wallet's keys and codec; `documents` are oldest first and
     /// the newest per contact wins. Documents that do not open — legacy-key
     /// ones, or another client's — are skipped. Empty when the identity has
-    /// no wallet identity index or the seed is unavailable.
+    /// no wallet or wallet identity index, so none can be DIP-0015 ones.
+    ///
+    /// # Errors
+    ///
+    /// The seed could not be used, for example because the password prompt
+    /// was cancelled.
     pub(crate) async fn dashpay_open_contact_infos(
         &self,
         identity: &QualifiedIdentity,
         documents: &[Document],
-    ) -> BTreeMap<Identifier, ContactDetails> {
+    ) -> Result<BTreeMap<Identifier, ContactDetails>, TaskError> {
         if documents.is_empty() {
-            return BTreeMap::new();
+            return Ok(BTreeMap::new());
         }
         let Some(seed_hash) = identity.dashpay_wallet_seed_hash() else {
-            return BTreeMap::new();
+            return Ok(BTreeMap::new());
         };
         let Ok(wallet) = self.resolve_wallet(&seed_hash).await else {
-            return BTreeMap::new();
+            return Ok(BTreeMap::new());
         };
         let owner = identity.identity.id();
         let identity_index = {
@@ -180,7 +185,7 @@ impl WalletBackend {
                 .and_then(|managed| managed.identity_index)
         };
         let Some(identity_index) = identity_index else {
-            return BTreeMap::new();
+            return Ok(BTreeMap::new());
         };
         let network = identity.network;
         self.secret_access()
@@ -190,18 +195,16 @@ impl WalletBackend {
                     .expose_hd_seed()
                     .ok_or(TaskError::ContactWalletSeedUnavailable)?;
                 let crypto = ContactInfoCrypto::new(seed, network, identity_index);
-                Ok::<_, TaskError>(open_contact_info_documents(&crypto, documents).await)
+                Ok(open_contact_info_documents(&crypto, documents).await)
             })
             .await
-            .unwrap_or_else(|error| {
-                tracing::debug!(?error, "contactInfo documents could not be opened");
-                BTreeMap::new()
-            })
     }
 }
 
 /// Open `documents` (oldest first) through `crypto`; the newest readable
 /// document per contact wins.
+// TODO: replace with a platform-wallet contactInfo-only read for seedless
+// wallets once one exists (upstream issue drafted, not yet filed).
 async fn open_contact_info_documents(
     crypto: &ContactInfoCrypto<'_>,
     documents: &[Document],

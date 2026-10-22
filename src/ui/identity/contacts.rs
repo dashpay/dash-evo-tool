@@ -61,8 +61,9 @@ pub const NOTE_UNCHANGED_TOOLTIP: &str = "There are no changes to save.";
 pub const NOTE_SAVE_TOOLTIP: &str = "Save this note on Dash Platform. Saving costs a small fee.";
 pub const NOTE_SAVED: &str = "Your note is saved.";
 /// Shown when contact details are kept on this device only: DIP-0015 holds
-/// them back until the identity has two contacts.
-pub const DETAILS_SAVED_ON_THIS_DEVICE: &str = "Your contact details are saved on this device. They will sync to your other devices once this identity has two contacts.";
+/// them back until the identity has two contacts, and nothing publishes them
+/// later on its own.
+pub const DETAILS_SAVED_ON_THIS_DEVICE: &str = "Your contact details are saved on this device only. After this identity has two contacts, edit and save these details again to sync them to your other devices.";
 const NOTE_SAVING_TOOLTIP: &str = "This contact's details are being saved.";
 pub const RECEIVED_HEADING: &str = "Received requests";
 pub const ACTIVE_HEADING_PREFIX: &str = "Active contacts";

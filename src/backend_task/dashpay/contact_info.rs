@@ -8,8 +8,9 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
-use crate::model::dashpay::{ContactInfoUpdate, validate_contact_note};
+use crate::model::dashpay::{ContactDetails, ContactInfoUpdate, validate_contact_note};
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::wallet_backend::WalletBackend;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
@@ -73,28 +74,50 @@ pub async fn create_or_update_contact_info(
     contact_user_id: Identifier,
     update: ContactInfoUpdate,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
-    let _write_guard = app_context
-        .contact_info_writes
-        .acquire(identity.identity.id())
-        .await;
-    let backend = app_context.wallet_backend()?;
     let owner = identity.identity.id();
+    let _write_guard = app_context.contact_info_writes.acquire(owner).await;
+    let ops = PlatformSaveOps {
+        app_context,
+        sdk,
+        backend: app_context.wallet_backend()?,
+        identity: &identity,
+        contact_id: contact_user_id,
+    };
+    let published = save_contact_details(&ops, &update).await?;
+    Ok(BackendTaskSuccessResult::DashPayContactInfoUpdated {
+        identity: owner,
+        contact_id: contact_user_id,
+        published,
+    })
+}
 
-    backend.dashpay_sync_contact_infos(&owner).await?;
-    let local = backend
-        .dashpay_contact_details(&owner)
-        .await
-        .remove(&contact_user_id);
-    let mut stored = super::contacts::stored_contact_details(app_context, sdk, &identity).await?;
-    let published = stored.published.remove(&contact_user_id);
-    let synced_before = backend.dashpay_details_synced(&owner, &contact_user_id)
-        || super::contacts::holds_details(published.as_ref(), local.as_ref());
-    let legacy = stored
-        .legacy
-        .get(&contact_user_id)
-        .map(super::contacts::ContactData::details);
-    let current = super::contacts::shown_contact_details(published, local, synced_before, legacy);
-    let details = update.apply_to(current);
+/// The reads and writes one contact details save performs, behind a trait so
+/// their order and failures can be driven in tests.
+trait SaveOps {
+    /// The details shown for the contact now; the fields an update keeps.
+    fn current(&self) -> impl Future<Output = Result<ContactDetails, TaskError>> + Send;
+    fn publish(
+        &self,
+        details: ContactDetails,
+    ) -> impl Future<Output = Result<ContactInfoPublishOutcome, TaskError>> + Send;
+    /// Record that platform-wallet holds the contact's details, so a legacy
+    /// document no longer stands in for them.
+    fn mark_synced(&self) -> Result<(), TaskError>;
+}
+
+/// Save `update` and return whether the details reached Platform.
+///
+/// # Errors
+///
+/// Nothing is written when the current details cannot be read (a cancelled
+/// password prompt included): a field the update keeps would otherwise be
+/// saved from a guess. A save whose synced record fails is reported as
+/// failed, since the old legacy details would show again on reload.
+async fn save_contact_details<O: SaveOps>(
+    ops: &O,
+    update: &ContactInfoUpdate,
+) -> Result<bool, TaskError> {
+    let details = update.apply_to(ops.current().await?);
 
     validate_contact_note(details.note.as_deref().unwrap_or_default())?;
     // The bound platform-wallet enforces, checked before it saves anything.
@@ -108,30 +131,69 @@ pub async fn create_or_update_contact_info(
         source: Box::new(source),
     })?;
 
-    let outcome = backend
-        .dashpay_set_contact_info(&identity, &contact_user_id, details)
-        .await?;
-    // platform-wallet holds these details now, published or not.
-    if let Err(error) = backend.dashpay_mark_details_synced(&owner, &contact_user_id) {
-        tracing::debug!(
-            ?error,
-            "could not record that the contact details are synced"
-        );
-    }
-    let published = match outcome {
-        ContactInfoPublishOutcome::Published => true,
-        ContactInfoPublishOutcome::DeferredUntilTwoContacts => false,
+    let outcome = ops.publish(details).await?;
+    ops.mark_synced()?;
+    match outcome {
+        ContactInfoPublishOutcome::Published => Ok(true),
+        ContactInfoPublishOutcome::DeferredUntilTwoContacts => Ok(false),
         // The write checks for a wallet identity index before platform-wallet
         // runs, so this is reached only if the two disagree.
         ContactInfoPublishOutcome::SkippedWatchOnly => {
-            return Err(TaskError::ContactInfoIdentityNotFromWallet);
+            Err(TaskError::ContactInfoIdentityNotFromWallet)
         }
-    };
-    Ok(BackendTaskSuccessResult::DashPayContactInfoUpdated {
-        identity: owner,
-        contact_id: contact_user_id,
-        published,
-    })
+    }
+}
+
+struct PlatformSaveOps<'a> {
+    app_context: &'a Arc<AppContext>,
+    sdk: &'a Sdk,
+    backend: Arc<WalletBackend>,
+    identity: &'a QualifiedIdentity,
+    contact_id: Identifier,
+}
+
+impl SaveOps for PlatformSaveOps<'_> {
+    async fn current(&self) -> Result<ContactDetails, TaskError> {
+        let owner = self.identity.identity.id();
+        self.backend.dashpay_sync_contact_infos(&owner).await?;
+        let local = self
+            .backend
+            .dashpay_contact_details(&owner)
+            .await
+            .remove(&self.contact_id);
+        let stored =
+            super::contacts::stored_contact_details(self.app_context, self.sdk, self.identity)
+                .await?;
+        let published = stored.published?.remove(&self.contact_id);
+        let synced_before = self
+            .backend
+            .dashpay_details_synced(&owner, &self.contact_id)
+            || super::contacts::holds_details(published.as_ref(), local.as_ref());
+        let legacy = stored
+            .legacy
+            .get(&self.contact_id)
+            .map(super::contacts::ContactData::details);
+        Ok(super::contacts::shown_contact_details(
+            published,
+            local,
+            synced_before,
+            legacy,
+        ))
+    }
+
+    async fn publish(
+        &self,
+        details: ContactDetails,
+    ) -> Result<ContactInfoPublishOutcome, TaskError> {
+        self.backend
+            .dashpay_set_contact_info(self.identity, &self.contact_id, details)
+            .await
+    }
+
+    fn mark_synced(&self) -> Result<(), TaskError> {
+        self.backend
+            .dashpay_mark_details_synced(&self.identity.identity.id(), &self.contact_id)
+    }
 }
 
 #[cfg(test)]
@@ -266,6 +328,96 @@ mod tests {
                 "{len}-byte fields"
             );
         }
+    }
+
+    struct ScriptedSave {
+        current: std::sync::Mutex<Option<Result<ContactDetails, TaskError>>>,
+        mark_fails: bool,
+        published: std::sync::Mutex<Vec<ContactDetails>>,
+    }
+
+    impl ScriptedSave {
+        fn new(current: Result<ContactDetails, TaskError>, mark_fails: bool) -> Self {
+            Self {
+                current: std::sync::Mutex::new(Some(current)),
+                mark_fails,
+                published: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl SaveOps for ScriptedSave {
+        async fn current(&self) -> Result<ContactDetails, TaskError> {
+            self.current.lock().unwrap().take().expect("read once")
+        }
+
+        async fn publish(
+            &self,
+            details: ContactDetails,
+        ) -> Result<ContactInfoPublishOutcome, TaskError> {
+            self.published.lock().unwrap().push(details);
+            Ok(ContactInfoPublishOutcome::DeferredUntilTwoContacts)
+        }
+
+        fn mark_synced(&self) -> Result<(), TaskError> {
+            if self.mark_fails {
+                return Err(TaskError::DashpaySidecarStorage {
+                    source: crate::wallet_backend::KvAdapterError::Truncated,
+                });
+            }
+            Ok(())
+        }
+    }
+
+    /// A cancelled password prompt while reading the current details stops
+    /// the save: a note-only save must not overwrite the nickname or the
+    /// hidden flag with empty values it never read.
+    #[tokio::test]
+    async fn an_unreadable_baseline_writes_nothing() {
+        let ops = ScriptedSave::new(Err(TaskError::SecretPromptCancelled), false);
+
+        let result = save_contact_details(&ops, &ContactInfoUpdate::note(Some("n".into()))).await;
+
+        assert!(matches!(result, Err(TaskError::SecretPromptCancelled)));
+        assert!(ops.published.lock().unwrap().is_empty());
+    }
+
+    /// A save whose synced record fails is not reported as saved: on reload
+    /// the old legacy details would show again.
+    #[tokio::test]
+    async fn a_failed_synced_record_fails_the_save() {
+        let ops = ScriptedSave::new(Ok(ContactDetails::default()), true);
+
+        let result =
+            save_contact_details(&ops, &ContactInfoUpdate::replace_all(None, None, false)).await;
+
+        assert!(matches!(
+            result,
+            Err(TaskError::DashpaySidecarStorage { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_save_keeps_the_fields_it_does_not_replace() {
+        let current = ContactDetails {
+            nickname: Some("Bao".into()),
+            note: None,
+            hidden: true,
+        };
+        let ops = ScriptedSave::new(Ok(current.clone()), false);
+
+        let published = save_contact_details(&ops, &ContactInfoUpdate::note(Some("n".into())))
+            .await
+            .expect("saved");
+
+        assert!(!published, "deferred until two contacts");
+        assert_eq!(
+            *ops.published.lock().unwrap(),
+            vec![ContactDetails {
+                note: Some("n".into()),
+                ..current
+            }]
+        );
     }
 
     fn contact_details_page(documents: impl IntoIterator<Item = Document>) -> Documents {

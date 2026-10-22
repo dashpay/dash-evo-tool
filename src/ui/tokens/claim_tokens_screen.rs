@@ -14,7 +14,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use super::tokens_screen::IdentityTokenBasicInfo;
+use super::tokens_screen::{IdentityTokenBasicInfo, IdentityTokenIdentifier};
 use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
@@ -238,10 +238,11 @@ impl ClaimTokensScreen {
 
     /// What a once-per-identity claim pays, and whether this identity already
     /// took it.
-    fn render_once_per_identity_info(&mut self, ui: &mut Ui) {
+    fn render_once_per_identity_info(&mut self, ui: &mut Ui) -> AppAction {
         let Some(amount) = once_per_identity_amount(&self.token_configuration) else {
-            return;
+            return AppAction::None;
         };
+        let mut action = AppAction::None;
         ui.heading("Once-per-identity distribution");
         ui.add_space(5.0);
         ui.label(format!(
@@ -259,24 +260,27 @@ impl ClaimTokensScreen {
                 .color(DashColors::warning_color(dark_mode)),
             );
             if ui.button("Dismiss").clicked() {
-                let info = &self.identity_token_basic_info;
-                match self
-                    .app_context
-                    .clear_once_per_identity_claim(&info.token_id, &info.identity_id)
-                {
-                    Ok(()) => self.once_per_identity_claimed_at = None,
-                    Err(error) => {
-                        MessageBanner::set_global(
-                            ui.ctx(),
-                            "The note could not be dismissed. Please try again.",
-                            MessageType::Error,
-                        )
-                        .with_details(error);
-                    }
-                }
+                action = self.dismiss_claim_note();
             }
         }
         ui.add_space(10.0);
+        action
+    }
+
+    /// The pair this screen's once-per-identity note is about.
+    fn claim_note_pair(&self) -> IdentityTokenIdentifier {
+        IdentityTokenIdentifier {
+            identity_id: self.identity_token_basic_info.identity_id,
+            token_id: self.identity_token_basic_info.token_id,
+        }
+    }
+
+    /// Forget the once-per-identity note. A backend task saves the dismissal;
+    /// the note goes away when it reports success.
+    fn dismiss_claim_note(&mut self) -> AppAction {
+        AppAction::BackendTask(BackendTask::TokenTask(Box::new(
+            TokenTask::ClearOncePerIdentityClaimHint(self.claim_note_pair()),
+        )))
     }
 
     /// Ask the user to confirm the claim of the selected distribution. The
@@ -384,12 +388,22 @@ impl ScreenLike for ClaimTokensScreen {
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         self.refresh_banner.take_and_clear();
-        if let BackendTaskSuccessResult::ClaimedTokens(fee_result) = backend_task_success_result {
-            self.completed_fee_result = Some(fee_result);
-            self.status = ClaimTokensStatus::Complete;
-            // A successful once-per-identity claim records its hint.
-            self.once_per_identity_claimed_at =
-                load_once_per_identity_claim(&self.app_context, &self.identity_token_basic_info);
+        match backend_task_success_result {
+            BackendTaskSuccessResult::ClaimedTokens(fee_result) => {
+                self.completed_fee_result = Some(fee_result);
+                self.status = ClaimTokensStatus::Complete;
+                // A successful once-per-identity claim records its hint.
+                self.once_per_identity_claimed_at = load_once_per_identity_claim(
+                    &self.app_context,
+                    &self.identity_token_basic_info,
+                );
+            }
+            BackendTaskSuccessResult::OncePerIdentityClaimHintCleared(pair)
+                if pair == self.claim_note_pair() =>
+            {
+                self.once_per_identity_claimed_at = None;
+            }
+            _ => {}
         }
     }
 
@@ -668,7 +682,7 @@ impl ScreenLike for ClaimTokensScreen {
                 }
 
                 if self.distribution_type == Some(TokenDistributionType::OncePerIdentity) {
-                    self.render_once_per_identity_info(ui);
+                    action |= self.render_once_per_identity_info(ui);
                 }
 
                 // Fee estimation display
@@ -896,5 +910,45 @@ mod tests {
             panic!("a claim was confirmed");
         };
         assert_eq!(*distribution_type, TokenDistributionType::OncePerIdentity);
+    }
+
+    /// Dismissing the claim note is saved by a backend task, not from the
+    /// click; the note goes away once that task reports success for this
+    /// identity and token.
+    #[test]
+    fn dismissing_the_claim_note_is_saved_by_a_backend_task() {
+        let (mut screen, _dir) = screen_for(once_per_identity_token(25));
+        screen.once_per_identity_claimed_at = Some(1_758_140_722_000);
+        let pair = IdentityTokenIdentifier {
+            identity_id: screen.identity_token_basic_info.identity_id,
+            token_id: screen.identity_token_basic_info.token_id,
+        };
+
+        let AppAction::BackendTask(BackendTask::TokenTask(task)) = screen.dismiss_claim_note()
+        else {
+            panic!("the dismissal is a backend task");
+        };
+        assert!(matches!(
+            task.as_ref(),
+            TokenTask::ClearOncePerIdentityClaimHint(sent) if *sent == pair
+        ));
+        assert!(
+            screen.once_per_identity_claimed_at.is_some(),
+            "the note stays until the dismissal is saved"
+        );
+
+        let other = IdentityTokenIdentifier {
+            identity_id: Identifier::new([0x99; 32]),
+            ..pair
+        };
+        screen.display_task_result(BackendTaskSuccessResult::OncePerIdentityClaimHintCleared(
+            other,
+        ));
+        assert!(screen.once_per_identity_claimed_at.is_some());
+
+        screen.display_task_result(BackendTaskSuccessResult::OncePerIdentityClaimHintCleared(
+            pair,
+        ));
+        assert_eq!(screen.once_per_identity_claimed_at, None);
     }
 }

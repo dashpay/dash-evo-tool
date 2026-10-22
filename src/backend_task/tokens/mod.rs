@@ -113,6 +113,9 @@ pub enum TokenTask {
     /// ordering so the row disappears, and record the dismissal so later
     /// refreshes do not re-watch the pair.
     StopTrackingTokenBalance(IdentityTokenIdentifier),
+    /// Forget the note that an identity may already have taken its
+    /// once-per-identity claim of a token (the user dismissed it).
+    ClearOncePerIdentityClaimHint(IdentityTokenIdentifier),
     QueryDescriptionsByKeyword(String, Option<Start>),
     FetchTokenByContractId(Identifier),
     FetchTokenByTokenId(Identifier),
@@ -572,6 +575,12 @@ impl AppContext {
                     Ok(None) => Ok(BackendTaskSuccessResult::TokenNotFound),
                     Err(e) => Err(TaskError::from(e)),
                 }
+            }
+            TokenTask::ClearOncePerIdentityClaimHint(pair) => {
+                self.clear_once_per_identity_claim(&pair.token_id, &pair.identity_id)?;
+                Ok(BackendTaskSuccessResult::OncePerIdentityClaimHintCleared(
+                    pair,
+                ))
             }
             TokenTask::SaveTokenLocally(token_info) => {
                 let token_id = token_info.token_id;

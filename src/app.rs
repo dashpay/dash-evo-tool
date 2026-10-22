@@ -2359,15 +2359,41 @@ impl AppState {
         );
     }
 
-    /// Handle the backend tasks and send the results through the channel
-    fn handle_backend_tasks(&self, tasks: Vec<BackendTask>, mode: BackendTasksExecutionMode) {
+    /// Handle the backend tasks and send the results through the channel.
+    ///
+    /// Contact-list reads in a batch report to the screen that sent them, as a
+    /// task dispatched with its own context does: the hub asks for its lists
+    /// once per arrival, so a failure delivered to a screen covering it would
+    /// leave it waiting for good.
+    fn handle_backend_tasks(
+        &mut self,
+        tasks: Vec<BackendTask>,
+        mode: BackendTasksExecutionMode,
+        owner: Option<ScreenOwner>,
+    ) {
         let sender = self.task_result_sender.clone();
         let watcher_sender = sender.clone();
         let app_context = self.current_app_context().clone();
+        let network = app_context.network;
         let contexts = tasks
             .iter()
-            .map(|task| BackendTaskContext::for_task_on(task, app_context.network))
+            .map(|task| {
+                let context = BackendTaskContext::for_task_on(task, network);
+                match owner {
+                    Some(owner) if context.contacts_load().is_some() => {
+                        let context = BackendTaskContext::for_dispatch_on(task, network);
+                        self.request_owners.record(&context, owner);
+                        context
+                    }
+                    _ => context,
+                }
+            })
             .collect::<Vec<_>>();
+        #[cfg(feature = "testing")]
+        if let Some(captured) = &mut self.captured_dispatches {
+            captured.extend(tasks.into_iter().zip(contexts));
+            return;
+        }
         let handle = tokio::runtime::Handle::current();
 
         let _ = self.subtasks.spawn_blocking_sync(
@@ -4275,7 +4301,7 @@ impl App for AppState {
                     self.handle_backend_task_with_context(task, context);
                 }
                 AppAction::BackendTasks(tasks, mode) => {
-                    self.handle_backend_tasks(tasks, mode);
+                    self.handle_backend_tasks(tasks, mode, owner);
                 }
                 AppAction::SetMainScreen(root_screen_type) => {
                     self.set_main_screen(root_screen_type);

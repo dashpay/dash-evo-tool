@@ -4,6 +4,7 @@
 
 use crate::app::AppAction;
 use crate::backend_task::contract::ContractTask;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::context::feature_gate::FeatureGate;
@@ -87,6 +88,11 @@ fn claim_blocked_reason(gate: ClaimGate) -> Option<&'static str> {
     }
 }
 
+const CONTRACTS_LOAD_FAILED: &str = "Your saved contracts could not be loaded from this device. Select Retry Loading on this screen to try again.";
+const IDENTITIES_LOAD_FAILED: &str = "Your identities could not be loaded from this device. Select Retry Loading on this screen to try again.";
+const LOCAL_DATA_INCOMPLETE: &str =
+    "Some saved data could not be loaded, so the lists below may be incomplete.";
+
 pub struct ContractFeePotsScreen {
     pub app_context: Arc<AppContext>,
     contracts: Vec<QualifiedContract>,
@@ -99,32 +105,67 @@ pub struct ContractFeePotsScreen {
     /// The pot a claim is in flight for; claiming is disabled meanwhile.
     claim_in_flight: Option<ContractFeePot>,
     progress_banner: Option<BannerHandle>,
+    /// Set while the last contract read failed; the banner says why.
+    contracts_load_banner: Option<BannerHandle>,
+    /// Set while the last identity read failed; the banner says why.
+    identities_load_banner: Option<BannerHandle>,
 }
 
 impl ContractFeePotsScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
-        let contracts = app_context.get_contracts().unwrap_or_else(|error| {
-            tracing::warn!(%error, "Failed to load contracts for the fee pots screen");
-            vec![]
-        });
-        let identities = app_context
-            .load_local_qualified_identities()
-            .unwrap_or_else(|error| {
-                tracing::warn!(%error, "Failed to load identities for the fee pots screen");
-                vec![]
-            });
-        Self {
+        let mut screen = Self {
             app_context: app_context.clone(),
-            contracts,
+            contracts: vec![],
             contract_search: String::new(),
             selected_contract: None,
-            identities,
+            identities: vec![],
             selected_identity: None,
             selected_identity_str: String::new(),
             pots: FeePotsState::NotLoaded,
             claim_in_flight: None,
             progress_banner: None,
+            contracts_load_banner: None,
+            identities_load_banner: None,
+        };
+        screen.reload_local_data();
+        screen
+    }
+
+    /// Reads the contracts and identities saved on this device.
+    fn reload_local_data(&mut self) {
+        let contracts = self.app_context.get_contracts();
+        let identities = self.app_context.load_local_qualified_identities();
+        self.apply_local_data(contracts, identities);
+    }
+
+    /// Takes each list that loaded; a failed read keeps the previous list and
+    /// raises a banner that stays until a retry succeeds.
+    fn apply_local_data(
+        &mut self,
+        contracts: Result<Vec<QualifiedContract>, TaskError>,
+        identities: Result<Vec<QualifiedIdentity>, TaskError>,
+    ) {
+        let ctx = self.app_context.egui_ctx().clone();
+        self.contracts_load_banner.take_and_clear();
+        match contracts {
+            Ok(contracts) => self.contracts = contracts,
+            Err(error) => {
+                self.contracts_load_banner =
+                    Some(load_failure_banner(&ctx, CONTRACTS_LOAD_FAILED, &error));
+            }
         }
+        self.identities_load_banner.take_and_clear();
+        match identities {
+            Ok(identities) => self.identities = identities,
+            Err(error) => {
+                self.identities_load_banner =
+                    Some(load_failure_banner(&ctx, IDENTITIES_LOAD_FAILED, &error));
+            }
+        }
+    }
+
+    fn local_data_failed(&self) -> bool {
+        self.contracts_load_banner.is_some() || self.identities_load_banner.is_some()
     }
 
     fn fetch_pots(&mut self, contract_id: Identifier) -> AppAction {
@@ -215,11 +256,17 @@ impl ContractFeePotsScreen {
     }
 }
 
+/// An error banner for a local read, kept until the read is retried.
+fn load_failure_banner(ctx: &egui::Context, message: &str, error: &TaskError) -> BannerHandle {
+    let handle = MessageBanner::set_global(ctx, message, MessageType::Error);
+    handle.with_details(error);
+    handle.disable_auto_dismiss();
+    handle
+}
+
 impl ScreenLike for ContractFeePotsScreen {
     fn refresh(&mut self) {
-        if let Ok(identities) = self.app_context.load_local_qualified_identities() {
-            self.identities = identities;
-        }
+        self.reload_local_data();
         self.pots = FeePotsState::NotLoaded;
     }
 
@@ -300,6 +347,14 @@ impl ScreenLike for ContractFeePotsScreen {
                 .color(DashColors::text_secondary(dark_mode)),
             );
             ui.add_space(10.0);
+
+            if self.local_data_failed() {
+                ui.colored_label(DashColors::warning_color(dark_mode), LOCAL_DATA_INCOMPLETE);
+                if ui.button("Retry Loading").clicked() {
+                    self.reload_local_data();
+                }
+                ui.add_space(10.0);
+            }
 
             if !FeatureGate::ContractFeePots.is_available(&self.app_context) {
                 ui.label(
@@ -402,6 +457,36 @@ impl ScreenLike for ContractFeePotsScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A storage failure must not pass for an empty device: the screen says
+    /// what failed, keeps a retry on screen, and a successful retry settles it.
+    #[test]
+    fn a_storage_failure_is_reported_and_can_be_retried() {
+        use crate::ui::components::message_banner::global_banner_texts;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        // The test context has no wallet backend, so the contract read fails.
+        let app_context = crate::context::test_support::test_app_context(dir.path());
+        let ctx = app_context.egui_ctx().clone();
+
+        let mut screen = ContractFeePotsScreen::new(&app_context);
+        assert!(
+            global_banner_texts(&ctx)
+                .iter()
+                .any(|text| text.starts_with("Your saved contracts could not be loaded")),
+            "got: {:?}",
+            global_banner_texts(&ctx)
+        );
+        assert!(screen.local_data_failed());
+
+        screen.apply_local_data(Ok(vec![]), Ok(vec![]));
+        assert!(!screen.local_data_failed());
+        assert!(
+            global_banner_texts(&ctx).is_empty(),
+            "got: {:?}",
+            global_banner_texts(&ctx)
+        );
+    }
 
     #[test]
     fn the_pots_state_names_the_contract_it_is_about() {

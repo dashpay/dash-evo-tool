@@ -7,6 +7,7 @@ use crate::backend_task::contract::ContractTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::context::feature_gate::FeatureGate;
+use crate::model::datetime::local_date_time_from_unix_millis;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -15,7 +16,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::message_banner::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::helpers::{add_contract_chooser_pre_filtered, format_timestamp_ms_local};
+use crate::ui::helpers::add_contract_chooser_pre_filtered;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
@@ -167,7 +168,7 @@ impl ContractFeePotsScreen {
             Some(last_claim) => format!(
                 "Epoch {epoch}, {date}, by {claimant}",
                 epoch = last_claim.epoch_index,
-                date = format_timestamp_ms_local(last_claim.time_ms),
+                date = local_date_time_from_unix_millis(last_claim.time_ms),
                 claimant = last_claim.claimant_id.to_string(Encoding::Base58)
             ),
             None => "Never claimed".to_string(),

@@ -590,7 +590,7 @@ pub(crate) fn key_caveat_message(caveat: &KeyCaveat) -> String {
         KeyCaveat::Disabled => "This key is disabled, so the network will reject anything signed with it. Choose another key.".to_string(),
         KeyCaveat::Expired { expired_at } => format!(
             "This key expired on {date}, so the network will reject anything signed with it. Choose another key.",
-            date = format_timestamp_ms_local(*expired_at)
+            date = crate::model::datetime::local_date_time_from_unix_millis(*expired_at)
         ),
         KeyCaveat::OutOfBounds => "This key can only sign for a different contract or document type, so the network will reject this action. Choose another key.".to_string(),
         KeyCaveat::ContractGroupBound { group_id } => format!(
@@ -603,7 +603,7 @@ pub(crate) fn key_caveat_message(caveat: &KeyCaveat) -> String {
         ),
         KeyCaveat::Expiring { expires_at } => format!(
             "This key stops working on {date}.",
-            date = format_timestamp_ms_local(*expires_at)
+            date = crate::model::datetime::local_date_time_from_unix_millis(*expires_at)
         ),
     }
 }
@@ -619,20 +619,6 @@ fn render_key_caveats(ui: &mut Ui, caveats: &[KeyCaveat]) {
         };
         ui.label(egui::RichText::new(key_caveat_message(caveat)).color(color));
     }
-}
-
-/// Formats a Unix timestamp in milliseconds as a local date and time.
-pub(crate) fn format_timestamp_ms_local(timestamp_ms: u64) -> String {
-    use chrono::{DateTime, Local, Utc};
-    i64::try_from(timestamp_ms)
-        .ok()
-        .and_then(DateTime::<Utc>::from_timestamp_millis)
-        .map(|utc| {
-            utc.with_timezone(&Local)
-                .format("%Y-%m-%d %H:%M")
-                .to_string()
-        })
-        .unwrap_or_else(|| timestamp_ms.to_string())
 }
 
 /// Renders a centered title + description block (used above success-screen buttons).

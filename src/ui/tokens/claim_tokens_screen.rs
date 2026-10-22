@@ -1,4 +1,5 @@
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
+use crate::model::datetime::local_date_time_from_unix_millis;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
 use crate::model::token::once_per_identity_amount;
@@ -8,7 +9,6 @@ use crate::ui::components::confirmation_dialog::{ConfirmationDialog, Confirmatio
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
-use crate::ui::helpers::format_timestamp_ms_local;
 use crate::ui::helpers::{TransactionType, add_key_chooser};
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
@@ -254,7 +254,7 @@ impl ClaimTokensScreen {
             ui.label(
                 RichText::new(format!(
                     "This identity may have already claimed its share on {date}. You can still claim; the network refuses a second claim.",
-                    date = format_timestamp_ms_local(claimed_at_ms)
+                    date = local_date_time_from_unix_millis(claimed_at_ms)
                 ))
                 .color(DashColors::warning_color(dark_mode)),
             );

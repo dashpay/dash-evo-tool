@@ -6,6 +6,7 @@ use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessRes
 use crate::context::AppContext;
 use crate::context::feature_gate::FeatureGate;
 use crate::model::amount::Amount;
+use crate::model::datetime::local_date_time_from_unix_millis;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::identity_key_limits::{
     KeyLimitsError, KeyLimitsRaise, key_limits_update_signer, parse_key_validity_days,
@@ -34,7 +35,6 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
-use crate::ui::helpers::format_timestamp_ms_local;
 use crate::ui::masternodes::{KeyVocabulary, key_role_label};
 use crate::ui::state::legacy_recovery::LegacyRecoveryState;
 use crate::ui::theme::DashColors;
@@ -1107,7 +1107,7 @@ impl KeyInfoScreen {
 
         if let Some(expires_at) = key.expires_at() {
             ui.label(RichText::new("Expires:").strong().color(text_primary));
-            let date = format_timestamp_ms_local(expires_at);
+            let date = local_date_time_from_unix_millis(expires_at);
             if key.is_expired_at(now_ms()) {
                 ui.label(
                     RichText::new(format!(
@@ -2144,8 +2144,8 @@ fn raise_confirmation_text(raise: &KeyLimitsRaise) -> String {
     if let (Some(from), Some(to)) = (raise.seen_expires_at, raise.expires_at) {
         sentences.push(format!(
             "Its expiry moves from {from} to {to}.",
-            from = format_timestamp_ms_local(from),
-            to = format_timestamp_ms_local(to)
+            from = local_date_time_from_unix_millis(from),
+            to = local_date_time_from_unix_millis(to)
         ));
     }
     sentences.push(format!(

@@ -2741,7 +2741,7 @@ pub enum TaskError {
     #[error(
         "This identity is suspended from contract {} until {}. Wait until then, or use a different identity for this contract.",
         contract_id.to_string(Encoding::Base58),
-        format_timestamp_ms_utc(*until_ms)
+        crate::model::datetime::local_date_time_from_unix_millis(*until_ms)
     )]
     ContractUserSuspended {
         contract_id: Identifier,
@@ -2883,7 +2883,7 @@ pub enum TaskError {
     /// maximum.
     #[error(
         "The scheduled token distributions at {} add up to more than the allowed maximum. Lower those amounts, then try again.",
-        format_timestamp_ms_utc(*timestamp_ms)
+        crate::model::datetime::local_date_time_from_unix_millis(*timestamp_ms)
     )]
     PreProgrammedDistributionOverLimit {
         token_position: u16,
@@ -4472,15 +4472,6 @@ impl SigningKeyUnavailableCause {
             Self::Other => TaskError::IdentitySigningFailed { source_error },
         }
     }
-}
-
-/// A millisecond Unix timestamp as a UTC date and time for error messages.
-fn format_timestamp_ms_utc(ms: u64) -> String {
-    i64::try_from(ms)
-        .ok()
-        .and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis)
-        .map(|at| at.format("%Y-%m-%d %H:%M UTC").to_string())
-        .unwrap_or_else(|| ms.to_string())
 }
 
 impl From<SdkError> for TaskError {
@@ -7811,9 +7802,24 @@ mod tests {
             until_ms: 1_758_140_722_000,
             source_error: Box::new(SdkError::Generic("suspended".to_string())),
         };
+        // Dates in messages follow the model's formatter: the user's time zone,
+        // like every other date the app shows.
+        let until = crate::model::datetime::local_date_time_from_unix_millis(1_758_140_722_000);
+        assert!(!until.is_empty());
         assert!(
-            suspended.to_string().contains("until 2025-09-17 20:25 UTC"),
+            suspended.to_string().contains(&format!("until {until}.")),
             "got: {suspended}"
+        );
+        let over_limit = TaskError::PreProgrammedDistributionOverLimit {
+            token_position: 0,
+            timestamp_ms: 1_758_140_722_000,
+            source_error: Box::new(SdkError::Generic("over".to_string())),
+        };
+        assert!(
+            over_limit
+                .to_string()
+                .contains(&format!("at {until} add up")),
+            "got: {over_limit}"
         );
     }
 

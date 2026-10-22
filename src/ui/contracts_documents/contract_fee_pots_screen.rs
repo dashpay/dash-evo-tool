@@ -309,16 +309,15 @@ impl ScreenLike for ContractFeePotsScreen {
 
             ui.heading("1. Select a contract:");
             ui.add_space(6.0);
-            let visible: Vec<QualifiedContract> = self
+            let visible: Vec<&QualifiedContract> = self
                 .contracts
                 .iter()
                 .filter(|contract| self.contract_matches_search(contract))
-                .cloned()
                 .collect();
             add_contract_chooser_pre_filtered(
                 ui,
                 &mut self.contract_search,
-                visible.iter(),
+                visible.into_iter(),
                 &mut self.selected_contract,
             );
 

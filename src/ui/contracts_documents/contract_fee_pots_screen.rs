@@ -38,7 +38,6 @@ enum FeePotsState {
     Loaded {
         contract_id: Identifier,
         pots: ContractFeePots,
-        current_epoch: Option<u16>,
     },
     /// The read failed; the banner says why.
     Failed(Identifier),
@@ -61,14 +60,16 @@ struct ClaimGate {
     identity_selected: bool,
     identity_receives: bool,
     credits: u64,
-    last_claim_epoch: Option<u16>,
-    current_epoch: Option<u16>,
     claim_in_flight: bool,
 }
 
 /// Why a pot cannot be claimed right now, `None` when it can. Each reason is
 /// a claim Platform would refuse (and still charge for) or one that cannot
 /// be sent yet.
+///
+/// A claim already made in the current epoch is not blocked here: the only
+/// current epoch at hand is the response metadata's, which the proof does not
+/// sign. Platform refuses such a claim, and the error says when to retry.
 fn claim_blocked_reason(gate: ClaimGate) -> Option<&'static str> {
     if !gate.has_recipients {
         Some("This contract has no moderators, so nobody can claim these fees.")
@@ -78,12 +79,6 @@ fn claim_blocked_reason(gate: ClaimGate) -> Option<&'static str> {
         Some("The selected identity does not receive these fees.")
     } else if gate.credits == 0 {
         Some("There are no fees to claim yet.")
-    } else if gate.last_claim_epoch.is_some() && gate.last_claim_epoch == gate.current_epoch {
-        // The current epoch is read with the pots, so this block lifts only
-        // when they are refreshed after the epoch ends — say so.
-        Some(
-            "These fees were already claimed in the current epoch. Once the next epoch starts, select Refresh and claim them.",
-        )
     } else if gate.claim_in_flight {
         Some("A claim is in progress.")
     } else {
@@ -161,7 +156,6 @@ impl ContractFeePotsScreen {
         contract: &QualifiedContract,
         pot: ContractFeePot,
         state: &ContractFeePotState,
-        current_epoch: Option<u16>,
     ) -> AppAction {
         let dark_mode = ui.style().visuals.dark_mode;
         ui.label(match pot {
@@ -189,8 +183,6 @@ impl ContractFeePotsScreen {
             identity_selected: self.selected_identity.is_some(),
             identity_receives: claimant.is_some(),
             credits: state.credits,
-            last_claim_epoch: state.last_claim_epoch(),
-            current_epoch,
             claim_in_flight: self.claim_in_flight.is_some(),
         });
 
@@ -243,16 +235,10 @@ impl ScreenLike for ContractFeePotsScreen {
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         match result {
-            BackendTaskSuccessResult::ContractFeePots {
-                contract_id,
-                pots,
-                current_epoch,
-            } if self.pots == FeePotsState::Loading(contract_id) => {
-                self.pots = FeePotsState::Loaded {
-                    contract_id,
-                    pots,
-                    current_epoch,
-                };
+            BackendTaskSuccessResult::ContractFeePots { contract_id, pots }
+                if self.pots == FeePotsState::Loading(contract_id) =>
+            {
+                self.pots = FeePotsState::Loaded { contract_id, pots };
             }
             BackendTaskSuccessResult::ContractFeesClaimed {
                 contract_id,
@@ -377,11 +363,7 @@ impl ScreenLike for ContractFeePotsScreen {
                         inner_action |= self.fetch_pots(contract_id);
                     }
                 }
-                FeePotsState::Loaded {
-                    pots,
-                    current_epoch,
-                    ..
-                } => {
+                FeePotsState::Loaded { pots, .. } => {
                     egui::Grid::new("contract_fee_pots_grid")
                         .num_columns(4)
                         .spacing([16.0, 8.0])
@@ -397,14 +379,12 @@ impl ScreenLike for ContractFeePotsScreen {
                                 &contract,
                                 ContractFeePot::Owner,
                                 &pots.owner,
-                                current_epoch,
                             );
                             inner_action |= self.render_pot_row(
                                 ui,
                                 &contract,
                                 ContractFeePot::Moderators,
                                 &pots.moderators,
-                                current_epoch,
                             );
                         });
                     ui.add_space(8.0);
@@ -433,7 +413,6 @@ mod tests {
             FeePotsState::Loaded {
                 contract_id: id,
                 pots: ContractFeePots::default(),
-                current_epoch: None,
             }
             .contract_id(),
             Some(id)
@@ -446,20 +425,13 @@ mod tests {
             identity_selected: true,
             identity_receives: true,
             credits: 10,
-            last_claim_epoch: Some(4),
-            current_epoch: Some(5),
             claim_in_flight: false,
         }
     }
 
     #[test]
-    fn a_recipient_can_claim_a_filled_pot_not_yet_claimed_this_epoch() {
+    fn a_recipient_can_claim_a_filled_pot() {
         assert_eq!(claim_blocked_reason(claimable()), None);
-        let never_claimed = ClaimGate {
-            last_claim_epoch: None,
-            ..claimable()
-        };
-        assert_eq!(claim_blocked_reason(never_claimed), None);
     }
 
     /// Each refusal Platform would charge for is blocked up front.
@@ -484,37 +456,11 @@ mod tests {
                 ..claimable()
             },
             ClaimGate {
-                last_claim_epoch: Some(5),
-                ..claimable()
-            },
-            ClaimGate {
                 claim_in_flight: true,
                 ..claimable()
             },
         ] {
             assert!(claim_blocked_reason(gate).is_some(), "{gate:?}");
         }
-    }
-
-    /// The epoch block does not lift by itself, so its reason names the
-    /// action that lifts it.
-    #[test]
-    fn a_pot_claimed_this_epoch_says_to_refresh_in_the_next_one() {
-        let reason = claim_blocked_reason(ClaimGate {
-            last_claim_epoch: Some(5),
-            ..claimable()
-        })
-        .expect("blocked");
-        assert!(reason.contains("select Refresh"), "{reason}");
-    }
-
-    /// Without a known current epoch the epoch rule cannot apply.
-    #[test]
-    fn an_unknown_current_epoch_does_not_block() {
-        let gate = ClaimGate {
-            current_epoch: None,
-            ..claimable()
-        };
-        assert_eq!(claim_blocked_reason(gate), None);
     }
 }

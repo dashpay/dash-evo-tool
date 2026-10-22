@@ -39,13 +39,12 @@ impl AppContext {
         if !FeatureGate::ContractFeePots.is_available(self) {
             return Err(TaskError::ContractFeePotsNotSupported);
         }
-        let (pots, metadata) = ContractFeePots::fetch_with_metadata(sdk, contract_id, None).await?;
+        // Only the pots are proved. The response metadata's epoch is not
+        // signed, so nothing is decided from it.
+        let pots = ContractFeePots::fetch(sdk, contract_id).await?;
         Ok(BackendTaskSuccessResult::ContractFeePots {
             contract_id,
             pots: pots.unwrap_or_default(),
-            // The epoch of the proved response; a pot already paid out in it
-            // cannot be claimed again until the next one.
-            current_epoch: u16::try_from(metadata.epoch).ok(),
         })
     }
 

@@ -15,7 +15,7 @@ use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identifier};
 use dash_sdk::query_types::Documents;
 use futures::future::join_all;
 use platform_wallet::wallet::identity::crypto::decode_private_data;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
 use zeroize::Zeroizing;
@@ -133,11 +133,13 @@ pub(super) fn decrypt_private_data(
 /// page of the owner's documents.
 ///
 /// Pages are ordered by `$updatedAt`, oldest first, and a later document for
-/// a contact replaces an earlier one, so the newest document wins.
+/// a contact replaces an earlier one, so the newest document wins. The test
+/// seam over [`stored_contact_details`]'s legacy half.
+#[cfg(test)]
 pub(super) async fn load_contact_details<P, PF, D, DF>(
     query: DocumentQuery,
     fetch_page: P,
-    mut derive_keys: D,
+    derive_keys: D,
 ) -> Result<HashMap<Identifier, ContactData>, TaskError>
 where
     P: FnMut(DocumentQuery) -> PF,
@@ -145,15 +147,41 @@ where
     D: FnMut(u32) -> DF,
     DF: Future<Output = Result<(Zeroizing<[u8; 32]>, Zeroizing<[u8; 32]>), TaskError>>,
 {
+    let documents = fetch_contact_info_documents(query, fetch_page).await?;
+    Ok(legacy_details_from(&documents, derive_keys).await)
+}
+
+/// Every page of the owner's `contactInfo` documents, oldest first by
+/// `$updatedAt`.
+async fn fetch_contact_info_documents<P, PF>(
+    query: DocumentQuery,
+    fetch_page: P,
+) -> Result<Vec<Document>, TaskError>
+where
+    P: FnMut(DocumentQuery) -> PF,
+    PF: Future<Output = Result<Documents, TaskError>>,
+{
     let query = query.with_order_by(OrderClause {
         field: "$updatedAt".to_string(),
         ascending: true,
     });
     let documents =
         super::contact_info::fetch_all_contact_info_documents(query, fetch_page).await?;
+    Ok(documents.into_values().flatten().collect())
+}
 
+/// The details `documents` (oldest first) hold under the legacy key root;
+/// a later document for a contact replaces an earlier one.
+async fn legacy_details_from<D, DF>(
+    documents: &[Document],
+    mut derive_keys: D,
+) -> HashMap<Identifier, ContactData>
+where
+    D: FnMut(u32) -> DF,
+    DF: Future<Output = Result<(Zeroizing<[u8; 32]>, Zeroizing<[u8; 32]>), TaskError>>,
+{
     let mut contact_info_map: HashMap<Identifier, ContactData> = HashMap::new();
-    for doc in documents.into_values().flatten() {
+    for doc in documents {
         let props = doc.properties();
         let Some(deriv_idx) = props
             .get("derivationEncryptionKeyIndex")
@@ -203,15 +231,29 @@ where
         );
     }
 
-    Ok(contact_info_map)
+    contact_info_map
 }
 
-/// The details legacy-key `contactInfo` documents hold for each contact.
-pub(super) async fn legacy_contact_details(
+/// The details the owner's stored `contactInfo` documents hold.
+pub(super) struct StoredContactDetails {
+    /// From DIP-0015 documents platform-wallet can read, newest per contact.
+    pub(super) published: BTreeMap<Identifier, ContactDetails>,
+    /// From documents older versions of this app wrote under the legacy
+    /// key root, newest per contact.
+    pub(super) legacy: HashMap<Identifier, ContactData>,
+}
+
+/// Read every `contactInfo` document the owner stored, both as DIP-0015
+/// documents and as legacy-key ones.
+///
+/// platform-wallet does not read DIP-0015 documents back for a wallet loaded
+/// without its seed, which is how wallets load after a restart, so they are
+/// opened here with platform-wallet's keys and codec.
+pub(super) async fn stored_contact_details(
     app_context: &Arc<AppContext>,
     sdk: &Sdk,
     identity: &QualifiedIdentity,
-) -> Result<HashMap<Identifier, ContactData>, TaskError> {
+) -> Result<StoredContactDetails, TaskError> {
     let query = DocumentQuery::new(app_context.dashpay_contract.clone(), "contactInfo")
         .map_err(|e| DashPayError::QueryCreation {
             query_target: "DashPay contactInfo",
@@ -222,44 +264,62 @@ pub(super) async fn legacy_contact_details(
             operator: WhereOperator::Equal,
             value: Value::Identifier(identity.identity.id().to_buffer()),
         });
-    load_contact_details(
-        query,
-        |query| async move {
-            Document::fetch_many(sdk, query)
+    let documents = fetch_contact_info_documents(query, |query| async move {
+        Document::fetch_many(sdk, query)
+            .await
+            .map_err(TaskError::from)
+    })
+    .await?;
+    let published = match app_context.wallet_backend() {
+        Ok(backend) => {
+            backend
+                .dashpay_open_contact_infos(identity, &documents)
                 .await
-                .map_err(TaskError::from)
-        },
-        |derivation_index| derive_contact_info_keys(app_context, identity, derivation_index),
-    )
-    .await
+        }
+        Err(_) => BTreeMap::new(),
+    };
+    let legacy = legacy_details_from(&documents, |derivation_index| {
+        derive_contact_info_keys(app_context, identity, derivation_index)
+    })
+    .await;
+    Ok(StoredContactDetails { published, legacy })
 }
 
 /// The details the contacts list shows for one contact, and that a save
-/// keeps for every field it does not replace: platform-wallet's synced
-/// details, or a legacy-key document's while platform-wallet has never held
-/// any for the contact (`synced_before` false and nothing synced now).
+/// keeps for every field it does not replace.
 ///
-/// Once platform-wallet has held details, they win even when empty, so a
-/// cleared note or an unhide is never undone by an old legacy document.
+/// A published DIP-0015 document wins: Platform holds the latest saved state
+/// from any device. Without one, platform-wallet's details on this device
+/// win; a legacy-key document stands in only while platform-wallet has never
+/// held details for the contact (`synced_before` false). Once it has, its
+/// details win even when empty, so a cleared note or an unhide is never
+/// undone by an old legacy document.
 pub(super) fn shown_contact_details(
-    synced: Option<ContactDetails>,
+    published: Option<ContactDetails>,
+    local: Option<ContactDetails>,
     synced_before: bool,
     legacy: Option<ContactDetails>,
 ) -> ContactDetails {
-    if synced_before {
-        return synced.unwrap_or_default();
+    if let Some(published) = published {
+        return published;
     }
-    synced
+    if synced_before {
+        return local.unwrap_or_default();
+    }
+    local
         .filter(|details| !details.is_empty())
         .or(legacy)
         .unwrap_or_default()
 }
 
-/// Whether platform-wallet holds details worth recording as its own: any
-/// non-empty synced details mean a `contactInfo` document or a local save
-/// set them.
-pub(super) fn holds_details(synced: Option<&ContactDetails>) -> bool {
-    synced.is_some_and(|details| !details.is_empty())
+/// Whether platform-wallet's side holds details worth recording as its own:
+/// a published DIP-0015 document (even an empty one), or non-empty details on
+/// this device.
+pub(super) fn holds_details(
+    published: Option<&ContactDetails>,
+    local: Option<&ContactDetails>,
+) -> bool {
+    published.is_some() || local.is_some_and(|details| !details.is_empty())
 }
 
 /// The people both sides have sent a contact request to, minus anyone the
@@ -387,7 +447,10 @@ pub async fn load_contacts(
             Default::default()
         }
     };
-    let legacy = legacy_contact_details(app_context, sdk, &identity).await?;
+    let StoredContactDetails {
+        mut published,
+        legacy,
+    } = stored_contact_details(app_context, sdk, &identity).await?;
 
     // Build enriched contact list with basic data
     let mut contact_list: Vec<ContactData> = contacts
@@ -395,10 +458,11 @@ pub async fn load_contacts(
         .map(|contact_id| {
             let legacy = legacy.get(&contact_id);
             let synced = synced.remove(&contact_id);
+            let published = published.remove(&contact_id);
             let synced_before = backend.as_ref().is_some_and(|backend| {
                 let synced_before = backend.dashpay_details_synced(&identity_id, &contact_id);
                 if !synced_before
-                    && holds_details(synced.as_ref())
+                    && holds_details(published.as_ref(), synced.as_ref())
                     && let Err(error) =
                         backend.dashpay_mark_details_synced(&identity_id, &contact_id)
                 {
@@ -406,8 +470,12 @@ pub async fn load_contacts(
                 }
                 synced_before
             });
-            let details =
-                shown_contact_details(synced, synced_before, legacy.map(ContactData::details));
+            let details = shown_contact_details(
+                published,
+                synced,
+                synced_before,
+                legacy.map(ContactData::details),
+            );
             ContactData {
                 identity_id: contact_id,
                 nickname: details.nickname,
@@ -623,7 +691,12 @@ mod tests {
     #[test]
     fn synced_contact_details_win_over_legacy_ones() {
         assert_eq!(
-            shown_contact_details(Some(details("synced")), false, Some(details("legacy"))),
+            shown_contact_details(
+                None,
+                Some(details("synced")),
+                false,
+                Some(details("legacy"))
+            ),
             details("synced")
         );
     }
@@ -631,11 +704,12 @@ mod tests {
     #[test]
     fn legacy_contact_details_show_when_none_were_ever_synced() {
         assert_eq!(
-            shown_contact_details(None, false, Some(details("legacy"))),
+            shown_contact_details(None, None, false, Some(details("legacy"))),
             details("legacy")
         );
         assert_eq!(
             shown_contact_details(
+                None,
                 Some(ContactDetails::default()),
                 false,
                 Some(details("legacy"))
@@ -644,7 +718,7 @@ mod tests {
             "a contact platform-wallet never held details for shows the legacy ones"
         );
         assert_eq!(
-            shown_contact_details(None, false, None),
+            shown_contact_details(None, None, false, None),
             ContactDetails::default()
         );
     }
@@ -660,20 +734,56 @@ mod tests {
             hidden: true,
         };
         assert_eq!(
-            shown_contact_details(Some(ContactDetails::default()), true, Some(legacy.clone())),
+            shown_contact_details(
+                None,
+                Some(ContactDetails::default()),
+                true,
+                Some(legacy.clone())
+            ),
             ContactDetails::default()
         );
         assert_eq!(
-            shown_contact_details(None, true, Some(legacy)),
+            shown_contact_details(None, None, true, Some(legacy)),
             ContactDetails::default()
         );
     }
 
     #[test]
     fn only_non_empty_synced_details_are_recorded_as_synced() {
-        assert!(holds_details(Some(&details("note"))));
-        assert!(!holds_details(Some(&ContactDetails::default())));
-        assert!(!holds_details(None));
+        assert!(holds_details(None, Some(&details("note"))));
+        assert!(!holds_details(None, Some(&ContactDetails::default())));
+        assert!(!holds_details(None, None));
+    }
+
+    /// SEC-003: Platform's DIP-0015 document is the latest saved state from
+    /// any device, so it wins over this device's details and legacy ones —
+    /// and a save keeps it for the fields it does not replace.
+    #[test]
+    fn a_published_document_wins_over_local_and_legacy_details() {
+        assert_eq!(
+            shown_contact_details(
+                Some(details("published")),
+                Some(details("local")),
+                true,
+                Some(details("legacy"))
+            ),
+            details("published")
+        );
+        assert_eq!(
+            shown_contact_details(
+                Some(ContactDetails::default()),
+                None,
+                false,
+                Some(details("legacy"))
+            ),
+            ContactDetails::default(),
+            "details cleared on another device stay cleared"
+        );
+    }
+
+    #[test]
+    fn an_empty_published_document_counts_as_held_details() {
+        assert!(holds_details(Some(&ContactDetails::default()), None));
     }
 
     fn request(document_id: u8, owner: Identifier, to: Identifier) -> (Identifier, Document) {

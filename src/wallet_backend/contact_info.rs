@@ -18,11 +18,12 @@ use dash_sdk::dpp::key_wallet::bip32::{
 };
 use dash_sdk::dpp::key_wallet::wallet::Wallet;
 use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
-use dash_sdk::platform::Identifier;
+use dash_sdk::platform::{Document, Identifier};
 use platform_wallet::error::PlatformWalletError;
 use platform_wallet::wallet::identity::crypto::contact_info::{
     ContactInfoKeys, derive_contact_info_keys,
 };
+use platform_wallet::wallet::identity::crypto::decode_private_data;
 use platform_wallet::wallet::identity::network::{
     ContactCryptoProvider, ContactInfoOpened, ContactInfoPublishOutcome, ContactInfoSealed,
     identity_auth_derivation_path_for_type,
@@ -147,6 +148,128 @@ impl WalletBackend {
                     })
             })
             .await
+    }
+}
+
+impl WalletBackend {
+    /// The details `identity`'s DIP-0015 `contactInfo` documents hold, read
+    /// with platform-wallet's keys and codec; `documents` are oldest first and
+    /// the newest per contact wins. Documents that do not open — legacy-key
+    /// ones, or another client's — are skipped. Empty when the identity has
+    /// no wallet identity index or the seed is unavailable.
+    pub(crate) async fn dashpay_open_contact_infos(
+        &self,
+        identity: &QualifiedIdentity,
+        documents: &[Document],
+    ) -> BTreeMap<Identifier, ContactDetails> {
+        if documents.is_empty() {
+            return BTreeMap::new();
+        }
+        let Some(seed_hash) = identity.dashpay_wallet_seed_hash() else {
+            return BTreeMap::new();
+        };
+        let Ok(wallet) = self.resolve_wallet(&seed_hash).await else {
+            return BTreeMap::new();
+        };
+        let owner = identity.identity.id();
+        let identity_index = {
+            let state = wallet.state().await;
+            state
+                .identity_manager
+                .managed_identity(&owner)
+                .and_then(|managed| managed.identity_index)
+        };
+        let Some(identity_index) = identity_index else {
+            return BTreeMap::new();
+        };
+        let network = identity.network;
+        self.secret_access()
+            .with_secret_session(&SecretScope::HdSeed { seed_hash }, async |session| {
+                let plaintext = session.plaintext();
+                let seed = plaintext
+                    .expose_hd_seed()
+                    .ok_or(TaskError::ContactWalletSeedUnavailable)?;
+                let crypto = ContactInfoCrypto::new(seed, network, identity_index);
+                Ok::<_, TaskError>(open_contact_info_documents(&crypto, documents).await)
+            })
+            .await
+            .unwrap_or_else(|error| {
+                tracing::debug!(?error, "contactInfo documents could not be opened");
+                BTreeMap::new()
+            })
+    }
+}
+
+/// Open `documents` (oldest first) through `crypto`; the newest readable
+/// document per contact wins.
+async fn open_contact_info_documents(
+    crypto: &ContactInfoCrypto<'_>,
+    documents: &[Document],
+) -> BTreeMap<Identifier, ContactDetails> {
+    let mut opened = BTreeMap::new();
+    for document in documents {
+        let Some(stored) = StoredContactInfo::of(document) else {
+            continue;
+        };
+        let Ok(root_path) = identity_auth_derivation_path_for_type(
+            crypto.network,
+            KeyDerivationType::ECDSA,
+            crypto.identity_index,
+            stored.root_index,
+        ) else {
+            continue;
+        };
+        let Ok(contact) = crypto
+            .contact_info_open(
+                &root_path,
+                stored.derivation_index,
+                &stored.enc_to_user_id,
+                stored.private_data,
+            )
+            .await
+        else {
+            continue;
+        };
+        let Ok(data) = decode_private_data(&contact.private_data) else {
+            continue;
+        };
+        opened.insert(
+            Identifier::from(contact.contact_id),
+            ContactDetails {
+                nickname: data.alias_name,
+                note: data.note,
+                hidden: data.display_hidden,
+            },
+        );
+    }
+    opened
+}
+
+/// The `contactInfo` fields a read needs.
+struct StoredContactInfo<'a> {
+    root_index: u32,
+    derivation_index: u32,
+    enc_to_user_id: [u8; 32],
+    private_data: &'a [u8],
+}
+
+impl<'a> StoredContactInfo<'a> {
+    fn of(document: &'a Document) -> Option<Self> {
+        use dash_sdk::dpp::document::DocumentV0Getters;
+        use dash_sdk::dpp::platform_value::Value;
+        let properties = document.properties();
+        let index = |name: &str| properties.get(name)?.to_integer::<u32>().ok();
+        let bytes = |name: &str| match properties.get(name)? {
+            Value::Bytes(bytes) => Some(bytes.as_slice()),
+            Value::Bytes32(bytes) => Some(bytes.as_slice()),
+            _ => None,
+        };
+        Some(Self {
+            root_index: index("rootEncryptionKeyIndex")?,
+            derivation_index: index("derivationEncryptionKeyIndex")?,
+            enc_to_user_id: bytes("encToUserId")?.try_into().ok()?,
+            private_data: bytes("privateData")?,
+        })
     }
 }
 
@@ -402,6 +525,112 @@ mod tests {
 
         assert_eq!(opened.contact_id, contact);
         assert_eq!(opened.private_data, b"alias");
+    }
+
+    fn stored_document(
+        id: u8,
+        key_id: u32,
+        derivation_index: u32,
+        sealed: &ContactInfoSealed,
+    ) -> Document {
+        use dash_sdk::dpp::document::DocumentV0;
+        use dash_sdk::dpp::platform_value::Value;
+        Document::V0(DocumentV0 {
+            id: Identifier::from([id; 32]),
+            properties: BTreeMap::from([
+                ("rootEncryptionKeyIndex".to_string(), Value::U32(key_id)),
+                (
+                    "derivationEncryptionKeyIndex".to_string(),
+                    Value::U32(derivation_index),
+                ),
+                (
+                    "encToUserId".to_string(),
+                    Value::Bytes(sealed.enc_to_user_id.to_vec()),
+                ),
+                (
+                    "privateData".to_string(),
+                    Value::Bytes(sealed.private_data.clone()),
+                ),
+            ]),
+            ..Default::default()
+        })
+    }
+
+    async fn sealed(
+        crypto: &ContactInfoCrypto<'_>,
+        derivation_index: u32,
+        contact: [u8; 32],
+        details: ContactDetails,
+    ) -> ContactInfoSealed {
+        use platform_wallet::wallet::identity::crypto::{
+            ContactInfoPrivateData, encode_private_data,
+        };
+        let plaintext = encode_private_data(&ContactInfoPrivateData {
+            alias_name: details.nickname,
+            note: details.note,
+            display_hidden: details.hidden,
+            accepted_accounts: Vec::new(),
+        });
+        crypto
+            .contact_info_seal(
+                &root(IDENTITY_INDEX, 2),
+                derivation_index,
+                &contact,
+                &plaintext,
+                &[4; 16],
+            )
+            .await
+            .expect("seal")
+    }
+
+    /// SEC-003: DIP-0015 documents are read back without platform-wallet
+    /// holding the seed; the newest per contact wins, and documents that do
+    /// not open (another key root, or garbage) are skipped, not fatal.
+    #[tokio::test]
+    async fn dip15_documents_are_read_back_newest_first() {
+        let crypto = ContactInfoCrypto::new(&SEED, NETWORK, IDENTITY_INDEX);
+        let note = |text: &str| ContactDetails {
+            note: Some(text.into()),
+            ..Default::default()
+        };
+        let older = sealed(&crypto, 0, [7; 32], note("older")).await;
+        let newer = sealed(&crypto, 1, [7; 32], note("newer")).await;
+        let hidden = sealed(
+            &crypto,
+            2,
+            [8; 32],
+            ContactDetails {
+                hidden: true,
+                ..Default::default()
+            },
+        )
+        .await;
+        let unreadable = ContactInfoSealed {
+            enc_to_user_id: [1; 32],
+            private_data: vec![9; 48],
+        };
+        let documents = [
+            stored_document(1, 2, 0, &older),
+            stored_document(2, 2, 9, &unreadable),
+            stored_document(3, 2, 1, &newer),
+            stored_document(4, 2, 2, &hidden),
+        ];
+
+        let opened = open_contact_info_documents(&crypto, &documents).await;
+
+        assert_eq!(
+            opened,
+            BTreeMap::from([
+                (Identifier::from([7; 32]), note("newer")),
+                (
+                    Identifier::from([8; 32]),
+                    ContactDetails {
+                        hidden: true,
+                        ..Default::default()
+                    }
+                ),
+            ])
+        );
     }
 
     /// A root that belongs to another wallet identity is refused.

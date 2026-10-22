@@ -57,9 +57,8 @@ where
 
 /// Save `update` for `contact_user_id` through platform-wallet.
 ///
-/// Every field the update preserves keeps the value the contacts list shows:
-/// platform-wallet's synced details, or a legacy-key document's when
-/// platform-wallet has none for the contact. Notes are limited to 255 UTF-8
+/// Every field the update preserves keeps the value the contacts list shows;
+/// see [`super::contacts::shown_contact_details`]. Notes are limited to 255 UTF-8
 /// bytes, and the details must fit the document size limit.
 ///
 /// # Errors
@@ -82,21 +81,19 @@ pub async fn create_or_update_contact_info(
     let owner = identity.identity.id();
 
     backend.dashpay_sync_contact_infos(&owner).await?;
-    let synced = backend
+    let local = backend
         .dashpay_contact_details(&owner)
         .await
         .remove(&contact_user_id);
+    let mut stored = super::contacts::stored_contact_details(app_context, sdk, &identity).await?;
+    let published = stored.published.remove(&contact_user_id);
     let synced_before = backend.dashpay_details_synced(&owner, &contact_user_id)
-        || super::contacts::holds_details(synced.as_ref());
-    let legacy = if synced_before {
-        None
-    } else {
-        super::contacts::legacy_contact_details(app_context, sdk, &identity)
-            .await?
-            .get(&contact_user_id)
-            .map(super::contacts::ContactData::details)
-    };
-    let current = super::contacts::shown_contact_details(synced, synced_before, legacy);
+        || super::contacts::holds_details(published.as_ref(), local.as_ref());
+    let legacy = stored
+        .legacy
+        .get(&contact_user_id)
+        .map(super::contacts::ContactData::details);
+    let current = super::contacts::shown_contact_details(published, local, synced_before, legacy);
     let details = update.apply_to(current);
 
     validate_contact_note(details.note.as_deref().unwrap_or_default())?;

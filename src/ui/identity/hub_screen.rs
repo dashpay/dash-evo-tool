@@ -101,6 +101,13 @@ pub struct IdentityHubScreen {
     selection: HubSelection,
     contact_info_overwrite_dialog: Option<(ConfirmationDialog, ContactInfoTaskKey)>,
     pending_contact_info_tasks: HashMap<ContactInfoTaskKey, DashPayTask>,
+    /// The dispatch each direct contact details write was sent under. Another
+    /// screen can write the same contact while the hub's write waits behind
+    /// it, so only an outcome for this dispatch settles the hub's write.
+    contact_info_dispatches: HashMap<ContactInfoTaskKey, u64>,
+    /// Set by `display_backend_task_error` when the error belongs to another
+    /// screen's write, so the context-free handler that follows it ignores it.
+    foreign_contact_info_error: bool,
     pending_contact_info_confirmations: VecDeque<ContactInfoTaskKey>,
 }
 
@@ -166,6 +173,8 @@ impl IdentityHubScreen {
             selection: HubSelection::default(),
             contact_info_overwrite_dialog: None,
             pending_contact_info_tasks: HashMap::new(),
+            contact_info_dispatches: HashMap::new(),
+            foreign_contact_info_error: false,
             pending_contact_info_confirmations: VecDeque::new(),
         }
     }
@@ -180,6 +189,40 @@ impl IdentityHubScreen {
             self.pending_contact_info_tasks
                 .insert(key, task.as_ref().clone());
         }
+    }
+
+    /// Send a direct contact details write under its own dispatch context and
+    /// remember it; see [`Self::contact_info_dispatches`].
+    fn bind_contact_info_dispatch(&mut self, action: AppAction) -> AppAction {
+        let AppAction::BackendTask(task) = action else {
+            return action;
+        };
+        let context = BackendTaskContext::for_dispatch(&task);
+        let (Some((identity_id, contact_id)), Some(dispatch_id)) =
+            (context.dashpay_contact_info_target(), context.dispatch_id())
+        else {
+            return AppAction::BackendTask(task);
+        };
+        let key = ContactInfoTaskKey::Direct {
+            identity_id,
+            contact_id,
+        };
+        self.contact_info_dispatches.insert(key, dispatch_id);
+        AppAction::BackendTaskWithContext { task, context }
+    }
+
+    /// Whether `context` is the dispatch of the hub's own write for its contact.
+    fn is_own_contact_info_dispatch(&self, context: &BackendTaskContext) -> bool {
+        context
+            .dashpay_contact_info_target()
+            .and_then(|(identity_id, contact_id)| {
+                self.contact_info_dispatches
+                    .get(&ContactInfoTaskKey::Direct {
+                        identity_id,
+                        contact_id,
+                    })
+            })
+            .is_some_and(|dispatch_id| context.dispatch_id() == Some(*dispatch_id))
     }
 
     /// Remember the identity an unload was dispatched for.
@@ -211,6 +254,7 @@ impl IdentityHubScreen {
         self.home_state = HomeState::default();
         self.contacts_state.reset_for_identity_change();
         self.pending_contact_info_tasks.clear();
+        self.contact_info_dispatches.clear();
         self.pending_contact_info_confirmations.clear();
         self.contact_info_overwrite_dialog = None;
     }
@@ -398,7 +442,10 @@ impl IdentityHubScreen {
     /// unreadable details, otherwise drop the pending write and release its
     /// guard. Returns whether the hub took over telling the user.
     pub(crate) fn handle_contact_info_error(&mut self, error: &TaskError) -> bool {
-        if !matches!(error, TaskError::DashPayContactInfoActionFailed { .. }) {
+        // Another screen's write failed; the hub's own write is still running.
+        if std::mem::take(&mut self.foreign_contact_info_error)
+            || !matches!(error, TaskError::DashPayContactInfoActionFailed { .. })
+        {
             return false;
         }
         if let Some(key) = contact_info_read_error_key(error)
@@ -668,6 +715,7 @@ impl ScreenLike for IdentityHubScreen {
             }
         });
         self.capture_contact_info_update(&action);
+        action = self.bind_contact_info_dispatch(action);
         self.capture_unload_dispatch(&action);
 
         // A picker card click sets the active identity and routes to Home.
@@ -700,7 +748,9 @@ impl ScreenLike for IdentityHubScreen {
                         .and_then(overwrite_unreadable_task)
                     {
                         self.pending_contact_info_tasks.insert(key, task.clone());
-                        action = AppAction::BackendTask(BackendTask::DashPayTask(Box::new(task)));
+                        action = self.bind_contact_info_dispatch(AppAction::BackendTask(
+                            BackendTask::DashPayTask(Box::new(task)),
+                        ));
                     }
                     self.contact_info_overwrite_dialog = None;
                 }
@@ -783,6 +833,15 @@ impl ScreenLike for IdentityHubScreen {
                 context,
                 snapshot,
             );
+            return;
+        }
+        if matches!(
+            result,
+            BackendTaskSuccessResult::DashPayContactInfoUpdated { .. }
+        ) && !self.is_own_contact_info_dispatch(context)
+        {
+            // Another screen's write: it changed the details shown, nothing more.
+            self.contacts_state.invalidate();
             return;
         }
         self.display_task_result(result);
@@ -906,8 +965,11 @@ impl ScreenLike for IdentityHubScreen {
     }
 
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
+        self.foreign_contact_info_error = context.dashpay_contact_info_target().is_some()
+            && !self.is_own_contact_info_dispatch(context);
         // Wrapped errors retain the unreadable-details confirmation flow.
-        if !matches!(error, TaskError::DashPayContactInfoActionFailed { .. })
+        if !self.foreign_contact_info_error
+            && !matches!(error, TaskError::DashPayContactInfoActionFailed { .. })
             && let Some((identity_id, contact_id)) = context.dashpay_contact_info_target()
         {
             self.pending_contact_info_tasks

@@ -156,8 +156,8 @@ fn saved_notes(hub: &HubHarness) -> Vec<(Identifier, ContactInfoField<Option<Str
     hub.state()
         .1
         .iter()
-        .filter_map(|action| match action {
-            AppAction::BackendTask(BackendTask::DashPayTask(task)) => match task.as_ref() {
+        .filter_map(|action| match dispatched_task(action)?.0 {
+            BackendTask::DashPayTask(task) => match task.as_ref() {
                 DashPayTask::UpdateContactInfo {
                     contact_id, update, ..
                 } => Some((*contact_id, update.note.clone())),
@@ -166,6 +166,15 @@ fn saved_notes(hub: &HubHarness) -> Vec<(Identifier, ContactInfoField<Option<Str
             _ => None,
         })
         .collect()
+}
+
+/// The task an action dispatches, with the context its result comes back under.
+fn dispatched_task(action: &AppAction) -> Option<(&BackendTask, BackendTaskContext)> {
+    match action {
+        AppAction::BackendTask(task) => Some((task, BackendTaskContext::from(task))),
+        AppAction::BackendTaskWithContext { task, context } => Some((task, context.clone())),
+        _ => None,
+    }
 }
 
 #[test]
@@ -381,11 +390,11 @@ fn hub_saving_a_note(
         .state()
         .1
         .iter()
-        .find_map(|action| match action {
-            AppAction::BackendTask(task @ BackendTask::DashPayTask(inner))
+        .find_map(|action| match dispatched_task(action)? {
+            (BackendTask::DashPayTask(inner), context)
                 if matches!(**inner, DashPayTask::UpdateContactInfo { .. }) =>
             {
-                Some(BackendTaskContext::from(task))
+                Some(context)
             }
             _ => None,
         })
@@ -543,6 +552,86 @@ fn unreadable_details_found_behind_another_screen_still_ask_first() {
     });
 }
 
+/// The outcome of a same-contact write another screen dispatched: the
+/// legacy Contact Details screen sends plain tasks, so its context names the
+/// contact but no dispatch.
+fn foreign_write_context(hub: &HubHarness) -> BackendTaskContext {
+    let app_context = hub.state().0.app_context.clone();
+    BackendTaskContext::from(&BackendTask::DashPayTask(Box::new(
+        DashPayTask::UpdateContactInfo {
+            identity: app_context.resolve_selected_identity().expect("identity"),
+            contact_id: Identifier::from(CONTACT),
+            update: dash_evo_tool::model::dashpay::ContactInfoUpdate::note(Some(
+                "from the other screen".into(),
+            )),
+        },
+    )))
+}
+
+/// Another screen's write for the same contact finishes while the hub's own
+/// note save is still queued behind it. Its success must not settle, show as
+/// saved, or announce the hub's write; only the hub's own outcome does.
+#[test]
+fn a_foreign_same_contact_save_does_not_settle_the_hubs_note() {
+    with_isolated_data_dir(|| {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let _guard = runtime.enter();
+        let app =
+            crate::support::mount_app(dash_evo_tool::ui::RootScreenType::RootScreenWalletsBalances);
+        let (mut hub, owner, own_context) = hub_saving_a_note(&app);
+        let foreign = foreign_write_context(&hub);
+        let updated = || BackendTaskSuccessResult::DashPayContactInfoUpdated {
+            identity: owner,
+            contact_id: Identifier::from(CONTACT),
+        };
+
+        hub.state_mut()
+            .0
+            .display_backend_task_result(&foreign, updated());
+        hub.run_steps(2);
+        assert!(
+            hub.query_by_label(SAVING_NOTE_LABEL).is_some(),
+            "another screen's save must not settle the hub's queued note"
+        );
+
+        hub.state_mut()
+            .0
+            .display_backend_task_result(&own_context, updated());
+        hub.run_steps(2);
+        assert!(hub.query_by_label(SAVING_NOTE_LABEL).is_none());
+    });
+}
+
+/// Likewise, another screen's failure for the same contact leaves the hub's
+/// queued note save running.
+#[test]
+fn a_foreign_same_contact_failure_does_not_release_the_hubs_note() {
+    use dash_evo_tool::backend_task::error::TaskError;
+    with_isolated_data_dir(|| {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let _guard = runtime.enter();
+        let app =
+            crate::support::mount_app(dash_evo_tool::ui::RootScreenType::RootScreenWalletsBalances);
+        let (mut hub, owner, _) = hub_saving_a_note(&app);
+        let foreign = foreign_write_context(&hub);
+
+        for error in [
+            contact_info_failure(owner, TaskError::WalletLocked),
+            TaskError::WalletLocked,
+        ] {
+            hub.state_mut()
+                .0
+                .display_backend_task_error(&foreign, &error);
+            hub.state_mut().0.display_task_error(&error);
+            hub.run_steps(2);
+            assert!(
+                hub.query_by_label(SAVING_NOTE_LABEL).is_some(),
+                "another screen's failure must not release the hub's queued note: {error:?}"
+            );
+        }
+    });
+}
+
 #[test]
 fn failed_unhide_behind_another_screen_restores_the_hidden_row() {
     use dash_evo_tool::backend_task::error::TaskError;
@@ -577,11 +666,11 @@ fn failed_unhide_behind_another_screen_restores_the_hidden_row() {
                 .state()
                 .1
                 .iter()
-                .find_map(|action| match action {
-                    AppAction::BackendTask(task @ BackendTask::DashPayTask(inner))
+                .find_map(|action| match dispatched_task(action)? {
+                    (BackendTask::DashPayTask(inner), context)
                         if matches!(**inner, DashPayTask::UpdateContactInfo { .. }) =>
                     {
-                        Some(BackendTaskContext::from(task))
+                        Some(context)
                     }
                     _ => None,
                 })
@@ -614,8 +703,11 @@ fn failed_unhide_behind_another_screen_restores_the_hidden_row() {
                 .click();
             hub.run_steps(2);
             assert!(
-                hub.state().1.iter().any(|action| matches!(action,
-                AppAction::BackendTask(BackendTask::DashPayTask(task))
+                hub.state()
+                    .1
+                    .iter()
+                    .any(|action| matches!(dispatched_task(action),
+                Some((BackendTask::DashPayTask(task), _))
                     if matches!(**task, DashPayTask::UpdateContactInfo { .. }))),
                 "the restored hidden row permits a retry"
             );

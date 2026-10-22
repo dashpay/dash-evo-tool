@@ -824,7 +824,7 @@ As a user whose limited key is running out, I want to add to its spending limit 
 
 - The Key Info screen of a limited key offers "Raise Limits" with an amount to add and a number of days to extend by.
 - An expiry is extended from its current date, or from today when the key has already expired.
-- An expired key cannot only be topped up; the screen asks to extend its expiry as well.
+- An expired key cannot be topped up on its own; the screen also asks to extend its expiry.
 - Before anything is sent, a confirmation shows the resulting total spending limit and expiry and the key that signs the change; exactly that is sent.
 - If the key's limits, or the key that would sign the change, changed elsewhere in the meantime, nothing is sent and the screen shows the current limits and signing key to review again; no other signing key is picked without a new review.
 - The change is signed by the identity's master key, or a critical key without limits; without either on this device, the screen says which key to import.

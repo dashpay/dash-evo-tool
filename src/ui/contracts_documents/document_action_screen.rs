@@ -163,6 +163,10 @@ pub struct DocumentActionScreen {
     agreed_action_fee: Option<DocumentActionFeeAgreement>,
 }
 
+/// Shown when the selected identity holds no key this device can sign the
+/// chosen document action with.
+const NO_SIGNING_KEY_NOTICE: &str = "This identity has no key on this device that can sign this action. Add or load a suitable key from the identity's keys, or select another identity.";
+
 /// An open contract fee confirmation and the action it was opened for: the
 /// action is built, fee agreement included, when the dialog opens, and that
 /// exact action is sent on confirm.
@@ -1979,7 +1983,15 @@ impl DocumentActionScreen {
                 // Step 2: Identity and Key Selection
                 self.render_identity_and_key_selection(ui);
 
-                if self.selected_identity.is_none() || self.selected_key.is_none() {
+                if self.selected_identity.is_none() {
+                    return action;
+                }
+                if self.selected_key.is_none() {
+                    let dark_mode = ui.style().visuals.dark_mode;
+                    ui.label(
+                        RichText::new(NO_SIGNING_KEY_NOTICE)
+                            .color(DashColors::warning_color(dark_mode)),
+                    );
                     return action;
                 }
 
@@ -2379,6 +2391,37 @@ mod tests {
             total,
             max_total,
         }
+    }
+
+    /// Regression: with an identity selected but no key that can sign the
+    /// action, the screen stopped below the identity selector with no word
+    /// of why (the key chooser is behind Advanced Options).
+    #[test]
+    fn an_identity_without_a_usable_key_is_told_why_nothing_follows() {
+        use egui_kittest::Harness;
+        use egui_kittest::kittest::Queryable;
+
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let contract = dpns();
+        let domain = owned_document_type(&contract, "domain");
+        let mut screen = DocumentActionScreen::new(context, None, DocumentActionType::Delete);
+        screen.selected_contract = Some(contract);
+        screen.selected_document_type = Some(domain);
+        screen.selected_identity = Some(identity_holding(&[]));
+        assert!(screen.selected_key.is_none());
+
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, screen: &mut DocumentActionScreen| {
+                screen.render_main_content(ui);
+            },
+            screen,
+        );
+        harness.run();
+        assert!(
+            harness.query_by_label(NO_SIGNING_KEY_NOTICE).is_some(),
+            "the missing key is explained"
+        );
     }
 
     /// Regression: Confirm rebuilt the action from the live form, so an input
